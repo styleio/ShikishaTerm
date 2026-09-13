@@ -669,7 +669,7 @@ mod tests {
         let (far, stub) = wired();
         let found = far
             .find(Some("ws/page"), &Sel::Css("#here".into()), 2_000)
-            .expect("答えが返らない");
+            .expect("no answer comes back");
         assert_eq!(found, Found::Visible);
         let asked = stub.asked.lock().unwrap().clone();
         assert_eq!(asked.len(), 1, "1つの操作が何度も渡っている: {asked:?}");
@@ -921,7 +921,7 @@ mod tests {
 
         // ...and driving it runs here, against that browser
         assert_eq!(
-            far.find(Some("ws/p"), &Sel::Css("#here".into()), 3_000).expect("答えが返らない"),
+            far.find(Some("ws/p"), &Sel::Css("#here".into()), 3_000).expect("no answer comes back"),
             Found::Visible
         );
         let asked = drawn.stub.asked.lock().unwrap().clone();

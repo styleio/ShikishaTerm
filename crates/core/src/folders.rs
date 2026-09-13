@@ -836,7 +836,7 @@ mod restore_tests {
         let git = |args: &[&str]| {
             let mut run = std::process::Command::new("git");
             run.arg("-C").arg(at).args(args);
-            let out = crate::detach_console(&mut run).output().expect("git が要る");
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         let url = format!("https://example.test/team/{name}.git");

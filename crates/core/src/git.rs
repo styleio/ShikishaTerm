@@ -909,7 +909,7 @@ mod tests {
 
         let rows = status(&dir).unwrap();
         let staged = rows.iter().find(|c| c.path == "kept.txt").expect("変更した行が出る");
-        assert_eq!(staged.index, 'M', "ステージ側は変更済み");
+        assert_eq!(staged.index, 'M', "the staged side is modified");
         let untracked = rows.iter().find(|c| c.path == "fresh.txt").expect("新しいファイルも出る");
         assert_eq!((untracked.index, untracked.work), ('?', '?'));
 

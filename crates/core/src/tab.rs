@@ -1138,7 +1138,7 @@ mod changed_span_tests {
         assert_eq!(
             Tab::changed_span(&before, &now),
             (3, 5),
-            "バナーと枠を外し、変わった2行だけを残す"
+            "drops the banner and the frame, keeping only the two rows that changed"
         );
     }
 
@@ -1160,7 +1160,7 @@ mod changed_span_tests {
         assert_eq!(
             Tab::changed_span(&before, &now),
             (1, 4),
-            "真ん中の一致では切らない"
+            "it does not cut at a match in the middle"
         );
     }
 
@@ -1198,27 +1198,27 @@ mod capture_range_tests {
         // A 24-row screen; the cursor sits in the input box (4th row from the
         // bottom). The 3 rows below it are a hint row and a status row
         let (lo, hi) = capture_range(24, 20, 10);
-        assert_eq!(lo, 3, "カーソルより下の3行を飛ばして数え始める");
-        assert_eq!(hi, 13, "実行してから書かれた10行ぶんを取る");
+        assert_eq!(lo, 3, "it starts counting after skipping the three rows below the cursor");
+        assert_eq!(hi, 13, "it takes the ten rows written since running");
 
         // Plain shell: the cursor sits at the prompt on the bottom row
         let (lo, hi) = capture_range(24, 23, 5);
-        assert_eq!((lo, hi), (0, 5), "下に枠がなければ最下行から数える");
+        assert_eq!((lo, hi), (0, 5), "with no frame below, it counts from the bottom row");
 
         // If nothing was written, nothing is taken (lo == hi gives 1 row, but
         // that row is the cursor row itself = the input box, so trim drops it)
         let (lo, hi) = capture_range(24, 20, 0);
-        assert_eq!(lo, hi, "実行後に何も書かれていなければ範囲は空に近い");
+        assert_eq!(lo, hi, "if nothing was written after running, the range is nearly empty");
     }
 
     /// Even with a broken screen size, the range calculation alone must not break down
     #[test]
     fn a_broken_screen_size_does_not_panic() {
-        assert_eq!(capture_range(0, 0, 0), (0, 0), "高さ0");
-        assert_eq!(capture_range(1, 5, 3), (0, 3), "カーソルが画面外");
+        assert_eq!(capture_range(0, 0, 0), (0, 0), "zero height");
+        assert_eq!(capture_range(1, 5, 3), (0, 3), "the cursor is off screen");
         let (lo, hi) = capture_range(24, 0, usize::MAX);
         assert_eq!(lo, 23);
-        assert_eq!(hi, usize::MAX, "足し算が溢れない");
+        assert_eq!(hi, usize::MAX, "the addition does not overflow");
     }
 }
 
@@ -1249,9 +1249,9 @@ mod tests {
             p.process(format!("{line}
 ").as_bytes());
         }
-        let found = super::find_line(&mut p, "needle", 0, true, 20).expect("見つかる");
+        let found = super::find_line(&mut p, "needle", 0, true, 20).expect("found");
         let text = super::extract_text(&mut p, found, found, 20);
-        assert!(text.contains("NEEDLE here"), "掴んだ行が違う: {text:?}");
+        assert!(text.contains("NEEDLE here"), "it caught the wrong row: {text:?}");
         // Case is not what anyone means when they search a terminal
         assert_eq!(super::find_line(&mut p, "NeEdLe", 0, true, 20), Some(found));
         // The other direction reaches it too, by wrapping past the newest line
@@ -1263,7 +1263,7 @@ mod tests {
         // Starting ON the match moves off it rather than standing still, so
         // pressing "next" repeatedly walks rather than sticks
         let again = super::find_line(&mut p, "needle", found, true, 20);
-        assert_eq!(again, Some(found), "他に無ければ一周して同じ行に戻る");
+        assert_eq!(again, Some(found), "with nothing else, it wraps around to the same row");
     }
 
     /// The seam between two reads is the whole difficulty: a Japanese session
@@ -1275,7 +1275,7 @@ mod tests {
         let mut w = super::Utf8Watch::default();
         // Byte by byte is the worst case a real read can be
         for i in 0..jp.len() {
-            assert!(!w.broken(&jp[i..i + 1]), "{i} バイト目で誤判定");
+            assert!(!w.broken(&jp[i..i + 1]), "misjudged at byte {i}");
         }
         // ...and the same text arriving whole is fine too
         let mut w = super::Utf8Watch::default();
@@ -1286,20 +1286,20 @@ mod tests {
 
     #[test]
     fn text_in_another_encoding_is_caught() {
-        // "指揮者" in Shift_JIS: no lead byte in it can begin a UTF-8 sequence
+        // "Shikisha" written in Japanese, in Shift_JIS: no lead byte in it can begin a UTF-8 sequence
         let sjis = [0x8Du8, 0x77, 0x8A, 0xF6, 0x8E, 0xD2];
         let mut w = super::Utf8Watch::default();
-        assert!(w.broken(&sjis), "CP932 のバイト列は UTF-8 ではない");
+        assert!(w.broken(&sjis), "CP932 bytes are not UTF-8");
         // The same three bytes, one read at a time, are a character
         let mut w = super::Utf8Watch::default();
-        assert!(!w.broken(&[0xE6]), "まだ途中かもしれない");
+        assert!(!w.broken(&[0xE6]), "it may still be partway through");
         assert!(!w.broken(&[0x8C]));
-        assert!(!w.broken(&[0x87]), "ここで完成する (\u{6307})");
+        assert!(!w.broken(&[0x87]), "it completes here (\u{6307})");
         // A lead byte followed by another lead byte is not a seam; nothing can
         // make those two into a character, so it is answered at once
         let mut w = super::Utf8Watch::default();
         assert!(!w.broken(&[0xE6]));
-        assert!(w.broken(&[0xE6]), "続きになれないバイトが来たら、そこで分かる");
+        assert!(w.broken(&[0xE6]), "once a byte that cannot continue it arrives, it is known right there");
     }
 
     #[test]
@@ -1331,9 +1331,9 @@ mod tests {
         // ConEmu's numbered sub-commands share OSC 9 with the plain message.
         // A progress bar is not a sentence, and it arrives once per percent --
         // reading it as one put "4;1;50" on screen and on somebody's phone
-        assert_eq!(p(&["9", "4", "1", "50"]), None, "進捗は通知ではない");
+        assert_eq!(p(&["9", "4", "1", "50"]), None, "progress is not a notification");
         assert_eq!(p(&["9", "4", "0"]), None);
-        assert_eq!(p(&["9", "9", "C:\\work"]), None, "作業フォルダも通知ではない");
+        assert_eq!(p(&["9", "9", "C:\\work"]), None, "the working folder is not a notification either");
         // ...except 2, which exists to put words in front of a person
         assert_eq!(p(&["9", "2", "look at me"]), Some((String::new(), "look at me".into())));
         // A body is still a body: one part can only be text, and text that
@@ -1394,12 +1394,12 @@ mod tests {
         // What Claude Code sends on startup. It asks for 5; this terminal does
         // the 1 of it, and says so
         p.process(b"\x1b[>5u");
-        assert_eq!(flags(), 1, "頼まれた分のうち、できる分を持っていない");
+        assert_eq!(flags(), 1, "of what was asked, it does not hold what it can do");
         p.process(b"\x1b[?u");
 
         // ...and on the way out it gives it back
         p.process(b"\x1b[<u");
-        assert_eq!(flags(), 0, "抜けたのに要求が残っている");
+        assert_eq!(flags(), 0, "the request is still there after it left");
 
         // Set outright, then asked again
         p.process(b"\x1b[=1;1u");
@@ -1413,14 +1413,14 @@ mod tests {
         }
         assert!(
             keyboard.lock().unwrap().len() <= super::KEYBOARD_STACK_MAX,
-            "積みっぱなしのプログラムに際限なく付き合っている"
+            "it keeps going along with a program that never stops pushing"
         );
 
         // Both answers said 1 -- what is honoured, never the 5 that was asked
         let answers = String::from_utf8_lossy(&said.lock().unwrap()).to_string();
         assert_eq!(
             answers, "\x1b[?1u\x1b[?1u",
-            "できないことまで「やる」と答えている: {answers:?}"
+            "it says it will do even what it cannot: {answers:?}"
         );
     }
 
@@ -1461,10 +1461,10 @@ mod tests {
         assert_eq!(
             notes.lock().unwrap().last().cloned(),
             Some(("Build".into(), "3 tests failed".into())),
-            "通知が届かなくなっている"
+            "notifications no longer arrive"
         );
         p.process(b"\x07");
-        assert_eq!(bell.load(std::sync::atomic::Ordering::Relaxed), 1, "ベルを数えていない");
+        assert_eq!(bell.load(std::sync::atomic::Ordering::Relaxed), 1, "it does not count the bell");
     }
 
     /// The other half of the same path: a shell announcing where it moved to,
@@ -1499,9 +1499,9 @@ mod tests {
         // the last thing we knew about stands rather than being replaced by a
         // path that means nothing on this machine
         p.process(b"\x1b]7;file://build-server/srv/app\x07");
-        assert_eq!(*cwd.lock().unwrap(), "C:\\Users\\me", "他所のパスで上書きしない");
+        assert_eq!(*cwd.lock().unwrap(), "C:\\Users\\me", "it does not overwrite with a path from somewhere else");
         // ...and none of this has quietly become a notification
-        assert!(notes.lock().unwrap().is_empty(), "cwd は通知ではない");
+        assert!(notes.lock().unwrap().is_empty(), "cwd is not a notification");
     }
 
     /// Copying from inside a full-screen tool, and the four ways it is refused.
@@ -1573,8 +1573,8 @@ mod tests {
         let session = session.expect("a conversation was started");
         assert_eq!(session.source, super::SessionSource::Minted);
         assert_eq!(out, vec!["claude", "--session-id", &session.id]);
-        assert_eq!(session.id.len(), 36, "UUIDの綴りで渡す: {}", session.id);
-        assert_eq!(&session.id[14..15], "4", "version 4 と名乗る");
+        assert_eq!(session.id.len(), 36, "handed over spelled as a UUID: {}", session.id);
+        assert_eq!(&session.id[14..15], "4", "it says it is version 4");
     }
 
     #[test]
@@ -1589,7 +1589,7 @@ mod tests {
         let (out, session) =
             super::plan_launch(Some(&s), &argv("codex --search"), super::Resume::Id(was.clone()));
         assert_eq!(out, vec!["codex", "resume", "0198-abc", "--search"]);
-        assert_eq!(session, Some(was), "引き継いだ会話をそのまま覚えている");
+        assert_eq!(session, Some(was), "it remembers the carried-over conversation as it is");
     }
 
     #[test]
@@ -1612,8 +1612,8 @@ mod tests {
         let s = spec(&["--session-id", "{id}"], &["--resume", "{id}"], &["--continue"]);
         let written = argv("claude --dangerously-skip-permissions --resume");
         let (out, session) = super::plan_launch(Some(&s), &written, super::Resume::Fresh);
-        assert_eq!(out, written, "自分で書いた再開の指定に、こちらの指定を重ねない");
-        assert_eq!(session, None, "こちらが選んでいない会話を、覚えたことにしない");
+        assert_eq!(out, written, "it does not add its own resume option on top of one you wrote");
+        assert_eq!(session, None, "it does not remember a conversation it did not choose");
         // --continue is the same story, and so is a resume spelled as a
         // subcommand
         let (out, _) =
@@ -1635,11 +1635,11 @@ mod tests {
         // is about what really starts, so a stub here would prove nothing
         let line = super::launch_line(&argv("claude"), &None, super::Resume::Fresh, "<new>");
         assert_eq!(line.argv, argv("claude --session-id <new>"));
-        assert_eq!(line.added, 2, "アプリが足した語数を数えている");
+        assert_eq!(line.added, 2, "it counts the words the app added");
         // The id is where it comes from, not a number: redrawing the field
         // must not show a different conversation every time
         let again = super::launch_line(&argv("claude"), &None, super::Resume::Fresh, "<new>");
-        assert_eq!(again.argv, line.argv, "描き直すたびに違う番号を見せない");
+        assert_eq!(again.argv, line.argv, "it does not show a different number on every redraw");
         // Nothing added, nothing to highlight
         let plain = super::launch_line(&argv("powershell.exe"), &None, super::Resume::Fresh, "<x>");
         assert_eq!(plain.argv, argv("powershell.exe"));
@@ -1660,7 +1660,7 @@ mod tests {
         assert_eq!(
             super::carry_unused(&argv("claude --resume"), &None),
             Some("own"),
-            "自分で書いた指定が優先される"
+            "an option you wrote yourself wins"
         );
         assert_eq!(
             super::carry_unused(&argv("claude --continue"), &None),
@@ -1707,11 +1707,11 @@ mod tests {
     fn a_read_notice_stays_away_while_its_line_is_still_there() {
         use super::unread_limit;
         let mut acked = Some("You've hit your limit".to_string());
-        assert_eq!(unread_limit(Some("You've hit your limit".into()), &mut acked), None, "読んだ行が戻ってきた");
-        assert_eq!(unread_limit(Some("Usage limit approaching".into()), &mut acked).as_deref(), Some("Usage limit approaching"), "別の行が隠れた");
+        assert_eq!(unread_limit(Some("You've hit your limit".into()), &mut acked), None, "a line that was read came back");
+        assert_eq!(unread_limit(Some("Usage limit approaching".into()), &mut acked).as_deref(), Some("Usage limit approaching"), "another line got hidden");
         assert_eq!(unread_limit(None, &mut acked), None);
-        assert_eq!(acked, None, "行が消えたら忘れる");
-        assert_eq!(unread_limit(Some("You've hit your limit".into()), &mut acked).as_deref(), Some("You've hit your limit"), "改めて出た行が新しい知らせにならない");
+        assert_eq!(acked, None, "it forgets once the line is gone");
+        assert_eq!(unread_limit(Some("You've hit your limit".into()), &mut acked).as_deref(), Some("You've hit your limit"), "a line shown again does not become a new notice");
     }
 
     #[test]
@@ -1784,13 +1784,13 @@ mod tests {
 
         assert!(
             !p.screen().contents().contains('\n'),
-            "contents() は改行を落とす (この前提が崩れたら本関数は不要)"
+            "contents() drops newlines (if that stops being true, this function is not needed)"
         );
         let visible = super::visible_text(p.screen());
         assert_eq!(
             visible.split('\n').collect::<Vec<_>>(),
             vec!["##########", "$$$$$$$$$$", "%%%%%%%%%%", ""],
-            "画面の行がそのまま残る (4行目は空行)"
+            "the screen's rows are kept as they are (row 4 is empty)"
         );
     }
 
@@ -1836,29 +1836,29 @@ mod tests {
         }
 
         t.write_bytes(b"echo REPLY\r").unwrap();
-        assert!(t.was_prompted(), "実行として記録される");
-        assert!(!t.answered_since_submit(), "実行した直後はまだ応答が無い");
+        assert!(t.was_prompted(), "it is recorded as a run");
+        assert!(!t.answered_since_submit(), "right after running, there is no answer yet");
 
         // Output moved and the screen changed, but the AI hasn't started working (paste redraw)
         for _ in 0..40 {
             std::thread::sleep(Duration::from_millis(50));
             t.tick(start);
         }
-        assert!(t.output_count() > 0 && t.had_output(), "出力そのものは動いている");
+        assert!(t.output_count() > 0 && t.had_output(), "the output itself is moving");
         assert!(
             !t.answered_since_submit(),
-            "画面が動いただけで応答ありと数えている (実行が効いていなくてもボールが渡る)"
+            "it counts the screen merely moving as an answer (the ball is passed even when the run did nothing)"
         );
 
         // Once the "started working" indicator is seen, it counts as answered
         t.saw_working.store(true, Ordering::Relaxed);
-        assert!(t.answered_since_submit(), "働き始めたら応答として数える");
+        assert!(t.answered_since_submit(), "it counts as an answer once work starts");
 
         // The next submit resets it back to a waiting state
         t.write_bytes(b"echo AGAIN\r").unwrap();
         assert!(
             !t.answered_since_submit(),
-            "実行のたびに数え直す (前の応答が残らない)"
+            "it counts again on every run (the previous answer does not linger)"
         );
 
         t.kill();
@@ -1890,7 +1890,7 @@ mod tests {
         }
         assert!(
             !t.answered_since_submit(),
-            "エコーだけ (直後の一瞬で止まった出力) は応答にしない"
+            "an echo alone (output that stopped a moment later) is not an answer"
         );
 
         // Output arriving well after the submit = the peer actually said
@@ -1936,24 +1936,24 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             t.tick(start);
         }
-        assert_eq!(marker(&t), u64::MAX, "実行していないうちは始まりが無い");
+        assert_eq!(marker(&t), u64::MAX, "before running, there is no start");
 
         // Fixed at the moment of execution (doesn't wait for the screen to move)
         t.write_bytes(b"echo ONE\r").unwrap();
         let began = marker(&t);
-        assert_ne!(began, u64::MAX, "実行した瞬間に始まりが決まる");
+        assert_ne!(began, u64::MAX, "the start is set the moment it runs");
 
         // No matter how much the screen moves after that, it's not re-taken
         for _ in 0..40 {
             std::thread::sleep(Duration::from_millis(50));
             t.tick(start);
         }
-        assert_eq!(marker(&t), began, "画面が動いても始まりは動かない");
+        assert_eq!(marker(&t), began, "the screen moving does not move the start");
 
         // Once fully received, wait for the next execution
         t.finish_response();
-        assert_eq!(marker(&t), u64::MAX, "次の応答は新しく取り直す");
-        assert!(!t.was_prompted(), "次の実行を待つ状態に戻る");
+        assert_eq!(marker(&t), u64::MAX, "the next answer is taken afresh");
+        assert!(!t.was_prompted(), "it goes back to waiting for the next run");
 
         t.kill();
     }
@@ -1967,26 +1967,26 @@ mod tests {
     fn only_a_real_enter_counts_as_submitting() {
         use super::contains_submit;
 
-        assert!(!contains_submit(b"hello"), "打っただけ");
-        assert!(!contains_submit(b""), "空");
-        assert!(contains_submit(b"hello\r"), "改行で実行");
-        assert!(contains_submit(b"\r"), "改行だけでも実行");
-        assert!(contains_submit(b"\n"), "LFも実行として扱う");
+        assert!(!contains_submit(b"hello"), "only typed");
+        assert!(!contains_submit(b""), "empty");
+        assert!(contains_submit(b"hello\r"), "a newline runs it");
+        assert!(contains_submit(b"\r"), "a newline alone runs it");
+        assert!(contains_submit(b"\n"), "LF is treated as running too");
 
         // The contents of a bracketed paste are body text. A newline inside it is not a submit
         assert!(
             !contains_submit(b"\x1b[200~one\rtwo\x1b[201~"),
-            "貼り付けた本文の改行は実行ではない"
+            "a newline inside pasted text does not run it"
         );
         // A newline after the paste closes is a submit
         assert!(
             contains_submit(b"\x1b[200~one\rtwo\x1b[201~\r"),
-            "貼り付けを閉じたあとの改行は実行"
+            "a newline after the paste is closed runs it"
         );
         // Even if the paste is never closed, its contents are not mistaken for a submit
         assert!(
             !contains_submit(b"\x1b[200~one\rtwo"),
-            "閉じられていない貼り付けの中身"
+            "the contents of a paste that was never closed"
         );
     }
 
@@ -2017,7 +2017,7 @@ mod tests {
             t.state
         };
         let calm = settle(&mut t);
-        assert_ne!(calm, TabState::Busy, "まず落ち着かせる");
+        assert_ne!(calm, TabState::Busy, "let it settle first");
 
         // Change the size. The child process redraws, but it's not a response
         t.resize(30, 100).unwrap();
@@ -2031,7 +2031,7 @@ mod tests {
         }
         assert!(
             !went_busy,
-            "描き直しを処理中と見なしている (このあと DONE になり応答として転送される)"
+            "it takes a redraw for work (this then becomes DONE and is passed on as an answer)"
         );
 
         t.kill();
@@ -2069,13 +2069,13 @@ mod tests {
                 }
             }
         }
-        assert!(!saw_done, "起動しただけで DONE（完了）になる");
-        assert_eq!(t.state, TabState::Wait, "起動後は待機のはず");
-        assert!(!t.was_prompted(), "何も聞いていないのに応答完了として扱われている");
+        assert!(!saw_done, "merely starting makes it DONE (finished)");
+        assert_eq!(t.state, TabState::Wait, "it should be idle after starting");
+        assert!(!t.was_prompted(), "it is treated as a finished answer though nothing was asked");
 
         // A DONE that comes after real input is a genuine response
         t.write_bytes(b"echo hi\r").unwrap();
-        assert!(t.was_prompted(), "入力したら応答を待つ状態になる");
+        assert!(t.was_prompted(), "typing puts it into waiting for an answer");
         let mut done_after = false;
         for _ in 0..200 {
             std::thread::sleep(Duration::from_millis(50));
@@ -2084,7 +2084,7 @@ mod tests {
                 break;
             }
         }
-        assert!(done_after, "入力のあとの静けさは完了になる");
+        assert!(done_after, "quiet after typing becomes done");
 
         t.kill();
     }
@@ -2113,7 +2113,7 @@ mod tests {
         if !t.had_output() {
             assert!(
                 !t.ready_for_startup_hook(start.elapsed().as_millis() as u64),
-                "無出力のうちは待つ"
+                "it waits while there is no output"
             );
         }
 
@@ -2134,21 +2134,21 @@ mod tests {
                 break;
             }
         }
-        assert!(became_ready, "落ち着いたら準備完了になる");
-        assert!(t.had_output(), "出力が出たことを根拠にしている");
+        assert!(became_ready, "once settled, it becomes ready");
+        assert!(t.had_output(), "it goes by output having appeared");
         assert!(
             t.age_ms() < 15_000,
-            "時間切れではなく、落ち着いたことで判定できている ({}ms)",
+            "decided by settling, not by timing out ({}ms)",
             t.age_ms()
         );
         // The point of the whole gate: the first byte is not the invitation to
         // type. Something has to hold still afterwards. Without this the tab
         // was declared ready on the same tick its banner appeared, and the
         // persona went into a CLI that had not drawn its input box yet.
-        let out_at = first_output_at.expect("出力が出たのに記録されていない");
+        let out_at = first_output_at.expect("output appeared but was not recorded");
         assert!(
             ready_at >= out_at + 500,
-            "出力が出た瞬間に準備完了にしている (出力 {out_at}ms → 準備完了 {ready_at}ms)"
+            "it becomes ready the moment output appears (output {out_at}ms -> ready {ready_at}ms)"
         );
 
         t.kill();
@@ -2161,7 +2161,7 @@ mod tests {
         let before = screen_hash(p.screen(), 2);
         // Rewrite only the bottom row (the equivalent of byobu's clock)
         p.process(b"\x1b[5;1H12:34:56");
-        assert_eq!(before, screen_hash(p.screen(), 2), "最下部の変化は無視");
+        assert_eq!(before, screen_hash(p.screen(), 2), "a change in the bottom rows is ignored");
         // The hash changes if the body content changes
         p.process(b"\x1b[1;1Hchanged!");
         assert_ne!(before, screen_hash(p.screen(), 2));
@@ -4509,7 +4509,7 @@ mod capture_probe {
             100,
             TabOptions::default(),
         )
-        .expect("起動");
+        .expect("started");
 
         // Wait until the frame finishes drawing
         let quiet_for = |tab: &Tab, ms: u64, cap: u64| {
@@ -4528,14 +4528,14 @@ mod capture_probe {
             }
             false
         };
-        assert!(quiet_for(&tab, 3000, 60), "起動しない");
+        assert!(quiet_for(&tab, 3000, 60), "it does not start");
 
         // Enter via bracketed paste, then execute once it settles (same order as production)
         let q = "Reply with exactly three lines: AAA then BBB then CCC. Nothing else.";
         tab.write_passthrough(b"\x1b[200~").unwrap();
         tab.write_passthrough(q.as_bytes()).unwrap();
         tab.write_passthrough(b"\x1b[201~").unwrap();
-        assert!(quiet_for(&tab, 600, 20), "貼り付けが落ち着かない");
+        assert!(quiet_for(&tab, 600, 20), "the paste does not settle");
 
         println!("=== 実行の直前 ===");
         {
@@ -4547,7 +4547,7 @@ mod capture_probe {
         println!("line_position = {}", tab.line_position());
 
         tab.write_bytes(b"\r").unwrap();
-        assert!(quiet_for(&tab, 5000, 120), "答えが返らない");
+        assert!(quiet_for(&tab, 5000, 120), "no answer comes back");
 
         println!("=== 実行の直後 ===");
         {
@@ -4603,7 +4603,7 @@ mod turns_probe {
             100,
             TabOptions::default(),
         )
-        .expect("起動");
+        .expect("started");
 
         let settle = |tab: &Tab| {
             let start = Instant::now();
@@ -4644,16 +4644,16 @@ mod turns_probe {
             let _ = marker_before;
             assert!(
                 got.contains(&format!("TURN{turn}-")) && got.contains(&format!("END{turn}")),
-                "{turn}回目の答えが丸ごと入っていない: {got:?}"
+                "answer {turn} is not all there: {got:?}"
             );
             assert!(
                 got.trim_start().starts_with(&format!("TURN{turn}-")),
-                "指示の折り返しの後半が頭に付いている: {got:?}"
+                "the second half of the wrapped instruction is stuck to the front: {got:?}"
             );
             for prev in 1..turn {
                 assert!(
                     !got.contains(&format!("END{prev}")),
-                    "{prev}回目の残りを拾っている: {got:?}"
+                    "it picked up what was left of answer {prev}: {got:?}"
                 );
             }
             tab.finish_response();
@@ -4680,7 +4680,7 @@ mod paste_no_submit_probe {
     #[ignore]
     fn probe_paste_without_enter_stays_unsent() {
         let tab = Tab::spawn("claude".into(), &["claude".to_string()], None, 24, 100,
-                             TabOptions::default()).expect("起動");
+                             TabOptions::default()).expect("started");
         let settle = |ms: u64, cap: u64| {
             let start = Instant::now();
             let (mut last, mut quiet) = (0u64, Instant::now());
@@ -4703,7 +4703,7 @@ mod paste_no_submit_probe {
         // nothing was sent, and on_done fires on an empty swing
         assert!(
             !tab.prompted.load(Ordering::Relaxed),
-            "括弧貼り付けだけで送信扱いになっている"
+            "a bracketed paste alone is treated as sending"
         );
         let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
         let (rows, cols) = p.screen().size();
@@ -4744,7 +4744,7 @@ mod draft_target_tests {
             100,
             TabOptions::default(),
         )
-        .expect("起動")
+        .expect("started")
     }
 
     /// A draft must never be placed into a shell.
@@ -4762,7 +4762,7 @@ mod draft_target_tests {
         settle(&tab, 700, 15);
         assert!(
             !tab.accepts_bracketed_paste(),
-            "シェルを下書きの宛先と見なしている"
+            "it treats the shell as somewhere to put a draft"
         );
     }
 
@@ -4778,7 +4778,7 @@ mod draft_target_tests {
         settle(&tab, 2500, 60);
         assert!(
             tab.accepts_bracketed_paste(),
-            "AI CLI が下書きを受け取れないことになっている"
+            "the AI CLI is treated as unable to take a draft"
         );
     }
 }
@@ -4867,7 +4867,7 @@ mod resize_survival_tests {
             40,
             TabOptions::default(),
         )
-        .expect("起動");
+        .expect("started");
         settle(&tab, 500);
 
         for to in [20u16, 7, 5, 11, 60] {
@@ -4888,7 +4888,7 @@ mod resize_survival_tests {
             };
             assert!(
                 text.lines().count() > 0,
-                "幅 {to} で画面が読めなくなった"
+                "at width {to}, the screen can no longer be read"
             );
         }
 
@@ -4901,7 +4901,7 @@ mod resize_survival_tests {
         };
         assert!(
             text.contains("ALIVE"),
-            "縮めた後に読み取りが止まっている: {text:?}"
+            "reading stopped after shrinking: {text:?}"
         );
     }
 }
@@ -4937,7 +4937,7 @@ mod long_paste_probe {
             120,
             TabOptions { cwd: Some(std::path::PathBuf::from(r"D:\ShikishaTerm")), ..Default::default() },
         )
-        .expect("起動");
+        .expect("started");
         let settle = |ms: u64, cap: u64| {
             let start = Instant::now();
             let (mut last, mut quiet) = (0u64, Instant::now());
@@ -4992,7 +4992,7 @@ mod long_paste_probe {
         tab.kill();
         assert!(
             text.contains("MANGO") && !text.contains("Pasted Content"),
-            "貼り付けが入力欄に残ったまま送信されていない"
+            "the paste stays in the input box and is not sent"
         );
     }
 
@@ -5068,7 +5068,7 @@ mod codex_session_probe {
             120,
             TabOptions { cwd: Some(cwd), ..Default::default() },
         )
-        .expect("起動");
+        .expect("started");
         println!(
             "resume spec: record={:?} verify={:?}",
             tab.resume.as_ref().and_then(|r| r.record.clone()),
@@ -5118,7 +5118,7 @@ mod codex_session_probe {
             );
         }
         tab.kill();
-        assert!(found.is_some(), "Codex の会話が見つからない");
+        assert!(found.is_some(), "the Codex conversation was not found");
     }
 }
 

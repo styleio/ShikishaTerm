@@ -7379,7 +7379,7 @@ mod remote_token_tests {
         assert!(start_remote_bg(Some(&cfg), None)
             .and_then(|rx| rx.recv().ok())
             .is_some_and(|(ui, errs)| ui.is_none() && errs.iter().any(|e| e.contains("16"))),
-            "短い固定トークンではリモートを起動しない");
+            "a short fixed token does not start the remote");
         cfg.remote.enabled = false;
         // Off: the written string is ignored even if usable
         cfg.remote.sticky_token = false;
@@ -7398,7 +7398,7 @@ mod survey_tests {
     #[test]
     fn env_block_comes_from_output_not_echo() {
         let echo_only = "D:\\run>echo ===SHIKISHA ENV=== & ver & echo ===ENV END===";
-        assert!(extract_env_block(echo_only).is_none(), "エコー行だけでは捕捉しない");
+        assert!(extract_env_block(echo_only).is_none(), "an echo line alone is not captured");
 
         let screen = "D:\\run>echo ===SHIKISHA ENV=== & ver & echo --- tools --- & where git 2>nul & echo ===ENV END===\n\
                       ===SHIKISHA ENV=== \n\
@@ -7409,10 +7409,10 @@ mod survey_tests {
                       ===ENV END=== \n\
                       \n\
                       D:\\run>";
-        let got = extract_env_block(screen).expect("出力ブロックを捕捉する");
+        let got = extract_env_block(screen).expect("the output block is captured");
         assert!(got.contains("Microsoft Windows"), "{got}");
         assert!(got.contains("git.exe"), "{got}");
-        assert!(!got.contains("where git"), "エコー行は含めない: {got}");
+        assert!(!got.contains("where git"), "the echo line is not included: {got}");
     }
 
     /// The probe picker follows argv first, then the prompt's shape
@@ -7448,17 +7448,17 @@ mod tests {
         let root = std::path::Path::new("D:/work/site");
         let under = |at: &str| local_under(root, at).map(|p| display_path_of(&p));
 
-        assert_eq!(under("public").as_deref(), Some("D:/work/site/public"), "中は通る");
+        assert_eq!(under("public").as_deref(), Some("D:/work/site/public"), "inside is allowed");
         assert_eq!(under("D:/work/site/public/a.txt").as_deref(),
-                   Some("D:/work/site/public/a.txt"), "絶対でも中なら通る");
+                   Some("D:/work/site/public/a.txt"), "an absolute path is allowed if it is inside");
         assert_eq!(under("public/../a.txt").as_deref(), Some("D:/work/site/a.txt"),
-                   "行って戻るだけなら中");
-        assert_eq!(under(""), Some("D:/work/site".to_string()), "根そのもの");
+                   "going out and back in is still inside");
+        assert_eq!(under(""), Some("D:/work/site".to_string()), "the root itself");
 
-        assert_eq!(under(".."), None, "一つ上は外");
-        assert_eq!(under("public/../../../secrets"), None, "遠回りしても外");
-        assert_eq!(under("C:/Windows"), None, "別のドライブは外");
-        assert_eq!(under("D:/work/site-two"), None, "名前が続いているだけの別フォルダ");
+        assert_eq!(under(".."), None, "one level up is outside");
+        assert_eq!(under("public/../../../secrets"), None, "a roundabout way out is still outside");
+        assert_eq!(under("C:/Windows"), None, "another drive is outside");
+        assert_eq!(under("D:/work/site-two"), None, "a different folder that only starts with the same name");
     }
 
     /// The same fence, drawn where paths look like this instead.
@@ -7468,19 +7468,19 @@ mod tests {
         let root = std::path::Path::new("/work/site");
         let under = |at: &str| local_under(root, at).map(|p| display_path_of(&p));
 
-        assert_eq!(under("public").as_deref(), Some("/work/site/public"), "中は通る");
+        assert_eq!(under("public").as_deref(), Some("/work/site/public"), "inside is allowed");
         assert_eq!(
             under("/work/site/public/a.txt").as_deref(),
             Some("/work/site/public/a.txt"),
-            "絶対でも中なら通る"
+            "an absolute path is allowed if it is inside"
         );
-        assert_eq!(under("public/../a.txt").as_deref(), Some("/work/site/a.txt"), "行って戻るだけなら中");
-        assert_eq!(under(""), Some("/work/site".to_string()), "根そのもの");
+        assert_eq!(under("public/../a.txt").as_deref(), Some("/work/site/a.txt"), "going out and back in is still inside");
+        assert_eq!(under(""), Some("/work/site".to_string()), "the root itself");
 
-        assert_eq!(under(".."), None, "一つ上は外");
-        assert_eq!(under("public/../../../secrets"), None, "遠回りしても外");
-        assert_eq!(under("/etc"), None, "根の外は外");
-        assert_eq!(under("/work/site-two"), None, "名前が続いているだけの別フォルダ");
+        assert_eq!(under(".."), None, "one level up is outside");
+        assert_eq!(under("public/../../../secrets"), None, "a roundabout way out is still outside");
+        assert_eq!(under("/etc"), None, "outside the root is outside");
+        assert_eq!(under("/work/site-two"), None, "a different folder that only starts with the same name");
     }
 
     /// What the phone is told when a tab finishes.
@@ -7498,24 +7498,24 @@ mod tests {
             Some("http://100.64.1.2:8787/r/K3fQ92mZxAbC"),
         );
         let lines: Vec<&str> = msg.lines().collect();
-        assert!(lines[0].contains("reviewer"), "どのタブか: {}", lines[0]);
+        assert!(lines[0].contains("reviewer"), "which tab: {}", lines[0]);
         // The answer itself, folded onto one line -- a notification is not a
         // place to reproduce a screen
         assert_eq!(lines[1], "Found 3 problems. The first is in tab.rs.");
         // ...then a blank line, a label, and the link, so the link is not
         // mistaken for part of what the AI said
         assert_eq!(lines[2], "");
-        assert!(!lines[3].is_empty(), "リンクの前に一言ある");
+        assert!(!lines[3].is_empty(), "there is a word before the link");
         assert_eq!(lines[4], "http://100.64.1.2:8787/r/K3fQ92mZxAbC");
         assert_eq!(lines.len(), 5);
         // The link is a ticket, never the board's key
-        assert!(!msg.contains("?t="), "トークンが載っていない: {msg:?}");
+        assert!(!msg.contains("?t="), "the token is not in it: {msg:?}");
 
         // Not asked for: the answer and nothing else. Not the link, and not
         // the machine's address either
         let quiet = on_done_message("builder", "done", None);
         assert_eq!(quiet.lines().count(), 2);
-        assert!(!quiet.contains("http"), "住所も出さない: {quiet:?}");
+        assert!(!quiet.contains("http"), "the address is not given either: {quiet:?}");
         assert!(!quiet.ends_with('\n'));
 
         // Nothing said (a tab that finished silently): just the name
@@ -7524,7 +7524,7 @@ mod tests {
         // A long answer is cut where a person can still read it, and says so
         let long = on_done_message("x", &"あ".repeat(400), None);
         let said = long.lines().nth(1).unwrap();
-        assert_eq!(said.chars().count(), 161, "160字＋省略記号");
+        assert_eq!(said.chars().count(), 161, "160 characters plus an ellipsis");
         assert!(said.ends_with('…'));
     }
 
@@ -7551,12 +7551,12 @@ mod tests {
             }
         };
 
-        let plain = pressed("enter", false).expect("Enter が届いていない");
-        let shifted = pressed("enter", true).expect("Shift+Enter が届いていない");
+        let plain = pressed("enter", false).expect("Enter did not arrive");
+        let shifted = pressed("enter", true).expect("Shift+Enter did not arrive");
         assert!(!plain.modifiers.contains(KeyModifiers::SHIFT));
         assert!(
             shifted.modifiers.contains(KeyModifiers::SHIFT),
-            "窓が送った修飾が途中で落ちている"
+            "a modifier the window sent was dropped on the way"
         );
 
         // Without a program asking, both are a Return, exactly as before
@@ -7591,7 +7591,7 @@ mod tests {
             assert_eq!(
                 bytes(&key, 0),
                 key_to_bytes(&key),
-                "誰も頼んでいないのに綴りが変わっている: {code:?} {mods:?}"
+                "the spelling changed though nobody asked for it: {code:?} {mods:?}"
             );
         }
         assert_eq!(bytes(&k(KeyCode::Enter, KeyModifiers::SHIFT), 0), Some(b"\r".to_vec()));
@@ -7600,7 +7600,7 @@ mod tests {
         assert_eq!(
             bytes(&k(KeyCode::Enter, KeyModifiers::SHIFT), 1),
             Some(b"\x1b[13;2u".to_vec()),
-            "Shift+Enter が普通のEnterのまま"
+            "Shift+Enter is still a plain Enter"
         );
         assert_eq!(
             bytes(&k(KeyCode::Enter, KeyModifiers::CONTROL), 1),
@@ -7613,7 +7613,7 @@ mod tests {
         assert_eq!(
             bytes(&k(KeyCode::BackTab, KeyModifiers::NONE), 1),
             Some(b"\x1b[9;2u".to_vec()),
-            "Shift+Tab は押された時点で修飾を名前に含んでいる"
+            "Shift+Tab carries its modifier in its name from the moment it is pressed"
         );
 
         // ...and everything else keeps the spelling it had, asked for or not.
@@ -7648,37 +7648,37 @@ mod tests {
         tracked.insert(1, 300_000);
         assert!(
             busy_repeat_due(299_000, every, &busy, &mut tracked).is_empty(),
-            "時間より前に呼んでいる"
+            "it called before the time"
         );
         assert_eq!(
             busy_repeat_due(300_000, every, &busy, &mut tracked),
             vec![1],
-            "時間になっても呼んでいない"
+            "it did not call when the time came"
         );
-        assert_eq!(tracked.get(&1), Some(&600_000), "次の時刻を置いていない");
+        assert_eq!(tracked.get(&1), Some(&600_000), "it did not set the next time");
         assert!(
             busy_repeat_due(300_001, every, &busy, &mut tracked).is_empty(),
-            "続けざまに二度呼んでいる"
+            "it called twice in a row"
         );
 
         // Tab 2 is working too, but automation was never told about it: it is
         // not this app's place to start
-        assert!(!tracked.contains_key(&2), "頼まれていないタブを数えている");
+        assert!(!tracked.contains_key(&2), "it counts a tab nobody asked about");
 
         // The work ends, and the asking stops with it -- including for a tab
         // that has gone to waiting on a person
         let answered = vec![TabState::Question, TabState::Busy, TabState::Done];
         assert!(
             busy_repeat_due(900_000, every, &answered, &mut tracked).is_empty(),
-            "人を待っているタブについて呼び続けている"
+            "it keeps calling about a tab that is waiting for a person"
         );
-        assert!(tracked.is_empty(), "終わったタブの予定が残っている");
+        assert!(tracked.is_empty(), "a finished tab's schedule is still there");
 
         // A tab that disappeared takes its place in the queue with it
         tracked.insert(9, 0);
         assert!(
             busy_repeat_due(1_000_000, every, &busy, &mut tracked).is_empty(),
-            "もう無いタブについて呼んでいる"
+            "it calls about a tab that no longer exists"
         );
     }
 
@@ -7697,20 +7697,20 @@ mod tests {
         assert_eq!(
             terminal_size(window, phone, true),
             Size { width: 45, height: 44 },
-            "見ているスマホの寸法に端末が合わない"
+            "the terminal does not fit the size of the phone that is watching"
         );
         // Nobody watching from afar: the window wears its own measurement again,
         // without waiting for anyone to resize anything
         assert_eq!(
             terminal_size(window, phone, false),
             Size { width: 118, height: 40 },
-            "誰も見ていないのに端末がスマホの寸法のまま"
+            "the terminal keeps the phone's size though nobody is watching"
         );
         // A phone that has connected but not yet measured itself decides nothing
         assert_eq!(
             terminal_size(window, None, true),
             Size { width: 118, height: 40 },
-            "寸法を報告していないスマホが端末を決めてしまった"
+            "a phone that did not report its size decided the terminal's size"
         );
     }
 
@@ -7733,7 +7733,7 @@ mod tests {
             .leaves()
             .into_iter()
             .find(|(id, _)| *id != front)
-            .expect("分割したのにペインが1つしかない")
+            .expect("there is only one pane after splitting")
             .0;
         let surfaces = vec![Surface::Session(0), Surface::Session(1)];
         let geom = vec![
@@ -7743,15 +7743,15 @@ mod tests {
             PaneGeom { id: front, rows: 50, cols: 100, rect: (800, 0, 800, 900) },
         ];
         let want = tab_sizes(2, &layout, &surfaces, &geom, (24, 40));
-        assert_eq!(want[1], (24, 40), "見ている本人の画面に端末が合わない");
-        assert_eq!(want[0], (50, 200), "奥のペインが窓の実測を失った");
+        assert_eq!(want[1], (24, 40), "the terminal does not fit the screen of the person looking at it");
+        assert_eq!(want[0], (50, 200), "the pane behind lost the window's measurement");
         // Undivided — every phone's case, and the window's most of the time —
         // the one pane there is takes the reported size whole
         let alone = crate::layout::Layout::single(1);
         assert_eq!(
             tab_sizes(1, &alone, &surfaces, &[], (24, 40))[0],
             (24, 40),
-            "分割していないのに報告された寸法が使われない"
+            "with no split, the reported size is not used"
         );
     }
 
@@ -7783,14 +7783,14 @@ mod tests {
         let first = relay.changes(&layout, &surfaces, &tabs);
         assert_eq!(first.len(), 1, "{first:?}");
         assert!(first[0].starts_with("{\"panes\":"));
-        assert!(relay.changes(&layout, &surfaces, &tabs).is_empty(), "変わっていないのに送っている");
+        assert!(relay.changes(&layout, &surfaces, &tabs).is_empty(), "it sends though nothing changed");
 
         // Divided: the new division, and a picture of the pane left behind
         layout.split(crate::layout::Dir::Row, 2);
         let split = relay.changes(&layout, &surfaces, &tabs);
         assert!(split[0].starts_with("{\"panes\":"), "{split:?}");
         assert_eq!(split.iter().filter(|m| m.contains("\"panescreen\"")).count(), 1, "{split:?}");
-        assert!(relay.changes(&layout, &surfaces, &tabs).is_empty(), "同じ絵をもう一度送っている");
+        assert!(relay.changes(&layout, &surfaces, &tabs).is_empty(), "it sends the same picture again");
 
         // A viewer who just arrived is told all of it
         let seed = relay.seed();
@@ -7809,7 +7809,7 @@ mod tests {
         assert!(!shell.is_ai());
         let (plan, why) = resume_plan(&shell, true, true);
         assert_eq!(plan, tab::Resume::Fresh);
-        assert_eq!(why, None, "シェルに「会話を引き継げない」と言っている");
+        assert_eq!(why, None, "it tells the shell the conversation cannot be carried over");
         shell.kill();
     }
 
@@ -7833,10 +7833,10 @@ mod tests {
             ..Default::default()
         };
         tabs[0].resume = Some(only_newest.clone());
-        assert!(!only_one_here(&tabs, 0), "同じCLI・同じフォルダの相方がいる");
+        assert!(!only_one_here(&tabs, 0), "there is a partner with the same CLI in the same folder");
         let (plan, why) = resume_plan(&tabs[0], only_one_here(&tabs, 0), true);
         assert_eq!(plan, tab::Resume::Fresh);
-        assert_eq!(why, Some("msg.resume.ambiguous"), "理由を言って新規にする");
+        assert_eq!(why, Some("msg.resume.ambiguous"), "it starts fresh and says why");
 
         // Alone, the same tab may continue what ran here last
         let (plan, why) = resume_plan(&tabs[0], true, true);
@@ -7855,7 +7855,7 @@ mod tests {
         };
         tabs[0].session = Some(mine.clone());
         let (plan, why) = resume_plan(&tabs[0], false, true);
-        assert_eq!(plan, tab::Resume::Id(mine), "相方がいても取り違えようがない");
+        assert_eq!(plan, tab::Resume::Id(mine), "a partner is there, but there is no way to mix them up");
         assert_eq!(why, None);
 
         // Asking for a clean start is never argued with
@@ -7990,20 +7990,20 @@ mod tests {
         assert_eq!(
             carried_conversation(Some(&known), &desk, &argv, &off, &here, "AGENT"),
             tab::Resume::Fresh,
-            "設定を切っても引き継いでいる"
+            "it carries the conversation over even with the setting off"
         );
 
         // A conversation that is no longer on this machine. Handing the CLI an
         // id it has never heard of makes it refuse to start, in red, in its own
         // words -- which is not an answer to "I reopened the app"
-        assert_eq!(plan(&known), tab::Resume::Fresh, "消えた会話を渡している");
+        assert_eq!(plan(&known), tab::Resume::Fresh, "it hands over a conversation that is gone");
 
         // Remembered under another program: the same name a year later can be
         // a different CLI, and resuming a conversation into one is nonsense
         assert_eq!(
             plan(&remembered("codex", "11111111-1111-4111-8111-111111111111")),
             tab::Resume::Fresh,
-            "別のCLIの会話を渡している"
+            "it hands over another CLI's conversation"
         );
 
         // A CLI with no way of being told which conversation to resume. Gemini
@@ -8020,7 +8020,7 @@ mod tests {
                 "AGENT",
             ),
             tab::Resume::Fresh,
-            "指定できないCLIに会話を渡している"
+            "it hands a conversation to a CLI that cannot be told one"
         );
 
         // Nothing remembered at all -- a tab that is new since last time
@@ -8076,7 +8076,7 @@ mod tests {
             let want = format!("KeyCode::Char('{key}')");
             assert!(
                 body.contains(&want),
-                "盤面は {key} を出しているのに、INDEX に受け手が無い"
+                "the board sends {key}, but INDEX has nothing to receive it"
             );
         }
     }
@@ -8088,12 +8088,12 @@ mod tests {
         // Nothing yet: point at "add a folder", and remember having done so
         assert_eq!(super::coach_step(0, 0, false), (Some(1), 1));
         // ...and it stays up on the next frame, once "shown" is written down
-        assert_eq!(super::coach_step(0, 1, false), (Some(1), 1), "1歩目が次のフレームで消える");
+        assert_eq!(super::coach_step(0, 1, false), (Some(1), 1), "step 1 disappears on the next frame");
         // One folder, nothing started in it: point at its +
         assert_eq!(super::coach_step(1, 1, false), (Some(2), 1));
         // An AI (or a branch) appeared: over, for good
         assert_eq!(super::coach_step(1, 1, true), (None, 2));
-        assert_eq!(super::coach_step(1, 2, false), (None, 2), "閉じた歩が戻ってきた");
+        assert_eq!(super::coach_step(1, 2, false), (None, 2), "a closed step came back");
         // Two folders at once: the second pointer is skipped, not shown later
         assert_eq!(super::coach_step(2, 1, false), (None, 1));
         // Somebody from before the pointer existed is not pointed at anything
@@ -8112,11 +8112,11 @@ mod tests {
             look_at(12, 12, 1, true),
             Some(LookAt { active: 12, board_open: false, settings_open: false })
         );
-        assert_eq!(look_at(13, 12, 1, false), None, "無いタブに移った");
+        assert_eq!(look_at(13, 12, 1, false), None, "it moved to a tab that does not exist");
         assert_eq!(
             look_at(0, 12, 4, true),
             Some(LookAt { active: 4, board_open: true, settings_open: true }),
-            "盤面を開いたら前のタブと設定を忘れた"
+            "opening the board forgot the previous tab and the settings"
         );
         // And nothing turns it into keystrokes any more, where it was lost
         assert!(super::keys_for(&shikisha_shared::Ev::Select { tab: 3 }).is_empty());
@@ -8125,11 +8125,11 @@ mod tests {
     #[test]
     fn the_add_tab_button_arrives_prefixed() {
         let evs = super::keys_for(&shikisha_shared::Ev::AddTab { pane: None, folder: None });
-        assert_eq!(evs.len(), 2, "前置キー + 本体の2打鍵");
-        let Event::Key(k) = &evs[0] else { panic!("前置キーが打鍵でない") };
+        assert_eq!(evs.len(), 2, "two keystrokes: the prefix and the key");
+        let Event::Key(k) = &evs[0] else { panic!("the prefix is not a keystroke") };
         assert_eq!(k.code, KeyCode::Char('b'));
         assert!(k.modifiers.contains(KeyModifiers::CONTROL));
-        let Event::Key(k) = &evs[1] else { panic!("本体が打鍵でない") };
+        let Event::Key(k) = &evs[1] else { panic!("the key is not a keystroke") };
         assert_eq!(k.code, KeyCode::Char('t'));
         assert!(k.modifiers.is_empty());
     }
@@ -8140,11 +8140,11 @@ mod tests {
     #[test]
     fn the_desk_button_arrives_prefixed() {
         let evs = super::keys_for(&shikisha_shared::Ev::OpenDesk);
-        assert_eq!(evs.len(), 2, "前置キー + 'w' の2打鍵");
-        let Event::Key(k) = &evs[0] else { panic!("前置キーが打鍵でない") };
+        assert_eq!(evs.len(), 2, "two keystrokes: the prefix and 'w'");
+        let Event::Key(k) = &evs[0] else { panic!("the prefix is not a keystroke") };
         assert_eq!(k.code, KeyCode::Char('b'));
         assert!(k.modifiers.contains(KeyModifiers::CONTROL));
-        let Event::Key(k) = &evs[1] else { panic!("本体が打鍵でない") };
+        let Event::Key(k) = &evs[1] else { panic!("the key is not a keystroke") };
         assert_eq!(k.code, KeyCode::Char('w'));
         assert!(k.modifiers.is_empty());
     }
@@ -8167,7 +8167,7 @@ mod tests {
             }
             patterns.push(t);
         }
-        assert!(patterns.len() > 5, "dist.list を読めていない ({} 件)", patterns.len());
+        assert!(patterns.len() > 5, "dist.list was not read ({} entries)", patterns.len());
 
         // A pattern matching nothing is a typo that deploys quietly and forever.
         //
@@ -8199,19 +8199,19 @@ mod tests {
             }
             assert!(
                 !file_pat.contains('*') && fetcher.contains(file_pat),
-                "dist.list の `{p}` に当てはまるものが1つも無く、取得する道具も知らない (綴り間違い?)"
+                "nothing matches `{p}` in dist.list, and no tool knows how to fetch it (a typo?)"
             );
         }
 
         // ...and the consumers must go through it rather than keeping their own copy
         let build_rs = include_str!("../../../build.rs");
-        assert!(build_rs.contains("dist.list"), "build.rs が dist.list を読んでいない");
+        assert!(build_rs.contains("dist.list"), "build.rs does not read dist.list");
         let release = include_str!("../../../.github/workflows/release.yml");
-        assert!(release.contains("stage.ps1"), "release.yml が共通の配布処理を呼んでいない");
+        assert!(release.contains("stage.ps1"), "release.yml does not call the shared packaging step");
         for hardcoded in ["Copy-Item -Recurse \"lang\"", "docs/AUTOMATION.md\", \"docs/AUTOMATION.ja.md\""] {
             assert!(
                 !release.contains(hardcoded),
-                "release.yml が独自の配布物リストを持っている: {hardcoded}"
+                "release.yml keeps its own list of what ships: {hardcoded}"
             );
         }
     }
@@ -8247,12 +8247,12 @@ mod tests {
             Surface::Session(0),
         ];
         // active is 1-based over the surfaces
-        assert_eq!(restartable_page(&surfaces, 1, &caps), None, "設定画面は対象外");
-        assert_eq!(restartable_page(&surfaces, 2, &caps), None, "実行結果は対象外");
+        assert_eq!(restartable_page(&surfaces, 1, &caps), None, "the settings screen is not included");
+        assert_eq!(restartable_page(&surfaces, 2, &caps), None, "run results are not included");
         // A user's page only qualifies once we know how it was opened
-        assert_eq!(restartable_page(&surfaces, 3, &caps), None, "開き方を知らないうちは対象外");
-        assert_eq!(restartable_page(&surfaces, 4, &caps), None, "セッションはここではなく session_mut の担当");
-        assert_eq!(restartable_page(&surfaces, 0, &caps), None, "盤面(INDEX)には戻す先が無い");
+        assert_eq!(restartable_page(&surfaces, 3, &caps), None, "not included while it does not know how to open it");
+        assert_eq!(restartable_page(&surfaces, 4, &caps), None, "sessions are handled by session_mut, not here");
+        assert_eq!(restartable_page(&surfaces, 0, &caps), None, "the board (INDEX) has nothing to go back to");
     }
 
     /// The status bar's restart button must land on the same keystroke a person
@@ -8262,18 +8262,18 @@ mod tests {
     #[test]
     fn the_restart_button_arrives_prefixed() {
         let evs = super::keys_for(&shikisha_shared::Ev::Restart);
-        assert_eq!(evs.len(), 2, "前置キー + 'r' の2打鍵");
-        let Event::Key(k) = &evs[0] else { panic!("前置キーが打鍵でない") };
+        assert_eq!(evs.len(), 2, "two keystrokes: the prefix and 'r'");
+        let Event::Key(k) = &evs[0] else { panic!("the prefix is not a keystroke") };
         assert_eq!(k.code, KeyCode::Char('b'));
         assert!(k.modifiers.contains(KeyModifiers::CONTROL));
-        let Event::Key(k) = &evs[1] else { panic!("本体が打鍵でない") };
+        let Event::Key(k) = &evs[1] else { panic!("the key is not a keystroke") };
         assert_eq!(k.code, KeyCode::Char('r'));
         assert!(k.modifiers.is_empty());
         // Ctrl+B r has to still be the tab restart on the receiving side
         let body = include_str!("runtime.rs");
         assert!(
             body.contains("// Ctrl+B r restarts this tab"),
-            "受け手の Ctrl+B r が消えている"
+            "the receiver's Ctrl+B r is gone"
         );
     }
 
@@ -8286,14 +8286,14 @@ mod tests {
             let evs = super::keys_for(&shikisha_shared::Ev::Menu {
                 key: key.to_string(),
             });
-            assert_eq!(evs.len(), 1, "{key}: 打鍵が1つでない");
+            assert_eq!(evs.len(), 1, "{key}: not exactly one keystroke");
             let Event::Key(k) = &evs[0] else {
-                panic!("{key}: 打鍵になっていない")
+                panic!("{key}: not a keystroke")
             };
             assert_eq!(k.code, KeyCode::Char(key.chars().next().unwrap()));
             assert!(
                 k.modifiers.is_empty(),
-                "{key}: 前置キーが付いている ({:?})",
+                "{key}: it has a prefix ({:?})",
                 k.modifiers
             );
         }
@@ -8320,7 +8320,7 @@ mod tests {
             text: "x".into(),
             origin: 1,
         };
-        assert!(can_wait(&draft) && can_wait(&send), "渡すものが待てない");
+        assert!(can_wait(&draft) && can_wait(&send), "what is handed over cannot wait");
         assert_eq!(target_of(&draft).map(|t| format!("{t:?}")).as_deref(),
                    Some("Name(\"ai\")"));
 
@@ -8330,7 +8330,7 @@ mod tests {
             Command::Log("x".into()),
             Command::SendKeys { target: TabRef::Index(1), keys: "y".into() },
         ] {
-            assert!(!can_wait(&other), "待つ必要のないものを預かっている: {other:?}");
+            assert!(!can_wait(&other), "it holds on to something that does not need to wait: {other:?}");
         }
     }
 
@@ -8345,10 +8345,10 @@ mod tests {
             Surface::Session(0),
         ];
         let page = page_ctx(&surfaces, "html", "https://example.com/".into(), true)
-            .expect("並びにあるのに見つからない");
-        assert_eq!(page.index, 1, "画面の番号と違う");
-        assert_eq!(page.id, "html", "自動化から指す呼び名が違う");
-        assert_eq!(page.name, "HTML解析", "人が読む名前が出ていない");
+            .expect("it is in the list but was not found");
+        assert_eq!(page.index, 1, "it differs from the number on screen");
+        assert_eq!(page.id, "html", "the name automation uses is wrong");
+        assert_eq!(page.name, "HTML解析", "the name a person reads is not shown");
         assert!(page.complete);
 
         // Nothing is passed for a page not in the layout (e.g. after it's closed)
@@ -8379,7 +8379,7 @@ mod tests {
                 (1, TabAuto::Path("scripts/html".to_string())),
                 (2, TabAuto::Path("scripts/ai".to_string())),
             ],
-            "割り当てがずれている"
+            "the assignment is off"
         );
     }
 
@@ -8418,7 +8418,7 @@ mod tests {
         assert_eq!(
             automation_by_pane(&desk),
             vec![(1, TabAuto::Path("scripts/mine".to_string()))],
-            "狙いを持つタブが自分の自動化を奪われている"
+            "a tab with its own target has had its automation taken"
         );
     }
 
@@ -8441,10 +8441,10 @@ mod tests {
         assert_eq!(
             surfaces,
             vec![Surface::Browser { key: "html".into(), name: "HTML解析".into() }, Surface::Session(0)],
-            "設定の順に並んでいない"
+            "they are not in the order of the settings"
         );
         // A session must be resolvable from its screen number
-        assert_eq!(session_at(&surfaces, 1), None, "1番はブラウザのはず");
+        assert_eq!(session_at(&surfaces, 1), None, "number 1 should be the browser");
         assert_eq!(session_at(&surfaces, 2), Some(0));
         // The ball moves by session number; what's displayed is the screen number
         assert_eq!(surface_at(&surfaces, 1), 2);
@@ -8497,7 +8497,7 @@ mod tests {
         assert_eq!(
             surfaces,
             vec![Surface::Browser { key: "html".into(), name: "HTML解析".into() }, Surface::Session(0)],
-            "開く前だと番号がずれる"
+            "before it is opened, the numbers are off"
         );
     }
 
@@ -8530,7 +8530,7 @@ mod tests {
     fn settings_active_points_at_the_open_settings_tab() {
         // Not open yet: points to the slot right after the end
         let before = vec![Surface::Session(0), Surface::Session(1)];
-        assert_eq!(settings_active(&before), 3, "開く前は末尾の次");
+        assert_eq!(settings_active(&before), 3, "before it is opened, it is after the last");
 
         // Already open: points to its existing location (the end). Not one slot further.
         let after = vec![
@@ -8538,7 +8538,7 @@ mod tests {
             Surface::Session(1),
             Surface::Browser { key: "settings".into(), name: "settings".into() },
         ];
-        assert_eq!(settings_active(&after), 3, "開いていればその場所");
+        assert_eq!(settings_active(&after), 3, "when open, it is where it is");
     }
 
     /// The activity wave reflects actual output, not decoration, so it must stay flat when nothing came out
@@ -8548,7 +8548,7 @@ mod tests {
         let mut t =
             Tab::spawn("SHELL".into(), &argv, None, 20, 100, tab::TabOptions::default()).unwrap();
         assert_eq!(t.activity().len(), tab::ACTIVITY_LEN);
-        assert!(t.activity().iter().all(|l| *l == 0), "起動直後は無音");
+        assert!(t.activity().iter().all(|l| *l == 0), "silent right after starting");
 
         // Ticking after output arrives should bring up the most recent frame
         t.write_bytes(b"echo hello\r").unwrap();
@@ -8562,7 +8562,7 @@ mod tests {
         }
         assert!(
             t.activity().iter().any(|l| *l > 0),
-            "出力があれば波形が立つ: {:?}",
+            "output raises the waveform: {:?}",
             t.activity()
         );
         t.kill();
@@ -8616,19 +8616,19 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(typed, "本文は入力欄に入る: {}", screen(&t));
+        assert!(typed, "the text goes into the input box: {}", screen(&t));
         // Long enough that an Enter nobody sent would have run it by now. A
         // slow machine only makes this wait more generous, never less
         std::thread::sleep(Duration::from_millis(200));
         assert!(
             !has_line(&t, "shikisha-ok"),
-            "まだ実行はされていない: {}",
+            "it has not run yet: {}",
             screen(&t)
         );
 
         // The reserved submit arrives
         t.write_bytes(b"\r").unwrap();
-        assert!(wait_for(&t, "shikisha-ok"), "実行される: {}", screen(&t));
+        assert!(wait_for(&t, "shikisha-ok"), "it runs: {}", screen(&t));
 
         t.kill();
     }
@@ -8646,23 +8646,23 @@ mod tests {
             Tab::spawn("T".into(), &argv, None, 20, 60, tab::TabOptions::default()).unwrap();
 
         // Right after startup: nobody has touched it yet, so the protection never kicks in, no matter when asked
-        assert!(!touched_recently(&t, 0), "起動した瞬間");
-        assert!(!touched_recently(&t, 1_000), "1秒後");
+        assert!(!touched_recently(&t, 0), "the moment it starts");
+        assert!(!touched_recently(&t, 1_000), "one second later");
         assert!(
             !touched_recently(&t, MANUAL_GUARD_MS - 1),
-            "ガード時間の内側でも、触られていなければ送ってよい"
+            "within the guard time, it may send if nothing was touched"
         );
 
         // The guard kicks in once a human touches it
         t.last_manual_ms = Some(10_000);
-        assert!(touched_recently(&t, 10_000), "触った直後");
+        assert!(touched_recently(&t, 10_000), "right after being touched");
         assert!(
             touched_recently(&t, 10_000 + MANUAL_GUARD_MS - 1),
-            "ガード時間内はまだ効く"
+            "still in effect within the guard time"
         );
         assert!(
             !touched_recently(&t, 10_000 + MANUAL_GUARD_MS),
-            "時間が過ぎたら解ける"
+            "released once the time passes"
         );
 
         t.kill();
@@ -8691,33 +8691,33 @@ mod tests {
 
         // A one-chunk paste: out at once, then the settling rule as before
         let mut p = PendingSend::new(1, one(1), true, 100, 1_000);
-        assert!(handed(&p.step(100, 1_000)), "最初のひと塊はすぐ渡す");
-        assert!(waited(&p.step(200, 1_100)), "反応が始まっただけでは送らない");
-        assert!(waited(&p.step(300, 2_000)), "まだ増えている");
-        assert!(waited(&p.step(400, 3_000)), "まだ増えている");
-        assert!(waited(&p.step(400, 3_100)), "止まった直後はまだ");
-        assert!(waited(&p.step(400, 3_100 + SUBMIT_QUIET_MS - 1)), "静かな時間が足りない");
-        assert!(submitted(&p.step(400, 3_100 + SUBMIT_QUIET_MS)), "落ち着いたら送る");
+        assert!(handed(&p.step(100, 1_000)), "the first chunk is handed over at once");
+        assert!(waited(&p.step(200, 1_100)), "a reaction starting is not enough to send");
+        assert!(waited(&p.step(300, 2_000)), "still growing");
+        assert!(waited(&p.step(400, 3_000)), "still growing");
+        assert!(waited(&p.step(400, 3_100)), "not yet, right after it stops");
+        assert!(waited(&p.step(400, 3_100 + SUBMIT_QUIET_MS - 1)), "not quiet for long enough");
+        assert!(submitted(&p.step(400, 3_100 + SUBMIT_QUIET_MS)), "it sends once it settles");
 
         // Restart the measurement if activity resumes partway through
         let mut p = PendingSend::new(1, one(1), true, 0, 0);
-        assert!(handed(&p.step(0, 0)), "ひと塊目");
-        assert!(waited(&p.step(0, 100)), "静かだがまだ足りない");
-        assert!(waited(&p.step(50, 200)), "再開したので測り直す");
-        assert!(waited(&p.step(50, 300)), "ここで改めて静止を観測");
-        assert!(waited(&p.step(50, 300 + SUBMIT_QUIET_MS - 1)), "測り直し中");
-        assert!(submitted(&p.step(50, 300 + SUBMIT_QUIET_MS)), "改めて落ち着いた");
+        assert!(handed(&p.step(0, 0)), "the first chunk");
+        assert!(waited(&p.step(0, 100)), "quiet, but not long enough");
+        assert!(waited(&p.step(50, 200)), "it started again, so it measures again");
+        assert!(waited(&p.step(50, 300)), "here it sees it stop again");
+        assert!(waited(&p.step(50, 300 + SUBMIT_QUIET_MS - 1)), "measuring again");
+        assert!(submitted(&p.step(50, 300 + SUBMIT_QUIET_MS)), "settled again");
 
         // Send anyway once the cap is hit, even if it never settles
         let mut p = PendingSend::new(1, one(1), true, 0, 0);
-        assert!(handed(&p.step(0, 0)), "ひと塊目");
+        assert!(handed(&p.step(0, 0)), "the first chunk");
         let mut out = 0;
         for t in (100..SUBMIT_GIVE_UP_MS).step_by(100) {
             out += 1;
-            assert!(!submitted(&p.step(out, t)), "増え続けている間は待つ ({t}ms)");
+            assert!(!submitted(&p.step(out, t)), "it waits while it keeps growing ({t}ms)");
         }
         out += 1;
-        assert!(submitted(&p.step(out, SUBMIT_GIVE_UP_MS)), "上限に達したら送る");
+        assert!(submitted(&p.step(out, SUBMIT_GIVE_UP_MS)), "it sends once the limit is reached");
     }
 
     /// The whole body has to be handed over before the Enter, and the next
@@ -8730,27 +8730,27 @@ mod tests {
     #[test]
     fn the_body_goes_over_a_piece_at_a_time_and_the_enter_comes_last() {
         let mut p = PendingSend::new(1, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0);
-        assert!(handed(&p.step(0, 0)), "ひと塊目はすぐ");
+        assert!(handed(&p.step(0, 0)), "the first chunk goes at once");
         // Silent recipient: not a word drawn. It must not be given the rest at
         // once, and above all must not be sent Enter.
-        assert!(waited(&p.step(0, 10)), "描かないうちは次を渡さない");
-        assert!(waited(&p.step(0, PASTE_ACK_MS - 1)), "待ちきる前は渡さない");
-        assert!(handed(&p.step(0, PASTE_ACK_MS)), "描かないままなら待って渡す");
+        assert!(waited(&p.step(0, 10)), "nothing more is handed over until it draws");
+        assert!(waited(&p.step(0, PASTE_ACK_MS - 1)), "nothing is handed over before the wait is up");
+        assert!(handed(&p.step(0, PASTE_ACK_MS)), "if it never draws, it hands over after waiting");
         // Drawing means it has caught up, so the rest can go straight away
         let last = PASTE_ACK_MS + 1;
-        assert!(handed(&p.step(9, last)), "描いたらすぐ次を渡す");
+        assert!(handed(&p.step(9, last)), "once it draws, the next is handed over at once");
         // Only now does the settling rule start, and it is measured from the
         // first pass that sees the recipient still — not from the last piece
-        assert!(waited(&p.step(9, last + 10)), "ここで静止を観測しはじめる");
-        assert!(waited(&p.step(9, last + 10 + SUBMIT_QUIET_MS - 1)), "静かな時間が足りない");
-        assert!(submitted(&p.step(9, last + 10 + SUBMIT_QUIET_MS)), "全部渡してから送信");
+        assert!(waited(&p.step(9, last + 10)), "here it starts watching for it to stop");
+        assert!(waited(&p.step(9, last + 10 + SUBMIT_QUIET_MS - 1)), "not quiet for long enough");
+        assert!(submitted(&p.step(9, last + 10 + SUBMIT_QUIET_MS)), "it sends after handing over everything");
 
         // A draft is placed and left alone: the body goes over, the Enter never does
         let mut p = PendingSend::new(1, vec![vec![b'a']], false, 0, 0);
-        assert!(handed(&p.step(0, 0)), "本文は渡す");
-        assert!(waited(&p.step(0, 10)), "静止を観測しはじめる");
-        assert!(submitted(&p.step(0, 10 + SUBMIT_QUIET_MS)), "本文は渡し終える");
-        assert!(!p.submit, "下書きは Enter を打たない");
+        assert!(handed(&p.step(0, 0)), "the text is handed over");
+        assert!(waited(&p.step(0, 10)), "it starts watching for it to stop");
+        assert!(submitted(&p.step(0, 10 + SUBMIT_QUIET_MS)), "the text is all handed over");
+        assert!(!p.submit, "a draft does not press Enter");
     }
 
     /// Two messages to one tab are two messages.
@@ -8778,11 +8778,11 @@ mod tests {
                 !waited(&p.step(0, 0))
             })
             .collect();
-        assert_eq!(acted, vec![true, false, true], "同じタブは順番待ち、別のタブは並行");
+        assert_eq!(acted, vec![true, false, true], "the same tab waits its turn; different tabs run side by side");
 
         // The one behind has handed over nothing at all, so nothing of it can
         // have landed inside the message in front
-        assert_eq!(queue[1].handed, 0, "後ろの本文が先に流れ込んでいる");
+        assert_eq!(queue[1].handed, 0, "text further back flowed in first");
     }
 
     /// A person typing into a tab mid-paste must not be typed into the middle
@@ -8790,12 +8790,12 @@ mod tests {
     #[test]
     fn typing_pushes_the_rest_of_the_paste_out_first() {
         let mut p = PendingSend::new(1, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0);
-        assert!(handed(&p.step(0, 0)), "ひと塊目");
-        assert_eq!(p.rest(500), b"bc".to_vec(), "残りは一度に出す");
-        assert_eq!(p.rest(500), Vec::<u8>::new(), "二度は出さない");
+        assert!(handed(&p.step(0, 0)), "the first chunk");
+        assert_eq!(p.rest(500), b"bc".to_vec(), "the rest goes out in one go");
+        assert_eq!(p.rest(500), Vec::<u8>::new(), "it is not sent twice");
         // The Enter still follows, measured from the moment the rest went over
-        assert!(waited(&p.step(0, 510)), "ここから静止を測り直す");
-        assert!(submitted(&p.step(0, 510 + SUBMIT_QUIET_MS)), "送信はそのあと");
+        assert!(waited(&p.step(0, 510)), "from here it measures the quiet again");
+        assert!(submitted(&p.step(0, 510 + SUBMIT_QUIET_MS)), "sending comes after that");
     }
 
     /// A provider edited while its tab is open reaches that tab.
@@ -8818,7 +8818,7 @@ mod tests {
         let argv = vec!["model".to_string(), "t/m".to_string()];
 
         let conns = config::desk_providers(&settings(180)[0], &|_| None);
-        let conn = bridge::conn_in(&conns, &argv).expect("接続が引ける");
+        let conn = bridge::conn_in(&conns, &argv).expect("the connection is found");
         assert_eq!(conn.timeout, Some(Duration::from_secs(180)));
         let mut tabs = [Tab::spawn(
             "model".into(),
@@ -8828,14 +8828,14 @@ mod tests {
             40,
             tab::TabOptions { model: Some(conn), ..Default::default() },
         )
-        .expect("起動")];
+        .expect("started")];
 
         // The wait is changed to "as long as it takes" and saved
         reload_providers(&settings(0), 0, &|_| None, &mut tabs, &mut []);
         assert_eq!(
             tabs[0].model.as_ref().and_then(|c| c.timeout),
             None,
-            "設定を変えてもタブが古い待ち時間を握ったまま"
+            "the tab keeps the old wait time after the setting changed"
         );
         tabs[0].kill();
     }
@@ -8845,18 +8845,18 @@ mod tests {
     #[test]
     fn a_paste_is_cut_between_characters() {
         let t = Tab::spawn("cmd".into(), &[crate::test_shell()], None, 24, 80, tab::TabOptions::default())
-            .expect("起動");
+            .expect("started");
         let text = "あ".repeat(PASTE_CHUNK); // 3 bytes each: boundaries never land on PASTE_CHUNK
         let chunks = paste_chunks(&t, &text);
-        assert!(chunks.len() > 1, "長い本文は分割される");
+        assert!(chunks.len() > 1, "long text is split");
         for c in &chunks {
             assert!(
                 std::str::from_utf8(c).is_ok(),
-                "塊の途中で文字が割れている"
+                "a character is broken across chunks"
             );
         }
         let joined: String = chunks.iter().map(|c| String::from_utf8_lossy(c).into_owned()).collect();
-        assert!(joined.contains(&text), "つなげたら元の本文に戻る");
+        assert!(joined.contains(&text), "joined back, it is the original text");
         let mut t = t;
         t.kill();
     }
@@ -8876,12 +8876,12 @@ mod tests {
         // Long since they touched it, and they allow it: automation may move the view
         assert!(gate(true, 0, false).may(g));
         // They said no
-        assert!(!gate(false, 0, false).may(g), "設定を無視して切り替えている");
+        assert!(!gate(false, 0, false).may(g), "it switches regardless of the setting");
         // They are reading the settings screen
-        assert!(!gate(true, 0, true).may(g), "設定画面から引き剥がしている");
+        assert!(!gate(true, 0, true).may(g), "it pulls you away from the settings screen");
 
         // They just moved the view themselves — stay out of the way
-        assert!(!gate(true, 1_000, false).may(1_000), "読んでいる最中に引き剥がしている");
+        assert!(!gate(true, 1_000, false).may(1_000), "it pulls you away while you are reading");
         assert!(!gate(true, 1_000, false).may(1_000 + g - 1));
         // ...and step back in once enough time has passed
         assert!(gate(true, 1_000, false).may(1_000 + g));
@@ -8893,7 +8893,7 @@ mod tests {
     /// the bottom of the screen, so it looks like "I typed but nothing showed up".
     #[test]
     fn the_wheel_goes_back_and_typing_comes_home() {
-        assert_eq!(scrolled_to(0, 3), 3, "遡れていない");
+        assert_eq!(scrolled_to(0, 3), 3, "it did not scroll back");
         assert_eq!(scrolled_to(3, -1), 2);
         // Doesn't go past the present even if it overshoots
         assert_eq!(scrolled_to(2, -100), 0);
@@ -8908,7 +8908,7 @@ mod tests {
         p.screen_mut().set_scrollback(2);
         assert_eq!(p.screen().scrollback(), 2);
         p.screen_mut().set_scrollback(scrolled_to(2, i32::MIN));
-        assert_eq!(p.screen().scrollback(), 0, "今へ戻らない");
+        assert_eq!(p.screen().scrollback(), 0, "it does not return to now");
     }
 
     /// A full-screen program must be handed the scroll itself, unmodified.
@@ -8944,17 +8944,17 @@ mod tests {
         assert_eq!(
             hooks::TabRef::Index(2).resolve(&keys),
             Some(2),
-            "ブラウザの後ろのタブを指せていない"
+            "it cannot point at the tab behind the browser"
         );
         assert_eq!(
             hooks::TabRef::Name("html".into()).resolve(&keys),
             Some(1),
-            "ブラウザを自動化での呼び名で指せていない"
+            "it cannot point at the browser by its automation name"
         );
         assert_eq!(
             hooks::TabRef::Name("解析".into()).resolve(&keys),
             None,
-            "画面の名前では届かない"
+            "the name on screen does not reach it"
         );
     }
 
@@ -8978,7 +8978,7 @@ mod tests {
         assert_eq!(
             starting_desk(true, Some("たまごカート編集部"), &names),
             1,
-            "前に開いていたものに戻らない"
+            "it does not go back to what was open before"
         );
 
         // What's remembered is the name, not the number, so it still tracks after reordering
@@ -8993,14 +8993,14 @@ mod tests {
         assert_eq!(
             starting_desk(true, Some("指揮者"), &reordered),
             2,
-            "並べ替えで別のデスクを開いている"
+            "reordering opens a different desk"
         );
 
         // Deleted, renamed, no memory of it, or disabled -> falls back to the first one
         assert_eq!(starting_desk(true, Some("消えた"), &names), 0);
         assert_eq!(starting_desk(true, None, &names), 0);
-        assert_eq!(starting_desk(false, Some("検証"), &names), 0, "切ってある");
-        assert_eq!(starting_desk(true, Some("指揮者"), &[]), 0, "空でも落ちない");
+        assert_eq!(starting_desk(false, Some("検証"), &names), 0, "it is turned off");
+        assert_eq!(starting_desk(true, Some("指揮者"), &[]), 0, "it does not crash on an empty list");
     }
 
 
@@ -9010,7 +9010,7 @@ mod tests {
         let w: Vec<usize> = WORDMARK.iter().map(|l| l.chars().count()).collect();
         assert!(
             w.iter().all(|n| *n == w[0]),
-            "行ごとに幅が違う: {w:?}"
+            "rows differ in width: {w:?}"
         );
     }
 
@@ -9058,7 +9058,7 @@ mod tests {
         t.kill();
         assert!(
             screen.contains("shikisha-cwd-test"),
-            "指定した作業フォルダで起動する: {screen}"
+            "it starts in the working folder it was given: {screen}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -9083,7 +9083,7 @@ mod tests {
         };
         let argv = vec![crate::test_shell()];
         let out = Tab::spawn("nowhere".into(), &argv, None, 10, 60, opts);
-        assert!(out.is_err(), "存在しないフォルダのまま起動してはいけない");
+        assert!(out.is_err(), "it must not start in a folder that does not exist");
     }
 
     #[test]
@@ -9112,11 +9112,11 @@ mod tests {
         assert_eq!(
             tabs.iter().map(|t| t.title.clone()).collect::<Vec<_>>(),
             vec!["one", "three"],
-            "設定の順序どおりに並ぶ"
+            "in the order of the settings"
         );
-        assert!(tabs[0].locked, "ロックは再起動なしで反映される");
-        assert!(!tabs[0].needs_restart, "起動条件が同じなら再起動不要");
-        assert_eq!(tabs[0].signature(), one_before, "既存セッションは維持される");
+        assert!(tabs[0].locked, "locking takes effect without a restart");
+        assert!(!tabs[0].needs_restart, "no restart needed if the launch settings are the same");
+        assert_eq!(tabs[0].signature(), one_before, "the running session is kept");
         assert!(msg.contains("added 1") && msg.contains("stopped 1"), "{msg}");
 
         // A change to the encoding requires a rebuild, so it gets deferred and flagged
@@ -9127,7 +9127,7 @@ mod tests {
             ]}]}]}"#,
         );
         let msg2 = apply_ws_config(&mut tabs, &desk2, 24, 80, &mut errs);
-        assert!(tabs[0].needs_restart, "要再起動の印が付く");
+        assert!(tabs[0].needs_restart, "it is marked as needing a restart");
         assert!(msg2.contains("1 need a restart"), "{msg2}");
 
         for t in tabs.iter_mut() {
@@ -9142,11 +9142,11 @@ mod tests {
         let contents = p.screen().contents();
         assert!(
             contents.contains("line17"),
-            "過去の行が見えるはず: {contents}"
+            "earlier lines should be visible: {contents}"
         );
         assert!(
             !contents.contains("line30"),
-            "最新行は画面外のはず: {contents}"
+            "the latest line should be off screen: {contents}"
         );
     }
 
@@ -9185,7 +9185,7 @@ mod shutdown_tests {
         let mut lines = src.lines().map(str::trim);
         assert!(
             lines.any(|l| l == "if shell.mail().closed {") && lines.next() == Some("break;"),
-            "閉じてもループが終わらない"
+            "closing does not end the loop"
         );
     }
 }

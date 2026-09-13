@@ -2396,22 +2396,22 @@ mod tests {
         // Relaunching the tab on screen: a phone watching an SSH session that
         // dropped is precisely who needs it, and it reaches no further than the
         // keystroke it stands for
-        assert!(super::allowed_from_afar(&Ev::Restart), "見ているタブを遠くから直せない");
+        assert!(super::allowed_from_afar(&Ev::Restart), "the tab being looked at cannot be fixed from afar");
         // Back/forward/reload/navigate must work from remote, or the top bar is just decoration
         assert!(super::allowed_from_afar(&Ev::Go { go: shikisha_shared::Go::Back }));
         assert!(super::allowed_from_afar(&Ev::Go {
             go: shikisha_shared::Go::To("example.com".into())
         }));
-        assert!(menu("a") && menu("?") && menu("w"), "普通の操作が通らない");
+        assert!(menu("a") && menu("?") && menu("w"), "ordinary actions do not get through");
         // The board and this gate read one list, so nothing the window alone can
         // do slips through, and nothing the phone can reach gets refused.
         for k in crate::shell::WINDOW_ONLY_MENU {
-            assert!(!menu(k), "{k} は窓専用なのに遠隔から通ってしまう");
+            assert!(!menu(k), "{k} is window-only but gets through from afar");
         }
         // Scrolling back to review earlier output is core to monitoring from afar
         assert!(
             super::allowed_from_afar(&Ev::Scroll { by: 3, row: 0, col: 0 }),
-            "遠くから履歴を遡れない"
+            "history cannot be scrolled back from afar"
         );
 
         // The folder list is the phone's only way to open another folder;
@@ -2419,18 +2419,18 @@ mod tests {
         // person could not do by adding a tab
         assert!(
             super::allowed_from_afar(&Ev::Browse { path: String::new(), open: false, make: String::new() }),
-            "スマホからフォルダ一覧を歩けない"
+            "the folder list cannot be walked from the phone"
         );
         assert!(
             super::allowed_from_afar(&Ev::Browse { path: r"C:\work".into(), open: true, make: String::new() }),
-            "スマホから選んだフォルダを開けない"
+            "a folder chosen on the phone cannot be opened"
         );
 
         // Named as well as looped, so the two standing cases are in this test's
         // own words: the master password is answered in the TUI, and settings
         // opens as a child WebView of the window.
-        assert!(!menu("k"), "マスターパスワードを遠くから呼べてしまう");
-        assert!(!menu("e"), "窓の中にしか出ないものを呼べる");
+        assert!(!menu("k"), "the master password can be called up from afar");
+        assert!(!menu("e"), "something that only appears inside the window can be called up");
         // Sizing from afar is intentionally allowed: a phone needs a terminal that
         // fits it, and the two sides hand off (each re-reports only on its own size
         // change) rather than fight in a loop.
@@ -2442,11 +2442,11 @@ mod tests {
                 area: (0, 0, 0, 0),
                 panes: Vec::new()
             }),
-            "スマホから端末をスマホ寸法に合わせられない"
+            "the terminal cannot be sized to the phone from the phone"
         );
         assert!(
             !super::allowed_from_afar(&Ev::Paste),
-            "長押しひとつでAIの入力欄に流れ込む"
+            "a single long press flows into the AI's input box"
         );
 
         // Arranging the screen, which a laptop or a Chromebook looking at the
@@ -2468,13 +2468,13 @@ mod tests {
         ] {
             assert!(
                 super::allowed_from_afar(&arranging),
-                "机の大きさの画面から画面を整えられない: {arranging:?}"
+                "a desk-sized screen cannot arrange the panes: {arranging:?}"
             );
         }
         // ...and what stays at the window, each for a reason written down
         assert!(
             !super::allowed_from_afar(&Ev::RemoteCut),
-            "遠くから全員を切ると自分も切れる"
+            "cutting everyone from afar cuts yourself too"
         );
     }
 
@@ -2503,7 +2503,7 @@ mod tests {
         let gate_src = GATE.replace("\r\n", "\n");
         let loop_src = LOOP.replace("\r\n", "\n");
         let between = |text: &str, from: &str, to: &str| -> String {
-            let a = text.find(from).unwrap_or_else(|| panic!("{from} が無い"));
+            let a = text.find(from).unwrap_or_else(|| panic!("{from} is missing"));
             let b = text[a..].find(to).map(|i| a + i).unwrap_or(text.len());
             text[a..b].to_string()
         };
@@ -2515,7 +2515,7 @@ mod tests {
         // anything at all
         assert!(
             gate.len() < gate_src.len() / 4 && gate.contains("_ => false,"),
-            "門の範囲が読めていない（{}文字）",
+            "the gate's range was not read ({} characters)",
             gate.len()
         );
         // An arm is its patterns, then `=>`, then what it answers. Only the
@@ -2536,7 +2536,7 @@ mod tests {
             patterns = &patterns[at + 2..];
         }
         allowed.retain(|name| !name.is_empty());
-        assert!(allowed.len() > 20, "許可リストが読めていない");
+        assert!(allowed.len() > 20, "the allow list was not read");
 
         // ...and the two places an intent can be answered: a queue of its own,
         // or the keystroke a person at a window would have pressed
@@ -2546,7 +2546,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         let keys = between(&loop_src, "pub fn keys_for", "\n}\n");
-        assert!(keys.len() < loop_src.len() / 4, "打鍵表の範囲が読めていない");
+        assert!(keys.len() < loop_src.len() / 4, "the keystroke table's range was not read");
 
         let mut lost = Vec::new();
         for name in &allowed {
@@ -2562,16 +2562,16 @@ mod tests {
         }
         assert!(
             lost.is_empty(),
-            "通したのに行き先が無い（押しても何も起きない）: {lost:?}"
+            "let through but routed nowhere (pressing does nothing): {lost:?}"
         );
 
         // And that this would notice: a name the gate allows and nothing
         // answers is exactly what it is for
         assert!(
             !routed.contains("Ev::Paste") && !keys.contains("Ev::Paste"),
-            "貼り付けに行き先が出来ている（門は閉じたままのはず）"
+            "paste has somewhere to go (the gate should stay closed)"
         );
-        assert!(allowed.iter().all(|n| n != "Paste"), "貼り付けが通っている");
+        assert!(allowed.iter().all(|n| n != "Paste"), "paste gets through");
     }
 
     #[test]
@@ -2718,10 +2718,10 @@ mod tests {
 
         // No token, no cookie, no pairing -- and the page is there
         let r = phone.get(&format!("/r/{id}"));
-        assert_eq!(r.status(), 200, "切符だけで開ける");
+        assert_eq!(r.status(), 200, "it opens with the ticket alone");
         let body = phone.text(&format!("/r/{id}"));
-        assert!(body.contains("レビュワー"), "そのタブの話だと分かる");
-        assert!(!body.contains("board-token-0000"), "盤面の鍵は載らない");
+        assert!(body.contains("レビュワー"), "it is clear which tab it is about");
+        assert!(!body.contains("board-token-0000"), "the board's key is not in it");
 
         // What it cannot do is everything else. The board's own doors still
         // want the board's token, and the ticket is not one
@@ -2739,7 +2739,7 @@ mod tests {
         // Saying nothing is not saying something
         let (code, said) = phone.said_post(&format!("/r/{id}/say"), "{\"text\":\"   \"}");
         assert_eq!(code, 200);
-        assert!(said.contains("false"), "空文は送らない: {said}");
+        assert!(said.contains("false"), "empty text is not sent: {said}");
 
         // ...and what is said arrives as it was written. The message this
         // feature exists for is a sentence typed on a phone, which in this
@@ -2751,10 +2751,10 @@ mod tests {
         let body = serde_json::json!({ "text": words }).to_string();
         let (code, said) = phone.said_post(&format!("/r/{id}/say"), &body);
         assert_eq!(code, 200);
-        assert!(said.contains("true"), "本文が送られていない: {said}");
+        assert!(said.contains("true"), "the text was not sent: {said}");
         match ui.rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(RemoteCmd::Reply { tab_id, tab, name, dest, text }) => {
-                assert_eq!(text, words, "本文が化けた");
+                assert_eq!(text, words, "the text got garbled");
                 assert_eq!(tab_id.as_deref(), Some("coder"));
                 assert_eq!(tab, 1);
                 assert_eq!(name, "レビュワー");
@@ -2762,12 +2762,12 @@ mod tests {
                 // the same chat the notification came from, not the default one
                 assert_eq!(dest, "");
             }
-            other => panic!("返信が届いていない: {other:?}"),
+            other => panic!("the reply did not arrive: {other:?}"),
         }
 
         // ...and the disconnect that ends every phone ends this too
         ui.cut_sessions();
-        assert_eq!(phone.status(&format!("/r/{id}")), 404, "切断で無効になる");
+        assert_eq!(phone.status(&format!("/r/{id}")), 404, "disconnecting makes it invalid");
     }
 
     /// A browser fetches a manifest on its own account, and a launcher fetches
@@ -2787,12 +2787,12 @@ mod tests {
         let phone = Phone::new(&base);
 
         let (code, body) = phone.said(crate::pwa::MANIFEST_PATH);
-        assert_eq!(code, 200, "マニフェストはトークン無しで読めないと install できない");
-        assert!(!body.contains("board-token-0000"), "鍵は載らない");
+        assert_eq!(code, 200, "the manifest must be readable without a token, or install is refused");
+        assert!(!body.contains("board-token-0000"), "the key is not in it");
         let m: serde_json::Value = serde_json::from_str(&body).unwrap();
         for i in m["icons"].as_array().unwrap() {
             let src = i["src"].as_str().unwrap();
-            assert_eq!(phone.status(src), 200, "{src} が 404 だと install ごと拒否される");
+            assert_eq!(phone.status(src), 200, "if {src} is 404, the whole install is refused");
         }
         assert_eq!(phone.status("/apple-touch-icon.png"), 200);
 
@@ -2889,17 +2889,17 @@ mod tests {
         assert_eq!(
             phone.status(crate::pwa::MANIFEST_PATH),
             200,
-            "127.0.0.1:{port} が答えない = HTTPS を前に立てられない"
+            "127.0.0.1:{port} does not answer = HTTPS cannot be put in front of it"
         );
         // The same board, so the same rules: the loopback is a way in for a
         // proxy on this machine, not a way past the token.
-        assert_eq!(phone.status("/api/state"), 403, "ループバックが鍵を迂回している");
+        assert_eq!(phone.status("/api/state"), 403, "loopback bypasses the key");
 
         // ...and both doors are let go of together, or the next start fails.
         ui.shutdown();
         assert!(
             RemoteUi::start(ip, port, "board-token-0000".into(), String::new()).is_ok(),
-            "閉じたのに片方のポートが残っている"
+            "one of the ports is still held after closing"
         );
     }
 
@@ -2932,9 +2932,9 @@ mod tests {
 
         // Locked: a page that asks, and says nothing about the tab.
         let body = phone.text(&format!("/r/{id}"));
-        assert!(body.contains("password") || body.contains("パスワード"), "訊いていない");
-        assert!(!body.contains("レビュワー"), "名乗る前にタブ名を見せている");
-        assert!(!body.contains("終わりました"), "名乗る前に答えを見せている");
+        assert!(body.contains("password") || body.contains("パスワード"), "it does not ask");
+        assert!(!body.contains("レビュワー"), "it shows the tab name before you identify yourself");
+        assert!(!body.contains("終わりました"), "it shows the answer before you identify yourself");
 
         // ...and nothing can be said through it yet. The proof is not in what
         // the answer looks like -- the asking page comes back either way --
@@ -2944,17 +2944,17 @@ mod tests {
             "{\"text\":\"勝手に送る\"}",
         );
         assert_eq!(code, 200);
-        assert!(said.contains("<!doctype"), "送信が受け付けられている: {said}");
+        assert!(said.contains("<!doctype"), "the send was accepted: {said}");
         assert!(
             ui.rx.try_recv().is_err(),
-            "パスワードを言う前の書き込みがタブに届いてしまう"
+            "writing before the password is given reaches the tab"
         );
 
         // A wrong password is refused, and hands out nothing to keep.
         let mut wrong = phone.post(&format!("/r/{id}/unlock"), "{\"password\":\"chigau\"}");
         assert_eq!(wrong.status().as_u16(), 200);
         assert!(!wrong.body_mut().read_to_string().unwrap_or_default().contains("true"));
-        assert!(wrong.headers().get("set-cookie").is_none(), "誤答に鍵を渡している");
+        assert!(wrong.headers().get("set-cookie").is_none(), "it hands a key to a wrong answer");
 
         // The right one is remembered in a cookie of the reply pages' own.
         let right = phone.post(&format!("/r/{id}/unlock"), "{\"password\":\"aikotoba\"}");
@@ -2964,22 +2964,22 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        assert!(set.starts_with("rq="), "返信ページ専用のクッキーではない: {set}");
+        assert!(set.starts_with("rq="), "not a cookie just for the reply page: {set}");
         // Lax, and it has to be: a reply link is followed from a chat app,
         // which is another site, and a Strict cookie is withheld on exactly
         // that navigation -- so the password would be asked every single time.
-        assert!(set.contains("SameSite=Lax"), "Strict では chat から来たとき送られない: {set}");
-        assert!(set.contains("Path=/r/"), "返信ページの外まで届いてしまう: {set}");
-        assert!(set.contains("HttpOnly"), "ページから読み出せてしまう: {set}");
+        assert!(set.contains("SameSite=Lax"), "with Strict it is not sent when coming from a chat: {set}");
+        assert!(set.contains("Path=/r/"), "it reaches beyond the reply page: {set}");
+        assert!(set.contains("HttpOnly"), "the page can read it: {set}");
 
         phone.also(set.split(';').next().unwrap_or(""));
 
         // Now the real page, and a reply that lands.
         let body = phone.text(&format!("/r/{id}"));
-        assert!(body.contains("レビュワー"), "名乗ったのに開かない");
+        assert!(body.contains("レビュワー"), "it does not open after identifying");
         let (code, said) = phone.said_post(&format!("/r/{id}/say"), "{\"text\":\"進めて\"}");
         assert_eq!(code, 200);
-        assert!(said.contains("true"), "送れない: {said}");
+        assert!(said.contains("true"), "cannot send: {said}");
 
         // What it is not: a way onto the board. That still wants the token,
         // the session, and the password on its own cookie.
@@ -2987,7 +2987,7 @@ mod tests {
         assert_eq!(
             phone.said("/api/state?t=board-token-0000"),
             (403, "cut".to_string()),
-            "返信の鍵で盤面が開いてしまう"
+            "the reply key opens the board"
         );
         ui.shutdown();
     }
@@ -3059,18 +3059,18 @@ mod tests {
         laptop.pair("pairing-key-44444");
         let laptop_row = newest(&before);
 
-        assert_ne!(phone_row.id, laptop_row.id, "2台が1行にまとめられている");
+        assert_ne!(phone_row.id, laptop_row.id, "two devices are merged into one row");
         assert_eq!(phone.state("pairing-key-44444"), 200);
         assert_eq!(laptop.state("pairing-key-44444"), 200);
 
-        assert!(ui.cut_client(&phone_row.id), "消したと言わない");
+        assert!(ui.cut_client(&phone_row.id), "it does not say it removed it");
         assert!(
             !ui.clients().iter().any(|c| c.id == phone_row.id),
-            "名簿から消えていない"
+            "it is not removed from the list"
         );
         assert!(
             ui.clients().iter().any(|c| c.id == laptop_row.id),
-            "巻き添えで名簿から消えた"
+            "it was removed from the list by mistake"
         );
 
         // The phone's own key is gone and so is what it was looking at. It
@@ -3079,13 +3079,13 @@ mod tests {
         assert_eq!(
             phone.said("/api/state"),
             (403, "forbidden".to_string()),
-            "取り上げた鍵でまだ入れる"
+            "the revoked key still gets in"
         );
 
         // And the laptop never noticed
-        assert_eq!(laptop.state("pairing-key-44444"), 200, "巻き添えで閉め出された");
+        assert_eq!(laptop.state("pairing-key-44444"), 200, "it was locked out by mistake");
 
-        assert!(!ui.cut_client(&phone_row.id), "二度目も消したと言っている");
+        assert!(!ui.cut_client(&phone_row.id), "it says it removed it a second time too");
     }
 
     #[test]
@@ -3143,7 +3143,7 @@ mod tests {
         let after_first = ui.clients().len();
         phone.pair("pairing-key-55555");
         phone.pair("pairing-key-55555");
-        assert_eq!(ui.clients().len(), after_first, "開き直すたびに端末が増えた");
+        assert_eq!(ui.clients().len(), after_first, "the device count grows every time it reopens");
         assert_eq!(phone.state("pairing-key-55555"), 200);
 
         // A second device is still a second device
@@ -3161,7 +3161,7 @@ mod tests {
             .expect("the phone's own key names no row");
         assert!(ui.cut_client(&phone_id));
         phone.pair("pairing-key-55555");
-        assert_eq!(ui.clients().len(), after_first + 1, "取り上げた端末が戻れない、または二重に入った");
+        assert_eq!(ui.clients().len(), after_first + 1, "a revoked device cannot come back, or came in twice");
         ui.shutdown();
     }
 
@@ -3195,10 +3195,10 @@ mod tests {
             .next()
             .unwrap()
             .parse()
-            .expect("originにポートが無い");
+            .expect("the origin has no port");
         ui.shutdown();
         let again = RemoteUi::start("127.0.0.1".parse().unwrap(), port, "tok123456789012".into(), String::new())
-            .expect("ポートが解放されていない");
+            .expect("the port was not released");
         again.shutdown();
     }
 
@@ -3210,39 +3210,39 @@ mod tests {
     fn wrong_passwords_shut_the_door_for_longer_each_time() {
         let t0 = Instant::now();
         let mut m = Misses::new(t0);
-        assert_eq!(m.wait_at(t0), None, "最初から閉まっている");
+        assert_eq!(m.wait_at(t0), None, "closed from the start");
         m.missed_at(t0);
-        assert_eq!(m.wait_at(t0), None, "一度の打ち間違いで待たされる");
+        assert_eq!(m.wait_at(t0), None, "one typo makes you wait");
         m.missed_at(t0);
-        assert_eq!(m.wait_at(t0), None, "二度の打ち間違いで待たされる");
+        assert_eq!(m.wait_at(t0), None, "two typos make you wait");
         m.missed_at(t0);
-        assert_eq!(m.wait_at(t0), Some(Duration::from_secs(1)), "三度目で閉まらない");
+        assert_eq!(m.wait_at(t0), Some(Duration::from_secs(1)), "it does not close on the third");
         assert_eq!(
             m.wait_at(t0 + Duration::from_millis(400)),
             Some(Duration::from_millis(600)),
-            "残り時間が減らない"
+            "the remaining time does not go down"
         );
-        assert_eq!(m.wait_at(t0 + Duration::from_secs(1)), None, "時間が来ても開かない");
+        assert_eq!(m.wait_at(t0 + Duration::from_secs(1)), None, "it does not open when the time comes");
         // Doubling: 1, 2, 4, 8, 16, 32, 60, 60...
         for (n, secs) in [(4, 2), (5, 4), (6, 8), (7, 16), (8, 32), (9, 60), (10, 60), (40, 60)] {
             assert_eq!(
                 Misses::shut_for(n),
                 Duration::from_secs(secs),
-                "{n}回目の待ち時間が違う"
+                "the wait for attempt {n} is wrong"
             );
         }
         // A right password clears the score
         m.forgive();
-        assert_eq!(m.wait_at(t0 + Duration::from_secs(2)), None, "正解のあとも閉まっている");
+        assert_eq!(m.wait_at(t0 + Duration::from_secs(2)), None, "still closed after the right answer");
         // Ten quiet minutes forget it: a person who slipped last week starts afresh
         for _ in 0..9 {
             m.missed_at(t0);
         }
         assert_eq!(m.wait_at(t0), Some(Duration::from_secs(60)));
         let later = t0 + Duration::from_secs(601);
-        assert_eq!(m.wait_at(later), None, "十分経っても忘れない");
+        assert_eq!(m.wait_at(later), None, "it does not forget after long enough");
         m.missed_at(later);
-        assert_eq!(m.wait_at(later), None, "忘れたあとの一度目で待たされる");
+        assert_eq!(m.wait_at(later), None, "the first attempt after forgetting makes you wait");
     }
 
     /// Over the wire: after wrong passwords in a row the door answers 429 with
@@ -3290,14 +3290,14 @@ mod tests {
         }
         // The door is shut now — to the right password as well
         let shut = guesser.post("/auth?t=tok123456789012", r#"{"password":"aikotoba"}"#);
-        assert_eq!(shut.status().as_u16(), 429, "続けて間違えても閉まらない");
+        assert_eq!(shut.status().as_u16(), 429, "repeated mistakes do not close it");
         let after = shut
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok())
-            .expect("Retry-After が無い");
-        assert!((1..=60).contains(&after), "待ち時間の案内がおかしい: {after}");
+            .expect("there is no Retry-After");
+        assert!((1..=60).contains(&after), "the wait time given is wrong: {after}");
         // ...and so is the reply page's, on the same score
         let link = ui.reply_link(crate::reply::Ticket::new(
             Some("coder".into()),
@@ -3309,10 +3309,10 @@ mod tests {
         let ticket = link.rsplit('/').next().unwrap().to_string();
         let (status, body) =
             guesser.said_post(&format!("/r/{ticket}/unlock"), r#"{"password":"aikotoba"}"#);
-        assert_eq!(status, 429, "返信ページの扉が別勘定になっている");
-        assert!(body.contains("\"wait\""), "待ち時間を返していない: {body}");
+        assert_eq!(status, 429, "the reply page's door is counted separately");
+        assert!(body.contains("\"wait\""), "it does not return the wait time: {body}");
         // The phone that is in was never made to wait
-        assert_eq!(inside.state("tok123456789012"), 200, "中の人まで止まった");
+        assert_eq!(inside.state("tok123456789012"), 200, "even the person inside was stopped");
         ui.shutdown();
     }
 
@@ -3338,14 +3338,14 @@ mod tests {
         assert_eq!(
             phone.said("/api/state?t=tok123456789012"),
             (403, "password".to_string()),
-            "パスワード未提示で通ってしまう"
+            "it gets through with no password given"
         );
 
         // Wrong password → refused
         assert_eq!(
             phone.said_post("/auth?t=tok123456789012", r#"{"password":"chigau"}"#),
             (403, "forbidden".to_string()),
-            "誤パスワードで通る"
+            "a wrong password gets through"
         );
         // The password rides in the body only. In the address — where the old
         // route took it, and where proxies and histories keep it — it is not a
@@ -3353,16 +3353,16 @@ mod tests {
         assert_eq!(
             phone.said("/auth?t=tok123456789012&p=aikotoba"),
             (403, "password".to_string()),
-            "アドレスに書いたパスワードが通る"
+            "a password written in the address gets through"
         );
 
         // Right password → a session cookie, and data routes open with it
         let resp = phone.post("/auth?t=tok123456789012", r#"{"password":"aikotoba"}"#);
-        assert_eq!(resp.status().as_u16(), 200, "正しいパスワードが通らない");
+        assert_eq!(resp.status().as_u16(), 200, "the right password does not get through");
         let cookie = resp
             .headers()
             .get("set-cookie")
-            .expect("セッションクッキーが出ない")
+            .expect("no session cookie comes out")
             .to_str()
             .unwrap()
             .split(';')
@@ -3370,7 +3370,7 @@ mod tests {
             .unwrap()
             .to_string();
         phone.also(&cookie);
-        assert_eq!(phone.state("tok123456789012"), 200, "クッキー提示でも開かない");
+        assert_eq!(phone.state("tok123456789012"), 200, "it does not open even with the cookie");
 
         // No token and no key of its own stays refused, whatever else it holds.
         // (The device's own key is a key: a phone holding it is let in without
@@ -3383,7 +3383,7 @@ mod tests {
             .filter(|c| !c.is_empty() && !c.starts_with("rk="))
             .collect::<Vec<_>>()
             .join("; ");
-        assert_eq!(keyless.status("/api/state"), 403, "トークンも鍵も無いのに通る");
+        assert_eq!(keyless.status("/api/state"), 403, "it gets through with neither a token nor a key");
 
         // The disconnect takes the password with it: the device unlocks again
         // only after the person there says so
@@ -3392,7 +3392,7 @@ mod tests {
         assert_eq!(
             phone.said("/api/state?t=tok123456789012"),
             (403, "password".to_string()),
-            "切断後もパスワードが効いたままになっている"
+            "the password still works after disconnecting"
         );
         ui.shutdown();
     }
@@ -3409,16 +3409,16 @@ mod tests {
         let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
         let base = ui.url.split("/?").next().unwrap().to_string();
         let mut phone = Phone::new(&base);
-        assert!(!ui.watched(), "誰も来ていないのに見られている扱い");
+        assert!(!ui.watched(), "it counts as watched though nobody came");
         phone.pair("tok123456789012");
         // Pairing alone is not watching: the page has to ask for the state
-        assert!(!ui.watched(), "ページを開いただけで見られている扱い");
+        assert!(!ui.watched(), "merely opening the page counts as watched");
         // Nor does a request that is refused -- it never saw the state
         let stranger = Phone::new(&base);
         assert_eq!(stranger.status("/api/state?t=tok123456789012"), 403);
-        assert!(!ui.watched(), "断った相手が見ている扱いになった");
+        assert!(!ui.watched(), "someone who was refused counts as watching");
         phone.get("/api/state?t=tok123456789012");
-        assert!(ui.watched(), "状態を取りに来た相手が見ている扱いにならない");
+        assert!(ui.watched(), "someone who came for the state does not count as watching");
         ui.shutdown();
     }
 
@@ -3452,7 +3452,7 @@ mod tests {
             RemoteCmd::Send { tab, text } => {
                 assert_eq!((tab, text.as_str()), (1, "続けて"));
             }
-            other => panic!("想定外: {other:?}"),
+            other => panic!("unexpected: {other:?}"),
         }
 
         // The entry point serves the same shell as the window — and now WITHOUT a
@@ -3464,7 +3464,7 @@ mod tests {
             let page = phone.text(entry);
             assert!(
                 page.contains("api/intent") && page.contains("window.__state"),
-                "{entry} が（トークン無しで）窓と同じ外皮を配っていない"
+                "{entry} does not serve (without a token) the same shell as the window"
             );
         }
 
@@ -3472,7 +3472,7 @@ mod tests {
         phone.post("/api/intent?t=tok123456789012", r#"{"kind":"select","tab":2}"#);
         match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
             RemoteCmd::Ui(shikisha_shared::Ev::Select { tab }) => assert_eq!(tab, 2),
-            other => panic!("想定外: {other:?}"),
+            other => panic!("unexpected: {other:?}"),
         }
 
         // The "back" button on the top bar also reaches the main loop (both
@@ -3483,7 +3483,7 @@ mod tests {
             RemoteCmd::Ui(shikisha_shared::Ev::Go {
                 go: shikisha_shared::Go::Back,
             }) => {}
-            other => panic!("戻るが本体まで届かない: {other:?}"),
+            other => panic!("going back does not reach the app: {other:?}"),
         }
 
         // Something only the window can answer is stopped as soon as it's
@@ -3493,9 +3493,9 @@ mod tests {
         phone.post("/api/intent?t=tok123456789012", r#"{"kind":"select","tab":3}"#);
         match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
             RemoteCmd::Ui(shikisha_shared::Ev::Select { tab }) => {
-                assert_eq!(tab, 3, "止めたはずの操作が先に届いた")
+                assert_eq!(tab, 3, "an action that should have been stopped arrived first")
             }
-            other => panic!("窓にしか答えられないものが通った: {other:?}"),
+            other => panic!("something only the window can answer got through: {other:?}"),
         }
         ui.shutdown();
     }
@@ -3531,7 +3531,7 @@ mod tests {
             let verb = line[at + 6..].split(['"', '/', '?']).next().unwrap_or("");
             assert!(
                 OWN_VERBS.contains(&verb),
-                "/api/{verb} を自分で処理しているのに OWN_VERBS に無い (設定プロキシに吸われて到達しない)"
+                "/api/{verb} is handled here but is not in OWN_VERBS (the settings proxy swallows it before it arrives)"
             );
         }
     }
@@ -3637,7 +3637,7 @@ mod tests {
     fn the_pairing_hop_keeps_which_screen_to_open() {
         assert_eq!(carried_query("/cfg?t=secret123&addtab=2"), "?addtab=2");
         assert_eq!(carried_query("/cfg?t=secret123&section=actions&ret=1"), "?section=actions&ret=1");
-        assert_eq!(carried_query("/cfg?t=secret123"), "", "トークンだけなら何も残さない");
+        assert_eq!(carried_query("/cfg?t=secret123"), "", "a token alone leaves nothing");
         assert_eq!(carried_query("/cfg"), "");
         // The result goes into a Location header, so nothing that isn't plain
         // query text is carried over — dropped outright rather than escaped
@@ -3645,7 +3645,7 @@ mod tests {
         assert_eq!(
             carried_query("/cfg?t=a&evil=%0d%0aSet-Cookie:%20x"),
             "",
-            "ヘッダを割りに来る細工は丸ごと落とす"
+            "anything crafted to split the headers is dropped whole"
         );
         // Percent-encoded text survives (it is literal text in a header, not a
         // break), so ordinary encoded values still reach the page
@@ -3740,13 +3740,13 @@ mod tests {
         assert!(crate::clients::revoke(&phone_id).unwrap());
         ui.sessions().drop_client(&phone_id);
 
-        assert_eq!(read_text(&mut phone_line).as_deref(), Some(CUT_MESSAGE), "切った端末に切断を言わない");
+        assert_eq!(read_text(&mut phone_line).as_deref(), Some(CUT_MESSAGE), "it does not tell a revoked device it was disconnected");
         ui.push_state("{\"ui\":\"after\"}".to_string());
-        assert_eq!(read_text(&mut phone_line), None, "切った端末に画面が送られ続けている");
+        assert_eq!(read_text(&mut phone_line), None, "screens keep being sent to a revoked device");
         assert_eq!(
             read_text(&mut laptop_line).as_deref(),
             Some("{\"ui\":\"after\"}"),
-            "巻き添えで残った端末の画面が止まった"
+            "the screen of a device left behind stopped"
         );
         ui.shutdown();
     }
@@ -3816,18 +3816,18 @@ mod tests {
             assert!(read_text(line).is_some_and(|m| m.starts_with("{\"ui\"")));
             assert!(read_text(line).is_some_and(|m| m.starts_with("{\"screen_html\"")));
         }
-        assert_eq!(read_text(&mut laptop_line).as_deref(), Some("{\"panes\":\"seed\"}"), "来たばかりの端末にペインの今が渡らない");
+        assert_eq!(read_text(&mut laptop_line).as_deref(), Some("{\"panes\":\"seed\"}"), "a device that just arrived is not given the panes' current state");
         // Registered once seeded; asked after the seed has arrived, not before
-        assert!(ui.has_pane_clients(), "ペインを描く端末が居るのに居ないことになっている");
+        assert!(ui.has_pane_clients(), "a device drawing panes is there but counted as absent");
 
         ui.push_panes("{\"panes\":\"moved\"}".to_string());
         ui.push_state("{\"ui\":\"after\"}".to_string());
-        assert_eq!(read_text(&mut laptop_line).as_deref(), Some("{\"panes\":\"moved\"}"), "ペインの変化がノートPCに届かない");
+        assert_eq!(read_text(&mut laptop_line).as_deref(), Some("{\"panes\":\"moved\"}"), "pane changes do not reach the laptop");
         assert_eq!(read_text(&mut laptop_line).as_deref(), Some("{\"ui\":\"after\"}"));
         assert_eq!(
             read_text(&mut phone_line).as_deref(),
             Some("{\"ui\":\"after\"}"),
-            "スマホにペインの絵が送られている"
+            "the pane picture is sent to the phone"
         );
         ui.shutdown();
     }
@@ -3877,10 +3877,10 @@ mod tests {
             }
         }
         let head = String::from_utf8_lossy(&buf);
-        assert!(head.contains("101"), "101 で格上げされていない: {head}");
+        assert!(head.contains("101"), "not upgraded with 101: {head}");
         assert!(
             head.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
-            "Sec-WebSocket-Accept が違う: {head}"
+            "Sec-WebSocket-Accept is wrong: {head}"
         );
 
         // Wait out the gap until registration is done, then push a frame
@@ -3890,9 +3890,9 @@ mod tests {
         // Server-to-client frames are unmasked. Unpack it directly here
         let mut hdr = [0u8; 2];
         sock.read_exact(&mut hdr).unwrap();
-        assert_eq!(hdr[0] & 0x0F, 0x2, "バイナリフレームでない");
+        assert_eq!(hdr[0] & 0x0F, 0x2, "not a binary frame");
         let len = (hdr[1] & 0x7F) as usize;
-        assert_eq!(hdr[1] & 0x80, 0, "サーバーフレームにマスクが付いている");
+        assert_eq!(hdr[1] & 0x80, 0, "a server frame is masked");
         let mut payload = vec![0u8; len];
         sock.read_exact(&mut payload).unwrap();
         assert_eq!(payload, vec![0xDE, 0xAD, 0xBE, 0xEF]);
@@ -3953,7 +3953,7 @@ mod tests {
                 assert_eq!(phase, "pressed");
                 assert!((x - 0.5).abs() < 1e-9 && (y - 0.25).abs() < 1e-9);
             }
-            other => panic!("軌跡が届いていない: {other:?}"),
+            other => panic!("the trace did not arrive: {other:?}"),
         }
 
         // ...and once the PC ends the session, the very same line reaches
@@ -3967,7 +3967,7 @@ mod tests {
             ui.rx
                 .recv_timeout(std::time::Duration::from_millis(700))
                 .is_err(),
-            "切断したはずの端末の操作が本体まで届いている"
+            "actions from a device that was disconnected reach the app"
         );
         ui.shutdown();
     }
@@ -4026,7 +4026,7 @@ mod tests {
                 }
             }
             let head = String::from_utf8_lossy(&buf).to_string();
-            assert!(head.contains("101"), "{path} が格上げされていない: {head}");
+            assert!(head.contains("101"), "{path} was not upgraded: {head}");
             sock
         };
 
@@ -4040,7 +4040,7 @@ mod tests {
         up.write_all(&mask_binary_frame(&frame(1, Kind::Data, "ここから".as_bytes()))).unwrap();
 
         let said = read_binary_frame(&mut down);
-        let (id, kind, payload) = unframe(&said).expect("枠が読めない");
+        let (id, kind, payload) = unframe(&said).expect("the frame cannot be read");
         assert_eq!((id, kind), (1, Kind::Data));
         assert_eq!(String::from_utf8_lossy(payload), "ここから");
 
@@ -4053,7 +4053,7 @@ mod tests {
     fn mask_binary_frame(payload: &[u8]) -> Vec<u8> {
         let mut out = vec![0x82u8]; // FIN + binary
         let mask = [0xA1u8, 0xB2, 0xC3, 0xD4];
-        assert!(payload.len() < 126, "テストの本文は126バイト未満");
+        assert!(payload.len() < 126, "the test payload is under 126 bytes");
         out.push(0x80 | payload.len() as u8);
         out.extend_from_slice(&mask);
         out.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i & 3]));
@@ -4065,8 +4065,8 @@ mod tests {
         use std::io::Read as _;
         let mut hdr = [0u8; 2];
         sock.read_exact(&mut hdr).unwrap();
-        assert_eq!(hdr[0] & 0x0F, 0x2, "バイナリフレームでない");
-        assert_eq!(hdr[1] & 0x80, 0, "サーバーフレームにマスクが付いている");
+        assert_eq!(hdr[0] & 0x0F, 0x2, "not a binary frame");
+        assert_eq!(hdr[1] & 0x80, 0, "a server frame is masked");
         let len = match hdr[1] & 0x7F {
             126 => {
                 let mut n = [0u8; 2];
@@ -4113,7 +4113,7 @@ mod tests {
             "tok123456789012",
             &phone.cookie,
         )
-        .expect("線が張れない");
+        .expect("the line cannot be set up");
 
         // Exactly what a browser sends a proxy for an unencrypted page
         let mut sock = TcpStream::connect(("127.0.0.1", proxy.port())).unwrap();
@@ -4127,8 +4127,8 @@ mod tests {
         let mut answer = Vec::new();
         let _ = sock.read_to_end(&mut answer);
         let answer = String::from_utf8_lossy(&answer);
-        assert!(answer.starts_with("HTTP/1.1 200"), "返ってきていない: {answer}");
-        assert!(answer.contains("こちら側のページ"), "本文が違う: {answer}");
+        assert!(answer.starts_with("HTTP/1.1 200"), "nothing came back: {answer}");
+        assert!(answer.contains("こちら側のページ"), "the body is wrong: {answer}");
         ui.shutdown();
     }
 
@@ -4158,7 +4158,7 @@ mod tests {
         let mut phone = Phone::new(&format!("http://{hostport}"));
         phone.pair("tok123456789012");
         let proxy = crate::tunnel::Proxy::start(&format!("http://{hostport}"), "tok123456789012", &phone.cookie)
-            .expect("線が張れない");
+            .expect("the line cannot be set up");
 
         let mut sock = TcpStream::connect(("127.0.0.1", proxy.port())).unwrap();
         sock.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
@@ -4177,14 +4177,14 @@ mod tests {
             head.push(one[0]);
         }
         let head = String::from_utf8_lossy(&head).to_string();
-        assert!(head.starts_with("HTTP/1.1 200"), "通してくれない: {head}");
+        assert!(head.starts_with("HTTP/1.1 200"), "it will not let it through: {head}");
 
         // And from here it is nobody's business but the two ends'
         sock.write_all(b"GET / HTTP/1.1\r\nHost: far\r\nConnection: close\r\n\r\n").unwrap();
         let mut answer = Vec::new();
         let _ = sock.read_to_end(&mut answer);
         let answer = String::from_utf8_lossy(&answer);
-        assert!(answer.contains("トンネルの向こう"), "中身が通っていない: {answer}");
+        assert!(answer.contains("トンネルの向こう"), "the contents did not get through: {answer}");
         ui.shutdown();
     }
 
@@ -4194,7 +4194,7 @@ mod tests {
         let mut out = vec![0x81u8]; // FIN + text
         let mask = [0xA1u8, 0xB2, 0xC3, 0xD4];
         let len = payload.len();
-        assert!(len < 126, "テストの本文は126バイト未満");
+        assert!(len < 126, "the test payload is under 126 bytes");
         out.push(0x80 | len as u8);
         out.extend_from_slice(&mask);
         out.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i & 3]));

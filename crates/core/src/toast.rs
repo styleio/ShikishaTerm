@@ -244,7 +244,7 @@ mod tests {
         while let Some(i) = rest.find("T[\"") {
             rest = &rest[i + 3..];
             let key = &rest[..rest.find('"').expect("キーが閉じていない")];
-            assert!(en.get(key).is_some(), "lang/en.json に無いキー: {key}");
+            assert!(en.get(key).is_some(), "a key missing from lang/en.json: {key}");
         }
     }
 

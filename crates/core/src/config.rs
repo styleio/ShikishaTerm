@@ -3719,7 +3719,7 @@ mod tests {
             ("デスクA", "a"),
             ("", ""),
         ] {
-            assert_eq!(slug_id(name), want, "{name} の呼び名");
+            assert_eq!(slug_id(name), want, "the automation name for {name}");
         }
     }
 
@@ -3743,17 +3743,17 @@ mod tests {
         assert_eq!(
             ids,
             [
-                "orgq9",   // 実装
+                "orgq9",   // a name in Japanese, with no ASCII to make an id from
                 "my-tab",  // My Tab
-                "bash",    // 名前がなければコマンドから
-                "orgq9-2", // もう一つの実装。フォルダが違っても同じ名前は使えない
+                "bash",    // with no name, from the command
+                "orgq9-2", // the same Japanese name again. A different folder does not make it reusable
                 "rev",
-                "rev-2", // 手で書いた重複はずらす
+                "rev-2", // a duplicate written by hand is shifted
             ]
         );
         assert!(
             errs.iter().any(|e| e.contains("rev")),
-            "ずらしたことを黙っていない: {errs:?}"
+            "it does not keep quiet about shifting it: {errs:?}"
         );
     }
 
@@ -3777,7 +3777,7 @@ mod tests {
         assert_eq!(desk[1].name, "本番");
         assert!(
             errs.iter().any(|e| e.contains("written")),
-            "ずらしたことを黙っていない: {errs:?}"
+            "it does not keep quiet about shifting it: {errs:?}"
         );
     }
 
@@ -3808,7 +3808,7 @@ mod tests {
             hit
         };
         for who in ["flat", "old", "coder", "deep"] {
-            assert!(aim(&mut doc, who, Some("page")), "{who} に届いていない");
+            assert!(aim(&mut doc, who, Some("page")), "it does not reach {who}");
         }
         assert_eq!(doc["desks"][0]["folders"][0]["tabs"][0]["drives"], "page");
         assert_eq!(
@@ -3818,9 +3818,9 @@ mod tests {
         // Clearing takes the key away rather than leaving an empty one behind
         assert!(aim(&mut doc, "coder", None));
         assert!(doc["desks"][0]["folders"][0]["tabs"][0].get("drives").is_none());
-        // The name on screen is not an address, here either: aiming at "実装"
+        // The name on screen is not an address, here either: aiming at the tab's display name
         // must not land on the tab that merely displays that name
-        assert!(!aim(&mut doc, "実装", Some("page")), "画面の名前で書き込まれた");
+        assert!(!aim(&mut doc, "実装", Some("page")), "it was written using the name on screen");
     }
 
     /// A settings file outlives the version that wrote it.
@@ -3842,8 +3842,8 @@ mod tests {
         assert!(errs.is_empty(), "{errs:?}");
         assert_eq!(desk.len(), 1);
         let names: Vec<&str> = desk[0].tabs.iter().map(|t| t.cfg.name.as_deref().unwrap_or("")).collect();
-        assert_eq!(names, vec!["coder", "reviewer"], "旧形式のタブが消えない");
-        assert_eq!(desk[0].folders.len(), 1, "入れ物のフォルダは1つだけ作る");
+        assert_eq!(names, vec!["coder", "reviewer"], "the old-style tabs are not gone");
+        assert_eq!(desk[0].folders.len(), 1, "only one container folder is made");
 
         // Written both ways, the ones inside a folder come first and the older
         // ones follow: the file says where they sit, and the migration adds
@@ -3863,7 +3863,7 @@ mod tests {
         )
         .unwrap();
         let (desk, _) = flat.resolve_desks();
-        assert_eq!(desk.len(), 1, "タブだけの設定でも画面が1つできる");
+        assert_eq!(desk.len(), 1, "a settings file with only tabs still makes one screen");
         assert_eq!(desk[0].tabs.len(), 1);
 
         // And the current shape is untouched by any of this
@@ -3887,11 +3887,11 @@ mod tests {
     #[test]
     fn a_folder_guards_what_it_says_or_what_its_desk_says() {
         let read = |json: &str| {
-            let cfg: Config = serde_json::from_str(json).expect("設定として読める");
+            let cfg: Config = serde_json::from_str(json).expect("it reads as settings");
             let (desk, _) = cfg.resolve_desks();
             desk.into_iter()
                 .next()
-                .expect("デスクが1つある")
+                .expect("there is one desk")
                 .folders
                 .into_iter()
                 .map(|f| f.protect)
@@ -3910,9 +3910,9 @@ mod tests {
                 {"cwd":"D:/b","protect":["release/*"," "],"tabs":[]},
                 {"cwd":"D:/c","protect":[],"tabs":[]}]}]}"#,
         );
-        assert_eq!(mixed[0], vec!["develop".to_string()], "言わなければデスクの答え");
-        assert_eq!(mixed[1], vec!["release/*".to_string()], "言えばそのとおり（空白は名前ではない）");
-        assert!(mixed[2].is_empty(), "空の一覧は「何も守らない」という答え");
+        assert_eq!(mixed[0], vec!["develop".to_string()], "say nothing and the desk's answer applies");
+        assert_eq!(mixed[1], vec!["release/*".to_string()], "say something and it is taken as said (spaces are not a name)");
+        assert!(mixed[2].is_empty(), "an empty list is the answer 'guard nothing'");
 
         // Alone on your own repository: nothing is guarded anywhere in the desk
         let alone = read(
@@ -3938,19 +3938,19 @@ mod tests {
                 timeout_sec: secs,
                 ..Default::default()
             };
-            provider_conn(&spec, &|_| None).expect("解決できる").timeout
+            provider_conn(&spec, &|_| None).expect("it resolves").timeout
         };
         assert_eq!(
             resolved(None),
             Some(std::time::Duration::from_secs(PROVIDER_TIMEOUT_DEFAULT_SEC)),
-            "書かなければ既定の待ち時間"
+            "without a value, the default wait"
         );
         assert_eq!(
             resolved(Some(600)),
             Some(std::time::Duration::from_secs(600)),
-            "書いた秒数のとおりに待つ"
+            "it waits the number of seconds written"
         );
-        assert_eq!(resolved(Some(0)), None, "0 は待ち続ける（上限なし）");
+        assert_eq!(resolved(Some(0)), None, "0 waits forever (no limit)");
     }
 
     /// The download keeps everything beside the exe, and must go on doing so.
@@ -3965,9 +3965,9 @@ mod tests {
     fn the_portable_layout_keeps_everything_beside_the_exe() {
         assert!(!packaged(), "a test run should not be a packaged one");
         #[cfg(windows)]
-        assert_eq!(root_dir(), exe_dir(), "ポータブル配置が exe の隣から離れた");
+        assert_eq!(root_dir(), exe_dir(), "the portable layout moved away from beside the exe");
         for p in [logs_dir(), state_path("x")] {
-            assert!(p.starts_with(root_dir()), "{p:?} が置き場の外に出た");
+            assert!(p.starts_with(root_dir()), "{p:?} went outside the data folder");
         }
     }
 
@@ -4002,7 +4002,7 @@ mod tests {
         assert_eq!(
             unpacked_root(bin, env(&[("HOME", "/home/dev"), ("XDG_DATA_HOME", "/srv/things")])),
             std::path::PathBuf::from("/srv/things/shikisha"),
-            "この機の流儀を無視した"
+            "it ignored this machine's convention"
         );
 
         // Told outright, which is how two boxes run on one machine
@@ -4064,15 +4064,15 @@ mod tests {
 
         let text = std::fs::read_to_string(&file).unwrap();
         let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert!(raw["desks"][0].get("tabs").is_none(), "古い置き場が残っている: {text}");
+        assert!(raw["desks"][0].get("tabs").is_none(), "the old location is still there: {text}");
         let cfg: Config = serde_json::from_str(&text).unwrap();
         let desk = &cfg.resolve_desks().0[0];
-        assert_eq!(desk.folders.len(), 2, "元のタブの入れ物と、足した1つ: {text}");
-        assert_eq!(desk.folders[0].cwd, None, "元のタブはアプリの場所のまま");
+        assert_eq!(desk.folders.len(), 2, "the original tabs' container, plus the one added: {text}");
+        assert_eq!(desk.folders[0].cwd, None, "the original tabs stay in the app's folder");
         assert_eq!(desk.folders[1].cwd.as_deref(), Some(Path::new(&fresh)));
         let in_folder = |g: usize| desk.tabs.iter().filter(|t| t.folder == g).count();
-        assert_eq!(in_folder(0), 2, "元のタブが元の入れ物に居ない: {text}");
-        assert_eq!(in_folder(1), 0, "足したフォルダにタブが移った: {text}");
+        assert_eq!(in_folder(0), 2, "the original tabs are not in their original container: {text}");
+        assert_eq!(in_folder(1), 0, "tabs moved into the added folder: {text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4112,7 +4112,7 @@ mod tests {
         assert_eq!(cfg.desks[0].secrets_allow, ["x"]);
 
         let desk = &cfg.resolve_desks().0[0];
-        assert_eq!(desk.folders.len(), 2, "元の1つと、足した1つ");
+        assert_eq!(desk.folders.len(), 2, "the original one, plus the one added");
         assert_eq!(desk.folders[0].cwd.as_deref(), Some(Path::new(&proj)));
         assert_eq!(desk.folders[1].name.as_deref(), Some("feature/login"));
         assert_eq!(desk.folders[1].cwd.as_deref(), Some(Path::new(&branch)));
@@ -4138,7 +4138,7 @@ mod tests {
         // ...and no two of them are the same, so automation can address each
         let all: Vec<String> = desk.tabs.iter().filter_map(|t| t.cfg.id.clone()).collect();
         let unique: std::collections::HashSet<&String> = all.iter().collect();
-        assert_eq!(all.len(), unique.len(), "自動化から指す名前がぶつかっていない");
+        assert_eq!(all.len(), unique.len(), "the names automation uses do not collide");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4181,10 +4181,10 @@ mod tests {
         assert_eq!(desk.folders.len(), 3);
         let in_folder = |g: usize| desk.tabs.iter().filter(|t| t.folder == g).collect::<Vec<_>>();
         let one = in_folder(1);
-        assert_eq!(one.len(), 1, "AIを1つだけ");
+        assert_eq!(one.len(), 1, "just one AI");
         assert_eq!(one[0].cfg.name.as_deref(), Some("codex"));
         assert_eq!(one[0].cfg.command.argv(), ["codex", "--flag"]);
-        assert!(in_folder(2).is_empty(), "何も起動しない、のはずがタブがある");
+        assert!(in_folder(2).is_empty(), "it should start nothing, but there are tabs");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4230,15 +4230,15 @@ mod tests {
         let desk = &cfg.resolve_desks().0[0];
         assert_eq!(desk.folders.len(), 3, "{text}");
         let there = &desk.folders[1];
-        assert_eq!(there.host.as_ref().map(|h| h.name.as_str()), Some("bench"), "マシンが書かれていない: {text}");
-        assert!(matches!(there.source, Source::Unknown), "向こうのフォルダに、ここで作り直す元が書かれた: {text}");
+        assert_eq!(there.host.as_ref().map(|h| h.name.as_str()), Some("bench"), "the machine is not written: {text}");
+        assert!(matches!(there.source, Source::Unknown), "the far folder was given a source to rebuild it from here: {text}");
         let in_folder = |g: usize| desk.tabs.iter().filter(|t| t.folder == g).collect::<Vec<_>>();
         let one = in_folder(1);
-        assert_eq!(one.len(), 1, "端末1つのはず: {text}");
-        assert_eq!(one[0].cfg.name.as_deref(), Some("bench"), "AIの名前がただの端末に付いた: {text}");
-        assert!(in_folder(2).is_empty(), "何も起動しない、のはずがタブがある");
+        assert_eq!(one.len(), 1, "there should be one terminal: {text}");
+        assert_eq!(one[0].cfg.name.as_deref(), Some("bench"), "the AI's name went on a plain terminal: {text}");
+        assert!(in_folder(2).is_empty(), "it should start nothing, but there are tabs");
         let opts = crate::desk::tab_options(&one[0].cfg, Some(there));
-        assert!(opts.remote.is_some(), "向こうのフォルダのタブが、このマシンで起動する");
+        assert!(opts.remote.is_some(), "a tab in the far folder starts on this machine");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4266,13 +4266,13 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].0, "blog.diary");
         assert_eq!(list[0].1.desc, "日記SaaSのログイン");
-        assert!(!list[0].1.ai, "既定でAIには開かない");
-        assert!(list[0].1.urls.is_empty(), "既定でどのサイトにも入れない");
+        assert!(!list[0].1.ai, "not open to the AI by default");
+        assert!(list[0].1.urls.is_empty(), "not allowed into any site by default");
         // The value really is stored (retrievable via resolve_tokens)
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("hunter2秘密"), "値が保存されていない");
+        assert!(raw.contains("hunter2秘密"), "the value was not saved");
         // But the value never appears in the listing API
-        assert!(!format!("{list:?}").contains("hunter2"), "一覧に値が漏れている");
+        assert!(!format!("{list:?}").contains("hunter2"), "the value leaks into the list");
 
         // What it is for can be changed without typing the password again
         let opened = SecretMeta {
@@ -4283,16 +4283,16 @@ mod tests {
         };
         upsert_secret(&path, None, "blog.diary", &opened, "").unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("hunter2秘密"), "値が空で上書きされた");
+        assert!(raw.contains("hunter2秘密"), "the value was overwritten with nothing");
         let list = list_secrets(&path, None).unwrap();
-        assert!(list[0].1.ai && list[0].1.urls == ["https://github.com"], "用途が変わっていない");
+        assert!(list[0].1.ai && list[0].1.urls == ["https://github.com"], "the use did not change");
 
         // ...but a name with nothing behind it is not filed at all
         assert!(upsert_secret(&path, None, "blog.nothing", &about("x"), "").is_err());
 
         upsert_secret(&path, None, "blog.github", &about("PAT"), "ghp_xxx").unwrap();
         let keys: Vec<String> = list_secrets(&path, None).unwrap().into_iter().map(|(k, _)| k).collect();
-        assert_eq!(keys, vec!["blog.diary".to_string(), "blog.github".to_string()], "整列済み");
+        assert_eq!(keys, vec!["blog.diary".to_string(), "blog.github".to_string()], "sorted");
 
         // Delete
         delete_secret(&path, None, "blog.github").unwrap();
@@ -4303,8 +4303,8 @@ mod tests {
         upsert_secret(&path, Some("master"), "ssh/blog/prod/password", &about("暗号化テスト"), "topsecret")
             .unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(crate::crypto::is_encrypted(&raw), "パスワードありなら暗号化される");
-        assert!(!raw.contains("topsecret"), "暗号化後は生値が見えない");
+        assert!(crate::crypto::is_encrypted(&raw), "with a password, it is encrypted");
+        assert!(!raw.contains("topsecret"), "after encryption the raw value is not visible");
         // With the correct password the list can be read; the value still doesn't appear
         let list = list_secrets(&path, Some("master")).unwrap();
         assert!(list.iter().any(|(k, _)| k == "ssh/blog/prod/password"));
@@ -4312,7 +4312,7 @@ mod tests {
         for bad in ["../evil", ".hidden", "a..b", "trailing/", "sp ace", ""] {
             assert!(
                 upsert_secret(&path, None, bad, &about("x"), "y").is_err(),
-                "{bad} が通ってしまう"
+                "{bad} gets through"
             );
         }
 
@@ -4356,14 +4356,14 @@ mod tests {
 
         // Said nothing: has nothing
         let bare = &spaces[0];
-        assert!(bare.notify.is_empty() && bare.primary_notify.is_none(), "アプリ側の通知先を引き継いだ");
-        assert!(bare.providers.is_empty(), "アプリ側の接続先を引き継いだ");
-        assert!(bare.capabilities.allow_hosts.is_empty(), "アプリ側の窓口を引き継いだ");
+        assert!(bare.notify.is_empty() && bare.primary_notify.is_none(), "it inherited the app's notification destinations");
+        assert!(bare.providers.is_empty(), "it inherited the app's connections");
+        assert!(bare.capabilities.allow_hosts.is_empty(), "it inherited the app's allowed hosts");
         assert!(
             !crate::grants::Grants::new(bare.automation_permissions.clone()).allows("lua", crate::grants::Subject::Ai),
-            "アプリ側の権限を引き継いだ"
+            "it inherited the app's permissions"
         );
-        assert!(bare.git.message_hint.is_none(), "アプリ側のgit設定を引き継いだ");
+        assert!(bare.git.message_hint.is_none(), "it inherited the app's git settings");
 
         // Said its own: exactly that
         let work = &spaces[1];
@@ -4401,7 +4401,7 @@ mod tests {
         let d = &cfg.desks[0];
         assert!(d.notify.is_empty() && d.primary_notify.is_none() && d.providers.is_empty());
         assert!(d.capabilities.files.is_empty() && d.automation_permissions.is_empty());
-        assert_eq!(d.git.protected(), GitSpec::default().protected(), "gitの既定が組み込みの答えでない");
+        assert_eq!(d.git.protected(), GitSpec::default().protected(), "git's default is not the built-in answer");
     }
 
     /// A secrets file written before names meant anything is brought forward
@@ -4434,7 +4434,7 @@ mod tests {
             ..Default::default()
         };
         let spaces = [desk("blog", &["github"], false), desk("shop", &[], true)];
-        assert!(migrate_secrets(&path, None, &spaces).unwrap(), "何も動かなかった");
+        assert!(migrate_secrets(&path, None, &spaces).unwrap(), "nothing moved");
 
         let now: std::collections::HashMap<String, SecretMeta> =
             list_secrets(&path, None).unwrap().into_iter().collect();
@@ -4443,28 +4443,28 @@ mod tests {
         assert_eq!(
             names,
             [
-                "blog.github",   // 使ってよいと書いてあったので、そのデスクの物に
-                "github",        // 元は残す (誰の物とも書いていなかったかもしれない)
-                "private",       // どのデスクも使えなかったものは、そのまま
+                "blog.github",   // it said it could be used, so it goes to that desk
+                "github",        // the original stays (it may never have said whose it was)
+                "private",       // what no desk could use is left as it is
                 "provider/deepseek",
-                "shop.github",   // 全部許可のデスクにも渡る
+                "shop.github",   // it also goes to a desk that allows everything
                 "shop.private",
             ]
         );
         // What it was allowed to do carries over; where it may be typed does not,
         // because nothing ever recorded that
-        assert!(now["blog.github"].ai, "AIから使えていたのに閉じられた");
+        assert!(now["blog.github"].ai, "it was usable from the AI, and got closed");
         assert!(now["blog.github"].urls.is_empty());
-        assert_eq!(now["blog.github"].desc, "PAT", "説明が引き継がれていない");
+        assert_eq!(now["blog.github"].desc, "PAT", "the description was not carried over");
         // Values follow their names
         let raw = std::fs::read_to_string(&path).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["tokens"]["blog.github"], "ghp_2");
         assert_eq!(v["tokens"]["provider/deepseek"], "sk-1");
-        assert!(v["tokens"].get("provider_deepseek").is_none(), "古い名前が残っている");
+        assert!(v["tokens"].get("provider_deepseek").is_none(), "the old name is still there");
 
         // Running again changes nothing: the file says which shape it is in
-        assert!(!migrate_secrets(&path, None, &spaces).unwrap(), "二度目が走った");
+        assert!(!migrate_secrets(&path, None, &spaces).unwrap(), "it ran a second time");
         let again = std::fs::read_to_string(&path).unwrap();
         assert_eq!(raw, again);
 
@@ -4485,12 +4485,12 @@ mod tests {
         // A whole site
         let m = at(&["https://github.com", "https://api.github.com"]);
         assert!(m.may_fill("https://github.com/login"));
-        assert!(m.may_fill("https://GitHub.com/login"), "大文字小文字は同じサイト");
-        assert!(m.may_fill("https://github.com/?next=/x"), "?以降は見ない");
+        assert!(m.may_fill("https://GitHub.com/login"), "upper and lower case are the same site");
+        assert!(m.may_fill("https://github.com/?next=/x"), "it does not look past ?");
         assert!(m.may_fill("https://api.github.com/"));
-        assert!(!m.may_fill("https://gist.github.com/"), "別のホストに入る");
-        assert!(!m.may_fill("https://github.com.evil.example/"), "前方一致で通る");
-        assert!(!m.may_fill("http://github.com/login"), "証明書のない経路に入る");
+        assert!(!m.may_fill("https://gist.github.com/"), "it gets into another host");
+        assert!(!m.may_fill("https://github.com.evil.example/"), "a prefix match gets through");
+        assert!(!m.may_fill("http://github.com/login"), "it gets onto a path without a certificate");
         assert!(!m.may_fill("about:blank"));
         assert!(!m.may_fill(""));
 
@@ -4501,18 +4501,18 @@ mod tests {
         let deep = at(&["https://example.com/api"]);
         assert!(deep.may_fill("https://example.com/api"));
         assert!(deep.may_fill("https://example.com/api/keys?x=1"));
-        assert!(!deep.may_fill("https://example.com/apiary"), "語の途中で切れている");
-        assert!(!deep.may_fill("https://example.com/"), "site全体に広がっている");
+        assert!(!deep.may_fill("https://example.com/apiary"), "it cut in the middle of a word");
+        assert!(!deep.may_fill("https://example.com/"), "it spread to the whole site");
         // ...and saying "the whole site" out loud is the same as not saying it
         assert!(at(&["https://example.com/*"]).may_fill("https://example.com/anything"));
 
         // A star at the front covers the site and everything under it
         let sub = at(&["https://*.example.com"]);
-        assert!(sub.may_fill("https://example.com/"), "元のサイトが外れている");
+        assert!(sub.may_fill("https://example.com/"), "the original site is excluded");
         assert!(sub.may_fill("https://dev.example.com/"));
         assert!(sub.may_fill("https://a.b.example.com/"));
-        assert!(!sub.may_fill("https://example.com.evil.test/"), "後ろに足せば通る");
-        assert!(!sub.may_fill("https://notexample.com/"), "点の前が一致していない");
+        assert!(!sub.may_fill("https://example.com.evil.test/"), "adding to the end gets through");
+        assert!(!sub.may_fill("https://notexample.com/"), "the part before the dot does not match");
 
         // A port written down has to match; left out it is the scheme's own
         assert!(at(&["https://example.com:8443"]).may_fill("https://example.com:8443/x"));
@@ -4522,9 +4522,9 @@ mod tests {
         // A plain connection is a place like any other, once it is written out
         let inside = at(&["http://intranet.local", "https://github.com"]);
         assert!(inside.may_fill("http://intranet.local/login"));
-        assert!(!inside.may_fill("https://intranet.local/login"), "書いた経路と違う");
+        assert!(!inside.may_fill("https://intranet.local/login"), "it differs from the path written");
         assert!(inside.may_fill("https://github.com/login"));
-        assert!(!inside.may_fill("http://github.com/login"), "平文に落とされて通る");
+        assert!(!inside.may_fill("http://github.com/login"), "it gets through downgraded to plain text");
     }
 
     /// What is offered for deletion is only what nothing claims. Getting this
@@ -4584,7 +4584,7 @@ mod tests {
     /// screen refused cannot arrive by another door
     #[test]
     fn a_line_that_reaches_too_far_is_refused() {
-        let ok = |u: &str| assert!(url_fault(u).is_none(), "{u} が断られた: {:?}", url_fault(u));
+        let ok = |u: &str| assert!(url_fault(u).is_none(), "{u} was refused: {:?}", url_fault(u));
         let no = |u: &str, why: &str| assert_eq!(url_fault(u), Some(why), "{u}");
 
         ok("https://example.com");
@@ -4608,7 +4608,7 @@ mod tests {
 
         // And a refused line does not quietly work anyway
         let bad = SecretMeta { urls: vec!["https://*.com".into()], ..Default::default() };
-        assert!(!bad.may_fill("https://anything.com/"), "断ったはずの行が効いている");
+        assert!(!bad.may_fill("https://anything.com/"), "a line that should have been refused takes effect");
     }
 
     #[test]
@@ -4625,10 +4625,10 @@ mod tests {
         let (desk, errs) = cfg.resolve_desks();
         assert!(errs.is_empty());
         let tabs = &desk[0].tabs;
-        assert_eq!(tabs.len(), 3, "親子が平坦化される");
+        assert_eq!(tabs.len(), 3, "parents and children are flattened");
         assert_eq!(tabs[0].depth, 0);
         assert_eq!(tabs[1].depth, 1);
-        assert!(tabs[1].cfg.locked, "lockedが読める");
+        assert!(tabs[1].cfg.locked, "locked can be read");
         assert_eq!(tabs[2].cfg.name.as_deref(), Some("C"));
     }
 
@@ -4639,7 +4639,7 @@ mod tests {
         assert_eq!(
             data_path_candidates("projects/x.json"),
             ["projects/x.json", "desks/x.json"],
-            "projects/ 指定が desks/ にフォールバックする"
+            "a projects/ path falls back to desks/"
         );
         assert_eq!(
             data_path_candidates("desks/x.json"),
@@ -4660,14 +4660,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let rel = format!("{stamp}/on_done.lua");
         std::fs::write(root_dir().join(&rel), "").unwrap();
-        assert_eq!(resolve_data_path(&rel), root_dir().join(&rel), "根の下にあるのに見つからない");
+        assert_eq!(resolve_data_path(&rel), root_dir().join(&rel), "it is under the root but was not found");
         let _ = std::fs::remove_dir_all(&dir);
 
         let missing = format!("{stamp}-missing/scripts/new");
         assert_eq!(
             resolve_data_path(&missing),
             root_dir().join(&missing),
-            "無いものの置き場所が根の下になっていない"
+            "where something missing would go is not under the root"
         );
     }
 
@@ -4695,7 +4695,7 @@ mod tests {
         )
         .unwrap();
         let (desk, errs) = cfg.resolve_desks();
-        assert_eq!(desk.len(), 1, "壊れた定義は飛ばして続行");
+        assert_eq!(desk.len(), 1, "a broken definition is skipped and it carries on");
         assert_eq!(errs.len(), 1);
     }
 
@@ -4732,7 +4732,7 @@ mod browser_kind_tests {
     fn the_git_panel_is_the_word_on_its_own() {
         let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert!(is_git_panel(&v(&["git"])));
-        assert!(is_git_panel(&v(&["GIT"])), "大文字でも同じもの");
+        assert!(is_git_panel(&v(&["GIT"])), "upper case is the same thing");
         // Somebody wanting a terminal that runs git keeps their terminal
         assert!(!is_git_panel(&v(&["git", "status"])));
         assert!(!is_git_panel(&v(&["gitk"])));
@@ -4754,14 +4754,14 @@ mod browser_kind_tests {
         .unwrap();
         let desk = &cfg.desks[0];
         let tabs = &desk.folders[0].tabs;
-        let sv = tabs[0].server.as_ref().expect("接続の設定が読めていない");
+        let sv = tabs[0].server.as_ref().expect("the connection settings were not read");
         assert_eq!(sv.key.as_deref(), Some("~/.ssh/id_ed25519"));
         assert_eq!(sv.remote_dir.as_deref(), Some("/var/www"));
         assert_eq!(sv.keepalive, Some(30));
         assert_eq!(sv.file_command.as_deref(), Some("sudo su -"));
-        let j = sv.jump.as_ref().expect("踏み台が読めていない");
+        let j = sv.jump.as_ref().expect("the jump host was not read");
         assert_eq!((j.host.as_str(), j.port, j.user.as_str()), ("gw.example.com", Some(2222), "jump"));
-        assert!(tabs[1].server.is_none(), "書いていないものが生えている");
+        assert!(tabs[1].server.is_none(), "something not written has appeared");
     }
 
     /// A file panel carries its own address, written the way the world writes
@@ -4776,7 +4776,7 @@ mod browser_kind_tests {
         assert_eq!(
             sftp_endpoint(&v(&["SFTP://deploy@example.com"])),
             Some(("example.com".into(), 22, "deploy".into())),
-            "大文字でも同じもの。ポートを書かなければ 22"
+            "upper case is the same thing. With no port written, 22"
         );
         // Half-written is still a panel: it has to hold its place and say what
         // it needs, not be handed to the launcher as the name of a program
@@ -4809,19 +4809,19 @@ mod browser_kind_tests {
         assert_eq!(
             browser_url_of(&v(&["web", "http://127.0.0.1:8080/"])).as_deref(),
             Some("http://127.0.0.1:8080/"),
-            "web という綴りも通す"
+            "the spelling web gets through too"
         );
         assert_eq!(
             browser_url_of(&v(&["BROWSER", "https://a.example/"])).as_deref(),
             Some("https://a.example/"),
-            "大文字小文字は問わない"
+            "case does not matter"
         );
 
         // Things that are not a browser
         assert!(browser_url_of(&v(&["cmd.exe"])).is_none());
         assert!(browser_url_of(&v(&["claude"])).is_none());
-        assert!(browser_url_of(&v(&["browser"])).is_none(), "URLが無い");
-        assert!(browser_url_of(&v(&["browser", "  "])).is_none(), "空白だけ");
+        assert!(browser_url_of(&v(&["browser"])).is_none(), "there is no URL");
+        assert!(browser_url_of(&v(&["browser", "  "])).is_none(), "only spaces");
         assert!(browser_url_of(&[]).is_none());
         // Don't sweep in some other command that merely starts with "browser"
         assert!(browser_url_of(&v(&["browserify", "x"])).is_none());
@@ -4841,10 +4841,10 @@ mod browser_kind_tests {
             }"#,
         )
         .unwrap();
-        let nav = t.nav.expect("上のバーが読めていない");
-        assert!(nav.reload && nav.url, "書いたものが出ない");
-        assert!(!nav.back && !nav.forward, "書いていないものまで出る");
-        let ask = t.ask.expect("帯が読めていない");
+        let nav = t.nav.expect("the top bar was not read");
+        assert!(nav.reload && nav.url, "what was written does not show");
+        assert!(!nav.back && !nav.forward, "even what was not written shows");
+        let ask = t.ask.expect("the banner was not read");
         assert_eq!(ask.label, "解析する");
 
         // If nothing is written, neither is shown
@@ -4855,6 +4855,6 @@ mod browser_kind_tests {
         // The banner's mere presence means "show it" -- shown even with empty contents
         let empty: super::TabConfig =
             serde_json::from_str(r#"{"command": "browser https://x/", "ask": {}}"#).unwrap();
-        assert!(empty.ask.is_some(), "空の帯を無かったことにしている");
+        assert!(empty.ask.is_some(), "an empty banner is treated as if there were none");
     }
 }
