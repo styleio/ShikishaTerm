@@ -209,7 +209,11 @@ pub struct Capabilities {
     desk: std::cell::Cell<usize>,
     /// Which pages are currently shown, and where. Skipped if unchanged.
     /// More than one at a time once the content area is split into panes
-    shown: std::cell::RefCell<Vec<PageAt>>,
+    /// `None` until something has been sent, and again whenever a page is added
+    /// or removed: an empty list is a real answer ("no page has a pane"), and
+    /// clearing to it made that answer look already sent, so a page opened
+    /// while no pane held a browser was never collapsed and sat over a terminal
+    shown: std::cell::RefCell<Option<Vec<PageAt>>>,
     /// Controls shown above a page (per name).
     ///
     /// Unlike the banner, these aren't drawn inside the page. The page is pushed
@@ -274,7 +278,7 @@ impl Capabilities {
             hosted: std::cell::RefCell::new(Vec::new()),
             opened: std::cell::RefCell::new(HashMap::new()),
             desk: std::cell::Cell::new(0),
-            shown: std::cell::RefCell::new(Vec::new()),
+            shown: std::cell::RefCell::new(None),
             nav: std::cell::RefCell::new(HashMap::new()),
             declared: std::cell::RefCell::new(std::collections::HashSet::new()),
             desk_id: std::cell::RefCell::new(String::new()),
@@ -619,7 +623,7 @@ impl Capabilities {
             hosted.push((desk, name.to_string()));
         }
         // Newly placed items get their position decided on the next redraw
-        self.shown.borrow_mut().clear();
+        *self.shown.borrow_mut() = None;
         crate::append_hook_log(&crate::i18n::tp(
             "err.caps.log_browser_open",
             &[("name", name), ("url", url)],
@@ -678,7 +682,7 @@ impl Capabilities {
     ///
     /// Redraws happen many times a second. Sends nothing if nothing changed.
     pub fn show_at(&self, want: &[PageAt]) {
-        if self.shown.borrow().as_slice() == want {
+        if !placement_changed(self.shown.borrow().as_deref(), want) {
             return;
         }
         let Some(h) = self.host.borrow().as_ref().map(std::rc::Rc::clone) else {
@@ -698,7 +702,7 @@ impl Capabilities {
             };
             let _ = h.child_bounds(&Self::key(*w, held), r);
         }
-        *self.shown.borrow_mut() = want.to_vec();
+        *self.shown.borrow_mut() = Some(want.to_vec());
     }
 
 
@@ -1101,7 +1105,7 @@ impl Capabilities {
         self.asks.borrow_mut().remove(&key);
         self.nav.borrow_mut().remove(&key);
         self.declared.borrow_mut().remove(&key);
-        self.shown.borrow_mut().clear();
+        *self.shown.borrow_mut() = None;
         Ok(())
     }
 
@@ -1250,9 +1254,29 @@ fn host_of(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
+/// Whether the pages have to be told where they are. Only when what was last
+/// sent is known and is the same does nothing need saying
+fn placement_changed(sent: Option<&[PageAt]>, want: &[PageAt]) -> bool {
+    sent != Some(want)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A page opened while no pane holds a browser is still put away.
+    ///
+    /// "Nothing sent yet" and "no page has a pane" were both an empty list, so
+    /// after a page was opened the next layout -- also empty -- looked already
+    /// sent, and the new page stayed where it was placed: over a terminal.
+    #[test]
+    fn a_page_opened_with_no_browser_pane_is_still_put_away() {
+        assert!(placement_changed(None, &[]), "未送信と「どのページも出さない」が同じに見える");
+        assert!(!placement_changed(Some(&[]), &[]), "同じ配置を何度も送っている");
+        let one = vec![("a".to_string(), (0, 0, 10, 10))];
+        assert!(placement_changed(Some(&[]), &one));
+        assert!(!placement_changed(Some(&one), &one));
+    }
 
     /// There is one refusal slot in the program, because there is one line on
     /// the board to show it. Tests that read it take turns, or one of them
