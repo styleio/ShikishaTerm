@@ -1231,7 +1231,10 @@ mod tests {
         let said = plan(&main, "feature-x", None).unwrap_err().to_string();
         assert!(said.contains(&wt.display().to_string()), "どのフォルダで開いているかを言わない: {said}");
         let said = plan(&main, "main", None).unwrap_err().to_string();
-        assert!(said.contains(&main.display().to_string()), "{said}");
+        // The checkout is named the way the planner names it: a temp folder can
+        // be spelled with a short name (RUNNER~1) that the planner writes long
+        let checkout = crate::repo::main_checkout(&main).unwrap();
+        assert!(said.contains(&checkout.display().to_string()), "{said}");
         // A branch that exists and is open nowhere is simply checked out
         let p = plan(&main, "spare", None).expect("空いているブランチは開ける");
         assert!(!p.fresh);
