@@ -676,6 +676,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // We hold off firing until we've verified it stayed quiet, so we don't fire on a
     // mid-response pause for breath.
     let mut pending_done: Vec<(usize, u64)> = Vec::new();
+    // The name drawn for a worktree nobody named, by the folder the dialog was
+    // opened on. Kept for as long as that dialog keeps asking, so the name on
+    // screen is the name that gets made
+    let mut drawn_names: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     // Whether automation may switch which tab is on screen (see ViewMove)
     let mut auto_switch = cfg.as_ref().and_then(|c| c.auto_switch).unwrap_or(true);
     // Whether the ✕ puts the window away rather than quitting (see the loop)
@@ -3778,10 +3783,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 false => ask.base.clone(),
             };
             // Nothing typed yet: propose one, so the dialog opens with a
-            // complete answer and pressing the button is enough
-            let wanted = match name.trim().is_empty() {
-                true => repo.as_deref().map(crate::worktree::suggest).unwrap_or_default(),
-                false => name.clone(),
+            // complete answer and pressing the button is enough.
+            //
+            // The same one every time this dialog asks, while it is still free.
+            // Drawn afresh on each ask, the name changed with every keystroke
+            // in another field -- and on the press itself, so the folder that
+            // was made was not the one on screen when the button was pressed
+            let wanted = match (name.trim().is_empty(), repo.as_deref()) {
+                (true, Some(main)) => match drawn_names.get(&ask.from) {
+                    Some(kept) if crate::worktree::is_free(main, kept) => kept.clone(),
+                    _ => {
+                        let fresh = crate::worktree::suggest(main);
+                        drawn_names.insert(ask.from.clone(), fresh.clone());
+                        fresh
+                    }
+                },
+                (true, None) => String::new(),
+                (false, _) => name.clone(),
             };
             let desk = desks
                 .get(desk_index)
@@ -3952,6 +3970,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         view.error = flash.clone();
                     }
                 }
+            }
+            // Made: the next dialog on this folder is new work and gets a
+            // name of its own
+            if view.done {
+                drawn_names.remove(&ask.from);
             }
             branch_view = Some(view);
         }
