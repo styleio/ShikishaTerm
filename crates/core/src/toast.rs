@@ -177,8 +177,8 @@ mod tests {
     #[test]
     fn the_shared_block_looks_like_nobodys_placeholder() {
         for (name, part) in [("CSS", CSS), ("HTML", HTML), ("JS", JS)] {
-            assert!(!part.contains("{{"), "{name} にテンプレート記法が混ざっている");
-            assert!(!part.contains("__"), "{name} にプレースホルダ記法が混ざっている");
+            assert!(!part.contains("{{"), "{name} has template syntax mixed in");
+            assert!(!part.contains("__"), "{name} has placeholder syntax mixed in");
         }
     }
 
@@ -197,7 +197,7 @@ mod tests {
             "function copyText(",
             "function legacyCopy(",
         ] {
-            assert_eq!(JS.matches(name).count(), 1, "{name} が重複または欠落している");
+            assert_eq!(JS.matches(name).count(), 1, "{name} is duplicated or missing");
         }
     }
 
@@ -206,11 +206,11 @@ mod tests {
     #[test]
     fn the_markup_and_the_script_mean_the_same_elements() {
         for id in ["toast", "toastmsg", "toastcopy"] {
-            assert!(HTML.contains(&format!(r#"id="{id}""#)), "{id} が markup に無い");
-            assert!(CSS.contains(&format!("#{id}")), "{id} に見た目が無い");
+            assert!(HTML.contains(&format!(r#"id="{id}""#)), "{id} is not in the markup");
+            assert!(CSS.contains(&format!("#{id}")), "{id} has no look");
             assert!(
                 JS.matches(&format!(r#"getElementById("{id}")"#)).count() > 0,
-                "{id} を誰も掴んでいない"
+                "nobody grabs {id}"
             );
         }
     }
@@ -224,14 +224,14 @@ mod tests {
         let handler = JS
             .split("document.addEventListener(\"click\"")
             .nth(1)
-            .expect("クリックを誰も見ていない");
+            .expect("nobody listens for the click");
         assert!(
             handler.contains("if (b && b.contains(e.target)) copyToast(); else hideToast();"),
-            "クリックとコピーが分かれていない"
+            "clicking and copying are not kept apart"
         );
         // Twice and no more: the one call inside copyToast(), and its own
         // definition. A third would be some other path reaching the clipboard
-        assert_eq!(JS.matches("copyText(").count(), 2, "コピーを呼ぶ場所が増えている");
+        assert_eq!(JS.matches("copyText(").count(), 2, "there are more places that call copy");
     }
 
     /// Wording comes from the dictionary each page already carries, so a key
@@ -243,7 +243,7 @@ mod tests {
         let mut rest = JS;
         while let Some(i) = rest.find("T[\"") {
             rest = &rest[i + 3..];
-            let key = &rest[..rest.find('"').expect("キーが閉じていない")];
+            let key = &rest[..rest.find('"').expect("the key is not closed")];
             assert!(en.get(key).is_some(), "a key missing from lang/en.json: {key}");
         }
     }
@@ -252,7 +252,7 @@ mod tests {
     fn render_fills_every_marker() {
         let out =
             render("<style>{{TOAST_CSS}}</style>{{TOAST_HTML}}<script>{{TOAST_JS}}</script>".into());
-        assert!(!out.contains("{{"), "置き換え漏れがある: {out}");
+        assert!(!out.contains("{{"), "something was not replaced: {out}");
         assert!(out.contains("#toast.show"));
     }
 }

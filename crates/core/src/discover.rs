@@ -339,7 +339,7 @@ mod tests {
     fn only_names_a_person_could_connect_to() {
         assert!(is_alias("web"));
         assert!(is_alias("10.0.0.2"));
-        assert!(!is_alias("*"), "パターンはホスト名ではない");
+        assert!(!is_alias("*"), "a pattern is not a host name");
         assert!(!is_alias("*.example.com"));
         assert!(!is_alias("web?"));
         assert!(!is_alias("!excluded"));
@@ -362,7 +362,7 @@ mod tests {
 
         let mut out = Vec::new();
         read_ssh_config(&ssh.join("config"), &dir, 0, &mut out);
-        assert_eq!(out, vec!["web", "prod", "db", "web"], "順番も込みで {out:?}");
+        assert_eq!(out, vec!["web", "prod", "db", "web"], "the order counts too {out:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -374,6 +374,6 @@ mod tests {
         let began = Instant::now();
         let _ = wsl_distros();
         let _ = ssh_hosts();
-        assert!(began.elapsed() < Duration::from_secs(5), "答えは有界");
+        assert!(began.elapsed() < Duration::from_secs(5), "the answer is bounded");
     }
 }

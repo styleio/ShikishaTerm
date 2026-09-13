@@ -319,10 +319,10 @@ mod tests {
             let framed = client_encode(Op::Text, body.as_bytes());
             let mut cursor = std::io::Cursor::new(framed);
             let (fin, opcode, payload) =
-                read_server_frame(&mut cursor).expect("書いた枠が読めない");
-            assert!(fin, "1枚で終わっていない");
-            assert_eq!(opcode, 0x1, "文字の枠ではない");
-            assert_eq!(&String::from_utf8(payload).unwrap(), body, "中身が変わった");
+                read_server_frame(&mut cursor).expect("a frame it wrote cannot be read");
+            assert!(fin, "it does not end in one frame");
+            assert_eq!(opcode, 0x1, "not a text frame");
+            assert_eq!(&String::from_utf8(payload).unwrap(), body, "the contents changed");
         }
     }
 
@@ -332,8 +332,8 @@ mod tests {
     fn every_frame_is_masked_differently() {
         let a = client_encode(Op::Text, b"hello");
         let b = client_encode(Op::Text, b"hello");
-        assert_eq!(a[1] & 0x80, 0x80, "マスク無しの枠を送っている");
-        assert_ne!(a, b, "毎回同じマスクを使っている");
+        assert_eq!(a[1] & 0x80, 0x80, "it sends frames with no mask");
+        assert_ne!(a, b, "it uses the same mask every time");
     }
 
     use super::*;

@@ -398,7 +398,7 @@ mod tests {
             cwd_path: None,
         };
         let files = list(&src.verify);
-        assert_eq!(files.len(), 1, "グロブが記録を見つけられていない");
+        assert_eq!(files.len(), 1, "the glob does not find the record");
         let text = read_head(&files[0]).unwrap();
         assert_eq!(id_of(&files[0], &text, &src).as_deref(), Some("11112222-3333-4444-5555-666677778888"));
         assert_eq!(cwd_of(&text, &src).as_deref(), Some("D:\\work\\payments"));
@@ -433,8 +433,8 @@ mod tests {
         let low = text.to_lowercase();
         let at = low.find("payments").unwrap();
         let s = snippet(text, at, "payments".len());
-        assert!(s.contains("PAYMENTS bug in checkout"), "文脈が読めない: {s}");
-        assert!(!s.contains('{') && !s.contains('"'), "JSONの記号が残っている: {s}");
+        assert!(s.contains("PAYMENTS bug in checkout"), "the context cannot be read: {s}");
+        assert!(!s.contains('{') && !s.contains('"'), "JSON symbols are left: {s}");
     }
 
     #[test]

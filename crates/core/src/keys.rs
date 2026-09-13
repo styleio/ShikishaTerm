@@ -407,7 +407,7 @@ mod manual_tests {
         ] {
             for a in ACTIONS {
                 let want = format!("`Ctrl+B {}`", a.key);
-                assert!(text.contains(&want), "{lang}: {} ({}) が手引きに無い", a.name, want);
+                assert!(text.contains(&want), "{lang}: {} ({}) is not in the guide", a.name, want);
             }
         }
     }
@@ -447,17 +447,17 @@ mod tests {
         let mut seen: Vec<char> = Vec::new();
         for a in ACTIONS {
             for c in std::iter::once(&a.key).chain(a.also) {
-                assert!(!seen.contains(c), "{c} が二重に割り当てられている ({})", a.name);
+                assert!(!seen.contains(c), "{c} is assigned twice ({})", a.name);
                 seen.push(*c);
             }
-            assert!(!a.key.is_ascii_digit(), "{}: 数字はタブ選択のもの", a.name);
+            assert!(!a.key.is_ascii_digit(), "{}: digits are for choosing tabs", a.name);
             assert!(a.name.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
         }
         // Every line the help screen shows has to exist in the dictionary
         let en: serde_json::Value =
             serde_json::from_str(include_str!("../../../lang/en.json")).unwrap();
         for a in ACTIONS {
-            assert!(en.get(a.desc).is_some(), "{} の説明が辞書に無い", a.desc);
+            assert!(en.get(a.desc).is_some(), "the description {} is not in the dictionary", a.desc);
         }
     }
 
@@ -504,10 +504,10 @@ mod tests {
         let binds = HashMap::from([("literal_prefix".to_string(), "off".to_string())]);
         let (keys, errs) = Keys::from(None, &binds);
         assert!(errs.is_empty());
-        assert_eq!(keys.after_prefix(KeyCode::Char('b')), None, "返した鍵は効かない");
+        assert_eq!(keys.after_prefix(KeyCode::Char('b')), None, "a key given back has no effect");
         assert!(
             !keys.help_rows().iter().any(|(_, d)| *d == "keys.literal_prefix"),
-            "届かない操作をヘルプに載せない"
+            "an action that cannot be reached is not listed in the help"
         );
     }
 
@@ -515,7 +515,7 @@ mod tests {
     fn two_actions_cannot_share_one_key() {
         let binds = HashMap::from([("help".to_string(), "q".to_string())]);
         let (keys, errs) = Keys::from(None, &binds);
-        assert_eq!(errs.len(), 1, "取り合いを黙って通さない: {errs:?}");
+        assert_eq!(errs.len(), 1, "a conflict does not pass silently: {errs:?}");
         // The one that was already there keeps it
         assert_eq!(keys.after_prefix(KeyCode::Char('q')), Some(KeyCode::Char('q')));
     }
@@ -541,9 +541,9 @@ mod tests {
         let rows = keys.help_rows();
         assert!(
             rows.iter().any(|(k, _)| k.contains("Ctrl+A q")),
-            "ヘルプが実際の鍵を出していない: {rows:?}"
+            "the help does not show the real keys: {rows:?}"
         );
-        assert!(!rows.iter().any(|(k, _)| k.contains("Ctrl+B")), "古い鍵が残っている");
+        assert!(!rows.iter().any(|(k, _)| k.contains("Ctrl+B")), "the old key is still there");
     }
 
     #[test]
@@ -554,7 +554,7 @@ mod tests {
         assert_eq!(
             keys.after_prefix(KeyCode::Char('q')),
             Some(KeyCode::Char('q')),
-            "打ち間違いで終了できなくなってはいけない"
+            "a typo must not make it impossible to quit"
         );
     }
 
@@ -562,14 +562,14 @@ mod tests {
     fn an_action_nobody_has_heard_of_is_said_out_loud() {
         let binds = HashMap::from([("teleport".to_string(), "ctrl+t".to_string())]);
         let (_, errs) = Keys::from(None, &binds);
-        assert_eq!(errs.len(), 1, "知らない名前を黙って捨てない");
+        assert_eq!(errs.len(), 1, "an unknown name is not dropped silently");
     }
 
     #[test]
     fn the_prefix_cannot_be_taken_by_something_else() {
         let binds = HashMap::from([("quit".to_string(), "ctrl+b".to_string())]);
         let (keys, errs) = Keys::from(None, &binds);
-        assert_eq!(errs.len(), 1, "接頭鍵を奪わせない: {errs:?}");
+        assert_eq!(errs.len(), 1, "the prefix key cannot be taken: {errs:?}");
         assert!(keys.is_prefix(&press('b', KeyModifiers::CONTROL)));
     }
 

@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn every_named_key_has_something_to_press() {
         for named in shikisha_shared::NAMED_KEYS {
-            assert!(named_vk(named).is_some(), "押し方の分からないキー名: {named}");
+            assert!(named_vk(named).is_some(), "a key name it does not know how to press: {named}");
         }
     }
 
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(evs[0]["modifiers"], 0);
         assert!(
             key_events("kaboom", false, false).is_empty(),
-            "知らない名前を押している"
+            "it presses a name it does not know"
         );
     }
 
@@ -227,7 +227,7 @@ mod tests {
         assert!(key_events("space", true, false)[0].get("text").is_none());
         assert!(
             key_events("space", false, false)[1].get("text").is_none(),
-            "離す方に文字が付いている"
+            "the release carries a character"
         );
     }
 
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn typing_sends_one_event_per_character() {
         let evs = text_events("あa");
-        assert_eq!(evs.len(), 2, "文字数で分けていない: {evs:?}");
+        assert_eq!(evs.len(), 2, "it does not split by character count: {evs:?}");
         assert_eq!(evs[0]["text"], "あ");
         assert_eq!(evs[1]["text"], "a");
     }
@@ -245,13 +245,13 @@ mod tests {
     fn a_drag_is_a_press_some_moves_and_a_release() {
         let (down, held) = mouse_event("pressed", 10.0, 20.0, false, false);
         assert_eq!(down["type"], "mousePressed");
-        assert!(held, "押したのに離れている");
+        assert!(held, "it was pressed but is released");
         let (moved, held) = mouse_event("moved", 30.0, 20.0, false, held);
-        assert_eq!(moved["buttons"], 1, "ドラッグ中の移動がボタン無しになっている");
+        assert_eq!(moved["buttons"], 1, "moving while dragging has no button");
         assert!(held);
         let (up, held) = mouse_event("released", 30.0, 20.0, false, held);
         assert_eq!(up["type"], "mouseReleased");
-        assert!(!held, "離したのに押したままになっている");
+        assert!(!held, "it was released but is still held");
         // A move with nothing held is a hover
         assert_eq!(mouse_event("moved", 1.0, 1.0, false, held).0["buttons"], 0);
     }
@@ -260,10 +260,10 @@ mod tests {
     #[test]
     fn the_viewport_follows_the_shape_of_the_screen_looking_at_it() {
         let nat = (1200.0, 800.0);
-        let tall = view_metrics(nat, 400.0, 900.0).expect("縦長の画面に合わせていない");
-        assert_eq!(tall["width"], 1200.0, "幅まで変えている");
+        let tall = view_metrics(nat, 400.0, 900.0).expect("it did not fit a tall screen");
+        assert_eq!(tall["width"], 1200.0, "it changes the width too");
         assert_eq!(tall["height"], 2700.0);
-        assert!(view_metrics(nat, 900.0, 400.0).is_none(), "横長で上書きしている");
+        assert!(view_metrics(nat, 900.0, 400.0).is_none(), "it overrides on a wide screen");
         // Nothing to go on: the page has not produced a frame yet
         assert!(view_metrics((0.0, 0.0), 400.0, 900.0).is_none());
     }

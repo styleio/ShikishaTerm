@@ -499,8 +499,8 @@ mod tests {
     #[test]
     fn a_profile_saved_by_a_windows_editor_is_read() {
         let text = std::fs::read_to_string(crate::repo_root().join("profiles/claude.json")).unwrap();
-        let plain = parse_file(&text).expect("同梱のプロファイルが読めない");
-        let marked = parse_file(&format!("\u{feff}{text}")).expect("BOM付きが読めない");
+        let plain = parse_file(&text).expect("the bundled profile cannot be read");
+        let marked = parse_file(&format!("\u{feff}{text}")).expect("with a BOM it cannot be read");
         assert_eq!(marked.name, plain.name);
     }
 
@@ -587,13 +587,13 @@ mod tests {
         assert_eq!(gemini.timeout_unit.from_seconds(3), 3_000);
         // The four events it has are the four it has: no permission event and
         // no failure event, so those two states stay with the screen reading
-        assert_eq!(gemini.events, ["BeforeAgent"], "session id は最初の合図で報告する");
+        assert_eq!(gemini.events, ["BeforeAgent"], "the session id is reported at the first signal");
         assert_eq!(gemini.states.get("BeforeAgent").map(String::as_str), Some("BUSY"));
         assert_eq!(gemini.states.get("AfterAgent").map(String::as_str), Some("DONE"));
         for named in gemini.states.keys() {
             assert!(
                 ["BeforeAgent", "AfterAgent", "BeforeTool", "AfterTool"].contains(&named.as_str()),
-                "そのイベントは存在しない: {named}"
+                "that event does not exist: {named}"
             );
         }
     }

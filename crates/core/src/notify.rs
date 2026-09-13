@@ -335,8 +335,8 @@ mod tests {
             seen.push(said);
         }
         let mine: Vec<&String> = seen.iter().filter(|s| s.contains("nobody there")).collect();
-        assert_eq!(mine.len(), 1, "一度の失敗は一度だけ画面に出る: {seen:?}");
-        assert!(mine[0].contains("test (phone)"), "宛先の名前が無い: {}", mine[0]);
+        assert_eq!(mine.len(), 1, "one failure appears on screen only once: {seen:?}");
+        assert!(mine[0].contains("test (phone)"), "the destination's name is missing: {}", mine[0]);
     }
     use std::sync::{Arc, Mutex};
 
@@ -356,19 +356,19 @@ mod tests {
         .unwrap();
         // An explicit primary wins
         let n = Notifier::new(two.clone(), Some("b".into()));
-        assert!(n.send_opt(None, "hi").contains("NOTIFY[b]"), "明示プライマリへ");
+        assert!(n.send_opt(None, "hi").contains("NOTIFY[b]"), "to the explicit primary");
         // A named destination overrides the primary
-        assert!(n.send_opt(Some("a"), "hi").contains("NOTIFY[a]"), "名指しが勝つ");
+        assert!(n.send_opt(Some("a"), "hi").contains("NOTIFY[a]"), "naming one wins");
         // No primary + two destinations = ambiguous, refused with guidance
         let n = Notifier::new(two, None);
-        assert!(!n.send_opt(None, "hi").contains("NOTIFY["), "曖昧なら送らない");
+        assert!(!n.send_opt(None, "hi").contains("NOTIFY["), "if ambiguous, nothing is sent");
         // No primary + exactly one destination = unambiguous
         let one: HashMap<String, Destination> = serde_json::from_str(
             r#"{"solo":{"type":"slack","webhook":"https://example.com/x"}}"#,
         )
         .unwrap();
         let n = Notifier::new(one, None);
-        assert!(n.send_opt(None, "hi").contains("NOTIFY[solo]"), "1件ならそれがプライマリ");
+        assert!(n.send_opt(None, "hi").contains("NOTIFY[solo]"), "with one, that one is the primary");
     }
 
     /// A desk sends only to the destinations it registered itself.
@@ -387,14 +387,14 @@ mod tests {
             parse(r#"{"work":{"type":"slack","webhook":"https://example.com/a"}}"#),
             Some("work".into()),
         );
-        assert!(n.send_opt(None, "hi").contains("NOTIFY[work]"), "このデスクの既定に行かない");
-        assert!(!n.send("mine", "hi").contains("NOTIFY["), "他のデスクの宛先に送れてしまう");
+        assert!(n.send_opt(None, "hi").contains("NOTIFY[work]"), "it does not go to this desk's default");
+        assert!(!n.send("mine", "hi").contains("NOTIFY["), "it can send to another desk's destination");
         let sent = n.send_all("test");
-        assert!(sent.contains("work") && !sent.contains("mine"), "テスト送信が外へ漏れる: {sent}");
+        assert!(sent.contains("work") && !sent.contains("mine"), "a test send leaks outside: {sent}");
 
         // A desk with nothing registered says so
         n.use_desk(HashMap::new(), None);
-        assert!(n.is_empty(), "送れないのに送れると言っている");
+        assert!(n.is_empty(), "it says it can send when it cannot");
         assert!(!n.send_opt(None, "hi").contains("NOTIFY["));
     }
 
@@ -418,18 +418,18 @@ mod tests {
     fn a_message_too_long_is_cut_rather_than_lost() {
         let discord = Destination::Discord { webhook: String::new() };
         let telegram = Destination::Telegram { token: String::new(), chat_id: String::new() };
-        assert!(discord.limit() < 2000, "Discord の 2,000 文字を超えない");
-        assert!(telegram.limit() < 4096, "Telegram の 4,096 文字を超えない");
+        assert!(discord.limit() < 2000, "it stays under Discord's 2,000 characters");
+        assert!(telegram.limit() < 4096, "it stays under Telegram's 4,096 characters");
 
         let long = "あ".repeat(5000);
         for d in [&discord, &telegram] {
             let cut = clip(&long, d.limit());
-            assert_eq!(cut.chars().count(), d.limit(), "上限ちょうどに収まる");
-            assert!(cut.ends_with('…'), "切ったことが読み手に分かる");
+            assert_eq!(cut.chars().count(), d.limit(), "it fits exactly at the limit");
+            assert!(cut.ends_with('…'), "the reader can tell it was cut");
         }
         // Counted in characters, not bytes: three bytes each, and a limit
         // measured in bytes would cut a Japanese message to a third
-        assert!(clip(&long, 100).len() > 100, "バイト数で切っていない");
+        assert!(clip(&long, 100).len() > 100, "it does not cut by bytes");
         // Short enough is left exactly as it was
         assert_eq!(clip("そのまま", 10), "そのまま");
         assert_eq!(clip("", 10), "");
@@ -463,7 +463,7 @@ mod tests {
         t.join().unwrap();
 
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 2, "2件届いていない");
+        assert_eq!(seen.len(), 2, "two did not arrive");
         // Discord reads "content"; Slack reads "text". Neither accepts the other's
         let discord: serde_json::Value = serde_json::from_str(&seen[0].1).unwrap();
         assert_eq!(discord["content"], "終わりました");

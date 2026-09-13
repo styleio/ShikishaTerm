@@ -246,12 +246,12 @@ two
         assert_eq!(text, "one
 two
 ");
-        assert_eq!(at, 8, "次の印が末尾になっていない");
+        assert_eq!(at, 8, "the next mark is not at the end");
 
         // Nothing new yet: the mark comes straight back
         let (text, again) = super::read_from(&path, at);
         assert_eq!(text, "");
-        assert_eq!(again, at, "読むものが無いのに印が動いている");
+        assert_eq!(again, at, "the mark moves though there is nothing to read");
 
         // ...and only what was added since
         std::fs::write(&path, "one
@@ -260,7 +260,7 @@ three
 ").unwrap();
         let (text, _) = super::read_from(&path, at);
         assert_eq!(text, "three
-", "同じところを二度読んでいる");
+", "it reads the same part twice");
 
         // A recording that was cleared is shorter than the mark. Start over
         // rather than reading nothing for ever
@@ -268,7 +268,7 @@ three
 ").unwrap();
         let (text, at) = super::read_from(&path, 999);
         assert_eq!(text, "fresh
-", "短くなった記録から読み直していない");
+", "it does not read again from a record that got shorter");
         assert_eq!(at, 6);
 
         // A character split across the end of a piece is not handed over broken

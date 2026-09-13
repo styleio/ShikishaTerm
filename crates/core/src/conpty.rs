@@ -219,11 +219,11 @@ mod tests {
     fn the_answer_is_always_sayable() {
         let r = report();
         assert_eq!(r.bundled, r.missing.is_none());
-        assert!(r.path.ends_with("conpty.dll"), "どこを見たかは常に言う");
+        assert!(r.path.ends_with("conpty.dll"), "it always says where it looked");
         let line = r.line();
         assert!(line.starts_with("ConPTY: "));
         if let Some(m) = r.missing {
-            assert!(line.contains(m.id()), "理由が読める: {line}");
+            assert!(line.contains(m.id()), "the reason can be read: {line}");
         }
     }
 

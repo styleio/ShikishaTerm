@@ -672,10 +672,10 @@ mod tests {
             .expect("no answer comes back");
         assert_eq!(found, Found::Visible);
         let asked = stub.asked.lock().unwrap().clone();
-        assert_eq!(asked.len(), 1, "1つの操作が何度も渡っている: {asked:?}");
+        assert_eq!(asked.len(), 1, "one action is handed over more than once: {asked:?}");
         assert!(
             asked[0].starts_with("eval ws/page") && asked[0].contains("__shikisha_state"),
-            "ページの助けを呼んでいない: {asked:?}"
+            "it does not call the page's helper: {asked:?}"
         );
     }
 
@@ -684,11 +684,11 @@ mod tests {
     fn a_picture_is_taken_by_the_browser_that_has_the_page() {
         let (far, stub) = wired();
         let png = far.snapshot(Some("ws/page"), 2_000);
-        assert!(png.is_err() || png.is_ok(), "撮れたか撮れないかのどちらかである");
+        assert!(png.is_err() || png.is_ok(), "it either took the picture or it did not");
         let asked = stub.asked.lock().unwrap().clone();
         assert!(
             asked.iter().any(|a| a.contains("Page.captureScreenshot")),
-            "向こうのブラウザに撮らせていない: {asked:?}"
+            "it does not have the far browser take the picture: {asked:?}"
         );
     }
 
@@ -703,14 +703,14 @@ mod tests {
         let far = Far::new();
         let (tx, _rx) = channel::<String>();
         far.line().attach(tx, "");
-        assert_eq!(far.who(), crate::i18n::t("far.device"), "名無しの端末が名無しのまま");
+        assert_eq!(far.who(), crate::i18n::t("far.device"), "a device with no name stays without a name");
         let refused = far
             .screencast(Some("ws/page"), true)
-            .expect_err("向こうの絵が送れてしまっている")
+            .expect_err("the far picture was sent")
             .to_string();
         assert!(
             refused.contains(&crate::i18n::t("far.device")),
-            "断り文の中に端末の呼び名が無い: {refused}"
+            "the refusal does not include the device's name: {refused}"
         );
     }
 
@@ -720,9 +720,9 @@ mod tests {
         let (far, _stub) = wired();
         let refused = far
             .screencast(Some("ws/page"), true)
-            .expect_err("向こうの絵が送れてしまっている")
+            .expect_err("the far picture was sent")
             .to_string();
-        assert!(refused.contains("台所のノート"), "どの端末で描いているか言わない: {refused}");
+        assert!(refused.contains("台所のノート"), "it does not say which device it is drawing on: {refused}");
     }
 
     /// Nobody there is not the same as a browser that said no
@@ -735,7 +735,7 @@ mod tests {
         assert!(!err.is_empty());
         assert!(
             before.elapsed() < std::time::Duration::from_secs(2),
-            "誰も居ないのに待っている: {:?}",
+            "it waits though nobody is there: {:?}",
             before.elapsed()
         );
     }
@@ -755,10 +755,10 @@ mod tests {
             leaving.detach();
         });
         let before = std::time::Instant::now();
-        assert!(far.href(Some("ws/page"), 30_000).is_err(), "居ないのに答えている");
+        assert!(far.href(Some("ws/page"), 30_000).is_err(), "it answers though nobody is there");
         assert!(
             before.elapsed() < std::time::Duration::from_secs(3),
-            "去ったのに待ち続けている: {:?}",
+            "it keeps waiting after it left: {:?}",
             before.elapsed()
         );
     }
@@ -785,10 +785,10 @@ mod tests {
             can_forward: false,
         });
         let heard = far.drain();
-        assert_eq!(heard.len(), 2, "通してはいけないものが通った: {heard:?}");
+        assert_eq!(heard.len(), 2, "something that must not get through got through: {heard:?}");
         assert!(matches!(heard[0], Ev::Ready { .. }));
         assert!(matches!(heard[1], Ev::Where { .. }));
-        assert!(far.drain().is_empty(), "2度読める");
+        assert!(far.drain().is_empty(), "it can be read twice");
     }
 
     /// A browser that answers, and can be told what to have reported.
@@ -886,7 +886,7 @@ mod tests {
         let base = ui.url.split("/?").next().unwrap().trim_end_matches('/').to_string();
 
         // The device end: join, then answer whatever is asked
-        let cookie = join(&base, "tok123456789012").expect("入れてもらえない");
+        let cookie = join(&base, "tok123456789012").expect("it is not let in");
         let drawn = Arc::new(Drawn {
             stub: Arc::new(Stub { asked: Mutex::new(Vec::new()), refs: Mutex::new(HashMap::new()) }),
             open: Mutex::new(Vec::new()),
@@ -912,11 +912,11 @@ mod tests {
         while !far.here() && std::time::Instant::now() < until {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert!(far.here(), "端末が線を張れていない");
+        assert!(far.here(), "the device has not set up its line");
 
         // Placing a page happens over there
         far.open_child("ws/p", "https://example.com/", (0, 0, 900, 700), BrowserProfile::shared_default())
-            .expect("向こうでページが開かない");
+            .expect("the page does not open over there");
         assert_eq!(drawn.open.lock().unwrap().clone(), vec!["ws/p".to_string()]);
 
         // ...and driving it runs here, against that browser
@@ -927,7 +927,7 @@ mod tests {
         let asked = drawn.stub.asked.lock().unwrap().clone();
         assert!(
             asked.iter().any(|a| a.contains("__shikisha_state")),
-            "ページの助けを呼んでいない: {asked:?}"
+            "it does not call the page's helper: {asked:?}"
         );
 
         // What a page over there reports arrives here
@@ -944,7 +944,7 @@ mod tests {
         }
         assert!(
             matches!(got.first(), Some(Ev::Ready { from: Some(n), .. }) if n == "ws/p"),
-            "向こうのページの報告が届いていない: {got:?}"
+            "the far page's report did not arrive: {got:?}"
         );
 
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -976,7 +976,7 @@ mod tests {
         for ask in &asks {
             let text = serde_json::to_string(ask).unwrap();
             let back: Ask = serde_json::from_str(&text).unwrap();
-            assert_eq!(format!("{ask:?}"), format!("{back:?}"), "往復で変わった");
+            assert_eq!(format!("{ask:?}"), format!("{back:?}"), "it changed on the round trip");
         }
     }
 }

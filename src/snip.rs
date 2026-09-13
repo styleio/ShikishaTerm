@@ -212,11 +212,11 @@ mod tests {
         let bmp = bmp_file(2, 1, px);
         assert_eq!(&bmp[0..2], b"BM");
         assert_eq!(u32::from_le_bytes(bmp[2..6].try_into().unwrap()) as usize, bmp.len());
-        assert_eq!(u32::from_le_bytes(bmp[10..14].try_into().unwrap()), 54, "画素の開始位置");
+        assert_eq!(u32::from_le_bytes(bmp[10..14].try_into().unwrap()), 54, "where the pixels start");
         assert_eq!(i32::from_le_bytes(bmp[18..22].try_into().unwrap()), 2);
-        assert_eq!(i32::from_le_bytes(bmp[22..26].try_into().unwrap()), -1, "上から並んでいない");
+        assert_eq!(i32::from_le_bytes(bmp[22..26].try_into().unwrap()), -1, "not ordered from the top");
         assert_eq!(u16::from_le_bytes(bmp[28..30].try_into().unwrap()), 32);
-        assert_eq!(&bmp[54..], &[10, 20, 30, 255, 40, 50, 60, 255], "透明のまま");
+        assert_eq!(&bmp[54..], &[10, 20, 30, 255, 40, 50, 60, 255], "still transparent");
     }
 
     /// A picture is handed out only under the number it was kept under, and
@@ -225,9 +225,9 @@ mod tests {
     fn a_picture_is_only_the_one_that_was_asked_for() {
         let n = hold(vec![1, 2, 3]);
         assert_eq!(frame(n).as_deref().map(Vec::as_slice), Some(&[1u8, 2, 3][..]));
-        assert!(frame(n + 1).is_none(), "別の番号で渡っている");
+        assert!(frame(n + 1).is_none(), "it is handed over under a different number");
         drop_frame();
-        assert!(frame(n).is_none(), "閉じた後も残っている");
+        assert!(frame(n).is_none(), "it is still there after closing");
     }
 
     /// A name a page suggests cannot walk out of the folder it is saved in

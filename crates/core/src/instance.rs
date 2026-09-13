@@ -195,11 +195,11 @@ mod tests {
     fn the_second_copy_on_a_layout_is_told_it_is_second() {
         let first = match claim() {
             Standing::First(c) => c,
-            Standing::Second => panic!("最初の起動なのに二重扱い"),
+            Standing::Second => panic!("it is treated as a duplicate though it is the first start"),
         };
-        assert!(matches!(claim(), Standing::Second), "二つ目が一つ目として通った");
+        assert!(matches!(claim(), Standing::Second), "the second one got through as the first");
         drop(first);
-        assert!(matches!(claim(), Standing::First(_)), "手放した後も塞がったまま");
+        assert!(matches!(claim(), Standing::First(_)), "it stays blocked after being let go");
     }
 
     /// Only the registered message is the request, and nothing else is

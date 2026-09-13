@@ -811,18 +811,18 @@ mod calling_home_tests {
             "folders": [ {"name":"here","cwd":".",
               "tabs": [ {"id":"gem","name":"Gemini","command":"sh"} ]} ] } ]
         }"#;
-        let cfg: config::Config = serde_json::from_str(json).expect("設定が読めない");
+        let cfg: config::Config = serde_json::from_str(json).expect("the settings cannot be read");
         let (desks, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
-        let desk = desks.first().expect("デスクが無い");
-        let ft = desk.tabs.first().expect("タブが無い");
+        let desk = desks.first().expect("there is no desk");
+        let ft = desk.tabs.first().expect("there is no tab");
         let opts = tab_options(&ft.cfg, desk.folder_of(ft));
 
         // The name the key is minted under
-        assert_eq!(opts.called("Gemini"), "gem", "画面の名前で鍵を作っている");
+        assert_eq!(opts.called("Gemini"), "gem", "it makes the key from the name on screen");
         // ...is the one a call is looked up by
         let key = hooks::TabKey { id: opts.id.clone() };
-        assert!(key.matches(opts.called("Gemini")), "作った名前で引けない");
+        assert!(key.matches(opts.called("Gemini")), "it cannot be looked up by the name it was made under");
     }
 
     /// A tab nobody named is known by what it says on it, and that still has
@@ -853,13 +853,13 @@ mod remote_folder_tests {
             "folders": [ {"name":"out there","cwd":"/home/user/p","host":"cloud"} ],
             "tabs": [ {"name":"there","command":"sh","group":0} ] } ]
         }"#;
-        let cfg: config::Config = serde_json::from_str(json).expect("設定が読めない");
+        let cfg: config::Config = serde_json::from_str(json).expect("the settings cannot be read");
         let (desks, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
-        let desk = desks.first().expect("デスクが無い");
-        let ft = desk.tabs.first().expect("タブが無い");
+        let desk = desks.first().expect("there is no desk");
+        let ft = desk.tabs.first().expect("there is no tab");
         let opts = tab_options(&ft.cfg, desk.folder_of(ft));
-        assert!(opts.remote.is_none(), "住所の無い機械を住所として扱っている");
+        assert!(opts.remote.is_none(), "a machine with no address is treated as an address");
         assert_eq!(opts.cloud.as_ref().map(|h| h.name.as_str()), Some("cloud"));
         // Whichever kind it is, the folder is not this machine's to check
         assert!(opts.held.is_none());
@@ -877,17 +877,17 @@ mod remote_folder_tests {
             "folders": [ {"name":"over there","cwd":"/srv/p/work","host":"bench"} ],
             "tabs": [ {"name":"there","command":"sh","group":0} ] } ]
         }"#;
-        let cfg: config::Config = serde_json::from_str(json).expect("設定が読めない");
+        let cfg: config::Config = serde_json::from_str(json).expect("the settings cannot be read");
         let (desks, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
-        let desk = desks.first().expect("デスクが無い");
-        let folder = desk.folders.first().expect("フォルダが無い");
-        assert!(folder.host.is_some(), "フォルダが機械を見つけていない");
+        let desk = desks.first().expect("there is no desk");
+        let folder = desk.folders.first().expect("there is no folder");
+        assert!(folder.host.is_some(), "the folder did not find its machine");
         // The path is that machine's, so it is not joined to anything here
         assert_eq!(folder.cwd.as_deref(), Some(std::path::Path::new("/srv/p/work")));
-        let ft = desk.tabs.first().expect("タブが無い");
+        let ft = desk.tabs.first().expect("there is no tab");
         let opts = tab_options(&ft.cfg, desk.folder_of(ft));
-        assert!(opts.remote.is_some(), "タブがその機械の端末になっていない");
+        assert!(opts.remote.is_some(), "the tab is not a terminal on that machine");
         assert_eq!(opts.remote_cwd.as_deref(), Some("/srv/p/work"));
         assert!(opts.held.is_none());
     }
@@ -917,11 +917,11 @@ mod remote_folder_tests {
         };
         let cfg = config::TabConfig::default();
         let opts = tab_options(&cfg, Some(&there));
-        let spec = opts.remote.as_ref().expect("その機械の端末になっていない");
+        let spec = opts.remote.as_ref().expect("it is not a terminal on that machine");
         assert_eq!(spec.host, "example.test");
         assert_eq!(spec.user, "me");
-        assert_eq!(opts.remote_cwd.as_deref(), Some("/srv/api/work"), "どこに立つか言えていない");
-        assert!(opts.held.is_none(), "ここに無いからと止めている");
+        assert_eq!(opts.remote_cwd.as_deref(), Some("/srv/api/work"), "it cannot say where it will stand");
+        assert!(opts.held.is_none(), "it holds it back because it is not here");
 
         // A folder on this machine is what it always was
         let here = config::Folder { host: None, ..there.clone() };

@@ -116,30 +116,30 @@ mod tests {
         let mut b = Ball::default();
         b.throw(0, 1, 1, 0);
         assert_eq!(b.holder, 1);
-        assert!(!b.awaiting_human, "自動送信は人待ちではない");
+        assert!(!b.awaiting_human, "an automatic send is not waiting for a person");
 
         b.draft(1, 2, 2, 100);
-        assert_eq!(b.holder, 2, "仕事は渡した先にある");
-        assert_eq!(b.from, 1, "どこから来たかは残る");
-        assert_eq!(b.depth, 2, "人も輪の一部。連鎖はここで途切れない");
-        assert!(b.awaiting_human, "人待ちになっていない");
+        assert_eq!(b.holder, 2, "the work is with the one it was passed to");
+        assert_eq!(b.from, 1, "where it came from is kept");
+        assert_eq!(b.depth, 2, "the person is part of the loop too. The chain does not break here");
+        assert!(b.awaiting_human, "it is not waiting for a person");
 
         // The next auto-send clears the "waiting for human" flag
         b.throw(2, 3, 1, 200);
-        assert!(!b.awaiting_human, "自動送信で人待ちが解けていない");
+        assert!(!b.awaiting_human, "an automatic send did not clear the wait for a person");
 
         // A human typing by hand returns the ball to hand
         b.draft(1, 2, 3, 300);
         b.reset();
         assert_eq!(b.holder, 0);
-        assert!(!b.awaiting_human, "リセットで人待ちが残っている");
+        assert!(!b.awaiting_human, "the wait for a person is still there after a reset");
     }
     use super::*;
 
     #[test]
     fn starts_in_human_hands() {
         let b = Ball::default();
-        assert_eq!(b.phase(0), Phase::Idle, "誰も自動で動いていない");
+        assert_eq!(b.phase(0), Phase::Idle, "nobody is moving on their own");
         assert_eq!(b.depth, 0);
     }
 
@@ -151,13 +151,13 @@ mod tests {
         match b.phase(1000) {
             Phase::Flying { from, to, progress } => {
                 assert_eq!((from, to), (1, 2));
-                assert!(progress < 0.01, "投げた瞬間は始点");
+                assert!(progress < 0.01, "the moment it is thrown it is at the start");
             }
-            other => panic!("飛行中のはず: {other:?}"),
+            other => panic!("it should be in flight: {other:?}"),
         }
         match b.phase(1000 + FLIGHT_MS / 2) {
-            Phase::Flying { progress, .. } => assert!((0.4..0.6).contains(&progress), "中間地点"),
-            other => panic!("まだ飛行中のはず: {other:?}"),
+            Phase::Flying { progress, .. } => assert!((0.4..0.6).contains(&progress), "halfway"),
+            other => panic!("it should still be in flight: {other:?}"),
         }
         assert_eq!(b.phase(1000 + FLIGHT_MS), Phase::Caught { at: 2 });
         assert_eq!(b.phase(1000 + FLIGHT_MS + CATCH_MS), Phase::Held { at: 2 });
@@ -170,7 +170,7 @@ mod tests {
         let mut b = Ball::default();
         b.throw(1, 2, 3, 1000);
         b.reset();
-        assert_eq!(b.phase(2000), Phase::Idle, "人間が入力したら連鎖は切れる");
+        assert_eq!(b.phase(2000), Phase::Idle, "when a person types, the chain breaks");
         assert_eq!(b.depth, 0);
     }
 
@@ -180,9 +180,9 @@ mod tests {
         let mut b = Ball::default();
         b.throw(1, 3, 2, 0);
         b.clamp_to(3);
-        assert_eq!(b.holder, 3, "居るうちは持ったまま");
+        assert_eq!(b.holder, 3, "while it is there, it keeps holding it");
         // Switched desk and the tab count went down
         b.clamp_to(2);
-        assert_eq!(b.phase(0), Phase::Idle, "居なくなったら手放す");
+        assert_eq!(b.phase(0), Phase::Idle, "once it is gone, it lets go");
     }
 }

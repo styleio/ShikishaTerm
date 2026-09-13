@@ -467,13 +467,13 @@ mod tests {
         assert_eq!(
             d.limit_line(screen).as_deref(),
             Some("You've hit your limit · resets 3pm (Asia/Tokyo)"),
-            "行ごと取れていない"
+            "the whole line was not taken"
         );
         assert_eq!(d.limit_line("  > \n  Usage limit approaching\n").as_deref(), Some("Usage limit approaching"));
         assert_eq!(d.limit_line("  > all good\n"), None);
         // The screen's verdict is what it always was
         d.tick("Thinking… (esc to interrupt)", 0, 0);
-        assert_eq!(d.tick(screen, 5_000, 0), TabState::Done, "上限の知らせが状態を変えた");
+        assert_eq!(d.tick(screen, 5_000, 0), TabState::Done, "the limit notice changed the state");
     }
 
     /// Three signals now say what a tab is doing, so the order they are
@@ -499,7 +499,7 @@ mod tests {
         assert_eq!(
             d.tick("> ", 5_000, 0),
             TabState::Done,
-            "何も主張していないタイトルが画面の判断を邪魔している"
+            "a title that claims nothing gets in the way of reading the screen"
         );
 
         // The same quiet screen, but the title says the turn is running again
@@ -507,7 +507,7 @@ mod tests {
         assert_eq!(
             d.tick("> ", 5_000, 0),
             TabState::Busy,
-            "考えているだけで描かないAIを、終わったと読んでいる"
+            "an AI that thinks without drawing is read as finished"
         );
 
         // ...and it lets go by itself as soon as the mark is gone
@@ -515,7 +515,7 @@ mod tests {
         assert_eq!(
             d.tick("> ", 5_000, 0),
             TabState::Done,
-            "タイトルが働いていると言い続けている"
+            "the title keeps saying it is working"
         );
 
         // A question on screen outranks it: a tab that claims to be busy while
@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(
             d.tick("Do you want to continue?", 100, 0),
             TabState::Question,
-            "人を待っている画面より、タイトルを信じている"
+            "it trusts the title over a screen waiting for a person"
         );
 
         // The hook outranks it too
@@ -533,7 +533,7 @@ mod tests {
         assert_eq!(
             d.tick("> ", 100, 0),
             TabState::Question,
-            "CLI自身の申告より、タイトルを信じている"
+            "it trusts the title over what the CLI itself reports"
         );
     }
 
@@ -548,7 +548,7 @@ mod tests {
         assert_eq!(
             d.tick("> ", 5_000, 0),
             TabState::Wait,
-            "プロファイルに無い記号を信じている"
+            "it trusts a mark that is not in the profile"
         );
 
         // ...and neither is a mark that is listed, if it is not in the title
@@ -559,7 +559,7 @@ mod tests {
         assert_eq!(
             d.tick("> ", 5_000, 0),
             TabState::Wait,
-            "印の無いタイトルを働いていると読んでいる"
+            "a title with no mark is read as working"
         );
     }
 
@@ -572,11 +572,11 @@ mod tests {
         p.title_busy = vec!["◐".into()];
         let mut d = Detector::new(p);
         d.title_says("◐ left behind");
-        assert_eq!(d.tick("> ", 5_000, 0), TabState::Busy, "働いている間は信じる");
+        assert_eq!(d.tick("> ", 5_000, 0), TabState::Busy, "it is trusted while working");
         assert_eq!(
             d.tick("> ", 61_000, 0),
             TabState::Wait,
-            "置き去りのタイトルを信じ続けている"
+            "it keeps trusting a title left behind"
         );
     }
 
@@ -593,19 +593,19 @@ mod tests {
         d.tick("> [Pasted Content 1917 chars]", 0, 0);
         assert!(
             !d.working_shown(),
-            "貼り付けの描き変わりを「働き始めた」と数えている"
+            "a paste redrawing is counted as starting work"
         );
 
         // The indicator shows once it actually starts working
         d.tick("Thinking… (12s · esc to interrupt)", 0, 0);
-        assert!(d.working_shown(), "作業中の表示を見落としている");
+        assert!(d.working_shown(), "it misses the working indicator");
 
         // Once the indicator disappears, it's not working again
         d.tick("> [Pasted Content 1917 chars]", 3000, 0);
-        assert!(!d.working_shown(), "表示が消えたら働いていない");
+        assert!(!d.working_shown(), "once the indicator is gone, it is not working");
 
         // Also confirms whether the profile has a "working" indicator at all
-        assert!(d.shows_working(), "このAIは作業中を画面に出す");
+        assert!(d.shows_working(), "this AI shows on screen that it is working");
     }
 
     /// The shipped profiles, against titles taken off the real CLIs.
@@ -629,13 +629,13 @@ mod tests {
             assert_eq!(
                 d.tick("", 5_000, 0),
                 TabState::Busy,
-                "{cli}: 働いていると書いてあるのに読めていない"
+                "{cli}: it says it is working, but that is not read"
             );
             d.title_says(resting);
             assert_ne!(
                 d.tick("", 5_000, 0),
                 TabState::Busy,
-                "{cli}: 働いていないタイトルを働いていると読んでいる"
+                "{cli}: a title that is not working is read as working"
             );
         }
     }
@@ -656,15 +656,15 @@ mod tests {
 
         let trust = "  Do you trust the contents of this directory? Working with untrusted \
                      contents comes with higher risk of prompt injection.\n\n› 1. Yes\n  2. No";
-        assert_eq!(d.tick(trust, 100, 0), TabState::Question, "人を待っている");
+        assert_eq!(d.tick(trust, 100, 0), TabState::Question, "waiting for a person");
 
         let diff = "28 +    Write-Host \"Working tree is not clean. Commit or discard changes.\"";
         d.tick(diff, 5_000, 0);
-        assert!(!d.working_shown(), "出力に混ざった語で作業中にしている");
+        assert!(!d.working_shown(), "a word mixed into the output makes it count as working");
 
         let spinner = "• Working (0s • esc to interrupt)";
         d.tick(spinner, 100, 0);
-        assert!(d.working_shown(), "本物の作業中表示を見落としている");
+        assert!(d.working_shown(), "it misses the real working indicator");
     }
 
     #[test]
@@ -740,7 +740,7 @@ mod tests {
     fn a_report_that_arrives_late_does_not_undo_a_newer_one() {
         let mut d = Detector::new(claude_like());
         assert!(d.hook_says(TabState::Done, 5_000));
-        assert!(!d.hook_says(TabState::Busy, 4_900), "古い報告は適用しない");
+        assert!(!d.hook_says(TabState::Busy, 4_900), "an old report is not applied");
         assert_eq!(d.tick("quiet", 3_000, 0), TabState::Done);
         // A genuinely newer one still gets through
         assert!(d.hook_says(TabState::Busy, 5_001));
@@ -760,7 +760,7 @@ mod tests {
         assert_eq!(d.tick("Allow Bash?", 8_000, 0), TabState::Question);
         // Answered: output moves again
         assert_eq!(d.tick("running npm test", 100, 0), TabState::Busy);
-        assert_eq!(d.hook_word(), None, "答えたら待ちは消える");
+        assert_eq!(d.hook_word(), None, "answering clears the wait");
     }
 
     /// A question on screen outranks even the program's own word: not every
@@ -773,7 +773,7 @@ mod tests {
         assert_eq!(d.tick("Do you want to proceed?\n❯ 1. Yes", 100, 0), TabState::Question);
         // The word is not thrown away by it: the menu belongs to a turn that
         // is still running, so the turn is still running once it is answered
-        assert_eq!(d.hook_word(), Some(TabState::Busy), "画面の問いは言葉を捨てない");
+        assert_eq!(d.hook_word(), Some(TabState::Busy), "a question on screen does not throw away the word");
         assert_eq!(d.tick("carrying on", 100, 0), TabState::Busy);
     }
 
@@ -792,7 +792,7 @@ mod tests {
         assert_eq!(
             d.tick("[Request interrupted by user]", 11_000, 0),
             TabState::Done,
-            "画面の判断に戻る"
+            "it goes back to reading the screen"
         );
         assert_eq!(d.hook_word(), None);
     }
@@ -805,8 +805,8 @@ mod tests {
         let mut d = Detector::new(Profile::generic());
         d.tick("working", 100, 0);
         assert!(d.hook_says(TabState::Busy, 1_000));
-        assert_eq!(d.tick("nothing", 30_000, 0), TabState::Busy, "無表示のCLIは黙って働く");
-        assert_eq!(d.tick("nothing", 61_000, 0), TabState::Done, "画面の判断に戻る");
+        assert_eq!(d.tick("nothing", 30_000, 0), TabState::Busy, "a CLI that shows nothing works silently");
+        assert_eq!(d.tick("nothing", 61_000, 0), TabState::Done, "it goes back to reading the screen");
         assert_eq!(d.hook_word(), None);
     }
 
@@ -857,13 +857,13 @@ mod state_set_tests {
         labels.sort_unstable();
         let mut unique = labels.clone();
         unique.dedup();
-        assert_eq!(labels, unique, "2つの状態が同じ名前を名乗っている");
+        assert_eq!(labels, unique, "two states go by the same name");
         // The words a person reads are looked up, not built, so a missing key
         // shows up as the key itself rather than as a blank
         for s in ALL {
             let shown = s.display();
-            assert!(!shown.is_empty(), "{} に表示する言葉が無い", s.label());
-            assert!(!shown.starts_with("state."), "{} の訳語が引けていない", s.label());
+            assert!(!shown.is_empty(), "{} has no words to show", s.label());
+            assert!(!shown.starts_with("state."), "the translation for {} is not found", s.label());
         }
     }
 
@@ -875,7 +875,7 @@ mod state_set_tests {
             ALL.iter().filter(|s| s.turn_ended()).map(|s| s.label()).collect();
         assert_eq!(ended, ["BACKGROUND", "DONE", "LIMIT", "FAILED"]);
         for s in [TabState::Wait, TabState::Busy, TabState::Question, TabState::Exited] {
-            assert!(!s.turn_ended(), "{} は手番の終わりではない", s.label());
+            assert!(!s.turn_ended(), "{} is not the end of a turn", s.label());
         }
     }
 
@@ -890,7 +890,7 @@ mod state_set_tests {
             assert_eq!(
                 round.is_some(),
                 claimable,
-                "{} の受け入れ可否が決めごとと違う",
+                "whether {} is accepted differs from what was decided",
                 s.label()
             );
             if claimable {
@@ -909,12 +909,12 @@ mod state_set_tests {
     fn the_resting_size_is_learned_while_nothing_is_going_on() {
         // First quiet look: whatever is there is what resting looks like
         let (bg, rest) = background_now(Some(1), false, None);
-        assert!(!bg, "初回の静かな観測は必ず平常");
+        assert!(!bg, "the first quiet observation is always normal");
         assert_eq!(rest, Some(1));
         // A shell left running afterwards is one more than resting
         let (bg, rest) = background_now(Some(2), false, rest);
-        assert!(bg, "平常より多い＝裏で何か動いている");
-        assert_eq!(rest, Some(1), "多いほうを平常にしてはいけない");
+        assert!(bg, "more than normal = something is running in the background");
+        assert_eq!(rest, Some(1), "the higher one must not become normal");
         // It ends; back to resting
         let (bg, _) = background_now(Some(1), false, rest);
         assert!(!bg);
@@ -924,11 +924,11 @@ mod state_set_tests {
     fn a_busy_turn_neither_reports_nor_teaches() {
         // Tool calls are processes too. Nothing is claimed from them...
         let (bg, rest) = background_now(Some(7), true, Some(1));
-        assert!(!bg, "作業中の子プロセスは裏の仕事ではない");
-        assert_eq!(rest, Some(1), "作業中に平常値を学ばない");
+        assert!(!bg, "a working child process is not background work");
+        assert_eq!(rest, Some(1), "it does not learn the normal level while working");
         // ...and a CLI installed as a .cmd shim simply rests higher
         let (bg, rest) = background_now(Some(2), false, None);
-        assert!(!bg, "shim は 2 個が平常");
+        assert!(!bg, "two is normal for a shim");
         assert_eq!(rest, Some(2));
         let (bg, _) = background_now(Some(3), false, rest);
         assert!(bg);
@@ -940,12 +940,12 @@ mod state_set_tests {
     #[test]
     fn a_bar_set_too_high_comes_back_down() {
         let (bg, rest) = background_now(Some(2), false, None);
-        assert!(!bg, "気づけないのは許す");
+        assert!(!bg, "failing to notice is forgivable");
         let (bg, rest) = background_now(Some(1), false, rest);
         assert!(!bg);
-        assert_eq!(rest, Some(1), "静かなときに見た小さいほうへ下がる");
+        assert_eq!(rest, Some(1), "it goes down to the smaller one seen while quiet");
         let (bg, _) = background_now(Some(2), false, rest);
-        assert!(bg, "下がったあとは同じ状況に気づく");
+        assert!(bg, "after going down, it notices the same situation");
     }
 
     /// No job, no count, no claim -- and a job with nobody in it is a tab that

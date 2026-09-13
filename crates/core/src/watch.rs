@@ -111,15 +111,15 @@ mod tests {
         // No judgment is made immediately after the watch interval
         assert!(!w.changed());
         w.last_check = Instant::now() - INTERVAL * 2;
-        assert!(!w.changed(), "変更が無ければ false");
+        assert!(!w.changed(), "false when nothing changed");
 
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(&f, "{\"max_chain\":3}").unwrap();
         w.last_check = Instant::now() - INTERVAL * 2;
-        assert!(w.changed(), "変更を検出する");
+        assert!(w.changed(), "it detects a change");
 
         w.last_check = Instant::now() - INTERVAL * 2;
-        assert!(!w.changed(), "一度検出したら基準を更新する");
+        assert!(!w.changed(), "once detected, it updates its baseline");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -131,7 +131,7 @@ mod tests {
         let mut w = Watcher::new(vec![f.clone()]);
         std::fs::write(&f, "{}").unwrap();
         w.last_check = Instant::now() - INTERVAL * 2;
-        assert!(w.changed(), "後から作られたファイルも検出する");
+        assert!(w.changed(), "it also detects a file made later");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

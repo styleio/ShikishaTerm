@@ -572,10 +572,10 @@ mod tests {
         });
         strip_machine_own(&mut desk);
         for gone in ["notify", "primary_notify", "providers", "capabilities"] {
-            assert!(desk.get(gone).is_none(), "{gone} が書き出しに残っている");
+            assert!(desk.get(gone).is_none(), "{gone} is left in the export");
         }
-        assert!(desk.get("automation_permissions").is_some(), "権限の表まで消えた");
-        assert!(desk.get("git").is_some(), "git設定まで消えた");
+        assert!(desk.get("automation_permissions").is_some(), "even the permissions table is gone");
+        assert!(desk.get("git").is_some(), "even the git settings are gone");
     }
 
     /// Builds a set of config files for testing, in the shape the settings
@@ -640,15 +640,15 @@ mod tests {
         let s = v["scripts"].as_object().unwrap();
         assert_eq!(
             s["scripts/ws1/on_start.lua"], "-- はじめ",
-            "デスクのスクリプトが入っていない"
+            "the desk's scripts are not included"
         );
         assert_eq!(
             s["scripts/ws1/html/on_load.lua"], "-- よみこみ",
-            "作業フォルダの中のタブのスクリプトが入っていない"
+            "scripts of tabs inside a working folder are not included"
         );
         assert_eq!(
             s["scripts/inner.lua"], "-- うち",
-            "入れ子のタブのスクリプトが入っていない"
+            "scripts of nested tabs are not included"
         );
         // The re-place unit is only the parent. Nested folders travel with their parent
         assert_eq!(v["roots"], json!(["scripts/inner.lua", "scripts/ws1"]));
@@ -656,7 +656,7 @@ mod tests {
         let desk = &v["desk"];
         assert_eq!(desk["folders"][0]["tabs"][1]["name"], "html");
         assert_eq!(desk["folders"][1]["tabs"][0]["children"][0]["name"], "inner");
-        assert!(desk.get("tabs").is_none(), "タブが作業フォルダの外にも書かれている");
+        assert!(desk.get("tabs").is_none(), "tabs are also written outside the working folders");
         // What the desk needs is written down, so the recipient knows
         assert_eq!(desk["secrets_allow"], json!(["github"]));
     }
@@ -670,8 +670,8 @@ mod tests {
         let (_, text) = pack(&cfg, 0).unwrap();
 
         let first = unpack(&cfg, &text).unwrap();
-        assert_eq!(first.name, "編集部-2", "名前が重なったまま");
-        assert!(!first.moved.is_empty(), "置き場所が重なったまま");
+        assert_eq!(first.name, "編集部-2", "the names still clash");
+        assert!(!first.moved.is_empty(), "the locations still clash");
         assert_eq!(first.files, 3);
 
         let second = unpack(&cfg, &text).unwrap();
@@ -687,7 +687,7 @@ mod tests {
             .iter()
             .map(|w| w["id"].as_str().unwrap_or(""))
             .collect();
-        assert_eq!(ids, ["henshu", "henshu-2", "henshu-3"], "取り込んだ写しが同じ呼び名を名乗っている");
+        assert_eq!(ids, ["henshu", "henshu-2", "henshu-3"], "the imported copies go by the same name");
 
         // The original scripts are untouched
         assert_eq!(
@@ -699,7 +699,7 @@ mod tests {
         assert!(d.join("scripts/ws1-2/on_start.lua").exists());
         assert!(d.join("scripts/ws1-3/on_start.lua").exists());
         assert!(d.join("scripts/ws1-2/html/on_load.lua").exists());
-        assert!(d.join("scripts/inner-2.lua").exists(), "拡張子の前に番号が入っていない");
+        assert!(d.join("scripts/inner-2.lua").exists(), "the number is not put before the extension");
         assert!(d.join("scripts/inner-3.lua").exists());
     }
 
@@ -717,11 +717,11 @@ mod tests {
         assert_eq!(added["automation"], "scripts/ws1-2");
         assert_eq!(
             added["folders"][0]["tabs"][1]["automation"], "scripts/ws1-2/html",
-            "中のフォルダが元の場所を指したまま"
+            "a folder inside still points at the original location"
         );
         assert_eq!(
             added["folders"][1]["tabs"][0]["children"][0]["automation"], "scripts/inner-2.lua",
-            "入れ子のタブが元の場所を指したまま"
+            "a nested tab still points at the original location"
         );
         // The first desk is exactly as it was
         assert_eq!(v["desks"][0]["folders"][0]["tabs"][1]["automation"], "scripts/ws1/html");
@@ -742,7 +742,7 @@ mod tests {
                 "scripts": { path: "-- ここには書けない" },
             }))
             .unwrap();
-            assert!(unpack(&cfg, &text).is_err(), "外へ書けてしまう: {path}");
+            assert!(unpack(&cfg, &text).is_err(), "it can write outside: {path}");
         }
         assert!(!d.parent().unwrap().join("逃げた.lua").exists());
     }
@@ -773,7 +773,7 @@ mod tests {
             json!({"shikisha_desk": 0, "desk": {}}),
             json!({"shikisha_desk": FORMAT + 1, "desk": {}}),
         ] {
-            assert!(unpack(&cfg, &bad.to_string()).is_err(), "読めてしまう: {bad}");
+            assert!(unpack(&cfg, &bad.to_string()).is_err(), "it can be read: {bad}");
         }
     }
 
@@ -802,7 +802,7 @@ mod tests {
         let added = &read_cfg(&cfg)["desks"][1];
         assert_eq!(added["folders"][0]["tabs"][0]["name"], "AI");
         assert_eq!(added["folders"][0]["tabs"][0]["automation"], "scripts/old/ai");
-        assert!(added.get("tabs").is_none(), "古い形のまま書かれている");
+        assert!(added.get("tabs").is_none(), "it is written in the old shape");
     }
 
     /// Confirms a file cannot grant itself this machine's secrets. What the
@@ -817,8 +817,8 @@ mod tests {
         unpack(&cfg, &bundle.to_string()).unwrap();
 
         let added = &read_cfg(&cfg)["desks"][1];
-        assert!(added.get("secrets_allow").is_none(), "許可リストが持ち込まれた");
-        assert!(added.get("secrets_allow_all").is_none(), "全許可が持ち込まれた");
+        assert!(added.get("secrets_allow").is_none(), "the allow list was brought in");
+        assert!(added.get("secrets_allow_all").is_none(), "allow-all was brought in");
     }
 
     /// Confirms tabs written beside the folders, the old way, travel in the
@@ -849,7 +849,7 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(names, ["A", "B"]);
-        assert_eq!(v["scripts"]["scripts/b.lua"], "-- b", "外に書かれたタブのスクリプトが入っていない");
+        assert_eq!(v["scripts"]["scripts/b.lua"], "-- b", "scripts of tabs written outside are not included");
         assert!(v["desk"].get("tabs").is_none());
     }
 
@@ -877,7 +877,7 @@ mod tests {
         let after = read_cfg(&cfg);
         assert_eq!(after["desks"].as_array().unwrap().len(), 2);
         assert_eq!(after["desks"][0]["folders"][0]["cwd"], "D:/x");
-        assert!(after.get("folders").is_none(), "移した後も直書きの folders が残っている");
+        assert!(after.get("folders").is_none(), "folders written in place are still there after moving");
     }
 
     /// Confirms a desk kept in its own separate file still travels whole
@@ -901,7 +901,7 @@ mod tests {
         let v: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["desk"]["name"], "外だし");
         assert_eq!(v["desk"]["folders"][0]["tabs"][0]["name"], "AI");
-        assert!(v["desk"].get("file").is_none(), "参照のまま持ち出している");
+        assert!(v["desk"].get("file").is_none(), "it takes it out as a reference");
     }
 
     /// Confirms the config entry wins over its definition file only where it
@@ -937,11 +937,11 @@ mod tests {
 
         let (_, text) = pack(&cfg, 0).unwrap();
         let desk = &serde_json::from_str::<Value>(&text).unwrap()["desk"];
-        assert_eq!(desk["name"], "ファイルの名前", "空の名前がファイルの名前に勝った");
-        assert_eq!(desk["automation"], "scripts/entry", "項目の指定がファイルに負けた");
-        assert!(desk.get("lua").is_none(), "古い綴りが残っている");
-        assert_eq!(desk["stops"][0]["when"], "x", "空のリストがファイルの中身に勝った");
-        assert_eq!(desk["folders"][0]["tabs"][0]["name"], "AI", "ファイルの隣のタブが読まれた");
+        assert_eq!(desk["name"], "ファイルの名前", "an empty name won over the file's name");
+        assert_eq!(desk["automation"], "scripts/entry", "the item's own setting lost to the file");
+        assert!(desk.get("lua").is_none(), "the old spelling is still there");
+        assert_eq!(desk["stops"][0]["when"], "x", "an empty list won over the file's contents");
+        assert_eq!(desk["folders"][0]["tabs"][0]["name"], "AI", "the tabs beside the file were read");
     }
 
     /// Confirms scripts are read from beside the config folder, where a tab
@@ -966,10 +966,10 @@ mod tests {
 
         let (_, text) = pack(&cfg, 0).unwrap();
         let v: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["scripts"]["scripts/a/on_start.lua"], "-- a", "exe の隣のスクリプトが見つからない");
+        assert_eq!(v["scripts"]["scripts/a/on_start.lua"], "-- a", "the script beside the exe was not found");
 
         unpack(&cfg, &text).unwrap();
-        assert!(d.join("scripts/a-2/on_start.lua").exists(), "exe の隣に置かれていない");
-        assert!(!d.join("config/scripts").exists(), "設定フォルダの中に書かれた");
+        assert!(d.join("scripts/a-2/on_start.lua").exists(), "it was not placed beside the exe");
+        assert!(!d.join("config/scripts").exists(), "it was written inside the config folder");
     }
 }

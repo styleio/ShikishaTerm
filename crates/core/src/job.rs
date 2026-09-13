@@ -221,14 +221,14 @@ mod tests {
             .stderr(Stdio::null())
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
-            .expect("cmd.exe が起動できない");
-        let job = Job::new().expect("ジョブが作れない");
-        assert!(job.take(parent.id()), "ジョブに入れられない");
+            .expect("cmd.exe cannot start");
+        let job = Job::new().expect("a job cannot be made");
+        assert!(job.take(parent.id()), "it cannot be put in the job");
 
         // Give the inner cmd.exe time to exist, or the test proves nothing
         // about children -- only about the process we assigned ourselves.
         std::thread::sleep(std::time::Duration::from_millis(400));
-        assert!(parent.try_wait().ok().flatten().is_none(), "まだ生きているはず");
+        assert!(parent.try_wait().ok().flatten().is_none(), "it should still be alive");
 
         drop(job);
         // Ending is not instant: the kernel terminates the members after the
@@ -238,7 +238,7 @@ mod tests {
             if parent.try_wait().ok().flatten().is_some() {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "ジョブを閉じても終わらない");
+            assert!(std::time::Instant::now() < deadline, "closing the job does not end it");
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         // Whatever happens above, nothing is left running
@@ -254,8 +254,8 @@ mod tests {
         use std::os::windows::process::CommandExt as _;
         use std::process::Stdio;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let job = Job::new().expect("ジョブが作れない");
-        assert_eq!(job.active(), Some(0), "空のジョブは0");
+        let job = Job::new().expect("a job cannot be made");
+        assert_eq!(job.active(), Some(0), "an empty job is 0");
 
         // A shell that waits, holding a child that also waits -- the shape a
         // CLI leaving a background shell behind actually has
@@ -266,8 +266,8 @@ mod tests {
             .stderr(Stdio::null())
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
-            .expect("cmd.exe が起動できない");
-        assert!(job.take(parent.id()), "ジョブに入れられない");
+            .expect("cmd.exe cannot start");
+        assert!(job.take(parent.id()), "it cannot be put in the job");
 
         // Wait for the inner process to exist rather than assuming a duration
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -277,7 +277,7 @@ mod tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "子を持っても増えない: {:?}",
+                "holding a child does not add to it: {:?}",
                 job.active()
             );
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn a_process_that_is_gone_is_simply_not_taken() {
         use std::os::windows::process::CommandExt as _;
-        let job = Job::new().expect("ジョブが作れない");
+        let job = Job::new().expect("a job cannot be made");
         let mut child = std::process::Command::new("cmd.exe")
             .args(["/c", "exit"])
             .stdin(std::process::Stdio::null())
@@ -302,7 +302,7 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .creation_flags(0x0800_0000)
             .spawn()
-            .expect("cmd.exe が起動できない");
+            .expect("cmd.exe cannot start");
         let pid = child.id();
         let _ = child.wait();
         // The pid may still be openable for a moment after the process ends,
@@ -310,6 +310,6 @@ mod tests {
         // and does not hang.
         let _ = job.take(pid);
         // A pid that was never a process is the clear case
-        assert!(!job.take(0xFFFF_FFF0), "存在しないプロセスは入らない");
+        assert!(!job.take(0xFFFF_FFF0), "a process that does not exist is not put in");
     }
 }

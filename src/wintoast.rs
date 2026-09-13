@@ -410,7 +410,7 @@ mod tests {
     #[test]
     #[ignore]
     fn really_shows_a_notification() {
-        super::show("SHIKISHA-TERM", "テスト通知です", Some(2)).expect("toast");
+        super::show("SHIKISHA-TERM", "This is a test notification", Some(2)).expect("toast");
         // Long enough to see it, and to click it.
         std::thread::sleep(std::time::Duration::from_secs(12));
         println!("clicked tab: {:?}", super::clicked_tab());

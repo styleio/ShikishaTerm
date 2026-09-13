@@ -1903,7 +1903,7 @@ mod tests {
         }
         assert!(
             t.answered_since_submit(),
-            "働き表示を見逃しても、submitのずっと後に動いた出力で応答と分かる\n\
+            "even if the working indicator is missed, output that moves long after submit is known to be a reply\n\
              submit={} last_change={} now_fp={} submitted_fp={} ignore_bottom={}\n{}",
             t.submit_tick_ms.load(Ordering::Relaxed),
             t.last_change_ms,
@@ -4335,7 +4335,7 @@ mod real_codex_probe {
                 .collect();
             let _ = writeln!(
                 log,
-                "[{:>6}ms] {phase} 状態={}->{} prompted={} working見た={} マッチ={:?} 応答あり={} 出力={}\n    画面末尾: {:?}",
+                "[{:>6}ms] {phase} state={}->{} prompted={} saw_working={} matched={:?} answered={} output={}\n    screen tail: {:?}",
                 start.elapsed().as_millis(),
                 old.label(),
                 new.label(),
@@ -4352,10 +4352,10 @@ mod real_codex_probe {
         let mut trusted = false;
         for _ in 0..80 {
             std::thread::sleep(Duration::from_millis(200));
-            snap(&mut t, &mut log, "起動中");
+            snap(&mut t, &mut log, "starting");
             let screen = super::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen());
             if !trusted && screen.contains("Do you trust") {
-                let _ = writeln!(log, "=== 信頼確認に 1 を返す ===");
+                let _ = writeln!(log, "=== answering 1 to the trust prompt ===");
                 t.write_bytes(b"1\r").unwrap();
                 trusted = true;
             }
@@ -4366,9 +4366,9 @@ mod real_codex_probe {
         // Wait until it settles
         for _ in 0..30 {
             std::thread::sleep(Duration::from_millis(200));
-            snap(&mut t, &mut log, "待機中");
+            snap(&mut t, &mut log, "idle");
         }
-        let _ = writeln!(log, "=== 待機時の画面全体 ===\n{}",
+        let _ = writeln!(log, "=== whole screen while idle ===\n{}",
                          super::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen()));
 
         // Paste roughly the same length as the user's case
@@ -4377,7 +4377,7 @@ mod real_codex_probe {
             "あ".repeat(1900)
         );
         let bracketed = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste();
-        let _ = writeln!(log, "=== 貼り付け ({}文字) 括弧付き貼り付け={} ===", body.chars().count(), bracketed);
+        let _ = writeln!(log, "=== paste ({} chars) bracketed_paste={} ===", body.chars().count(), bracketed);
         let mut bytes = Vec::new();
         if bracketed {
             bytes.extend_from_slice(b"\x1b[200~");
@@ -4393,7 +4393,7 @@ mod real_codex_probe {
         let mut quiet = 0;
         for _ in 0..100 {
             std::thread::sleep(Duration::from_millis(100));
-            snap(&mut t, &mut log, "貼付後");
+            snap(&mut t, &mut log, "pasted");
             let now = t.output_count();
             if now == last {
                 quiet += 1;
@@ -4405,21 +4405,21 @@ mod real_codex_probe {
                 last = now;
             }
         }
-        let _ = writeln!(log, "=== 貼り付けの取り込みが落ち着いた (出力={}) ===", t.output_count());
+        let _ = writeln!(log, "=== the paste has been taken in (output={}) ===", t.output_count());
 
-        let _ = writeln!(log, "=== 実行 (Enter) ===");
+        let _ = writeln!(log, "=== run (Enter) ===");
         t.write_bytes(b"\r").unwrap();
 
         // Follow the situation for a while after execution
         for _ in 0..150 {
             std::thread::sleep(Duration::from_millis(200));
-            snap(&mut t, &mut log, "実行後");
+            snap(&mut t, &mut log, "after run");
         }
 
-        let _ = writeln!(log, "=== 最終画面 ===\n{}", super::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen()));
-        let _ = writeln!(log, "=== 取り込んだ応答 ===\n{:?}", t.last_response);
+        let _ = writeln!(log, "=== final screen ===\n{}", super::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen()));
+        let _ = writeln!(log, "=== captured reply ===\n{:?}", t.last_response);
         t.kill();
-        println!("書き出し: {}", out_path.display());
+        println!("written to: {}", out_path.display());
     }
 }
 
@@ -4450,7 +4450,7 @@ mod layout_probe {
             ) {
                 Ok(t) => t,
                 Err(e) => {
-                    println!("起動できず: {e}");
+                    println!("could not start: {e}");
                     continue;
                 }
             };
@@ -4473,15 +4473,15 @@ mod layout_probe {
             let screen = p.screen();
             let (rows, cols) = screen.size();
             let (cur_row, cur_col) = screen.cursor_position();
-            println!("画面 {rows}行 x {cols}桁 / カーソル row={cur_row} col={cur_col}");
+            println!("screen {rows} rows x {cols} cols / cursor row={cur_row} col={cur_col}");
             println!("alternate_screen = {}", screen.alternate_screen());
-            println!("カーソルより下: {} 行", rows - 1 - cur_row);
-            println!("--- 全 {rows} 行 (深さ: 内容) ---");
+            println!("below the cursor: {} rows", rows - 1 - cur_row);
+            println!("--- all {rows} rows (depth: contents) ---");
             for r in (0..rows).rev() {
                 let line = screen.rows(0, cols).nth(r as usize).unwrap_or_default();
                 let depth = rows - 1 - r;
-                let mark = if r == cur_row { " <== カーソル" } else { "" };
-                println!("深さ{depth:>2} | {}{mark}", line.trim_end());
+                let mark = if r == cur_row { " <== cursor" } else { "" };
+                println!("depth {depth:>2} | {}{mark}", line.trim_end());
             }
         }
     }
@@ -4537,7 +4537,7 @@ mod capture_probe {
         tab.write_passthrough(b"\x1b[201~").unwrap();
         assert!(quiet_for(&tab, 600, 20), "the paste does not settle");
 
-        println!("=== 実行の直前 ===");
+        println!("=== just before running ===");
         {
             let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
             let (rows, _) = p.screen().size();
@@ -4549,7 +4549,7 @@ mod capture_probe {
         tab.write_bytes(b"\r").unwrap();
         assert!(quiet_for(&tab, 5000, 120), "no answer comes back");
 
-        println!("=== 実行の直後 ===");
+        println!("=== just after running ===");
         {
             let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
             let (rows, _) = p.screen().size();
@@ -4559,13 +4559,13 @@ mod capture_probe {
         println!("line_position = {}", tab.line_position());
 
         let got = tab.capture_for_probe();
-        println!("\n=== 切り出し結果 ({} 行) ===", got.lines().count());
+        println!("\n=== captured ({} lines) ===", got.lines().count());
         for (i, l) in got.lines().enumerate() {
             println!("{i:>2} | {l}");
         }
-        println!("=== ここまで ===");
-        println!("AAA を含む: {}", got.contains("AAA"));
-        println!("CCC を含む: {}", got.contains("CCC"));
+        println!("=== end ===");
+        println!("contains AAA: {}", got.contains("AAA"));
+        println!("contains CCC: {}", got.contains("CCC"));
     }
 }
 
@@ -4707,7 +4707,7 @@ mod paste_no_submit_probe {
         );
         let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
         let (rows, cols) = p.screen().size();
-        println!("--- 下から8行 ---");
+        println!("--- bottom 8 rows ---");
         for r in rows.saturating_sub(8)..rows {
             let l = p.screen().rows(0, cols).nth(r as usize).unwrap_or_default();
             println!("| {}", l.trim_end());

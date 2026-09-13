@@ -10610,7 +10610,7 @@ mod tests {
                 "the board script dies whole on a syntax error:\n{}",
                 String::from_utf8_lossy(&done.stderr)
             ),
-            Err(e) => eprintln!("node が無いので構文検査は行われていない ({e})。CI では走る"),
+            Err(e) => eprintln!("node is missing, so the syntax check did not run ({e}). It runs in CI"),
         }
     }
 

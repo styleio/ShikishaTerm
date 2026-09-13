@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(shell.poll(Duration::from_millis(120), None).unwrap(), None);
         assert!(
             began.elapsed() >= Duration::from_millis(100),
-            "何も無いのにすぐ戻っている: {:?}",
+            "it returns at once though there is nothing: {:?}",
             began.elapsed()
         );
     }

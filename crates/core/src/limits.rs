@@ -256,7 +256,7 @@ mod tests {
         let l = parse(&v).unwrap();
         assert_eq!(l.five_hour, None);
         assert_eq!(l.seven_day, Some(Window { pct: 1, resets_at: None }));
-        assert_eq!(parse(&serde_json::json!({"rate_limits": null})), None, "形が変わったら黙って無し");
+        assert_eq!(parse(&serde_json::json!({"rate_limits": null})), None, "if the shape changes, quietly nothing");
         assert_eq!(parse(&serde_json::json!("nonsense")), None);
     }
 
@@ -264,7 +264,7 @@ mod tests {
     fn the_reset_time_is_read_with_its_offset() {
         assert_eq!(epoch_of("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(epoch_of("1970-01-02T00:00:00+00:00"), Some(86_400));
-        assert_eq!(epoch_of("1970-01-01T09:00:00+09:00"), Some(0), "オフセットが引かれていない");
+        assert_eq!(epoch_of("1970-01-01T09:00:00+09:00"), Some(0), "the offset is not subtracted");
         assert_eq!(epoch_of("2026-09-08T16:19:59.874255+00:00"), Some(1_788_884_399));
         assert_eq!(epoch_of("2026-09-12T04:59:59.874275+00:00"), Some(1_789_189_199));
         assert_eq!(epoch_of("soon"), None);
@@ -276,9 +276,9 @@ mod tests {
     fn the_sign_in_is_used_only_while_it_is_good() {
         let text = r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-abc","refreshToken":"r","expiresAt":2000,"scopes":["user:inference"]}}"#;
         assert_eq!(token_in(text, 1000).as_deref(), Some("sk-ant-oat01-abc"));
-        assert_eq!(token_in(text, 2000), None, "切れたサインインを使った");
+        assert_eq!(token_in(text, 2000), None, "an expired sign-in was used");
         assert_eq!(token_in(r#"{"claudeAiOauth":{"accessToken":""}}"#, 0), None);
-        assert_eq!(token_in(r#"{"apiKey":"x"}"#, 0), None, "OAuth でないものを使った");
+        assert_eq!(token_in(r#"{"apiKey":"x"}"#, 0), None, "something that is not OAuth was used");
         assert_eq!(token_in("not json", 0), None);
         // A file with no expiry is taken as good -- the service will say otherwise
         assert_eq!(token_in(r#"{"claudeAiOauth":{"accessToken":"t"}}"#, 0).as_deref(), Some("t"));
@@ -295,12 +295,12 @@ mod tests {
         assert_eq!(m.current(), Some(l.clone()));
         // Stale readings are not shown
         m.shared.lock().unwrap().last = Some((l.clone(), Instant::now() - KEEP - Duration::from_secs(1)));
-        assert_eq!(m.current(), None, "古い値を出した");
+        assert_eq!(m.current(), None, "it showed an old value");
         // Wanting it off forgets what was read
         m.shared.lock().unwrap().last = Some((l, Instant::now()));
         m.want(true);
         m.want(false);
-        assert_eq!(m.current(), None, "切ったのに覚えている");
+        assert_eq!(m.current(), None, "it remembers though it was cut");
         assert!(!m.shared.lock().unwrap().want);
     }
 }

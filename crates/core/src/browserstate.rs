@@ -220,7 +220,7 @@ mod tests {
         assert_eq!(load(label).unwrap(), (cookies, storage));
         assert!(list().iter().any(|e| e.label == label && e.count == 2));
         delete(label).unwrap();
-        assert!(load(label).is_err(), "消したものは読めない");
+        assert!(load(label).is_err(), "what was removed cannot be read");
         // Deleting what is already gone is not a failure
         delete(label).unwrap();
     }
@@ -234,7 +234,7 @@ mod tests {
         }))
         .unwrap();
         crate::crypto::write_atomic(&path(label), &text).unwrap();
-        assert!(load(label).is_err(), "後の版は推測しない");
+        assert!(load(label).is_err(), "a later version is not guessed at");
         delete(label).unwrap();
     }
 }

@@ -171,10 +171,10 @@ mod tests {
     #[test]
     fn embedded_english_is_valid_and_complete() {
         let en = parse(EN);
-        assert!(!en.is_empty(), "英語の辞書が読める");
-        assert!(en.contains_key("app.title"), "基本のキーがある");
+        assert!(!en.is_empty(), "the English dictionary can be read");
+        assert!(en.contains_key("app.title"), "the basic keys are there");
         // Not allowed to have an empty value, or the screen would show blank
-        assert!(en.values().all(|v| !v.trim().is_empty()), "空の文言が無い");
+        assert!(en.values().all(|v| !v.trim().is_empty()), "there is no empty text");
     }
 
     /// Confirms shipped translation files only use keys that exist in English (a typo'd key is otherwise silently ignored)
@@ -184,7 +184,7 @@ mod tests {
         // A relative path would break when running in parallel with another
         // test that changes the current directory (this actually happened)
         let lang_dir = crate::repo_root().join("lang");
-        for entry in std::fs::read_dir(&lang_dir).expect("langフォルダ") {
+        for entry in std::fs::read_dir(&lang_dir).expect("the lang folder") {
             let path = entry.unwrap().path();
             if path.file_name().unwrap() == "en.json" {
                 continue;
@@ -193,7 +193,7 @@ mod tests {
             for key in parse(&text).keys() {
                 assert!(
                     en.contains_key(key),
-                    "{}: 英語に無いキー {key}",
+                    "{}: a key not in English {key}",
                     path.display()
                 );
             }
@@ -226,12 +226,12 @@ mod tests {
                 asked += 1;
                 assert!(
                     en.contains_key(key),
-                    "{}: 画面が使う {key} が英語に無い",
+                    "{}: {key} used by the screen is not in English",
                     path.file_name().unwrap().to_string_lossy()
                 );
             }
         }
-        assert!(asked > 100, "画面の文言を読めていない ({asked}件)");
+        assert!(asked > 100, "the screen's text is not being read ({asked} of them)");
     }
 
     #[test]
@@ -245,7 +245,7 @@ mod tests {
             merged.insert(k, v);
         }
         assert_eq!(merged["app.title"], "訳あり");
-        assert_eq!(merged["common.save"], en["common.save"], "訳が無ければ英語");
+        assert_eq!(merged["common.save"], en["common.save"], "without a translation, English");
     }
 
     #[test]

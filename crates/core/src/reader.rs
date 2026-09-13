@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn claude_records_are_read() {
         let line = r#"{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"thinking","thinking":"hm"},{"type":"text","text":"直しました"}]}}"#.as_bytes();
-        let turn = turn_of(line).expect("assistantの発言");
+        let turn = turn_of(line).expect("the assistant's turn");
         assert_eq!(turn.who, Who::Ai);
         assert_eq!(turn.text, "直しました");
     }
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn codex_records_are_read() {
         let line = r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"原因が確定しました"}]}}"#.as_bytes();
-        let turn = turn_of(line).expect("assistantの発言");
+        let turn = turn_of(line).expect("the assistant's turn");
         assert_eq!(turn.who, Who::Ai);
         assert_eq!(turn.text, "原因が確定しました");
     }
@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn a_person_types_a_plain_string() {
         let line = r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":"バグを発見しました"}}"#.as_bytes();
-        let turn = turn_of(line).expect("人の発言");
+        let turn = turn_of(line).expect("the person's turn");
         assert_eq!(turn.who, Who::You);
         assert_eq!(turn.text, "バグを発見しました");
     }
@@ -334,10 +334,10 @@ mod tests {
     fn machinery_is_not_speech() {
         // A tool result rides in a user record; it has a role, but nobody said it
         let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","text":"ok"}]}}"#.as_bytes();
-        assert!(turn_of(result).is_none(), "ツール結果は発言ではない");
+        assert!(turn_of(result).is_none(), "a tool result is not a turn");
         // A sub-agent's transcript shares the file
         let side = r#"{"isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"別の会話"}]}}"#.as_bytes();
-        assert!(turn_of(side).is_none(), "サブエージェントの記録は別の会話");
+        assert!(turn_of(side).is_none(), "a subagent's record is a different conversation");
         // Neither is anything without a role
         let meta = r#"{"type":"summary","text":"…"}"#.as_bytes();
         assert!(turn_of(meta).is_none());
@@ -346,9 +346,9 @@ mod tests {
     #[test]
     fn envelopes_are_peeled_off_what_a_person_typed() {
         let line = r#"{"message":{"role":"user","content":[{"type":"text","text":"<system-reminder>machine</system-reminder>直して<user_instructions>rules</user_instructions>"}]}}"#.as_bytes();
-        let turn = turn_of(line).expect("人の発言");
+        let turn = turn_of(line).expect("the person's turn");
         assert_eq!(turn.who, Who::You);
-        assert_eq!(turn.text, "直して", "機械が挟んだ封筒は人の言葉ではない");
+        assert_eq!(turn.text, "直して", "an envelope the machine inserted is not the person's words");
     }
 
     /// The tag shape is the rule, so pasted HTML survives — it has no hyphen
@@ -387,14 +387,14 @@ mod tests {
         std::fs::write(&path, &lines).unwrap();
 
         let page = read_back(&path, u64::MAX, 2).unwrap();
-        assert_eq!(page.turns.len(), 2, "最後のやり取り = 人の発言 + その返答");
+        assert_eq!(page.turns.len(), 2, "the last exchange = the person's turn + its reply");
         assert_eq!(page.turns[0].who, Who::You);
-        assert_eq!(page.turns[0].text, "直してください", "人の言葉まで遡る");
+        assert_eq!(page.turns[0].text, "直してください", "it goes back as far as the person's words");
         assert_eq!(page.turns[1].who, Who::Ai);
         // The answer arrives whole, head included -- the failure this exists to end
-        assert!(page.turns[1].text.starts_with("段落0"), "返答の頭が欠けない");
+        assert!(page.turns[1].text.starts_with("段落0"), "the start of the reply is not cut off");
         assert!(page.turns[1].text.ends_with("段落29"));
-        assert!(!page.more, "先頭まで読み切っている");
+        assert!(!page.more, "it has read all the way to the start");
     }
 
     /// A block is handed back only once its head has been read. Asking for one
@@ -414,7 +414,7 @@ mod tests {
         let page = read_back(&path, u64::MAX, 1).unwrap();
         assert_eq!(page.turns.len(), 1);
         assert_eq!(page.turns[0].text, "段落0\n\n段落1\n\n段落2\n\n段落3\n\n段落4");
-        assert!(page.more, "その前の発言がまだ残っている");
+        assert!(page.more, "earlier turns are still left");
         // ...and the next page begins exactly where this one stopped
         let older = read_back(&path, page.from, 1).unwrap();
         assert_eq!(older.turns[0].text, "古い質問");
@@ -435,14 +435,14 @@ mod tests {
 
         let last = read_back(&path, u64::MAX, 4).unwrap();
         assert_eq!(last.turns.len(), 4);
-        assert_eq!(last.turns[3].text, "a39", "最後の発言が末尾に来る");
+        assert_eq!(last.turns[3].text, "a39", "the last turn comes at the end");
         assert_eq!(last.turns[3].who, Who::Ai);
-        assert!(last.more, "まだ前がある");
+        assert!(last.more, "there is more before");
 
         // The page before it, asked for by where the last one started
         let older = read_back(&path, last.from, 4).unwrap();
         assert_eq!(older.turns[3].text, "a37");
-        assert!(!older.turns.iter().any(|t| t.text == "a38"), "同じ発言を二度返さない");
+        assert!(!older.turns.iter().any(|t| t.text == "a38"), "it does not return the same turn twice");
 
         // Walking back far enough reaches the head, and says so
         let mut at = older.from;
@@ -453,7 +453,7 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(at, 0, "先頭まで遡れる");
+        assert_eq!(at, 0, "it can go back to the start");
     }
 
     /// Read a real record, named by `SHIKISHA_READ_PROBE`, and print what comes
@@ -466,14 +466,14 @@ mod tests {
     #[ignore]
     fn probe() {
         let Ok(path) = std::env::var("SHIKISHA_READ_PROBE") else {
-            panic!("SHIKISHA_READ_PROBE に記録ファイルのパスを渡す");
+            panic!("pass the path of a record file in SHIKISHA_READ_PROBE");
         };
         let path = PathBuf::from(path);
         let size = std::fs::metadata(&path).unwrap().len();
         let began = std::time::Instant::now();
         let page = read_back(&path, u64::MAX, 6).unwrap();
         println!(
-            "{} MB / {:?} で {} turn (more={})",
+            "{} MB / {:?} for {} turns (more={})",
             size / 1_048_576,
             began.elapsed(),
             page.turns.len(),
@@ -483,7 +483,7 @@ mod tests {
             let head: String = turn.text.chars().take(90).collect();
             println!("[{:?}] {} …", turn.who, head.replace('\n', " "));
         }
-        assert!(!page.turns.is_empty(), "本物の記録から1つも読めない");
+        assert!(!page.turns.is_empty(), "not a single turn can be read from a real record");
     }
 
     /// A line longer than one read step must not be cut in half by the chunk
@@ -505,7 +505,7 @@ mod tests {
         let page = read_back(&path, u64::MAX, 8).unwrap();
         // The two are one turn: the same speaker either side of a tool call
         let said: Vec<&str> = page.turns.iter().map(|t| t.text.as_str()).collect();
-        assert_eq!(said, vec!["先頭の発言\n\n最後の発言"], "巨大な行の向こうの発言も残る");
-        assert!(!page.more, "先頭まで読み切っている");
+        assert_eq!(said, vec!["先頭の発言\n\n最後の発言"], "turns beyond a huge line are kept too");
+        assert!(!page.more, "it has read all the way to the start");
     }
 }

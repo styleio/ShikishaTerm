@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn ax_elements_get_named_refs_in_document_order() {
-        // <a href> と <input> がAXレーンから、名前・属性つきで番号順に出る
+        // <a href> and <input> come from the AX lane, with names and attributes, in number order
         let (doc, strings) = snap_doc(
             &[
                 (-1, 9, "#document", "", 1, &[]),
@@ -679,7 +679,7 @@ mod tests {
             ax_node("textField", "名前", 12),
         ]});
         let d = build(&ax, &snap, &metrics());
-        assert_eq!(d.refs, vec![10, 12], "AXの2要素が順に採番される: {}", d.text);
+        assert_eq!(d.refs, vec![10, 12], "the two AX elements are numbered in order: {}", d.text);
         assert!(d.text.contains("[1] link \"つぎへ\" https://example.com/x"), "{}", d.text);
         assert!(d.text.contains("[2] textbox \"名前\""), "{}", d.text);
         assert!(d.text.contains("placeholder=\"名前\""), "{}", d.text);
@@ -687,7 +687,7 @@ mod tests {
 
     #[test]
     fn clickable_div_without_role_is_supplemented() {
-        // AXに現れないJSクリッカブル(<div onclick>)が div* として拾われる
+        // a JS clickable that never appears in AX (<div onclick>) is picked up as div*
         let (doc, strings) = snap_doc(
             &[
                 (-1, 9, "#document", "", 1, &[]),
@@ -706,7 +706,7 @@ mod tests {
 
     #[test]
     fn wrapper_around_ax_element_is_not_duplicated() {
-        // AXで拾ったリンクを包むクリッカブルdivは重複掲載しない(中身が本体)
+        // a clickable div wrapping a link already found in AX is not listed twice (the contents are what counts)
         let (doc, strings) = snap_doc(
             &[
                 (-1, 9, "#document", "", 1, &[]),
@@ -723,12 +723,12 @@ mod tests {
         let snap = json!({"documents": [doc], "strings": strings});
         let ax = json!({"nodes": [ax_node("RootWebArea", "", 1), ax_node("link", "リンク", 31)]});
         let d = build(&ax, &snap, &metrics());
-        assert_eq!(d.refs, vec![31], "包みのdivは載らない: {}", d.text);
+        assert_eq!(d.refs, vec![31], "the wrapping div is not listed: {}", d.text);
     }
 
     #[test]
     fn nested_pointer_children_collapse_to_the_boundary() {
-        // cursor:pointerは継承するので、境界(外側)の1要素だけが載る
+        // cursor:pointer is inherited, so only the one element at the boundary (the outermost) is listed
         let (doc, strings) = snap_doc(
             &[
                 (-1, 9, "#document", "", 1, &[]),
@@ -745,12 +745,12 @@ mod tests {
         let snap = json!({"documents": [doc], "strings": strings});
         let ax = json!({"nodes": [ax_node("RootWebArea", "", 1)]});
         let d = build(&ax, &snap, &metrics());
-        assert_eq!(d.refs, vec![40], "境界の外側だけ: {}", d.text);
+        assert_eq!(d.refs, vec![40], "only the outer edge of the boundary: {}", d.text);
     }
 
     #[test]
     fn out_of_viewport_is_flagged_not_dropped() {
-        // 画面外の要素は捨てずに off_screen フラグで残す
+        // elements off screen are kept with an off_screen flag, not thrown away
         let (doc, strings) = snap_doc(
             &[
                 (-1, 9, "#document", "", 1, &[]),
@@ -769,7 +769,7 @@ mod tests {
 
     #[test]
     fn ignored_and_unnamed_noise_is_skipped() {
-        // ignored=trueのAXノードと、名前もhrefもないリンクは載らない
+        // AX nodes with ignored=true, and links with neither a name nor an href, are not listed
         let (doc, strings) = snap_doc(
             &[(-1, 9, "#document", "", 1, &[]), (0, 1, "a", "", 60, &[])],
             &[(1, [0.0, 0.0, 10.0, 10.0], "auto")],
@@ -782,13 +782,13 @@ mod tests {
             ax_node("link", "", 60),
         ]});
         let d = build(&ax, &snap, &metrics());
-        assert!(d.refs.is_empty(), "何も載らないはず: {}", d.text);
+        assert!(d.refs.is_empty(), "nothing should be listed: {}", d.text);
     }
 
     #[test]
     fn elements_carry_their_section_heading() {
-        // 見出しの配下にある要素は §見出し を名乗る (AI要約内の引用と
-        // 本物の検索結果を、行単体で見分けられるように)
+        // an element under a heading calls itself §heading (so a quote inside an AI summary
+        // can be told from a real search result by its line alone)
         let (doc, strings) = snap_doc(
             &[
                 (-1, 9, "#document", "", 1, &[]),

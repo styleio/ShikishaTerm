@@ -801,7 +801,7 @@ mod tests {
         let refused = c.call("send_to_tab", vec![]);
         assert!(
             refused.is_err() || refused.unwrap()["ok"] == serde_json::json!(false),
-            "トークン無しでは何も通らない"
+            "without a token nothing gets through"
         );
         server.shutdown();
     }
@@ -817,7 +817,7 @@ mod tests {
         assert!(bad.contains("bad JSON"), "{bad}");
         let missing = c.line(r#"{"id":"7"}"#).unwrap();
         assert!(missing.contains("needs a method"), "{missing}");
-        assert!(missing.contains(r#""id":"7""#), "答えは呼んだ側のidを返す: {missing}");
+        assert!(missing.contains(r#""id":"7""#), "the answer returns the caller's id: {missing}");
         // ...and the connection is still usable afterwards
         let after = c.call("nope", vec![]).unwrap();
         assert_eq!(after["ok"], serde_json::json!(false));
@@ -869,17 +869,17 @@ mod tests {
         let mut c = ApiClient::connect(&second.path, &token).unwrap();
         let got = c.call("state", vec![]).unwrap();
         assert_eq!(got["ok"], serde_json::json!(true), "{got}");
-        assert_eq!(got["result"], "worker", "誰の鍵かも覚えている");
+        assert_eq!(got["result"], "worker", "it also remembers whose key it is");
         second.shutdown();
     }
 
     #[test]
     fn the_pipe_is_gone_once_the_app_stops_listening() {
         let mut server = served(|_| {});
-        assert!(knockable(&server.path), "開いているのに繋がらない");
+        assert!(knockable(&server.path), "it is open but does not connect");
         let path = server.path.clone();
         server.shutdown();
-        assert!(!knockable(&path), "閉じたあとのパイプには繋がらない");
+        assert!(!knockable(&path), "a pipe does not connect after it is closed");
     }
 
     /// Whether anything answers at that address. A pipe opens like a file; a

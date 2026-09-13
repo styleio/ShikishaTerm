@@ -1048,11 +1048,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // count as leaving -- a page beside the terminal is part of the view
         if !board_open && !settings_open {
             if let Some(here) = surface_folder(&surfaces, &tabs, active) {
-                if let Some(left) = view_folder.as_ref().filter(|f| !crate::uistate::same_folder(f, here)) {
-                    if let Some(kept) = view_kept.take() {
-                        folder_views.retain(|(f, _)| !crate::uistate::same_folder(f, left));
-                        folder_views.push((left.clone(), kept));
-                    }
+                if let Some(left) = view_folder.as_ref().filter(|f| !crate::uistate::same_folder(f, here))
+                    && let Some(kept) = view_kept.take()
+                {
+                    folder_views.retain(|(f, _)| !crate::uistate::same_folder(f, left));
+                    folder_views.push((left.clone(), kept));
                 }
                 if !view_folder.as_deref().is_some_and(|f| crate::uistate::same_folder(f, here)) {
                     view_folder = Some(here.to_path_buf());

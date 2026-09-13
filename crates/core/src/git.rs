@@ -816,18 +816,18 @@ mod tests {
         let theirs = ["develop".to_string(), "release/*".to_string()];
         assert!(is_protected("develop", &theirs));
         assert!(is_protected("release/1.0", &theirs));
-        assert!(is_protected("release/", &theirs), "* は何も無くても当たる");
-        assert!(!is_protected("main", &theirs), "書いていないものは守らない");
-        assert!(!is_protected("hotfix/release/1.0", &theirs), "頭から見る");
+        assert!(is_protected("release/", &theirs), "* matches even when there is nothing");
+        assert!(!is_protected("main", &theirs), "what was not written is not guarded");
+        assert!(!is_protected("hotfix/release/1.0", &theirs), "it matches from the start");
 
         // `*` is the whole of the language. Everything else is the name
         // itself, because a branch really can be called `v1.0+fix`
         let odd = ["v1.0+fix".to_string(), "*/wip".to_string()];
         assert!(is_protected("v1.0+fix", &odd));
-        assert!(!is_protected("v1Z0+fix", &odd), ". は . でしかない");
+        assert!(!is_protected("v1Z0+fix", &odd), ". is only ever .");
         assert!(is_protected("team/wip", &odd));
-        assert!(!is_protected("wip", &odd), "* の前の / まで含めて名前");
-        assert!(is_protected("anything at all", &["*".to_string()]), "* だけなら全部守る");
+        assert!(!is_protected("wip", &odd), "the / before * is part of the name");
+        assert!(is_protected("anything at all", &["*".to_string()]), "* alone guards everything");
 
         // Spaces around a name are somebody typing a list, not a branch
         assert!(is_protected("main", &[" main ".to_string()]));
@@ -855,12 +855,12 @@ mod tests {
         // On main it refuses, and says which branch it is refusing about --
         // whoever catches this offers to make a branch instead
         let refused = commit(&dir, "first", &guarded(), false, false).unwrap_err().to_string();
-        assert!(refused.contains("main"), "断る理由にブランチ名が入る: {refused}");
+        assert!(refused.contains("main"), "the reason for refusing includes the branch name: {refused}");
         // Nothing was committed by the refusal
         assert!(log(&dir, 1).map(|l| l.is_empty()).unwrap_or(true));
 
         // ...and it goes through for someone who says they meant it
-        let hash = commit(&dir, "first", &guarded(), true, false).expect("承知のうえなら通る");
+        let hash = commit(&dir, "first", &guarded(), true, false).expect("it gets through when done knowingly");
         assert!(!hash.is_empty());
         assert_eq!(log(&dir, 1).unwrap()[0].subject, "first");
 
@@ -868,7 +868,7 @@ mod tests {
         run(&dir, &["checkout", "-q", "-b", "feature"]).unwrap();
         std::fs::write(dir.join("a.txt"), "hello again").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        commit(&dir, "second", &guarded(), false, false).expect("自分のブランチなら止まらない");
+        commit(&dir, "second", &guarded(), false, false).expect("it does not stop on your own branch");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -885,14 +885,14 @@ mod tests {
         assert!(commit(&dir, "next", &guarded(), false, false).is_err());
 
         // The offer: a branch, and the staged work still staged on it
-        branch_create(&dir, "work/next").expect("枝を作れる");
+        branch_create(&dir, "work/next").expect("a branch can be made");
         assert_eq!(branch(&dir).unwrap().as_deref(), Some("work/next"));
         let rows = status(&dir).unwrap();
         assert_eq!(rows.iter().find(|c| c.path == "a.txt").unwrap().index, 'M',
-            "ステージしたものは持ったまま移る");
-        commit(&dir, "next", &guarded(), false, false).expect("移った先では通る");
+            "what is staged comes along when moving");
+        commit(&dir, "next", &guarded(), false, false).expect("it gets through on the branch moved to");
 
-        assert!(branch_create(&dir, "  ").is_err(), "名前が空なら断る");
+        assert!(branch_create(&dir, "  ").is_err(), "an empty name is refused");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -908,21 +908,21 @@ mod tests {
         stage(&dir, &["kept.txt".to_string()]).unwrap();
 
         let rows = status(&dir).unwrap();
-        let staged = rows.iter().find(|c| c.path == "kept.txt").expect("変更した行が出る");
+        let staged = rows.iter().find(|c| c.path == "kept.txt").expect("the changed line shows");
         assert_eq!(staged.index, 'M', "the staged side is modified");
-        let untracked = rows.iter().find(|c| c.path == "fresh.txt").expect("新しいファイルも出る");
+        let untracked = rows.iter().find(|c| c.path == "fresh.txt").expect("new files show too");
         assert_eq!((untracked.index, untracked.work), ('?', '?'));
 
         // ...and taking it back out moves it to the other side
         unstage(&dir, &["kept.txt".to_string()]).unwrap();
         let after = status(&dir).unwrap();
         let back = after.iter().find(|c| c.path == "kept.txt").unwrap();
-        assert_eq!(back.index, ' ', "ステージから外れた");
-        assert_eq!(back.work, 'M', "作業ツリー側には残っている");
+        assert_eq!(back.index, ' ', "it was unstaged");
+        assert_eq!(back.work, 'M', "it is still in the working tree");
 
         // The diff has the words that changed in it
         let d = diff(&dir, Some("kept.txt"), false).unwrap();
-        assert!(d.contains("+two"), "差分に変更後の行がある: {d}");
+        assert!(d.contains("+two"), "the diff has the changed line: {d}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -939,15 +939,15 @@ mod tests {
 
         let rows = graph(&dir, false, false, 10, None).unwrap();
         let commits: Vec<&Line> = rows.iter().filter(|r| !r.hash.is_empty()).collect();
-        assert_eq!(commits.len(), 2, "コミットの数だけ行がある");
-        assert!(commits[0].graph.contains('*'), "git の描いた絵が付いてくる");
+        assert_eq!(commits.len(), 2, "as many rows as commits");
+        assert!(commits[0].graph.contains('*'), "the picture git draws comes along");
         assert_eq!(commits[0].subject, "second");
-        assert!(commits[0].date.starts_with("20"), "日時が読める形: {}", commits[0].date);
+        assert!(commits[0].date.starts_with("20"), "the date and time are in a readable form: {}", commits[0].date);
 
         let d = detail(&dir, &commits[0].hash).unwrap();
         assert_eq!(d.subject, "second");
         assert_eq!(d.body, "with a reason");
-        assert_eq!(d.parents, vec![commits[1].hash.clone()], "親を1つ持っている");
+        assert_eq!(d.parents, vec![commits[1].hash.clone()], "it has one parent");
         assert_eq!(d.files, vec!["a.txt".to_string(), "b.txt".to_string()]);
         assert!(!d.committer.is_empty() && !d.commit_date.is_empty());
 
@@ -957,7 +957,7 @@ mod tests {
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].patch.contains("+two"));
         // ...and walking one back leaves the file as it was before that commit
-        apply(&dir, &hunks[0].patch, false, true).expect("取り消せる");
+        apply(&dir, &hunks[0].patch, false, true).expect("it can be undone");
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap().trim(), "one");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -976,10 +976,10 @@ mod tests {
         assert_eq!(
             list.iter().filter(|(_, here)| *here).map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
             vec!["side"],
-            "今いる枝はひとつだけ印が付く"
+            "only the current branch is marked"
         );
 
-        checkout(&dir, "main").expect("戻れる");
+        checkout(&dir, "main").expect("it can go back");
         assert_eq!(branch(&dir).unwrap().as_deref(), Some("main"));
         assert!(checkout(&dir, "no-such-branch").is_err());
         let _ = std::fs::remove_dir_all(&dir);
@@ -992,10 +992,10 @@ mod tests {
         stage(&dir, &["a.txt".to_string()]).unwrap();
         commit(&dir, "frist", &guarded(), true, false).unwrap();
 
-        commit(&dir, "first", &guarded(), true, true).expect("書き直せる");
+        commit(&dir, "first", &guarded(), true, true).expect("it can be rewritten");
         let log = log(&dir, 5).unwrap();
-        assert_eq!(log.len(), 1, "コミットは増えない");
-        assert_eq!(log[0].subject, "first", "言い直したほうが残る");
+        assert_eq!(log.len(), 1, "the commit count does not grow");
+        assert_eq!(log[0].subject, "first", "the reworded one is kept");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1016,7 +1016,7 @@ mod tests {
             "+new\n",
         );
         let hunks = split_hunks(diff);
-        assert_eq!(hunks.len(), 2, "@@ ごとに1つ");
+        assert_eq!(hunks.len(), 2, "one per @@");
         assert_eq!(hunks[0].file, "f.txt");
         assert_eq!((hunks[0].start, hunks[0].end), (1, 4));
         assert_eq!((hunks[1].start, hunks[1].end), (21, 22));
@@ -1025,7 +1025,7 @@ mod tests {
         assert!(hunks[1].patch.starts_with("diff --git a/f.txt b/f.txt\n"));
         assert!(hunks[1].patch.contains("+++ b/f.txt\n"));
         assert!(hunks[1].patch.contains("@@ -20,2 +21,2 @@\n-old\n+new\n"));
-        assert!(!hunks[1].patch.contains("+two"), "隣の hunk は混ざらない");
+        assert!(!hunks[1].patch.contains("+two"), "neighboring hunks do not mix");
         // Nothing to cut is not an error
         assert!(split_hunks("").is_empty());
     }
@@ -1046,20 +1046,20 @@ mod tests {
         );
         std::fs::write(dir.join("f.txt"), edited).unwrap();
         let hunks = split_hunks(&diff(&dir, Some("f.txt"), false).unwrap());
-        assert_eq!(hunks.len(), 2, "離れた2箇所は2つの hunk: {hunks:?}",
+        assert_eq!(hunks.len(), 2, "two places far apart are two hunks: {hunks:?}",
             hunks = hunks.iter().map(|h| h.header.clone()).collect::<Vec<_>>());
 
         // Stage the first one only
-        apply(&dir, &hunks[0].patch, true, false).expect("hunk を1つだけ載せられる");
+        apply(&dir, &hunks[0].patch, true, false).expect("a single hunk can be staged");
         let staged = diff(&dir, Some("f.txt"), true).unwrap();
-        assert!(staged.contains("LINE ONE"), "選んだほうは入っている");
-        assert!(!staged.contains("LINE TWENTY"), "選ばなかったほうは入っていない");
+        assert!(staged.contains("LINE ONE"), "the one chosen is in");
+        assert!(!staged.contains("LINE TWENTY"), "the one not chosen is not in");
         // ...and the other is still waiting in the tree
         let left = diff(&dir, Some("f.txt"), false).unwrap();
         assert!(left.contains("LINE TWENTY") && !left.contains("LINE ONE"));
 
         // Taking it back out again
-        apply(&dir, &hunks[0].patch, true, true).expect("戻せる");
+        apply(&dir, &hunks[0].patch, true, true).expect("it can be taken back");
         assert!(diff(&dir, Some("f.txt"), true).unwrap().trim().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1089,11 +1089,11 @@ mod tests {
         let row = rows.iter().find(|c| c.path == "c.txt").unwrap();
         assert!(
             row.index == 'U' || row.work == 'U' || (row.index == 'A' && row.work == 'A'),
-            "衝突の印が付いている: {}{}",
+            "it is marked as a conflict: {}{}",
             row.index,
             row.work
         );
-        assert!(row.tangled, "まだ両方の側が入ったまま");
+        assert!(row.tangled, "both sides are still in it");
         assert_eq!(tangled(&dir).unwrap(), vec!["c.txt".to_string()]);
 
         // Sorted out by hand: git still calls it unmerged until it is staged,
@@ -1101,9 +1101,9 @@ mod tests {
         std::fs::write(dir.join("c.txt"), "ours and theirs").unwrap();
         let after = status(&dir).unwrap();
         let row = after.iter().find(|c| c.path == "c.txt").unwrap();
-        assert!(!row.tangled, "印が消えたら、もう解くものは無い");
-        assert!(conflicts(&dir).unwrap().contains(&"c.txt".to_string()), "git はまだ未マージ扱い");
-        assert!(tangled(&dir).unwrap().is_empty(), "解くべきものは残っていない");
+        assert!(!row.tangled, "once the markers are gone, there is nothing left to resolve");
+        assert!(conflicts(&dir).unwrap().contains(&"c.txt".to_string()), "git still treats it as unmerged");
+        assert!(tangled(&dir).unwrap().is_empty(), "nothing is left to resolve");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1122,7 +1122,7 @@ mod tests {
         // status parses into records rather than one blob
         let changes = status(here).expect("status reads");
         for c in &changes {
-            assert!(!c.path.is_empty(), "パスの無い行が出ている");
+            assert!(!c.path.is_empty(), "a row with no path shows");
             assert!(!c.index.is_whitespace() || !c.work.is_whitespace());
         }
         assert!(log(here, 3).expect("log reads").len() <= 3);

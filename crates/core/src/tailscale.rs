@@ -201,7 +201,7 @@ mod tests {
             "\"TCP\":",
             "\"AllowFunnel\": { \"ipc.tail4871ca.ts.net:443\": true }, \"TCP\":",
         );
-        assert_eq!(declared(&public, 8787), None, "公開されたものは配らない");
+        assert_eq!(declared(&public, 8787), None, "something made public is not handed out");
     }
 
     /// A serve rule on a port other than 443 keeps its port in the link.
@@ -282,7 +282,7 @@ mod tests {
         assert_eq!(
             found.as_deref().map(|o| o.starts_with("https://")),
             Some(true),
-            "serve が立っているのに HTTPS の入口が見つからない"
+            "serve is running but the HTTPS entrance is not found"
         );
     }
 

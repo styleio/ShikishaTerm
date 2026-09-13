@@ -295,6 +295,6 @@ mod tests {
         std::fs::write(&f, r#"{"version":99,"desks":[{"name":"x","tabs":[]}]}"#).unwrap();
         let text = std::fs::read_to_string(&f).unwrap();
         let parsed: Saved = serde_json::from_str(&text).unwrap();
-        assert!(parsed.version > VERSION, "後の版のファイルだと分かる");
+        assert!(parsed.version > VERSION, "it can tell the file is from a later version");
     }
 }

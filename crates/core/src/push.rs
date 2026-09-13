@@ -662,8 +662,8 @@ mod tests {
                 &aes_gcm::Nonce::<aes_gcm::aead::consts::U12>::from(nonce),
                 Payload { msg: ciphertext, aad: b"" },
             )
-            .expect("購読者の鍵で開けない");
-        assert_eq!(*opened.last().unwrap(), 0x02, "最後のレコードの印が無い");
+            .expect("it cannot be opened with the subscriber's key");
+        assert_eq!(*opened.last().unwrap(), 0x02, "the last record's mark is missing");
         assert_eq!(&opened[..opened.len() - 1], RFC_PLAINTEXT);
     }
 
@@ -675,8 +675,8 @@ mod tests {
         let auth = unb64(RFC_AUTH).unwrap();
         let a = seal(&ua, &auth, b"hello").unwrap();
         let b = seal(&ua, &auth, b"hello").unwrap();
-        assert_ne!(a[..16], b[..16], "同じ塩を二度使っている");
-        assert_ne!(a[21..86], b[21..86], "同じ使い捨て鍵を二度使っている");
+        assert_ne!(a[..16], b[..16], "the same salt is used twice");
+        assert_ne!(a[21..86], b[21..86], "the same one-time key is used twice");
     }
 
     /// Sends one real notification to every device that has subscribed here.
@@ -720,7 +720,7 @@ mod tests {
         let key = new_key().unwrap();
         let token = vapid_token("https://push.example/x/y", &key, 1_700_000_000).unwrap();
         let parts: Vec<&str> = token.split('.').collect();
-        assert_eq!(parts.len(), 3, "JWT は3つの部分でできている");
+        assert_eq!(parts.len(), 3, "a JWT is made of three parts");
 
         let header: serde_json::Value =
             serde_json::from_slice(&unb64(parts[0]).unwrap()).unwrap();
@@ -737,7 +737,7 @@ mod tests {
         let verifying = p256::ecdsa::VerifyingKey::from(&p256::ecdsa::SigningKey::from(&key));
         assert!(
             verifying.verify(signed.as_bytes(), &sig).is_ok(),
-            "自分の鍵で開けない署名を送っている"
+            "it sends a signature its own key cannot open"
         );
     }
 

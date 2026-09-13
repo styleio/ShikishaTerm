@@ -1084,7 +1084,7 @@ mod tests {
             .replace("__DICT__", "{}")
             .replace("__TOOLS__", &serde_json::to_string(TOOLS).unwrap());
         assert!(!built.contains("__DICT__") && !built.contains("__TOOLS__"));
-        assert!(built.contains("const TOOLS = [\"text\",\"noun\",\"color\"];"), "道具の一覧が入っていない");
+        assert!(built.contains("const TOOLS = [\"text\",\"noun\",\"color\"];"), "the list of tools is not in it");
     }
 
     /// Every tool the board may offer is one the page can run, and the page
@@ -1094,15 +1094,15 @@ mod tests {
         for t in TOOLS {
             assert!(
                 PAGE.contains(&format!("TOOL === \"{t}\"")),
-                "{t} を提示しているのにページが動かせない"
+                "{t} is offered, but the page cannot drive it"
             );
         }
         for t in AI_TOOLS {
-            assert!(TOOLS.contains(t), "{t} は道具の一覧に無い");
+            assert!(TOOLS.contains(t), "{t} is not in the list of tools");
             let key = format!("snip.ai.{t}.prompt");
-            assert_ne!(crate::i18n::t(&key), key, "{key} が言葉の表に無い");
+            assert_ne!(crate::i18n::t(&key), key, "{key} is not in the word table");
         }
-        assert!(PAGE.contains("const TOOL = TOOLS.includes(Q.get(\"tool\"))"), "一覧に無い名前で道具が始まる");
+        assert!(PAGE.contains("const TOOL = TOOLS.includes(Q.get(\"tool\"))"), "a tool starts under a name that is not in the list");
     }
 
     /// A colour is read in whole pixels. A pixel drawn a fraction wide makes
@@ -1111,7 +1111,7 @@ mod tests {
     #[test]
     fn a_colour_is_read_in_whole_pixels() {
         assert!(PAGE.contains("zoom.s = Math.max(1, Math.floor(Math.min(W / rect.w, H / rect.h)));"));
-        assert!(PAGE.contains("ctx.imageSmoothingEnabled = false;"), "拡大がぼける");
+        assert!(PAGE.contains("ctx.imageSmoothingEnabled = false;"), "zooming in is blurry");
     }
 
     /// Nothing the page does with an answer sends it anywhere but the
@@ -1126,7 +1126,7 @@ mod tests {
         }).collect();
         assert!(!acts.is_empty());
         for a in acts {
-            assert!(["copy", "save", "close", "ask"].contains(&a), "知らない行き先 {a}");
+            assert!(["copy", "save", "close", "ask"].contains(&a), "an unknown destination {a}");
         }
     }
 
@@ -1137,7 +1137,7 @@ mod tests {
     fn every_tool_has_a_name_on_the_menu() {
         for t in TOOLS {
             let key = format!("snip.tool.{t}");
-            assert_ne!(crate::i18n::t(&key), key, "{key} が言葉の表に無い");
+            assert_ne!(crate::i18n::t(&key), key, "{key} is not in the word table");
         }
     }
 
@@ -1168,7 +1168,7 @@ mod tests {
         assert!(picture_of("").is_none());
         let refused = answer(&serde_json::json!({"do": "ask", "tool": "text", "png": b64(b"\x89PNG\r\n\x1a\n"), "id": 7}), "");
         assert_eq!(refused["state"], "no_desk");
-        assert_eq!(refused["id"], 7, "問いの番号が返っていない");
+        assert_eq!(refused["id"], 7, "the question's number did not come back");
     }
 
     /// An answer is taken only in the tool's shape. The object is found
@@ -1179,8 +1179,8 @@ mod tests {
         let text = |s: &str| read_reply("text", s).map(|v| v["text"].as_str().unwrap_or("?").to_string());
         assert_eq!(text(r#"{"text":"貸借対照表\n2026年"}"#).as_deref(), Some("貸借対照表\n2026年"));
         assert_eq!(text("以下のとおりです。\n```json\n{\"text\": \"A-7731\", \"note\": \"丸は文字ではありません\"}\n```").as_deref(), Some("A-7731"));
-        assert_eq!(text("画像に書かれている文字は次のとおりです: 貸借対照表"), None, "形でない答えを受け取った");
-        assert_eq!(text(r#"{"nouns":["猫"]}"#), None, "別の道具の形を受け取った");
+        assert_eq!(text("画像に書かれている文字は次のとおりです: 貸借対照表"), None, "it accepted an answer that is not in the shape");
+        assert_eq!(text(r#"{"nouns":["猫"]}"#), None, "it accepted another tool's shape");
         assert_eq!(text(r#"{"text": 5}"#), None);
 
         let nouns = |s: &str| read_reply("noun", s).map(|v| v["lines"].clone());
@@ -1195,15 +1195,15 @@ mod tests {
     #[test]
     fn every_ai_tool_has_a_shape() {
         for t in AI_TOOLS {
-            let shape = shape_of(t).unwrap_or_else(|| panic!("{t} に答えの形が無い"));
-            assert!(shape["properties"]["note"].is_object(), "{t} に一言の置き場が無い");
+            let shape = shape_of(t).unwrap_or_else(|| panic!("{t} has no answer shape"));
+            assert!(shape["properties"]["note"].is_object(), "{t} has no place for a note");
             assert_eq!(shape["additionalProperties"], false);
             // Codex CLI refuses a shape that leaves any field optional
             let mut props: Vec<&String> = shape["properties"].as_object().unwrap().keys().collect();
             let mut required: Vec<&str> = shape["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
             props.sort();
             required.sort();
-            assert_eq!(props, required, "{t} の形に必須でない欄がある");
+            assert_eq!(props, required, "{t}'s shape has a field that is not required");
         }
         assert!(shape_of("color").is_none());
     }

@@ -124,12 +124,12 @@ mod tests {
     #[test]
     fn the_entry_says_which_kind_it_is() {
         assert!(matches!(Elsewhere::of(&cloud()).unwrap(), Elsewhere::Cloud(_)));
-        match Elsewhere::of(&server()).expect("住所があるのに組めない") {
+        match Elsewhere::of(&server()).expect("it cannot be built though there is an address") {
             Elsewhere::Ssh(spec) => {
                 assert_eq!(spec.host, "example.com");
                 assert_eq!(spec.port, 2222);
             }
-            Elsewhere::Cloud(_) => panic!("SSH の場所をサンドボックスにした"),
+            Elsewhere::Cloud(_) => panic!("an SSH place was made into a sandbox"),
         }
     }
 
@@ -140,7 +140,7 @@ mod tests {
     fn naming_a_machine_does_not_make_one() {
         // No key is set in a test run, so anything that tried to make a
         // sandbox here would fail rather than succeed quietly
-        let named = Elsewhere::of(&cloud()).expect("名前を付けるだけで失敗した");
+        let named = Elsewhere::of(&cloud()).expect("it failed merely by giving a name");
         assert_eq!(named, Elsewhere::Cloud(cloud()));
         assert_eq!(named.address(), "cloud");
     }
@@ -158,7 +158,7 @@ mod tests {
         });
         let said = at.address();
         assert!(said.contains("example.com"), "{said}");
-        assert!(!said.contains("password"), "秘密の名前が出ている: {said}");
+        assert!(!said.contains("password"), "the secret's name shows: {said}");
         assert_eq!(at.user(), Some("someone"));
 
         // A sandbox has one account and nobody chose it, so there is no name

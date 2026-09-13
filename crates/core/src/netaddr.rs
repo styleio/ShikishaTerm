@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn private_ranges_are_recognized() {
         assert!(is_tailscale(&"100.101.102.103".parse().unwrap()));
-        assert!(!is_tailscale(&"100.200.1.1".parse().unwrap()), "100.128以降は別");
+        assert!(!is_tailscale(&"100.200.1.1".parse().unwrap()), "100.128 and above are different");
         assert!(is_private(&"192.168.1.5".parse().unwrap()));
         assert!(is_private(&"10.0.0.1".parse().unwrap()));
         assert!(is_private(&"127.0.0.1".parse().unwrap()));
@@ -214,10 +214,10 @@ mod tests {
         let lan = lan_ip();
         println!("tailscale={ts:?} lan={lan:?}");
         if let Ok((ip, note)) = resolve_bind("auto", false) {
-            assert!(is_private(&ip), "自動選択は必ずプライベート網: {ip}");
+            assert!(is_private(&ip), "the automatic choice is always a private network: {ip}");
             if ts.is_some() {
-                assert_eq!(Some(ip), ts, "Tailscaleがあればそれを優先する");
-                assert!(note.is_none(), "Tailscaleなら注意書きは不要");
+                assert_eq!(Some(ip), ts, "Tailscale comes first when it is there");
+                assert!(note.is_none(), "with Tailscale no note is needed");
             }
         }
     }
@@ -249,16 +249,16 @@ mod tests {
     #[test]
     fn a_blank_stand_in_leaves_the_real_link_alone() {
         assert_eq!(demo_link_from("http://8.8.8.8/\n").as_deref(), Some("http://8.8.8.8/"));
-        assert_eq!(demo_link_from("  \n "), None, "空のファイルは無効");
-        assert_eq!(demo_link_from("http://8.8.8.8/ と書いた"), None, "空白入りは QR にならない");
+        assert_eq!(demo_link_from("  \n "), None, "an empty file is not valid");
+        assert_eq!(demo_link_from("http://8.8.8.8/ と書いた"), None, "something with a space does not become a QR code");
     }
 
     #[test]
     fn qr_svg_is_scannable_markup() {
         let svg = qr_svg("http://100.64.0.1:8787/?t=abc", 6);
-        assert!(svg.starts_with("<svg"), "SVGとして返す");
-        assert!(svg.contains("<rect"), "モジュールが描かれている");
-        assert!(svg.matches("<rect").count() > 50, "十分な数のモジュール");
+        assert!(svg.starts_with("<svg"), "it comes back as SVG");
+        assert!(svg.contains("<rect"), "the modules are drawn");
+        assert!(svg.matches("<rect").count() > 50, "enough modules");
     }
 
 

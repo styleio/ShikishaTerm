@@ -3800,18 +3800,18 @@ mod tests {
         });
         assert!(super::write_desk_value(&mut doc, "work", "send_pictures_to", Some("claude".into())));
         assert_eq!(doc["desks"][0]["send_pictures_to"], "claude");
-        assert!(doc["desks"][1].get("send_pictures_to").is_none(), "隣のデスクに書かれた");
+        assert!(doc["desks"][1].get("send_pictures_to").is_none(), "it was written to the next desk");
 
         let settled = super::slug_id("Home Stuff");
         assert!(super::write_desk_value(&mut doc, &settled, "send_pictures_to", Some("codex".into())));
         assert_eq!(doc["desks"][1]["send_pictures_to"], "codex");
-        assert_eq!(doc["desks"][1]["id"], settled.as_str(), "名前から決まった呼び名が書き残されていない");
+        assert_eq!(doc["desks"][1]["id"], settled.as_str(), "the call-name settled from the name was not written down");
 
         assert!(super::write_desk_value(&mut doc, "work", "send_pictures_to", None));
-        assert!(doc["desks"][0].get("send_pictures_to").is_none(), "取り消しが消えない");
+        assert!(doc["desks"][0].get("send_pictures_to").is_none(), "the removal did not go away");
         assert!(!super::write_desk_value(&mut doc, "nobody", "send_pictures_to", Some("x".into())));
         assert!(!super::write_desk_value(&mut doc, "", "send_pictures_to", Some("x".into())));
-        assert_eq!(doc["language"], "ja", "ほかの設定が変わった");
+        assert_eq!(doc["language"], "ja", "other settings changed");
     }
 
     /// What a desk agreed to is read back as the name it was agreed for, and

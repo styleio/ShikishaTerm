@@ -444,9 +444,9 @@ mod tests {
     /// The text of a button is its label, not its empty form value.
     #[test]
     fn a_button_reads_as_its_label() {
-        let at = super::AUTOMATION.find("window.__shikisha_text = function").expect("__shikisha_text が無い");
+        let at = super::AUTOMATION.find("window.__shikisha_text = function").expect("__shikisha_text is missing");
         let body = &super::AUTOMATION[at..at + 400];
-        assert!(body.contains("el instanceof HTMLInputElement"), "値を持つかどうかで判定している");
-        assert!(!body.contains("el.value !== undefined"), "ボタンが空文字で読まれる");
+        assert!(body.contains("el instanceof HTMLInputElement"), "it decides by whether there is a value");
+        assert!(!body.contains("el.value !== undefined"), "a button is read as an empty string");
     }
 }

@@ -588,8 +588,8 @@ mod tests {
         let now = ["", "x", "new", "ai", "web"];
         let other = Layout::single(1);
         let back = Layout::restore(&kept, &other, |k| now.iter().position(|n| *n == k)).unwrap();
-        assert_eq!(surfaces(&back), vec![3, 4], "番号でなく名前で戻る");
-        assert_eq!(back.focused_surface(), 4, "最後に見ていたペインに戻る");
+        assert_eq!(surfaces(&back), vec![3, 4], "it comes back by name, not by number");
+        assert_eq!(back.focused_surface(), 4, "it goes back to the pane last looked at");
     }
 
     #[test]
@@ -599,9 +599,9 @@ mod tests {
         let kept = l.keep(|s| Some(["", "ai", "web"][s].to_string()));
         let other = Layout::single(1);
         let back = Layout::restore(&kept, &other, |k| (k == "ai").then_some(1)).unwrap();
-        assert!(back.is_single(), "消えたタブのペインは閉じる");
+        assert!(back.is_single(), "the pane of a tab that is gone is closed");
         assert_eq!(back.focused_surface(), 1);
-        assert!(Layout::restore(&kept, &other, |_| None).is_none(), "何も残っていなければ戻さない");
+        assert!(Layout::restore(&kept, &other, |_| None).is_none(), "if nothing is left, it does not restore");
     }
 
     #[test]
@@ -615,7 +615,7 @@ mod tests {
         }
         let mut back = Layout::restore(&kept, &busy, |k| k.parse().ok()).unwrap();
         let fresh = back.split(Dir::Col, 3);
-        assert!(fresh > 5, "新しいペインIDが使用済みの番号と重なる: {fresh}");
+        assert!(fresh > 5, "a new pane id collides with a number already used: {fresh}");
     }
 
     #[test]
@@ -637,18 +637,18 @@ mod tests {
         l.split(Dir::Row, 2); // focus is now the right half
         l.split(Dir::Col, 3); // ...which becomes a stack
         let dividers = l.dividers();
-        assert_eq!(dividers.len(), 2, "仕切りは2本");
-        assert_eq!(dividers[0].1, Dir::Row, "先に外側 (縦の仕切り)");
+        assert_eq!(dividers.len(), 2, "two dividers");
+        assert_eq!(dividers[0].1, Dir::Row, "the outer one first (the vertical divider)");
         assert_eq!(dividers[1].1, Dir::Col);
 
         assert!(l.set_divider(0, 0.25));
         let left = l.rects()[0].1;
-        assert!((left.w - 0.25).abs() < 0.001, "左は 1/4 になった: {left:?}");
+        assert!((left.w - 0.25).abs() < 0.001, "the left became 1/4: {left:?}");
         // ...and the inner divider now lives in the area that is left over
         let inner = l.dividers()[1].0;
-        assert!((inner.x - 0.25).abs() < 0.001, "内側は残りの領域を分ける: {inner:?}");
+        assert!((inner.x - 0.25).abs() < 0.001, "the inner one divides what is left: {inner:?}");
 
-        assert!(!l.set_divider(9, 0.5), "存在しない仕切りは動かせない");
+        assert!(!l.set_divider(9, 0.5), "a divider that does not exist cannot be moved");
     }
 
     #[test]
@@ -660,7 +660,7 @@ mod tests {
         l.set_divider(1, 0.15);
         l.equalize();
         for (r, _, ratio) in l.dividers() {
-            assert!((ratio - 0.5).abs() < 0.001, "半々に戻る: {r:?} {ratio}");
+            assert!((ratio - 0.5).abs() < 0.001, "back to half and half: {r:?} {ratio}");
         }
     }
 
@@ -670,20 +670,20 @@ mod tests {
         l.split(Dir::Row, 2);
         l.set_divider(0, 0.0);
         let w = l.rects()[0].1.w;
-        assert!(w >= MIN_RATIO, "掴んで端まで引いても消えない: {w}");
+        assert!(w >= MIN_RATIO, "grabbing it and pulling to the edge does not make it disappear: {w}");
     }
 
     #[test]
     fn split_puts_the_new_pane_where_it_was_asked_for() {
         let mut l = Layout::single(1);
         let right = l.split(Dir::Row, 2);
-        assert_eq!(l.focus(), right, "手を出した先にフォーカスが移る");
+        assert_eq!(l.focus(), right, "focus moves to where it was reached for");
         assert_eq!(surfaces(&l), vec![1, 2]);
         let rects = l.rects();
         let a = rects.iter().find(|(p, _)| *p != right).unwrap().1;
         let b = rects.iter().find(|(p, _)| *p == right).unwrap().1;
-        assert!(a.x < b.x, "右に割ったら新しい方が右");
-        assert!((a.w + b.w - 1.0).abs() < 0.001, "幅を食い合って合計は1");
+        assert!(a.x < b.x, "split to the right, the new one is on the right");
+        assert!((a.w + b.w - 1.0).abs() < 0.001, "they share the width, adding up to 1");
     }
 
     /// What is already on screen is not moved to another pane — the aim goes to
@@ -701,12 +701,12 @@ mod tests {
         assert_eq!(l.focused_surface(), 2);
 
         l.show(1);
-        assert_eq!(surfaces(&l), vec![1, 2], "既に見えているものを入れ替えない");
-        assert_eq!(l.focused_surface(), 1, "狙いはそこへ移る");
+        assert_eq!(surfaces(&l), vec![1, 2], "what is already visible is not swapped");
+        assert_eq!(l.focused_surface(), 1, "the target moves there");
 
         // ...and back, as many turns as the automation takes
         l.show(2);
-        assert_eq!(surfaces(&l), vec![1, 2], "往復しても位置は変わらない");
+        assert_eq!(surfaces(&l), vec![1, 2], "going back and forth does not change positions");
         assert_eq!(l.focused_surface(), 2);
     }
 
@@ -717,7 +717,7 @@ mod tests {
         let mut l = Layout::single(1);
         l.split(Dir::Row, 2);
         l.show(3);
-        assert_eq!(surfaces(&l), vec![1, 3], "見えていないものは今のペインに入る");
+        assert_eq!(surfaces(&l), vec![1, 3], "what is not visible goes into the current pane");
         assert_eq!(l.focused_surface(), 3);
         assert_eq!(l.leaves().iter().filter(|(_, s)| *s == 3).count(), 1);
     }
@@ -738,7 +738,7 @@ mod tests {
         assert!(l.close(right));
         assert!(l.is_single());
         assert_eq!(l.focused_surface(), 1);
-        assert_eq!(l.rects()[0].1, FRect::FULL, "残った方が全部を取り返す");
+        assert_eq!(l.rects()[0].1, FRect::FULL, "the one left takes back the whole area");
     }
 
     #[test]
@@ -759,13 +759,13 @@ mod tests {
         let right = l.split(Dir::Row, 2);
         let bottom = l.split(Dir::Col, 3);
         assert_eq!(l.focus(), bottom);
-        assert!(l.focus_move(Move::Left), "斜めの親をまたいで左へ");
+        assert!(l.focus_move(Move::Left), "left, across a diagonal parent");
         assert_eq!(l.focused_surface(), 1);
         assert!(l.focus_move(Move::Right));
-        assert_eq!(l.focused_surface(), 2, "左から右は上半分の方が近い");
+        assert_eq!(l.focused_surface(), 2, "from left, going right, the upper half is nearer");
         assert!(l.focus_move(Move::Down));
         assert_eq!(l.focused_surface(), 3);
-        assert!(!l.focus_move(Move::Down), "端では動かない");
+        assert!(!l.focus_move(Move::Down), "it does not move at the edge");
         let _ = right;
     }
 
@@ -775,7 +775,7 @@ mod tests {
         let right = l.split(Dir::Row, 2);
         l.set_ratio(right, 0.0);
         let w = l.rects().iter().map(|(_, r)| r.w).fold(f32::MAX, f32::min);
-        assert!(w >= MIN_RATIO - 0.001, "潰れきらない: {w}");
+        assert!(w >= MIN_RATIO - 0.001, "it does not collapse completely: {w}");
     }
 
     #[test]
@@ -786,10 +786,10 @@ mod tests {
         let width = |l: &Layout, id| l.rects().iter().find(|(p, _)| *p == id).unwrap().1.w;
         let before = width(&l, right);
         assert!(l.grow(right, 0.2));
-        assert!(width(&l, right) > before + 0.1, "右のペインが広がらない");
+        assert!(width(&l, right) > before + 0.1, "the right pane does not grow");
         let before = width(&l, left);
         assert!(l.grow(left, 0.2));
-        assert!(width(&l, left) > before + 0.1, "左のペインが広がらない");
+        assert!(width(&l, left) > before + 0.1, "the left pane does not grow");
     }
 
     #[test]
@@ -797,7 +797,7 @@ mod tests {
         let mut l = Layout::single(1);
         l.split(Dir::Row, 5);
         l.clamp(3);
-        assert_eq!(surfaces(&l), vec![1, 0], "消えたタブは盤面に戻す");
+        assert_eq!(surfaces(&l), vec![1, 0], "a tab that is gone goes back to the board");
     }
 
     #[test]

@@ -10264,26 +10264,26 @@ mod tests {
         let png = b"\x89PNG\r\n\x1a\n";
         let schema = r#"{"type":"object"}"#;
         let (args, input, on_disk) = super::picture_invocation("claude", "read", png, schema).unwrap();
-        let tools = args.iter().position(|a| a == "--tools").expect("claude にツールの指定が無い");
-        assert_eq!(args[tools + 1], "", "claude にツールが渡っている");
-        assert!(args.windows(2).any(|w| w == ["--json-schema", schema]), "claude に答えの形が渡っていない");
-        assert!(!on_disk, "claude には画像をファイルで渡さない");
+        let tools = args.iter().position(|a| a == "--tools").expect("claude is given no tools option");
+        assert_eq!(args[tools + 1], "", "claude is given tools");
+        assert!(args.windows(2).any(|w| w == ["--json-schema", schema]), "claude is not given the shape of the answer");
+        assert!(!on_disk, "claude should not be given the picture as a file");
         let msg: serde_json::Value = serde_json::from_str(input.trim()).unwrap();
         assert_eq!(msg["message"]["content"][0]["type"], "image");
         assert_eq!(msg["message"]["content"][1]["text"], "read");
 
         let (args, input, on_disk) = super::picture_invocation("codex", "read", png, schema).unwrap();
-        assert!(args.windows(2).any(|w| w == ["--sandbox", "read-only"]), "codex が読み取り専用でない");
-        assert!(args.windows(2).any(|w| w == ["--output-schema", super::SCHEMA_FILE]), "codex に答えの形が渡っていない");
+        assert!(args.windows(2).any(|w| w == ["--sandbox", "read-only"]), "codex is not read-only");
+        assert!(args.windows(2).any(|w| w == ["--output-schema", super::SCHEMA_FILE]), "codex is not given the shape of the answer");
         assert!(on_disk && input == "read");
 
         let (args, _, on_disk) = super::picture_invocation("gemini", "read", png, schema).unwrap();
-        assert!(args.windows(2).any(|w| w == ["--approval-mode", "plan"]), "gemini が読み取り専用でない");
+        assert!(args.windows(2).any(|w| w == ["--approval-mode", "plan"]), "gemini is not read-only");
         assert!(on_disk);
 
         assert!(super::picture_invocation("aider", "read", png, schema).is_none());
         for (name, _, _) in super::AI_ENGINES {
-            assert!(super::reads_pictures(name), "{name} は画像の渡し方が決まっていない");
+            assert!(super::reads_pictures(name), "{name} has no decided way to be given a picture");
         }
     }
 
@@ -10307,8 +10307,8 @@ mod tests {
                 &crate::snip::shape_of("text").unwrap().to_string(),
             );
             eprintln!("{name} {:.1}s -> {said:?}", t0.elapsed().as_secs_f32());
-            let said = said.unwrap_or_else(|e| panic!("{name} が読めなかった: {e:#}"));
-            assert!(said.contains("\"text\""), "{name} が決められた形で答えなかった");
+            let said = said.unwrap_or_else(|e| panic!("{name} could not read it: {e:#}"));
+            assert!(said.contains("\"text\""), "{name} did not answer in the required shape");
         }
     }
 
@@ -10319,7 +10319,7 @@ mod tests {
         let out = "{\"type\":\"system\"}\n{\"type\":\"result\",\"is_error\":false,\"result\":\" 貸借対照表 \"}\n";
         assert_eq!(super::picture_answer("claude", out).unwrap(), "貸借対照表");
         let shaped = "{\"type\":\"result\",\"is_error\":false,\"result\":\"x\",\"structured_output\":{\"text\":\"貸借\"}}";
-        assert_eq!(super::picture_answer("claude", shaped).unwrap(), "{\"text\":\"貸借\"}", "形の決まった答えを読んでいない");
+        assert_eq!(super::picture_answer("claude", shaped).unwrap(), "{\"text\":\"貸借\"}", "the shaped answer is not read");
         let bad = "{\"type\":\"result\",\"is_error\":true,\"result\":\"limit\"}";
         assert!(super::picture_answer("claude", bad).is_err());
         assert!(super::picture_answer("claude", "not json").is_err());
@@ -10339,21 +10339,21 @@ mod tests {
         // Offered on the project's own checkout: in a repository, not cut
         assert!(
             PAGE.contains("if (where.family && !where.cut) box.insertBefore(envCard(g), buttons);"),
-            "devcontainer が元のチェックアウトのページに出ていない"
+            "the devcontainer card does not show on the original checkout's page"
         );
         // A branch's page points at it instead of offering a second copy
         assert!(
             PAGE.contains("box.insertBefore(elsewhereCard(where), buttons);"),
-            "枝のページが、どこで設定するのかを言っていない"
+            "a branch's page does not say where this is set"
         );
         assert!(
             !PAGE.contains("if (!where || !where.cut) return;"),
-            "枝だけの門が残っていて、元のチェックアウトが弾かれる"
+            "a branch-only gate is still there, and the original checkout is turned away"
         );
         // And the screen is told whose it is, which it cannot work out itself
         assert!(
             PAGE.contains("where.project"),
-            "画面がプロジェクトの名前を受け取っていない"
+            "the screen does not receive the project's name"
         );
     }
 
@@ -10372,20 +10372,20 @@ mod tests {
             .split("const TAB_EVENTS = [")
             .nth(1)
             .and_then(|r| r.split("];").next())
-            .expect("TAB_EVENTS が画面から消えている");
+            .expect("TAB_EVENTS is gone from the screen");
         let offered: Vec<&str> = block
             .lines()
             .filter_map(|l| l.trim().strip_prefix("[\""))
             .filter_map(|l| l.split('"').next())
             .collect();
-        assert!(offered.len() >= 8, "引き金の一覧が短すぎる: {offered:?}");
+        assert!(offered.len() >= 8, "the list of triggers is too short: {offered:?}");
         for name in &offered {
             if *name == "_shared" {
                 continue; // not a trigger: shared helpers the others call
             }
             assert!(
                 crate::hooks::HOOK_NAMES.contains(name),
-                "{name} は画面にあるがエンジンが呼ばない"
+                "{name} is on the screen, but the engine never calls it"
             );
         }
         // And every way a turn can end is reachable from here
@@ -10398,7 +10398,7 @@ mod tests {
             let hook = crate::hooks::ending_hook(state);
             assert!(
                 offered.contains(&hook),
-                "{} の受け皿 {hook} が画面から選べない",
+                "for {}, the hook {hook} cannot be chosen on the screen",
                 state.label()
             );
         }
@@ -10414,16 +10414,16 @@ mod tests {
     /// them, so both halves are checked here by name
     #[test]
     fn a_server_tabs_settings_survive_a_save() {
-        assert!(PAGE.contains("server: t.server || null"), "読むときに接続の設定を落としている");
+        assert!(PAGE.contains("server: t.server || null"), "reading drops the connection settings");
         assert!(
             PAGE.contains(r#"for (const k of ["key", "jump", "keepalive", "file_command", "remote_dir"])"#),
-            "書くときに接続の設定を落としている"
+            "writing drops the connection settings"
         );
         // A tab that is not a server does not get an empty block, and a
         // bastion nobody named is not written down as one
         assert!(PAGE.contains("if (!Object.keys(node.server).length) delete node.server;"),
-                "中身の無い接続の設定を書き出している");
-        assert!(PAGE.contains(r#"if (!(v.host || "").trim()) continue;"#), "名前の無い踏み台を書き出している");
+                "it writes out connection settings with nothing in them");
+        assert!(PAGE.contains(r#"if (!(v.host || "").trim()) continue;"#), "it writes out a jump host with no name");
     }
 
     /// Conversational text must never be typed into a terminal — only what
@@ -10435,8 +10435,8 @@ mod tests {
             "free -h"
         );
         assert_eq!(extract_cmd("```bash\nfree -h\n```").unwrap(), "free -h");
-        assert!(extract_cmd("メモリを見るには free -h を使います").is_err(), "地の文は拒否");
-        assert!(extract_cmd("<<<CMD\n\n>>>").is_err(), "空の提案は拒否");
+        assert!(extract_cmd("メモリを見るには free -h を使います").is_err(), "plain prose is refused");
+        assert!(extract_cmd("<<<CMD\n\n>>>").is_err(), "an empty suggestion is refused");
     }
 
     /// A file that isn't there yet is a fresh install; a file that's there but
@@ -10455,16 +10455,16 @@ mod tests {
 
         // Missing: hand over the empty shape, no fuss.
         match read_user_json(&path, "{}") {
-            UserJson::Text(t) => assert_eq!(t, "{}", "未作成のファイルは空の形で渡す"),
-            UserJson::Refused(..) => panic!("未作成なだけで拒否してはいけない"),
+            UserJson::Text(t) => assert_eq!(t, "{}", "a file not made yet is handed over as an empty shape"),
+            UserJson::Refused(..) => panic!("it must not refuse merely because the file is not made yet"),
         }
 
         // Fine: hand it over verbatim, so unknown keys and "//" notes survive.
         let good = "{\n  \"//note\": \"kept\",\n  \"max_chain\": 10\n}";
         std::fs::write(&path, good).unwrap();
         match read_user_json(&path, "{}") {
-            UserJson::Text(t) => assert_eq!(t, good, "読めたファイルは原文のまま渡す"),
-            UserJson::Refused(..) => panic!("正しい JSON を拒否した"),
+            UserJson::Text(t) => assert_eq!(t, good, "a file that was read is handed over exactly as written"),
+            UserJson::Refused(..) => panic!("valid JSON was refused"),
         }
 
         // Broken: refuse, and say where. Naming the line is the point — a bare
@@ -10472,20 +10472,20 @@ mod tests {
         let bad = "{\n  \"name\": \"実装\",\n  \"cwd\": \"D:\\very\"\n}";
         std::fs::write(&path, bad).unwrap();
         let UserJson::Refused(status, body) = read_user_json(&path, "{}") else {
-            panic!("壊れた JSON を通してしまった");
+            panic!("broken JSON got through");
         };
         assert_eq!(status, 409);
         assert_eq!(body["ok"], serde_json::json!(false));
-        assert_eq!(body["line"], serde_json::json!(3), "壊れた行を指していない");
-        assert!(body["column"].as_u64().unwrap() > 0, "壊れた桁を指していない");
+        assert_eq!(body["line"], serde_json::json!(3), "it does not point at the broken line");
+        assert!(body["column"].as_u64().unwrap() > 0, "it does not point at the broken column");
         assert_eq!(
             body["text"],
             serde_json::json!(bad),
-            "原文が付いていないと、画面が該当行を見せられない"
+            "without the original text, the screen cannot show the line in question"
         );
         assert!(
             body["path"].as_str().unwrap().ends_with("config.json"),
-            "どのファイルの話か分からない"
+            "it is not clear which file this is about"
         );
         let _ = std::fs::remove_file(&path);
     }
@@ -10495,16 +10495,16 @@ mod tests {
     /// with the token puts the key to the machine where a camera can see it.
     #[test]
     fn the_phone_card_hands_the_link_over_rather_than_printing_it() {
-        let from = PAGE.find("function remoteCard()").expect("remoteCard が無い");
-        let len = PAGE[from..].find("function aiSelect()").expect("カードの終わりが無い");
+        let from = PAGE.find("function remoteCard()").expect("there is no remoteCard");
+        let len = PAGE[from..].find("function aiSelect()").expect("the card has no end");
         let card = &PAGE[from..from + len];
-        assert!(card.contains("/api/remote/url"), "コピー用の取り出し口が無い");
-        assert!(card.contains("netBadge"), "どの網に繋がるかのバッジが無い");
-        assert!(card.contains("copyText("), "共有のクリップボード経路を通っていない");
+        assert!(card.contains("/api/remote/url"), "there is no place to take the URL for copying");
+        assert!(card.contains("netBadge"), "there is no badge for which network it connects to");
+        assert!(card.contains("copyText("), "it does not go through the shared clipboard path");
         assert_eq!(
             card.matches("j.origin").count(),
             1,
-            "origin は「見せるものがあるか」の判定だけ。画面に描いてはいけない"
+            "origin only decides whether there is anything to show. It must not be drawn on screen"
         );
     }
 
@@ -10516,7 +10516,7 @@ mod tests {
     /// itself; the card that feeds it has to live by it too.
     #[test]
     fn drawing_the_actions_card_writes_nothing() {
-        let from = PAGE.find("function actionsCard()").expect("actionsCard が無い");
+        let from = PAGE.find("function actionsCard()").expect("there is no actionsCard");
         let body = &PAGE[from..from + 2400];
         for write in ["a.label =", "a.body =", "a.lua ="] {
             for (i, _) in body.match_indices(write) {
@@ -10527,7 +10527,7 @@ mod tests {
                 // One sitting in the drawing path is the bug.
                 assert!(
                     line.contains("addEventListener"),
-                    "描画中に書き込んでいる: {line}"
+                    "it writes while drawing: {line}"
                 );
             }
         }
@@ -10543,24 +10543,24 @@ mod tests {
     /// project's setup command stopped reaching its worktrees.
     #[test]
     fn a_save_keeps_what_a_folder_says_that_this_screen_does_not_show() {
-        let read = PAGE.find("function readFolders(").expect("readFolders が無い");
+        let read = PAGE.find("function readFolders(").expect("there is no readFolders");
         let read = &PAGE[read..read + 400];
-        assert!(!read.contains("({name:f.name, id:f.id, cwd:f.cwd})"), "読み込みで決まった鍵だけ残している");
-        let of = PAGE.find("function foldersOf(").expect("foldersOf が無い");
-        assert!(PAGE[of..of + 600].contains("Object.assign({}, f,"), "読み込みで鍵を落としている");
-        let out = PAGE.find("const foldersOut = ").expect("foldersOut が無い");
+        assert!(!read.contains("({name:f.name, id:f.id, cwd:f.cwd})"), "it keeps only the keys decided when reading");
+        let of = PAGE.find("function foldersOf(").expect("there is no foldersOf");
+        assert!(PAGE[of..of + 600].contains("Object.assign({}, f,"), "reading drops keys");
+        let out = PAGE.find("const foldersOut = ").expect("there is no foldersOut");
         let out = &PAGE[out..out + 900];
-        assert!(out.contains("Object.assign({}, g)"), "保存で知っている鍵だけ書いている");
-        assert!(!out.contains("const o = {};"), "保存で知っている鍵だけ書いている");
+        assert!(out.contains("Object.assign({}, g)"), "saving writes only the keys it knows");
+        assert!(!out.contains("const o = {};"), "saving writes only the keys it knows");
     }
 
     #[test]
     fn what_a_model_wraps_its_answer_in_is_not_part_of_the_answer() {
-        assert_eq!(strip_fence("one\ntwo"), "one\ntwo", "素のままなら素のまま");
+        assert_eq!(strip_fence("one\ntwo"), "one\ntwo", "plain in, plain out");
         assert_eq!(
             strip_fence("Here it is:\n```rust\nfn main() {}\n```\nhope that helps"),
             "fn main() {}",
-            "囲いの中だけが答え"
+            "only what is inside the fence is the answer"
         );
         // An opening fence with nothing closing it still gives up its contents
         assert_eq!(strip_fence("```\nline\n"), "line");
@@ -10570,10 +10570,10 @@ mod tests {
     fn manual_is_embedded_and_usable() {
         // The spec handed to the AI must be obtainable no matter where it's launched from (regardless of language)
         for (code, text) in EMBEDDED_MANUALS {
-            assert!(text.contains("shikisha.send_to_tab"), "{code} の仕様書が空");
+            assert!(text.contains("shikisha.send_to_tab"), "the spec for {code} is empty");
         }
         let m = load_manual(std::path::Path::new("/nonexistent/config.json"));
-        assert!(m.contains("shikisha."), "埋め込みにフォールバックする");
+        assert!(m.contains("shikisha."), "it falls back to the embedded one");
     }
 
     /// The spec must explain every event the screen offers as a choice.
@@ -10591,7 +10591,7 @@ mod tests {
                 }
                 assert!(
                     text.contains(event),
-                    "{code} の仕様書に {event} の説明が無い (AIはこのイベントを知らないまま書く)"
+                    "the spec for {code} does not explain {event} (the AI writes without knowing this event)"
                 );
             }
         }
@@ -10615,7 +10615,7 @@ mod tests {
         for (i, n) in names.iter().enumerate() {
             assert!(
                 !names[..i].contains(n),
-                "{name}: `{n}` がトップレベルで二重宣言されている (JS全体が動かなくなる)"
+                "{name}: `{n}` is declared twice at the top level (the whole script stops working)"
             );
         }
     }
@@ -10628,7 +10628,7 @@ mod tests {
             // Every page is coloured before it is worded, and each one says so
             // by asking for the block. A page that stopped asking would come up
             // with no colours defined and nothing would say why
-            assert!(page.contains("{{THEME}}"), "{name} が配色を受け取っていない");
+            assert!(page.contains("{{THEME}}"), "{name} does not receive the colors");
             let html = crate::i18n::render(&themed(page.to_string()))
                 .replace("__TOKEN__", "t")
                 .replace("__REMOTE__", "false")
@@ -10642,9 +10642,9 @@ mod tests {
             // is poured in on the way, and a page that kept a copy of one of
             // its names would only break once it was actually served
             assert_no_duplicate_bindings(name, &html);
-            assert!(!html.contains("{{"), "{name} に未置換の {{{{key}}}} が残っている");
-            assert!(!html.contains("__"), "{name} に未置換のプレースホルダが残っている");
-            assert!(html.contains("<html lang=\"en\">"), "{name} の lang 属性");
+            assert!(!html.contains("{{"), "an unfilled {{{{key}}}} is left in {name}");
+            assert!(!html.contains("__"), "an unfilled placeholder is left in {name}");
+            assert!(html.contains("<html lang=\"en\">"), "the lang attribute of {name}");
         }
     }
 
@@ -10704,9 +10704,9 @@ mod tests {
         // Both are listed, and no key is
         let seen = listed(&agent);
         let text = seen.to_string();
-        assert!(text.contains(&phone.id) && text.contains(&laptop.id), "端末が並んでいない: {text}");
-        assert!(!text.contains(&laptop_key), "鍵そのものが画面に出ている");
-        assert!(!text.contains(&laptop.hash), "照合用のハッシュまで出ている");
+        assert!(text.contains(&phone.id) && text.contains(&laptop.id), "the devices are not listed: {text}");
+        assert!(!text.contains(&laptop_key), "the key itself shows on the screen");
+        assert!(!text.contains(&laptop.hash), "even the hash used for matching shows");
 
         // Naming one
         agent
@@ -10714,7 +10714,7 @@ mod tests {
             .header("X-Token", &token)
             .send(serde_json::json!({"id": phone.id, "name": "台所のiPad"}).to_string())
             .unwrap();
-        assert!(listed(&agent).to_string().contains("台所のiPad"), "名前が残らない");
+        assert!(listed(&agent).to_string().contains("台所のiPad"), "the name is not kept");
 
         // Taking one away: the row goes, the running remote is told, and the
         // other device is untouched
@@ -10724,12 +10724,12 @@ mod tests {
             .send(serde_json::json!({"id": phone.id}).to_string())
             .unwrap();
         let after = listed(&agent).to_string();
-        assert!(!after.contains(&phone.id), "名簿から消えていない: {after}");
-        assert!(after.contains(&laptop.id), "巻き添えで消えた: {after}");
+        assert!(!after.contains(&phone.id), "it is not removed from the list: {after}");
+        assert!(after.contains(&laptop.id), "it was removed by mistake: {after}");
         assert_eq!(
             ended.lock().unwrap().as_slice(),
             [phone.id.as_str()],
-            "鍵は取り上げたが、その端末が見ている画面は止めていない"
+            "the key was taken away, but the screen that device is watching was not stopped"
         );
 
         ui.shutdown();
@@ -10837,9 +10837,9 @@ mod tests {
         // The top is this computer: the person's own folder and the drives
         let top = walk(r#"{"path":""}"#);
         assert_eq!(top["ok"], serde_json::json!(true), "{top}");
-        assert!(top["up"].is_null(), "一番上には戻る先が無い: {top}");
-        assert!(!top["dirs"].as_array().unwrap().is_empty(), "ドライブが出ていない: {top}");
-        assert_eq!(top["chosen"], serde_json::json!(""), "一番上は選べる場所ではない");
+        assert!(top["up"].is_null(), "the top has nowhere to go back to: {top}");
+        assert!(!top["dirs"].as_array().unwrap().is_empty(), "the drives are not shown: {top}");
+        assert_eq!(top["chosen"], serde_json::json!(""), "the top is not a place that can be chosen");
 
         // A settings-style relative path is read against the config folder, and
         // choosing the folder writes it back the same way
@@ -10850,7 +10850,7 @@ mod tests {
         let dirs = sub["dirs"].as_array().unwrap();
         assert_eq!(dirs.len(), 1, "{sub}");
         assert!(dirs[0].as_str().unwrap().ends_with("inner"));
-        assert!(sub["files"].as_array().unwrap().is_empty(), "フォルダ選びにファイルが混ざった: {sub}");
+        assert!(sub["files"].as_array().unwrap().is_empty(), "files got mixed into choosing a folder: {sub}");
 
         // Asked for files, the same folder lists them; walking onto one is the choice
         let with = walk(r#"{"path":"scripts","files":true}"#);
@@ -10962,11 +10962,11 @@ mod tests {
         let page = PAGE;
         assert!(
             page.contains(r#"back.addEventListener("mousedown", e => { if (e.target === back) back.remove(); });"#),
-            "モーダルが押下ではなくクリックで閉じている"
+            "the modal closes on click instead of on press"
         );
         assert!(
             !page.contains(r#"back.addEventListener("click""#),
-            "背景のクリックで閉じる書き方が戻っている"
+            "the way of closing on a background click is back"
         );
     }
 
@@ -11005,7 +11005,7 @@ mod tests {
                 ureq::Error::StatusCode(c) => c,
                 other => panic!("unexpected: {other}"),
             });
-        assert_eq!(status, 403, "トークン無しは拒否される");
+        assert_eq!(status, 403, "without a token it is refused");
 
         // Correct token → the current config can be read
         let body = agent
@@ -11030,7 +11030,7 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&cfg).unwrap(),
             r#"{"max_chain":10}"#,
-            "検証に失敗したら元の設定は保たれる"
+            "if validation fails, the original settings are kept"
         );
 
         // Valid JSON is saved

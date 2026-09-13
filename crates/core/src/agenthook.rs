@@ -447,10 +447,10 @@ mod tests {
 
         let after: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
-        assert_eq!(after["model"], "opus", "関係ない設定はそのまま");
-        assert_eq!(after["hooks"]["Stop"], theirs["hooks"]["Stop"], "別イベントは無傷");
+        assert_eq!(after["model"], "opus", "unrelated settings stay as they are");
+        assert_eq!(after["hooks"]["Stop"], theirs["hooks"]["Stop"], "other events are untouched");
         let starts = after["hooks"]["SessionStart"].as_array().unwrap();
-        assert_eq!(starts.len(), 2, "相手のフックの隣に足す");
+        assert_eq!(starts.len(), 2, "it is added beside the other hooks");
         assert_eq!(starts[0], theirs["hooks"]["SessionStart"][0]);
 
         // The file it replaced is still there to go back to
@@ -466,7 +466,7 @@ mod tests {
         uninstall(&t).unwrap();
         let back: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
-        assert_eq!(back, theirs, "自分の分だけを取り去る");
+        assert_eq!(back, theirs, "it takes away only its own");
         assert_eq!(status(&t), Status::Absent);
     }
 
@@ -481,12 +481,12 @@ mod tests {
     #[test]
     fn a_path_already_free_of_spaces_needs_no_second_name() {
         let plain = std::env::temp_dir().join("shikisha-plain").join("app");
-        assert!(!plain.display().to_string().contains(' '), "前提: {plain:?}");
+        assert!(!plain.display().to_string().contains(' '), "assumption: {plain:?}");
         assert_eq!(spaceless(&plain), Some(plain.display().to_string()));
 
         // And this program's own path answers, or nothing that needs the
         // unquoted spelling could ever be installed from here
-        assert!(spaceless(&me()).is_some(), "自分自身を名指せない: {:?}", me());
+        assert!(spaceless(&me()).is_some(), "it cannot name itself: {:?}", me());
     }
 
     /// One event can be asked for more than one thing, and all of it has to
@@ -512,7 +512,7 @@ mod tests {
             ],
         };
         install(&t).unwrap();
-        assert_eq!(status(&t), Status::Installed, "3つ書いたなら3つ揃っている");
+        assert_eq!(status(&t), Status::Installed, "three written means all three are there");
 
         let after: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
@@ -580,7 +580,7 @@ mod tests {
         crossed["hooks"]["Stop"][0]["hooks"][0]["args"] =
             serde_json::json!(["--hook", "state:BUSY"]);
         std::fs::write(&t.file, serde_json::to_string_pretty(&crossed).unwrap()).unwrap();
-        assert_eq!(status(&t), Status::Stale, "意味が違うものは入れ直す対象");
+        assert_eq!(status(&t), Status::Stale, "one with a different meaning is due to be reinstalled");
         install(&t).unwrap();
         assert_eq!(status(&t), Status::Installed);
         assert_eq!(
@@ -588,13 +588,13 @@ mod tests {
                 .map(|s| s.matches("--hook").count())
                 .unwrap(),
             4,
-            "入れ直しても増えない"
+            "reinstalling does not add more"
         );
 
         uninstall(&t).unwrap();
         let back: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
-        assert_eq!(back, serde_json::json!({}), "全イベントから引き上げる");
+        assert_eq!(back, serde_json::json!({}), "it is taken out of every event");
     }
 
     /// The profiles that ship with the app are read here rather than described:
@@ -625,9 +625,9 @@ mod tests {
     fn the_bare_form_carries_no_quotes() {
         let h = handler(HookFormat::Bare, TIMEOUT_S, "state:DONE");
         let line = h["command"].as_str().unwrap();
-        assert!(!line.contains('"'), "引用符があると起動しない: {line}");
+        assert!(!line.contains('"'), "with quotes it does not start: {line}");
         assert!(line.ends_with(" --hook state:DONE"), "{line}");
-        assert!(h.get("args").is_none(), "一行形式に args は書かない");
+        assert!(h.get("args").is_none(), "args are not written in the one-line form");
         // A CLI that waits on this is waiting for nothing; and above three
         // seconds Codex complains at every launch
         assert_eq!(h["async"], serde_json::json!(true));
@@ -636,7 +636,7 @@ mod tests {
         // spaces. (Where the exe lives during a test run has none, so this
         // checks the rule rather than the workaround)
         let program = line.trim_end_matches(" --hook state:DONE");
-        assert!(!program.contains(' '), "空白のあるパスは分割されて見失われる: {program}");
+        assert!(!program.contains(' '), "a path with a space is split and lost: {program}");
     }
 
     #[test]
@@ -645,11 +645,11 @@ mod tests {
         let t = target(&dir, HookFormat::Args);
         std::fs::write(&t.file, "{ this is not json").unwrap();
         assert!(matches!(status(&t), Status::Unreadable(_)));
-        assert!(install(&t).is_err(), "読めない設定は書き換えない");
+        assert!(install(&t).is_err(), "settings that cannot be read are not rewritten");
         assert_eq!(
             std::fs::read_to_string(&t.file).unwrap(),
             "{ this is not json",
-            "一文字も変わっていない"
+            "not one character has changed"
         );
     }
 
@@ -666,7 +666,7 @@ mod tests {
         assert_eq!(h["type"], "command");
         let line = h["command"].as_str().unwrap();
         assert!(line.starts_with('"') && line.contains("--hook session"), "{line}");
-        assert!(h.get("args").is_none(), "一行形式に args は書かない");
+        assert!(h.get("args").is_none(), "args are not written in the one-line form");
     }
 
     #[test]
@@ -682,15 +682,15 @@ mod tests {
             }] }] }
         });
         std::fs::write(&t.file, serde_json::to_string_pretty(&old).unwrap()).unwrap();
-        assert_eq!(status(&t), Status::Stale, "動かした後は古い場所を指したまま");
+        assert_eq!(status(&t), Status::Stale, "after moving, it still points at the old place");
         install(&t).unwrap();
-        assert_eq!(status(&t), Status::Installed, "入れ直すと今の場所を指す");
+        assert_eq!(status(&t), Status::Installed, "reinstalling points at the current place");
         let after: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
         assert_eq!(
             after["hooks"]["SessionStart"].as_array().unwrap().len(),
             1,
-            "古い方は残さない"
+            "the old one is not kept"
         );
     }
 }
