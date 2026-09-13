@@ -2162,6 +2162,8 @@ pub struct Folder {
     /// folders that said nothing -- so that nothing downstream has to know
     /// there were two places to ask
     pub protect: Vec<String>,
+    /// The project it says it is a piece of, by name, when it says
+    pub project: Option<String>,
 }
 
 /// A desk resolved at launch time (tabs are flattened; depth preserves the hierarchy)
@@ -2629,6 +2631,7 @@ fn resolve_folders(
                     .collect(),
                 None => protect.to_vec(),
             },
+            project: def.project.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_string),
         });
         flatten(&def.tabs, 0, at, &mut tabs);
     }

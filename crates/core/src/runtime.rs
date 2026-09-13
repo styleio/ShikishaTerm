@@ -1320,9 +1320,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 notify::banner_raise();
                 append_hook_log(&format!("wintoast: clicked (tab{tab})"));
                 if tab >= 1 {
-                    for e in keys_for(&shikisha_shared::Ev::Select { tab }) {
-                        shell.inject(e);
-                    }
+                    shell.mail().selects.push(tab);
                 }
             }
 
@@ -2182,6 +2180,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::LimitAck { tab }) => {
                         shell.mail().limit_acks.push(tab);
                     }
+                    // Picking a tab from afar. By number, as at the window
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Select { tab }) => {
+                        shell.mail().selects.push(tab);
+                    }
                     // Arranging the screen, from a device with room to
                     // arrange it. The same queues the window's own presses
                     // fill -- one place decides what a split means
@@ -2536,6 +2538,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .filter_map(|f| {
                             f.cwd.clone().map(|c| (c, f.name.clone().unwrap_or_default()))
                         })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            folder_projects: desks
+                .get(desk_index)
+                .map(|w| {
+                    w.folders
+                        .iter()
+                        .filter_map(|f| f.cwd.clone().zip(f.project.clone()))
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -4290,6 +4301,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 shell.mail().open_settings = Some((Some("update".into()), false, None, None));
             }
         }
+        // A tab asked for from the screen: a row in the list or the bar, a
+        // notification clicked. What it does is `look_at`'s to say, the same
+        // as the number pressed on the keyboard
+        for n in shell.mail().take_selects() {
+            if let Some(v) = look_at(n, surface_count, active, settings_open) {
+                (active, board_open, settings_open) = (v.active, v.board_open, v.settings_open);
+                view_touched_ms = start.elapsed().as_millis() as u64;
+            }
+        }
         for idx in shell.mail().take_limit_acks() {
             if let Some(i) = session_at(&surfaces, idx)
                 && let Some(t) = tabs.get_mut(i) {
@@ -4540,18 +4560,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // 0 is the board, which is a screen over everything;
                         // 1.. are the running things, which live in panes. One
                         // key row, two different kinds of destination
-                        KeyCode::Char('0') => {
-                            board_open = true;
-                            view_touched_ms = start.elapsed().as_millis() as u64;
-                        }
-                        KeyCode::Char(c @ '1'..='9') => {
-                            let n = c as usize - '0' as usize;
-                            if n <= surface_count {
-                                active = n;
-                                board_open = false;
+                        // Straight away rather than through the mailbox: the
+                        // keys after it in this same batch belong to the tab
+                        // it picked
+                        KeyCode::Char(c @ '0'..='9') => {
+                            if let Some(v) = look_at(c as usize - '0' as usize, surface_count, active, settings_open) {
+                                (active, board_open, settings_open) = (v.active, v.board_open, v.settings_open);
                                 view_touched_ms = start.elapsed().as_millis() as u64;
-                                // An explicit tab pick is a deliberate exit from settings.
-                                settings_open = false;
                             }
                         }
                         // Cycling walks the running things only. The board is
@@ -6887,6 +6902,30 @@ pub fn plaintext_secrets_warning(cfg: Option<&config::Config>) -> Option<String>
     has_secret.then(|| i18n::t("msg.secrets.unencrypted"))
 }
 
+/// What the view becomes when somebody asks to look at screen number `n`.
+#[derive(Debug, PartialEq)]
+pub struct LookAt {
+    pub active: usize,
+    pub board_open: bool,
+    pub settings_open: bool,
+}
+
+/// Looking at screen number `n`: 0 is the board, a screen over everything,
+/// which leaves the tab in front where it was; 1.. are the running things,
+/// which live in panes, and picking one is a deliberate exit from settings.
+/// `None` for a number nothing is at.
+///
+/// The one answer for every way of asking -- a digit after the prefix, a row
+/// pressed in the list, a notification clicked -- so none of them can come to
+/// mean something the others do not
+pub fn look_at(n: usize, surface_count: usize, active: usize, settings_open: bool) -> Option<LookAt> {
+    match n {
+        0 => Some(LookAt { active, board_open: true, settings_open }),
+        n if n <= surface_count => Some(LookAt { active: n, board_open: false, settings_open: false }),
+        _ => None,
+    }
+}
+
 /// Converts an intent from the screen into keystrokes the loop already understands.
 ///
 /// The window and the phone use the same page. If there were two separate places
@@ -6907,10 +6946,11 @@ pub fn keys_for(ev: &shikisha_shared::Ev) -> Vec<Event> {
         ]
     };
     match ev {
-        // "I want to look at this tab" is the same thing as Ctrl+B <digit>
-        Ev::Select { tab } if *tab <= 9 => {
-            prefixed(char::from_digit(*tab as u32, 10).unwrap_or('0'))
-        }
+        // "I want to look at this tab" is not here. It was Ctrl+B and a digit,
+        // and a digit is one character: tab 10 and on were pressed, sent,
+        // and turned into nothing. It goes to the mailbox by number instead
+        // (`Mailbox::selects`, `look_at`)
+        //
         // The tab bar's + is prefixed so it works no matter which tab is showing
         Ev::AddTab { .. } => prefixed('t'),
         // The board's menu is a plain keystroke while looking at INDEX.
@@ -7732,6 +7772,26 @@ mod tests {
         assert_eq!(super::coach_step(3, 0, false), (None, 0));
         // Folders all removed later: not a first run any more
         assert_eq!(super::coach_step(0, 2, false), (None, 2));
+    }
+
+    /// A tab past the ninth can be picked. Sent as Ctrl+B and a digit, tab 10
+    /// and on were pressed in the list and turned into nothing, and with a few
+    /// folders on a desk the tenth tab is not unusual
+    #[test]
+    fn a_tab_past_the_ninth_can_be_looked_at() {
+        use super::{look_at, LookAt};
+        assert_eq!(
+            look_at(12, 12, 1, true),
+            Some(LookAt { active: 12, board_open: false, settings_open: false })
+        );
+        assert_eq!(look_at(13, 12, 1, false), None, "無いタブに移った");
+        assert_eq!(
+            look_at(0, 12, 4, true),
+            Some(LookAt { active: 4, board_open: true, settings_open: true }),
+            "盤面を開いたら前のタブと設定を忘れた"
+        );
+        // And nothing turns it into keystrokes any more, where it was lost
+        assert!(super::keys_for(&shikisha_shared::Ev::Select { tab: 3 }).is_empty());
     }
 
     #[test]

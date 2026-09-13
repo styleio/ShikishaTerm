@@ -178,8 +178,15 @@ pub const PALETTE: [&str; 8] = [
 /// second folder should not have to learn that the first one has a name.
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct GroupState {
-    /// The heading: what someone named it, else the branch, else the folder
+    /// The heading: what someone named it; else, for a worktree, the branch it
+    /// was cut for; else the folder's own name
     pub name: String,
+    /// The project this folder is a piece of, in words: what the settings call
+    /// it, or the folder its repository is checked out in. Absent outside a
+    /// repository. Worked out here rather than on the page, because the page
+    /// can only see headings -- and a heading is not the project's name
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     /// The whole path, for the tooltip
     pub folder: String,
     /// The colour of this folder's project, ready to draw. Folders sharing one
@@ -244,20 +251,25 @@ impl GroupState {
             if out.iter().any(|(k, _)| k == cwd) {
                 continue;
             }
-            // What to call it: what someone typed, else the branch it is on,
-            // else the folder's own name. A branch first because with several
-            // of them open, the branch is the thing that tells them apart
+            // What to call it: what someone typed, else -- for a worktree --
+            // the branch it was cut for, else the folder's own name. The branch
+            // for a worktree because with several of them open, the branch is
+            // the thing that tells them apart. Not for a project's own
+            // checkout: that folder is the project, and headed by its branch
+            // two projects standing on main read as the same folder twice
             let name = t
                 .group_name()
                 .map(str::to_string)
                 .filter(|n| !n.trim().is_empty())
-                .or_else(|| t.place.branch.clone())
+                .or_else(|| t.place.branch.clone().filter(|_| t.place.linked))
                 .or_else(|| cwd.file_name().map(|n| n.to_string_lossy().to_string()))
+                .or_else(|| t.place.branch.clone())
                 .unwrap_or_default();
             out.push((
                 cwd.to_path_buf(),
                 GroupState {
                     name,
+                    project: None,
                     folder: cwd.display().to_string(),
                     color: t
                         .place
@@ -294,6 +306,7 @@ impl GroupState {
                         .map(str::to_string)
                         .or_else(|| cwd.file_name().map(|n| n.to_string_lossy().to_string()))
                         .unwrap_or_default(),
+                    project: None,
                     folder: cwd.display().to_string(),
                     // No colour: which project it belongs to is read off a
                     // running tab's place, and nothing is running here yet
@@ -308,7 +321,38 @@ impl GroupState {
             ));
         }
         adopt_checkouts(&mut out);
+        for (_, g) in out.iter_mut() {
+            g.project = g.family.as_deref().and_then(project_by_family);
+        }
         by_family(out)
+    }
+
+    /// Put the names the settings give projects over the ones read off disk.
+    ///
+    /// `named` is (a folder, the project it says it is in). A name written on
+    /// one folder of a household names the whole household: the worktrees cut
+    /// from a checkout do not each repeat what project they are
+    pub fn name_projects(groups: &mut [(std::path::PathBuf, GroupState)], named: &[(std::path::PathBuf, String)]) {
+        let mut by_family: Vec<(String, String)> = Vec::new();
+        for (at, name) in named {
+            let Some((_, g)) = groups.iter().find(|(k, _)| same_folder(k, at)) else { continue };
+            if let Some(f) = g.family.clone()
+                && !by_family.iter().any(|(k, _)| *k == f)
+            {
+                by_family.push((f, name.clone()));
+            }
+        }
+        for (at, g) in groups.iter_mut() {
+            let own = named.iter().find(|(k, _)| same_folder(k, at)).map(|(_, n)| n.clone());
+            let kin = g
+                .family
+                .as_ref()
+                .and_then(|f| by_family.iter().find(|(k, _)| k == f))
+                .map(|(_, n)| n.clone());
+            if let Some(n) = own.or(kin) {
+                g.project = Some(n);
+            }
+        }
     }
 
     /// The colour a project is drawn in: the one someone chose for it, or one
@@ -563,6 +607,21 @@ pub struct Project {
     pub at: String,
     /// What to call it in the list
     pub name: String,
+}
+
+/// A project's name read off the git folder its checkouts share: the folder
+/// the repository is checked out in (`D:\orion\.git` is orion), or a bare
+/// repository's own name without its `.git`
+fn project_by_family(family: &str) -> Option<String> {
+    let p = std::path::Path::new(family.trim_end_matches(['\\', '/']));
+    let name = if p.file_name().is_some_and(|n| n.eq_ignore_ascii_case(".git")) {
+        p.parent()?.file_name()?
+    } else {
+        p.file_name()?
+    };
+    let name = name.to_string_lossy();
+    let name = name.strip_suffix(".git").unwrap_or(&name);
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Whether two paths name one folder, the way Windows sees it: case does
@@ -1183,6 +1242,53 @@ mod tests {
         // Not in a repository, so it belongs to no family and has no colour
         assert_eq!(found[0].1.color, None);
         assert!(!found[0].1.linked);
+    }
+
+    /// A project's own checkout is headed by its folder and a worktree by its
+    /// branch, and both say which project they are in by the project's name.
+    ///
+    /// Headed by its branch, every checkout standing on main read "main" --
+    /// two projects side by side were two identical rows -- and the pill on a
+    /// worktree, read off that heading, named the branch instead of the project
+    #[test]
+    fn a_checkout_is_headed_by_its_folder_and_a_worktree_by_its_branch() {
+        let family = std::env::temp_dir().join("shikisha-group-orion").join(".git");
+        let place = |branch: &str, linked: bool| crate::repo::Place {
+            branch: Some(branch.to_string()),
+            family: Some(family.clone()),
+            linked,
+            ..Default::default()
+        };
+        let mut tabs = vec![in_folder("orion", None), in_folder("feature-x", None), in_folder("plain", None)];
+        tabs[0].place = place("main", false);
+        tabs[1].place = place("feature-x-branch", true);
+        let found = GroupState::all(&tabs, &Default::default(), &[]);
+        for t in tabs.iter_mut() {
+            t.kill();
+        }
+        let by = |end: &str| &found.iter().find(|(k, _)| k.ends_with(end)).unwrap().1;
+        let (head, cut, plain) = (by("shikisha-group-orion"), by("shikisha-group-feature-x"), by("shikisha-group-plain"));
+        assert_eq!(head.name, "shikisha-group-orion", "元のフォルダがブランチ名で呼ばれた");
+        assert_eq!(head.branch.as_deref(), Some("main"));
+        assert_eq!(cut.name, "feature-x-branch", "ワークツリーはブランチ名で呼ぶ");
+        assert_eq!(head.project.as_deref(), Some("shikisha-group-orion"));
+        assert_eq!(cut.project.as_deref(), Some("shikisha-group-orion"), "ワークツリーの札がプロジェクト名でない");
+        assert_eq!(plain.project, None, "リポジトリの外にプロジェクト名が付いた");
+
+        // A name the settings give one folder of the household names all of it
+        let mut named = found.clone();
+        let at = named.iter().find(|(k, _)| k.ends_with("shikisha-group-orion")).unwrap().0.clone();
+        GroupState::name_projects(&mut named, &[(at, "Orion API".into())]);
+        let projects: Vec<Option<&str>> = named.iter().map(|(_, g)| g.project.as_deref()).collect();
+        assert_eq!(projects.iter().filter(|p| **p == Some("Orion API")).count(), 2, "{projects:?}");
+    }
+
+    #[test]
+    fn a_project_is_named_after_the_folder_its_repository_is_checked_out_in() {
+        assert_eq!(project_by_family(r"D:\work\orion\.git").as_deref(), Some("orion"));
+        assert_eq!(project_by_family(r"D:\work\orion\.git\").as_deref(), Some("orion"));
+        assert_eq!(project_by_family("/srv/repos/orion.git").as_deref(), Some("orion"));
+        assert_eq!(project_by_family(""), None);
     }
 
     #[test]

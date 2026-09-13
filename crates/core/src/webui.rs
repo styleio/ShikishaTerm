@@ -4172,6 +4172,12 @@ function openModal(...kids) {
 // Child pages automatically answer native JavaScript dialogs for browser
 // automation. Settings decisions must remain on the page until a person acts.
 // A modal dialog also makes an editor underneath inert and traps keyboard focus.
+//
+// Every question asked here is about throwing something away -- a secret, a
+// device's key, a desk, unsaved changes -- so the button that does it wears
+// the colour for breaking things, not the brand's (STYLEGUIDE §5, buttons),
+// and the key that is pressed without looking lands on Cancel: an Enter meant
+// for the field underneath must not be the one that deletes
 let confirming = false;
 function confirmAction(message, action) {
   if (confirming) return Promise.resolve(false);
@@ -4183,7 +4189,8 @@ function confirmAction(message, action) {
       if (previous && previous.isConnected) previous.focus();
       resolve(answer);
     };
-    const accept = el("button", {class:"primary", onclick:() => finish(true)}, action);
+    const accept = el("button", {class:"danger", onclick:() => finish(true)}, action);
+    const cancel = el("button", {class:"quiet", onclick:() => finish(false)}, T["common.cancel"]);
     const dialog = el("dialog", {class:"modal-inner framed confirm-box",
       "aria-labelledby":"confirm-title", "aria-describedby":"confirm-message"},
       el("div", {class:"mhead"},
@@ -4191,8 +4198,7 @@ function confirmAction(message, action) {
         el("button", {class:"quiet icon", title:T["common.close"],
           "aria-label":T["common.close"], onclick:() => finish(false)}, "✕")),
       el("div", {class:"mbody", id:"confirm-message"}, message),
-      el("div", {class:"mfoot"},
-        el("button", {class:"quiet", onclick:() => finish(false)}, T["common.cancel"]), accept));
+      el("div", {class:"mfoot"}, cancel, accept));
     dialog.addEventListener("cancel", e => { e.preventDefault(); finish(false); });
     dialog.addEventListener("keydown", e => {
       if (e.key !== "Tab") return;
@@ -4207,7 +4213,7 @@ function confirmAction(message, action) {
           e.clientY < r.top || e.clientY > r.bottom)) finish(false);
     });
     document.body.append(dialog);
-    dialog.showModal(); accept.focus();
+    dialog.showModal(); cancel.focus();
   });
 }
 

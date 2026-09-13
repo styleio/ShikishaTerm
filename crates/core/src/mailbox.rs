@@ -99,6 +99,12 @@ pub struct Mailbox {
     pub help_site: bool,
     /// Tabs whose usage-limit notice was read, by screen number
     pub limit_acks: Vec<usize>,
+    /// Tabs somebody asked to look at, by screen number (0 is the board): a
+    /// row pressed in the list or the bar, a notification clicked, a number
+    /// pressed after the prefix. By number rather than as the keystroke it
+    /// would be, because a keystroke is one digit and a desk can hold more
+    /// than nine things
+    pub selects: Vec<usize>,
     /// Lines a person finished in the composer, each with the tab it is for,
     /// awaiting delivery. Filled from both surfaces: the window's ipc and the
     /// phone's relay.
@@ -253,6 +259,9 @@ impl Mailbox {
     }
     pub fn take_help_site(&mut self) -> bool {
         std::mem::take(&mut self.help_site)
+    }
+    pub fn take_selects(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.selects)
     }
     pub fn take_limit_acks(&mut self) -> Vec<usize> {
         std::mem::take(&mut self.limit_acks)

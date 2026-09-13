@@ -613,6 +613,7 @@ impl WinSurface {
                 Ev::Update { open } => self.mail.update_card = Some(open),
                 Ev::Help => self.mail.help_site = true,
                 Ev::LimitAck { tab } => self.mail.limit_acks.push(tab),
+                Ev::Select { tab } => self.mail.selects.push(tab),
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
                 Ev::RunAction { index } => self.mail.run_actions.push(index),
@@ -758,15 +759,37 @@ impl WinSurface {
     }
 }
 
+/// The port the window's own page is served on, worked out from where this
+/// copy of the program lives: the same install asks for the same port on every
+/// start, and two installs on one machine (a test copy beside the one in use)
+/// ask for different ones rather than taking turns with one. In the range no
+/// service registers, so nothing else expects to find it free
+fn shell_port(root: &std::path::Path) -> u16 {
+    let mut h: u32 = 2166136261;
+    for b in root.to_string_lossy().to_lowercase().bytes() {
+        h = (h ^ b as u32).wrapping_mul(16777619);
+    }
+    49152 + (h % 16384) as u16
+}
+
 /// Opens our own window and runs the same loop on top of it
 fn run_in_window() -> Result<()> {
     // Serve the shell page. file:// breaks wry's IPC, so serve it over local HTTP instead.
-    let server = tiny_http::Server::http("127.0.0.1:0").map_err(|e| {
-        anyhow::anyhow!(shikisha_core::i18n::tp(
-            "err.main.local_server",
-            &[("e", &e.to_string())]
-        ))
-    })?;
+    //
+    // On the same port every time when it can be had. What the page keeps for
+    // itself -- how the list is grouped, how big the git panes are -- lives in
+    // the browser's storage, and that storage belongs to an origin, port
+    // included: served from a port picked afresh on every start, the window
+    // forgot all of it every time it opened. Any free port is still better
+    // than no window
+    let server = tiny_http::Server::http(("127.0.0.1", shell_port(&config::root_dir())))
+        .or_else(|_| tiny_http::Server::http("127.0.0.1:0"))
+        .map_err(|e| {
+            anyhow::anyhow!(shikisha_core::i18n::tp(
+                "err.main.local_server",
+                &[("e", &e.to_string())]
+            ))
+        })?;
     let port = server
         .server_addr()
         .to_ip()
@@ -1585,6 +1608,20 @@ mod frame_bench {
             measure(&tab, &writer, kind);
             settle(&tab, Duration::from_millis(400), Duration::from_secs(10));
         }
+    }
+}
+
+#[cfg(test)]
+mod shell_port_tests {
+    /// One install asks for one port, start after start, so what the page keeps
+    /// in its storage is still there next time; another install asks for another
+    #[test]
+    fn the_same_install_asks_for_the_same_port() {
+        let a = super::shell_port(std::path::Path::new(r"C:\google\SHIKISHA-TERM"));
+        assert_eq!(a, super::shell_port(std::path::Path::new(r"C:\google\SHIKISHA-TERM")));
+        assert_eq!(a, super::shell_port(std::path::Path::new(r"c:\GOOGLE\shikisha-term")), "大文字小文字で別のポートになった");
+        assert_ne!(a, super::shell_port(std::path::Path::new(r"D:\ShikishaTerm\target\debug")));
+        assert!(a >= 49152, "登録済みの範囲に入った: {a}");
     }
 }
 

@@ -34,7 +34,7 @@
   A NEW INSTALL AND AN UPGRADE ARE DIFFERENT ROADS. A new install arrives on
   bare ground; an upgrade arrives on top of what the last version left behind,
   which for an installed package is everything under LOCALAPPDATA\SHIKISHA-TERM
-  -- config, workspaces, the last session. A version that cannot read what the
+  -- config, desks, the last session. A version that cannot read what the
   one before it wrote takes away the settings of everyone who updates, and no
   amount of testing a clean install will ever show it. -From is that road.
 

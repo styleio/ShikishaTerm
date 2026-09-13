@@ -5,7 +5,7 @@
   program and is only ever read -- lang, profiles, the automation manual -- goes
   inside the package, beside the exe, exactly as before. What belongs to the
   person using it does not: an installed package runs from a read-only folder,
-  so config, data, logs and workspaces live under LOCALAPPDATA instead. The
+  so config, data, logs and desks live under LOCALAPPDATA instead. The
   program decides that for itself at run time (see config::root_dir); nothing
   here has to arrange it.
 

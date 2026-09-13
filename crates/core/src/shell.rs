@@ -2241,7 +2241,7 @@ function drawTabs() {
   // of them
   const axis = groupBy !== "none" && folders.length > 1 ? groupBy : "none";
   if (folders.length > 1) nav.append(axisRow());
-  const keyed = folders.map((g, gi) => ({ gi, g, ...groupOf(g, inside[gi], axis, folders) }));
+  const keyed = folders.map((g, gi) => ({ gi, g, ...groupOf(g, inside[gi], axis) }));
   if (axis !== "none") {
     // Stable: folders keep the order the settings put them in, within their
     // group. A list that reshuffles itself as states change is a list nobody
@@ -2269,7 +2269,7 @@ function drawTabs() {
     const kin = axis === "none" && housed(g), top = axis === "none" && heads(g);
     if (kin && folded.has("kin:" + g.family)) continue;
     if (g.empty) { into.append(emptyRow(g)); continue; }
-    into.append(folderRow(g, kinOf(g), top, inside[gi], folders));
+    into.append(folderRow(g, kinOf(g), top, inside[gi]));
     // Its tabs are hidden while it is folded, and the heading says so
     if (folded.has(g.folder)) continue;
     const mine = inside[gi];
@@ -2414,18 +2414,7 @@ function drawCoach() {
 // which project, the shape is whether this is the project's own folder or a
 // branch of it. The head of a household also says which branch the project
 // itself is standing on, and how many branches hang under it
-// Which project a folder belongs to, said the way the list can work it out:
-// the folder of the checkout it shares a repository with. The settings can
-// name a project outright, and once that name reaches this page it belongs
-// here -- until then this is the answer the household box is already drawn
-// from, so the pill and the box can never disagree
-function projectOf(g, folders) {
-  if (!g.family) return null;
-  const head = (folders || []).find(o => o.family === g.family && !o.linked);
-  return head && head !== g ? (head.name || null) : null;
-}
-
-function folderRow(g, kin, head, mine, folders) {
+function folderRow(g, kin, head, mine) {
   const shut = folded.has(g.folder);
   const chip = g.linked ? cutMark() : el("span", {class:"chip"});
   if (g.color) {
@@ -2455,10 +2444,12 @@ function folderRow(g, kin, head, mine, folders) {
   }
   // Which repository, and where in it. Each half only when it is not already
   // on the row: a worktree folder is named after its branch unless somebody
-  // renamed it, and a project's own folder is usually named after the project
-  const proj = projectOf(g, folders);
-  if (proj && proj !== g.name) {
-    row.append(el("span", {class:"proj", title:T["tui.folder.project.title"] || ""}, proj));
+  // renamed it, and a project's own folder is named after its folder, which
+  // is usually the project. The project's name comes from the app -- a
+  // heading is not a project's name, and reading one as the other put "main"
+  // on every worktree of every project standing on main
+  if (g.project && g.project !== g.name) {
+    row.append(el("span", {class:"proj", title:T["tui.folder.project.title"] || ""}, g.project));
   }
   if (g.branch && g.branch !== g.name) {
     row.append(el("span", {class:"on", title:T["tui.folder.on.title"] || ""}, g.branch));
@@ -2520,11 +2511,11 @@ function tabRow(t, g, deep, head) {
   if (t.place) {
     const p = t.place;
     const line = el("span", {class:"place"});
-    // Not when the heading right above already says it. Two tabs under
-    // "feature/login" saying "feature/login" each is the sidebar spending
-    // three lines on one fact
+    // Not when the heading right above already says it, as its name or as the
+    // branch it wears. Two tabs under "feature/login" saying "feature/login"
+    // each is the sidebar spending three lines on one fact
     const heading = g ? g.name : null;
-    const worn = head && g && p.branch === g.branch;
+    const worn = g && p.branch === g.branch;
     if (p.branch && p.branch !== heading && !worn) {
       // A long branch name is shortened from the front. The end of a branch
       // name is the part someone chose ("…/fix-login"); the front is the
@@ -3360,7 +3351,7 @@ function setGroupBy(v) {
 // repository is checked out in, which is the household the list already
 // draws; a folder that is in no repository at all is its own answer rather
 // than being filed under a project it does not have
-function groupOf(g, mine, axis, folders) {
+function groupOf(g, mine, axis) {
   if (axis === "state") {
     if (!(mine || []).length) return { key: "-", label: T["tui.group.idle"] || "Nothing running" };
     const st = worstOf(mine);
@@ -3369,8 +3360,7 @@ function groupOf(g, mine, axis, folders) {
   }
   if (axis === "project") {
     if (!g.family) return { key: "-", label: T["tui.group.noproject"] || "No project" };
-    const head = folders.find(o => o.family === g.family && !o.linked);
-    return { key: g.family, label: (head && head.name) || g.name || "" };
+    return { key: g.family, label: g.project || g.name || "" };
   }
   return { key: "", label: "" };
 }
@@ -4342,15 +4332,23 @@ window.__panes = function (json) {
         // ▥ lines running down = a division down the middle; ▤ lines running
         // across = a division across. A matched pair, so the two read as one
         // choice with two directions rather than as two unrelated icons
-        '<span class="sp sr" title="' + (T["tui.pane.split_right"] || "") + '">&#9637;</span>' +
-        '<span class="sp sd" title="' + (T["tui.pane.split_down"] || "") + '">&#9636;</span>' +
+        '<span class="sp sr">&#9637;</span>' +
+        '<span class="sp sd">&#9636;</span>' +
         // Same act, two directions in time: ⟳ carries the conversation on,
         // ⟲ goes back to the start of one. A matched pair, the way ▥ and ▤ are
-        '<span class="rs rk" title="' + (T["tui.pane.restart_keep"] || "") + '">&#10227;</span>' +
-        '<span class="rs rf" title="' + (T["tui.pane.restart_fresh"] || "") + '">&#10226;</span>' +
+        '<span class="rs rk">&#10227;</span>' +
+        '<span class="rs rf">&#10226;</span>' +
         '<span class="cl">&#10005;</span></div>' +
         '<div class="pbody"><pre class="pscreen notranslate" translate="no"></pre>' +
         '<div class="pnew"></div><div class="pask"></div></div>';
+      // The hints are set as properties, not written into the markup: the key
+      // to split downwards is Ctrl+B ", and a quote spliced into an attribute
+      // ends the attribute there -- the hint read "Split down (Ctrl+B " and
+      // stopped
+      for (const [sel, key] of [[".sp.sr", "tui.pane.split_right"], [".sp.sd", "tui.pane.split_down"],
+                                [".rs.rk", "tui.pane.restart_keep"], [".rs.rf", "tui.pane.restart_fresh"]]) {
+        el.querySelector(sel).title = T[key] || "";
+      }
       // Clicking anywhere in a pane you are not in moves you there. The close
       // control is the one thing inside it that means something else.
       el.onmousedown = (e) => {
@@ -10594,7 +10592,7 @@ mod tests {
         // A browser belongs to no folder and comes after every folder
         assert!(PAGE.contains("for (const t of loose) nav.append(tabRow(t, null, false, false));"));
         // The head's own branch is said once, on the head, not again under each tab
-        assert!(PAGE.contains("const worn = head && g && p.branch === g.branch;"));
+        assert!(PAGE.contains("const worn = g && p.branch === g.branch;"));
     }
 
     /// A folder with no tab in it is on the list, and the next thing to press

@@ -911,6 +911,7 @@ mod remote_folder_tests {
             cwd: Some(std::path::PathBuf::from("/srv/api/work")),
             source: Default::default(),
             protect: Vec::new(),
+            project: None,
         };
         let cfg = config::TabConfig::default();
         let opts = tab_options(&cfg, Some(&there));
