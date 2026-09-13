@@ -22,7 +22,7 @@ pub struct TabOptions {
     pub group: Option<String>,
     /// The branches a commit made from this tab refuses to land on, straight
     /// from the folder's settings. It travels with the tab because naming a tab
-    /// is how automation names a repository -- `git_commit("農場1", …)` has to
+    /// is how automation names a repository -- `git_commit("farm1", …)` has to
     /// arrive knowing what that project guards
     pub protect: Vec<String>,
     /// Number of scrollback lines

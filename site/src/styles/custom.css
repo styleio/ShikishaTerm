@@ -1,5 +1,5 @@
-/* アクセントはロゴの #00AAFF に合わせる。
-   アプリの枠と見出しも同じ色なので、サイトから画面まで地続きになる */
+/* The accent matches the logo's #00AAFF.
+   The app's frame and headings are the same color, so the site runs straight on into the app */
 :root {
   --sl-color-accent-low: #06283d;
   --sl-color-accent: #0090dd;
@@ -11,19 +11,19 @@
   --sl-color-accent-high: #06344f;
 }
 
-/* トップの hero は文章量が多いので、行間を少しゆるめる */
+/* The hero at the top has a lot of text, so the line height is loosened a little */
 .hero .sl-markdown-content p {
   line-height: 1.7;
 }
 
-/* 「何ができるか」を並べるカードの見出しを詰める */
+/* Tighten the headings on the cards that list what it can do */
 .card .title {
   line-height: 1.3;
 }
 
-/* ダウンロード直後のページ (/get/) に置く2枚のカード。
-   MDX の中では <style> が書けない (CSS の { が JSX 式として読まれる) ので、
-   ここに置く */
+/* The two cards on the page shown right after a download (/get/).
+   <style> cannot be written inside MDX (the { in CSS is read as a JSX expression), so
+   they live here */
 .asks {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));

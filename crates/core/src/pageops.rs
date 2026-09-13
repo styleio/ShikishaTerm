@@ -380,7 +380,7 @@ pub fn ref_stale(r: u32, e: anyhow::Error) -> anyhow::Error {
 }
 
 /// Click a digest ref with genuine mouse events. Returns the state plus
-/// an echo — what was actually clicked (`link 「…」`) — so a wrong ref
+/// an echo — what was actually clicked (`link "…"`) — so a wrong ref
 /// number is exposed by its own answer instead of failing silently.
 ///
 /// A hidden webview (bounds 0×0 — e.g. another tab is showing) stops
@@ -552,8 +552,8 @@ pub fn click_desc(s: &dyn Speaks, to: Option<&str>, oid: &str, timeout_ms: u64) 
     const DESC: &str = r#"function () {
         const t = this.innerText || this.value || this.getAttribute("aria-label")
                || this.getAttribute("alt") || "";
-        return this.tagName.toLowerCase() + " 「"
-             + Array.from(String(t).replace(/\s+/g, " ").trim()).slice(0, 60).join("") + "」";
+        return this.tagName.toLowerCase() + ' "'
+             + Array.from(String(t).replace(/\s+/g, " ").trim()).slice(0, 60).join("") + '"';
     }"#;
     s.cdp(
         to,
@@ -680,7 +680,7 @@ pub fn field_desc(s: &dyn Speaks, to: Option<&str>, oid: &str, timeout_ms: u64) 
         const t = this.getAttribute("placeholder") || this.getAttribute("aria-label")
                || this.getAttribute("name") || this.id || "";
         return this.tagName.toLowerCase()
-             + (t ? " 「" + Array.from(String(t)).slice(0, 40).join("") + "」" : "");
+             + (t ? ' "' + Array.from(String(t)).slice(0, 40).join("") + '"' : "");
     }"#;
     s.cdp(
         to,

@@ -1,7 +1,7 @@
-//! PTY入出力の切り分け用ヘッドレスプローブ (デバッグ用)
-//! 使い方: cargo run --bin pty_probe -- [--watch] <command> [args...]
-//! 指定コマンドをPTYで起動し、出力を約10秒キャプチャして表示する。
-//! 途中でテスト入力("echo PROBE_OK\r")も書き込む (--watch なら何も書き込まない)。
+//! A headless probe for narrowing down PTY input and output problems (for debugging)
+//! Usage: cargo run --bin pty_probe -- [--watch] <command> [args...]
+//! Starts the given command in a PTY, captures its output for about 10 seconds, and prints it.
+//! Also writes a test input ("echo PROBE_OK\r") partway through (with --watch, it writes nothing).
 
 use std::io::{Read as _, Write as _};
 use std::sync::mpsc;
@@ -70,7 +70,7 @@ fn main() -> anyhow::Result<()> {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
             if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(200)) {
-                // カーソル位置照会(DSR)には本物のターミナル同様応答する
+                // Answer a cursor position query (DSR) the way a real terminal would
                 if chunk.windows(4).any(|w| w == b"\x1b[6n") {
                     println!("[probe] DSR query detected -> replying \\x1b[30;1R");
                     let _ = writer.write_all(b"\x1b[30;1R");

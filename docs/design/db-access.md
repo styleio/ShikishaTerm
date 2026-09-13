@@ -38,7 +38,7 @@ What that buys:
 4. Users can automate the management tab itself in Lua
 
 What we build becomes a Lego brick in the user's hands. Far from breaking the primitives rule
-(RULES, "設計の約束"), this is that rule applied plainly.
+(RULES, the design commitments), this is that rule applied plainly.
 
 ---
 
@@ -87,7 +87,7 @@ no need to pick one point for the whole app.
 
 ```
 Layer 1  db.query(name, sql, params) / db.exec(name, sql, params)   raw; the foundation
-Layer 2  db.tables(name) / db.columns(name, "users")                dialect差 lives only here
+Layer 2  db.tables(name) / db.columns(name, "users")                dialect differences live only here
 Layer 3  db.insert / db.update / db.delete / db.clause              sugar
 ──────────────────────────────────────────────────────────────────
 Screen   a thin GUI that calls the above (one page in webui.rs)
@@ -420,7 +420,7 @@ upstream change.
 ## Notes
 
 - Whatever SQL actually runs must be shown somewhere a person can read it (RULES,
-  「走るものは見せる」). The display side must call the same assembly function the execution uses,
+  "show what runs"). The display side must call the same assembly function the execution uses,
   never imitate it
 - The settings screen says "create a read-only user and connect with it" as an instruction.
   It does not say "recommended" or "optional" (RULES and existing practice)

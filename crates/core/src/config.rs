@@ -2396,7 +2396,7 @@ fn hash5(s: &str) -> String {
             out.push(b'0');
         }
         out.reverse();
-        String::from_utf8(out).expect("36進の数字")
+        String::from_utf8(out).expect("base-36 digits are ASCII")
     };
     let s = format!("{:0>5}", base36(h));
     s[s.len() - 5..].to_string()
@@ -2443,7 +2443,7 @@ pub fn unique_id(base: &str, used: &std::collections::HashSet<String>) -> String
     (2..)
         .map(|n| format!("{base}-{n}"))
         .find(|c| !used.contains(c))
-        .expect("いつかは空く")
+        .expect("some suffix is free sooner or later")
 }
 
 /// Give every tab a name automation can say, and make sure no two are the same.
@@ -2711,7 +2711,7 @@ pub fn set_folder_color(family: &Path, color: &str) -> Result<()> {
         root["folder_colors"] = serde_json::json!({});
     }
     let key = family.display().to_string();
-    let map = root["folder_colors"].as_object_mut().expect("作ったばかり");
+    let map = root["folder_colors"].as_object_mut().expect("made just above");
     match color.trim() {
         "" => {
             map.shift_remove(&key);
@@ -3027,7 +3027,7 @@ pub(crate) fn ensure_folders(holder: &mut serde_json::Value) {
         .and_then(|t| t.as_array().cloned())
         .filter(|t| !t.is_empty());
     if let Some(mut legacy) = legacy {
-        let folders = holder["folders"].as_array_mut().expect("作ったばかり");
+        let folders = holder["folders"].as_array_mut().expect("made just above");
         if folders.is_empty() {
             folders.push(serde_json::json!({ "tabs": [] }));
         }
@@ -3042,7 +3042,7 @@ pub(crate) fn ensure_folders(holder: &mut serde_json::Value) {
 /// One answer to "where does a tab go", used by everything that adds one
 fn folder_tabs_at<'a>(holder: &'a mut serde_json::Value, cwd: Option<&Path>) -> &'a mut Vec<serde_json::Value> {
     ensure_folders(holder);
-    let folders = holder["folders"].as_array_mut().expect("作ったばかり");
+    let folders = holder["folders"].as_array_mut().expect("made just above");
     let at = folders.iter().position(|g| {
         let here = g.get("cwd").and_then(|c| c.as_str()).map(resolve_folder_cwd);
         here.as_deref() == cwd
@@ -3058,7 +3058,7 @@ fn folder_tabs_at<'a>(holder: &'a mut serde_json::Value, cwd: Option<&Path>) -> 
             folders.len() - 1
         }
     };
-    folders[at]["tabs"].as_array_mut().expect("配列")
+    folders[at]["tabs"].as_array_mut().expect("tabs is an array")
 }
 
 /// Copies of tabs need names automation can still tell apart. The one it uses
@@ -3268,7 +3268,7 @@ impl Config {
 /// two are the same.
 ///
 /// The display name is a label a person is free to change and free to reuse --
-/// two desks called "本番" is nobody's mistake. What a desk's secrets
+/// two desks called "production" is nobody's mistake. What a desk's secrets
 /// are filed under cannot work that way, so it is settled here: unique across
 /// the settings, inferred from the display name when nothing was written, and
 /// left alone once it exists. Renaming the desk on screen after that costs

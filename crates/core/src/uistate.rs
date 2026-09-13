@@ -486,7 +486,7 @@ impl UsageState {
     /// The words are English in every language on purpose (the shipped
     /// Japanese carries no `tui.usage.*` entries, so they fall through to
     /// the English). This row has one job -- keep STOP within reach -- and
-    /// "5時間枠 24% 使用 · 0時間9分後に回復" ran the reading to twice the
+    /// the Japanese translation of it ran the reading to twice the
     /// width of "5h 24% used 9m", pushing the button toward the edge. A
     /// person's decision to translate these keys anyway is honoured, but it
     /// is a decision to make the row wider
@@ -945,7 +945,7 @@ fn kept_by_the_system(_: &std::fs::DirEntry) -> bool {
 ///
 /// Not `%USERPROFILE%\\Desktop`: with OneDrive backing it up, the desktop is
 /// somewhere under OneDrive and is named in the system's own language -- on the
-/// machine this was written on, `OneDrive\\デスクトップ`. A guessed path would
+/// machine this was written on, it is not called Desktop at all. A guessed path would
 /// open a folder that is not the one on the screen behind the window
 #[cfg(windows)]
 fn desktop_dir() -> Option<String> {

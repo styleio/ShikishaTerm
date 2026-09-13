@@ -939,8 +939,8 @@ to open, which is what a sign-in button usually needs.
   ask for them. Text you can flick through and select, not a grid of characters
   turned page by page. Available for the CLIs that keep such a record (Claude
   Code, Codex).
-- **A second reload button, the one that ignores what is stored.** Next to 再読み込み
-  is スーパーリロード — the page and everything it is built from is fetched again.
+- **A second reload button, the one that ignores what is stored.** Next to Reload
+  is Hard reload — the page and everything it is built from is fetched again.
   Shift-clicking the plain one does the same. Each has its own switch in the
   tab's settings, so a page can show one, the other, or both.
 - **The browser can be told what name to give sites (UA).** Empty means it looks

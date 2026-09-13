@@ -4291,7 +4291,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // can't be operated.
             let (is_browser, target_id) = match surfaces.get(target.wrapping_sub(1)) {
                 // Drive by the browser's KEY, not its display name: the display name
-                // may be localized ("ブラウザ") while browser_* resolves by key, so
+                // may be localized (a translated "Browser") while browser_* resolves by key, so
                 // passing the name yields "that browser isn't open".
                 Some(Surface::Browser { key, .. }) => (true, key.clone()),
                 Some(Surface::Session(s)) if Some(*s) != session_at(&surfaces, active) => {
