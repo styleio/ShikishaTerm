@@ -9284,8 +9284,12 @@ function sendLine(text, tab) {
 function sendBar() {
   if (!castInput) return;
   // On a git panel there is nothing else Send could mean: the surface has no
-  // command line to type at, and the line in the bar is the commit message
-  if (gitTab()) { gitCommit(); return; }
+  // command line to type at, and the line in the bar is the commit message.
+  // Only the panel standing as a tab of its own, not gitTab(): that one also
+  // answers for any tab whose folder is a repository (the column's reach),
+  // which turned every Send from a phone -- to Claude, to a shell -- into a
+  // commit of whatever was typed
+  if (gitSurfaceTab()) { gitCommit(); return; }
   const t = castInput.value;
   // 📼's ▶ run mode owns the button: Run the sheet on the shown page. The
   // text stays put — it's a document being iterated, not a message. In ⏺
@@ -10898,6 +10902,24 @@ mod tests {
         assert!(PAGE.contains("if (dgBusy || dgOwed === 0) return;"), "問い合わせが同時に何本も出る");
         assert!(PAGE.contains("dgCoast = requestAnimationFrame(step);"), "離した後に滑らない");
         assert!(!PAGE.contains("pageBy(d > 0 ? 1 : -1)"), "スワイプが1ページ送りに戻っている");
+    }
+
+    /// Send from the composer goes to the pane in front, and only a git panel
+    /// standing as its own tab turns it into a commit.
+    ///
+    /// gitTab() answers for any tab whose folder is a repository -- the right
+    /// reach for the changes column, the wrong one here: asked it, every Send
+    /// from a phone to Claude or a shell in a repository became a commit of
+    /// the typed words, refused on main and so, to the person, simply dead.
+    #[test]
+    fn send_reaches_the_pane_and_commits_only_on_a_git_panel() {
+        let at = PAGE.find("function sendBar() {").expect("sendBar がない");
+        let body = &PAGE[at..at + PAGE[at..].find("\n}\n").expect("sendBar の終わりがない")];
+        assert!(
+            body.contains("if (gitSurfaceTab()) { gitCommit(); return; }"),
+            "送信がgitパネルのタブ以外でもコミットになる"
+        );
+        assert!(!body.contains("if (gitTab())"), "送信がリポジトリ内のタブ全部をgitパネル扱いしている");
     }
 
     /// The folder picker is a framed dialog, drawn in this app's own marks.
