@@ -172,6 +172,7 @@ Use the part that exists. Adding a new kind of part is a change to this page.
 | **Bar** | A number between 0 and 100 | `--line` track, `--live` fill, `--warn` past 80, `--stop` past 95; always with words beside it saying what it is of and when it resets |
 | **Dialog** (`.vbox`) | One decision | title · one sentence · fields · the exact thing that will run (mono well) · one primary button at the right, ✕ at the top |
 | **Dialog** (settings, `.framed`) | One record, edited | **header** (title · ✕) · **body** (fields) · **footer** (destructive at the left, then the reason it cannot be saved, then Cancel and the primary at the right), each divided by a `--line` |
+| **Dialog** (choosing, `.picker`) | One place out of many | The same header, body and footer as `.framed`, with the body in **two columns** (left 200px = places to start from, right = breadcrumb · list). Width `min(760px,100%)`, body at a fixed height so the window does not grow and shrink with what is listed. A filter field under the header. One press on a row **selects** it; `›` or a double press **goes in** (on a phone `›` is the only way in). Footer: what is selected · an **add** button at the left · Cancel and the primary at the right. Line-drawn marks, no emoji. At 640px and below the left column becomes a row across the top |
 | **Field** | One thing to fill in | its name above it (12px `--text`), the control, the line that explains it under (11.5px `--faint`); `--s2` between them and `--s5` to the next field |
 | **Boxed list** (`.rows`) | Several of the same thing | one border round the whole, `--line` between rows, `--panel2` on hover, a `›` at the right when the row opens something |
 | **Sidebar** (settings) | What is being edited | a **sign** (initial plate · name · gear · `▾` at the far right), one row for the program's own settings, then the tree. Name and gear open that desk's page, `▾` goes to another one, and the app row puts its list where the tree was |
@@ -261,6 +262,12 @@ One law, so that no screen has to be learned twice.
 
 A screen never has two primary buttons. When a dialog is open, the page's own
 save is behind the scrim and is not the one being talked about.
+
+The left end of a dialog's footer holds **one** of two things: a destructive
+button, or a button that **adds to what the dialog is showing** (the picker's
+"New folder"). Both are things to keep away from the primary. An add button is
+a plain one (`--edge` outline), never in the destructive `--stop` text, and a
+dialog never has both.
 
 ### 5.4 A button that cannot be pressed
 

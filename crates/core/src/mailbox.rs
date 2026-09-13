@@ -158,8 +158,9 @@ pub struct Mailbox {
     pub repairs: Vec<(String, String, String, bool)>,
     /// Colours chosen for a project: (a folder in it, the colour)
     pub folder_colors: Vec<(String, String)>,
-    /// Folders being looked through, and the one finally chosen
-    pub browses: Vec<(String, bool)>,
+    /// Folders being looked through, the one finally chosen, and the name of a
+    /// folder to make where the list is standing: (path, open, make)
+    pub browses: Vec<(String, bool, String)>,
     /// Folders renamed in the list: (folder, the new name)
     pub folder_names: Vec<(String, String)>,
     /// Folders taken out of the list. The files stay where they are
@@ -341,7 +342,7 @@ impl Mailbox {
     pub fn take_folder_colors(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.folder_colors)
     }
-    pub fn take_browses(&mut self) -> Vec<(String, bool)> {
+    pub fn take_browses(&mut self) -> Vec<(String, bool, String)> {
         std::mem::take(&mut self.browses)
     }
     pub fn take_folder_names(&mut self) -> Vec<(String, String)> {

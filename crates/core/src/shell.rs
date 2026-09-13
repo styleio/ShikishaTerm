@@ -361,7 +361,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #strip .snew:hover { color:var(--text); background:var(--hover); }
   /* Which repository a folder belongs to. A label, not a state, so it is worn
      the way the branch beside it is: quiet, and never in a state's colour */
-  .tab.folder .proj { flex:none; padding:0 5px; border-radius:var(--r-chip);
+  /* It gives up its width long before the folder's own name does: on a phone's
+     sidebar the name was squeezed to one letter while the project beside it was
+     shown whole, and the name is the thing the row is about */
+  .tab.folder .proj { flex:0 100 auto; min-width:0; padding:0 5px; border-radius:var(--r-chip);
     background:var(--panel2); color:var(--muted); font-size:11px;
     max-width:96px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   /* The grouping chooser, and the headings it produces */
@@ -432,7 +435,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the sidebar, and never on the left edge, which belongs to the AI's own
      colour */
   .tab.folder { padding-top:9px; padding-bottom:3px; gap:6px; }
-  .tab.folder .nm { font-size:11.5px; opacity:.85; letter-spacing:.02em; }
+  .tab.folder .nm { font-size:11.5px; opacity:.85; letter-spacing:.02em; min-width:4em; }
   /* A household: a project's own folder with the branches cut from it. One
      box, so the eye reads them as one project; the head of it a shade
      heavier than any other heading, since it is the row that names the
@@ -444,7 +447,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .family .tab.intab.deep { padding-left:40px; }
   /* Which branch the project itself is standing on, worn by the head of a
      household only: alone, a folder's own branch is already on its tabs */
-  .tab.folder .on { flex:0 0 auto; font-size:10px; color:var(--dim); font-family:var(--mono);
+  .tab.folder .on { flex:0 50 auto; min-width:0; font-size:10px; color:var(--dim); font-family:var(--mono);
     border:1px solid var(--line); border-radius:var(--r-chip); padding:0 4px; max-width:90px;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   /* How many branches hang under this project, and the one press that puts
@@ -1498,6 +1501,104 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-radius:var(--r-ctl); padding:4px 6px; outline:none; }
   #repair .rerr { color:var(--stop); font-size:12px; white-space:pre-wrap; }
   #branch .brow, #browse .brow { display:flex; gap:var(--s2); justify-content:flex-end; }
+  /* The folder picker. A framed dialog (5.2) -- head, body, foot, each divided
+     by a rule -- widened to hold two columns, which is the one thing it has that
+     a one-question dialog does not: somewhere to start from, beside the list */
+  #browse .vbox.picker { width:min(760px,100%); padding:0; gap:0; max-height:86vh; }
+  #browse .picker .vhead { padding:16px 20px; margin:0; }
+  #browse .pfilter { position:relative; padding:12px 20px; border-bottom:1px solid var(--line); }
+  #browse .pfilter .pqi { position:absolute; left:32px; top:50%; transform:translateY(-50%);
+    color:var(--dim); display:flex; pointer-events:none; }
+  #browse .pq { width:100%; height:36px; box-sizing:border-box; padding:0 12px 0 34px;
+    font:inherit; font-size:13px; color:var(--text); background:var(--bg);
+    border:1px solid var(--edge); border-radius:var(--r-ctl); outline:none; }
+  #browse .pq:focus { border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #browse .pbody { display:grid; grid-template-columns:200px 1fr; height:min(420px,52vh); min-height:0; }
+  #browse .pplaces { border-right:1px solid var(--line); overflow:auto; padding:var(--s2) 0; }
+  #browse .phd { padding:6px 16px 4px; color:var(--muted); font-size:11.5px; }
+  #browse .pl { display:flex; align-items:center; gap:var(--s2); min-height:28px; padding:0 16px;
+    font-size:13px; color:var(--text); cursor:pointer; white-space:nowrap; overflow:hidden; }
+  #browse .pl .nm { overflow:hidden; text-overflow:ellipsis; }
+  #browse .pl:hover { background:var(--panel2); }
+  #browse .pl.on { background:var(--raise); box-shadow:inset 3px 0 0 var(--brand); }
+  #browse .pl.group { color:var(--muted); cursor:default; }
+  #browse .pl.group:hover { background:none; }
+  #browse .pl .tree { color:var(--faint); font-family:var(--mono); width:12px; flex:none; }
+  #browse .pl .ico, #browse .pr .ico { color:var(--dim); display:flex; flex:none; }
+  #browse .pmain { display:flex; flex-direction:column; min-width:0; min-height:0; }
+  #browse .pcrumb { display:flex; align-items:center; flex-wrap:wrap; gap:2px; padding:8px 16px;
+    border-bottom:1px solid var(--line); font-family:var(--mono); font-size:12px; color:var(--text); }
+  #browse .pcrumb .seg { cursor:pointer; padding:1px 3px; border-radius:var(--r-chip); }
+  #browse .pcrumb .seg:hover { background:var(--panel2); }
+  #browse .pcrumb .div { color:var(--faint); }
+  #browse .pcrumb .ico { color:var(--dim); display:flex; margin-right:var(--s1); }
+  #browse .pnote:empty { display:none; }
+  #browse .pnote { padding:8px 16px; font-size:12px; color:var(--dim); }
+  #browse .pnote.bad { color:var(--stop); white-space:pre-wrap; }
+  #browse .prows { overflow:auto; flex:1; min-height:0; }
+  #browse .pr { display:flex; align-items:center; gap:var(--s2); min-height:30px; padding:0 8px 0 16px;
+    font-size:13px; color:var(--text); cursor:pointer; user-select:none; }
+  #browse .pr:hover { background:var(--panel2); }
+  #browse .pr.sel { background:var(--raise); box-shadow:inset 3px 0 0 var(--brand); }
+  #browse .pr .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #browse .pr .up { color:var(--dim); }
+  #browse .pr .when { flex:none; color:var(--dim); font-size:11.5px; font-variant-numeric:tabular-nums; }
+  /* The way in. A row that opens something ends in a chevron (5.5), and on a
+     phone -- where nothing is double-clicked -- it is the only way in */
+  #browse .pr .in { flex:none; min-width:22px; min-height:22px; display:flex; align-items:center;
+    justify-content:center; color:var(--dim); border-radius:var(--r-chip); }
+  #browse .pr .in:hover { color:var(--text); background:var(--panel2); }
+  #browse .pr.making { cursor:default; }
+  #browse .pr.making input { flex:1; min-width:0; height:26px; box-sizing:border-box; padding:0 8px;
+    font:inherit; font-size:13px; color:var(--text); background:var(--bg);
+    border:1px solid var(--brand); border-radius:var(--r-ctl); outline:none; }
+  #browse .pmakewhy:empty { display:none; }
+  #browse .pmakewhy { margin:4px 16px 6px 38px; padding:var(--s2) var(--s3); font-size:11.5px;
+    color:var(--warn); border-radius:var(--r-ctl);
+    background:color-mix(in srgb, var(--warn) 9%, transparent);
+    border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+  #browse .pfoot { display:flex; flex-direction:column; gap:var(--s2); padding:12px 20px;
+    border-top:1px solid var(--line); }
+  #browse .psel { display:flex; align-items:center; gap:var(--s2); min-width:0; }
+  #browse .psel .plab { flex:none; font-size:12px; color:var(--dim); }
+  #browse .psel .ppath { display:flex; align-items:center; gap:var(--s1); min-width:0;
+    font-family:var(--mono); font-size:12px; color:var(--text); }
+  /* Clipped from the front, because the end of a path is the part that tells
+     two of them apart. The box runs right to left so the ellipsis lands on the
+     left; the path inside it is held left to right, or a drive root came out
+     as "\:D" -- the reordering flips the punctuation at the ends */
+  #browse .psel .ppath .p { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl;
+    text-align:left; }
+  #browse .psel .ppath .p bdi { direction:ltr; unicode-bidi:isolate; }
+  #browse .pwhy:empty { display:none; }
+  #browse .pwhy { font-size:11.5px; color:var(--warn); }
+  #browse .pbtns { display:flex; align-items:center; gap:var(--s2); }
+  #browse .pbtns .sp { flex:1; }
+  #browse button.quiet { border-color:transparent; background:none; }
+  #browse button.quiet:hover { border-color:transparent; background:var(--panel2); }
+  /* Not pressable, and still answering (5.4): grey, not disabled */
+  #browse button.go.held { background:var(--panel2); border-color:var(--line); color:var(--faint);
+    cursor:not-allowed; filter:none; font-weight:500; }
+  #browse .pplaces.ring { box-shadow:inset 0 0 0 6px color-mix(in srgb, var(--warn) 45%, transparent); }
+  @media (max-width:640px) {
+    /* The places stop being a column and become a row across the top, so the
+       list keeps the width a phone has */
+    #browse .pbody { grid-template-columns:1fr; grid-template-rows:auto 1fr; height:62vh; }
+    #browse .pplaces { display:flex; overflow-x:auto; overflow-y:hidden; border-right:0;
+      border-bottom:1px solid var(--line); padding:6px 8px; gap:4px; scrollbar-width:none; }
+    #browse .pplaces::-webkit-scrollbar { display:none; }
+    #browse .phd, #browse .pl.group, #browse .pl .tree { display:none; }
+    #browse .pl { padding:0 10px; border-radius:var(--r-ctl); flex:none; }
+    #browse .pr .when { display:none; }
+    /* Three buttons do not fit on one phone line, and a button broken in the
+       middle of its word ("キャン／セル") reads as two. The add button takes a
+       line; Cancel and the primary share the next, at the right as ever */
+    #browse .pbtns { flex-wrap:wrap; }
+    #browse .pbtns .sp { flex-basis:100%; height:0; }
+    #browse .pbtns .pcancel { margin-left:auto; }
+  }
+  #browse button { white-space:nowrap; }
   #branch button, #browse button { font:inherit; font-size:12.5px; min-height:32px; padding:0 var(--s4);
     border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--raise);
     color:var(--text); cursor:pointer; }
@@ -1966,13 +2067,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   </div>
   <!-- Somewhere else to work. The same list on the window and on a phone -->
   <div id="browse" hidden>
-    <div class="vbox">
+    <div class="vbox picker">
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">&#10005;</span></div>
-      <div class="vsay"></div>
-      <div class="bwhere"></div>
-      <div class="berr"></div>
-      <div class="vlist"></div>
-      <div class="brow"><button class="go"></button></div>
+      <div class="pfilter"><span class="pqi"></span><input class="pq" type="text" autocomplete="off" spellcheck="false"></div>
+      <div class="pbody">
+        <div class="pplaces"></div>
+        <div class="pmain">
+          <div class="pcrumb"></div>
+          <div class="pnote"></div>
+          <div class="prows"></div>
+        </div>
+      </div>
+      <div class="pfoot">
+        <div class="psel"><span class="plab"></span><span class="ppath"></span></div>
+        <div class="pwhy"></div>
+        <div class="pbtns"><button class="pmake" type="button"></button><span class="sp"></span><button class="quiet pcancel" type="button"></button><button class="go" type="button"></button></div>
+      </div>
     </div>
   </div>
   <!-- The reader: what was said on this tab, as text you can scroll and copy.
@@ -2740,50 +2850,261 @@ function closeFolderMenu() {
 // Somewhere else to work. The list comes from the app, so this is the same
 // walk from the window and from a phone -- there is no dialog the operating
 // system can draw on a phone, and one list is one thing to keep right
+// Line drawings for the picker. Drawn in the colour of the text around them,
+// the way every other mark on the board is, rather than as emoji -- which each
+// system draws in its own colours and at its own size, and none of them in
+// this app's
+const PICK_ICON = {
+  search: '<circle cx="6" cy="6" r="4.2"/><path d="M9.2 9.2 12.5 12.5"/>',
+  folder: '<path d="M1.5 3.5h4l1.3 1.5h5.7v6.5h-11z"/>',
+  up: '<path d="M7 11.5V3M3.5 6.5 7 3l3.5 3.5"/>',
+  home: '<path d="M2 6.5 7 2.5l5 4V12H2z"/><path d="M5.6 12V8.6h2.8V12"/>',
+  desktop: '<rect x="1.5" y="2.5" width="11" height="7.5" rx="1"/><path d="M5 12.5h4M7 10v2.5"/>',
+  project: '<rect x="2.5" y="2.5" width="9" height="9" rx="1.5"/>',
+  drive: '<rect x="1.5" y="4" width="11" height="6" rx="1"/><path d="M10 7h.01"/>',
+};
+function pickIcon(name) {
+  const s = el("span", {class:"ico"});
+  s.innerHTML = '<svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">' + (PICK_ICON[name] || "") + '</svg>';
+  return s;
+}
+
+// What the picker is holding on the page: the folder picked inside the list
+// (empty means the one being looked at), the filter, and a folder being named
+let pickSel = "";
+let pickQ = "";
+let pickMaking = false;
+let pickMadeSeen = "";
+let pickDrawn = "";
+const leafOf = p => (p || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p || "";
+
 function openBrowse(at) {
   const b = document.getElementById("browse");
   if (!b) return;
+  const first = b.hidden;
   b.hidden = false;
-  b.querySelector(".vtitle").textContent = T["tui.browse.title"] || "ADD A WORKING FOLDER";
-  b.querySelector(".vsay").textContent = T["tui.browse.say"] || "";
-  b.querySelector(".go").textContent = T["tui.browse.open"] || "Add this folder";
-  send({kind:"browse", path:at || "", open:false});
+  b.querySelector(".vtitle").textContent = T["tui.browse.title"] || "";
+  b.querySelector(".pq").placeholder = T["tui.browse.filter"] || "";
+  b.querySelector(".plab").textContent = T["tui.browse.selected"] || "";
+  b.querySelector(".pmake").textContent = T["tui.browse.make"] || "";
+  b.querySelector(".pcancel").textContent = T["common.cancel"] || "";
+  b.querySelector(".go").textContent = T["tui.browse.open"] || "";
+  const qi = b.querySelector(".pqi");
+  if (!qi.firstChild) qi.append(pickIcon("search"));
+  pickGo(at || "");
+  // The first thing a person does in a list this long is narrow it
+  if (first) setTimeout(() => b.querySelector(".pq").focus(), 0);
+}
+// Somewhere else in the tree. What was picked and typed belongs to the folder
+// it was picked in, so it goes
+function pickGo(path) {
+  const b = document.getElementById("browse");
+  pickSel = "";
+  pickQ = "";
+  pickMaking = false;
+  if (b) {
+    b.querySelector(".pq").value = "";
+    b.querySelector(".pwhy").textContent = "";
+  }
+  pickDrawn = "";
+  if (b) b.querySelector(".prows").scrollTop = 0;
+  send({kind:"browse", path:path || "", open:false});
 }
 function closeBrowse() {
   const b = document.getElementById("browse");
   if (b) b.hidden = true;
+  pickMaking = false;
+}
+// "今日 18:50", "昨日 21:15", "09/10 14:20", and the year only when it is not
+// this one. A date is read against today, so it is said against today
+function pickWhen(sec) {
+  if (sec == null) return "";
+  const d = new Date(sec * 1000), now = new Date();
+  const two = n => String(n).padStart(2, "0");
+  const hm = two(d.getHours()) + ":" + two(d.getMinutes());
+  const day = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(now) - day(d)) / 86400000);
+  let when;
+  if (diff === 0) when = (T["tui.browse.today"] || "{t}").replace("{t}", hm);
+  else if (diff === 1) when = (T["tui.browse.yesterday"] || "{t}").replace("{t}", hm);
+  else if (d.getFullYear() === now.getFullYear()) when = two(d.getMonth() + 1) + "/" + two(d.getDate()) + " " + hm;
+  else when = d.getFullYear() + "/" + two(d.getMonth() + 1) + "/" + two(d.getDate());
+  return (T["tui.browse.modified"] || "{when}").replace("{when}", when);
+}
+// Where a choice would land: the folder picked in the list, or the one the
+// list is standing in
+function pickPath() {
+  const st = (S && S.browse) || null;
+  return pickSel || (st && st.at) || "";
 }
 function drawBrowse() {
   const b = document.getElementById("browse");
   if (!b || b.hidden) return;
-  const st = (S && S.browse) || null;
-  b.querySelector(".bwhere").textContent = (st && st.at) || (T["tui.browse.top"] || "");
-  b.querySelector(".berr").textContent = (st && st.error) || "";
-  const list = b.querySelector(".vlist");
-  list.textContent = "";
-  if (st && st.up != null) {
-    list.append(el("div", {class:"vrow", onclick:() => openBrowse(st.up)},
-      el("span", {class:"nm"}, "..")));
+  const st = (S && S.browse) || {};
+  const at = st.at || "";
+  // State arrives several times a second whatever is going on elsewhere on the
+  // board. Rebuilding the list on each one threw the scroll back to the top and
+  // replaced a row between the two clicks of a double-click, so the second
+  // click landed on nothing. Only a change to what this dialog shows redraws it
+  const sig = JSON.stringify([st, pickSel, pickQ, pickMaking, T["tui.browse.title"]]);
+  if (sig === pickDrawn) return;
+  pickDrawn = sig;
+  const keepRows = b.querySelector(".prows").scrollTop;
+  const keepPlaces = b.querySelector(".pplaces").scrollTop;
+
+  // Places, the same whichever folder is being looked at
+  const places = b.querySelector(".pplaces");
+  places.textContent = "";
+  places.append(el("div", {class:"phd"}, T["tui.browse.places"] || ""));
+  const ps = st.places || [];
+  const onAt = p => at && p.path.replace(/[\\/]+$/, "").toLowerCase() === at.replace(/[\\/]+$/, "").toLowerCase();
+  const place = (p, icon, label, child, last) => el("div",
+    {class:"pl" + (onAt(p) ? " on" : ""), title:p.path, onclick:() => pickGo(p.path)},
+    child ? el("span", {class:"tree"}, last ? "└" : "├") : null,
+    pickIcon(icon), el("span", {class:"nm"}, label));
+  for (const p of ps.filter(x => x.kind === "home"))
+    places.append(place(p, "home", T["tui.browse.home"] || p.path));
+  for (const p of ps.filter(x => x.kind === "desktop"))
+    places.append(place(p, "desktop", T["tui.browse.desktop"] || p.path));
+  const projects = ps.filter(x => x.kind === "project");
+  if (projects.length) {
+    places.append(el("div", {class:"pl group"}, pickIcon("project"),
+      el("span", {class:"nm"}, T["tui.browse.projects"] || "")));
+    projects.forEach((p, i) => places.append(place(p, "folder", p.name || leafOf(p.path), true, i === projects.length - 1)));
   }
-  for (const d of (st && st.dirs) || []) {
-    // The last part is what a person reads; the whole path is the tooltip
-    const leaf = d.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || d;
-    list.append(el("div", {class:"vrow", title:d, onclick:() => openBrowse(d)},
-      el("span", {class:"nm"}, leaf)));
+  for (const p of ps.filter(x => x.kind === "drive"))
+    places.append(place(p, "drive", (T["tui.browse.drive"] || "{d}").replace("{d}", p.name)));
+
+  // Where the list is standing, one step per segment
+  const crumb = b.querySelector(".pcrumb");
+  crumb.textContent = "";
+  crumb.append(pickIcon("folder"));
+  if (!at) {
+    crumb.append(el("span", {}, T["tui.browse.top"] || ""));
+  } else {
+    const parts = at.split(/[\\/]+/).filter(Boolean);
+    const winSep = at.includes("\\") || /^[A-Za-z]:/.test(at);
+    let acc = at.startsWith("/") ? "/" : "";
+    parts.forEach((part, i) => {
+      acc = i === 0 ? (winSep ? part + "\\" : acc + part) : acc.replace(/[\\/]+$/, "") + (winSep ? "\\" : "/") + part;
+      const to = acc;
+      crumb.append(el("span", {class:"seg", title:to, onclick:() => pickGo(to)}, part));
+      crumb.append(el("span", {class:"div"}, "/"));
+    });
   }
-  b.querySelector(".go").disabled = !(st && st.at);
+
+  // The folder just made is the one picked, once
+  if (st.made && st.made !== pickMadeSeen) {
+    pickMadeSeen = st.made;
+    pickSel = st.made;
+    pickMaking = false;
+  }
+
+  // The list, narrowed by what was typed. Commas separate words, the way the
+  // box's own example is written
+  const words = pickQ.toLowerCase().split(",").map(w => w.trim()).filter(Boolean);
+  const dirs = (st.dirs || []).map((d, i) => ({ d, when: (st.modified || [])[i] }));
+  const shown = words.length ? dirs.filter(x => words.some(w => leafOf(x.d).toLowerCase().includes(w))) : dirs;
+  if (pickSel && !shown.some(x => x.d === pickSel)) pickSel = "";
+
+  const note = b.querySelector(".pnote");
+  note.className = "pnote";
+  note.textContent = "";
+  if (st.error) { note.className = "pnote bad"; note.textContent = st.error; }
+  else if (words.length && !shown.length) note.textContent = (T["tui.browse.nomatch"] || "{q}").replace("{q}", pickQ.trim());
+
+  const rows = b.querySelector(".prows");
+  const typing = rows.querySelector(".pr.making input");
+  const draft = typing ? typing.value : "";
+  const hadFocus = typing && document.activeElement === typing;
+  rows.textContent = "";
+  if (pickMaking) {
+    const input = el("input", {type:"text", placeholder:T["tui.browse.make.ph"] || "", spellcheck:"false"});
+    input.value = draft;
+    input.addEventListener("keydown", e => {
+      if (typingIME(e)) return;
+      if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); pickMake(input.value); }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); pickMaking = false; drawBrowse(); }
+    });
+    rows.append(el("div", {class:"pr making"}, pickIcon("folder"), input));
+    rows.append(el("div", {class:"pmakewhy"}, st.made_error || ""));
+    if (hadFocus || !typing) setTimeout(() => { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }, 0);
+  }
+  if (st.up != null) {
+    rows.append(el("div", {class:"pr", onclick:() => pickGo(st.up)},
+      pickIcon("up"), el("span", {class:"nm"}, "..", el("span", {class:"up"}, "  " + (T["tui.browse.up"] || "")))));
+  }
+  for (const x of shown) {
+    const row = el("div", {class:"pr" + (x.d === pickSel ? " sel" : ""), title:x.d,
+        onclick:() => { pickSel = x.d; b.querySelector(".pwhy").textContent = ""; drawBrowse(); },
+        ondblclick:() => pickGo(x.d)},
+      // At the top the list is home and then the drives; only a drive root is a drive
+      pickIcon(at || !/^[A-Za-z]:[\\/]?$|^\/$/.test(x.d) ? "folder" : "drive"),
+      el("span", {class:"nm"}, leafOf(x.d)),
+      el("span", {class:"when"}, pickWhen(x.when)),
+      el("span", {class:"in", title:T["tui.browse.enter"] || "", onclick:e => { e.stopPropagation(); pickGo(x.d); }}, "›"));
+    rows.append(row);
+  }
+  rows.scrollTop = keepRows;
+  places.scrollTop = keepPlaces;
+  const sel = rows.querySelector(".pr.sel");
+  if (sel && st.made && sel.title === st.made) sel.scrollIntoView({block:"nearest"});
+
+  // Where a choice would land, and whether there is anything to choose
+  const path = pickPath();
+  const pp = b.querySelector(".ppath");
+  pp.textContent = "";
+  pp.append(pickIcon("folder"), el("span", {class:"p"}, el("bdi", {}, path || "—")));
+  b.querySelector(".go").classList.toggle("held", !path);
+}
+function pickMake(name) {
+  const st = (S && S.browse) || {};
+  if (!(name || "").trim()) return;
+  send({kind:"browse", path:st.at || "", open:false, make:name});
+}
+function pickChoose() {
+  const b = document.getElementById("browse");
+  const path = pickPath();
+  if (!path) {
+    // Pressed while there is nothing to choose: say so where it stays, and
+    // point at where the answer is (5.4)
+    b.querySelector(".pwhy").textContent = T["tui.browse.nowhere"] || "";
+    const places = b.querySelector(".pplaces");
+    places.classList.remove("ring");
+    void places.offsetWidth;
+    places.classList.add("ring");
+    setTimeout(() => places.classList.remove("ring"), 1800);
+    return;
+  }
+  closeBrowse();
+  send({kind:"browse", path, open:true});
 }
 (function () {
   const b = document.getElementById("browse");
   if (!b) return;
   b.querySelector(".vclose").onclick = closeBrowse;
-  b.addEventListener("mousedown", e => { if (e.target === b) closeBrowse(); });
-  b.querySelector(".go").onclick = () => {
-    const st = (S && S.browse) || null;
-    if (!st || !st.at) return;
-    closeBrowse();
-    send({kind:"browse", path:st.at, open:true});
+  b.querySelector(".pcancel").onclick = closeBrowse;
+  b.querySelector(".go").onclick = pickChoose;
+  b.querySelector(".pmake").onclick = () => {
+    const st = (S && S.browse) || {};
+    if (!st.at) { b.querySelector(".pwhy").textContent = T["tui.browse.make.nowhere"] || ""; return; }
+    b.querySelector(".pwhy").textContent = "";
+    pickMaking = true;
+    drawBrowse();
   };
+  const q = b.querySelector(".pq");
+  q.addEventListener("input", () => { pickQ = q.value; drawBrowse(); });
+  // Pressing down on the backdrop closes; pressing down inside and letting go
+  // outside -- selecting text past the edge -- does not (5.2)
+  let downIn = false;
+  b.addEventListener("mousedown", e => { downIn = e.target !== b; });
+  b.addEventListener("click", e => { if (e.target === b && !downIn) closeBrowse(); });
+  b.addEventListener("keydown", e => {
+    if (typingIME(e)) return;
+    if (e.key === "Escape") { e.preventDefault(); closeBrowse(); }
+    else if (e.key === "Enter" && e.target === q) { e.preventDefault(); pickChoose(); }
+  });
 })();
 
 // Another branch of the project this folder belongs to.
@@ -10431,6 +10752,33 @@ mod tests {
             PAGE.contains(r#"if (armedPane === cls + p.id || (t && t.state === "EXIT"))"#),
             "動いているペインを一押しで落とせてしまう"
         );
+    }
+
+    /// The folder picker is a framed dialog, drawn in this app's own marks.
+    ///
+    /// Head, body, foot, each divided by a rule (5.2), and nothing drawn with
+    /// emoji: each system draws those in its own colours and at its own size,
+    /// and none of them in this app's. A row that opens something ends in a
+    /// chevron (5.5), which on a phone -- where nothing is double-clicked -- is
+    /// the only way in. And the button that cannot be pressed yet still answers
+    /// (5.4) instead of being disabled and silent.
+    #[test]
+    fn the_folder_picker_is_a_framed_dialog_in_our_own_marks() {
+        let dialog = PAGE.split(r#"<div id="browse" hidden>"#).nth(1)
+            .and_then(|r| r.split("</div>\n  </div>").next()).unwrap_or_default();
+        for part in ["vhead", "pfilter", "pplaces", "pcrumb", "prows", "pfoot", "pmake", "pcancel", "go"] {
+            assert!(dialog.contains(part), "選ぶダイアログに {part} が無い");
+        }
+        let code = PAGE.split("const PICK_ICON = {").nth(1)
+            .and_then(|r| r.split("// Another branch of the project").next()).unwrap_or_default();
+        assert!(!code.is_empty(), "選ぶダイアログの台本が見つからない");
+        assert!(!code.chars().any(|c| ('\u{1F300}'..='\u{1FAFF}').contains(&c)),
+                "選ぶダイアログに絵文字が残っている");
+        assert!(code.contains(r#"el("span", {class:"in""#), "行に入口の › が無い");
+        assert!(code.contains(r#"b.querySelector(".go").classList.toggle("held", !path);"#),
+                "選べないときに黙って押せなくしている");
+        assert!(code.contains(r#"send({kind:"browse", path:st.at || "", open:false, make:name});"#),
+                "新しいフォルダが今いる場所に作られない");
     }
 
     /// Each + has one meaning. A folder's is another worktree; the foot of the
