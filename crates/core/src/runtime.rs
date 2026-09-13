@@ -3890,10 +3890,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             let wrote = crate::worktree::create(&plan).and_then(|()| {
                                 config::append_folder_starting(
                                     &desk,
-                                    Some(&plan.main),
+                                    Some(plan.like(&from)),
                                     &plan.folder,
                                     Some(&plan.branch),
                                     &start,
+                                    plan.host.as_ref().map(|h| h.name.as_str()),
                                 )
                             });
                             match wrote {
@@ -3924,7 +3925,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // is shown before any of them runs; one that cannot be made
                 // stops the whole ask, because "three of the four were made"
                 // is a state nobody asked for
-                let fanned = crate::worktree::fan(&from, &wanted, Some(&ask.base), &ask.ais);
+                // On the machine that was chosen, the same as a single one
+                let fanned = match on {
+                    Some(h) => crate::worktree::fan_on(
+                        h,
+                        &wanted,
+                        Some(&ask.base),
+                        &ask.ais,
+                        &crate::repo::remote_url_of(&from).unwrap_or_default(),
+                        ask.setup.then(|| told.clone()).flatten(),
+                    ),
+                    None => crate::worktree::fan(&from, &wanted, Some(&ask.base), &ask.ais),
+                };
                 view.branch = wanted.clone();
                 view.lines = fanned.iter().filter_map(|(_, p)| p.as_ref().ok().map(|p| p.line())).collect();
                 view.folder = fanned
@@ -3943,10 +3955,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let wrote = crate::worktree::create(plan).and_then(|()| {
                             config::append_folder_starting(
                                 &desk,
-                                Some(&plan.main),
+                                Some(plan.like(&from)),
                                 &plan.folder,
                                 Some(&plan.branch),
                                 &one,
+                                plan.host.as_ref().map(|h| h.name.as_str()),
                             )
                         });
                         match wrote {
