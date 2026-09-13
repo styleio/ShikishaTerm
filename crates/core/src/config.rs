@@ -212,10 +212,8 @@ pub struct Config {
     /// anywhere, including the far end of an ssh session.
     pub tui_clipboard: Option<bool>,
     /// Width of the left tab bar, in pixels, or 0 when it is put away. Omitted
-    /// means put away, the same as the column on the right: the window opens on
-    /// the terminal, and the bar is one press away in the title bar. Dragging
-    /// the bar's edge or pressing that switch writes it back here, which is how
-    /// it survives a restart.
+    /// means the built-in width. Dragging the bar's edge writes it back here,
+    /// which is how it survives a restart.
     ///
     /// It used to be counted in terminal columns, from the days when the app
     /// drew the bar itself out of characters. The window has been drawing it
@@ -411,11 +409,11 @@ pub fn clamp_tab_bar(px: u16) -> u16 {
     }
 }
 
-/// How wide the tab bar opens in the app's own window. Nothing written down
-/// means put away: the terminal is what the window is for, and the switch that
-/// brings the bar out sits in the title bar where it can always be seen.
 pub fn tab_bar_px() -> u16 {
-    load().and_then(|c| c.tab_bar_width).map(clamp_tab_bar).unwrap_or(0)
+    load()
+        .and_then(|c| c.tab_bar_width)
+        .map(clamp_tab_bar)
+        .unwrap_or(TAB_BAR_DEFAULT_PX)
 }
 
 /// The width the right-hand column comes out at when it is asked for.
