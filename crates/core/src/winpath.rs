@@ -258,7 +258,7 @@ mod tests {
         assert!(drive_at(r"C:\x"));
         assert!(drive_at("c:/x"));
         assert!(!drive_at("C"));
-        assert!(!drive_at("/C:/x"), "先頭のスラッシュは剥がしてから");
+        assert!(!drive_at("/C:/x"), "strip the leading slash first");
         assert!(!drive_at("home/me"));
     }
 }

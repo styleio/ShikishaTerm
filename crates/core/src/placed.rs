@@ -266,7 +266,7 @@ mod tests {
     fn with_nobody_connected_a_page_is_drawn_on_this_machine() {
         let placed = Placed::new();
         placed.prefer(Draw::There);
-        assert_eq!(placed.side(Some("desk/p")), Draw::Here, "開く前から向こう扱い");
+        assert_eq!(placed.side(Some("desk/p")), Draw::Here, "it counts as over there before it is opened");
         // Opening needs a browser, which a test machine may not have -- what
         // is being checked is which side was asked, which the error says
         let refused = placed
@@ -274,7 +274,7 @@ mod tests {
         let said = refused.map(|()| String::new()).unwrap_or_else(|e| e.to_string());
         assert!(
             !said.contains(&crate::i18n::t("err.far.nobody")),
-            "誰も居ないのに向こうに投げている: {said}"
+            "it throws it over there though nobody is there: {said}"
         );
     }
 
@@ -285,7 +285,7 @@ mod tests {
         assert_eq!(Draw::of("device"), Draw::There);
         assert_eq!(Draw::of("here"), Draw::Here);
         assert_eq!(Draw::of(""), Draw::Here);
-        assert_eq!(Draw::of("なにか"), Draw::Here, "知らない語は留守番できる側");
+        assert_eq!(Draw::of("なにか"), Draw::Here, "an unknown word is the side that can stay behind");
     }
 
     /// A page drawn over there says which device has it, and a page of this
@@ -322,11 +322,11 @@ mod tests {
                 (0, 0, 800, 600),
                 BrowserProfile::shared_default(),
             )
-            .expect("向こうに開けない");
+            .expect("it cannot open over there");
         assert_eq!(
             placed.drawn_on(Some("0/probe")).as_deref(),
             Some("台所のノート"),
-            "向こうで描いているのに、どの端末かを言わない"
+            "it draws over there but does not say which device"
         );
         // The next page goes here. Where each one is was written down when it
         // was opened, so this one is unaffected by that
@@ -334,11 +334,11 @@ mod tests {
         assert_eq!(
             placed.drawn_on(Some("0/probe")).as_deref(),
             Some("台所のノート"),
-            "開いた後に設定で場所が変わってしまう"
+            "after opening, the settings change where it is"
         );
         // And a page nobody opened is this machine's business, like every other
         // question about one
-        assert_eq!(placed.drawn_on(Some("0/never")), None, "無いページが向こう扱い");
+        assert_eq!(placed.drawn_on(Some("0/never")), None, "a page that does not exist counts as over there");
     }
 
     /// A page that was never opened is this machine's business, so the answer
@@ -352,7 +352,7 @@ mod tests {
             .to_string();
         assert!(
             !err.contains(&crate::i18n::t("err.far.nobody")),
-            "無いページを向こうに聞きに行っている: {err}"
+            "it goes to ask over there for a page that does not exist: {err}"
         );
     }
 }

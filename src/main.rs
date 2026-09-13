@@ -1081,7 +1081,7 @@ mod hook_report_tests {
     fn a_subagent_cannot_end_the_turn_but_can_still_ask() {
         let mut done = claude("Stop");
         done["agent_id"] = serde_json::json!("agent_42");
-        assert_eq!(hook_report("state:DONE", &done).state, None, "サブの完了は本体の完了ではない");
+        assert_eq!(hook_report("state:DONE", &done).state, None, "a subagent finishing is not the main one finishing");
 
         let mut ask = claude("PermissionRequest");
         ask["agent_id"] = serde_json::json!("agent_42");
@@ -1089,7 +1089,7 @@ mod hook_report_tests {
         assert_eq!(
             hook_report("state:QUESTION", &ask).state,
             Some("QUESTION".into()),
-            "誰が出したダイアログでも人は答えなければならない"
+            "whoever put up the dialog, the person has to answer it"
         );
     }
 
@@ -1425,7 +1425,7 @@ mod frame_bench {
                 return p;
             }
         }
-        panic!("vt_writer が見つからない (cargo build --bin vt_writer)");
+        panic!("vt_writer is not found (cargo build --bin vt_writer)");
     }
 
     /// Wait until the tab has stopped saying anything for `quiet`.
@@ -1490,7 +1490,7 @@ mod frame_bench {
             for (i, r) in had.iter().enumerate().rev().take(4).collect::<Vec<_>>().iter().rev() {
                 println!("  row {i}: {:?}", r.chars().take(120).collect::<String>());
             }
-            panic!("{kind}: 最後の行が画面に出ないまま時間切れ");
+            panic!("{kind}: time ran out before the last line showed on screen");
         };
         println!(
             "  {kind:>7}: {:>4}ms  {:>9} bytes from the pty  \
@@ -1543,7 +1543,7 @@ mod frame_bench {
                     took.as_millis(),
                     tab.output_count()
                 ),
-                None => println!("  {kind:>9}: 時間切れ ({} bytes)", tab.output_count()),
+                None => println!("  {kind:>9}: timed out ({} bytes)", tab.output_count()),
             }
         }
     }
@@ -1669,9 +1669,9 @@ mod shell_port_tests {
     fn the_same_install_asks_for_the_same_port() {
         let a = super::shell_port(std::path::Path::new(r"C:\google\SHIKISHA-TERM"));
         assert_eq!(a, super::shell_port(std::path::Path::new(r"C:\google\SHIKISHA-TERM")));
-        assert_eq!(a, super::shell_port(std::path::Path::new(r"c:\GOOGLE\shikisha-term")), "大文字小文字で別のポートになった");
+        assert_eq!(a, super::shell_port(std::path::Path::new(r"c:\GOOGLE\shikisha-term")), "a difference in case gave a different port");
         assert_ne!(a, super::shell_port(std::path::Path::new(r"D:\ShikishaTerm\target\debug")));
-        assert!(a >= 49152, "登録済みの範囲に入った: {a}");
+        assert!(a >= 49152, "it fell in the registered range: {a}");
     }
 }
 
@@ -1686,7 +1686,7 @@ mod shutdown_tests {
         let src = include_str!("main.rs");
         assert!(
             src.contains("#![windows_subsystem = \"windows\"]"),
-            "コンソールが付いてくる"
+            "a console comes along"
         );
     }
 
@@ -1703,12 +1703,12 @@ mod shutdown_tests {
         use shikisha_shared::Ev;
         assert!(
             super::keys_for(&Ev::Closed).is_empty(),
-            "閉じたことを打鍵として扱っている"
+            "closing is treated as a keystroke"
         );
         let src = include_str!("main.rs");
         assert!(
             src.contains("Ev::Closed => self.mail.closed = true"),
-            "窓が閉じた報告を受けていない"
+            "the window is not told it was closed"
         );
     }
 }

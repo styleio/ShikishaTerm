@@ -996,14 +996,14 @@ mod tests {
             user: user.into(),
             ..Default::default()
         };
-        assert_eq!(at("a").address(), at("b").address(), "鍵は機械のもの");
-        assert_ne!(at("a").route(), at("b").route(), "人が違えば別の接続");
+        assert_eq!(at("a").address(), at("b").address(), "the key belongs to the machine");
+        assert_ne!(at("a").route(), at("b").route(), "a different person is a different connection");
 
         let mut through = at("a");
         through.jump = Some(Box::new(at("gate")));
-        assert_eq!(through.address(), at("a").address(), "経路が変わっても機械は同じ");
-        assert_ne!(through.route(), at("a").route(), "踏み台越しは別の接続");
-        assert!(through.route().contains("gate"), "どこを通ったか読めない");
+        assert_eq!(through.address(), at("a").address(), "a different route is still the same machine");
+        assert_ne!(through.route(), at("a").route(), "through a jump host is a different connection");
+        assert!(through.route().contains("gate"), "it cannot tell which way it went");
     }
 
     /// The reader hands out exactly what arrived, in order, however the caller
@@ -1049,7 +1049,7 @@ mod tests {
         };
         use portable_pty::MasterPty;
         assert!(pty.try_clone_reader().is_ok());
-        assert!(pty.try_clone_reader().is_err(), "二人目に画面の半分が渡る");
+        assert!(pty.try_clone_reader().is_err(), "a second one gets half of the screen");
         assert!(pty.take_writer().is_ok());
         assert!(pty.take_writer().is_err());
     }
@@ -1133,8 +1133,8 @@ mod tests {
                 Err(_) => break,
             }
         }
-        assert!(seen.contains("welcome"), "画面に何も届いていない: {seen:?}");
-        assert!(seen.contains("echo:hello"), "打った文字が届いていない: {seen:?}");
+        assert!(seen.contains("welcome"), "nothing reached the screen: {seen:?}");
+        assert!(seen.contains("echo:hello"), "the typed characters did not arrive: {seen:?}");
         // Resizing is a message to the far end, not a local setting
         pty.resize(portable_pty::PtySize { rows: 40, cols: 120, pixel_width: 0, pixel_height: 0 })
             .expect("resize");
@@ -1204,14 +1204,14 @@ mod tests {
         };
 
         let good = exec(&spec, "git --version", 15_000).expect("the command did not run");
-        assert!(good.ok(), "動いたのに失敗になっている: {good:?}");
+        assert!(good.ok(), "it worked but counts as a failure: {good:?}");
         assert_eq!(good.code, 0);
         assert!(good.out.contains("ran:git --version"), "{good:?}");
 
         let bad = exec(&spec, "please fail", 15_000).expect("the command did not run");
-        assert!(!bad.ok(), "失敗したのに成功になっている: {bad:?}");
-        assert_eq!(bad.code, 3, "終了コードが届いていない");
-        assert_eq!(bad.said(), "it went wrong", "言い分が拾えていない");
+        assert!(!bad.ok(), "it failed but counts as a success: {bad:?}");
+        assert_eq!(bad.code, 3, "the exit code did not arrive");
+        assert_eq!(bad.said(), "it went wrong", "what it said was not picked up");
         // The two halves do not run into each other
         assert!(bad.out.is_empty(), "{bad:?}");
     }

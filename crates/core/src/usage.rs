@@ -241,8 +241,8 @@ mod tests {
         let mut meter = Meter::default();
         let first = meter.sample(&[(0, me)]);
         let u = first.get(&0).copied().unwrap_or_default();
-        assert_eq!(u.cpu, 0, "最初の一回で率をでっち上げない");
-        assert!(u.mem > 0, "自分自身のメモリが読めていない: {}", u.mem);
+        assert_eq!(u.cpu, 0, "it does not make up a rate on the first reading");
+        assert!(u.mem > 0, "it cannot read its own memory: {}", u.mem);
         // A second look has a gap to measure over; cpu is allowed to be
         // anything from zero up, but memory stays real
         std::thread::sleep(std::time::Duration::from_millis(30));
@@ -257,7 +257,7 @@ mod tests {
         assert!(meter.at.is_some());
         let empty = meter.sample(&[]);
         assert!(empty.is_empty());
-        assert!(meter.at.is_none(), "タブが無くなったら過去も忘れる");
+        assert!(meter.at.is_none(), "when a tab is gone its past is forgotten too");
         assert!(meter.prev.is_empty());
     }
 }

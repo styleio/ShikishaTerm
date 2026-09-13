@@ -503,7 +503,7 @@ mod tests {
     /// token the next screen will use for the wrong thing.
     #[test]
     fn every_token_has_its_role_written_down() {
-        let scheme = built_in().into_iter().find(|s| s.name == DEFAULT_NAME).expect("自前のテーマ");
+        let scheme = built_in().into_iter().find(|s| s.name == DEFAULT_NAME).expect("our own theme");
         let vars = scheme.css_vars();
         let names: Vec<&str> = vars
             .split(';')
@@ -517,7 +517,7 @@ mod tests {
             ("ja", include_str!("../../../docs/design/STYLEGUIDE.ja.md")),
         ] {
             for n in &names {
-                assert!(guide.contains(&format!("`{n}`")), "{lang}: {n} の役割が規約に書かれていない");
+                assert!(guide.contains(&format!("`{n}`")), "{lang}: the role of {n} is not written in the guide");
             }
         }
     }
@@ -525,10 +525,10 @@ mod tests {
     #[test]
     fn what_ships_with_the_app_is_the_app_own_and_nobody_else_s() {
         let list = built_in();
-        assert!(!list.is_empty(), "組み込みのテーマが読めていない");
+        assert!(!list.is_empty(), "the built-in themes are not read");
         assert!(
             list.iter().any(|s| s.name == DEFAULT_NAME),
-            "自前のテーマが一覧に無い"
+            "our own theme is not in the list"
         );
         for s in &list {
             // Other people's colour schemes are other people's, published
@@ -536,11 +536,11 @@ mod tests {
             // by being pointed at, never by being copied into it
             assert!(
                 s.name.starts_with(DEFAULT_NAME),
-                "他所の配色を同梱している: {}",
+                "it ships someone else's colors: {}",
                 s.name
             );
             for c in s.ansi() {
-                assert!(is_colour(&c), "{} の色がおかしい: {c}", s.name);
+                assert!(is_colour(&c), "the colors of {} are wrong: {c}", s.name);
             }
         }
     }
@@ -550,7 +550,7 @@ mod tests {
         let s: Scheme = serde_json::from_str(r##"{"name":"half","red":"#ff0000"}"##).unwrap();
         let a = s.ansi();
         assert_eq!(a[1], "#ff0000");
-        assert_eq!(a[2], DEFAULT[2], "書かれていない色は既定のまま");
+        assert_eq!(a[2], DEFAULT[2], "a color not written stays at the default");
         assert!(s.css_vars().contains("--c1:#ff0000;"));
     }
 
@@ -581,7 +581,7 @@ mod tests {
             .unwrap()
             .to_string();
         let (r, _, _) = rgb(&panel).unwrap();
-        assert!(r < 0xff, "明るい配色でパネルが背景より明るい: {panel}");
+        assert!(r < 0xff, "in a light scheme the panel is lighter than the background: {panel}");
 
         let dark: Scheme =
             serde_json::from_str(r##"{"name":"night","background":"#000000"}"##).unwrap();
@@ -601,7 +601,7 @@ mod tests {
         assert_eq!(by_name.name, DEFAULT_NAME);
         let inline = resolve(Some(&serde_json::json!({"red":"#123456"})));
         assert_eq!(inline.ansi()[1], "#123456");
-        assert_eq!(inline.name, "custom", "名前が無ければそう呼ぶ");
+        assert_eq!(inline.name, "custom", "with no name it is called that");
         // A name nobody has is not a reason to come up without colours
         assert_eq!(resolve(Some(&serde_json::json!("nope"))).name, DEFAULT_NAME);
         assert_eq!(resolve(None).name, DEFAULT_NAME);

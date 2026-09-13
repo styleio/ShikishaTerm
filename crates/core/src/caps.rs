@@ -1184,9 +1184,9 @@ mod reload_tests {
 
         c.set_capabilities(CapabilitySpec::default());
 
-        assert_eq!(c.hosted_names(), vec!["settings".to_string()], "置いたページを忘れた");
-        assert!(c.nav_of("html").is_some(), "上のバーを忘れた");
-        assert!(c.forget_press("html"), "押された帯を忘れた");
+        assert_eq!(c.hosted_names(), vec!["settings".to_string()], "it forgot the page it placed");
+        assert!(c.nav_of("html").is_some(), "it forgot the top bar");
+        assert!(c.forget_press("html"), "it forgot the banner that was pressed");
         // The bar being asked is the desk in view's, by display name
         assert_eq!(
             c.asks_now(),
@@ -1197,7 +1197,7 @@ mod reload_tests {
                     label: "できました".into()
                 }
             )],
-            "出している帯を忘れた"
+            "it forgot the banner it is showing"
         );
     }
 
@@ -1216,11 +1216,11 @@ mod reload_tests {
         c.hosted.borrow_mut().push((0, "調べ物".into()));
 
         let closed = c.keep_only_declared(&["ai".to_string()]);
-        assert_eq!(closed, vec!["html".to_string()], "消したものが閉じていない");
+        assert_eq!(closed, vec!["html".to_string()], "what was removed was not closed");
         assert_eq!(
             c.hosted_names(),
             vec!["ai".to_string(), "調べ物".to_string()],
-            "設定が開けていないページまで閉じた"
+            "it closed pages the settings could not open either"
         );
     }
 
@@ -1228,7 +1228,7 @@ mod reload_tests {
     #[test]
     fn the_settings_themselves_are_replaced() {
         let c = Capabilities::disabled();
-        assert!(c.read("tmp", "x.txt").is_err(), "何も許していないはず");
+        assert!(c.read("tmp", "x.txt").is_err(), "nothing should be allowed");
 
         let mut files = HashMap::new();
         files.insert(
@@ -1238,7 +1238,7 @@ mod reload_tests {
         c.set_capabilities(CapabilitySpec { files, ..Default::default() });
         // The gateway is registered (the read itself still fails since the file doesn't exist)
         let err = c.read("tmp", "居ないファイル.txt").unwrap_err().to_string();
-        assert!(!err.contains("未登録"), "窓口が入れ替わっていない: {err}");
+        assert!(!err.contains("未登録"), "the gateway was not swapped: {err}");
     }
 }
 
@@ -1271,8 +1271,8 @@ mod tests {
     /// sent, and the new page stayed where it was placed: over a terminal.
     #[test]
     fn a_page_opened_with_no_browser_pane_is_still_put_away() {
-        assert!(placement_changed(None, &[]), "未送信と「どのページも出さない」が同じに見える");
-        assert!(!placement_changed(Some(&[]), &[]), "同じ配置を何度も送っている");
+        assert!(placement_changed(None, &[]), "not sent yet looks the same as 'show no page'");
+        assert!(!placement_changed(Some(&[]), &[]), "it sends the same layout over and over");
         let one = vec![("a".to_string(), (0, 0, 10, 10))];
         assert!(placement_changed(Some(&[]), &one));
         assert!(!placement_changed(Some(&one), &one));
@@ -1301,7 +1301,7 @@ mod tests {
         );
         // A known secret value gets redacted
         let masked = c.redact("Authorization: hunter2secret\n本文");
-        assert!(!masked.contains("hunter2secret"), "秘密値が残っている: {masked}");
+        assert!(!masked.contains("hunter2secret"), "the secret value is still there: {masked}");
         assert!(masked.contains("••••"));
         // Values that are too short are excluded, since they'd break ordinary words
         assert_eq!(c.redact("ab cd ab"), "ab cd ab");
@@ -1346,12 +1346,12 @@ mod tests {
         assert_eq!(got("diary", Subject::Ai).unwrap(), "hunter2secret");
         // Written for a person to use; an AI's turn is turned away
         assert_eq!(got("deploy", Subject::Human).unwrap(), "ghp_xxx");
-        assert!(got("deploy", Subject::Ai).is_err(), "AIに開いていない鍵が渡った");
+        assert!(got("deploy", Subject::Ai).is_err(), "a key not open to the AI was handed over");
         // Another desk's cannot be named at all, however it is spelled
         for reach in ["other.diary", "ssh/blog/prod/password", "../other.diary"] {
-            assert!(got(reach, Subject::Human).is_err(), "{reach} が通ってしまう");
+            assert!(got(reach, Subject::Human).is_err(), "{reach} gets through");
         }
-        assert!(got("nope", Subject::Human).is_err(), "未登録は取れない");
+        assert!(got("nope", Subject::Human).is_err(), "an unregistered one cannot be taken");
 
         // Switching desks changes what the same word means
         c.set_desk_id("other");
@@ -1387,18 +1387,18 @@ mod tests {
 
         // Allowed: nothing to say
         assert!(c.script_secret("errand", Subject::Ai).is_ok());
-        assert_eq!(take_refusal(), None, "通ったのに何か言っている");
+        assert_eq!(take_refusal(), None, "it got through but still says something");
 
         // Refused: the script's words and the screen's words are one sentence
         let said = c.script_secret("errand", Subject::Human).unwrap_err().to_string();
         assert_eq!(take_refusal().as_deref(), Some(said.as_str()));
-        assert!(said.contains("errand"), "どの秘密のことか言っていない: {said}");
+        assert!(said.contains("errand"), "it does not say which secret: {said}");
         // ...and it is handed over once, so a toast does not come back
-        assert_eq!(take_refusal(), None, "同じ断りが二度出る");
+        assert_eq!(take_refusal(), None, "the same refusal appears twice");
 
         // A name nobody registered is the same kind of dead end
         assert!(c.script_secret("nope", Subject::Human).is_err());
-        assert!(take_refusal().is_some(), "登録が無いことが伝わらない");
+        assert!(take_refusal().is_some(), "it does not come across that nothing is registered");
     }
 
     /// Who may use a secret is two questions, not one. A key that only an AI's
@@ -1431,7 +1431,7 @@ mod tests {
         c.set_desk_id("blog");
         let got = |name: &str, who| c.script_secret(name, who).map(|(v, _)| v);
         assert_eq!(got("errand", Subject::Ai).unwrap(), "ai only");
-        assert!(got("errand", Subject::Human).is_err(), "人だけに閉じた鍵が渡った");
+        assert!(got("errand", Subject::Human).is_err(), "a key closed to everyone but people was handed over");
         assert_eq!(got("byhand", Subject::Human).unwrap(), "person only");
         assert!(got("byhand", Subject::Ai).is_err());
         // Neither ticked is a secret nothing may spend, and it stays that way
@@ -1518,8 +1518,8 @@ mod tests {
         );
         let c = caps(spec, dir.clone());
         for f in ["config.json", "secrets.json", ".env", "hack.lua", "x.enc"] {
-            assert!(c.write("all", f, "x").is_err(), "{f} は拒否されるはず");
-            assert!(c.read("all", f).is_err(), "{f} は拒否されるはず");
+            assert!(c.write("all", f, "x").is_err(), "{f} should be refused");
+            assert!(c.read("all", f).is_err(), "{f} should be refused");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1539,6 +1539,6 @@ mod tests {
         spec.allow_hosts.push("api.github.com".into());
         let c = caps(spec, PathBuf::from("."));
         assert!(c.http_raw("https://api.github.com.evil.com/x", "{}").is_err());
-        assert!(c.http_raw("http://api.github.com/x", "{}").is_err(), "httpは不可");
+        assert!(c.http_raw("http://api.github.com/x", "{}").is_err(), "http is not allowed");
     }
 }

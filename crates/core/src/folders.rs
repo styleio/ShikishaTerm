@@ -990,7 +990,7 @@ mod restore_tests {
         let checkout = root.join("myproject");
         let url = project("myproject", &checkout);
         let want = root.join("myproject.worktrees").join("work-2");
-        assert!(plan(&want, &cut(&url, "work-2"), None).is_ok(), "main を開いていても関係ない");
+        assert!(plan(&want, &cut(&url, "work-2"), None).is_ok(), "having main open does not matter");
     }
 
     /// A branch that is gone everywhere is started again from what it grew

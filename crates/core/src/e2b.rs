@@ -970,8 +970,8 @@ mod tests {
                     said.push(String::from_utf8(unwrap_bytes(&raw).unwrap()).unwrap());
                 }
             }
-            assert_eq!(said, ["hi", "there", "bell"], "切れ目 {cut} で落とした");
-            assert!(held.is_empty(), "切れ目 {cut} で残骸がある");
+            assert_eq!(said, ["hi", "there", "bell"], "it dropped something at cut {cut}");
+            assert!(held.is_empty(), "there is debris at cut {cut}");
         }
     }
 
@@ -981,8 +981,8 @@ mod tests {
     fn half_a_message_is_kept_rather_than_read() {
         let whole = frame(b"{\"event\":{}}");
         let mut held = whole[..whole.len() - 1].to_vec();
-        assert!(whole_frames(&mut held).is_empty(), "途中まででも読んでしまった");
-        assert_eq!(held.len(), whole.len() - 1, "読めないものを捨てた");
+        assert!(whole_frames(&mut held).is_empty(), "it read something only partly there");
+        assert_eq!(held.len(), whole.len() - 1, "it threw away what it could not read");
         held.push(whole[whole.len() - 1]);
         assert_eq!(whole_frames(&mut held).len(), 1);
     }
@@ -1021,8 +1021,8 @@ mod tests {
         // An offset is what was added to get that clock, so it comes back off:
         // the same moment written three ways is one number
         let z = epoch_of("2026-09-12T14:22:01Z");
-        assert_eq!(epoch_of("2026-09-12T23:22:01+09:00"), z, "東の時差");
-        assert_eq!(epoch_of("2026-09-12T09:22:01-05:00"), z, "西の時差");
+        assert_eq!(epoch_of("2026-09-12T23:22:01+09:00"), z, "an offset east");
+        assert_eq!(epoch_of("2026-09-12T09:22:01-05:00"), z, "an offset west");
 
         // Nothing recognisable is zero, not a panic and not a guess
         assert_eq!(epoch_of(""), 0);
@@ -1055,15 +1055,15 @@ mod tests {
             "size": "4096",
             "modifiedTime": "2026-09-12T14:22:01Z",
         });
-        let e = entry_of(&said).expect("読めない");
+        let e = entry_of(&said).expect("cannot read");
         assert_eq!(e.name, "thing.bin");
         assert!(!e.dir);
         assert_eq!(e.size, 4096);
         assert_eq!(e.modified, 1_789_222_921);
 
         let as_number = serde_json::json!({ "name": "x", "type": "FILE_TYPE_DIRECTORY", "size": 12 });
-        let d = entry_of(&as_number).expect("読めない");
-        assert!(d.dir, "フォルダをファイルとして読んだ");
+        let d = entry_of(&as_number).expect("cannot read");
+        assert!(d.dir, "it read a folder as a file");
         assert_eq!(d.size, 12);
         // Nothing said about a time is zero, not today
         assert_eq!(d.modified, 0);
@@ -1087,7 +1087,7 @@ mod tests {
     #[test]
     fn a_message_goes_out_in_its_envelope() {
         let f = frame(b"{}");
-        assert_eq!(f[0], 0, "旗が立っている");
+        assert_eq!(f[0], 0, "the flag is set");
         assert_eq!(u32::from_be_bytes([f[1], f[2], f[3], f[4]]), 2);
         assert_eq!(&f[5..], b"{}");
     }
@@ -1103,11 +1103,11 @@ mod tests {
         let r = collect(&s);
         assert!(r.ok(), "{r:?}");
         assert_eq!(r.out.trim(), "git version 2.0");
-        assert_eq!(r.err.trim(), "Preparing worktree", "二つの流れが混ざっている");
+        assert_eq!(r.err.trim(), "Preparing worktree", "the two streams are mixed");
 
         let mut bad = Vec::new();
         bad.extend(frame(br#"{"event":{"end":{"status":"exit status 128"}}}"#));
-        assert_eq!(collect(&bad).code, 128, "終了コードが言葉から取れていない");
+        assert_eq!(collect(&bad).code, 128, "the exit code was not taken from the words");
 
         // Nothing said about an ending is not a clean ending
         assert_eq!(collect(&[]).code, -1);

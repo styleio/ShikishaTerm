@@ -157,13 +157,13 @@ mod tests {
         assert_eq!(icons.len(), 4);
         for i in icons {
             let src = i["src"].as_str().unwrap();
-            let bytes = icon(src).unwrap_or_else(|| panic!("{src} が配られていない"));
-            assert_eq!(&bytes[1..4], b"PNG", "{src} が PNG ではない");
+            let bytes = icon(src).unwrap_or_else(|| panic!("{src} is not served"));
+            assert_eq!(&bytes[1..4], b"PNG", "{src} is not a PNG");
             // The size in the manifest is a promise about the file, not a hint.
             let want: u32 = i["sizes"].as_str().unwrap().split('x').next().unwrap().parse().unwrap();
             let wide = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
             let high = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
-            assert_eq!((wide, high), (want, want), "{src} の寸法が宣言と違う");
+            assert_eq!((wide, high), (want, want), "{src} has a size different from what is declared");
         }
         assert!(icon("/apple-touch-icon.png").is_some());
         assert!(icon("/pwa/../config.lua").is_none());
@@ -181,7 +181,7 @@ mod tests {
     fn the_manifest_says_everything_a_browser_asks_for() {
         let m: serde_json::Value = serde_json::from_str(&manifest_json()).unwrap();
         for named in ["name", "short_name", "start_url", "display", "icons"] {
-            assert!(!m[named].is_null(), "{named} が無い");
+            assert!(!m[named].is_null(), "{named} is missing");
         }
         // A window of its own, rather than a tab with the address bar above it
         assert_eq!(m["display"], "standalone");
@@ -194,19 +194,19 @@ mod tests {
             .filter_map(|i| i["sizes"].as_str())
             .collect();
         for want in ["192x192", "512x512"] {
-            assert!(sizes.contains(&want), "{want} の絵が無い: {sizes:?}");
+            assert!(sizes.contains(&want), "there is no picture for {want}: {sizes:?}");
         }
         // And one a launcher may cut a shape out of without cutting the mark
         assert!(
             m["icons"].as_array().unwrap().iter().any(|i| i["purpose"] == "maskable"),
-            "型抜きされる launcher 向けの絵が無い"
+            "there is no picture for launchers that cut it into a shape"
         );
     }
 
     #[test]
     fn the_manifest_carries_no_token() {
         let m = manifest_json();
-        assert!(!m.contains("?t="), "start_url にトークンが乗っている");
+        assert!(!m.contains("?t="), "start_url carries the token");
         assert!(m.contains("\"start_url\":\"./\""));
     }
 

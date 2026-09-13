@@ -360,13 +360,13 @@ mod tests {
         let mut doc = serde_json::json!({"kept": "as written"});
         let (at, err) = run_steps(&mut doc, "0.8.0", &steps);
         assert_eq!((at.as_str(), err), ("0.11.0", None));
-        assert_eq!(marks(&doc), ["v09", "v10", "v11"], "0.8 から 0.11 へは3段");
-        assert_eq!(doc["kept"], "as written", "知らないキーが消えた");
+        assert_eq!(marks(&doc), ["v09", "v10", "v11"], "three steps from 0.8 to 0.11");
+        assert_eq!(doc["kept"], "as written", "an unknown key disappeared");
 
         let mut doc = serde_json::json!({});
         let (at, _) = run_steps(&mut doc, "0.10.0", &steps);
         assert_eq!(at, "0.11.0");
-        assert_eq!(marks(&doc), ["v10", "v11"], "刻印より前の段を当てた、または刻印の版の段を飛ばした");
+        assert_eq!(marks(&doc), ["v10", "v11"], "it applied a step older than the stamp, or skipped the step for the stamped version");
     }
 
     /// A failing step stops the walk where it is, and says so
@@ -379,9 +379,9 @@ mod tests {
         ];
         let mut doc = serde_json::json!({});
         let (at, err) = run_steps(&mut doc, "0.8.0", &steps);
-        assert_eq!(at, "0.9.0", "失敗した段の手前で止まる");
+        assert_eq!(at, "0.9.0", "it stops just before the step that failed");
         assert!(err.as_deref().is_some_and(|e| e.contains("0.9.0 -> 0.10.0")), "{err:?}");
-        assert_eq!(marks(&doc), ["v09"], "失敗した段より先を当てた");
+        assert_eq!(marks(&doc), ["v09"], "it applied steps past the one that failed");
     }
 
     fn scratch_root(name: &str) -> std::path::PathBuf {
@@ -411,23 +411,23 @@ mod tests {
 
         let out = on_start_at(&root, "0.10.0", STEPS);
         assert_eq!(out.failed, None);
-        let backup = out.backup.expect("書き換える前にバックアップが要る");
+        let backup = out.backup.expect("a backup is needed before rewriting");
         assert!(
             std::fs::read_to_string(backup.join("config/config.json")).unwrap().contains("workspaces"),
-            "バックアップが移行前の中身ではない"
+            "the backup is not the contents from before migrating"
         );
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(root.join("config/config.json")).unwrap()).unwrap();
-        assert_eq!(cfg["desks"][0]["name"], "Work", "デスクが引き継がれていない");
+        assert_eq!(cfg["desks"][0]["name"], "Work", "the desks were not carried over");
         assert!(cfg.get("workspaces").is_none());
         // Written back in the order the person wrote it, the renamed key in its old place
         let keys: Vec<&str> = cfg.as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(keys, ["language", "//desks", "desks", "remote"], "キーの並びが変わった");
+        assert_eq!(keys, ["language", "//desks", "desks", "remote"], "the order of the keys changed");
         let inner: Vec<&str> = cfg["remote"].as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(inner, ["port", "enabled"], "入れ子のキーの並びが変わった");
+        assert_eq!(inner, ["port", "enabled"], "the order of nested keys changed");
 
         // The next start finds nothing to do and makes no second copy
-        assert_eq!(on_start_at(&root, "0.10.0", STEPS), Outcome::default(), "二度目に何かした");
+        assert_eq!(on_start_at(&root, "0.10.0", STEPS), Outcome::default(), "it did something the second time");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -445,14 +445,14 @@ mod tests {
             let (at, err) = run_steps(&mut doc, ver, STEPS);
             assert_eq!(err, None, "{name}: {err:?}");
             let last = STEPS.last().map(|s| s.to).unwrap_or(ver);
-            assert!(!crate::update::is_newer(last, &at), "{name} は {at} で止まった");
+            assert!(!crate::update::is_newer(last, &at), "{name} stopped at {at}");
             let once = doc.clone();
             let (_, err) = run_steps(&mut doc, &at, STEPS);
             assert_eq!(err, None);
-            assert_eq!(doc, once, "{name}: 二度目で変わった");
-            let _: crate::config::Config = serde_json::from_value(doc).expect("移行後に読めない");
+            assert_eq!(doc, once, "{name}: it changed the second time");
+            let _: crate::config::Config = serde_json::from_value(doc).expect("it cannot be read after migrating");
         }
-        assert!(seen >= 1, "fixture が1つも無い");
+        assert!(seen >= 1, "there is not a single fixture");
     }
 
     /// The rename arrives without anybody losing what they had written.
@@ -472,7 +472,7 @@ mod tests {
             ]
         });
         to_0_10_0(&mut doc).unwrap();
-        assert!(doc.get("workspaces").is_none(), "古い呼び名が残っている");
+        assert!(doc.get("workspaces").is_none(), "the old name is still there");
         assert_eq!(doc["desks"][0]["file"], "desks/projectx.json");
         assert_eq!(doc["desks"][1]["name"], "B");
         assert_eq!(doc["//desks"], "what it was for");
@@ -493,28 +493,28 @@ mod tests {
         std::fs::write(root.join("desks/p.json"), r#"{}"#).unwrap();
         let steps = [Step { to: "0.9.0", apply: to_09 }];
         let out = on_start_at(&root, "0.9.0", &steps);
-        assert_eq!(out.from.as_deref(), Some(BASELINE), "刻印が無ければ基準の版");
+        assert_eq!(out.from.as_deref(), Some(BASELINE), "with no stamp, the baseline version");
         assert_eq!(out.failed, None);
-        let backup = out.backup.expect("バックアップが無い");
+        let backup = out.backup.expect("there is no backup");
         assert_eq!(std::fs::read_to_string(backup.join("config/config.json")).unwrap(), r#"{"mine": true}"#);
         assert!(backup.join("config/secrets.json").is_file());
         assert!(backup.join("desks/p.json").is_file());
         let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("config/config.json")).unwrap()).unwrap();
         assert_eq!((marks(&cfg), cfg["mine"].as_bool()), (vec!["v09"], Some(true)));
-        assert_eq!(std::fs::read_to_string(root.join("config/secrets.json")).unwrap(), r#"{"s": 1}"#, "secrets に触った");
+        assert_eq!(std::fs::read_to_string(root.join("config/secrets.json")).unwrap(), r#"{"s": 1}"#, "it touched secrets");
         assert_eq!(recorded_at(&root).as_deref(), Some("0.9.0"));
-        assert_eq!(on_start_at(&root, "0.9.0", &steps), Outcome::default(), "二度目に何かした");
+        assert_eq!(on_start_at(&root, "0.9.0", &steps), Outcome::default(), "it did something the second time");
         // A layout from before the stamp, already at the baseline, is stamped
         let _ = std::fs::remove_file(version_path(&root));
         assert_eq!(on_start_at(&root, BASELINE, &steps), Outcome::default());
-        assert_eq!(recorded_at(&root).as_deref(), Some(BASELINE), "刻印が付かない");
+        assert_eq!(recorded_at(&root).as_deref(), Some(BASELINE), "no stamp is added");
 
         // A failing step: the file stays as the last good step left it, the
         // stamp does not reach the present, and the person is told
         let steps = [Step { to: "0.9.0", apply: to_09 }, Step { to: "0.10.0", apply: fail }];
         let out = on_start_at(&root, "0.10.0", &steps);
         assert!(out.failed.is_some());
-        assert_eq!(recorded_at(&root).as_deref(), Some("0.9.0"), "失敗したのに版が進んだ");
+        assert_eq!(recorded_at(&root).as_deref(), Some("0.9.0"), "the version moved on though it failed");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -530,7 +530,7 @@ mod tests {
         let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
         left.sort();
         assert_eq!(left.len(), KEEP);
-        assert_eq!(left[0], "0.8.0-20260909-000003", "古い方が残った");
+        assert_eq!(left[0], "0.8.0-20260909-000003", "the older one was kept");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

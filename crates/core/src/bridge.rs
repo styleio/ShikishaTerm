@@ -332,8 +332,8 @@ mod tests {
         let mine: HashMap<_, _> = [("mine".to_string(), conn("http://localhost:11434/v1"))].into();
         let argv = line(&["model", "claude/sonnet"]);
         assert_eq!(conn_in(&work, &argv).map(|c| c.url), Some("https://work.example/v1".to_string()));
-        assert!(conn_in(&mine, &argv).is_none(), "別のデスクの接続先が使えてしまう");
-        assert!(conn_in(&HashMap::new(), &argv).is_none(), "何も登録していないデスクで接続できる");
+        assert!(conn_in(&mine, &argv).is_none(), "another desk's destination can be used");
+        assert!(conn_in(&HashMap::new(), &argv).is_none(), "a desk with nothing registered can connect");
     }
 
     /// A model line with no connection is refused in its own words, never by
@@ -341,9 +341,9 @@ mod tests {
     #[test]
     fn a_model_line_without_a_connection_says_why() {
         let line = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        assert_eq!(why_not(&line(&["claude"])), None, "model 以外の行に口を出している");
-        assert!(why_not(&line(&["model", "no-slash"])).is_some(), "形の違う行が黙って通る");
-        assert!(why_not(&line(&["model"])).is_some(), "空の行が黙って通る");
+        assert_eq!(why_not(&line(&["claude"])), None, "it meddles with lines other than model");
+        assert!(why_not(&line(&["model", "no-slash"])).is_some(), "a line of the wrong shape passes silently");
+        assert!(why_not(&line(&["model"])).is_some(), "an empty line passes silently");
     }
 
     #[test]

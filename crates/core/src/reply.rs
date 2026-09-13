@@ -462,7 +462,7 @@ mod tests {
         let book = Book::new();
         let id = book.mint(ticket("レビュワー"));
         assert_eq!(id.chars().count(), ID_LEN);
-        assert!(id.chars().all(|c| c.is_ascii_alphanumeric()), "URLに置ける文字だけ");
+        assert!(id.chars().all(|c| c.is_ascii_alphanumeric()), "only characters that can go in a URL");
         assert_eq!(book.get(&id).unwrap().tab_name, "レビュワー");
         // A guess is not a ticket
         assert!(book.get("ZZZZZZZZZZZZ").is_none());
@@ -497,8 +497,8 @@ mod tests {
         let mut old = ticket("x");
         old.born = Instant::now() - (LIFETIME + Duration::from_secs(1));
         let id = book.mint(old);
-        assert!(book.get(&id).is_none(), "期限切れは通らない");
-        assert_eq!(book.len(), 0, "引いた時点で捨てる");
+        assert!(book.get(&id).is_none(), "an expired one does not get through");
+        assert_eq!(book.len(), 0, "it is thrown away as soon as it is taken");
     }
 
     /// A hook in a loop must not be able to grow this without end.
@@ -509,8 +509,8 @@ mod tests {
         for i in 0..MAX_TICKETS + 10 {
             book.mint(ticket(&format!("t{i}")));
         }
-        assert!(book.len() <= MAX_TICKETS, "上限を超えない: {}", book.len());
-        assert!(book.get(&first).is_none(), "古いものから捨てる");
+        assert!(book.len() <= MAX_TICKETS, "it does not go over the limit: {}", book.len());
+        assert!(book.get(&first).is_none(), "the oldest are thrown away first");
     }
 
     /// The commonest thing a phone is asked is a confirmation, and answering
@@ -532,11 +532,11 @@ mod tests {
 
         // One is not a choice, and neither is a paragraph that opens with a
         // number, nor a line of numbers with nothing after them
-        assert!(choices_of("1. Yes").is_empty(), "選択肢が1つなら選ばせない");
+        assert!(choices_of("1. Yes").is_empty(), "with only one option there is no choice to make");
         assert!(choices_of("").is_empty());
         assert!(choices_of("3.14 is pi\n2. and this is a real option").is_empty());
         let prose = format!("1. {}\n2. {}", "x".repeat(80), "y".repeat(80));
-        assert!(choices_of(&prose).is_empty(), "長すぎるものは選択肢ではない");
+        assert!(choices_of(&prose).is_empty(), "something too long is not an option");
         // The same number twice is a screen we do not understand; take the first
         assert_eq!(choices_of("1. a\n1. b\n2. c").len(), 2);
     }
@@ -549,11 +549,11 @@ mod tests {
         let mut t = ticket("レビュワー");
         t.said = "<script>alert(1)</script> & \"done\"".into();
         let html = page("K3fQ92mZxAbC", &t);
-        assert!(html.contains("レビュワー"), "タブ名が出る");
-        assert!(!html.contains("<script>alert"), "出力はHTMLとして解釈させない");
-        assert!(html.contains("&lt;script&gt;"), "文字としては見える");
-        assert!(html.contains("K3fQ92mZxAbC"), "自分の切符でPOSTできる");
-        assert!(!html.contains("?t="), "盤面のトークンは載らない");
+        assert!(html.contains("レビュワー"), "the tab name shows");
+        assert!(!html.contains("<script>alert"), "output is not interpreted as HTML");
+        assert!(html.contains("&lt;script&gt;"), "it is visible as text");
+        assert!(html.contains("K3fQ92mZxAbC"), "it can POST with its own ticket");
+        assert!(!html.contains("?t="), "the board's token is not in it");
 
         // A confirmation gets its buttons; a plain answer does not
         let mut asking = ticket("coder");

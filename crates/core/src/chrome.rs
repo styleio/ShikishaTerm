@@ -1634,7 +1634,7 @@ mod tests {
             .expect("cannot take it");
         let png = shot.get("data").and_then(|v| v.as_str()).unwrap_or("");
         assert!(png.len() > 1000, "the picture is too small: {} characters", png.len());
-        println!("screenshot: {} 文字の PNG", png.len());
+        println!("screenshot: a PNG of {} characters", png.len());
     }
 
     /// The browser this program fetches for itself, on a machine with none.
@@ -1879,7 +1879,7 @@ mod tests {
             pages.find(Some("p"), &Sel::Css("#here".into()), t).is_err(),
             "a closed page can still be driven"
         );
-        println!("すべて通過");
+        println!("all passed");
     }
 
     /// The seam: a runtime with no window, asked for something that shows

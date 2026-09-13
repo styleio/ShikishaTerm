@@ -143,7 +143,7 @@ mod remote_floor_tests {
         let now: Vec<String> = (1..41).map(|i| format!("line {i}")).collect();
         assert_eq!(screen_push(&had, &now), ScreenPush::Whole);
         let (was, is) = (140.0, remote_floor(0).as_millis() as f64);
-        assert!(was / is >= 4.0, "以前の 140ms の4倍以上になっていない: {is}ms");
+        assert!(was / is >= 4.0, "not at least four times the old 140ms: {is}ms");
     }
 
     /// An AI at work is the other shape: a spinner and a line of output, which
@@ -430,10 +430,10 @@ mod file_panel_tests {
     use crate::elsewhere::Elsewhere;
 
     fn panel_of(json: &str) -> Option<Elsewhere> {
-        let cfg: config::Config = serde_json::from_str(json).expect("設定が読めない");
+        let cfg: config::Config = serde_json::from_str(json).expect("the settings cannot be read");
         let (desks, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
-        let desk = desks.first().expect("デスクが無い");
+        let desk = desks.first().expect("there is no desk");
         surfaces_of(Some(desk), &[], &[], &[]).into_iter().find_map(|s| match s {
             Surface::Sftp { at, .. } => Some(at),
             _ => None,
@@ -454,14 +454,14 @@ mod file_panel_tests {
                            "command":"sftp://someone@example.com:2222","group":0} ] } ]
             }"#,
         )
-        .expect("パネルが機械を持っていない");
+        .expect("the panel has no machine");
         match at {
             Elsewhere::Ssh(spec) => {
                 assert_eq!(spec.host, "example.com");
                 assert_eq!(spec.port, 2222);
                 assert_eq!(spec.user, "someone");
             }
-            Elsewhere::Cloud(_) => panic!("タブに書かれた住所をフォルダが上書きした"),
+            Elsewhere::Cloud(_) => panic!("the folder overrode the address written on the tab"),
         }
     }
 
@@ -481,10 +481,10 @@ mod file_panel_tests {
                 "tabs": [ {"name":"files","id":"files","command":"sftp://","group":0} ] } ]
             }"#,
         )
-        .expect("パネルがフォルダの機械に届いていない");
+        .expect("the panel does not reach the folder's machine");
         match at {
             Elsewhere::Cloud(host) => assert_eq!(host.name, "cloud"),
-            Elsewhere::Ssh(spec) => panic!("住所が無いのに SSH にした: {}", spec.host),
+            Elsewhere::Ssh(spec) => panic!("it went to SSH though there is no address: {}", spec.host),
         }
     }
 
@@ -499,7 +499,7 @@ mod file_panel_tests {
                 "tabs": [ {"name":"files","id":"files","command":"sftp://","group":0} ] } ]
             }"#,
         );
-        assert!(at.is_none(), "行き先が無いのに行き先を作った");
+        assert!(at.is_none(), "it made a destination though there is none");
     }
 }
 
@@ -528,9 +528,9 @@ mod drawn_away_tests {
         assert_eq!(
             state.tabs[0].away.as_deref(),
             Some("台所のノート"),
-            "向こうで描いているページに、どの端末かが付いていない"
+            "a page drawn over there does not say which device"
         );
-        assert_eq!(state.tabs[1].away, None, "こちらのページまで向こう扱いになっている");
+        assert_eq!(state.tabs[1].away, None, "even a page here is treated as over there");
     }
 
     /// Nothing is said about a page drawn here, which is nearly every page.
@@ -546,7 +546,7 @@ mod drawn_away_tests {
         // ...and it is left out of the state altogether rather than sent as a
         // null on every push
         let json = serde_json::to_string(&state).unwrap_or_default();
-        assert!(!json.contains("\"away\""), "言うことが無いのに毎回送っている");
+        assert!(!json.contains("\"away\""), "it sends every time though there is nothing to say");
     }
 }
 

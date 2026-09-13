@@ -285,15 +285,15 @@ mod tests {
     /// face
     #[test]
     fn the_icon_is_asked_for_by_the_number_it_is_filed_under() {
-        assert_eq!(OUR_ICON as usize, 1, "リソース番号がずれている");
+        assert_eq!(OUR_ICON as usize, 1, "the resource number is off");
         let build = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("build.rs"),
         )
-        .expect("build.rs が読めない");
+        .expect("build.rs cannot be read");
         // `set_icon` files it as the first icon, number 1. A different id
         // would have to be said with `set_icon_with_id`
-        assert!(build.contains("set_icon(\"assets/icon.ico\")"), "埋め込み方が変わった");
-        assert!(!build.contains("set_icon_with_id"), "番号を明示するなら、ここも合わせる");
+        assert!(build.contains("set_icon(\"assets/icon.ico\")"), "the way it is embedded changed");
+        assert!(!build.contains("set_icon_with_id"), "if the number is made explicit, match it here too");
     }
 
     /// A field is always terminated, however long the text: a tip that ran

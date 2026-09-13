@@ -390,7 +390,7 @@ mod tests {
               "remoteUser": "vscode",
             }"#,
         )
-        .expect("読めない");
+        .expect("cannot read");
         assert_eq!(e.image.as_deref(), Some("mcr.microsoft.com/devcontainers/rust:1"));
         assert_eq!(e.setup, ["cargo fetch"]);
         assert_eq!(e.ports, [8080, 5432]);
@@ -403,7 +403,7 @@ mod tests {
     /// read as no file at all, so the project's setup quietly never ran.
     #[test]
     fn a_file_saved_by_a_windows_editor_is_read() {
-        let e = read("\u{feff}{ \"postCreateCommand\": \"cargo fetch\" }").expect("BOM付きが読めない");
+        let e = read("\u{feff}{ \"postCreateCommand\": \"cargo fetch\" }").expect("with a BOM it cannot be read");
         assert_eq!(e.setup, ["cargo fetch"]);
     }
 
@@ -419,17 +419,17 @@ mod tests {
               "postStartCommand": { "a": "fourth", "b": "fifth" }
             }"#,
         )
-        .expect("読めない");
+        .expect("cannot read");
         assert_eq!(e.setup[0], "first");
-        assert_eq!(e.setup[1], "npm ci", "配列は1行になる");
+        assert_eq!(e.setup[1], "npm ci", "an array becomes one line");
         assert_eq!(e.setup[2], "third");
-        assert_eq!(e.setup.len(), 5, "まとめて走らせる指定も1つずつ拾う: {:?}", e.setup);
+        assert_eq!(e.setup.len(), 5, "commands run together are still picked up one by one: {:?}", e.setup);
     }
 
     /// A word with a space in it is one word, and stays one word.
     #[test]
     fn an_argument_with_a_space_survives_becoming_a_line() {
-        let e = read(r#"{"onCreateCommand": ["echo", "two words", "it's"]}"#).expect("読めない");
+        let e = read(r#"{"onCreateCommand": ["echo", "two words", "it's"]}"#).expect("cannot read");
         assert_eq!(e.setup, [r#"echo 'two words' 'it'\''s'"#]);
     }
 
@@ -439,7 +439,7 @@ mod tests {
         let e = read(
             r#"{"image":"x","features":{"ghcr.io/devcontainers/features/node:1":{},"ghcr.io/devcontainers/features/go:1":{}}}"#,
         )
-        .expect("読めない");
+        .expect("cannot read");
         assert_eq!(e.unresolved.len(), 2, "{:?}", e.unresolved);
         assert!(e.unresolved.iter().any(|f| f.contains("node")));
     }
@@ -447,18 +447,18 @@ mod tests {
     /// A project that says nothing is not an error; most say nothing.
     #[test]
     fn a_project_with_nothing_to_say_says_nothing() {
-        let none = read("{}").expect("空でも読める");
+        let none = read("{}").expect("even empty it can be read");
         assert!(!none.any());
         assert!(read("not json at all").is_none());
         let at = std::env::temp_dir().join("shikisha-dc-none");
         let _ = std::fs::create_dir_all(&at);
-        assert!(of(&at).is_none(), "無いのに何か返している");
+        assert!(of(&at).is_none(), "it returns something though there is nothing");
     }
 
     /// The build's Dockerfile stands in for an image when there is no image.
     #[test]
     fn a_dockerfile_is_what_it_is_built_from() {
-        let e = read(r#"{"build":{"dockerfile":"Dockerfile","context":".."}}"#).expect("読めない");
+        let e = read(r#"{"build":{"dockerfile":"Dockerfile","context":".."}}"#).expect("cannot read");
         assert_eq!(e.image.as_deref(), Some("Dockerfile"));
     }
 
@@ -470,7 +470,7 @@ mod tests {
         std::fs::create_dir_all(at.join(".devcontainer")).unwrap();
         std::fs::write(at.join(".devcontainer").join("devcontainer.json"), r#"{"image":"x"}"#).unwrap();
         std::fs::write(at.join("Cargo.lock"), "").unwrap();
-        assert!(propose(&at).is_none(), "既に言っているのに提案している");
+        assert!(propose(&at).is_none(), "it proposes though it is already said");
         let _ = std::fs::remove_dir_all(&at);
     }
 
@@ -495,20 +495,20 @@ mod tests {
         std::fs::write(at.join("Cargo.lock"), "").unwrap();
         std::fs::write(at.join("Cargo.toml"), "").unwrap();
         std::fs::write(at.join("package-lock.json"), "").unwrap();
-        let d = propose(&at).expect("提案できる");
+        let d = propose(&at).expect("it can propose");
         // The manifest beside its own lock file is the same install, once
         assert_eq!(d.why.len(), 2, "{:?}", d.why);
         assert!(d.json.contains("cargo fetch && npm ci"), "{}", d.json);
-        assert!(d.json.contains("devcontainers/rust"), "最初に見つけたものが像になる");
+        assert!(d.json.contains("devcontainers/rust"), "the first one found becomes the image");
         // What is proposed is what the reader reads back
-        let back = read(&d.json).expect("自分が書いたものを読めない");
+        let back = read(&d.json).expect("it cannot read what it wrote itself");
         assert_eq!(back.setup, ["cargo fetch && npm ci"]);
         assert!(back.image.is_some());
 
         // Saved only where nothing is standing, and only once
         assert!(save(&d).is_ok());
         assert!(std::path::Path::new(&d.at).is_file());
-        assert!(save(&d).is_err(), "既にあるものに書き込んでいる");
+        assert!(save(&d).is_err(), "it writes into something that already exists");
         // And once it is there, nothing is proposed any more
         assert!(propose(&at).is_none());
         let _ = std::fs::remove_dir_all(&at);

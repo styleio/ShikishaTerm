@@ -809,9 +809,9 @@ mod tests {
             let said = dial(bad).map(|_| String::new()).unwrap_or_else(|e| e.to_string());
             assert!(
                 said.contains(bad) || !said.is_empty(),
-                "住所として断っていない: {bad}"
+                "it does not refuse it as an address: {bad}"
             );
-            assert!(dial(bad).is_err(), "話せない住所を受けている: {bad}");
+            assert!(dial(bad).is_err(), "it accepts an address it cannot speak to: {bad}");
         }
     }
 
@@ -828,16 +828,16 @@ mod tests {
     fn an_https_board_is_reached_and_really_encrypted() {
         use std::io::Write as _;
         let site = "https://shikisha-term.com";
-        let mut wire = dial(site).expect("繋がらない");
+        let mut wire = dial(site).expect("it does not connect");
         write!(
             wire,
             "GET / HTTP/1.1\r\nHost: shikisha-term.com\r\nConnection: close\r\n\r\n"
         )
-        .expect("書けない");
+        .expect("cannot write");
         wire.flush().unwrap();
-        let said = read_head(&mut wire).expect("何も返ってこない");
+        let said = read_head(&mut wire).expect("nothing comes back");
         let first = said.lines().next().unwrap_or_default().to_string();
-        assert!(first.starts_with("HTTP/"), "HTTP が返っていない: {first}");
+        assert!(first.starts_with("HTTP/"), "HTTP did not come back: {first}");
         println!("{site} -> {first}");
 
         // And the same address spelled without its scheme is refused rather
@@ -849,7 +849,7 @@ mod tests {
     #[test]
     fn a_frame_says_which_connection_and_what_for() {
         let f = frame(7, Kind::Data, b"hello");
-        let (id, kind, payload) = unframe(&f).expect("読めない");
+        let (id, kind, payload) = unframe(&f).expect("cannot read");
         assert_eq!((id, kind, payload), (7, Kind::Data, &b"hello"[..]));
         // Empty payloads are ordinary (a close carries none)
         assert_eq!(unframe(&frame(1, Kind::Close, b"")).unwrap().2.len(), 0);
@@ -868,7 +868,7 @@ mod tests {
         // does: the request cannot wait for the connection to be made
         pipe.accept(&frame(1, Kind::Open, far.as_bytes()));
         pipe.accept(&frame(1, Kind::Data, "こんにちは hello".as_bytes()));
-        let (kind, said) = next_of(&rx, spare, 1).expect("返事が来ない");
+        let (kind, said) = next_of(&rx, spare, 1).expect("no reply comes");
         assert_eq!(kind, Kind::Data);
         assert_eq!(String::from_utf8_lossy(&said), "こんにちは HELLO");
 
@@ -886,7 +886,7 @@ mod tests {
         while pipe.count() > 0 && std::time::Instant::now() < until {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert_eq!(pipe.count(), 0, "切ったのに握ったままになっている");
+        assert_eq!(pipe.count(), 0, "it keeps holding on after being cut");
     }
 
     /// Somewhere that cannot be reached is news, not silence: a browser
@@ -897,10 +897,10 @@ mod tests {
         // Port 1 on this machine, which nothing listens on
         let spare = &mut Vec::new();
         pipe.accept(&frame(9, Kind::Open, b"127.0.0.1:1"));
-        assert_eq!(next_of(&rx, spare, 9).expect("何も答えない").0, Kind::Close);
+        assert_eq!(next_of(&rx, spare, 9).expect("it answers nothing").0, Kind::Close);
         // An address with no port is refused the same way rather than guessed
         pipe.accept(&frame(10, Kind::Open, b"example.com"));
-        assert_eq!(next_of(&rx, spare, 10).expect("何も答えない").0, Kind::Close);
+        assert_eq!(next_of(&rx, spare, 10).expect("it answers nothing").0, Kind::Close);
     }
 
     /// A cut-off client's pages stop fetching through this machine
@@ -912,12 +912,12 @@ mod tests {
         pipe.accept(&frame(1, Kind::Data, b"x"));
         assert_eq!(next_of(&rx, &mut Vec::new(), 1).unwrap().1, b"X");
         pipe.shut();
-        assert_eq!(pipe.count(), 0, "握ったままになっている");
+        assert_eq!(pipe.count(), 0, "it keeps holding on");
         // And nothing further is opened. Asked straight away, with nothing
         // waited for: a shut pipe refuses on the calling thread, and one that
         // did not would have written the connection down before reaching for
         // it -- so the fault, if there were one, is already visible here
         pipe.accept(&frame(2, Kind::Open, far.as_bytes()));
-        assert_eq!(pipe.count(), 0, "閉じた後に繋いでいる");
+        assert_eq!(pipe.count(), 0, "it connects after being closed");
     }
 }

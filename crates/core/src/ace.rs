@@ -53,15 +53,15 @@ mod tests {
 
     #[test]
     fn the_library_and_its_languages_are_carried() {
-        assert!(asset("/vendor/ace/ace.js").is_some_and(|b| b.len() > 100_000), "本体が入っていない");
-        assert!(asset("/vendor/ace/mode-rust.js").is_some(), "言語が入っていない");
+        assert!(asset("/vendor/ace/ace.js").is_some_and(|b| b.len() > 100_000), "the main file is not included");
+        assert!(asset("/vendor/ace/mode-rust.js").is_some(), "the languages are not included");
     }
 
     #[test]
     fn nothing_else_is_answered() {
-        assert!(asset("/vendor/ace/../../../secrets.json").is_none(), "外へ出られる");
+        assert!(asset("/vendor/ace/../../../secrets.json").is_none(), "it can get outside");
         assert!(asset("/vendor/ace/").is_none());
         assert!(asset("/etc/passwd").is_none());
-        assert!(asset("ace.js").is_none(), "接頭辞なしでは答えない");
+        assert!(asset("ace.js").is_none(), "it does not answer without the prefix");
     }
 }

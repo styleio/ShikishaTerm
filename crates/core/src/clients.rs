@@ -259,9 +259,9 @@ pub(crate) mod tests {
         alone(|| {
             let (row, key) = pair("台所のiPad").unwrap();
             let text = std::fs::read_to_string(path()).unwrap();
-            assert!(!text.contains(&key), "鍵そのものが書かれている");
-            assert!(text.contains(&row.hash), "照合に使うものが書かれていない");
-            assert_eq!(who(&key).map(|c| c.id), Some(row.id), "本人だと分からない");
+            assert!(!text.contains(&key), "the key itself is written");
+            assert!(text.contains(&row.hash), "what is used for matching is not written");
+            assert_eq!(who(&key).map(|c| c.id), Some(row.id), "it cannot tell it is the same client");
         });
     }
 
@@ -273,8 +273,8 @@ pub(crate) mod tests {
             let (phone, phone_key) = pair("phone").unwrap();
             let (laptop, laptop_key) = pair("laptop").unwrap();
 
-            assert!(revoke(&phone.id).unwrap(), "消えたと言わない");
-            assert!(who(&phone_key).is_none(), "取り上げた鍵がまだ開く");
+            assert!(revoke(&phone.id).unwrap(), "it does not say it was removed");
+            assert!(who(&phone_key).is_none(), "a key that was taken away still opens");
             assert_eq!(who(&laptop_key).map(|c| c.id), Some(laptop.id), "it was locked out by mistake");
 
             assert!(!revoke(&phone.id).unwrap(), "it says it removed it a second time too");
@@ -287,8 +287,8 @@ pub(crate) mod tests {
     fn a_key_that_was_never_handed_out_opens_nothing() {
         alone(|| {
             let (_, key) = pair("phone").unwrap();
-            assert!(who("").is_none(), "空の鍵が通った");
-            assert!(who(&crate::random_hex(24)).is_none(), "配っていない鍵が通った");
+            assert!(who("").is_none(), "an empty key got through");
+            assert!(who(&crate::random_hex(24)).is_none(), "a key never handed out got through");
             // And the real one still does, so the test above is not passing
             // because everything is refused
             assert!(who(&key).is_some());
@@ -316,8 +316,8 @@ pub(crate) mod tests {
                 pair(&format!("d{i}")).unwrap();
             }
             let book = load();
-            assert_eq!(book.clients.len(), MAX_CLIENTS, "際限なく増えている");
-            assert!(who(&first_key).is_none(), "いちばん古いものが残っている");
+            assert_eq!(book.clients.len(), MAX_CLIENTS, "it grows without limit");
+            assert!(who(&first_key).is_none(), "the oldest one is still there");
             assert!(!book.clients.iter().any(|c| c.id == first.id));
         });
     }
@@ -329,7 +329,7 @@ pub(crate) mod tests {
             let (_, a) = pair("a").unwrap();
             let (_, b) = pair("b").unwrap();
             revoke_all().unwrap();
-            assert!(who(&a).is_none() && who(&b).is_none(), "誰かが残っている");
+            assert!(who(&a).is_none() && who(&b).is_none(), "someone is still there");
             assert!(load().clients.is_empty());
         });
     }
@@ -339,7 +339,7 @@ pub(crate) mod tests {
     fn an_unreadable_book_is_an_empty_one() {
         alone(|| {
             std::fs::write(path(), "{ this is not json").unwrap();
-            assert!(load().clients.is_empty(), "壊れた名簿で起動できなくなる");
+            assert!(load().clients.is_empty(), "a broken list stops it from starting");
             // And pairing writes a good one over it
             let (_, key) = pair("after").unwrap();
             assert!(who(&key).is_some());

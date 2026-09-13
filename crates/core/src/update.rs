@@ -1077,7 +1077,7 @@ mod tests {
     #[test]
     fn compares_versions_numerically() {
         assert!(is_newer("0.2.0", "0.1.0"));
-        assert!(is_newer("0.1.10", "0.1.9"), "文字列比較だと 10 < 9 になる");
+        assert!(is_newer("0.1.10", "0.1.9"), "as a string comparison 10 < 9");
         assert!(!is_newer("0.1.0", "0.1.0"));
         assert!(!is_newer("0.0.9", "0.1.0"));
         assert!(is_newer("1.0", "0.99.99"));
@@ -1129,7 +1129,7 @@ mod tests {
         let bytes = b"hello";
         let ok = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  SHIKISHA-TERM.zip";
         assert!(verify_sha256(bytes, ok).is_ok());
-        assert!(verify_sha256(bytes, &ok.to_uppercase()).is_ok(), "大文字でも同じ");
+        assert!(verify_sha256(bytes, &ok.to_uppercase()).is_ok(), "upper case is the same");
         assert!(verify_sha256(b"hellp", ok).is_err());
         assert!(verify_sha256(bytes, "").is_err());
     }
@@ -1144,7 +1144,7 @@ mod tests {
         assert!(verify_signature(b"the zip", &sig, &pubhex).is_ok());
         assert!(verify_signature(b"the zap", &sig, &pubhex).is_err());
         let other = SigningKey::from_bytes(&[8u8; 32]).verifying_key().to_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
-        assert!(verify_signature(b"the zip", &sig, &other).is_err(), "別の鍵で通った");
+        assert!(verify_signature(b"the zip", &sig, &other).is_err(), "it got through with a different key");
         assert!(verify_signature(b"the zip", "zz", &pubhex).is_err());
     }
 
@@ -1168,15 +1168,15 @@ mod tests {
             .skip(1)
             .take_while(|l| !l.contains("END PUBLIC KEY"))
             .collect();
-        assert!(!body.is_empty(), "install.sh に鍵が無い");
+        assert!(!body.is_empty(), "install.sh has no key");
         let der = base64::engine::general_purpose::STANDARD
             .decode(body.trim())
-            .expect("鍵が base64 ではない");
+            .expect("the key is not base64");
         // An Ed25519 public key as OpenSSL reads one: twelve bytes saying what
         // it is, then the thirty-two that are the key
-        assert_eq!(der.len(), 44, "鍵の形が違う");
+        assert_eq!(der.len(), 44, "the key has the wrong shape");
         let hex: String = der[12..].iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(hex, PUBLIC_KEY_HEX, "install.sh の鍵が、この版の鍵ではない");
+        assert_eq!(hex, PUBLIC_KEY_HEX, "the key in install.sh is not this version's key");
     }
 
     /// A person's folders are placed only where nothing is; the rest is
@@ -1212,12 +1212,12 @@ mod tests {
         let read = |p: &str| std::fs::read_to_string(root.join(p)).unwrap();
         assert_eq!(read("lang/ja.json"), "new lang");
         assert_eq!(read("config.example.json"), "new example");
-        assert_eq!(read("config/config.json"), "mine", "設定が上書きされた");
-        assert_eq!(read("scripts/example/a.lua"), "mine too", "人が触った例が上書きされた");
-        assert_eq!(read("desks/projectx.example.json"), "new desk example", "無い例は置く");
+        assert_eq!(read("config/config.json"), "mine", "the settings were overwritten");
+        assert_eq!(read("scripts/example/a.lua"), "mine too", "an example the person touched was overwritten");
+        assert_eq!(read("desks/projectx.example.json"), "new desk example", "a missing example is placed");
         assert_eq!(read("conpty.dll"), "new dll");
-        assert_eq!(read("conpty.dll.old"), "old dll", "使用中のものは脇に残す");
-        assert!(!root.join("lang/ja.json.old").exists(), "上書きできるものに .old が残った");
+        assert_eq!(read("conpty.dll.old"), "old dll", "what is in use is kept to the side");
+        assert!(!root.join("lang/ja.json.old").exists(), "a .old was left for something that could be overwritten");
         // Interrupted: what was set aside goes back
         restore_aside(&root);
         assert_eq!(read("conpty.dll"), "old dll");

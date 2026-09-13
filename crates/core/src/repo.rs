@@ -654,13 +654,13 @@ mod tests {
     fn one_folder_spelled_two_ways_is_one_project() {
         let (main, side, _) = a_repository_with_a_worktree("family-spelling");
         let shouted = PathBuf::from(main.display().to_string().to_uppercase());
-        assert!(shouted.exists(), "大文字でも同じ場所を指している");
-        assert_ne!(shouted, main, "綴りとしては別物");
+        assert!(shouted.exists(), "upper case points at the same place");
+        assert_ne!(shouted, main, "as spelling, they are different");
 
-        assert_eq!(family_of(&shouted), family_of(&main), "同じ家族と見なされていない");
+        assert_eq!(family_of(&shouted), family_of(&main), "they are not seen as the same family");
         assert_eq!(family_of(&shouted), family_of(&side));
         // And the checkout still knows it is not one of its own branches
-        assert!(!is_linked(&shouted), "本体が枝に見えている");
+        assert!(!is_linked(&shouted), "the main checkout looks like a branch");
         assert!(is_linked(&side));
     }
 
@@ -674,13 +674,13 @@ mod tests {
         let (main, side, _) = a_repository_with_a_worktree("family-spelling");
         let other = main.with_file_name("by-another-name");
         let _ = std::fs::remove_file(&other);
-        std::os::unix::fs::symlink(&main, &other).expect("リンクが作れない");
-        assert!(other.exists(), "リンクの先が無い");
-        assert_ne!(other, main, "綴りとしては別物");
+        std::os::unix::fs::symlink(&main, &other).expect("the link cannot be made");
+        assert!(other.exists(), "what the link points to does not exist");
+        assert_ne!(other, main, "as spelling, they are different");
 
-        assert_eq!(family_of(&other), family_of(&main), "同じ家族と見なされていない");
+        assert_eq!(family_of(&other), family_of(&main), "they are not seen as the same family");
         assert_eq!(family_of(&other), family_of(&side));
-        assert!(!is_linked(&other), "本体が枝に見えている");
+        assert!(!is_linked(&other), "the main checkout looks like a branch");
         assert!(is_linked(&side));
     }
 
@@ -689,9 +689,9 @@ mod tests {
         // What the list marks with a sign of its own: closing a branch that was
         // cut for a piece of work is a different act from closing the project
         let (main, side, _) = a_repository_with_a_worktree("family-linked");
-        assert!(is_linked(&side), "枝である");
-        assert!(!is_linked(&main), "本体は枝ではない");
-        assert!(!is_linked(&tmp("family-linked-plain")), "リポジトリでなければ枝でもない");
+        assert!(is_linked(&side), "it is a branch");
+        assert!(!is_linked(&main), "the main checkout is not a branch");
+        assert!(!is_linked(&tmp("family-linked-plain")), "not a repository, so not a branch either");
     }
 
     #[test]
@@ -785,16 +785,16 @@ mod tests {
         let ours = held.local_addr().expect("addr").port();
 
         let all = listeners();
-        assert!(!all.is_empty(), "LISTEN中のポートが1つも読めていない");
+        assert!(!all.is_empty(), "not a single listening port was read");
         let mine = std::process::id();
         assert!(
             all.get(&mine).is_some_and(|ports| ports.contains(&ours)),
-            "自分で開いたポート {ours} が表に出てこない"
+            "the port {ours} opened here does not show in the table"
         );
         for (pid, ports) in &all {
             assert!(*pid > 0 || !ports.is_empty());
             for p in ports {
-                assert!(*p > 0, "ポート0が混ざっている");
+                assert!(*p > 0, "port 0 is mixed in");
             }
         }
     }
@@ -802,11 +802,11 @@ mod tests {
     #[test]
     fn our_own_process_is_somewhere_in_the_machine_tree() {
         let children = child_map();
-        assert!(!children.is_empty(), "プロセス一覧が読めていない");
+        assert!(!children.is_empty(), "the process list was not read");
         let me = std::process::id();
         assert!(
             children.values().any(|kids| kids.contains(&me)),
-            "自分自身が親子表に出てこない"
+            "this process does not show in the parent-child table"
         );
     }
 }

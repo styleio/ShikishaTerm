@@ -285,7 +285,7 @@ mod tests {
         assert_eq!(
             found.hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
             vec!["sub/Payments.rs"],
-            "名前の一部・大文字小文字の違いでも見つかる"
+            "found by part of the name, and regardless of case"
         );
         assert!(!found.capped);
     }
@@ -296,10 +296,10 @@ mod tests {
         std::fs::write(at.join("a.txt"), "one\ntwo NEEDLE two\nthree\n").unwrap();
         std::fs::write(at.join("b.txt"), "nothing here").unwrap();
         let found = by_text(&at, "needle", 50);
-        assert_eq!(found.hits.len(), 1, "中身で見つかるのは1件だけ");
+        assert_eq!(found.hits.len(), 1, "only one hit by contents");
         let hit = &found.hits[0];
         assert_eq!(hit.path, "a.txt");
-        assert_eq!(hit.line, Some(2), "行番号は1から数える");
+        assert_eq!(hit.line, Some(2), "line numbers count from 1");
         assert_eq!(hit.text.as_deref(), Some("two NEEDLE two"));
     }
 
@@ -307,14 +307,14 @@ mod tests {
     fn one_file_answers_once() {
         let at = scratch("once");
         std::fs::write(at.join("a.txt"), "hit\nhit\nhit\n").unwrap();
-        assert_eq!(by_text(&at, "hit", 50).hits.len(), 1, "同じファイルは1行だけ");
+        assert_eq!(by_text(&at, "hit", 50).hits.len(), 1, "one line per file");
     }
 
     #[test]
     fn nothing_is_searched_for_an_empty_box() {
         let at = scratch("empty");
         std::fs::write(at.join("a.txt"), "anything").unwrap();
-        assert!(by_name(&at, "   ", 50).hits.is_empty(), "空の検索は全件ではない");
+        assert!(by_name(&at, "   ", 50).hits.is_empty(), "an empty search is not everything");
         assert!(by_text(&at, "", 50).hits.is_empty());
     }
 
@@ -322,16 +322,16 @@ mod tests {
     fn a_long_line_is_cut_around_the_match() {
         let line = format!("{}NEEDLE{}", "x".repeat(400), "y".repeat(400));
         let shown = around(&line, "needle");
-        assert!(shown.chars().count() < 200, "長い行はそのまま出さない");
-        assert!(shown.contains("NEEDLE"), "切っても当たりは残る");
-        assert!(shown.starts_with('…') && shown.ends_with('…'), "切った側に印が付く");
+        assert!(shown.chars().count() < 200, "a long line is not shown as it is");
+        assert!(shown.contains("NEEDLE"), "the hit is still there after cutting");
+        assert!(shown.starts_with('…') && shown.ends_with('…'), "the side that was cut is marked");
     }
 
     #[test]
     fn the_mark_answers_one_question() {
-        assert_eq!(mark_of(b"hello"), mark_of(b"hello"), "同じ中身は同じ印");
-        assert_ne!(mark_of(b"hello"), mark_of(b"hellp"), "1文字違えば別");
-        assert_ne!(mark_of(b"hello"), mark_of(b"hello "), "長さが違えば別");
+        assert_eq!(mark_of(b"hello"), mark_of(b"hello"), "the same contents give the same mark");
+        assert_ne!(mark_of(b"hello"), mark_of(b"hellp"), "one character different means different");
+        assert_ne!(mark_of(b"hello"), mark_of(b"hello "), "a different length means different");
         assert_ne!(mark_of(b""), mark_of(b"x"));
     }
 
@@ -340,16 +340,16 @@ mod tests {
         let at = scratch("stamp").join("a.txt");
         std::fs::write(&at, "one").unwrap();
         let first = stamp_of(&at);
-        assert!(!first.is_empty(), "そこにあるファイルには印が付く");
+        assert!(!first.is_empty(), "a file that is there gets a mark");
         std::fs::write(&at, "one and a half").unwrap();
-        assert_ne!(stamp_of(&at), first, "長さが変われば印も変わる");
-        assert!(stamp_of(&at.with_file_name("nothing")).is_empty(), "無いものには印が無い");
+        assert_ne!(stamp_of(&at), first, "when the length changes the mark changes too");
+        assert!(stamp_of(&at.with_file_name("nothing")).is_empty(), "what is not there has no mark");
     }
 
     #[test]
     fn a_binary_file_is_not_read_as_lines() {
         let at = scratch("binary");
         std::fs::write(at.join("a.bin"), b"pre\0NEEDLE\0post").unwrap();
-        assert!(by_text(&at, "needle", 50).hits.is_empty(), "バイナリは中身検索の対象外");
+        assert!(by_text(&at, "needle", 50).hits.is_empty(), "binary files are not searched by contents");
     }
 }

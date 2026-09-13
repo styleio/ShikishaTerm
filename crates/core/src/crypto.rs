@@ -249,9 +249,9 @@ mod tests {
     fn each_encryption_uses_fresh_salt_and_nonce() {
         let a = encrypt("same", "pw").unwrap();
         let b = encrypt("same", "pw").unwrap();
-        assert_ne!(a.salt, b.salt, "ソルトは毎回変わる");
-        assert_ne!(a.nonce, b.nonce, "nonceは毎回変わる");
-        assert_ne!(a.data, b.data, "同じ平文でも暗号文は変わる");
+        assert_ne!(a.salt, b.salt, "the salt changes every time");
+        assert_ne!(a.nonce, b.nonce, "the nonce changes every time");
+        assert_ne!(a.data, b.data, "the same plaintext gives a different ciphertext");
     }
 
     #[test]

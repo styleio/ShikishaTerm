@@ -384,9 +384,9 @@ mod tests {
         unsafe {
             std::env::set_var("GITHUB_TOKEN", "from_the_environment");
         }
-        assert_eq!(find(Some("  ours  ".into())).as_deref(), Some("ours"), "前後の空白が値に入っている");
-        assert_eq!(find(None), None, "マシンのトークンがデスクに使われた");
-        assert_eq!(find(Some("   ".into())), None, "空のトークンが使われた");
+        assert_eq!(find(Some("  ours  ".into())).as_deref(), Some("ours"), "surrounding spaces got into the value");
+        assert_eq!(find(None), None, "the machine's token was used for a desk");
+        assert_eq!(find(Some("   ".into())), None, "an empty token was used");
         unsafe {
             std::env::remove_var("GITHUB_TOKEN");
         }
@@ -438,7 +438,7 @@ mod tests {
         };
         assert_eq!(days_until(&stamp(11)), Some(11));
         assert_eq!(days_until(&stamp(0)), Some(0));
-        assert_eq!(days_until(&stamp(-3)), Some(-3), "切れたものは負の日数で出る");
+        assert_eq!(days_until(&stamp(-3)), Some(-3), "an expired one comes out as negative days");
 
         // Not a date: nothing, rather than a number somebody would believe
         // The same day, with the time joined on the other way round
@@ -477,7 +477,7 @@ mod tests {
     #[ignore = "needs the network and a token of your own"]
     fn the_real_github_answers_the_way_this_reads_it() {
         let Ok(token) = std::env::var("SHIKISHA_GITHUB_PROBE") else {
-            panic!("SHIKISHA_GITHUB_PROBE にトークンを入れて実行してください");
+            panic!("run it with a token in SHIKISHA_GITHUB_PROBE");
         };
         let said = probe(Some(token));
         println!(
@@ -485,12 +485,12 @@ mod tests {
             said.source, said.ok, said.status, said.login, said.expires_at, said.expires_in_days
         );
         assert_eq!(said.source, Some("desk"));
-        assert!(said.ok, "GitHub が受け付けませんでした: status={}", said.status);
-        assert!(said.login.is_some(), "アカウント名が読めていない");
+        assert!(said.ok, "GitHub did not accept it: status={}", said.status);
+        assert!(said.login.is_some(), "the account name was not read");
         // An expiry is not guaranteed -- a token can be made without one -- but
         // when the header is there it has to become a number of days
         if said.expires_at.is_some() {
-            assert!(said.expires_in_days.is_some(), "期限の日付が日数にならない");
+            assert!(said.expires_in_days.is_some(), "the expiry date does not become a number of days");
         }
     }
 
@@ -506,7 +506,7 @@ mod tests {
         assert_eq!(w.known.lock().unwrap().len(), 1);
         w.use_token(Some("ours".into()));
         assert!(w.can_ask());
-        assert!(w.known.lock().unwrap().is_empty(), "前のアカウントの答えが残っている");
+        assert!(w.known.lock().unwrap().is_empty(), "the previous account's answer is still there");
         // Saying the same thing twice is not a change, and must not throw away
         // answers that are still this token's
         assert_eq!(w.of("owner/name", "main"), None);

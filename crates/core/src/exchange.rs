@@ -223,10 +223,10 @@ mod tests {
     fn what_is_handed_over_is_kept_with_our_other_things() {
         let real = real_root();
         assert!(real.ends_with("ShikishaTerm/exchange"), "{real:?}");
-        assert_ne!(real, root(), "テスト実行は自分の場所を使う");
+        assert_ne!(real, root(), "a test run uses its own place");
         assert!(
             root().to_string_lossy().contains(&std::process::id().to_string()),
-            "同時に走る別の実行と混ざる: {:?}",
+            "it mixes with another run going at the same time: {:?}",
             root()
         );
     }
@@ -235,7 +235,7 @@ mod tests {
     fn new_run_makes_unique_dirs_under_root() {
         let a = new_run().unwrap();
         let b = new_run().unwrap();
-        assert_ne!(a, b, "run フォルダは毎回ユニーク");
+        assert_ne!(a, b, "the run folder is unique every time");
         assert!(within_root(&a));
         assert!(a.starts_with(root()));
         let _ = std::fs::remove_dir_all(&a);
@@ -249,8 +249,8 @@ mod tests {
         std::fs::write(&f, "browser_go(\"br\",\"reload\")").unwrap();
         let got = take(&f);
         assert_eq!(got.as_deref(), Some("browser_go(\"br\",\"reload\")"));
-        assert!(!f.exists(), "消費後は削除されている");
-        assert_eq!(take(&f), None, "二度目は None");
+        assert!(!f.exists(), "it is deleted once used");
+        assert_eq!(take(&f), None, "the second time is None");
         let _ = std::fs::remove_dir_all(&run);
     }
 

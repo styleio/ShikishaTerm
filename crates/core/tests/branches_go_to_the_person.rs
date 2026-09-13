@@ -41,6 +41,6 @@ fn a_branch_lands_under_the_person_and_never_beside_the_project() {
     assert!(
         at.starts_with(home.join("SHIKISHA-TERM").join("branches"))
             || at.starts_with(ours.join("SHIKISHA-TERM").join("worktrees")),
-        "自分のフォルダにも逃げ場にも入っていない: {at:?}"
+        "it is in neither its own folder nor the fallback: {at:?}"
     );
 }

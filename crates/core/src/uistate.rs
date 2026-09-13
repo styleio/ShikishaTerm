@@ -1025,14 +1025,14 @@ mod browse_tests {
         }
         let st = BrowseState::of(&d.display().to_string());
         assert_eq!(st.dirs.len(), 3);
-        assert_eq!(st.modified.len(), st.dirs.len(), "日付と名前の数が合わない");
-        assert!(st.modified.iter().all(Option::is_some), "日付が取れていない");
+        assert_eq!(st.modified.len(), st.dirs.len(), "the number of dates and names does not match");
+        assert!(st.modified.iter().all(Option::is_some), "the dates were not read");
         let leaves: Vec<String> = st
             .dirs
             .iter()
             .map(|p| std::path::Path::new(p).file_name().unwrap().to_string_lossy().to_string())
             .collect();
-        assert_eq!(leaves, ["a", "b", "C"], "人が読む順に並んでいない");
+        assert_eq!(leaves, ["a", "b", "C"], "they are not in the order a person reads");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -1052,7 +1052,7 @@ mod browse_tests {
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false);
-            assert!(ok, "attrib が使えない");
+            assert!(ok, "attrib cannot be used");
         };
         attrib(&d.join("hidden"), &["+h"]);
         attrib(&d.join("kept"), &["+h", "+s"]);
@@ -1062,7 +1062,7 @@ mod browse_tests {
             .iter()
             .map(|p| std::path::Path::new(p).file_name().unwrap().to_string_lossy().to_string())
             .collect();
-        assert_eq!(leaves, ["hidden", "mine"], "システムの物が出ている、または隠しただけの物が消えた");
+        assert_eq!(leaves, ["hidden", "mine"], "system items show, or items that were only hidden disappeared");
         attrib(&d.join("kept"), &["-h", "-s"]);
         attrib(&d.join("hidden"), &["-h"]);
         let _ = std::fs::remove_dir_all(&d);
@@ -1072,16 +1072,16 @@ mod browse_tests {
     fn a_folder_is_made_one_level_down_and_nowhere_else() {
         let d = scratch("make");
         let inside = d.display().to_string();
-        let made = make_folder(&inside, "  shinkoku ").expect("作れるはず");
+        let made = make_folder(&inside, "  shinkoku ").expect("it should be possible to make it");
         assert!(std::path::Path::new(&made).is_dir());
-        assert!(made.ends_with("shinkoku"), "前後の空白が名前に残った");
+        assert!(made.ends_with("shinkoku"), "surrounding spaces stayed in the name");
         // The same name again is refused, not silently reused
         assert!(make_folder(&inside, "shinkoku").is_err());
         // A box for a name is not a way to reach somewhere else
         for bad in ["..", "a/b", "a\\b", "c:x", "", "   ", "end.", "CON", "com1", "LPT9.txt"] {
-            assert!(make_folder(&inside, bad).is_err(), "{bad:?} が通った");
+            assert!(make_folder(&inside, bad).is_err(), "{bad:?} got through");
         }
-        assert!(!d.join("a").exists(), "区切りを含む名前で途中の階層が作られた");
+        assert!(!d.join("a").exists(), "a name containing a separator created intermediate folders");
         // And nothing is made at the top, where there is no folder to make it in
         assert!(make_folder("", "x").is_err());
         let _ = std::fs::remove_dir_all(&d);
@@ -1096,8 +1096,8 @@ mod browse_tests {
             ("gone".into(), d.join("not-here").display().to_string()),
         ]);
         let kinds: Vec<&str> = st.places.iter().map(|p| p.kind.as_str()).collect();
-        assert_eq!(kinds.first(), Some(&"home"), "ホームが先頭に無い");
-        assert_eq!(kinds.last(), Some(&"drive"), "ドライブが末尾に無い");
+        assert_eq!(kinds.first(), Some(&"home"), "home is not first");
+        assert_eq!(kinds.last(), Some(&"drive"), "the drives are not last");
         let projects: Vec<&str> = st
             .places
             .iter()
@@ -1105,7 +1105,7 @@ mod browse_tests {
             .map(|p| p.name.as_str())
             .collect();
         // One entry per checkout, and none for a checkout that is not here
-        assert_eq!(projects, ["tools"], "同じ場所が2回、または無い場所が出ている");
+        assert_eq!(projects, ["tools"], "the same place twice, or a place that does not exist, is shown");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
@@ -1476,10 +1476,10 @@ mod tests {
         let a = TabState::browser(3, "shop", "通販サイト");
         let b = TabState::browser(4, "mail", "メール");
         assert_eq!((a.index, b.index), (3, 4));
-        assert_eq!(a.kind, "browser", "セッションと同じ見せ方になっている");
-        assert_eq!(a.id.as_deref(), Some("shop"), "自動化から指す名前が違う");
+        assert_eq!(a.kind, "browser", "it is shown the same way as a session");
+        assert_eq!(a.id.as_deref(), Some("shop"), "the name automation uses is wrong");
         // The human-readable name and the name automation refers to are different things
-        assert_eq!(a.name, "通販サイト", "設定した表示名が出ていない");
+        assert_eq!(a.name, "通販サイト", "the display name that was set is not shown");
         // It isn't a session, so don't pad it out to look like one
         assert!(a.activity.is_empty() && a.profile.is_empty() && a.depth == 0);
         assert!(!a.locked);
@@ -1507,9 +1507,9 @@ mod tests {
         for t in tabs.iter_mut() {
             t.kill();
         }
-        assert_eq!(found.len(), 2, "フォルダの数だけ");
+        assert_eq!(found.len(), 2, "as many as there are folders");
         assert!(found[0].0.ends_with("shikisha-group-one"));
-        assert_eq!(found[0].1.name, "shikisha-group-one", "名前が無ければフォルダ自身の名前");
+        assert_eq!(found[0].1.name, "shikisha-group-one", "with no name, the folder's own name");
         // Not in a repository, so it belongs to no family and has no colour
         assert_eq!(found[0].1.color, None);
         assert!(!found[0].1.linked);
@@ -1539,12 +1539,12 @@ mod tests {
         }
         let by = |end: &str| &found.iter().find(|(k, _)| k.ends_with(end)).unwrap().1;
         let (head, cut, plain) = (by("shikisha-group-orion"), by("shikisha-group-feature-x"), by("shikisha-group-plain"));
-        assert_eq!(head.name, "shikisha-group-orion", "元のフォルダがブランチ名で呼ばれた");
+        assert_eq!(head.name, "shikisha-group-orion", "the original folder was called by the branch name");
         assert_eq!(head.branch.as_deref(), Some("main"));
-        assert_eq!(cut.name, "feature-x-branch", "ワークツリーはブランチ名で呼ぶ");
+        assert_eq!(cut.name, "feature-x-branch", "a worktree is called by its branch name");
         assert_eq!(head.project.as_deref(), Some("shikisha-group-orion"));
-        assert_eq!(cut.project.as_deref(), Some("shikisha-group-orion"), "ワークツリーの札がプロジェクト名でない");
-        assert_eq!(plain.project, None, "リポジトリの外にプロジェクト名が付いた");
+        assert_eq!(cut.project.as_deref(), Some("shikisha-group-orion"), "the worktree's pill is not the project's name");
+        assert_eq!(plain.project, None, "a project name was given outside a repository");
 
         // A name the settings give one folder of the household names all of it
         let mut named = found.clone();
@@ -1590,9 +1590,9 @@ mod tests {
             t.kill();
         }
         assert_eq!(found.len(), 2, "{found:?}");
-        assert!(!found[0].1.empty, "タブのあるフォルダが空扱い");
+        assert!(!found[0].1.empty, "a folder with tabs is treated as empty");
         assert_eq!(found[1].0, fresh);
-        assert!(found[1].1.empty, "タブの無いフォルダが空と分からない");
+        assert!(found[1].1.empty, "a folder with no tabs is not recognized as empty");
         assert_eq!(found[1].1.name, "New one");
         assert_eq!(unnamed[1].1.name, "shikisha-group-fresh");
     }
@@ -1664,7 +1664,7 @@ mod tests {
             g(r"D:\lone.worktrees\x", Some(r"D:\lone\.git"), true),
         ];
         let names: Vec<String> = by_family(list).into_iter().map(|(_, g)| g.name).collect();
-        assert_eq!(names, ["proj", "a", "b", "other", "x"], "元→枝→その他、の順になっていない");
+        assert_eq!(names, ["proj", "a", "b", "other", "x"], "not in the order original, branches, others");
         // Spelled differently, still one family
         let list = vec![
             g(r"D:\proj.worktrees\a", Some(r"d:\PROJ\.git\"), true),
@@ -1672,8 +1672,8 @@ mod tests {
         ];
         let out = by_family(list);
         let names: Vec<&str> = out.iter().map(|(_, g)| g.name.as_str()).collect();
-        assert_eq!(names, ["proj", "a"], "綴りが違うだけで別の家族にされた");
-        assert_eq!(out[0].1.family, out[1].1.family, "家族の綴りが揃っていない");
+        assert_eq!(names, ["proj", "a"], "a difference only in spelling put it in a different family");
+        assert_eq!(out[0].1.family, out[1].1.family, "the family's spelling is not consistent");
     }
 
     /// A folder nothing runs in is placed by its path: a branch folder under
@@ -1698,9 +1698,9 @@ mod tests {
             (at(r"D:\elsewhere"), GroupState { empty: true, ..Default::default() }),
         ];
         adopt_checkouts(&mut list);
-        assert_eq!(list[1].1.family.as_deref(), Some(git.as_str()), "空の元フォルダが家族に入らない");
-        assert!(!list[1].1.linked, "元が枝扱い");
-        assert_eq!(list[2].1.family, None, "無関係のフォルダが家族にされた");
+        assert_eq!(list[1].1.family.as_deref(), Some(git.as_str()), "an empty original folder is not included in the family");
+        assert!(!list[1].1.linked, "the original is treated as a branch");
+        assert_eq!(list[2].1.family, None, "an unrelated folder was put into the family");
     }
 
     #[test]
@@ -1715,22 +1715,22 @@ mod tests {
         // keep their own things are not either
         assert_eq!(at.dirs.len(), 1, "{:?}", at.dirs);
         assert!(at.dirs[0].ends_with("work"));
-        assert!(at.files.is_empty(), "作業場所を選ぶ一覧にファイルが混ざった: {:?}", at.files);
+        assert!(at.files.is_empty(), "files got mixed into the list for choosing where to work: {:?}", at.files);
         assert_eq!(at.up.as_deref(), Some(root.parent().unwrap().display().to_string().as_str()));
         // Asked for the files as well -- choosing a key or a secrets file --
         // the same walk lists them, still leaving out what tools keep for
         // themselves
         let with = BrowseState::with_files(&root.display().to_string());
-        assert_eq!(with.dirs, at.dirs, "ファイルを足しても、フォルダの一覧は変わらない");
+        assert_eq!(with.dirs, at.dirs, "adding a file does not change the folder list");
         assert_eq!(with.files.len(), 1, "{:?}", with.files);
         assert!(with.files[0].ends_with("notes.txt"));
 
         // The top is the drives, and every drive can get back to it
         let top = BrowseState::of("");
-        assert!(top.up.is_none(), "一番上には戻る先が無い");
-        assert!(!top.dirs.is_empty(), "ドライブが出ている");
+        assert!(top.up.is_none(), "the top has nowhere to go back to");
+        assert!(!top.dirs.is_empty(), "the drives are shown");
         let drive = BrowseState::of(&top.dirs.last().cloned().unwrap());
-        assert!(drive.up.is_some(), "ドライブから一覧へ戻れる");
+        assert!(drive.up.is_some(), "a drive can go back to the list");
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1752,7 +1752,7 @@ mod tests {
         let mut chosen = std::collections::HashMap::new();
         chosen.insert(a.display().to_string(), "#123456".to_string());
         assert_eq!(GroupState::color_of(a, &chosen), "#123456");
-        assert_ne!(GroupState::color_of(b, &chosen), "#123456", "他所の色まで変えない");
+        assert_ne!(GroupState::color_of(b, &chosen), "#123456", "it does not change another place's color");
     }
 
     fn tab(index: usize, name: &str) -> TabState {
@@ -1802,7 +1802,7 @@ mod tests {
         for looky in ["color", "#", "rgb", "▁", "●", "width", "px"] {
             assert!(
                 !json.contains(looky),
-                "見た目が混ざっている ({looky}): {json}"
+                "the look is mixed in ({looky}): {json}"
             );
         }
     }
@@ -1822,6 +1822,6 @@ mod tests {
         let mut b = a.clone();
         assert_eq!(a, b);
         b.tabs[0].state = "BUSY".into();
-        assert_ne!(a, b, "状態が変わったのに同じと判定された");
+        assert_ne!(a, b, "the state changed but was judged the same");
     }
 }

@@ -3476,7 +3476,7 @@ mod tests {
         let html = b.html(None, t).unwrap();
         assert!(html.contains("ここにいる"), "the HTML was not retrieved");
         assert!(html.len() > 200, "the HTML is too short: {}", html.len());
-        println!("HTML {} 文字 / すべて通過", html.chars().count());
+        println!("HTML {} chars / all passed", html.chars().count());
 
         drop(b);
     }
@@ -3510,7 +3510,7 @@ mod tests {
             "2",
             "placing a child stopped the outer window working"
         );
-        println!("子ページの出し入れ: 通過");
+        println!("opening and closing child pages: passed");
         drop(b);
     }
 
@@ -3574,11 +3574,11 @@ mod tests {
         assert_eq!(v, "\"hello\"");
 
         let id = b.eval("return document.documentElement.outerHTML.length;").unwrap();
-        println!("HTML長 = {}", b.wait_result(id, Duration::from_secs(20)).unwrap());
+        println!("HTML length = {}", b.wait_result(id, Duration::from_secs(20)).unwrap());
 
         drop(b);
         std::thread::sleep(Duration::from_millis(600));
-        println!("閉じてもここまで来た (プロセスは生きている)");
+        println!("got this far after closing (the process is alive)");
     }
 
     /// The CDP lane end-to-end: digest lists the operable elements (AX lane

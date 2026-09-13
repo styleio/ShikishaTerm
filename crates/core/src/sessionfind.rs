@@ -306,13 +306,13 @@ mod tests {
     #[cfg(windows)]
     fn the_same_folder_spelled_differently_is_the_same_folder() {
         let same = |a: &str, b: &str| same_folder(Path::new(a), Path::new(b));
-        assert!(same(r"D:\Simic2", "D:/Simic2"), "スラッシュの向きは関係ない");
-        assert!(same(r"D:\simic2", "D:/Simic2"), "大文字小文字は関係ない");
-        assert!(same(r"d:\Simic2", "D:/Simic2"), "ドライブ文字も同じ");
-        assert!(same(r"D:\Simic2\", "D:/Simic2"), "末尾の区切りは関係ない");
-        assert!(!same(r"D:\Simic2", "D:/Simic"), "別のフォルダは別のフォルダ");
-        assert!(!same(r"D:\Simic2", r"C:\Simic2"), "ドライブが違えば別");
-        assert!(!same(r"D:\a\Simic2", r"D:\Simic2"), "階層が違えば別");
+        assert!(same(r"D:\Simic2", "D:/Simic2"), "the direction of the slashes does not matter");
+        assert!(same(r"D:\simic2", "D:/Simic2"), "case does not matter");
+        assert!(same(r"d:\Simic2", "D:/Simic2"), "the drive letter is the same too");
+        assert!(same(r"D:\Simic2\", "D:/Simic2"), "a trailing separator does not matter");
+        assert!(!same(r"D:\Simic2", "D:/Simic"), "a different folder is a different folder");
+        assert!(!same(r"D:\Simic2", r"C:\Simic2"), "a different drive means different");
+        assert!(!same(r"D:\a\Simic2", r"D:\Simic2"), "a different depth means different");
     }
 
     /// The same promise where the filesystem means what it says: a redundant
@@ -321,11 +321,11 @@ mod tests {
     #[cfg(unix)]
     fn the_same_folder_spelled_differently_is_the_same_folder_on_unix() {
         let same = |a: &str, b: &str| same_folder(Path::new(a), Path::new(b));
-        assert!(same("/home/dev/simic2/", "/home/dev/simic2"), "末尾の区切りは関係ない");
-        assert!(same("/home/dev/./simic2", "/home/dev/simic2"), "「ここ」を挟んでも同じ");
-        assert!(!same("/home/dev/Simic2", "/home/dev/simic2"), "大文字小文字は別のフォルダ");
-        assert!(!same("/home/dev/simic2", "/home/dev/simic"), "別のフォルダは別のフォルダ");
-        assert!(!same("/home/dev/a/simic2", "/home/dev/simic2"), "階層が違えば別");
+        assert!(same("/home/dev/simic2/", "/home/dev/simic2"), "a trailing separator does not matter");
+        assert!(same("/home/dev/./simic2", "/home/dev/simic2"), "putting 'here' in between is the same");
+        assert!(!same("/home/dev/Simic2", "/home/dev/simic2"), "a different case is a different folder");
+        assert!(!same("/home/dev/simic2", "/home/dev/simic"), "a different folder is a different folder");
+        assert!(!same("/home/dev/a/simic2", "/home/dev/simic2"), "a different depth means different");
     }
 
     fn tmp(name: &str) -> PathBuf {
