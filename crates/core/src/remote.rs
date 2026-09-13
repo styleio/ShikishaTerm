@@ -177,6 +177,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // The window's own bar is not a thing a phone has. Refused rather than
         // ignored: a page somewhere else must not be able to close this window
         Ev::Window { .. } => false,
+        // Taking the screen is taking *this machine's* screen. The phone's page
+        // opens the tool on a picture chosen on the phone and sends nothing, so
+        // a request arriving from afar is not one the page makes
+        Ev::Snip { .. } => false,
         // Putting the right-hand column away, or dragging its edge. A phone
         // has less width to spare than a window does, so this is the one it
         // needs most
@@ -1283,6 +1287,19 @@ fn handle(
     // carry the token too, but none of them lands on this route, so a page that
     // has been cut cannot quietly let itself back in: a person has to open the
     // link again.
+    // The tools that start from a picture. Handed out like the board's own
+    // page, before any token: it holds nothing of this machine's and asks this
+    // machine for nothing -- on a phone the picture is chosen on the phone, and
+    // everything done with it happens in the phone's own browser
+    if method == "GET" && path == "/snip" {
+        let resp = Response::from_string(crate::snip::page())
+            .with_header(
+                Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
+            )
+            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
+            .with_header(Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap());
+        return req.respond(resp).map_err(Into::into);
+    }
     if method == "GET" && (path == "/" || path == "/shell") {
         let mut resp = Response::from_string(crate::shell::served_page(
             sticky,

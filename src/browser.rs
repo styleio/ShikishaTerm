@@ -261,6 +261,14 @@ pub enum Cmd {
     TrayNotice { title: String, text: String },
     /// Close the window (when the conductor is gone)
     Close,
+    /// Open a tool over a picture of the screen, after waiting `delay` seconds
+    /// (see `Ev::Snip`). The window the tool is drawn in is this loop's own
+    Snip { tool: String, delay: u8 },
+    /// A second of the wait has gone. `press` is the press it belongs to, so a
+    /// count from a press that was replaced by a newer one does nothing
+    SnipTick { press: u64, left: u8 },
+    /// The tool is done with: its window goes, and so does the picture
+    SnipClose,
 }
 
 
@@ -650,6 +658,11 @@ impl Browser {
     pub fn hide(&self) -> Result<()> {
         self.away.store(true, Ordering::Relaxed);
         self.send(Cmd::Hide)
+    }
+
+    /// Open a tool over a picture of the screen (see `Cmd::Snip`)
+    pub fn snip(&self, tool: &str, delay: u8) -> Result<()> {
+        self.send(Cmd::Snip { tool: tool.to_string(), delay })
     }
 
     /// Bring the window back in front of the person
@@ -1528,11 +1541,22 @@ fn run_window(
     // For drag detection: is the button currently held down
     let mut mouse_down = false;
 
+    // The window a tool from the left bar is drawn in, over a picture of the
+    // screen. Built the first time one is asked for and kept, hidden, after
+    let mut snip: Option<SnipWindow> = None;
+    // Which press the wait belongs to. A second press replaces the first, and
+    // the first one's count must not go on to take a picture
+    let mut snip_gen: u64 = 0;
+    let snip_tool = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    let snip_wake = ev_loop.create_proxy();
+    let snip_own = std::rc::Rc::clone(&own);
+    let snip_base = url.trim_end_matches('/').to_string();
+
     // Reports are sent from inside the loop too, so grab a sender for "closed" ahead of time
     let closed_tx = ev_tx.clone();
     // The channel that answers "where are we now". Only known from inside the window, so it answers from here
     let where_tx = ev_tx.clone();
-    ev_loop.run_return(move |event, _, control| {
+    ev_loop.run_return(move |event, elwt, control| {
         *control = ControlFlow::Wait;
         match event {
             Event::UserEvent(cmd) => match cmd {
@@ -2118,7 +2142,71 @@ fn run_window(
                 Cmd::Close => {
                     *control = ControlFlow::Exit;
                 }
+                Cmd::Snip { tool, delay } => {
+                    snip_gen += 1;
+                    let press = snip_gen;
+                    *snip_tool.borrow_mut() = tool.clone();
+                    if snip.is_none() {
+                        match SnipWindow::build(elwt, &snip_wake, &snip_own) {
+                            Ok(w) => snip = Some(w),
+                            Err(e) => {
+                                shikisha_core::append_hook_log(&format!("snip: no window for the tool: {e:#}"));
+                                return;
+                            }
+                        }
+                    }
+                    let Some(w) = snip.as_ref() else { return };
+                    if delay == 0 {
+                        // Nothing to wait for: the picture is of what is on
+                        // screen now, this program included
+                        w.shoot(&snip_base, &tool);
+                        return;
+                    }
+                    w.wait(&snip_base, &tool, delay);
+                    let wake = snip_wake.clone();
+                    std::thread::spawn(move || {
+                        for left in (0..delay).rev() {
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                            if wake.send_event(Cmd::SnipTick { press, left }).is_err() {
+                                return;
+                            }
+                        }
+                    });
+                }
+                Cmd::SnipTick { press, left } => {
+                    if press != snip_gen {
+                        return;
+                    }
+                    let Some(w) = snip.as_ref() else { return };
+                    if left == 0 {
+                        let tool = snip_tool.borrow().clone();
+                        w.shoot(&snip_base, &tool);
+                    } else {
+                        let _ = w.view.evaluate_script(&format!("window.__snipWait && window.__snipWait({left});"));
+                    }
+                }
+                Cmd::SnipClose => {
+                    // A count still running belongs to a tool that is gone
+                    snip_gen += 1;
+                    if let Some(w) = snip.as_ref() {
+                        w.put_away();
+                    }
+                }
             },
+            // The tool's own window. Checked before anything else about windows:
+            // the arms below are the board's, and read no window id -- a tool
+            // closed with Alt+F4 would otherwise be the app asked to close,
+            // and the tool's size would be handed to the board
+            Event::WindowEvent { window_id, event, .. }
+                if snip.as_ref().is_some_and(|w| w.window.id() == window_id) =>
+            {
+                if let WindowEvent::CloseRequested = event {
+                    snip_gen += 1;
+                    if let Some(w) = snip.as_ref() {
+                        w.put_away();
+                    }
+                }
+            }
             // The ✕. Not the end of the program: the conductor answers with
             // `Hide` or `Close`, having asked the person if an AI is at work
             Event::WindowEvent {
@@ -2185,6 +2273,147 @@ fn run_window(
     tray.remove();
     let _ = closed_tx.send(Ev::Closed);
     Ok(())
+}
+
+/// The window a tool from the left bar is drawn in.
+///
+/// Its own top-level window, not a page inside the board: the picture is of the
+/// whole screen, and the tool is laid over exactly that screen, at its pixels,
+/// in front of everything -- the board included, which may be what is being
+/// pictured. Borderless, off the taskbar, and kept hidden between uses so the
+/// next press does not wait for a browser to start.
+///
+/// The page is dropped from first, then the window: a page outliving the
+/// window it is drawn into is a page drawing into nothing
+struct SnipWindow {
+    view: wry::WebView,
+    _ctx: wry::WebContext,
+    window: tao::window::Window,
+}
+
+impl SnipWindow {
+    fn build(
+        target: &tao::event_loop::EventLoopWindowTarget<Cmd>,
+        wake: &tao::event_loop::EventLoopProxy<Cmd>,
+        own: &std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    ) -> Result<Self> {
+        use tao::platform::windows::WindowBuilderExtWindows;
+        let window = tao::window::WindowBuilder::new()
+            .with_title("SHIKISHA-TERM")
+            .with_decorations(false)
+            .with_always_on_top(true)
+            .with_visible(false)
+            .with_skip_taskbar(true)
+            .with_undecorated_shadow(false)
+            .with_inner_size(tao::dpi::LogicalSize::new(280.0, 72.0))
+            .build(target)?;
+        // Its own folder beside the board's: a second page on the board's
+        // folder would have to be opened with exactly the board's options,
+        // and a mismatch there is a page that silently never comes up
+        let mut ctx = wry::WebContext::new(Some(shell_data_dir().join("snip")));
+        let wake = wake.clone();
+        let own = std::rc::Rc::clone(own);
+        let view = wry::WebViewBuilder::new_with_web_context(&mut ctx)
+            .with_url("about:blank")
+            .with_background_color((0, 0, 0, 255))
+            .with_ipc_handler(move |req| {
+                // Heard only from the app's own address. The tool page is the
+                // app's; anything else in this window is not the tool
+                if !from_ours(&own.borrow(), &req.uri().to_string()) {
+                    return;
+                }
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(req.body()) else {
+                    return;
+                };
+                let text = || v.get("text").and_then(|t| t.as_str()).unwrap_or_default().to_string();
+                match v.get("act").and_then(|a| a.as_str()) {
+                    Some("copy") => {
+                        if !crate::snip::copy_text(&text()) {
+                            shikisha_core::append_hook_log("snip: the clipboard would not take the text");
+                        }
+                    }
+                    Some("save") => {
+                        let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("snip.txt").to_string();
+                        // The window goes first, so the dialog is not opened
+                        // behind a window that stays in front of everything
+                        let _ = wake.send_event(Cmd::SnipClose);
+                        crate::snip::save_text(text(), name);
+                    }
+                    Some("close") => {
+                        let _ = wake.send_event(Cmd::SnipClose);
+                    }
+                    _ => {}
+                }
+            })
+            .build(&window)?;
+        Ok(Self { view, _ctx: ctx, window })
+    }
+
+    /// The small card that counts down, in the top corner of the screen the
+    /// pointer is on. Left out of the picture, and letting the pointer through,
+    /// so the person can arrange the screen underneath it
+    fn wait(&self, base: &str, tool: &str, delay: u8) {
+        use tao::platform::windows::WindowExtWindows;
+        let Some(scr) = crate::snip::screen_at_pointer() else { return };
+        let scale = self.scale_at(scr);
+        let (w, h) = ((280.0 * scale) as i32, (72.0 * scale) as i32);
+        let margin = (16.0 * scale) as i32;
+        self.window.set_outer_position(tao::dpi::PhysicalPosition::new(scr.x + scr.w - w - margin, scr.y + margin));
+        self.window.set_inner_size(tao::dpi::PhysicalSize::new(w as u32, h as u32));
+        crate::snip::keep_out_of_pictures(self.window.hwnd() as isize, true);
+        let _ = self.window.set_ignore_cursor_events(true);
+        let _ = self.view.load_url(&format!("{base}/snip?tool={}&wait={delay}", pct(tool)));
+        self.window.set_visible(true);
+    }
+
+    /// Take the picture, and lay the tool over the screen it was taken of
+    fn shoot(&self, base: &str, tool: &str) {
+        use tao::platform::windows::WindowExtWindows;
+        let Some(scr) = crate::snip::screen_at_pointer() else { return };
+        let Some(bmp) = crate::snip::take(scr) else {
+            shikisha_core::append_hook_log("snip: the screen could not be taken");
+            self.put_away();
+            return;
+        };
+        let n = crate::snip::hold(bmp);
+        self.window.set_visible(false);
+        let _ = self.window.set_ignore_cursor_events(false);
+        // Taken already: the tool itself may be pictured by the next press
+        crate::snip::keep_out_of_pictures(self.window.hwnd() as isize, false);
+        self.window.set_outer_position(tao::dpi::PhysicalPosition::new(scr.x, scr.y));
+        self.window.set_inner_size(tao::dpi::PhysicalSize::new(scr.w as u32, scr.h as u32));
+        let _ = self.view.load_url(&format!("{base}/snip?tool={}&n={n}", pct(tool)));
+        self.window.set_visible(true);
+        self.window.set_focus();
+        let _ = self.view.focus();
+    }
+
+    /// Gone from the screen, and the picture with it
+    fn put_away(&self) {
+        use tao::platform::windows::WindowExtWindows;
+        self.window.set_visible(false);
+        let _ = self.window.set_ignore_cursor_events(false);
+        crate::snip::keep_out_of_pictures(self.window.hwnd() as isize, false);
+        crate::snip::drop_frame();
+        let _ = self.view.load_url("about:blank");
+    }
+
+    /// How large a point is on the screen the tool is about to be put on.
+    fn scale_at(&self, scr: crate::snip::Screen) -> f64 {
+        self.window
+            .available_monitors()
+            .find(|m| {
+                let p = m.position();
+                p.x == scr.x && p.y == scr.y
+            })
+            .map(|m| m.scale_factor())
+            .unwrap_or(1.0)
+    }
+}
+
+/// A word safe to put in an address as it is.
+fn pct(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect()
 }
 
 /// Screencasting and input injection over CDP (Chrome DevTools Protocol).

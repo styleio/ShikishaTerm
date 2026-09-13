@@ -44,6 +44,7 @@ use shikisha_core::{
 };
 mod browser;
 mod picker;
+mod snip;
 mod wintoast;
 mod tray;
 
@@ -612,6 +613,11 @@ impl WinSurface {
                 Ev::Thanks { open } => self.mail.thanks = Some(open),
                 Ev::Update { open } => self.mail.update_card = Some(open),
                 Ev::Help => self.mail.help_site = true,
+                // A tool from the left bar. The window thread owns the screen
+                // and the tool's window; nothing about it is the runtime's
+                Ev::Snip { tool, delay } => {
+                    let _ = self.win.snip(&tool, delay);
+                }
                 Ev::LimitAck { tab } => self.mail.limit_acks.push(tab),
                 Ev::Select { tab } => self.mail.selects.push(tab),
                 Ev::FolderView { folder } => self.mail.folder_views.push(folder),
@@ -828,6 +834,38 @@ fn run_in_window() -> Result<()> {
                         )
                         .expect("header"),
                     );
+                let _ = req.respond(r);
+                continue;
+            }
+            // The tools that start from a picture: the page, and the picture
+            // itself, by the number it was kept under. Nothing but this
+            // machine's own window asks this server for anything
+            if path == "/snip" {
+                let r = tiny_http::Response::from_string(shikisha_core::snip::page()).with_header(
+                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
+                        .expect("header"),
+                );
+                let _ = req.respond(r);
+                continue;
+            }
+            if path == "/snip/frame.bmp" {
+                let n = req
+                    .url()
+                    .split_once("n=")
+                    .and_then(|(_, v)| v.split('&').next())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(0);
+                let r = match snip::frame(n) {
+                    Some(bytes) => tiny_http::Response::from_data((*bytes).clone())
+                        .with_header(
+                            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"image/bmp"[..]).expect("header"),
+                        )
+                        // Somebody's screen: never kept anywhere a later visit could find it
+                        .with_header(
+                            tiny_http::Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).expect("header"),
+                        ),
+                    None => tiny_http::Response::from_data(Vec::new()).with_status_code(404),
+                };
                 let _ = req.respond(r);
                 continue;
             }
