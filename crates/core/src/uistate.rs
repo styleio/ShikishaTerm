@@ -1285,8 +1285,8 @@ mod tests {
 
     #[test]
     fn a_project_is_named_after_the_folder_its_repository_is_checked_out_in() {
-        assert_eq!(project_by_family(r"D:\work\orion\.git").as_deref(), Some("orion"));
-        assert_eq!(project_by_family(r"D:\work\orion\.git\").as_deref(), Some("orion"));
+        assert_eq!(project_by_family(&crate::local_path(r"D:\work\orion\.git")).as_deref(), Some("orion"));
+        assert_eq!(project_by_family(&crate::local_path(r"D:\work\orion\.git\")).as_deref(), Some("orion"));
         assert_eq!(project_by_family("/srv/repos/orion.git").as_deref(), Some("orion"));
         assert_eq!(project_by_family(""), None);
     }
