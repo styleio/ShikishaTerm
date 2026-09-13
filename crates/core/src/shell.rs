@@ -5492,8 +5492,13 @@ function measureFocused() {
   // With the panes covered, the thing being talked about IS the content area.
   const laid = f && f.getClientRects().length > 0;
   const b = laid ? f.getBoundingClientRect() : m;
+  // Without panes -- a phone, a browser elsewhere -- the content area starts
+  // under the strip of tabs, the same as the panes would. Measured from the
+  // top of #main instead, the editor's bar was drawn over the tabs
+  const strip = document.getElementById("strip");
+  const under = !laid && strip && !strip.hidden ? strip.getBoundingClientRect().height : 0;
   main.style.setProperty("--fx", (b.left - m.left) + "px");
-  main.style.setProperty("--fy", (b.top - m.top) + "px");
+  main.style.setProperty("--fy", (b.top - m.top + under) + "px");
   main.style.setProperty("--fr", (m.right - b.right) + "px");
   main.style.setProperty("--fb", (m.bottom - b.bottom) + "px");
   // The composer sits at the foot of the pane it is for, and is as wide as
@@ -10381,6 +10386,12 @@ mod tests {
         assert!(
             PAGE.contains(r#"main.style.setProperty("--striph", (!strip || strip.hidden) ? "0px" : "32px");"#),
             "帯の高さが場所を取っていない"
+        );
+        // Without panes (a phone) the content area is measured too, and it also
+        // starts under the strip: the editor's bar was drawn over the tabs
+        assert!(
+            PAGE.contains(r#"main.style.setProperty("--fy", (b.top - m.top + under) + "px");"#),
+            "ペインの無い画面で、帯の下から始まっていない"
         );
         // Appearing or disappearing changes every pane's height, so the
         // measurement has to follow it rather than wait for a window resize

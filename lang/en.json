@@ -450,7 +450,7 @@
   "files.none": "Nothing matches that.",
   "files.capped": "Showing the first matches — narrow the search for the rest.",
   "files.empty": "This folder is empty.",
-  "files.hint": "Press a file to open it beside your work.",
+  "files.hint": "Press a file to open it in the editor.",
   "settings.sec.resume": "Carrying conversations",
   "settings.sec.resume.sub": "What survives a restart",
   "settings.section.resume": "Carrying conversations across a restart",

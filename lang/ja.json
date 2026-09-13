@@ -440,7 +440,7 @@
   "files.none": "当てはまるものはありません。",
   "files.capped": "最初に見つかった分だけ出しています。絞り込むと続きが出ます。",
   "files.empty": "このフォルダは空です。",
-  "files.hint": "ファイルを押すと、隣に開きます。",
+  "files.hint": "ファイルを押すと、エディタで開きます。",
   "settings.sec.resume": "会話の引き継ぎ",
   "settings.sec.resume.sub": "再起動で何が残るか",
   "settings.section.resume": "再起動をまたいで会話を引き継ぐ",
