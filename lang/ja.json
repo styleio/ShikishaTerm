@@ -1118,6 +1118,7 @@
   "msg.folder.opened": "{path} を追加しました。＋を押してタブを追加してください",
   "msg.folder.closed": "{path} を閉じました（ファイルはそのままです）",
   "err.worktree.exists": "{path} には既に何かあります",
+  "err.worktree.in_use": "ブランチ {branch} は {path} で開いています。1つのブランチを開けるフォルダは1つだけです。別の名前にするか、そのフォルダを開いてください。",
   "err.worktree.failed": "できませんでした: {said}\n{command}",
   "err.deskpack.non_lua": "Lua以外のファイルは取り込めません: {path}",
   "err.deskpack.would_overwrite": "既にあるファイルを上書きしようとしています: {path}",

@@ -1130,6 +1130,7 @@
   "msg.folder.opened": "Added {path}. Press its + to add a tab.",
   "msg.folder.closed": "{path} is closed. The files are still there.",
   "err.worktree.exists": "There is already something at {path}.",
+  "err.worktree.in_use": "The branch {branch} is already open in {path}. One branch can be open in one folder at a time: choose another name, or open that folder.",
   "err.worktree.failed": "Could not do it: {said}\n{command}",
   "err.deskpack.non_lua": "Only Lua files can be imported: {path}",
   "err.deskpack.would_overwrite": "This would overwrite an existing file: {path}",

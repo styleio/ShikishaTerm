@@ -198,6 +198,16 @@ pub fn plan_for(
     let main = crate::repo::main_checkout(main)
         .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.not_a_repo")))?;
     let fresh = !branch_exists(&main, &branch);
+    // A branch that is already open in a folder cannot be opened in a second
+    // one. git refuses that too, but only once the button is pressed, and in
+    // its own language -- the name is on screen while it is typed, so the
+    // answer is as well
+    if !fresh && let Some(open) = checked_out_at(&main, &branch) {
+        bail!(crate::i18n::tp(
+            "err.worktree.in_use",
+            &[("branch", &branch), ("path", &open.display().to_string())]
+        ));
+    }
     let base = match base.map(str::trim).filter(|b| !b.is_empty()) {
         Some(b) => b.to_string(),
         None => default_base(&main),
@@ -967,6 +977,12 @@ pub fn bases(main: &Path) -> Vec<String> {
     out
 }
 
+/// Whether a name drawn for new work is still free: no branch of that name
+/// here, and nothing standing where its folder would go
+pub fn is_free(main: &Path, name: &str) -> bool {
+    !branch_exists(main, name) && !folder_for(main, name).exists()
+}
+
 /// A name for the next branch, when nobody has one in mind.
 ///
 /// Short and countable rather than unique-by-construction: this ends up on a
@@ -988,7 +1004,7 @@ pub fn suggest(main: &Path) -> String {
     // other. Asking costs a look at the disk per draw, which is affordable
     // now that working out where a folder goes is arithmetic on a path and
     // no longer a probe
-    let free = |name: &str| !branch_exists(main, name) && !folder_for(main, name).exists();
+    let free = |name: &str| is_free(main, name);
     for _ in 0..20 {
         match petname::petname(2, "-") {
             Some(name) if free(&name) => return name,
@@ -1020,6 +1036,38 @@ pub fn fan(main: &Path, name: &str, base: Option<&str>, ais: &[String]) -> Vec<(
             (ai.clone(), plan(main, &branch, base))
         })
         .collect()
+}
+
+/// Where a branch is already open, if it is.
+///
+/// Read off the files git keeps that answer in, without starting git: the
+/// checkout's own HEAD, then each linked worktree's HEAD beside the note of
+/// where that worktree is. The dialog asks on every keystroke
+fn checked_out_at(main: &Path, branch: &str) -> Option<PathBuf> {
+    let git = crate::repo::family_of(main)?;
+    let wanted = format!("ref: refs/heads/{branch}");
+    let on = |head: &Path| std::fs::read_to_string(head).is_ok_and(|t| t.trim() == wanted);
+    if on(&git.join("HEAD")) {
+        return Some(main.to_path_buf());
+    }
+    for entry in std::fs::read_dir(git.join("worktrees")).ok()?.flatten() {
+        let dir = entry.path();
+        if on(&dir.join("HEAD")) {
+            // `gitdir` holds the worktree's own .git file; the folder is the
+            // one around it. Unreadable, the answer is still "open somewhere"
+            return Some(match std::fs::read_to_string(dir.join("gitdir")) {
+                // git writes it with forward slashes on every system; put
+                // back together from its parts it is spelled the way the
+                // rest of the screen spells a path here
+                Ok(t) => {
+                    let p: PathBuf = Path::new(t.trim()).components().collect();
+                    p.parent().map(Path::to_path_buf).unwrap_or(p)
+                }
+                Err(_) => dir,
+            });
+        }
+    }
+    None
 }
 
 /// Whether a branch of this name is already in the repository.
@@ -1163,6 +1211,30 @@ mod tests {
         std::fs::create_dir_all(d.join(".git")).unwrap();
         std::fs::write(d.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
         d
+    }
+
+    /// A branch already open somewhere is refused while its name is typed,
+    /// naming where it is open -- the checkout itself, or a worktree
+    #[test]
+    fn a_branch_open_in_another_folder_is_said_before_the_button() {
+        let main = repo("inuse");
+        let git = main.join(".git");
+        for b in ["main", "feature-x", "spare"] {
+            std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+            std::fs::write(git.join("refs/heads").join(b), "3c06a89\n").unwrap();
+        }
+        let wt = scratch("inuse").join("wt").join("feature-x");
+        std::fs::create_dir_all(git.join("worktrees/feature-x")).unwrap();
+        std::fs::write(git.join("worktrees/feature-x/HEAD"), "ref: refs/heads/feature-x\n").unwrap();
+        std::fs::write(git.join("worktrees/feature-x/gitdir"), format!("{}\n", wt.join(".git").display())).unwrap();
+
+        let said = plan(&main, "feature-x", None).unwrap_err().to_string();
+        assert!(said.contains(&wt.display().to_string()), "どのフォルダで開いているかを言わない: {said}");
+        let said = plan(&main, "main", None).unwrap_err().to_string();
+        assert!(said.contains(&main.display().to_string()), "{said}");
+        // A branch that exists and is open nowhere is simply checked out
+        let p = plan(&main, "spare", None).expect("空いているブランチは開ける");
+        assert!(!p.fresh);
     }
 
     #[test]
