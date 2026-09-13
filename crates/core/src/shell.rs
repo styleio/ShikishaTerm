@@ -491,7 +491,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      anchored to an edge (the composer to the bottom, the browser bar to the
      top) and would otherwise need its own arithmetic. Undivided they are all
      zero, which is exactly what these rules hard-coded before panes existed. */
-  #main { position:relative; overflow:hidden;
+  /* Placed, not left to find a cell. Where the bar is not drawn -- a laptop's
+     browser looking at this board -- its row is empty, and auto-placement put
+     the content area in it: zero pixels tall, over the tab list, with the
+     status line above where the terminal should have been */
+  #main { grid-column:2; grid-row:2; position:relative; overflow:hidden;
     --fx:0px; --fy:0px; --fr:0px; --fb:0px; --dx:0px; --dr:0px; --navh:0px; --askh:0px; --striph:0px; }
   /* The panes themselves. Only the ones that aren't focused draw anything here
      — the focused pane's rectangle is filled by the full renderer above. */
@@ -1249,7 +1253,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the window and STOP went off the right edge, at exactly the width a
      person needs it. With the item allowed to be narrower than its words,
      the shrinkable parts (desk name, usage words) truncate instead */
-  #status { grid-column:2; display:flex; align-items:center; gap:var(--s3);
+  #status { grid-column:2; grid-row:3; display:flex; align-items:center; gap:var(--s3);
     padding:5px 12px; border-top:1px solid var(--line); background:var(--panel);
     font-size:12px; color:var(--dim); flex-wrap:nowrap; min-width:0; overflow:hidden; }
   #status .grow { flex:1; }
