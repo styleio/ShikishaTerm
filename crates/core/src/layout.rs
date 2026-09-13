@@ -514,6 +514,59 @@ impl Layout {
             }
         }
     }
+
+    /// Writes this arrangement down by what each pane shows, not by where that
+    /// thing stands in the tab list.
+    ///
+    /// A working folder's view is put back later -- after tabs have been
+    /// opened and closed elsewhere, which moves every row number below them.
+    /// Kept by position it would come back pointing at somebody else's tabs;
+    /// kept by name, a pane whose tab has gone simply isn't there any more.
+    /// `key_of` names a surface (1..), or says it has no name worth keeping.
+    pub fn keep(&self, key_of: impl Fn(usize) -> Option<String>) -> Kept {
+        let keys = self
+            .leaves()
+            .into_iter()
+            .map(|(id, s)| (id, if s == 0 { None } else { key_of(s) }))
+            .collect();
+        Kept { layout: self.clone(), keys }
+    }
+
+    /// Puts a kept arrangement back, as it stands now.
+    ///
+    /// `index_of` finds a name in today's tab list. A pane whose tab is gone is
+    /// closed rather than left empty -- the split was there for that tab -- and
+    /// the one pane a layout always has shows nothing if that was all there
+    /// was. Nothing left that still exists, and there is nothing to put back.
+    /// `after` is the arrangement being replaced: pane ids go on counting from
+    /// wherever it had got to, so the page never sees an old id reused for a
+    /// different pane.
+    pub fn restore(kept: &Kept, after: &Layout, index_of: impl Fn(&str) -> Option<usize>) -> Option<Layout> {
+        let mut out = kept.layout.clone();
+        out.next_id = out.next_id.max(after.next_id);
+        let mut alive = 0;
+        for (id, key) in &kept.keys {
+            match key.as_deref().and_then(&index_of) {
+                Some(s) => {
+                    out.set_surface(*id, s);
+                    alive += 1;
+                }
+                None => {
+                    if !out.close(*id) {
+                        out.set_surface(*id, 0);
+                    }
+                }
+            }
+        }
+        (alive > 0).then_some(out)
+    }
+}
+
+/// An arrangement of panes written down by name (see `Layout::keep`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Kept {
+    layout: Layout,
+    keys: Vec<(PaneId, Option<String>)>,
 }
 
 #[cfg(test)]
@@ -522,6 +575,47 @@ mod tests {
 
     fn surfaces(l: &Layout) -> Vec<usize> {
         l.leaves().into_iter().map(|(_, s)| s).collect()
+    }
+
+    #[test]
+    fn a_kept_view_comes_back_to_the_same_tabs_after_the_list_moves() {
+        // Tab "ai" on the left at row 2, "web" on the right at row 3, focus right
+        let mut l = Layout::single(2);
+        l.split(Dir::Row, 3);
+        let names = ["", "x", "ai", "web"];
+        let kept = l.keep(|s| names.get(s).map(|n| n.to_string()));
+        // Meanwhile a tab was added above both: they are rows 3 and 4 now
+        let now = ["", "x", "new", "ai", "web"];
+        let other = Layout::single(1);
+        let back = Layout::restore(&kept, &other, |k| now.iter().position(|n| *n == k)).unwrap();
+        assert_eq!(surfaces(&back), vec![3, 4], "番号でなく名前で戻る");
+        assert_eq!(back.focused_surface(), 4, "最後に見ていたペインに戻る");
+    }
+
+    #[test]
+    fn a_pane_whose_tab_is_gone_closes_and_nothing_left_is_nothing_to_restore() {
+        let mut l = Layout::single(1);
+        l.split(Dir::Row, 2);
+        let kept = l.keep(|s| Some(["", "ai", "web"][s].to_string()));
+        let other = Layout::single(1);
+        let back = Layout::restore(&kept, &other, |k| (k == "ai").then_some(1)).unwrap();
+        assert!(back.is_single(), "消えたタブのペインは閉じる");
+        assert_eq!(back.focused_surface(), 1);
+        assert!(Layout::restore(&kept, &other, |_| None).is_none(), "何も残っていなければ戻さない");
+    }
+
+    #[test]
+    fn a_restored_view_never_hands_out_an_id_already_used() {
+        let mut l = Layout::single(1);
+        l.split(Dir::Row, 2);
+        let kept = l.keep(|s| Some(s.to_string()));
+        let mut busy = Layout::single(1);
+        for s in 2..6 {
+            busy.split(Dir::Row, s);
+        }
+        let mut back = Layout::restore(&kept, &busy, |k| k.parse().ok()).unwrap();
+        let fresh = back.split(Dir::Col, 3);
+        assert!(fresh > 5, "新しいペインIDが使用済みの番号と重なる: {fresh}");
     }
 
     #[test]

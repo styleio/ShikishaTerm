@@ -752,6 +752,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // learned, a desk switched) are worth writing at once; a divider being
     // dragged is not, and a delay keeps a drag from writing a file per frame
     let mut save_at: Option<std::time::Instant> = None;
+    // Each working folder's screen as it was left: which tab was in front and
+    // the split it stood in, so pressing the folder's name brings that back.
+    // For this run only, like which folders are folded -- `view_folder` is the
+    // folder in front now, and `view_kept` how its screen looked last pass
+    let mut folder_views: Vec<(std::path::PathBuf, crate::layout::Kept)> = Vec::new();
+    let mut view_folder: Option<std::path::PathBuf> = None;
+    let mut view_kept: Option<crate::layout::Kept> = None;
     // The zoom level waiting to be written down, and when to write it
     let mut font_size: Option<u8> = None;
     // The editors as they stand: which folder each works in, and which file it
@@ -1001,8 +1008,64 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 active = pane_layout.focused_surface();
                 view_touched_ms = start.elapsed().as_millis() as u64;
             }
+        // A working folder's name was pressed: back to what was on screen the
+        // last time that folder was the one being looked at. Kept by the names
+        // of what each pane showed, so tabs opened or closed since elsewhere do
+        // not turn it into somebody else's view. Never looked at this run, it
+        // opens on its first tab. Already the folder in front, nothing moves --
+        // the press is somebody finding their place, not asking to be moved
+        for want in shell.mail().take_folder_views() {
+            let want = std::path::PathBuf::from(want);
+            let is_want = |f: &std::path::Path| crate::uistate::same_folder(f, &want);
+            if !(view_folder.as_deref().is_some_and(is_want) && !board_open && !settings_open) {
+                let keyed = surface_keys(&surfaces, &tabs);
+                let back = folder_views.iter().find(|(f, _)| is_want(f)).and_then(|(_, kept)| {
+                    crate::layout::Layout::restore(kept, &pane_layout, |k| {
+                        keyed.iter().position(|t| t.matches(k)).map(|i| i + 1)
+                    })
+                });
+                match back {
+                    Some(l) => pane_layout = l,
+                    None => {
+                        let Some(n) = (1..=surface_count)
+                            .find(|&s| surface_folder(&surfaces, &tabs, s).is_some_and(is_want))
+                        else {
+                            continue;
+                        };
+                        pane_layout.show(n);
+                    }
+                }
+                active = pane_layout.focused_surface();
+            }
+            board_open = false;
+            settings_open = false;
+            view_touched_ms = start.elapsed().as_millis() as u64;
+        }
         if pane_layout.focused_surface() != active {
             pane_layout.show(active);
+        }
+        // Which working folder is in front, and how the screen looked while it
+        // was. Written down every pass rather than at the moment of leaving,
+        // because by the time a press has moved to another folder the panes
+        // have already changed: the arrangement worth keeping is the one from
+        // the pass before. A pane on something in no folder (a page) does not
+        // count as leaving -- a page beside the terminal is part of the view
+        if !board_open && !settings_open {
+            if let Some(here) = surface_folder(&surfaces, &tabs, active) {
+                if let Some(left) = view_folder.as_ref().filter(|f| !crate::uistate::same_folder(f, here)) {
+                    if let Some(kept) = view_kept.take() {
+                        folder_views.retain(|(f, _)| !crate::uistate::same_folder(f, left));
+                        folder_views.push((left.clone(), kept));
+                    }
+                }
+                if !view_folder.as_deref().is_some_and(|f| crate::uistate::same_folder(f, here)) {
+                    view_folder = Some(here.to_path_buf());
+                }
+            }
+            if view_folder.is_some() {
+                let keyed = surface_keys(&surfaces, &tabs);
+                view_kept = Some(pane_layout.keep(|s| keyed.get(s - 1).and_then(|k| k.id.clone())));
+            }
         }
         // Who the terminals are cut to, settled once per pass rather than by
         // whichever viewer last reported (see `terminal_size`). Both viewers
@@ -2217,6 +2280,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // Picking a tab from afar. By number, as at the window
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Select { tab }) => {
                         shell.mail().selects.push(tab);
+                    }
+                    // A working folder pressed in the list, from afar: the same
+                    // queue as the window's
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderView { folder }) => {
+                        shell.mail().folder_views.push(folder);
                     }
                     // Arranging the screen, from a device with room to
                     // arrange it. The same queues the window's own presses
@@ -6489,6 +6557,15 @@ pub fn save_replay_to_downloads() -> std::io::Result<Option<std::path::PathBuf>>
 ///
 /// Targets are counted by screen position. A name and a number both point to
 /// the same thing (numbers shift with reordering, so using names when writing is recommended).
+/// The folder a surface (1..) works in, if it works in one. A page works in
+/// none; a panel works in the folder it reports on.
+pub fn surface_folder<'a>(surfaces: &'a [Surface], tabs: &'a [Tab], surface: usize) -> Option<&'a std::path::Path> {
+    match surfaces.get(surface.checked_sub(1)?)? {
+        Surface::Session(i) => tabs.get(*i)?.cwd(),
+        Surface::Git { dir, .. } | Surface::Editor { dir, .. } | Surface::Sftp { dir, .. } => dir.as_deref(),
+        Surface::Browser { .. } => None,
+    }
+}
 pub fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
     surfaces
         .iter()

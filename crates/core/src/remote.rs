@@ -104,6 +104,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
     match ev {
         // Pick/type into/stop the tab you want to view. The core of remote control
         Ev::Select { .. } | Ev::Key { .. } | Ev::Stop => true,
+        // Pressing a working folder's name: a select that picks the tab for
+        // you (the one last looked at there). The same reach as Select, and on
+        // a phone -- where a folder's tabs start put away -- the way to them
+        Ev::FolderView { .. } => true,
         // Relaunching the tab you are looking at. A phone watching an SSH tab that
         // dropped is exactly who needs this, and it reaches no further than the
         // keystroke (Ctrl+B r) it stands for — one tab, the one on screen.
@@ -2438,6 +2442,7 @@ mod tests {
             Ev::PaneRatio { divider: 0, ratio: 0.5 },
             Ev::AddTab { pane: Some(1), folder: None },
             Ev::FolderName { folder: "a".into(), name: "b".into() },
+            Ev::FolderView { folder: "a".into() },
             Ev::FolderClose { folder: "a".into() },
             Ev::FolderDiscard { folder: "a".into() },
             Ev::FolderColor { folder: "a".into(), color: "blue".into() },
