@@ -1990,6 +1990,15 @@ fn run_window(
                     shikisha_core::append_hook_log("Board page dropped while the window is put away");
                 }
                 Cmd::Show => {
+                    // The window first, the page second. A window put away from
+                    // minimized comes back minimized, and a page built into a
+                    // window with no size is refused (0x80070057): the board
+                    // never came back, and what returned was an empty frame
+                    // with any placed pages floating in it
+                    window.set_visible(true);
+                    if window.is_minimized() {
+                        window.set_minimized(false);
+                    }
                     if shell.is_none() {
                         let born = std::time::Instant::now();
                         match shell_of() {
@@ -2035,10 +2044,6 @@ fn run_window(
                                 "Board page could not be built again: {e:#}"
                             )),
                         }
-                    }
-                    window.set_visible(true);
-                    if window.is_minimized() {
-                        window.set_minimized(false);
                     }
                     window.set_focus();
                 }
@@ -2666,6 +2671,22 @@ mod nav_tests {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// A window put away from minimized gets its board back.
+    ///
+    /// The board was built again before the window was restored, into a
+    /// window with no size, and WebView2 refused it (0x80070057): what came
+    /// back from the notification area was an empty frame. The window has to
+    /// be shown and restored before the page is built
+    #[test]
+    fn the_board_is_built_into_a_window_that_has_a_size() {
+        let src = include_str!("browser.rs");
+        let show = src.find("Cmd::Show => {").expect("Cmd::Show が無い");
+        let body = &src[show..show + 2500];
+        let restored = body.find("window.set_minimized(false)").expect("最小化を戻していない");
+        let built = body.find("match shell_of()").expect("盤面を作り直していない");
+        assert!(restored < built, "最小化のまま盤面を作っている");
+    }
 
     /// A page placed in the window may report, and may not ask. Every intent
     /// that types, runs, changes or opens something is refused from a
