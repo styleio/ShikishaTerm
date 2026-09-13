@@ -215,7 +215,10 @@ pub fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'s
         return (tab::Resume::Fresh, None);
     }
     let Some(spec) = t.resume.as_ref() else {
-        return (tab::Resume::Fresh, Some("msg.resume.unsupported"));
+        // Only an AI has a conversation to lose. A shell restarted is a shell
+        // restarted, and "this CLI cannot carry a conversation" said about one
+        // is a sentence about something that was never there
+        return (tab::Resume::Fresh, t.is_ai().then_some("msg.resume.unsupported"));
     };
     // Nothing has happened in this tab yet, and it was having a conversation
     // when the app last closed. "Carry the conversation over" can only mean
@@ -7536,6 +7539,19 @@ mod tests {
             xpath,
             hint: hint.into(),
         }
+    }
+
+    /// A shell has no conversation, so restarting one says nothing about
+    /// conversations.
+    #[test]
+    fn a_restarted_shell_is_not_told_it_lost_a_conversation() {
+        let opts = tab::TabOptions { cwd: Some(std::env::temp_dir()), ..Default::default() };
+        let mut shell = Tab::spawn("sh".into(), &[crate::test_shell()], None, 10, 40, opts).unwrap();
+        assert!(!shell.is_ai());
+        let (plan, why) = resume_plan(&shell, true, true);
+        assert_eq!(plan, tab::Resume::Fresh);
+        assert_eq!(why, None, "シェルに「会話を引き継げない」と言っている");
+        shell.kill();
     }
 
     /// Two tabs running the same CLI in the same folder cannot both claim
