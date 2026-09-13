@@ -234,6 +234,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     // The folders these tabs are actually in. Worked out here, once, so the
     // window and the phone are looking at the same list
     let mut groups = crate::uistate::GroupState::all(tabs, &ui.folder_colors, &ui.folders);
+    crate::uistate::GroupState::name_projects(&mut groups, &ui.folder_projects);
     // And whether each of them is on this machine. Asked here because this is
     // the one place the list is built, and answered from a table kept up to
     // date on its own threads -- a drive that has stopped answering must not
@@ -816,6 +817,9 @@ pub struct Ui {
     /// The current desk's folders as the settings have them, so one with
     /// no tab in it is still on the list (uistate::GroupState::all)
     pub folders: Vec<(std::path::PathBuf, String)>,
+    /// Of those, the ones the settings say which project they are in: (the
+    /// folder, the project's name)
+    pub folder_projects: Vec<(std::path::PathBuf, String)>,
     /// Of those, the ones that live on another machine. This machine has no
     /// opinion worth having about them: it is asked whether every folder is
     /// here, and for these the answer is "no" and is not a fault

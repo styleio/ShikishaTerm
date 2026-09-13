@@ -171,10 +171,17 @@ fn settings_confirmations_require_a_person() {
         assert_eq!(
             eval(
                 &b,
-                "const d=document.querySelector('dialog'), p=d.querySelector('.primary').getBoundingClientRect(), c=d.querySelector('.quiet:not(.icon)').getBoundingClientRect(); return p.right >= c.right && p.right <= d.getBoundingClientRect().right;"
+                "const d=document.querySelector('dialog'), p=d.querySelector('.danger').getBoundingClientRect(), c=d.querySelector('.quiet:not(.icon)').getBoundingClientRect(); return p.right >= c.right && p.right <= d.getBoundingClientRect().right;"
             ),
             "true",
-            "{kind}: primary must be at the right"
+            "{kind}: the action must be at the right"
+        );
+        // What Enter lands on without looking is Cancel: every one of these
+        // throws something away
+        assert_eq!(
+            eval(&b, "return document.activeElement.textContent;"),
+            eval(&b, "return T['common.cancel'];"),
+            "{kind}: focus starts on the destructive button"
         );
         if kind == "provider" {
             for _ in 0..5 {
@@ -257,6 +264,12 @@ fn settings_confirmations_require_a_person() {
         );
         press(&b, &key, "button");
         if kind == "provider" {
+            // Enter straight away is Cancel...
+            send_key(0x0d);
+            assert_eq!(eval(&b, "return probeState();"), before, "{kind}: Enter deleted");
+            press(&b, &key, "button");
+            // ...and the action is one Tab away
+            send_key(0x09);
             send_key(0x0d);
         } else {
             press(
@@ -266,7 +279,7 @@ fn settings_confirmations_require_a_person() {
                 } else {
                     &key
                 },
-                "dialog .primary",
+                "dialog .danger",
             );
         }
         if kind == "desk-secrets" {
@@ -274,8 +287,8 @@ fn settings_confirmations_require_a_person() {
             press(&b, "common.cancel", "dialog button");
             assert_eq!(eval(&b, "return probeState();"), before);
             press(&b, &key, "button");
-            press(&b, &key, "dialog .primary");
-            press(&b, &key, "dialog .primary");
+            press(&b, &key, "dialog .danger");
+            press(&b, &key, "dialog .danger");
         }
         if kind == "close" {
             assert!(
