@@ -80,7 +80,7 @@
   "tui.branch.project": "Project",
   "tui.branch.dest": "Where it runs",
   "tui.branch.dest.add": "Add a machine…",
-  "tui.branch.dest.add.hint": "Machines are set up on the settings page, under Machines.",
+  "tui.branch.dest.add.hint": "Machines are set up on the settings page, under Where it runs.",
   "tui.branch.dest.here": "This PC",
   "tui.branch.name": "Branch name (optional)",
   "tui.branch.where": "Where it goes (you can change this)",
