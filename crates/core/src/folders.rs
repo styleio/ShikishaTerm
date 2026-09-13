@@ -134,7 +134,7 @@ impl Watch {
     /// exactly the difference worth drawing.
     ///
     /// These are also the folders worth remembering: anything else is dropped,
-    /// so switching workspace stops the old one's drives being polled forever.
+    /// so switching desk stops the old one's drives being polled forever.
     pub fn look(&self, paths: &[PathBuf]) -> HashMap<PathBuf, Health> {
         self.ask(paths, true)
     }

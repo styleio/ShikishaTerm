@@ -782,7 +782,7 @@ fn build_sandbox_env(
         }
         Ok((rep.state.as_str().to_string(), rep.echo))
     });
-    // Set up basic auth (the credential comes from the workspace's own
+    // Set up basic auth (the credential comes from the desk's own
     // secrets, and the value never reaches the AI)
     let who_auth = Rc::clone(subject);
     bind!("browser_auth", (String, String), |lua_, c, al, (name, secret_key)| {
@@ -1246,11 +1246,11 @@ struct Script {
     defined: HashSet<String>,
 }
 
-/// Where a hook resolves to. The more specific one wins (tab > workspace > base)
+/// Where a hook resolves to. The more specific one wins (tab > desk > base)
 #[derive(Default)]
 struct Attach {
     base: Option<usize>,
-    workspace: Option<usize>,
+    desk: Option<usize>,
     tabs: std::collections::HashMap<usize, usize>,
     /// What a pane had before an aim (🎯) took it over, so letting the aim go
     /// gives the tab its own automation back. Being aimed at something is a
@@ -4724,8 +4724,8 @@ end
         self.attach.base = Some(id);
     }
 
-    pub fn set_workspace(&mut self, id: usize) {
-        self.attach.workspace = Some(id);
+    pub fn set_desk(&mut self, id: usize) {
+        self.attach.desk = Some(id);
     }
 
     /// Attach a script to a tab index (1-based)
@@ -4734,11 +4734,11 @@ end
     }
 
     /// Resolve which script is responsible for that hook on that tab
-    /// (tab > workspace > base. Never runs more than one)
+    /// (tab > desk > base. Never runs more than one)
     fn resolve(&self, hook: &str, tab_index: usize) -> Option<usize> {
         [
             self.attach.tabs.get(&tab_index).copied(),
-            self.attach.workspace,
+            self.attach.desk,
             self.attach.base,
         ]
         .into_iter()
@@ -4754,7 +4754,7 @@ end
     ///
     /// The specific one when a script defines it, `on_done` otherwise, and
     /// never both -- the same rule the scopes already follow (tab beats
-    /// workspace beats base, one runs). Firing both would hand the same
+    /// desk beats base, one runs). Firing both would hand the same
     /// finished turn over twice, which for a hook that notifies a phone is
     /// two buzzes for one answer.
     pub fn fire_ending(&mut self, state: crate::detect::TabState, ctx: &TabCtx) {
@@ -6862,25 +6862,25 @@ mod tests {
     }
 
     #[test]
-    fn tab_script_wins_over_workspace_and_base() {
+    fn tab_script_wins_over_desk_and_base() {
         let mut e = HookEngine::new().unwrap();
         let base = e
             .load_source("base", r#"function on_done(t) shikisha.log("base") end
                                     function on_exit(t) shikisha.log("base-exit") end"#)
             .unwrap();
-        let ws = e
-            .load_source("ws", r#"function on_done(t) shikisha.log("ws") end"#)
+        let desk = e
+            .load_source("desk", r#"function on_done(t) shikisha.log("desk") end"#)
             .unwrap();
         let tab = e
             .load_source("tab", r#"function on_done(t) shikisha.log("tab") end"#)
             .unwrap();
         e.set_base(base);
-        e.set_workspace(ws);
+        e.set_desk(desk);
         e.set_tab(2, tab);
 
         // Tab 2 has a tab-specific script, so it wins
         e.fire("on_done", &ctx(2, ""), None);
-        // Tab 1 has no tab-specific script, so the workspace one is used
+        // Tab 1 has no tab-specific script, so the desk one is used
         e.fire("on_done", &ctx(1, ""), None);
         // If the tab-specific script has no on_exit, fall back to the base one
         e.fire("on_exit", &ctx(2, ""), None);
@@ -6893,7 +6893,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(logs, vec!["tab", "ws", "base-exit"]);
+        assert_eq!(logs, vec!["tab", "desk", "base-exit"]);
     }
 
     #[test]

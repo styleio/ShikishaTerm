@@ -229,7 +229,7 @@ impl GroupState {
     /// heading and belong to nothing, which is why the answer is looked up by
     /// path rather than handed out by position
     ///
-    /// `configured` is what the settings say the workspace's folders are, by
+    /// `configured` is what the settings say the desk's folders are, by
     /// path and name. Any of them no tab is in comes last, marked empty:
     /// added a minute ago, or emptied out, either way somewhere with a + to
     /// press and nothing else to say for it
@@ -835,8 +835,8 @@ pub struct NavState {
 /// The moment one goes in, every receiving side is locked into the same look
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct UiState {
-    pub workspace: String,
-    /// The folders this workspace's tabs are working in. One means nothing is
+    pub desk: String,
+    /// The folders this desk's tabs are working in. One means nothing is
     /// drawn: the heading only exists to tell folders apart
     #[serde(default)]
     pub groups: Vec<GroupState>,
@@ -849,8 +849,8 @@ pub struct UiState {
     /// Folders to choose from, while somewhere new is being opened
     #[serde(default)]
     pub browse: Option<BrowseState>,
-    pub workspaces: Vec<String>,
-    pub ws_index: usize,
+    pub desks: Vec<String>,
+    pub desk_index: usize,
     /// What the focused pane is showing (0 = nothing is in it yet)
     pub active: usize,
     /// Whether INDEX is covering the window. A screen, not a pane: the board
@@ -925,8 +925,8 @@ pub struct UiState {
     /// press something that no longer does anything
     #[serde(default)]
     pub help_rows: Vec<(String, String)>,
-    /// Whether the workspace picker is being shown
-    pub ws_open: bool,
+    /// Whether the desk picker is being shown
+    pub desk_open: bool,
     /// If a QR for phone pairing is being shown, the destination it encodes
     pub qr: Option<String>,
     /// The QR image itself (inline SVG). Making it a separate image request
@@ -955,7 +955,7 @@ pub struct UiState {
     /// shows its restart button from this rather than working it out again
     #[serde(default)]
     pub restartable: bool,
-    /// If the current workspace is an AI-vs-AI discussion, the session number
+    /// If the current desk is an AI-vs-AI discussion, the session number
     /// (1-based) of the opening speaker. The dashboard shows a "start the
     /// discussion" card that sends the typed topic there. None = not a discussion.
     #[serde(default)]
@@ -1419,7 +1419,7 @@ mod tests {
     #[test]
     fn the_state_carries_no_appearance() {
         let s = UiState {
-            workspace: "検証".into(),
+            desk: "検証".into(),
             tabs: vec![tab(1, "実装")],
             ..Default::default()
         };

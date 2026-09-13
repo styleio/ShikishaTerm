@@ -4,9 +4,9 @@
 .env*
 # 利用者の持ち物 (設定と資格情報)
 /config/
-workspaces/*.json
-!workspaces/*.example.json
-# 持ち出したワークスペース (接続先や作業フォルダがそのまま入っている)
+desks/*.json
+!desks/*.example.json
+# 持ち出したデスク (接続先や作業フォルダがそのまま入っている)
 *.stws.json
 projects/
 logs/

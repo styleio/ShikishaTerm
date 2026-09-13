@@ -22,7 +22,7 @@ impl Watcher {
         }
     }
 
-    /// Swap out the watched targets (when config changes alter the workspace
+    /// Swap out the watched targets (when config changes alter the desk
     /// layout).
     pub fn retarget(&mut self, paths: Vec<PathBuf>) {
         self.stamps = paths.into_iter().map(|p| { let t = mtime(&p); (p, t) }).collect();
@@ -52,7 +52,7 @@ fn mtime(p: &Path) -> Option<SystemTime> {
 }
 
 /// Build the list of files that should be watched
-/// (the main config, workspace definitions, automation scripts, secrets).
+/// (the main config, desk definitions, automation scripts, secrets).
 pub fn watch_targets(cfg: Option<&crate::config::Config>, config_path: &Path) -> Vec<PathBuf> {
     let mut out = vec![config_path.to_path_buf()];
     let Some(cfg) = cfg else { return out };
@@ -79,15 +79,15 @@ pub fn watch_targets(cfg: Option<&crate::config::Config>, config_path: &Path) ->
         out.push(p);
     }
     add_automation(&mut out, cfg.automation_path());
-    for ws in &cfg.workspaces {
-        if let Some(f) = &ws.file {
+    for desk in &cfg.desks {
+        if let Some(f) = &desk.file {
             out.push(crate::config::resolve_data_path(f));
         }
     }
-    let (workspaces, _) = cfg.resolve_workspaces();
-    for ws in &workspaces {
-        add_automation(&mut out, ws.automation.clone());
-        for t in &ws.tabs {
+    let (desks, _) = cfg.resolve_desks();
+    for desk in &desks {
+        add_automation(&mut out, desk.automation.clone());
+        for t in &desk.tabs {
             add_automation(&mut out, t.cfg.automation_path());
         }
     }

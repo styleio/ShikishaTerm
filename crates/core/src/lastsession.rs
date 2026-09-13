@@ -33,7 +33,7 @@ const FILE: &str = "last-session";
 pub struct Saved {
     pub version: u32,
     #[serde(default)]
-    pub workspaces: Vec<SavedWs>,
+    pub desks: Vec<SavedWs>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,7 +70,7 @@ fn path() -> PathBuf {
 
 impl Saved {
     pub fn load() -> Saved {
-        let fallback = Saved { version: VERSION, workspaces: Vec::new() };
+        let fallback = Saved { version: VERSION, desks: Vec::new() };
         let Ok(text) = std::fs::read_to_string(path()) else {
             return fallback;
         };
@@ -94,9 +94,9 @@ impl Saved {
 
     /// The conversation this tab was having last time, if this is recognisably
     /// the same tab.
-    pub fn conversation_for(&self, workspace: &str, t: &Tab) -> Option<Session> {
+    pub fn conversation_for(&self, desk: &str, t: &Tab) -> Option<Session> {
         self.conversation_of(
-            workspace,
+            desk,
             t.program(),
             t.cwd().map(|c| c.display().to_string()).as_deref(),
             t.id.as_deref(),
@@ -112,14 +112,14 @@ impl Saved {
     /// a live one. `conversation_for` is the same test, asked later
     pub fn conversation_of(
         &self,
-        workspace: &str,
+        desk: &str,
         program: &str,
         cwd: Option<&str>,
         id: Option<&str>,
         title: &str,
     ) -> Option<Session> {
-        let ws = self.workspaces.iter().find(|w| w.name == workspace)?;
-        let saved = ws.tabs.iter().find(|s| {
+        let desk = self.desks.iter().find(|w| w.name == desk)?;
+        let saved = desk.tabs.iter().find(|s| {
             s.program == program
                 && s.cwd.as_deref() == cwd
                 && match (&s.id, id) {
@@ -139,23 +139,23 @@ impl Saved {
         })
     }
 
-    /// The division of the screen this workspace had last time.
-    pub fn panes_for(&self, workspace: &str) -> Option<crate::layout::Layout> {
-        self.workspaces
+    /// The division of the screen this desk had last time.
+    pub fn panes_for(&self, desk: &str) -> Option<crate::layout::Layout> {
+        self.desks
             .iter()
-            .find(|w| w.name == workspace)?
+            .find(|w| w.name == desk)?
             .panes
             .clone()
     }
 
-    /// Replace what is remembered about one workspace, leaving the others.
+    /// Replace what is remembered about one desk, leaving the others.
     ///
-    /// Workspaces are updated one at a time because that is how they are used:
-    /// switching away should not forget where you were, and a workspace that
+    /// Desks are updated one at a time because that is how they are used:
+    /// switching away should not forget where you were, and a desk that
     /// has not been opened this run has nothing newer to say about itself
     pub fn remember(
         &mut self,
-        workspace: &str,
+        desk: &str,
         tabs: &[Tab],
         panes: Option<&crate::layout::Layout>,
     ) {
@@ -182,13 +182,13 @@ impl Saved {
             })
             .collect();
         let entry = SavedWs {
-            name: workspace.to_string(),
+            name: desk.to_string(),
             panes: panes.cloned(),
             tabs: saved,
         };
-        match self.workspaces.iter_mut().find(|w| w.name == workspace) {
+        match self.desks.iter_mut().find(|w| w.name == desk) {
             Some(w) => *w = entry,
-            None => self.workspaces.push(entry),
+            None => self.desks.push(entry),
         }
     }
 
@@ -213,7 +213,7 @@ mod tests {
     fn a_tab_is_recognised_by_what_it_is_not_only_by_its_name() {
         let saved = Saved {
             version: VERSION,
-            workspaces: vec![SavedWs {
+            desks: vec![SavedWs {
                 name: "work".into(),
                 panes: None,
                 tabs: vec![SavedTab {
@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(found("codex", "D:\\Test", Some("coder"), "AGENT"), None);
         // Nor is the same tab set up in another folder
         assert_eq!(found("claude", "D:\\Other", Some("coder"), "AGENT"), None);
-        // And a workspace that was never remembered has nothing to say
+        // And a desk that was never remembered has nothing to say
         assert!(saved
             .conversation_of("elsewhere", "claude", Some("D:\\Test"), Some("coder"), "AGENT")
             .is_none());
@@ -262,7 +262,7 @@ mod tests {
     fn the_file_an_earlier_release_wrote_still_loads() {
         const AS_0_5_1_WROTE_IT: &str = r#"{
           "version": 1,
-          "workspaces": [{
+          "desks": [{
             "name": "work",
             "panes": null,
             "tabs": [{
@@ -292,7 +292,7 @@ mod tests {
         let dir = std::env::temp_dir().join("shikisha-lastsession");
         let _ = std::fs::create_dir_all(&dir);
         let f = dir.join("last-session");
-        std::fs::write(&f, r#"{"version":99,"workspaces":[{"name":"x","tabs":[]}]}"#).unwrap();
+        std::fs::write(&f, r#"{"version":99,"desks":[{"name":"x","tabs":[]}]}"#).unwrap();
         let text = std::fs::read_to_string(&f).unwrap();
         let parsed: Saved = serde_json::from_str(&text).unwrap();
         assert!(parsed.version > VERSION, "後の版のファイルだと分かる");

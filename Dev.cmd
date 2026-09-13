@@ -66,7 +66,7 @@ echo Carrying over existing settings from target\debug
 copy /y "target\debug\config.json" "run\" >nul
 if exist "target\debug\secrets.json" copy /y "target\debug\secrets.json" "run\" >nul
 if exist "target\debug\scripts" xcopy /y /e /i /q "target\debug\scripts" "run\scripts" >nul
-if exist "target\debug\workspaces" xcopy /y /e /i /q "target\debug\workspaces" "run\workspaces" >nul
+if exist "target\debug\desks" xcopy /y /e /i /q "target\debug\desks" "run\desks" >nul
 
 :have_run
 rem Application files are refreshed every time, so a change you just made is

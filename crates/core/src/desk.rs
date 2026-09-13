@@ -1,7 +1,7 @@
-//! Opening a workspace: the tabs it names, the automation it carries, and
+//! Opening a desk: the tabs it names, the automation it carries, and
 //! moving between them.
 //!
-//! What a workspace *is* -- which tabs exist, what each one runs, which folder
+//! What a desk *is* -- which tabs exist, what each one runs, which folder
 //! it works in, which automation is loaded for it -- is the runtime's to know.
 //! A shell only ever asks for the result.
 
@@ -54,20 +54,20 @@ pub fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
 
 pub fn build_engine(
     cfg: Option<&config::Config>,
-    ws: Option<&config::Workspace>,
+    desk: Option<&config::Desk>,
     errors: &mut Vec<String>,
     caps: &hooks::Caps,
 ) -> Option<HookEngine> {
     let base = cfg.and_then(|c| c.automation_path());
-    let ws_lua = ws.and_then(|w| w.automation.clone());
-    let tab_luas: Vec<(usize, TabAuto)> = ws.map(automation_by_pane).unwrap_or_default();
-    let has_discuss = ws
+    let desk_lua = desk.and_then(|w| w.automation.clone());
+    let tab_luas: Vec<(usize, TabAuto)> = desk.map(automation_by_pane).unwrap_or_default();
+    let has_discuss = desk
         .and_then(|w| w.discuss.as_ref())
         .is_some_and(|d| d.agents.len() >= 2);
     // Keep the engine even with no Lua hooks when a tab wants a completion
     // notification: the on_done detection loop only runs when an engine exists,
-    // so without this a notify-only workspace would never fire on_done.
-    let wants_notify = ws
+    // so without this a notify-only desk would never fire on_done.
+    let wants_notify = desk
         .map(|w| w.tabs.iter().any(|t| t.cfg.notify_on_done.is_some()))
         .unwrap_or(false);
     // A Lua quick-action needs an engine to run in, even when nothing else does.
@@ -75,7 +75,7 @@ pub fn build_engine(
         .map(|c| c.actions.iter().any(|a| a.lua))
         .unwrap_or(false);
     if base.is_none()
-        && ws_lua.is_none()
+        && desk_lua.is_none()
         && tab_luas.is_empty()
         && !has_discuss
         && !wants_notify
@@ -109,12 +109,12 @@ pub fn build_engine(
         && let Some(id) = load(&mut engine, p, errors) {
             engine.set_base(id);
         }
-    if let Some(p) = &ws_lua
+    if let Some(p) = &desk_lua
         && let Some(id) = load(&mut engine, p, errors) {
-            engine.set_workspace(id);
+            engine.set_desk(id);
         }
-    // The referee (stop conditions) is per-workspace. Passed to the built-in commander as a Lua table.
-    let stops_lua = ws
+    // The referee (stop conditions) is per-desk. Passed to the built-in commander as a Lua table.
+    let stops_lua = desk
         .map(|w| config::stops_to_lua(&w.stops))
         .unwrap_or_else(|| "{}".to_string());
     for (idx, auto) in &tab_luas {
@@ -125,8 +125,8 @@ pub fn build_engine(
             engine.set_tab(*idx, id);
         }
     }
-    // AI-vs-AI discussion: if the workspace has `discuss`, load the built-in discussion commander into each participant tab
-    if let Some(w) = ws
+    // AI-vs-AI discussion: if the desk has `discuss`, load the built-in discussion commander into each participant tab
+    if let Some(w) = desk
         && let Some(d) = &w.discuss {
             let agents: Vec<String> = d
                 .agents
@@ -177,7 +177,7 @@ pub fn build_engine(
                 for (i, id) in agents.iter().enumerate() {
                     let Some(pane) = surface_of_id(w, id) else {
                         errors.push(crate::i18n::tp(
-                            "err.ws.discuss_tab_missing",
+                            "err.desk.discuss_tab_missing",
                             &[("id", id)],
                         ));
                         continue;
@@ -202,7 +202,7 @@ pub fn build_engine(
                     ) {
                         Ok(sid) => engine.set_tab(pane, sid),
                         Err(e) => errors.push(crate::i18n::tp(
-                            "err.ws.discuss_agent_failed",
+                            "err.desk.discuss_agent_failed",
                             &[("id", id), ("e", &format!("{e:#}"))],
                         )),
                     }
@@ -217,12 +217,12 @@ pub fn build_engine(
                         ) {
                             Ok(sid) => engine.set_tab(pane, sid),
                             Err(e) => errors.push(crate::i18n::tp(
-                                "err.ws.discuss_judge_failed",
+                                "err.desk.discuss_judge_failed",
                                 &[("j", j), ("e", &format!("{e:#}"))],
                             )),
                         },
                         None => errors.push(crate::i18n::tp(
-                            "err.ws.discuss_judge_missing",
+                            "err.desk.discuss_judge_missing",
                             &[("j", j)],
                         )),
                     }
@@ -237,18 +237,18 @@ pub fn build_engine(
                         ) {
                             Ok(sid) => engine.set_tab(pane, sid),
                             Err(e) => errors.push(crate::i18n::tp(
-                                "err.ws.discuss_moderator_failed",
+                                "err.desk.discuss_moderator_failed",
                                 &[("m", m), ("e", &format!("{e:#}"))],
                             )),
                         },
                         None => errors.push(crate::i18n::tp(
-                            "err.ws.discuss_moderator_missing",
+                            "err.desk.discuss_moderator_missing",
                             &[("m", m)],
                         )),
                     }
                 }
             } else if !d.agents.is_empty() {
-                errors.push(crate::i18n::t("err.ws.discuss_needs_two"));
+                errors.push(crate::i18n::t("err.desk.discuss_needs_two"));
             }
         }
     // Keep the engine even with no Lua hooks when a tab wants a completion
@@ -263,7 +263,7 @@ pub fn build_engine(
 /// off without asking). The return value is the message reported to the user.
 pub fn apply_ws_config(
     tabs: &mut Vec<Tab>,
-    ws: &config::Workspace,
+    desk: &config::Desk,
     rows: u16,
     cols: u16,
     errors: &mut Vec<String>,
@@ -273,7 +273,7 @@ pub fn apply_ws_config(
     let mut staged = 0usize;
 
     // Close tabs no longer in config (removed via the GUI = an explicit instruction)
-    let wanted: Vec<String> = ws
+    let wanted: Vec<String> = desk
         .tabs
         .iter()
         .map(|f| {
@@ -294,8 +294,8 @@ pub fn apply_ws_config(
     });
 
     // Update existing tabs and add new ones
-    let mut ordered: Vec<Tab> = Vec::with_capacity(ws.tabs.len());
-    for ft in &ws.tabs {
+    let mut ordered: Vec<Tab> = Vec::with_capacity(desk.tabs.len());
+    for ft in &desk.tabs {
         let argv = ft.cfg.command.argv();
         if argv.is_empty() {
             continue;
@@ -309,8 +309,8 @@ pub fn apply_ws_config(
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-        let mut opts = tab_options(&ft.cfg, ws.folder_of(ft));
-        let argv = resolve_launch(argv, &mut opts, Some(ws), &ft.cfg);
+        let mut opts = tab_options(&ft.cfg, desk.folder_of(ft));
+        let argv = resolve_launch(argv, &mut opts, Some(desk), &ft.cfg);
         // Kept for the message, because the options themselves are moved into
         // the tab and the message is only wanted when that did not happen
         let said = opts.clone();
@@ -384,14 +384,14 @@ pub fn apply_ws_config(
 ///
 /// Runs not just on open, but also whenever config is reloaded.
 /// Without going through here, checking a box wouldn't show up until a restart.
-pub fn apply_browser_chrome(ws: &config::Workspace, caps: &hooks::Caps) {
+pub fn apply_browser_chrome(desk: &config::Desk, caps: &hooks::Caps) {
     // Close browsers that dropped out of config. Leaving them in place would
     // make them reappear at the back of the list as a "page not in config".
-    let declared: Vec<String> = ws
+    let declared: Vec<String> = desk
         .browsers
         .iter()
         .map(|b| b.id.clone())
-        .chain(ws.tabs.iter().filter_map(|ft| {
+        .chain(desk.tabs.iter().filter_map(|ft| {
             let argv = ft.cfg.command.argv();
             config::browser_url_of(&argv)?;
             Some(
@@ -407,7 +407,7 @@ pub fn apply_browser_chrome(ws: &config::Workspace, caps: &hooks::Caps) {
         append_hook_log(&format!("Closed because it dropped out of config: {gone}"));
     }
 
-    for ft in &ws.tabs {
+    for ft in &desk.tabs {
         let argv = ft.cfg.command.argv();
         if config::browser_url_of(&argv).is_none() {
             continue;
@@ -445,22 +445,22 @@ pub fn apply_browser_chrome(ws: &config::Workspace, caps: &hooks::Caps) {
     }
 }
 
-/// Launch every tab a workspace declares.
+/// Launch every tab a desk declares.
 ///
 /// `carry` is what was on screen when the app last closed; whether a given tab
 /// actually comes back to it is that tab's own setting. A tab the Vault
 /// reopened names its own conversation and outranks both: that id was chosen
 /// deliberately, a moment ago, and "what this tab was saying last time" is not
 /// an answer to it
-pub fn spawn_workspace(
-    ws: &config::Workspace,
+pub fn spawn_desk(
+    desk: &config::Desk,
     rows: u16,
     cols: u16,
     tabs: &mut Vec<Tab>,
     errors: &mut Vec<String>,
     carry: Option<&crate::lastsession::Saved>,
 ) {
-    for ft in &ws.tabs {
+    for ft in &desk.tabs {
         let argv = ft.cfg.command.argv();
         if argv.is_empty() {
             continue;
@@ -476,15 +476,15 @@ pub fn spawn_workspace(
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-        let mut opts = tab_options(&ft.cfg, ws.folder_of(ft));
-        let argv = resolve_launch(argv, &mut opts, Some(ws), &ft.cfg);
+        let mut opts = tab_options(&ft.cfg, desk.folder_of(ft));
+        let argv = resolve_launch(argv, &mut opts, Some(desk), &ft.cfg);
         let cwd = opts.cwd.clone();
         // Kept for the message, because the options are moved into the tab and
         // the message is only wanted when that did not happen
         let said = opts.clone();
         let plan = match resume_plan_of(ft.cfg.resume.as_deref()) {
             named @ tab::Resume::Id(_) => named,
-            _ => carried_conversation(carry, ws, &argv, &ft.cfg, &cwd, &title),
+            _ => carried_conversation(carry, desk, &argv, &ft.cfg, &cwd, &title),
         };
         if let tab::Resume::Id(s) = &plan {
             append_hook_log(&format!("launching \"{title}\" carrying {}", s.short()));
@@ -516,51 +516,51 @@ pub fn spawn_workspace(
     }
 }
 
-/// Everything that belongs to the workspace now on screen, handed over at once.
+/// Everything that belongs to the desk now on screen, handed over at once.
 ///
-/// Five things are settled per workspace -- where its notifications go, which
+/// Five things are settled per desk -- where its notifications go, which
 /// model connections it may use, what doors its automation has, who may use
 /// them, and which GitHub account answers for it -- and every one of them has to
 /// change at the same moment as the screen does. In one place because the
 /// failure otherwise is silent and one-sided: the half nobody remembered to
-/// swap keeps answering for the workspace that was on screen a moment ago.
+/// swap keeps answering for the desk that was on screen a moment ago.
 ///
-/// Each value is already the whole answer (see [`config::Config::resolve_workspaces`]);
+/// Each value is already the whole answer (see [`config::Config::resolve_desks`]);
 /// nothing here decides anything.
 pub fn hand_over(
-    ws: &config::Workspace,
+    desk: &config::Desk,
     caps: &hooks::Caps,
     notifier: &crate::notify::Notifier,
     prs: &crate::pr::Watch,
 ) {
-    notifier.scope_to(ws.notify.clone(), ws.primary_notify.clone());
-    crate::bridge::scope_to(ws.providers.clone());
-    caps.set_capabilities(ws.capabilities.clone());
-    caps.set_grants(ws.automation_permissions.clone());
-    // A script's `token` means this workspace's, and no other's
-    caps.set_workspace_id(&ws.id);
+    notifier.scope_to(desk.notify.clone(), desk.primary_notify.clone());
+    crate::bridge::scope_to(desk.providers.clone());
+    caps.set_capabilities(desk.capabilities.clone());
+    caps.set_grants(desk.automation_permissions.clone());
+    // A script's `token` means this desk's, and no other's
+    caps.set_desk_id(&desk.id);
     // Which account the pull request numbers are read with: the token this
-    // workspace was given, or the machine's when it was given none. The program
+    // desk was given, or the machine's when it was given none. The program
     // reaches for the value itself here -- a script never sees it
     prs.use_token(
-        caps.secret_value(&config::workspace_secret_key(&ws.id, config::GITHUB_SECRET))
+        caps.secret_value(&config::desk_secret_key(&desk.id, config::GITHUB_SECRET))
             .ok(),
     );
 }
 
-/// Switches workspaces (virtual-desktop model).
+/// Switches desks (virtual-desktop model).
 /// Switching means hiding, not stopping — tabs that go into the background keep running.
-/// An unlaunched workspace gets its first launch right here.
+/// An unlaunched desk gets its first launch right here.
 #[allow(clippy::too_many_arguments)]
-pub fn switch_workspace(
+pub fn switch_desk(
     to: usize,
-    ws_index: &mut usize,
+    desk_index: &mut usize,
     tabs: &mut Vec<Tab>,
-    ws_tabs: &mut [Vec<Tab>],
-    workspaces: &[config::Workspace],
+    desk_tabs: &mut [Vec<Tab>],
+    desks: &[config::Desk],
     active: &mut usize,
     panes: &mut crate::layout::Layout,
-    ws_panes: &mut [crate::layout::Layout],
+    desk_panes: &mut [crate::layout::Layout],
     rows: u16,
     cols: u16,
     errors: &mut Vec<String>,
@@ -573,57 +573,57 @@ pub fn switch_workspace(
     prs: &crate::pr::Watch,
     last: &crate::lastsession::Saved,
 ) {
-    // Guard against every backing array, not just `workspaces`: the per-workspace
-    // `engines`/`ws_tabs` caches are resized on config reload, and a mismatch must
+    // Guard against every backing array, not just `desks`: the per-desk
+    // `engines`/`desk_tabs` caches are resized on config reload, and a mismatch must
     // never index out of bounds (that would crash the whole app on switch).
-    if to == *ws_index
-        || to >= workspaces.len()
+    if to == *desk_index
+        || to >= desks.len()
         || to >= engines.len()
-        || to >= ws_tabs.len()
-        || to >= ws_panes.len()
-        || *ws_index >= ws_tabs.len()
-        || *ws_index >= ws_panes.len()
+        || to >= desk_tabs.len()
+        || to >= desk_panes.len()
+        || *desk_index >= desk_tabs.len()
+        || *desk_index >= desk_panes.len()
     {
         return;
     }
-    ws_tabs[*ws_index] = std::mem::take(tabs);
-    // How a workspace is divided belongs to that workspace. Carrying one
+    desk_tabs[*desk_index] = std::mem::take(tabs);
+    // How a desk is divided belongs to that desk. Carrying one
     // layout across the switch would leave a project split into panes that
     // point at another project's tab numbers — the screen would look
     // deliberate and mean nothing.
-    ws_panes[*ws_index] = panes.clone();
-    // The Lua environment is kept per workspace (so shared variables survive switching)
-    engines[*ws_index] = engine.take();
-    *ws_index = to;
-    // Ids only mean something within their own workspace.
+    desk_panes[*desk_index] = panes.clone();
+    // The Lua environment is kept per desk (so shared variables survive switching)
+    engines[*desk_index] = engine.take();
+    *desk_index = to;
+    // Ids only mean something within their own desk.
     // Placed pages also only appear in the tab list for whichever one is currently viewed.
-    caps.set_workspace(to);
-    // Everything that is this workspace's rather than the app's, in one act and
+    caps.set_desk(to);
+    // Everything that is this desk's rather than the app's, in one act and
     // before its tabs are launched below: a tab opening for the first time is
     // held to the same answers as one that was already running
-    hand_over(&workspaces[to], caps, notifier, prs);
-    config::save_last_workspace(&workspaces[to].name);
-    *tabs = std::mem::take(&mut ws_tabs[to]);
+    hand_over(&desks[to], caps, notifier, prs);
+    config::save_last_desk(&desks[to].name);
+    *tabs = std::mem::take(&mut desk_tabs[to]);
     if tabs.is_empty() {
         // First visit this run, so these tabs are being launched for the first
         // time and the same question applies as at startup: come back to what
-        // this workspace was saying, or start it clean
-        spawn_workspace(&workspaces[to], rows, cols, tabs, errors, Some(last));
+        // this desk was saying, or start it clean
+        spawn_desk(&desks[to], rows, cols, tabs, errors, Some(last));
         // Whether or not it was carried, the way back is worth holding on to:
         // this is what Ctrl+B r reaches for on a tab nobody has spoken to yet
         for t in tabs.iter_mut() {
-            t.previous = last.conversation_for(&workspaces[to].name, t);
+            t.previous = last.conversation_for(&desks[to].name, t);
         }
-        open_declared_browsers(&workspaces[to], caps, errors);
+        open_declared_browsers(&desks[to], caps, errors);
     }
     *engine = match engines[to].take() {
         Some(e) => Some(e),
-        None => build_engine(cfg, workspaces.get(to), errors, caps),
+        None => build_engine(cfg, desks.get(to), errors, caps),
     };
     started_fired.clear();
     started_fired.resize(tabs.len(), false);
     *active = if tabs.is_empty() { 0 } else { 1 };
-    *panes = std::mem::replace(&mut ws_panes[to], crate::layout::Layout::single(*active));
+    *panes = std::mem::replace(&mut desk_panes[to], crate::layout::Layout::single(*active));
     panes.show(*active);
 }
 
@@ -651,9 +651,9 @@ pub fn extract_env_block(screen: &str) -> Option<String> {
     (end > start + 1).then(|| body.trim().chars().take(1500).collect())
 }
 
-/// Loads Lua hooks across 3 tiers (base > workspace > tab).
+/// Loads Lua hooks across 3 tiers (base > desk > tab).
 /// Hook resolution favors "the more specific one wins", so only hooks a tab's
-/// script doesn't define fall back to workspace, then base.
+/// script doesn't define fall back to desk, then base.
 /// Lines up per-tab automation by screen number.
 ///
 /// The number matches whatever's shown on screen. If the number a human
@@ -673,12 +673,12 @@ pub enum TabAuto {
     Path(String),
 }
 
-/// Returns the screen number (1-based) of the tab in a workspace whose id
+/// Returns the screen number (1-based) of the tab in a desk whose id
 /// (or name, if no id) matches. Used to resolve discussion participants/referee
 /// from a tab id to a screen number.
-pub fn surface_of_id(ws: &config::Workspace, id: &str) -> Option<usize> {
+pub fn surface_of_id(desk: &config::Desk, id: &str) -> Option<usize> {
     let mut pane = 0;
-    for t in &ws.tabs {
+    for t in &desk.tabs {
         if t.cfg.command.argv().is_empty() {
             continue;
         }
@@ -691,10 +691,10 @@ pub fn surface_of_id(ws: &config::Workspace, id: &str) -> Option<usize> {
     None
 }
 
-pub fn automation_by_pane(ws: &config::Workspace) -> Vec<(usize, TabAuto)> {
+pub fn automation_by_pane(desk: &config::Desk) -> Vec<(usize, TabAuto)> {
     let mut pane = 0;
     let mut out = Vec::new();
-    for t in &ws.tabs {
+    for t in &desk.tabs {
         // A row with an empty command doesn't show up on screen either
         if t.cfg.command.argv().is_empty() {
             continue;
@@ -715,22 +715,22 @@ pub fn automation_by_pane(ws: &config::Workspace) -> Vec<(usize, TabAuto)> {
 pub fn resolve_launch(
     argv: Vec<String>,
     opts: &mut tab::TabOptions,
-    ws: Option<&config::Workspace>,
+    desk: Option<&config::Desk>,
     cfg: &config::TabConfig,
 ) -> Vec<String> {
     let id = cfg.id.as_deref();
-    // A terminal on another machine. What it is *called* -- the workspace and
+    // A terminal on another machine. What it is *called* -- the desk and
     // the tab -- is what its password is filed under, so the name is worked
     // out here, where both are known, and never written into the settings
     if let Some((host, port, user)) = config::ssh_endpoint(&argv) {
         let under = |what: &str| {
-            let (w, t) = (ws.map(|w| w.id.as_str())?, id?);
+            let (w, t) = (desk.map(|w| w.id.as_str())?, id?);
             Some(format!("ssh/{w}/{t}/{what}"))
         };
         opts.remote = Some(server_spec(&host, port, &user, cfg.server.as_ref(), &under));
     }
     if let Some(mut conn) = bridge::launch_for(&argv) {
-        if let (Some(d), Some(id)) = (ws.and_then(|w| w.discuss.as_ref()), id) {
+        if let (Some(d), Some(id)) = (desk.and_then(|w| w.discuss.as_ref()), id) {
             conn.persona = d.personas.get(id).filter(|p| !p.trim().is_empty()).cloned();
         }
         // Whether this model is a browser brain is not decided here. It is
@@ -805,16 +805,16 @@ mod calling_home_tests {
     #[test]
     fn a_tab_calls_home_under_the_name_it_is_looked_up_by() {
         let json = r#"{
-          "workspaces": [ { "name":"w", "id":"w",
+          "desks": [ { "name":"w", "id":"w",
             "folders": [ {"name":"here","cwd":".",
               "tabs": [ {"id":"gem","name":"Gemini","command":"sh"} ]} ] } ]
         }"#;
         let cfg: config::Config = serde_json::from_str(json).expect("設定が読めない");
-        let (wss, errs) = cfg.resolve_workspaces();
+        let (desks, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
-        let ws = wss.first().expect("ワークスペースが無い");
-        let ft = ws.tabs.first().expect("タブが無い");
-        let opts = tab_options(&ft.cfg, ws.folder_of(ft));
+        let desk = desks.first().expect("デスクが無い");
+        let ft = desk.tabs.first().expect("タブが無い");
+        let opts = tab_options(&ft.cfg, desk.folder_of(ft));
 
         // The name the key is minted under
         assert_eq!(opts.called("Gemini"), "gem", "画面の名前で鍵を作っている");
@@ -847,16 +847,16 @@ mod remote_folder_tests {
     fn a_machine_that_must_be_made_is_not_an_address() {
         let json = r#"{
           "hosts": [ {"name":"cloud","at":"","kind":"e2b","project":"/home/user/p"} ],
-          "workspaces": [ { "name":"w",
+          "desks": [ { "name":"w",
             "folders": [ {"name":"out there","cwd":"/home/user/p","host":"cloud"} ],
             "tabs": [ {"name":"there","command":"sh","group":0} ] } ]
         }"#;
         let cfg: config::Config = serde_json::from_str(json).expect("設定が読めない");
-        let (wss, errs) = cfg.resolve_workspaces();
+        let (desks, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
-        let ws = wss.first().expect("ワークスペースが無い");
-        let ft = ws.tabs.first().expect("タブが無い");
-        let opts = tab_options(&ft.cfg, ws.folder_of(ft));
+        let desk = desks.first().expect("デスクが無い");
+        let ft = desk.tabs.first().expect("タブが無い");
+        let opts = tab_options(&ft.cfg, desk.folder_of(ft));
         assert!(opts.remote.is_none(), "住所の無い機械を住所として扱っている");
         assert_eq!(opts.cloud.as_ref().map(|h| h.name.as_str()), Some("cloud"));
         // Whichever kind it is, the folder is not this machine's to check
@@ -871,20 +871,20 @@ mod remote_folder_tests {
     fn a_written_down_machine_reaches_the_tab() {
         let json = r#"{
           "hosts": [ {"name":"bench","at":"ssh://tester@127.0.0.1:2225","project":"/srv/p"} ],
-          "workspaces": [ { "name":"w",
+          "desks": [ { "name":"w",
             "folders": [ {"name":"over there","cwd":"/srv/p/work","host":"bench"} ],
             "tabs": [ {"name":"there","command":"sh","group":0} ] } ]
         }"#;
         let cfg: config::Config = serde_json::from_str(json).expect("設定が読めない");
-        let (wss, errs) = cfg.resolve_workspaces();
+        let (desks, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
-        let ws = wss.first().expect("ワークスペースが無い");
-        let folder = ws.folders.first().expect("フォルダが無い");
+        let desk = desks.first().expect("デスクが無い");
+        let folder = desk.folders.first().expect("フォルダが無い");
         assert!(folder.host.is_some(), "フォルダが機械を見つけていない");
         // The path is that machine's, so it is not joined to anything here
         assert_eq!(folder.cwd.as_deref(), Some(std::path::Path::new("/srv/p/work")));
-        let ft = ws.tabs.first().expect("タブが無い");
-        let opts = tab_options(&ft.cfg, ws.folder_of(ft));
+        let ft = desk.tabs.first().expect("タブが無い");
+        let opts = tab_options(&ft.cfg, desk.folder_of(ft));
         assert!(opts.remote.is_some(), "タブがその機械の端末になっていない");
         assert_eq!(opts.remote_cwd.as_deref(), Some("/srv/p/work"));
         assert!(opts.held.is_none());
@@ -935,17 +935,17 @@ fn cwd_string(folder: Option<&config::Folder>) -> Option<String> {
     (!at.trim().is_empty()).then_some(at)
 }
 
-/// Launches the tabs for a workspace (called on first activation)
+/// Launches the tabs for a desk (called on first activation)
 /// Opens the browsers declared in config.
 ///
 /// If one fails to open, the rest still run. A browser failing to launch is
-/// never a reason to stop the whole workspace.
-pub fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &mut Vec<String>) {
+/// never a reason to stop the whole desk.
+pub fn open_declared_browsers(desk: &config::Desk, caps: &hooks::Caps, errors: &mut Vec<String>) {
     // Don't touch ones already open. Reopening them would restart the page from
     // scratch, wiping out whatever the user was looking at every time settings are saved.
     let open_now = caps.hosted_names();
     let already = |name: &str| open_now.iter().any(|n| n == name);
-    for b in &ws.browsers {
+    for b in &desk.browsers {
         if already(&b.id) {
             caps.note_declared(&b.id);
             continue;
@@ -958,14 +958,14 @@ pub fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors
         match caps.browser_open(&b.id, &b.url, profile) {
             Ok(()) => caps.note_declared(&b.id),
             Err(e) => errors.push(crate::i18n::tp(
-                "err.ws.browser_open",
+                "err.desk.browser_open",
                 &[("id", &b.id), ("e", &format!("{e:#}"))],
             )),
         }
     }
     // A tab written as "browser https://..." gets the same treatment.
     // The name automation addresses it by is that tab's ID (or display name if no ID)
-    for ft in &ws.tabs {
+    for ft in &desk.tabs {
         let argv = ft.cfg.command.argv();
         let Some(url) = config::browser_url_of(&argv) else {
             continue;
@@ -984,7 +984,7 @@ pub fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors
             .calling_itself(ft.cfg.user_agent.clone());
             if let Err(e) = caps.browser_open(&name, &url, profile) {
                 errors.push(crate::i18n::tp(
-                    "err.ws.browser_open",
+                    "err.desk.browser_open",
                     &[("id", &name), ("e", &format!("{e:#}"))],
                 ));
                 continue;
@@ -992,7 +992,7 @@ pub fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors
         }
         caps.note_declared(&name);
     }
-    apply_browser_chrome(ws, caps);
+    apply_browser_chrome(desk, caps);
 }
 
 /// The conversation a tab should be launched back into, if there is one.
@@ -1008,7 +1008,7 @@ pub fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors
 /// `cwd`, exactly as a running tab would report them.
 pub fn carried_conversation(
     carry: Option<&crate::lastsession::Saved>,
-    ws: &config::Workspace,
+    desk: &config::Desk,
     argv: &[String],
     cfg: &config::TabConfig,
     cwd: &Option<std::path::PathBuf>,
@@ -1022,7 +1022,7 @@ pub fn carried_conversation(
     };
     let cwd = cwd.as_ref().map(|c| c.display().to_string());
     let Some(session) = saved.conversation_of(
-        &ws.name,
+        &desk.name,
         argv.first().map(String::as_str).unwrap_or_default(),
         cwd.as_deref(),
         cfg.id.as_deref(),

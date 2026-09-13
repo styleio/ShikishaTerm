@@ -81,10 +81,10 @@ pub mod view;
 pub mod watch;
 pub mod webui;
 pub mod winpath;
-pub mod workspace;
+pub mod desk;
+pub mod deskpack;
 pub mod worktree;
 pub mod ws;
-pub mod wspack;
 
 pub fn append_hook_log(msg: &str) {
     use std::sync::OnceLock;

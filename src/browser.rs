@@ -2631,15 +2631,15 @@ mod nav_tests {
         }
     }
 
-    /// The workspace button and the model-chat box parse into their own intents,
+    /// The desk button and the model-chat box parse into their own intents,
     /// not into a keystroke that would leak into the visible session.
     #[test]
-    fn workspace_and_chat_intents_parse() {
+    fn desk_and_chat_intents_parse() {
         let read = |s: &str| {
             let v: serde_json::Value = serde_json::from_str(s).unwrap();
             parse_intent(&v)
         };
-        assert!(matches!(read(r#"{"kind":"openws"}"#), Some(Ev::OpenWs)));
+        assert!(matches!(read(r#"{"kind":"opendesk"}"#), Some(Ev::OpenDesk)));
         // The gear names the tab in view by its place in the folder
         match read(r#"{"kind":"opensettings","tabpos":1,"folder":"D:/work"}"#) {
             Some(Ev::OpenSettings { tabpos, folder, section, ret }) => {
@@ -2823,7 +2823,7 @@ mod tests {
     fn our_pages_come_from_two_servers() {
         let own = vec!["http://127.0.0.1:8787/".to_string(), "http://127.0.0.1:51604/?token=x".to_string()];
         assert!(from_ours(&own, "http://127.0.0.1:8787/?token=abc"));
-        assert!(from_ours(&own, "http://127.0.0.1:51604/?token=abc&ws=2"), "設定ページがよそ者扱い");
+        assert!(from_ours(&own, "http://127.0.0.1:51604/?token=abc&desk=2"), "設定ページがよそ者扱い");
         assert!(from_ours(&own, "http://127.0.0.1:51604/result?token=abc&run=1"));
         assert!(!from_ours(&own, "http://127.0.0.1:3000/"), "同じ機械の別サーバが自前扱い");
         assert!(!from_ours(&own, "https://example.com/"));

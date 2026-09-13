@@ -12,7 +12,7 @@ cyberpunk-styled window.
 > original plan — the UI is rendered in WebView2 (not a terminal TUI), the local HTTP
 > server is `tiny_http`, and the phone view pushes over a WebSocket. Those sections are
 > written as built. The design rationale (state detection, profiles, the Lua sandbox,
-> the security model, workspace portability) is unchanged.
+> the security model, desk portability) is unchanged.
 
 ---
 
@@ -22,13 +22,13 @@ cyberpunk-styled window.
 |---|---|
 | **Session** | One child process (Claude Code / SSH / a shell, …) and its screen. One tab = one session |
 | **Tab** | The unit that shows and drives a session. Listed vertically in the left bar |
-| **Workspace** | The unit you switch between — like a virtual desktop, a set of tabs grouped together (e.g. ProjectX, Chores) |
-| **Workspace definition file** | A workspace's contents (its tab definitions) externalized as JSON: `workspaces/*.json`. The unit you copy and share |
+| **Desk** | The unit you switch between — like a virtual desktop, a set of tabs grouped together (e.g. ProjectX, Chores) |
+| **Desk definition file** | A desk's contents (its tab definitions) externalized as JSON: `desks/*.json`. The unit you copy and share |
 | **Profile** | Per-tool state-detection rules: `profiles/*.json` |
 | **Hook** | A Lua script fired on a state transition: `scripts/*.lua` |
 | **Chain depth** | A counter of how many times auto-send has chained. Reset to 0 by manual human input |
 
-`workspaces` in `config.json` is the **index of workspaces**; each entry can either point
+`desks` in `config.json` is the **index of desks**; each entry can either point
 at its contents with `file` or inline them with `tabs` (the two are equivalent).
 
 ## 1. System overview
@@ -382,22 +382,22 @@ scripts/projectx/reviewer/
 | Level | Where it's written | Purpose |
 |---|---|---|
 | Tab | the tab definition's `"automation"` | Behavior specific to that tab (e.g. a reviewer) |
-| Workspace | the workspace definition's `"automation"` | A pipeline specific to that project |
+| Desk | the desk definition's `"automation"` | A pipeline specific to that project |
 | Global | `config.json`'s `"automation"` | A fallback shared by all tabs |
 
-The GUI auto-names the path by convention (`scripts/<workspace>/<tab>`) and **saves the result
+The GUI auto-names the path by convention (`scripts/<desk>/<tab>`) and **saves the result
 into the config**. The user never thinks about the path, renaming won't break it, and pointing a
 different tab at the same path shares the automation. The old key `"lua"` is still read.
 
-Resolution: **the more specific wins** (Tab > Workspace > Global). If a tab-level script doesn't
+Resolution: **the more specific wins** (Tab > Desk > Global). If a tab-level script doesn't
 define a given hook, it falls back to the level above — never both. This removes the need to
 branch on `tab.index` and lets scripts be reused.
 
 Execution model: hooks run as Lua coroutines, and `shikisha.wait()` doesn't block the UI — it
 waits for its condition on the detection tick (looks synchronous, is actually async). There is one
-Lua environment **per workspace**. Each script is read in its own namespace, so defining `on_done`
+Lua environment **per desk**. Each script is read in its own namespace, so defining `on_done`
 in several files doesn't clash, and shared variables (`get_var`/`set_var`) are shared within the
-workspace (so an A⇔B loop's round-trip counter works).
+desk (so an A⇔B loop's round-trip counter works).
 
 Safety rules (all hooks):
 - Auto-sends are counted against the auto-run budget (§7.5); over it, blue WAIT
@@ -428,7 +428,7 @@ end
 
 ### 8.5 File / network capabilities (off by default)
 The sandbox exists to protect against **scripts the user did not write** — not against the user
-themselves (AI-generated code, a shared workspace definition, an automation grabbed off the net).
+themselves (AI-generated code, a shared desk definition, an automation grabbed off the net).
 So capabilities are **all disabled by default**, and only what's explicitly named in the config is
 enabled. The GUI doesn't edit these (it's a power-user feature where a mistake is costly).
 
@@ -559,7 +559,7 @@ the LAN without it, and what to watch out for then (explained, not forbidden; on
 the internet requires an explicit setting in the config file).
 
 ## 10.5 Config hot-reload
-Don't make the user restart on every change. The modified times of the config files, workspace
+Don't make the user restart on every change. The modified times of the config files, desk
 definitions, automation scripts and secrets are checked once a second, and a change triggers a reload.
 
 | Change | Effect |
@@ -572,23 +572,23 @@ definitions, automation scripts and secrets are checked once a second, and a cha
 Command changes don't auto-restart so a running AI session isn't cut without warning. The new settings
 are held, and the tab is rebuilt at a time the user chooses.
 
-## 10.6 Exporting / importing a workspace
+## 10.6 Exporting / importing a desk
 
-A workspace isn't just a tab order. Its tabs point at automation scripts that live elsewhere, and
+A desk isn't just a tab order. Its tabs point at automation scripts that live elsewhere, and
 without those it won't run on the machine you handed it to. So the settings and the scripts go into one
 file (`*.stws.json`).
 
 ```json
 {
-  "shikisha_workspace": 1,
-  "workspace": { "name": "...", "automation": "...", "tabs": [...], "browsers": [...] },
+  "shikisha_desk": 1,
+  "desk": { "name": "...", "automation": "...", "tabs": [...], "browsers": [...] },
   "roots":   ["scripts/ws1"],
   "scripts": { "scripts/ws1/on_start.lua": "...", "scripts/ws1/html/on_load.lua": "..." }
 }
 ```
 
 - `roots` is the **unit that gets re-pasted**. Folders inside move with their parent, so they aren't part of the unit
-- A workspace split into a separate file (`file`) is expanded in place, so the one file is self-contained
+- A desk split into a separate file (`file`) is expanded in place, so the one file is self-contained
 - The subject is **the saved settings**. Exporting the mid-edit state produces settings only the recipient has
 
 Rules on the import side:
@@ -601,7 +601,7 @@ Rules on the import side:
 | An unknown version / format | Refuse (never a half import) |
 
 What doesn't come in: notification targets, `secrets.json`, capabilities. Those are global settings, not
-a workspace's belongings, and it would mean handing credentials around. Commands and working folders come
+a desk's belongings, and it would mean handing credentials around. Commands and working folders come
 in as-is, so check the contents before you hand it over.
 
 ## 11. Portable operation & Google-Drive conflict handling
@@ -622,9 +622,9 @@ in as-is, so check the contents before you hand it over.
 ```
 [SHIKISHA-TERM Directory]
  ├── SHIKISHA-TERM.exe   # the app (single binary)
- ├── config.json            # global settings + the workspace index (relative paths)
+ ├── config.json            # global settings + the desk index (relative paths)
  ├── secrets.json           # credentials (encryptable; never share)
- ├── workspaces/            # workspace definition files (shippable per project)
+ ├── desks/            # desk definition files (shippable per project)
  │     ├── projectx.json
  │     └── chores.json
  ├── profiles/              # agent profiles (detection rules)

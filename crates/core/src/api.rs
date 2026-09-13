@@ -241,7 +241,7 @@ impl ApiServer {
     ///
     /// Called with the live set rather than told about each closure: tabs go
     /// away in several places (closed, rebuilt by a config change, swapped out
-    /// with the workspace), and a key that outlived its tab is a working key
+    /// with the desk), and a key that outlived its tab is a working key
     /// nobody is watching.
     ///
     /// `live` must be the names the keys were minted under -- `Tab::called`,

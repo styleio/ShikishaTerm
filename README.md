@@ -180,7 +180,7 @@ starting), double-click **`Settings.cmd`**.
   you, detected from the screen itself rather than from any vendor API
 - **Split panes** — put an agent next to the browser it is driving, or two agents side by
   side, and watch both at once. Each pane is sized for what is in it
-- **Workspaces** — swap the whole tab layout per project, like virtual desktops. Export one
+- **Desks** — swap the whole tab layout per project, like virtual desktops. Export one
   to a single file, automation scripts included, and hand it to another machine or person
 - **Automation** — "when this finishes, hand the result to the review tab", "answer this
   confirmation automatically". Written in Lua, or described in plain language and written
@@ -229,7 +229,7 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 |---|---|
 | `Ctrl+B q` | Quit |
 | `Ctrl+B 0`–`9` | Switch tab (0 = INDEX) |
-| `Ctrl+B w` / `W` | Workspace list / next |
+| `Ctrl+B w` / `W` | Desk list / next |
 | `Ctrl+B %` / `"` | Split the view beside / below (`<` `>` resize) |
 | `Ctrl+B o` / arrows | Move between panes |
 | `Ctrl+B X` | Close this pane (the tab keeps running) |
@@ -320,9 +320,9 @@ settings screen.
 ```
 SHIKISHA-TERM.exe   the app
 Settings.cmd           opens only the settings screen
-config.json            general settings + the list of workspaces
+config.json            general settings + the list of desks
 secrets.json           notification targets and tokens (encryptable, never share)
-workspaces/            workspace definitions (shareable per project)
+desks/            desk definitions (shareable per project)
 profiles/              per-AI status detection rules
 scripts/               automation scripts
 logs/                  session and automation logs

@@ -214,7 +214,7 @@ impl Default for Layout {
 }
 
 impl Layout {
-    /// One pane filling everything — what every workspace starts as.
+    /// One pane filling everything — what every desk starts as.
     pub fn single(surface: usize) -> Layout {
         Layout { root: Node::leaf(1, surface), focus: 1, next_id: 2 }
     }
@@ -500,7 +500,7 @@ impl Layout {
         false
     }
 
-    /// Drops surfaces that no longer exist (a tab closed, a workspace with
+    /// Drops surfaces that no longer exist (a tab closed, a desk with
     /// fewer rows) back to the dashboard, and collapses panes that are left
     /// showing nothing when there is more than one.
     ///

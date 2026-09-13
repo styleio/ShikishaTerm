@@ -53,7 +53,7 @@ pub struct Snapshot {
     /// Screen of the tab being viewed (colored HTML)
     #[serde(default)]
     pub screen_html: String,
-    pub workspace: String,
+    pub desk: String,
     pub tabs: Vec<RemoteTab>,
     pub auto_enabled: bool,
     /// Terminal column count. The screen is drawn at this width, so
@@ -130,10 +130,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // reachable from a phone: the board doesn't send a keystroke for it, it
         // walks to the reverse-proxied /cfg page instead.
         Ev::Menu { key } => !crate::shell::WINDOW_ONLY_MENU.contains(&key.as_str()),
-        // Opening the workspace switcher is allowed (it was allowed before as
-        // Menu "w"). It only shows the list; picking a workspace is a separate
+        // Opening the desk switcher is allowed (it was allowed before as
+        // Menu "w"). It only shows the list; picking a desk is a separate
         // digit intent, so this alone doesn't disrupt the window.
-        Ev::OpenWs => true,
+        Ev::OpenDesk => true,
         // Finishing a line in the composer from the phone is just like typing
         // into the tab it names.
         Ev::Say { .. } => true,

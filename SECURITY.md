@@ -77,7 +77,7 @@ tailnet can reach the port at all. Do not enable phone access on shared or publi
 ## Things to keep in mind
 
 - **Never commit `secrets.json`, `config.json` or `.env`** — they are gitignored for a
-  reason. Workspace files under `workspaces/` are meant to be shared; keep credentials out
+  reason. Desk files under `desks/` are meant to be shared; keep credentials out
   of them
 - **Session logs record what the AI printed**, including anything it read. Treat
   `logs/` as sensitive

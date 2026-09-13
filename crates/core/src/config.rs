@@ -1,14 +1,14 @@
-//! config/config.json: defines the workspace / tab layout. See DESIGN.md chapter 7.4.
+//! config/config.json: defines the desk / tab layout. See DESIGN.md chapter 7.4.
 //! Looked up in the config folder beside the exe, then the config folder in the
 //! current directory.
 //!
-//! Terminology: a "workspace" is the unit you switch between (like a virtual
-//! desktop). Its externalized contents form a "workspace definition file".
+//! Terminology: a "desk" is the unit you switch between (like a virtual
+//! desktop). Its externalized contents form a "desk definition file".
 //!
 //! Settings are split into 3 kinds by role (everything the user owns lives
 //! under the config folder):
-//!   config/config.json  ... global settings + workspace list (rarely changed)
-//!   workspaces/*.json   ... workspace definition files (copyable/shareable units)
+//!   config/config.json  ... global settings + desk list (rarely changed)
+//!   desks/*.json   ... desk definition files (copyable/shareable units)
 //!   config/secrets.json ... credentials (can be encrypted, never share)
 
 use anyhow::{Context as _, Result};
@@ -53,7 +53,7 @@ impl Config {
     /// heard of projects behaves exactly as it did.
     pub fn project_of(&self, cwd: &std::path::Path) -> Option<&ProjectSpec> {
         let named = self
-            .workspaces
+            .desks
             .iter()
             .flat_map(|w| w.folders.iter())
             .chain(self.folders.iter())
@@ -130,17 +130,17 @@ pub struct Config {
     /// adds one, and the picker says "this PC" and nothing else until then
     #[serde(default)]
     pub hosts: Vec<HostSpec>,
-    /// List of workspaces (projects). Switched between like virtual desktops
+    /// List of desks (projects). Switched between like virtual desktops
     #[serde(default)]
-    pub workspaces: Vec<WorkspaceSpec>,
-    /// Working folders written directly when workspaces are not used
+    pub desks: Vec<DeskSpec>,
+    /// Working folders written directly when desks are not used
     #[serde(default)]
     pub folders: Vec<FolderConfig>,
     /// Tabs written directly here, the way they were before folders existed.
     ///
     /// Kept because a settings file outlives the version that wrote it. When
     /// this shape stopped being read, every tab in a file from the older
-    /// version stopped existing -- no error, no warning, a workspace that
+    /// version stopped existing -- no error, no warning, a desk that
     /// simply opened empty. Reading them and folding them into the first
     /// folder is what upgrading should have done in the first place.
     #[serde(default)]
@@ -166,8 +166,8 @@ pub struct Config {
     /// Only `shikisha.show()` ever moves the view; handing work to a tab does not.
     /// This is the person's answer to that request — see main::ViewMove
     pub auto_switch: Option<bool>,
-    /// Whether to start from the last-opened workspace (default: yes)
-    pub restore_workspace: Option<bool>,
+    /// Whether to start from the last-opened desk (default: yes)
+    pub restore_desk: Option<bool>,
     /// Whether the window's ✕ puts the program away in the notification area
     /// rather than quitting (default: yes). Put away, the tabs go on working
     /// and the phone stays connected; the icon's menu is where quitting is
@@ -261,13 +261,13 @@ pub struct Config {
     ///
     /// App-wide, and deliberately so. Every part of it describes one server on
     /// one machine -- an address, a port, one pairing with one phone -- and
-    /// there is no reading of it under which a workspace would want a different
+    /// there is no reading of it under which a desk would want a different
     /// answer. What a phone can then DO is a different question, and that one is
-    /// already the workspace's: a touch arrives as the same intent a click does,
-    /// and is held to the table and the doors of the workspace on screen (see
-    /// [`WorkspaceSpec::automation_permissions`]).
+    /// already the desk's: a touch arrives as the same intent a click does,
+    /// and is held to the table and the doors of the desk on screen (see
+    /// [`DeskSpec::automation_permissions`]).
     ///
-    /// The one thing a workspace might still want to say is "do not show me on
+    /// The one thing a desk might still want to say is "do not show me on
     /// a phone at all". That is a new curtain rather than a setting split in
     /// two, so it is not here: it needs a screen of its own on the phone, and
     /// one that said "disconnected" when the truth is "this one is not shown
@@ -279,10 +279,10 @@ pub struct Config {
     ///
     /// App-wide for the same reason: there is one pipe, and it belongs to the
     /// process. Splitting the setting would not split the pipe, and a second
-    /// per-workspace switch would only be a second place to read one answer
-    /// from. What a call may actually do is already the workspace's -- the key
+    /// per-desk switch would only be a second place to read one answer
+    /// from. What a call may actually do is already the desk's -- the key
     /// names the tab, [`crate::runtime::subject_of`] turns that into who is
-    /// calling, and the answer comes from the workspace on screen. A key naming
+    /// calling, and the answer comes from the desk on screen. A key naming
     /// a tab that is not in it is nobody, and is answered as an AI: the side
     /// that cannot do harm if the guess is wrong
     #[serde(default)]
@@ -846,7 +846,7 @@ impl Place {
 ///
 /// A secret belongs to the thing that uses it and is let go of with it, so
 /// this should be empty. It will not always be: a settings file edited by
-/// hand, a workspace deleted in an older version, a name changed underneath.
+/// hand, a desk deleted in an older version, a name changed underneath.
 /// Rather than keep a screen for tidying, the settings say when there is
 /// something to tidy.
 ///
@@ -854,7 +854,7 @@ impl Place {
 /// -- a name a person invented, a key an older version wrote -- is left alone,
 /// because "I do not recognise it" is not the same as "nobody wants it".
 pub fn orphan_secrets(cfg: &Config, keys: &[String]) -> Vec<String> {
-    let (spaces, _) = cfg.resolve_workspaces();
+    let (spaces, _) = cfg.resolve_desks();
     // A destination keeps its token as "@name". Two fields carry one, and
     // the rest of the destinations have nothing to keep
     let refs: std::collections::HashSet<String> = cfg
@@ -878,13 +878,13 @@ pub fn orphan_secrets(cfg: &Config, keys: &[String]) -> Vec<String> {
                 return !refs.contains(k);
             }
             if let Some(rest) = k.strip_prefix("ssh/") {
-                // ssh/<workspace>/<tab>/<what>
+                // ssh/<desk>/<tab>/<what>
                 let mut part = rest.split('/');
-                let (Some(ws), Some(tab)) = (part.next(), part.next()) else {
+                let (Some(desk), Some(tab)) = (part.next(), part.next()) else {
                     return false;
                 };
                 return !spaces.iter().any(|s| {
-                    s.id == ws
+                    s.id == desk
                         && s.tabs
                             .iter()
                             .any(|t| t.cfg.id.as_deref().unwrap_or_default() == tab)
@@ -894,8 +894,8 @@ pub fn orphan_secrets(cfg: &Config, keys: &[String]) -> Vec<String> {
                 return false; // a shape this version does not know
             }
             match k.split_once('.') {
-                // <workspace>.<name>, the ones automation asks for
-                Some((ws, _)) => !spaces.iter().any(|s| s.id == ws),
+                // <desk>.<name>, the ones automation asks for
+                Some((desk, _)) => !spaces.iter().any(|s| s.id == desk),
                 None => false,
             }
         })
@@ -1201,7 +1201,7 @@ fn write_secrets_value(
 /// Whether the store may hold something under this name.
 ///
 /// Two shapes live in one flat store, and the punctuation is what tells them
-/// apart. `.` separates a workspace from the name a person typed
+/// apart. `.` separates a desk from the name a person typed
 /// (`blog.github`); `/` marks the names the program makes for itself
 /// (`ssh/blog/prod/password`, `provider/deepseek`), which no script can ask
 /// for. Everything else is refused, so a name cannot be made to mean a
@@ -1219,7 +1219,7 @@ pub fn valid_secret_key(key: &str) -> bool {
 /// Whether a person may type this as the name of a secret.
 ///
 /// One word: no `.` and no `/`. Those two are how the store tells a
-/// workspace's secrets from the program's own, so a name carrying either
+/// desk's secrets from the program's own, so a name carrying either
 /// could be made to read as something it is not
 pub fn valid_secret_name(name: &str) -> bool {
     !name.is_empty()
@@ -1228,18 +1228,18 @@ pub fn valid_secret_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
 }
 
-/// The name a workspace's secret is stored under: what the person typed, with
-/// the workspace it belongs to in front. One place decides this, because the
+/// The name a desk's secret is stored under: what the person typed, with
+/// the desk it belongs to in front. One place decides this, because the
 /// screen that writes it and the script that asks for it must agree
-pub fn workspace_secret_key(ws_id: &str, name: &str) -> String {
-    format!("{ws_id}.{name}")
+pub fn desk_secret_key(desk_id: &str, name: &str) -> String {
+    format!("{desk_id}.{name}")
 }
 
 /// One secret's value, for the program itself.
 ///
 /// The program's own door, the same one [`crate::caps::Capabilities::secret_value`]
 /// opens -- used where there is no running app to ask, such as the settings
-/// server working out whether this workspace's GitHub token still works. A
+/// server working out whether this desk's GitHub token still works. A
 /// script never arrives here, and nothing that answers a page returns what this
 /// hands back
 pub fn secret_value(
@@ -1358,19 +1358,19 @@ const SECRETS_SHAPE: u64 = 2;
 
 /// Bring a secrets file written by an earlier version up to date.
 ///
-/// Names used to be one flat word each, and which of them a workspace could
+/// Names used to be one flat word each, and which of them a desk could
 /// use was a list kept in the settings. Now the name says it: a secret a
-/// script can ask for belongs to one workspace and carries its name, and the
+/// script can ask for belongs to one desk and carries its name, and the
 /// program's own credentials stand behind a `/`. So:
 ///
 /// - `provider_x` and `notify_x`, which only the program ever reads, become
 ///   `provider/x` and `notify/x`;
-/// - every other name is **copied** to `<workspace>.<name>` for each
-///   workspace that was allowed to use it, and the original is left where it
-///   is -- a copy rather than a move, because two workspaces may have shared
+/// - every other name is **copied** to `<desk>.<name>` for each
+///   desk that was allowed to use it, and the original is left where it
+///   is -- a copy rather than a move, because two desks may have shared
 ///   one, and because a name nobody listed still belongs to whoever wrote it.
 ///
-/// A copy keeps whether an AI could use it (it could, if a workspace listed
+/// A copy keeps whether an AI could use it (it could, if a desk listed
 /// it) and leaves the list of sites empty, which is the one thing this cannot
 /// guess: nothing records where a password was being typed. The first attempt
 /// to use one says so and points at the setting.
@@ -1381,7 +1381,7 @@ const SECRETS_SHAPE: u64 = 2;
 pub fn migrate_secrets(
     path: &std::path::Path,
     password: Option<&str>,
-    workspaces: &[Workspace],
+    desks: &[Desk],
 ) -> anyhow::Result<bool> {
     if !path.exists() {
         return Ok(false);
@@ -1419,16 +1419,16 @@ pub fn migrate_secrets(
             renames.push((key.clone(), format!("notify/{rest}")));
             continue;
         }
-        for ws in workspaces {
-            let allowed = ws.secrets_allow_all || ws.secrets_allow.iter().any(|k| k == key);
-            if !allowed || ws.id.is_empty() {
+        for desk in desks {
+            let allowed = desk.secrets_allow_all || desk.secrets_allow.iter().any(|k| k == key);
+            if !allowed || desk.id.is_empty() {
                 continue;
             }
             copies.push((
                 key.clone(),
-                workspace_secret_key(&ws.id, key),
+                desk_secret_key(&desk.id, key),
                 SecretMeta {
-                    // It was already usable by whatever the workspace set
+                    // It was already usable by whatever the desk set
                     // going, an AI's turn included. Where a password may be
                     // typed is the part that was never asked, and is asked now
                     human: true,
@@ -1492,17 +1492,17 @@ pub fn delete_secret(
     write_secrets_value(path, password, &root)
 }
 
-/// A workspace entry inside config.json. Either inline tabs or a reference to a definition file
+/// A desk entry inside config.json. Either inline tabs or a reference to a definition file
 #[derive(Debug, Deserialize)]
-pub struct WorkspaceSpec {
+pub struct DeskSpec {
     pub name: String,
-    /// What this workspace is called by everything that is not a person: the
+    /// What this desk is called by everything that is not a person: the
     /// name its secrets are filed under, and the one that survives renaming
-    /// the workspace on screen. Filled in from the display name when absent,
-    /// the same way a tab's is (see [`settle_workspace_ids`])
+    /// the desk on screen. Filled in from the display name when absent,
+    /// the same way a tab's is (see [`settle_desk_ids`])
     #[serde(default)]
     pub id: Option<String>,
-    /// Reference to a workspace definition file (e.g. "workspaces/projectx.json")
+    /// Reference to a desk definition file (e.g. "desks/projectx.json")
     #[serde(default)]
     pub file: Option<String>,
     /// Inline definition
@@ -1512,21 +1512,21 @@ pub struct WorkspaceSpec {
     ///
     /// Kept because a settings file outlives the version that wrote it. When
     /// this shape stopped being read, every tab in a file from the older
-    /// version stopped existing -- no error, no warning, a workspace that
+    /// version stopped existing -- no error, no warning, a desk that
     /// simply opened empty. Reading them and folding them into the first
     /// folder is what upgrading should have done in the first place.
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
 
-    /// Automation shared across this workspace (used when a tab doesn't specify its own)
+    /// Automation shared across this desk (used when a tab doesn't specify its own)
     #[serde(default)]
     pub automation: Option<String>,
-    /// Browsers opened alongside this workspace. Referred to by id from automation
+    /// Browsers opened alongside this desk. Referred to by id from automation
     #[serde(default)]
     pub browsers: Vec<BrowserConfig>,
     #[serde(default)]
     pub lua: Option<String>,
-    /// Secret keys this workspace's rally is allowed to use (default is empty = deny all)
+    /// Secret keys this desk's rally is allowed to use (default is empty = deny all)
     #[serde(default)]
     pub secrets_allow: Vec<String>,
     /// Allow all secrets, knowingly accepting the risk
@@ -1539,9 +1539,9 @@ pub struct WorkspaceSpec {
     #[serde(default)]
     pub discuss: Option<DiscussSpec>,
 
-    /// The notification destinations this workspace can reach, out of the ones
+    /// The notification destinations this desk can reach, out of the ones
     /// registered app-wide. Absent means every one of them, which is what a
-    /// workspace that has never been asked the question says.
+    /// desk that has never been asked the question says.
     ///
     /// Here because the destinations are the one setting where sharing the
     /// app's answer is itself the accident: work's AI finishing its task and
@@ -1550,10 +1550,10 @@ pub struct WorkspaceSpec {
     #[serde(default)]
     pub notify: Option<Vec<String>>,
     /// The destination an unnamed `shikisha.notify(text)` reaches from this
-    /// workspace. Absent means the app's own answer
+    /// desk. Absent means the app's own answer
     #[serde(default)]
     pub primary_notify: Option<String>,
-    /// The model connections (`model <name>/<model>`) this workspace can use,
+    /// The model connections (`model <name>/<model>`) this desk can use,
     /// out of the ones registered app-wide. Absent means every one of them.
     ///
     /// The connection carries the account the inference is billed to and the
@@ -1569,11 +1569,11 @@ pub struct WorkspaceSpec {
     ///
     /// A gateway is a door with a token already attached, and a folder in
     /// `allow_dirs` is a folder a script here can read. One set of doors for
-    /// every workspace means the script in the private workspace has the
+    /// every desk means the script in the private desk has the
     /// company's doors, which is the whole accident
     #[serde(default)]
     pub capabilities: Option<crate::caps::CapabilitySpec>,
-    /// Who may call which automation command here: this workspace's table, or
+    /// Who may call which automation command here: this desk's table, or
     /// the app's when it has none.
     ///
     /// Its own table rather than its own rows on top of the app's, because a
@@ -1587,27 +1587,27 @@ pub struct WorkspaceSpec {
     /// folders that have not said otherwise, and how the commit message is
     /// written. Absent means the app's own answer.
     ///
-    /// The token is not here. Which account reaches GitHub from this workspace
-    /// is the secret `<workspace>.github` (see [`GITHUB_SECRET`]) -- a value
+    /// The token is not here. Which account reaches GitHub from this desk
+    /// is the secret `<desk>.github` (see [`GITHUB_SECRET`]) -- a value
     /// belongs in the secret store, and the store already files one per
-    /// workspace
+    /// desk
     #[serde(default)]
     pub git: Option<GitSpec>,
 }
 
-/// The name this workspace's GitHub token is filed under, inside the workspace's
+/// The name this desk's GitHub token is filed under, inside the desk's
 /// own secrets.
 ///
 /// One name, decided here, because three places have to agree about it: the
 /// screen that offers to set it, the settings server that reports whether it
 /// works, and the pull request watch that asks with it. A fine-grained token
 /// belongs to the account and the repositories somebody chose, which is why it
-/// is worth having one per workspace at all
+/// is worth having one per desk at all
 pub const GITHUB_SECRET: &str = "github";
 
-/// Contents of a workspace definition file (workspaces/*.json)
+/// Contents of a desk definition file (desks/*.json)
 #[derive(Debug, Deserialize)]
-pub struct WorkspaceFile {
+pub struct DeskFile {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -1616,13 +1616,13 @@ pub struct WorkspaceFile {
     ///
     /// Kept because a settings file outlives the version that wrote it. When
     /// this shape stopped being read, every tab in a file from the older
-    /// version stopped existing -- no error, no warning, a workspace that
+    /// version stopped existing -- no error, no warning, a desk that
     /// simply opened empty. Reading them and folding them into the first
     /// folder is what upgrading should have done in the first place.
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
 
-    /// Automation shared across this workspace
+    /// Automation shared across this desk
     #[serde(default)]
     pub automation: Option<String>,
     #[serde(default)]
@@ -1637,7 +1637,7 @@ pub struct WorkspaceFile {
     pub discuss: Option<DiscussSpec>,
 }
 
-/// AI-vs-AI (N-party) discussion settings. Per workspace. Read by the built-in discussion orchestrator.
+/// AI-vs-AI (N-party) discussion settings. Per desk. Read by the built-in discussion orchestrator.
 /// Participants (agents) are listed in turn order. Cycled round-robin; once max_rounds is reached, the judge (if any) rules
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct DiscussSpec {
@@ -1676,7 +1676,7 @@ fn default_verdict() -> String {
     "winner".into()
 }
 
-/// Stop conditions (the referee). Held per workspace. Evaluated top to bottom; the first match wins.
+/// Stop conditions (the referee). Held per desk. Evaluated top to bottom; the first match wins.
 /// Defines "when this collaboration ends (success/failure)". Can span multiple participants (tabs)
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 pub struct StopCond {
@@ -1810,7 +1810,7 @@ pub struct AskSpec {
     pub label: String,
 }
 
-/// A single browser opened alongside the workspace
+/// A single browser opened alongside the desk
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserConfig {
     /// Name referred to from automation (e.g. "br")
@@ -1942,7 +1942,7 @@ pub struct TabConfig {
 /// A built-in server connection, beyond its address.
 ///
 /// None of it is a secret. A private key is named by its path, and what opens
-/// that key -- like the password -- is filed in the vault under the workspace
+/// that key -- like the password -- is filed in the vault under the desk
 /// and the tab, so these settings can be read, copied and shared without
 /// carrying a credential with them
 #[derive(Debug, Deserialize, serde::Serialize, Clone, Default, PartialEq, Eq)]
@@ -1990,7 +1990,7 @@ pub struct JumpSpec {
 ///
 /// The folder is written here and nowhere else. A tab used to carry its own,
 /// which meant a reviewer could be pointed at a different folder from the tab
-/// it was reviewing -- two AIs in one workspace looking at different files,
+/// it was reviewing -- two AIs in one desk looking at different files,
 /// with nothing on screen to say so. There is now one folder per group and no
 /// field on a tab to disagree with it.
 ///
@@ -2163,22 +2163,22 @@ pub struct Folder {
     pub protect: Vec<String>,
 }
 
-/// A workspace resolved at launch time (tabs are flattened; depth preserves the hierarchy)
+/// A desk resolved at launch time (tabs are flattened; depth preserves the hierarchy)
 #[derive(Default)]
-pub struct Workspace {
+pub struct Desk {
     pub name: String,
-    /// What automation and the secret store call this workspace. Unique across
+    /// What automation and the secret store call this desk. Unique across
     /// the settings, and unchanged by renaming what is on screen
     pub id: String,
-    /// The folders this workspace works in. Always at least one, so that
+    /// The folders this desk works in. Always at least one, so that
     /// nothing downstream has to answer "what if a tab is in none"
     pub folders: Vec<Folder>,
     pub tabs: Vec<FlatTab>,
-    /// Automation at the workspace level
+    /// Automation at the desk level
     pub automation: Option<String>,
     /// Browsers opened alongside it
     pub browsers: Vec<BrowserConfig>,
-    /// Secret keys this workspace's rally is allowed to use (default is empty = deny all)
+    /// Secret keys this desk's rally is allowed to use (default is empty = deny all)
     pub secrets_allow: Vec<String>,
     /// Allow all secrets, knowingly accepting the risk
     pub secrets_allow_all: bool,
@@ -2187,18 +2187,18 @@ pub struct Workspace {
     /// AI-vs-AI discussion settings
     pub discuss: Option<DiscussSpec>,
     /// The notification destinations reachable from here. Already the whole
-    /// answer: a list is this workspace's own, and `None` is "every registered
-    /// one", which is what the app says for a workspace that named none. The
+    /// answer: a list is this desk's own, and `None` is "every registered
+    /// one", which is what the app says for a desk that named none. The
     /// notifier is never told which of the two it was handed
     pub notify: Option<Vec<String>>,
     /// The destination an unnamed notify reaches from here, settled the same
-    /// way -- this workspace's, or the app's when it can be reached from here
+    /// way -- this desk's, or the app's when it can be reached from here
     pub primary_notify: Option<String>,
     /// The model connections usable from here. Already the whole answer: a list
-    /// is this workspace's own, and `None` is "every registered one"
+    /// is this desk's own, and `None` is "every registered one"
     pub providers: Option<Vec<String>>,
     /// What automation running here may reach outside the terminal. Already the
-    /// whole answer -- this workspace's doors, or the app's for a workspace that
+    /// whole answer -- this desk's doors, or the app's for a desk that
     /// named none -- so nothing downstream asks twice
     pub capabilities: crate::caps::CapabilitySpec,
     /// Who may call which automation command here, settled the same way. Rows it
@@ -2209,7 +2209,7 @@ pub struct Workspace {
     pub git: GitSpec,
 }
 
-impl Workspace {
+impl Desk {
     /// The working folder a tab belongs to. Everything about where it runs
     /// lives there, because a tab has nothing of its own to disagree with
     pub fn folder_of(&self, t: &FlatTab) -> Option<&Folder> {
@@ -2253,7 +2253,7 @@ pub fn host_spec(host: &HostSpec) -> anyhow::Result<crate::ssh::Spec> {
 /// what lets a stored password be sent without anybody typing it.
 ///
 /// Nothing here is a secret: a host and a user are the address on an envelope.
-/// What the password is called is worked out from the workspace and the tab,
+/// What the password is called is worked out from the desk and the tab,
 /// by whoever is launching, so that it is not something to write down twice
 pub fn ssh_endpoint(argv: &[String]) -> Option<(String, u16, String)> {
     endpoint_of(argv, "ssh")
@@ -2404,7 +2404,7 @@ pub struct FlatTab {
     pub cfg: TabConfig,
     /// Display indent depth (0 = parent)
     pub depth: u16,
-    /// Which of the workspace's working folders this tab belongs to, and
+    /// Which of the desk's working folders this tab belongs to, and
     /// therefore where it starts
     pub folder: usize,
 }
@@ -2470,7 +2470,7 @@ pub fn slug_id(name: &str) -> String {
 
 /// `base`, or the first of `base-2`, `base-3`... that nobody has taken.
 /// The same walk the settings screen does, and the same one an imported
-/// workspace's folders take (see `wspack::free_name`)
+/// desk's folders take (see `deskpack::free_name`)
 pub fn unique_id(base: &str, used: &std::collections::HashSet<String>) -> String {
     if base.is_empty() {
         return String::new();
@@ -2495,7 +2495,7 @@ pub fn unique_id(base: &str, used: &std::collections::HashSet<String>) -> String
 ///
 /// Returns the names that had to be moved aside, so startup can say so. The
 /// settings screen fills the same field as you type; this is for the files it
-/// never touched -- hand-written settings, and workspaces brought in from
+/// never touched -- hand-written settings, and desks brought in from
 /// somewhere else
 fn settle_tab_ids(tabs: &mut [FlatTab]) -> Vec<String> {
     let mut used: std::collections::HashSet<String> = tabs
@@ -2554,7 +2554,7 @@ fn flatten(tabs: &[TabConfig], depth: u16, folder: usize, out: &mut Vec<FlatTab>
 
 /// The folders a definition asks for, and at least one of them.
 ///
-/// A workspace with nothing written in it still has the folder everything
+/// A desk with nothing written in it still has the folder everything
 /// lands in, so no caller has to answer "and if it has none".
 fn foldered(folders: &[FolderConfig]) -> Vec<FolderConfig> {
     let mut out = folders.to_vec();
@@ -2631,22 +2631,22 @@ fn resolve_folders(
         });
         flatten(&def.tabs, 0, at, &mut tabs);
     }
-    // Every tab in the workspace at once: automation reaches across folders,
+    // Every tab in the desk at once: automation reaches across folders,
     // so two folders holding a "reviewer" each is the same collision as two in one
     let moved = settle_tab_ids(&mut tabs);
     (folders, tabs, moved)
 }
 
-/// Where this workspace's notifications can go, and where an unnamed one goes.
+/// Where this desk's notifications can go, and where an unnamed one goes.
 ///
 /// Settled here, once, the same way a folder's protected branches are: what the
-/// workspace said, or what the app said for the workspaces that said nothing.
+/// desk said, or what the app said for the desks that said nothing.
 ///
-/// The app's own default destination is only inherited when this workspace can
-/// reach it. A workspace that has listed its own destinations has drawn a line,
+/// The app's own default destination is only inherited when this desk can
+/// reach it. A desk that has listed its own destinations has drawn a line,
 /// and quietly leaving the app's personal chat as the one an unnamed
 /// `notify(text)` lands in would walk straight back across it -- so when the
-/// line excludes it, this workspace has no default and says so, rather than
+/// line excludes it, this desk has no default and says so, rather than
 /// having one it cannot use
 fn settle_notify(
     own: Option<&Vec<String>>,
@@ -2667,7 +2667,7 @@ fn one_name(s: &str) -> Option<String> {
     (!t.is_empty()).then_some(t)
 }
 
-/// A list of names a workspace drew around something, settled: blank entries
+/// A list of names a desk drew around something, settled: blank entries
 /// dropped, and `None` kept as `None` -- an empty list is "nothing", which is a
 /// different answer from "whatever the app says"
 fn named(list: Option<&Vec<String>>) -> Option<Vec<String>> {
@@ -2792,7 +2792,7 @@ pub fn set_folder_color(family: &Path, color: &str) -> Result<()> {
     Ok(())
 }
 
-/// Adds a folder to a workspace's settings, with the same tabs as another.
+/// Adds a folder to a desk's settings, with the same tabs as another.
 ///
 /// This is what "work on another branch too" writes down. It edits the file
 /// the person owns rather than keeping a second list of its own, so what
@@ -2802,19 +2802,19 @@ pub fn set_folder_color(family: &Path, color: &str) -> Result<()> {
 /// Everything already in the file is left exactly as it was -- it is read as
 /// values, not as our own types, so a key this version has never heard of
 /// still comes out the other side.
-pub fn append_folder(ws_name: &str, like: Option<&Path>, cwd: &Path, name: Option<&str>) -> Result<()> {
-    append_folder_at(&config_file_path(), ws_name, like, cwd, name, &Start::Same)
+pub fn append_folder(desk_name: &str, like: Option<&Path>, cwd: &Path, name: Option<&str>) -> Result<()> {
+    append_folder_at(&config_file_path(), desk_name, like, cwd, name, &Start::Same)
 }
 
 /// The same, saying what the new folder runs.
 pub fn append_folder_starting(
-    ws_name: &str,
+    desk_name: &str,
     like: Option<&Path>,
     cwd: &Path,
     name: Option<&str>,
     start: &Start,
 ) -> Result<()> {
-    append_folder_at(&config_file_path(), ws_name, like, cwd, name, start)
+    append_folder_at(&config_file_path(), desk_name, like, cwd, name, start)
 }
 
 /// What a folder just made should run.
@@ -2832,13 +2832,13 @@ pub enum Start {
 /// against a file of its own rather than against whatever this machine has
 pub fn append_folder_at(
     path: &Path,
-    ws_name: &str,
+    desk_name: &str,
     like: Option<&Path>,
     cwd: &Path,
     name: Option<&str>,
     start: &Start,
 ) -> Result<()> {
-    with_folders(path, ws_name, |folders| {
+    with_folders(path, desk_name, |folders| {
         // The tabs to bring along: whoever is already working in the folder
         // this was asked for from. Same faces, new branch -- unless the ask
         // said what should run instead
@@ -2908,8 +2908,8 @@ pub fn append_folder_at(
 
 /// Renames a folder in the list. An empty name hands it back to what the
 /// folder itself says -- its branch, or its own last part
-pub fn rename_folder(ws_name: &str, cwd: &Path, name: &str) -> Result<()> {
-    with_folders(&config_file_path(), ws_name, |folders| {
+pub fn rename_folder(desk_name: &str, cwd: &Path, name: &str) -> Result<()> {
+    with_folders(&config_file_path(), desk_name, |folders| {
         let Some(g) = find_folder(folders, cwd) else {
             return Ok(());
         };
@@ -2931,18 +2931,18 @@ pub fn rename_folder(ws_name: &str, cwd: &Path, name: &str) -> Result<()> {
 /// written by hand and had to be asked about. Both write the same thing, so
 /// "answered once" and "made by us" leave the settings in the same state and
 /// every machine after this one is silent.
-pub fn set_folder_source(ws_name: &str, cwd: &Path, source: &SourceSpec) -> Result<()> {
-    set_folder_source_at(&config_file_path(), ws_name, cwd, source)
+pub fn set_folder_source(desk_name: &str, cwd: &Path, source: &SourceSpec) -> Result<()> {
+    set_folder_source_at(&config_file_path(), desk_name, cwd, source)
 }
 
 /// The same, told which settings file to edit.
 pub fn set_folder_source_at(
     path: &Path,
-    ws_name: &str,
+    desk_name: &str,
     cwd: &Path,
     source: &SourceSpec,
 ) -> Result<()> {
-    with_folders(path, ws_name, |folders| {
+    with_folders(path, desk_name, |folders| {
         let Some(g) = find_folder(folders, cwd) else {
             return Ok(());
         };
@@ -2956,8 +2956,8 @@ pub fn set_folder_source_at(
 /// The folder on disk is not touched. Closing a thing on screen and deleting
 /// somebody's work are different acts, and only one of them can be undone by
 /// opening it again.
-pub fn remove_folder(ws_name: &str, cwd: &Path) -> Result<()> {
-    with_folders(&config_file_path(), ws_name, |folders| {
+pub fn remove_folder(desk_name: &str, cwd: &Path) -> Result<()> {
+    with_folders(&config_file_path(), desk_name, |folders| {
         if folders.len() <= 1 {
             anyhow::bail!(crate::i18n::t("err.worktree.last_folder"));
         }
@@ -2987,32 +2987,32 @@ fn find_folder<'a>(
     })
 }
 
-/// Opens a workspace's groups, hands them over to be changed, and writes the
+/// Opens a desk's groups, hands them over to be changed, and writes the
 /// result back where it came from.
 ///
 /// One way in, because there are three things that change a group and each of
-/// them would otherwise carry its own copy of "find the workspace, follow it
+/// them would otherwise carry its own copy of "find the desk, follow it
 /// to the file it lives in, fold the loose tabs, write it out atomically".
 fn with_folders(
     path: &Path,
-    ws_name: &str,
+    desk_name: &str,
     edit: impl FnOnce(&mut Vec<serde_json::Value>) -> Result<()>,
 ) -> Result<()> {
     let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
     let mut root: serde_json::Value =
         serde_json::from_str(without_bom(&text)).unwrap_or_else(|_| serde_json::json!({}));
 
-    // A workspace kept in a file of its own is edited there; the entry in the
+    // A desk kept in a file of its own is edited there; the entry in the
     // settings only names it
     let mut file_at: Option<std::path::PathBuf> = None;
     {
         let list = root
-            .get("workspaces")
+            .get("desks")
             .and_then(|w| w.as_array())
             .map(|a| a.to_vec())
             .unwrap_or_default();
         for w in list {
-            if w.get("name").and_then(|n| n.as_str()) == Some(ws_name) {
+            if w.get("name").and_then(|n| n.as_str()) == Some(desk_name) {
                 if let Some(f) = w.get("file").and_then(|f| f.as_str()) {
                     file_at = Some(resolve_data_path(f));
                 }
@@ -3028,26 +3028,26 @@ fn with_folders(
     };
     #[allow(clippy::let_and_return)]
 
-    // The object that holds the groups: the workspace's own, the file it names,
-    // or the settings themselves when no workspace was ever made
-    let holder: &mut serde_json::Value = match (&mut side, ws_name.is_empty()) {
+    // The object that holds the groups: the desk's own, the file it names,
+    // or the settings themselves when no desk was ever made
+    let holder: &mut serde_json::Value = match (&mut side, desk_name.is_empty()) {
         (Some(v), _) => v,
         (None, true) => &mut root,
         (None, false) => root
-            .get_mut("workspaces")
+            .get_mut("desks")
             .and_then(|w| w.as_array_mut())
             .and_then(|a| {
                 a.iter_mut()
-                    .find(|w| w.get("name").and_then(|n| n.as_str()) == Some(ws_name))
+                    .find(|w| w.get("name").and_then(|n| n.as_str()) == Some(desk_name))
             })
-            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.no_workspace")))?,
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.no_desk")))?,
     };
     ensure_folders(holder);
 
     let folders = holder
         .get_mut("folders")
         .and_then(|g| g.as_array_mut())
-        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.no_workspace")))?;
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.no_desk")))?;
     edit(folders)?;
 
     let out = |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_default();
@@ -3064,7 +3064,7 @@ fn with_folders(
 /// are read as the first folder's (`foldered_with`). They are written into
 /// it here, before anything is added, so that a folder added after them does
 /// not become "the first" and take them: adding an empty folder to a
-/// workspace written the old way used to move every tab it had into it.
+/// desk written the old way used to move every tab it had into it.
 pub(crate) fn ensure_folders(holder: &mut serde_json::Value) {
     if !holder.get("folders").map(|f| f.is_array()).unwrap_or(false) {
         holder["folders"] = serde_json::json!([]);
@@ -3141,7 +3141,7 @@ fn resolve_folder_cwd(c: &str) -> std::path::PathBuf {
 
 /// The names one written path may be stored under, best first.
 ///
-/// The folder was called `projects` before it was called `workspaces`, and
+/// The folder was called `projects` before it was called `desks`, and
 /// settings written under either name are still out there, so a path naming
 /// one is also looked for under the other. Kept apart from the looking so it
 /// can be checked without a folder to look in -- the check used to change the
@@ -3150,15 +3150,15 @@ fn resolve_folder_cwd(c: &str) -> std::path::PathBuf {
 fn data_path_candidates(p: &str) -> Vec<String> {
     let mut out = vec![p.to_string()];
     if let Some(rest) = p.strip_prefix("projects/") {
-        out.push(format!("workspaces/{rest}"));
-    } else if let Some(rest) = p.strip_prefix("workspaces/") {
+        out.push(format!("desks/{rest}"));
+    } else if let Some(rest) = p.strip_prefix("desks/") {
         out.push(format!("projects/{rest}"));
     }
     out
 }
 
 /// Where a relative path written in the settings -- an automation folder, a
-/// workspace file -- is looked for, in order:
+/// desk file -- is looked for, in order:
 ///
 /// 1. the layout root (`root_dir`): the person's own folder, where the
 ///    settings screen writes and where a carried-over `scripts\` lands;
@@ -3174,7 +3174,7 @@ fn data_path_candidates(p: &str) -> Vec<String> {
 /// found, and a folder the settings screen made went to the working folder
 /// -- `C:\Windows\System32` when started from the Start menu.
 ///
-/// Configs pointing at the old projects/ name also fall back to workspaces/ (compat)
+/// Configs pointing at the old projects/ name also fall back to desks/ (compat)
 pub fn resolve_data_path(p: &str) -> std::path::PathBuf {
     let candidates = data_path_candidates(p);
     let root = root_dir();
@@ -3199,19 +3199,19 @@ pub fn resolve_data_path(p: &str) -> std::path::PathBuf {
 }
 
 impl Config {
-    /// Resolve the workspace definitions.
-    /// If workspaces isn't defined, inline tabs are treated as a single unnamed workspace
-    pub fn resolve_workspaces(&self) -> (Vec<Workspace>, Vec<String>) {
+    /// Resolve the desk definitions.
+    /// If desks isn't defined, inline tabs are treated as a single unnamed desk
+    pub fn resolve_desks(&self) -> (Vec<Desk>, Vec<String>) {
         let mut out = Vec::new();
         let mut errors = Vec::new();
-        if self.workspaces.is_empty() {
+        if self.desks.is_empty() {
             // Tabs written the old way, with no folder around them, are still
             // a screenful of work somebody arranged
             if !self.folders.is_empty() || !self.tabs.is_empty() {
                 let (folders, tabs, moved) =
                     resolve_folders(&foldered_with(&self.folders, &self.tabs), &self.git.protected(), &self.hosts);
                 errors.extend(moved_note("DEFAULT", &moved));
-                out.push(Workspace {
+                out.push(Desk {
                     name: "DEFAULT".into(),
                     id: String::new(),
                     folders,
@@ -3234,7 +3234,7 @@ impl Config {
             }
             return (out, errors);
         }
-        for ws in &self.workspaces {
+        for desk in &self.desks {
             #[allow(clippy::type_complexity)]
             #[allow(clippy::type_complexity)]
             let (folder_defs, file_name, file_lua, file_secrets, file_stops, file_discuss): (
@@ -3244,8 +3244,8 @@ impl Config {
                 (Vec<String>, bool),
                 Vec<StopCond>,
                 Option<DiscussSpec>,
-            ) = match &ws.file {
-                Some(f) => match read_json::<WorkspaceFile>(&resolve_data_path(f)) {
+            ) = match &desk.file {
+                Some(f) => match read_json::<DeskFile>(&resolve_data_path(f)) {
                     Ok(p) => (
                         foldered_with(&p.folders, &p.tabs),
                         p.name,
@@ -3255,12 +3255,12 @@ impl Config {
                         p.discuss,
                     ),
                     Err(e) => {
-                        errors.push(format!("{}: {e:#}", ws.name));
+                        errors.push(format!("{}: {e:#}", desk.name));
                         continue;
                     }
                 },
                 None => (
-                    foldered_with(&ws.folders, &ws.tabs),
+                    foldered_with(&desk.folders, &desk.tabs),
                     None,
                     None,
                     (Vec::new(), false),
@@ -3268,72 +3268,72 @@ impl Config {
                     None,
                 ),
             };
-            // This workspace's git settings, or the app's. Its protected branches
+            // This desk's git settings, or the app's. Its protected branches
             // go to the folders here, so a folder still has the one answer it
             // has always had -- its own, or the one handed down to it
-            let git = ws.git.clone().unwrap_or_else(|| self.git.clone());
+            let git = desk.git.clone().unwrap_or_else(|| self.git.clone());
             let (folders, tabs, moved) = resolve_folders(&folder_defs, &git.protected(), &self.hosts);
             // Prefer the display name from config; fall back to the definition file's name if empty
-            let name = if ws.name.is_empty() {
+            let name = if desk.name.is_empty() {
                 file_name.unwrap_or_else(|| "UNNAMED".into())
             } else {
-                ws.name.clone()
+                desk.name.clone()
             };
             errors.extend(moved_note(&name, &moved));
             let (notify_only, notify_primary) = settle_notify(
-                ws.notify.as_ref(),
-                ws.primary_notify.as_ref(),
+                desk.notify.as_ref(),
+                desk.primary_notify.as_ref(),
                 self.primary_notify.as_ref(),
             );
-            out.push(Workspace {
+            out.push(Desk {
                 name,
-                id: ws.id.clone().unwrap_or_default(),
+                id: desk.id.clone().unwrap_or_default(),
                 folders,
                 tabs,
                 // Prefer config's setting; fall back to the definition file's if absent
-                automation: ws.automation.clone().or_else(|| ws.lua.clone()).or(file_lua),
-                browsers: ws.browsers.clone(),
+                automation: desk.automation.clone().or_else(|| desk.lua.clone()).or(file_lua),
+                browsers: desk.browsers.clone(),
                 // Prefer config's setting; fall back to the definition file's if absent
-                secrets_allow: if ws.secrets_allow.is_empty() {
+                secrets_allow: if desk.secrets_allow.is_empty() {
                     file_secrets.0
                 } else {
-                    ws.secrets_allow.clone()
+                    desk.secrets_allow.clone()
                 },
-                secrets_allow_all: ws.secrets_allow_all || file_secrets.1,
+                secrets_allow_all: desk.secrets_allow_all || file_secrets.1,
                 // Prefer config's setting; fall back to the definition file's if absent
-                stops: if ws.stops.is_empty() { file_stops } else { ws.stops.clone() },
-                discuss: ws.discuss.clone().or(file_discuss),
+                stops: if desk.stops.is_empty() { file_stops } else { desk.stops.clone() },
+                discuss: desk.discuss.clone().or(file_discuss),
                 notify: notify_only,
                 primary_notify: notify_primary,
-                providers: named(ws.providers.as_ref()),
-                capabilities: ws
+                providers: named(desk.providers.as_ref()),
+                capabilities: desk
                     .capabilities
                     .clone()
                     .unwrap_or_else(|| self.capabilities.clone()),
-                automation_permissions: ws
+                automation_permissions: desk
                     .automation_permissions
                     .clone()
                     .unwrap_or_else(|| self.automation_permissions.clone()),
                 git,
             });
         }
-        errors.extend(settle_workspace_ids(&mut out));
+        errors.extend(settle_desk_ids(&mut out));
         (out, errors)
     }
 }
 
-/// Give every workspace a name that is not the one on screen, and make sure no
+/// Give every desk a name that is not the one on screen, and make sure no
 /// two are the same.
 ///
 /// The display name is a label a person is free to change and free to reuse --
-/// two workspaces called "本番" is nobody's mistake. What a workspace's secrets
+/// two desks called "本番" is nobody's mistake. What a desk's secrets
 /// are filed under cannot work that way, so it is settled here: unique across
 /// the settings, inferred from the display name when nothing was written, and
-/// left alone once it exists. Renaming the workspace on screen after that costs
+/// left alone once it exists. Renaming the desk on screen after that costs
 /// nothing; changing this is what costs a re-entry of its passwords.
 ///
 /// Returns a note for each one that had to be moved aside
-fn settle_workspace_ids(list: &mut [Workspace]) -> Vec<String> {
+fn settle_desk_ids(list: &mut [Desk]) -> Vec<String> {
     let mut used: std::collections::HashSet<String> = list
         .iter()
         .map(|w| w.id.trim().to_string())
@@ -3350,14 +3350,14 @@ fn settle_workspace_ids(list: &mut [Workspace]) -> Vec<String> {
         let base = match written.is_empty() {
             false => written.clone(),
             true => match slug_id(&w.name) {
-                s if s.is_empty() => "workspace".into(),
+                s if s.is_empty() => "desk".into(),
                 s => s,
             },
         };
         let id = unique_id(&base, &used);
         if !written.is_empty() {
             notes.push(crate::i18n::tp(
-                "err.ws.duplicate_ids",
+                "err.desk.duplicate_ids",
                 &[("name", &w.name), ("old", &written), ("new", &id)],
             ));
         }
@@ -3368,13 +3368,13 @@ fn settle_workspace_ids(list: &mut [Workspace]) -> Vec<String> {
     notes
 }
 
-/// What to say when two tabs in one workspace claimed the same automation name
-fn moved_note(ws: &str, moved: &[String]) -> Vec<String> {
+/// What to say when two tabs in one desk claimed the same automation name
+fn moved_note(desk: &str, moved: &[String]) -> Vec<String> {
     match moved.is_empty() {
         true => Vec::new(),
         false => vec![crate::i18n::tp(
-            "err.ws.duplicate_ids.tabs",
-            &[("ws", ws), ("names", &moved.join(", "))],
+            "err.desk.duplicate_ids.tabs",
+            &[("desk", desk), ("names", &moved.join(", "))],
         )],
     }
 }
@@ -3414,7 +3414,7 @@ pub fn packaged() -> bool {
 }
 
 /// Root of the layout that holds what belongs to the person using it: config,
-/// data, logs, workspaces.
+/// data, logs, desks.
 ///
 /// Portable by default -- beside the exe. That is the promise the download
 /// makes: unzip it anywhere, copy the folder to another machine whole, delete
@@ -3499,6 +3499,14 @@ fn config_candidates() -> Vec<std::path::PathBuf> {
 /// Done only once. Not fatal if it fails, since loading still falls back to the old layout
 pub fn migrate_legacy_config() {
     let root = root_dir();
+    // The folder holding desk definition files is named after the desk, and the
+    // desk used to be called something else. Moved rather than read from both
+    // places: two folders that mean the same thing is how one of them quietly
+    // stops being the one the app looks in
+    let (was, now) = (root.join("workspaces"), root.join("desks"));
+    if was.is_dir() && !now.exists() {
+        let _ = std::fs::rename(&was, &now);
+    }
     let new_cfg = root.join("config").join("config.json");
     let old_cfg = root.join("config.json");
     if new_cfg.exists() || !old_cfg.exists() {
@@ -3522,7 +3530,7 @@ pub fn migrate_legacy_config() {
 /// Path to the config file the web GUI edits.
 /// Returns the existing file's path if present, otherwise the path where a new one would be created beside the exe.
 /// Home for state files (ones a human doesn't edit), gathered under the root's data folder.
-/// The exe is the only file directly at the root (folders are config / data / logs / lang / workspaces / scripts)
+/// The exe is the only file directly at the root (folders are config / data / logs / lang / desks / scripts)
 pub fn state_path(name: &str) -> std::path::PathBuf {
     let p = root_dir().join("data");
     let _ = std::fs::create_dir_all(&p);
@@ -3537,25 +3545,25 @@ pub fn logs_dir() -> std::path::PathBuf {
     p
 }
 
-/// Home for the name of the last-open workspace.
+/// Home for the name of the last-open desk.
 ///
 /// Not written back into config.json -- that would interrupt a user mid-edit,
 /// and the change-watcher would react to its own write and trigger a reload
-fn last_workspace_path() -> std::path::PathBuf {
-    state_path("last-workspace")
+fn last_desk_path() -> std::path::PathBuf {
+    state_path("last-desk")
 }
 
-/// Name of the last-open workspace
-pub fn load_last_workspace() -> Option<String> {
-    let s = std::fs::read_to_string(last_workspace_path()).ok()?;
+/// Name of the last-open desk
+pub fn load_last_desk() -> Option<String> {
+    let s = std::fs::read_to_string(last_desk_path()).ok()?;
     let s = s.trim().to_string();
     (!s.is_empty()).then_some(s)
 }
 
-/// Remember the name of the currently open workspace. Fails silently if it can't
+/// Remember the name of the currently open desk. Fails silently if it can't
 /// (being unable to remember it is no reason for things to stop working)
-pub fn save_last_workspace(name: &str) {
-    let _ = crate::crypto::write_atomic(&last_workspace_path(), name);
+pub fn save_last_desk(name: &str) {
+    let _ = crate::crypto::write_atomic(&last_desk_path(), name);
 }
 
 /// Write one appearance value back into the settings file, leaving the rest of
@@ -3565,17 +3573,17 @@ pub fn save_last_workspace(name: &str) {
 /// the config: a settings file is a person's own document, with their key order
 /// and anything we do not know about still in it. Rewriting it wholesale to
 /// record a font size would be a poor trade.
-/// Add a tab to one workspace and write the settings back.
+/// Add a tab to one desk and write the settings back.
 ///
 /// The reopen the Vault performs: a resumed conversation becomes a real tab in
-/// the workspace, the way dragging a past session into a workspace makes it a
+/// the desk, the way dragging a past session into a desk makes it a
 /// member of it. Read-modify-write on the parsed JSON, like every other change
 /// here, so the person's own file keeps its shape and its order -- the new tab
-/// simply lands at the end of the workspace it was reopened into.
+/// simply lands at the end of the desk it was reopened into.
 ///
-/// Returns whether it was written. A workspace that has vanished since the
+/// Returns whether it was written. A desk that has vanished since the
 /// page listed it is a false rather than a new tab in the wrong place.
-pub fn append_tab(workspace: &str, tab: serde_json::Value, cwd: Option<&Path>) -> bool {
+pub fn append_tab(desk: &str, tab: serde_json::Value, cwd: Option<&Path>) -> bool {
     let path = config_file_path();
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
     let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
@@ -3583,16 +3591,16 @@ pub fn append_tab(workspace: &str, tab: serde_json::Value, cwd: Option<&Path>) -
         crate::append_hook_log("could not reopen into a tab: settings are not readable");
         return false;
     };
-    let Some(list) = doc.get_mut("workspaces").and_then(|w| w.as_array_mut()) else {
+    let Some(list) = doc.get_mut("desks").and_then(|w| w.as_array_mut()) else {
         return false;
     };
-    let Some(ws) = list
+    let Some(desk) = list
         .iter_mut()
-        .find(|w| w.get("name").and_then(|n| n.as_str()) == Some(workspace))
+        .find(|w| w.get("name").and_then(|n| n.as_str()) == Some(desk))
     else {
         return false;
     };
-    folder_tabs_at(ws, cwd).push(tab);
+    folder_tabs_at(desk, cwd).push(tab);
     match serde_json::to_string_pretty(&doc) {
         Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok(),
         Err(_) => false,
@@ -3609,10 +3617,10 @@ pub fn append_tab(workspace: &str, tab: serde_json::Value, cwd: Option<&Path>) -
 /// Walk every tab the settings file holds, and write the aim onto the one that
 /// answers to `tab_name`.
 ///
-/// Recursive because tabs nest: a workspace holds working folders, a folder
+/// Recursive because tabs nest: a desk holds working folders, a folder
 /// holds tabs, and a tab holds children. Written as one walk over anything
 /// called "tabs" rather than as a list of the places to look, because that
-/// list was already out of date -- it knew the flat `tabs` and a workspace's
+/// list was already out of date -- it knew the flat `tabs` and a desk's
 /// own, and not the working folder that every tab made today lands in, so an
 /// aim chosen on screen was never written down at all.
 ///
@@ -3644,7 +3652,7 @@ fn write_aim(v: &mut serde_json::Value, tab_name: &str, target: Option<&str>, wr
                 *written = true;
             }
             for (k, child) in obj.iter_mut() {
-                if matches!(k.as_str(), "tabs" | "children" | "folders" | "workspaces") {
+                if matches!(k.as_str(), "tabs" | "children" | "folders" | "desks") {
                     write_aim(child, tab_name, target, written);
                 }
             }
@@ -3656,7 +3664,7 @@ fn write_aim(v: &mut serde_json::Value, tab_name: &str, target: Option<&str>, wr
 /// Read-modify-write on the parsed JSON, like every other change here, so the
 /// person's own file keeps its shape and its order. The tab is found by its
 /// automation name, wherever it is written: the flat `tabs` list, a
-/// workspace's own, or -- where every tab a person makes today ends up -- a
+/// desk's own, or -- where every tab a person makes today ends up -- a
 /// working folder inside one. Returns whether it was written.
 pub fn save_tab_aim(tab_name: &str, target: Option<&str>) -> bool {
     let path = config_file_path();
@@ -3729,7 +3737,7 @@ pub fn load() -> Option<Config> {
             continue;
         };
         match serde_json::from_str::<Config>(without_bom(&text)) {
-            Ok(c) if !c.folders.is_empty() || !c.workspaces.is_empty() => return Some(c),
+            Ok(c) if !c.folders.is_empty() || !c.desks.is_empty() => return Some(c),
             _ => continue,
         }
     }
@@ -3741,7 +3749,7 @@ mod tests {
 
     /// The screen offers an automation name while you type; the app settles on
     /// one when it reads a file nobody typed into. They have to be the same
-    /// name, or a workspace would arrive under one spelling and be filed under
+    /// name, or a desk would arrive under one spelling and be filed under
     /// another. These are the settings screen's own answers (`slugId` in
     /// webui.rs, run in node), so a change on either side breaks this test.
     #[test]
@@ -3758,7 +3766,7 @@ mod tests {
             ("レビュー担当", "bqqvx"),
             ("日本語テスト", "83iht"),
             // One latin letter is still a slug, hash or no hash
-            ("ワークスペースA", "a"),
+            ("デスクA", "a"),
             ("", ""),
         ] {
             assert_eq!(slug_id(name), want, "{name} の呼び名");
@@ -3771,7 +3779,7 @@ mod tests {
     #[test]
     fn every_tab_ends_up_with_a_name_automation_can_say() {
         let cfg: super::Config = serde_json::from_str(
-            r#"{"workspaces":[{"name":"project","folders":[
+            r#"{"desks":[{"name":"project","folders":[
                  {"tabs":[{"name":"実装","command":"claude"},
                           {"name":"My Tab","command":"codex"},
                           {"command":"bash"}]},
@@ -3780,8 +3788,8 @@ mod tests {
                           {"id":"rev","name":"検査2","command":"codex"}]}]}]}"#,
         )
         .unwrap();
-        let (ws, errs) = cfg.resolve_workspaces();
-        let ids: Vec<String> = ws[0].tabs.iter().map(|t| t.cfg.id.clone().unwrap()).collect();
+        let (desk, errs) = cfg.resolve_desks();
+        let ids: Vec<String> = desk[0].tabs.iter().map(|t| t.cfg.id.clone().unwrap()).collect();
         assert_eq!(
             ids,
             [
@@ -3799,24 +3807,24 @@ mod tests {
         );
     }
 
-    /// The name on screen is a label -- two workspaces may be called the same
+    /// The name on screen is a label -- two desks may be called the same
     /// thing -- so what secrets and automation are filed under is settled apart
     /// from it, once, and left alone afterwards
     #[test]
-    fn every_workspace_ends_up_with_a_name_of_its_own() {
+    fn every_desk_ends_up_with_a_name_of_its_own() {
         let cfg: super::Config = serde_json::from_str(
-            r#"{"workspaces":[{"name":"本番"},
+            r#"{"desks":[{"name":"本番"},
                               {"name":"本番"},
                               {"name":"Blog","id":"written"},
                               {"name":"Other","id":"written"}]}"#,
         )
         .unwrap();
-        let (ws, errs) = cfg.resolve_workspaces();
-        let ids: Vec<&str> = ws.iter().map(|w| w.id.as_str()).collect();
+        let (desk, errs) = cfg.resolve_desks();
+        let ids: Vec<&str> = desk.iter().map(|w| w.id.as_str()).collect();
         assert_eq!(ids, ["fazcj", "fazcj-2", "written", "written-2"]);
         // The display names are left exactly as the person wrote them
-        assert_eq!(ws[0].name, "本番");
-        assert_eq!(ws[1].name, "本番");
+        assert_eq!(desk[0].name, "本番");
+        assert_eq!(desk[1].name, "本番");
         assert!(
             errs.iter().any(|e| e.contains("written")),
             "ずらしたことを黙っていない: {errs:?}"
@@ -3825,16 +3833,16 @@ mod tests {
 
     /// The aim (🎯) is chosen on screen and has to survive the next start, so
     /// it is written back into the settings. It has to reach the tab wherever
-    /// that tab is written: a working folder inside a workspace is where every
+    /// that tab is written: a working folder inside a desk is where every
     /// tab a person makes today lives, and an aim chosen on one used to be
     /// dropped on the floor -- the walk only knew the flat list and a
-    /// workspace's own
+    /// desk's own
     #[test]
     fn an_aim_reaches_a_tab_wherever_it_is_written() {
         use serde_json::json;
         let mut doc = json!({
             "tabs": [{"id": "flat", "command": "sh"}],
-            "workspaces": [{
+            "desks": [{
                 "name": "project",
                 "tabs": [{"id": "old", "command": "sh"}],
                 "folders": [{"tabs": [
@@ -3852,14 +3860,14 @@ mod tests {
         for who in ["flat", "old", "coder", "deep"] {
             assert!(aim(&mut doc, who, Some("page")), "{who} に届いていない");
         }
-        assert_eq!(doc["workspaces"][0]["folders"][0]["tabs"][0]["drives"], "page");
+        assert_eq!(doc["desks"][0]["folders"][0]["tabs"][0]["drives"], "page");
         assert_eq!(
-            doc["workspaces"][0]["folders"][0]["tabs"][0]["children"][0]["drives"],
+            doc["desks"][0]["folders"][0]["tabs"][0]["children"][0]["drives"],
             "page"
         );
         // Clearing takes the key away rather than leaving an empty one behind
         assert!(aim(&mut doc, "coder", None));
-        assert!(doc["workspaces"][0]["folders"][0]["tabs"][0].get("drives").is_none());
+        assert!(doc["desks"][0]["folders"][0]["tabs"][0].get("drives").is_none());
         // The name on screen is not an address, here either: aiming at "実装"
         // must not land on the tab that merely displays that name
         assert!(!aim(&mut doc, "実装", Some("page")), "画面の名前で書き込まれた");
@@ -3869,54 +3877,54 @@ mod tests {
     ///
     /// Tabs used to be written beside the folders rather than inside one. When
     /// that stopped being read, every tab in an older file stopped existing --
-    /// no error, no warning, a workspace that opened empty and a person with
+    /// no error, no warning, a desk that opened empty and a person with
     /// no way to tell why. They are read again, into the folder they would
     /// have been put in.
     #[test]
     fn tabs_written_the_old_way_are_still_someones_tabs() {
         let old: Config = serde_json::from_str(
-            r#"{"workspaces":[{"name":"project","tabs":[
+            r#"{"desks":[{"name":"project","tabs":[
                  {"name":"coder","command":"claude"},
                  {"name":"reviewer","command":"codex"}]}]}"#,
         )
         .unwrap();
-        let (ws, errs) = old.resolve_workspaces();
+        let (desk, errs) = old.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
-        assert_eq!(ws.len(), 1);
-        let names: Vec<&str> = ws[0].tabs.iter().map(|t| t.cfg.name.as_deref().unwrap_or("")).collect();
+        assert_eq!(desk.len(), 1);
+        let names: Vec<&str> = desk[0].tabs.iter().map(|t| t.cfg.name.as_deref().unwrap_or("")).collect();
         assert_eq!(names, vec!["coder", "reviewer"], "旧形式のタブが消えない");
-        assert_eq!(ws[0].folders.len(), 1, "入れ物のフォルダは1つだけ作る");
+        assert_eq!(desk[0].folders.len(), 1, "入れ物のフォルダは1つだけ作る");
 
         // Written both ways, the ones inside a folder come first and the older
         // ones follow: the file says where they sit, and the migration adds
         let both: Config = serde_json::from_str(
-            r#"{"workspaces":[{"name":"p",
+            r#"{"desks":[{"name":"p",
                  "folders":[{"cwd":"D:/a","tabs":[{"name":"inside","command":"cmd"}]}],
                  "tabs":[{"name":"outside","command":"cmd"}]}]}"#,
         )
         .unwrap();
-        let (ws, _) = both.resolve_workspaces();
-        let names: Vec<&str> = ws[0].tabs.iter().map(|t| t.cfg.name.as_deref().unwrap_or("")).collect();
+        let (desk, _) = both.resolve_desks();
+        let names: Vec<&str> = desk[0].tabs.iter().map(|t| t.cfg.name.as_deref().unwrap_or("")).collect();
         assert_eq!(names, vec!["inside", "outside"]);
 
-        // The same shape without workspaces at all
+        // The same shape without desks at all
         let flat: Config = serde_json::from_str(
             r#"{"tabs":[{"name":"only","command":"cmd"}]}"#,
         )
         .unwrap();
-        let (ws, _) = flat.resolve_workspaces();
-        assert_eq!(ws.len(), 1, "タブだけの設定でも画面が1つできる");
-        assert_eq!(ws[0].tabs.len(), 1);
+        let (desk, _) = flat.resolve_desks();
+        assert_eq!(desk.len(), 1, "タブだけの設定でも画面が1つできる");
+        assert_eq!(desk[0].tabs.len(), 1);
 
         // And the current shape is untouched by any of this
         let now: Config = serde_json::from_str(
-            r#"{"workspaces":[{"name":"p","folders":[{"cwd":"D:/a",
+            r#"{"desks":[{"name":"p","folders":[{"cwd":"D:/a",
                  "tabs":[{"name":"one","command":"cmd"}]}]}]}"#,
         )
         .unwrap();
-        let (ws, _) = now.resolve_workspaces();
-        assert_eq!(ws[0].tabs.len(), 1);
-        assert_eq!(ws[0].folders.len(), 1);
+        let (desk, _) = now.resolve_desks();
+        assert_eq!(desk[0].tabs.len(), 1);
+        assert_eq!(desk[0].folders.len(), 1);
     }
     use super::*;
 
@@ -3930,10 +3938,10 @@ mod tests {
     fn a_folder_guards_what_it_says_or_what_the_app_says() {
         let read = |json: &str| {
             let cfg: Config = serde_json::from_str(json).expect("設定として読める");
-            let (ws, _) = cfg.resolve_workspaces();
-            ws.into_iter()
+            let (desk, _) = cfg.resolve_desks();
+            desk.into_iter()
                 .next()
-                .expect("ワークスペースが1つある")
+                .expect("デスクが1つある")
                 .folders
                 .into_iter()
                 .map(|f| f.protect)
@@ -3941,13 +3949,13 @@ mod tests {
         };
 
         // Nobody has said anything: the branches everybody shares
-        let plain = read(r#"{"workspaces":[{"name":"W","folders":[{"cwd":"D:/a","tabs":[]}]}]}"#);
+        let plain = read(r#"{"desks":[{"name":"W","folders":[{"cwd":"D:/a","tabs":[]}]}]}"#);
         assert_eq!(plain[0], vec!["main".to_string(), "master".to_string()]);
 
         // The app-wide answer reaches the folders that have not given one, and
         // the folder that has keeps its own
         let mixed = read(
-            r#"{"git":{"protect":["develop"]},"workspaces":[{"name":"W","folders":[
+            r#"{"git":{"protect":["develop"]},"desks":[{"name":"W","folders":[
                 {"cwd":"D:/a","tabs":[]},
                 {"cwd":"D:/b","protect":["release/*"," "],"tabs":[]},
                 {"cwd":"D:/c","protect":[],"tabs":[]}]}]}"#,
@@ -3958,7 +3966,7 @@ mod tests {
 
         // Alone on your own repository: nothing is guarded anywhere
         let alone = read(
-            r#"{"git":{"protect":[]},"workspaces":[{"name":"W","folders":[{"cwd":"D:/a","tabs":[]}]}]}"#,
+            r#"{"git":{"protect":[]},"desks":[{"name":"W","folders":[{"cwd":"D:/a","tabs":[]}]}]}"#,
         );
         assert!(alone[0].is_empty());
     }
@@ -4078,18 +4086,18 @@ mod tests {
                 .replace("<work>", &work),
         )
         .unwrap();
-        let ws = &cfg.resolve_workspaces().0[0];
-        assert_eq!(ws.folders.len(), 2);
-        assert_eq!(ws.tabs.len(), 3);
+        let desk = &cfg.resolve_desks().0[0];
+        assert_eq!(desk.folders.len(), 2);
+        assert_eq!(desk.tabs.len(), 3);
         // Everyone in a group works in the one folder -- the whole point, since
         // a reviewer pointed somewhere else reviews nothing
-        assert_eq!(ws.cwd_of(&ws.tabs[0]), Some(work.clone().into()));
-        assert_eq!(ws.cwd_of(&ws.tabs[1]), ws.cwd_of(&ws.tabs[0]));
+        assert_eq!(desk.cwd_of(&desk.tabs[0]), Some(work.clone().into()));
+        assert_eq!(desk.cwd_of(&desk.tabs[1]), desk.cwd_of(&desk.tabs[0]));
         // Relative stays relative to the settings, so a folder of them travels
-        assert_eq!(ws.cwd_of(&ws.tabs[2]), Some(root_dir().join("scripts")));
+        assert_eq!(desk.cwd_of(&desk.tabs[2]), Some(root_dir().join("scripts")));
     }
 
-    /// A workspace written the old way, tabs beside the folders, keeps them
+    /// A desk written the old way, tabs beside the folders, keeps them
     /// when a folder is added: they go into the first folder, which is where
     /// launching already read them from, and the new folder comes after.
     #[test]
@@ -4099,7 +4107,7 @@ mod tests {
         let file = dir.join("config.json");
         std::fs::write(
             &file,
-            r#"{"workspaces": [{"name": "orion", "tabs": [
+            r#"{"desks": [{"name": "orion", "tabs": [
                  {"name": "backend", "command": "claude"},
                  {"name": "frontend", "command": "codex"}]}]}"#,
         )
@@ -4110,13 +4118,13 @@ mod tests {
 
         let text = std::fs::read_to_string(&file).unwrap();
         let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert!(raw["workspaces"][0].get("tabs").is_none(), "古い置き場が残っている: {text}");
+        assert!(raw["desks"][0].get("tabs").is_none(), "古い置き場が残っている: {text}");
         let cfg: Config = serde_json::from_str(&text).unwrap();
-        let ws = &cfg.resolve_workspaces().0[0];
-        assert_eq!(ws.folders.len(), 2, "元のタブの入れ物と、足した1つ: {text}");
-        assert_eq!(ws.folders[0].cwd, None, "元のタブはアプリの場所のまま");
-        assert_eq!(ws.folders[1].cwd.as_deref(), Some(Path::new(&fresh)));
-        let in_folder = |g: usize| ws.tabs.iter().filter(|t| t.folder == g).count();
+        let desk = &cfg.resolve_desks().0[0];
+        assert_eq!(desk.folders.len(), 2, "元のタブの入れ物と、足した1つ: {text}");
+        assert_eq!(desk.folders[0].cwd, None, "元のタブはアプリの場所のまま");
+        assert_eq!(desk.folders[1].cwd.as_deref(), Some(Path::new(&fresh)));
+        let in_folder = |g: usize| desk.tabs.iter().filter(|t| t.folder == g).count();
         assert_eq!(in_folder(0), 2, "元のタブが元の入れ物に居ない: {text}");
         assert_eq!(in_folder(1), 0, "足したフォルダにタブが移った: {text}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -4133,7 +4141,7 @@ mod tests {
         let branch = crate::local_path("D:/work/proj.worktrees/feature/login");
         std::fs::write(
             &file,
-            r#"{"max_chain": 7, "workspaces": [{"name": "Demo", "secrets_allow": ["x"],
+            r#"{"max_chain": 7, "desks": [{"name": "Demo", "secrets_allow": ["x"],
                  "folders": [{"cwd": "<proj>", "tabs": [
                    {"name": "実装", "id": "coder", "command": "claude"},
                    {"name": "レビュー", "id": "rev", "command": "codex"}]}]}]}"#
@@ -4154,16 +4162,16 @@ mod tests {
         let cfg: Config = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         // Nothing else in the file was disturbed, including a key nobody read
         assert_eq!(cfg.max_chain, Some(7));
-        assert_eq!(cfg.workspaces[0].secrets_allow, ["x"]);
+        assert_eq!(cfg.desks[0].secrets_allow, ["x"]);
 
-        let ws = &cfg.resolve_workspaces().0[0];
-        assert_eq!(ws.folders.len(), 2, "元の1つと、足した1つ");
-        assert_eq!(ws.folders[0].cwd.as_deref(), Some(Path::new(&proj)));
-        assert_eq!(ws.folders[1].name.as_deref(), Some("feature/login"));
-        assert_eq!(ws.folders[1].cwd.as_deref(), Some(Path::new(&branch)));
+        let desk = &cfg.resolve_desks().0[0];
+        assert_eq!(desk.folders.len(), 2, "元の1つと、足した1つ");
+        assert_eq!(desk.folders[0].cwd.as_deref(), Some(Path::new(&proj)));
+        assert_eq!(desk.folders[1].name.as_deref(), Some("feature/login"));
+        assert_eq!(desk.folders[1].cwd.as_deref(), Some(Path::new(&branch)));
         // The same faces, working in the new folder
         let names = |g: usize| {
-            ws.tabs
+            desk.tabs
                 .iter()
                 .filter(|t| t.folder == g)
                 .map(|t| t.cfg.name.clone().unwrap_or_default())
@@ -4173,7 +4181,7 @@ mod tests {
         assert_eq!(names(1), ["実装", "レビュー"]);
         // Automation still has one name per tab: the copies are marked with the
         // folder they went to, while what is on screen stays readable
-        let ids = ws
+        let ids = desk
             .tabs
             .iter()
             .filter(|t| t.folder == 1)
@@ -4181,7 +4189,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(ids, ["coder@feature-login", "rev@feature-login"]);
         // ...and no two of them are the same, so automation can address each
-        let all: Vec<String> = ws.tabs.iter().filter_map(|t| t.cfg.id.clone()).collect();
+        let all: Vec<String> = desk.tabs.iter().filter_map(|t| t.cfg.id.clone()).collect();
         let unique: std::collections::HashSet<&String> = all.iter().collect();
         assert_eq!(all.len(), unique.len(), "自動化から指す名前がぶつかっていない");
 
@@ -4197,7 +4205,7 @@ mod tests {
         let file = dir.join("config.json");
         std::fs::write(
             &file,
-            r#"{"workspaces": [{"name": "Demo", "folders": [
+            r#"{"desks": [{"name": "Demo", "folders": [
                 {"cwd": "D:/work/proj", "tabs": [{"name": "実装", "id": "coder", "command": "claude"}]}]}]}"#,
         )
         .unwrap();
@@ -4220,9 +4228,9 @@ mod tests {
         )
         .unwrap();
         let cfg: Config = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-        let ws = &cfg.resolve_workspaces().0[0];
-        assert_eq!(ws.folders.len(), 3);
-        let in_folder = |g: usize| ws.tabs.iter().filter(|t| t.folder == g).collect::<Vec<_>>();
+        let desk = &cfg.resolve_desks().0[0];
+        assert_eq!(desk.folders.len(), 3);
+        let in_folder = |g: usize| desk.tabs.iter().filter(|t| t.folder == g).collect::<Vec<_>>();
         let one = in_folder(1);
         assert_eq!(one.len(), 1, "AIを1つだけ");
         assert_eq!(one[0].cfg.name.as_deref(), Some("codex"));
@@ -4308,16 +4316,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Where a workspace's notifications go is settled at launch, once.
+    /// Where a desk's notifications go is settled at launch, once.
     ///
     /// Two things are being checked, and the second is the one that matters: a
-    /// workspace that has drawn its own line does not keep the app's default
-    /// destination underneath it. A company workspace listing only the company
+    /// desk that has drawn its own line does not keep the app's default
+    /// destination underneath it. A company desk listing only the company
     /// chat, with the app's default still pointing at a personal one, would
     /// otherwise send every unnamed notification exactly where the line was
     /// drawn to stop it going.
     #[test]
-    fn a_workspace_says_where_its_notifications_go() {
+    fn a_desk_says_where_its_notifications_go() {
         let cfg: Config = serde_json::from_str(
             r#"{
                 "primary_notify": "mine",
@@ -4326,7 +4334,7 @@ mod tests {
                   "work": {"type":"slack","webhook":"https://example.com/b"}
                 },
                 "providers": {"mine": {"base_url":"http://localhost:11434/v1"}},
-                "workspaces": [
+                "desks": [
                   {"name":"個人"},
                   {"name":"会社", "notify":["work"]},
                   {"name":"会社2", "notify":["work"], "primary_notify":"work"},
@@ -4336,7 +4344,7 @@ mod tests {
               }"#,
         )
         .unwrap();
-        let (spaces, errs) = cfg.resolve_workspaces();
+        let (spaces, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
         let at = |i: usize| (spaces[i].notify.clone(), spaces[i].primary_notify.clone());
 
@@ -4359,27 +4367,27 @@ mod tests {
         );
     }
 
-    /// The doors in front of a script are the workspace's, or the app's.
+    /// The doors in front of a script are the desk's, or the app's.
     ///
-    /// Not both: a gateway carries a token already attached, so a workspace that
+    /// Not both: a gateway carries a token already attached, so a desk that
     /// has written its own must not also keep the app's -- the door it was
     /// trying not to have is exactly the one that would stay open.
     #[test]
-    fn a_workspace_says_what_its_automation_can_reach() {
+    fn a_desk_says_what_its_automation_can_reach() {
         let cfg: Config = serde_json::from_str(
             r#"{
                 "capabilities": {
                   "files": {"shared": {"dir": "C:/shared", "read": true}},
                   "allow_hosts": ["example.com"]
                 },
-                "workspaces": [
+                "desks": [
                   {"name":"ふつう"},
                   {"name":"会社", "capabilities": {"files": {"books": {"dir": "C:/books", "write": true}}}}
                 ]
               }"#,
         )
         .unwrap();
-        let (spaces, errs) = cfg.resolve_workspaces();
+        let (spaces, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
 
         // Said nothing: the app's doors, whole
@@ -4394,7 +4402,7 @@ mod tests {
         assert!(!own.files.contains_key("shared"), "アプリ側の窓口が残っている");
     }
 
-    /// Who may run what is the workspace's table, or the app's -- never halves
+    /// Who may run what is the desk's table, or the app's -- never halves
     /// of both.
     ///
     /// A row read from two places is a row nobody can read: the one somebody did
@@ -4403,11 +4411,11 @@ mod tests {
     /// which is what lets a command added next month arrive with the answer its
     /// author chose.
     #[test]
-    fn a_workspace_says_who_may_run_what() {
+    fn a_desk_says_who_may_run_what() {
         let cfg: Config = serde_json::from_str(
             r#"{
                 "automation_permissions": {"lua": {"ai": true}},
-                "workspaces": [
+                "desks": [
                   {"name":"ふつう"},
                   {"name":"会社", "automation_permissions": {"write_path": {"ai": false}}},
                   {"name":"素のまま", "automation_permissions": {}}
@@ -4415,7 +4423,7 @@ mod tests {
               }"#,
         )
         .unwrap();
-        let (spaces, errs) = cfg.resolve_workspaces();
+        let (spaces, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
         let allows = |at: usize, name: &str| {
             crate::grants::Grants::new(spaces[at].automation_permissions.clone())
@@ -4430,18 +4438,18 @@ mod tests {
         assert!(spaces[2].automation_permissions.is_empty());
     }
 
-    /// What git does here is the workspace's, and its folders hear about it.
+    /// What git does here is the desk's, and its folders hear about it.
     ///
     /// The protected branches are the part with a third level under it: a folder
-    /// may have its own, and the ones that do not take the workspace's. Checked
+    /// may have its own, and the ones that do not take the desk's. Checked
     /// through the folders rather than through the spec, because the folder is
     /// where everything downstream asks
     #[test]
-    fn a_workspace_says_what_git_does_here() {
+    fn a_desk_says_what_git_does_here() {
         let cfg: Config = serde_json::from_str(
             r#"{
                 "git": {"protect": ["main"], "message_hint": "アプリの言い分"},
-                "workspaces": [
+                "desks": [
                   {"name":"ふつう", "folders":[{"cwd":"."}]},
                   {"name":"会社", "git": {"protect": ["main", "release/*"]},
                    "folders":[{"cwd":"."}, {"cwd":".", "protect":["nothing-else"]}]}
@@ -4449,7 +4457,7 @@ mod tests {
               }"#,
         )
         .unwrap();
-        let (spaces, errs) = cfg.resolve_workspaces();
+        let (spaces, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
 
         // Said nothing: the app's, and its folder was handed the same
@@ -4462,7 +4470,7 @@ mod tests {
         assert_eq!(
             spaces[1].folders[0].protect,
             vec!["main".to_string(), "release/*".to_string()],
-            "ワークスペースの答えがフォルダに届いていない"
+            "デスクの答えがフォルダに届いていない"
         );
         assert_eq!(spaces[1].git.message_hint, None, "アプリ側の指示が残っている");
         // ...and a folder with its own answer still has the last word
@@ -4471,21 +4479,21 @@ mod tests {
 
     /// A settings file written before any of this existed reads the same way.
     #[test]
-    fn a_workspace_without_the_new_keys_still_reads() {
+    fn a_desk_without_the_new_keys_still_reads() {
         let cfg: Config =
-            serde_json::from_str(r#"{"workspaces":[{"name":"古い","tabs":[]}]}"#).unwrap();
-        assert!(cfg.workspaces[0].notify.is_none());
-        assert!(cfg.workspaces[0].primary_notify.is_none());
-        assert!(cfg.workspaces[0].providers.is_none());
-        assert!(cfg.workspaces[0].capabilities.is_none());
-        assert!(cfg.workspaces[0].automation_permissions.is_none());
-        assert!(cfg.workspaces[0].git.is_none());
+            serde_json::from_str(r#"{"desks":[{"name":"古い","tabs":[]}]}"#).unwrap();
+        assert!(cfg.desks[0].notify.is_none());
+        assert!(cfg.desks[0].primary_notify.is_none());
+        assert!(cfg.desks[0].providers.is_none());
+        assert!(cfg.desks[0].capabilities.is_none());
+        assert!(cfg.desks[0].automation_permissions.is_none());
+        assert!(cfg.desks[0].git.is_none());
     }
 
     /// A secrets file written before names meant anything is brought forward
     /// without anybody losing a password: the program's own credentials move
-    /// behind a `/`, and everything a workspace was allowed to use turns up
-    /// under that workspace's name
+    /// behind a `/`, and everything a desk was allowed to use turns up
+    /// under that desk's name
     #[test]
     fn an_older_secrets_file_is_brought_forward() {
         let dir = std::env::temp_dir().join("shikisha-secrets-migrate");
@@ -4498,7 +4506,7 @@ mod tests {
                 "descriptions":{"github":"PAT"}}"#,
         )
         .unwrap();
-        let ws = |id: &str, allow: &[&str], all: bool| Workspace {
+        let desk = |id: &str, allow: &[&str], all: bool| Desk {
             name: id.into(),
             id: id.into(),
             folders: Vec::new(),
@@ -4511,7 +4519,7 @@ mod tests {
             discuss: None,
             ..Default::default()
         };
-        let spaces = [ws("blog", &["github"], false), ws("shop", &[], true)];
+        let spaces = [desk("blog", &["github"], false), desk("shop", &[], true)];
         assert!(migrate_secrets(&path, None, &spaces).unwrap(), "何も動かなかった");
 
         let now: std::collections::HashMap<String, SecretMeta> =
@@ -4521,11 +4529,11 @@ mod tests {
         assert_eq!(
             names,
             [
-                "blog.github",   // 使ってよいと書いてあったので、そのワークスペースの物に
+                "blog.github",   // 使ってよいと書いてあったので、そのデスクの物に
                 "github",        // 元は残す (誰の物とも書いていなかったかもしれない)
-                "private",       // どのワークスペースも使えなかったものは、そのまま
+                "private",       // どのデスクも使えなかったものは、そのまま
                 "provider/deepseek",
-                "shop.github",   // 全部許可のワークスペースにも渡る
+                "shop.github",   // 全部許可のデスクにも渡る
                 "shop.private",
             ]
         );
@@ -4612,7 +4620,7 @@ mod tests {
     fn only_what_nothing_claims_is_offered_for_tidying() {
         let cfg: Config = serde_json::from_str(
             r#"{
-              "workspaces": [
+              "desks": [
                 {"name":"Blog","id":"blog","tabs":[
                    {"name":"prod","id":"prod","command":"ssh://me@example.com"}]}
               ],
@@ -4698,9 +4706,9 @@ mod tests {
             ]}]}"#,
         )
         .unwrap();
-        let (ws, errs) = cfg.resolve_workspaces();
+        let (desk, errs) = cfg.resolve_desks();
         assert!(errs.is_empty());
-        let tabs = &ws[0].tabs;
+        let tabs = &desk[0].tabs;
         assert_eq!(tabs.len(), 3, "親子が平坦化される");
         assert_eq!(tabs[0].depth, 0);
         assert_eq!(tabs[1].depth, 1);
@@ -4709,17 +4717,17 @@ mod tests {
     }
 
     #[test]
-    fn legacy_projects_path_falls_back_to_workspaces() {
+    fn legacy_projects_path_falls_back_to_desks() {
         // An existing config pointing at the old name projects/ should still be
-        // able to read workspaces/, and the other way round
+        // able to read desks/, and the other way round
         assert_eq!(
             data_path_candidates("projects/x.json"),
-            ["projects/x.json", "workspaces/x.json"],
-            "projects/ 指定が workspaces/ にフォールバックする"
+            ["projects/x.json", "desks/x.json"],
+            "projects/ 指定が desks/ にフォールバックする"
         );
         assert_eq!(
-            data_path_candidates("workspaces/x.json"),
-            ["workspaces/x.json", "projects/x.json"]
+            data_path_candidates("desks/x.json"),
+            ["desks/x.json", "projects/x.json"]
         );
         // Anything else is only ever itself
         assert_eq!(data_path_candidates("scripts/x.lua"), ["scripts/x.lua"]);
@@ -4748,30 +4756,30 @@ mod tests {
     }
 
     #[test]
-    fn inline_workspaces_are_resolved() {
+    fn inline_desks_are_resolved() {
         let cfg: Config = serde_json::from_str(
-            r#"{"workspaces":[
+            r#"{"desks":[
                 {"name":"X","tabs":[{"name":"a","command":"a"}]},
                 {"name":"Y","tabs":[{"name":"b","command":"b"}]}
             ]}"#,
         )
         .unwrap();
-        let (ws, _) = cfg.resolve_workspaces();
-        assert_eq!(ws.len(), 2);
-        assert_eq!(ws[1].name, "Y");
+        let (desk, _) = cfg.resolve_desks();
+        assert_eq!(desk.len(), 2);
+        assert_eq!(desk[1].name, "Y");
     }
 
     #[test]
-    fn missing_workspace_file_is_reported_not_fatal() {
+    fn missing_desk_file_is_reported_not_fatal() {
         let cfg: Config = serde_json::from_str(
-            r#"{"workspaces":[
-                {"name":"Bad","file":"workspaces/does-not-exist.json"},
+            r#"{"desks":[
+                {"name":"Bad","file":"desks/does-not-exist.json"},
                 {"name":"Good","tabs":[{"name":"a","command":"a"}]}
             ]}"#,
         )
         .unwrap();
-        let (ws, errs) = cfg.resolve_workspaces();
-        assert_eq!(ws.len(), 1, "壊れた定義は飛ばして続行");
+        let (desk, errs) = cfg.resolve_desks();
+        assert_eq!(desk.len(), 1, "壊れた定義は飛ばして続行");
         assert_eq!(errs.len(), 1);
     }
 
@@ -4779,7 +4787,7 @@ mod tests {
     fn operate_defaults_match_the_baked_in_safety_net() {
         // A config with no `operate` block falls back to the historical limits and
         // the safe "stop" policy, so behavior is unchanged until the user opts in.
-        let cfg: Config = serde_json::from_str(r#"{"workspaces":[]}"#).unwrap();
+        let cfg: Config = serde_json::from_str(r#"{"desks":[]}"#).unwrap();
         assert_eq!(cfg.operate.max_rounds, 40);
         assert_eq!(cfg.operate.max_seconds, 900);
         assert_eq!(cfg.operate.max_tokens, 400_000);
@@ -4792,7 +4800,7 @@ mod tests {
     fn operate_accepts_partial_overrides_and_unlimited_zeros() {
         // Only some fields set: the rest keep their defaults. 0 means "no limit".
         let cfg: Config =
-            serde_json::from_str(r#"{"workspaces":[],"operate":{"max_rounds":0,"on_limit":"continue"}}"#)
+            serde_json::from_str(r#"{"desks":[],"operate":{"max_rounds":0,"on_limit":"continue"}}"#)
                 .unwrap();
         assert_eq!(cfg.operate.max_rounds, 0, "0 = unlimited rounds");
         assert_eq!(cfg.operate.on_limit, "continue");
@@ -4820,7 +4828,7 @@ mod browser_kind_tests {
     #[test]
     fn a_server_tab_keeps_what_its_address_cannot_hold() {
         let cfg: Config = serde_json::from_str(
-            r#"{"workspaces":[{"name":"W","id":"w","folders":[{"cwd":"D:/a","tabs":[
+            r#"{"desks":[{"name":"W","id":"w","folders":[{"cwd":"D:/a","tabs":[
                  {"name":"prod","id":"prod","command":"ssh://rocky@example.com:22",
                   "server":{"key":"~/.ssh/id_ed25519","remote_dir":"/var/www",
                             "keepalive":30,"file_command":"sudo su -",
@@ -4828,8 +4836,8 @@ mod browser_kind_tests {
                  {"name":"plain","command":"ssh://a@b:22"}]}]}]}"#,
         )
         .unwrap();
-        let ws = &cfg.workspaces[0];
-        let tabs = &ws.folders[0].tabs;
+        let desk = &cfg.desks[0];
+        let tabs = &desk.folders[0].tabs;
         let sv = tabs[0].server.as_ref().expect("接続の設定が読めていない");
         assert_eq!(sv.key.as_deref(), Some("~/.ssh/id_ed25519"));
         assert_eq!(sv.remote_dir.as_deref(), Some("/var/www"));

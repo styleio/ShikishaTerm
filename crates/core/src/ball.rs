@@ -181,7 +181,7 @@ mod tests {
         b.throw(1, 3, 2, 0);
         b.clamp_to(3);
         assert_eq!(b.holder, 3, "居るうちは持ったまま");
-        // Switched workspace and the tab count went down
+        // Switched desk and the tab count went down
         b.clamp_to(2);
         assert_eq!(b.phase(0), Phase::Idle, "居なくなったら手放す");
     }

@@ -15,7 +15,7 @@ letters. `Ctrl+B 0` brings it back from anywhere.
 
 **The list on the left** is the tab bar. From the top:
 
-- **The workspace** — the name at the very top. Press it to switch to another.
+- **The desk** — the name at the very top. Press it to switch to another.
 - **Working folders** — a heading per folder, with the tabs working in it under
   it. A folder is where an AI runs; the colour on its heading is which project it
   belongs to. Its `+` opens the folder's menu (add a tab, work on another branch,
@@ -42,7 +42,7 @@ macro recorder, git, an AI's command suggestion, or the target another tab drive
 **The input box** at the bottom is where you type to the tab in view. On a phone
 it is the only way in.
 
-**The status line** at the very bottom says which workspace this is, whether
+**The status line** at the very bottom says which desk this is, whether
 automation is on, whether a phone is connected, the build, and a stop button that
 halts every hand-over and every working AI at once. While you are looking at a tab whose AI has said
 something about its usage limit, that line is shown here too; press it to put it
@@ -67,7 +67,7 @@ since every one of them can be changed in the settings.
 | `Ctrl+B <` / `Ctrl+B >` | Move the divider left or up / right or down |
 | `Ctrl+B s` | Put the tab bar away, or bring it back |
 | `Ctrl+B g` | Show the changed files on the right, or put them away |
-| `Ctrl+B w` / `Ctrl+B W` | Workspace list / next workspace |
+| `Ctrl+B w` / `Ctrl+B W` | Desk list / next desk |
 | `Ctrl+B [` | Copy mode (`/` searches, `n` and `N` walk the matches) |
 | `Ctrl+B c` | Copy the latest answer |
 | `Ctrl+B l` | Lock input on this tab |
@@ -78,7 +78,7 @@ since every one of them can be changed in the settings.
 | `Ctrl+B ?` | The key list |
 
 On INDEX the menu is single letters: `e` settings, `p` the palette, `f` find,
-`i` the QR code for a phone, `r` restart stopped tabs, `w` switch workspace,
+`i` the QR code for a phone, `r` restart stopped tabs, `w` switch desk,
 `t` send a test notification, `k` the master password, `?` help.
 
 The mouse works too: wheel to scroll, Ctrl+wheel to change the terminal's text
@@ -151,7 +151,7 @@ A tab that runs the `ssh` command itself still works as before (the kind is
 
 ## 6. Where passwords and tokens live
 
-Register them under **Secrets** on the workspace's settings page. Automation
+Register them under **Secrets** on the desk's settings page. Automation
 names them in one short word and never receives the value. Two things are asked
 when you register one:
 
@@ -165,7 +165,7 @@ when you register one:
   an AI's errands, which nobody spends by hand
 
 Listing, changing and deleting all happen in that same **Secrets** card on the
-workspace's settings page. Press a row to open it.
+desk's settings page. Press a row to open it.
 
 ## 7. Automation
 
@@ -204,7 +204,7 @@ Settings › Update is the one place a version is installed, whether you came fr
 the card or on your own. **Fetch and install** downloads the zip, checks it against
 its published SHA256 and its signature, and then — after the same question
 quitting asks while an AI is at work — swaps the files and starts the program
-again. Your settings, data, logs, workspaces and scripts are not touched, and a
+again. Your settings, data, logs, desks and scripts are not touched, and a
 copy of the settings is made before the first start of the new version. The
 version replaced is kept, and **Go back** on the same card puts it back. The
 Store copy hands the same button to the Store, which installs and restarts.

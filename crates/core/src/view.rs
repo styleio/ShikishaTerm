@@ -3,7 +3,7 @@
 //! `UiState` is what every shell is handed -- the window on this machine and a
 //! phone see the same thing -- and this is the one place it is built. `Ui` is
 //! what the runtime knows that the tabs themselves do not: which one is in
-//! front, whether a screen is covering them, what the workspace is called.
+//! front, whether a screen is covering them, what the desk is called.
 
 use crate::tab::Tab;
 use crate::{ball, config, folders, i18n, ssh, uistate};
@@ -285,13 +285,13 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         branch: ui.branch.clone(),
         repair: ui.repair.clone(),
         browse: ui.browse.clone(),
-        workspace: ui
-            .ws_names
-            .get(ui.ws_index)
+        desk: ui
+            .desk_names
+            .get(ui.desk_index)
             .cloned()
             .unwrap_or_default(),
-        workspaces: ui.ws_names.clone(),
-        ws_index: ui.ws_index,
+        desks: ui.desk_names.clone(),
+        desk_index: ui.desk_index,
         active: ui.active,
         board: ui.board,
         settings_open: ui.settings,
@@ -377,7 +377,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         help_rows: ui.help_rows.clone(),
         vault: ui.vault.clone(),
         self_cost: ui.self_cost.clone(),
-        ws_open: ui.ws_open,
+        desk_open: ui.desk_open,
         // The link, its picture and the badge under it are decided together, in
         // this one place: a QR that says one thing while the badge beside it
         // says another is worse than either alone.
@@ -394,7 +394,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         restartable: ui.restartable,
         discuss_start: ui.discuss_start,
         discuss_start_name: ui.discuss_start_name.clone(),
-        // "At rest" = a discussion workspace where every participant's screen
+        // "At rest" = a discussion desk where every participant's screen
         // has gone quiet and the automation ring has settled (Idle). We gauge
         // "quiet" from how long the screen has been unchanged rather than the
         // BUSY verdict, because some CLIs (Claude Code) leave a static status
@@ -429,10 +429,10 @@ mod file_panel_tests {
 
     fn panel_of(json: &str) -> Option<Elsewhere> {
         let cfg: config::Config = serde_json::from_str(json).expect("設定が読めない");
-        let (wss, errs) = cfg.resolve_workspaces();
+        let (desks, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
-        let ws = wss.first().expect("ワークスペースが無い");
-        surfaces_of(Some(ws), &[], &[], &[]).into_iter().find_map(|s| match s {
+        let desk = desks.first().expect("デスクが無い");
+        surfaces_of(Some(desk), &[], &[], &[]).into_iter().find_map(|s| match s {
             Surface::Sftp { at, .. } => Some(at),
             _ => None,
         })?
@@ -446,7 +446,7 @@ mod file_panel_tests {
         let at = panel_of(
             r#"{
               "hosts": [ {"name":"cloud","at":"","kind":"e2b"} ],
-              "workspaces": [ { "name":"w", "id": "w",
+              "desks": [ { "name":"w", "id": "w",
                 "folders": [ {"name":"out there","cwd":"/home/user/p","host":"cloud"} ],
                 "tabs": [ {"name":"files","id":"files",
                            "command":"sftp://someone@example.com:2222","group":0} ] } ]
@@ -474,7 +474,7 @@ mod file_panel_tests {
         let at = panel_of(
             r#"{
               "hosts": [ {"name":"cloud","at":"","kind":"e2b"} ],
-              "workspaces": [ { "name":"w", "id": "w",
+              "desks": [ { "name":"w", "id": "w",
                 "folders": [ {"name":"out there","cwd":"/home/user/p","host":"cloud"} ],
                 "tabs": [ {"name":"files","id":"files","command":"sftp://","group":0} ] } ]
             }"#,
@@ -492,7 +492,7 @@ mod file_panel_tests {
     fn a_panel_in_a_folder_here_has_nowhere_to_reach() {
         let at = panel_of(
             r#"{
-              "workspaces": [ { "name":"w", "id": "w",
+              "desks": [ { "name":"w", "id": "w",
                 "folders": [ {"name":"here","cwd":"."} ],
                 "tabs": [ {"name":"files","id":"files","command":"sftp://","group":0} ] } ]
             }"#,
@@ -574,7 +574,7 @@ pub struct EditorOpen {
 }
 
 pub fn surfaces_of(
-    ws: Option<&config::Workspace>,
+    desk: Option<&config::Desk>,
     titles: &[&str],
     hosted: &[String],
     editors: &[EditorOpen],
@@ -582,8 +582,8 @@ pub fn surfaces_of(
     let mut out: Vec<Surface> = Vec::new();
     let mut used_tabs = vec![false; titles.len()];
     let mut used_web: Vec<&str> = Vec::new();
-    if let Some(ws) = ws {
-        for ft in &ws.tabs {
+    if let Some(desk) = desk {
+        for ft in &desk.tabs {
             let argv = ft.cfg.command.argv();
             if argv.is_empty() {
                 continue;
@@ -596,7 +596,7 @@ pub fn surfaces_of(
                     .or_else(|| ft.cfg.name.clone())
                     .unwrap_or_else(|| "editor".into());
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
-                out.push(Surface::Editor { key, name, dir: ws.cwd_of(ft) });
+                out.push(Surface::Editor { key, name, dir: desk.cwd_of(ft) });
                 continue;
             }
             if config::is_sftp_panel(&argv) {
@@ -607,12 +607,12 @@ pub fn surfaces_of(
                     .or_else(|| ft.cfg.name.clone())
                     .unwrap_or_else(|| "sftp".into());
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
-                // Its credentials are filed under the workspace and this tab,
+                // Its credentials are filed under the desk and this tab,
                 // exactly as a terminal's are, so the two are named the same
                 // way and neither is written into the settings
                 let under = |what: &str| {
                     let t = ft.cfg.id.as_deref()?;
-                    Some(format!("ssh/{}/{}/{}", ws.id, t, what))
+                    Some(format!("ssh/{}/{}/{}", desk.id, t, what))
                 };
                 // The tab's own address wins: somebody wrote it on this
                 // tab, and the folder it happens to sit in does not overrule
@@ -630,7 +630,7 @@ pub fn surfaces_of(
                         ))
                     })
                     .or_else(|| {
-                        ws.folder_of(ft)
+                        desk.folder_of(ft)
                             .and_then(|f| f.host.as_ref())
                             .and_then(|h| crate::elsewhere::Elsewhere::of(h).ok())
                     });
@@ -640,7 +640,7 @@ pub fn surfaces_of(
                     .as_ref()
                     .and_then(|sp| sp.remote_dir.clone())
                     .unwrap_or_default();
-                out.push(Surface::Sftp { key, name, dir: ws.cwd_of(ft), at, remote_dir });
+                out.push(Surface::Sftp { key, name, dir: desk.cwd_of(ft), at, remote_dir });
                 continue;
             }
             if config::is_git_panel(&argv) {
@@ -652,8 +652,8 @@ pub fn surfaces_of(
                     .unwrap_or_else(|| "git".into());
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
                 out.push(Surface::Git {
-                    dir: ws.cwd_of(ft),
-                    protect: ws.folder_of(ft).map(|f| f.protect.clone()).unwrap_or_default(),
+                    dir: desk.cwd_of(ft),
+                    protect: desk.folder_of(ft).map(|f| f.protect.clone()).unwrap_or_default(),
                     key,
                     name,
                 });
@@ -763,9 +763,9 @@ pub struct Ui {
     /// Whether the settings form is covering the window. A screen the same way
     pub settings: bool,
     pub auto: Option<bool>,
-    pub ws_names: Vec<String>,
-    pub ws_index: usize,
-    pub ws_open: bool,
+    pub desk_names: Vec<String>,
+    pub desk_index: usize,
+    pub desk_open: bool,
     pub help_open: bool,
     /// The keys in force, for the help screen to show
     pub help_rows: Vec<(String, String)>,
@@ -800,7 +800,7 @@ pub struct Ui {
     /// How the content area is divided, and which pane the keyboard is aimed at.
     /// `active` is always the surface in the focused pane
     pub layout: crate::layout::Layout,
-    /// If the current workspace is a discussion, the opening speaker's session
+    /// If the current desk is a discussion, the opening speaker's session
     /// number (1-based) and display name — for the dashboard's "start" card
     pub discuss_start: Option<usize>,
     pub discuss_start_name: Option<String>,
@@ -813,7 +813,7 @@ pub struct Ui {
     pub browse: Option<crate::uistate::BrowseState>,
     /// The colours chosen for projects, by the folder git shares
     pub folder_colors: std::collections::HashMap<String, String>,
-    /// The current workspace's folders as the settings have them, so one with
+    /// The current desk's folders as the settings have them, so one with
     /// no tab in it is still on the list (uistate::GroupState::all)
     pub folders: Vec<(std::path::PathBuf, String)>,
     /// Of those, the ones that live on another machine. This machine has no
@@ -822,10 +822,10 @@ pub struct Ui {
     pub folders_elsewhere: Vec<std::path::PathBuf>,
     /// The controls shown over the browser being viewed (None = don't show)
     pub nav: Option<crate::uistate::NavState>,
-    /// What each page of this workspace is asking the person, by the name
+    /// What each page of this desk is asking the person, by the name
     /// automation gives it. Drawn as a bar under that page
     pub asks: Vec<(String, crate::uistate::AskState)>,
-    /// Which of this workspace's pages are drawn on the connected device
+    /// Which of this desk's pages are drawn on the connected device
     /// rather than here, by the same name, each with what that device is
     /// called (`caps::drawn_away`)
     pub away: Vec<(String, String)>,
@@ -934,7 +934,7 @@ pub fn title_of(argv: &[String]) -> String {
 ///
 /// The address comes from the command line, where a person can read it; the
 /// rest comes from the tab's `server` block. Credentials are named, never
-/// carried: `under` works out what each one is filed under from the workspace
+/// carried: `under` works out what each one is filed under from the desk
 /// and the tab, so nothing here is a secret and the same name is not written
 /// down twice.
 ///

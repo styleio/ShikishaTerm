@@ -37,11 +37,11 @@
     "access": "children"
   },
 
-  "//workspaces": "切り替える単位。file で定義ファイルを参照するか、tabs を直書きする",
-  "workspaces": [
+  "//desks": "切り替える単位。file で定義ファイルを参照するか、tabs を直書きする",
+  "desks": [
     {
       "name": "ProjectX",
-      "file": "workspaces/projectx.json"
+      "file": "desks/projectx.json"
     },
     {
       "name": "雑用",

@@ -5,13 +5,13 @@
 //! merged yet" is a question about every row at once, and answering it means
 //! leaving the terminal entirely.
 //!
-//! **Nothing has to be set up for this.** Where a workspace has been given a
+//! **Nothing has to be set up for this.** Where a desk has been given a
 //! token of its own it uses that one; otherwise it uses what the person already
 //! has -- `GITHUB_TOKEN` in their environment, or whatever their own `gh` is
 //! signed in as. Asking someone to paste a token in so a terminal can show them
 //! a number they can already see on a website is not a trade worth offering.
 //!
-//! A workspace's own token is worth offering, though, and it is the reason this
+//! A desk's own token is worth offering, though, and it is the reason this
 //! is not one machine-wide answer any more: the repositories somebody works on
 //! for a company and the ones they work on for themselves are reached with
 //! different accounts, and whichever account answered first was the one every
@@ -75,9 +75,9 @@ struct Slot {
 pub struct Watch {
     ask: Sender<Key>,
     known: Arc<Mutex<HashMap<Key, Slot>>>,
-    /// The token in use, which changes when the workspace does. Held here
+    /// The token in use, which changes when the desk does. Held here
     /// rather than handed to the thread once, because the thread outlives any
-    /// one workspace. Never handed back out
+    /// one desk. Never handed back out
     token: Arc<Mutex<Option<String>>>,
 }
 
@@ -93,7 +93,7 @@ impl Watch {
         Watch { ask, known, token }
     }
 
-    /// The token the workspace now on screen asks with.
+    /// The token the desk now on screen asks with.
     ///
     /// What is already known is thrown away, because it was learned with
     /// somebody else's account: a repository one token can see is a repository
@@ -149,7 +149,7 @@ fn serve(
         .build()
         .new_agent();
     while let Ok((repo, branch)) = inbox.recv() {
-        // Read for each question rather than once: the workspace, and with it
+        // Read for each question rather than once: the desk, and with it
         // the account, can have changed since the last one
         let Some(now) = token.lock().ok().and_then(|t| t.clone()) else {
             continue;
@@ -205,13 +205,13 @@ fn read_one(v: &serde_json::Value) -> Option<Pr> {
 
 /// Whose token is being used.
 ///
-/// Said on screen, because the three are different promises: one this workspace
+/// Said on screen, because the three are different promises: one this desk
 /// was given, one sitting in the environment of whoever started the app, and
 /// whatever the person's own `gh` happens to be signed in as
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
-    /// The secret `<workspace>.github`
-    Workspace,
+    /// The secret `<desk>.github`
+    Desk,
     /// `GITHUB_TOKEN` or `GH_TOKEN`
     Env,
     /// `gh auth token`
@@ -222,7 +222,7 @@ impl Source {
     /// The word the screen looks its sentence up by.
     pub fn id(self) -> &'static str {
         match self {
-            Source::Workspace => "workspace",
+            Source::Desk => "desk",
             Source::Env => "env",
             Source::Gh => "gh",
         }
@@ -233,14 +233,14 @@ impl Source {
 ///
 /// Never written anywhere, never logged, and sent to nowhere but GitHub's own
 /// API. Read in the order of how particular each one is: the token this
-/// workspace was given, then something the person put in their environment on
+/// desk was given, then something the person put in their environment on
 /// purpose, then whatever their own GitHub tool is signed in as.
 ///
-/// `own` is the workspace's own token, already looked up by whoever knows which
-/// workspace is being asked about -- this module never reaches into the secrets
+/// `own` is the desk's own token, already looked up by whoever knows which
+/// desk is being asked about -- this module never reaches into the secrets
 pub fn find(own: Option<String>) -> Option<(String, Source)> {
     if let Some(t) = own.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
-        return Some((t, Source::Workspace));
+        return Some((t, Source::Desk));
     }
     for name in ["GITHUB_TOKEN", "GH_TOKEN"] {
         if let Ok(v) = std::env::var(name) {
@@ -304,7 +304,7 @@ pub struct Probe {
     pub status: u16,
 }
 
-/// Ask GitHub about the token this workspace would use.
+/// Ask GitHub about the token this desk would use.
 ///
 /// Its own call rather than a side effect of asking about a branch: the
 /// settings screen has to be able to say "this one works and has eleven days
@@ -440,28 +440,28 @@ mod tests {
         assert!(read_one(&serde_json::json!({"state": "open"})).is_none());
     }
 
-    /// The workspace's own token comes first, and nothing about the machine
+    /// The desk's own token comes first, and nothing about the machine
     /// changes that.
     ///
     /// This is the whole point of the change: one machine, two accounts, and
     /// until now whichever one answered first was the one every row used. The
-    /// environment is still read for a workspace that has been given nothing,
+    /// environment is still read for a desk that has been given nothing,
     /// because that is what every setup so far relies on
     #[test]
-    fn the_workspace_is_asked_before_the_machine() {
+    fn the_desk_is_asked_before_the_machine() {
         // SAFETY: this process's own environment, in a test that puts it back
         unsafe {
             std::env::set_var("GITHUB_TOKEN", "from_the_environment");
         }
         let (token, source) = find(Some("  ours  ".into())).expect("自分のトークンがある");
         assert_eq!(token, "ours", "前後の空白が値に入っている");
-        assert_eq!(source, Source::Workspace);
+        assert_eq!(source, Source::Desk);
 
         let (token, source) = find(None).expect("環境変数が読まれていない");
         assert_eq!(token, "from_the_environment");
         assert_eq!(source, Source::Env);
 
-        // A workspace that was given an empty one has been given nothing
+        // A desk that was given an empty one has been given nothing
         assert_eq!(find(Some("   ".into())).unwrap().1, Source::Env);
         unsafe {
             std::env::remove_var("GITHUB_TOKEN");
@@ -560,7 +560,7 @@ mod tests {
             "source={:?} ok={} status={} login={:?} expires_at={:?} days={:?}",
             said.source, said.ok, said.status, said.login, said.expires_at, said.expires_in_days
         );
-        assert_eq!(said.source, Some("workspace"));
+        assert_eq!(said.source, Some("desk"));
         assert!(said.ok, "GitHub が受け付けませんでした: status={}", said.status);
         assert!(said.login.is_some(), "アカウント名が読めていない");
         // An expiry is not guaranteed -- a token can be made without one -- but

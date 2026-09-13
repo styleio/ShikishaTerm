@@ -260,11 +260,11 @@ pub enum Ev {
     Survey,
     /// The operating board's menu was pressed
     Menu { key: String },
-    /// Open the workspace switcher. A dedicated intent (rather than reusing the
+    /// Open the desk switcher. A dedicated intent (rather than reusing the
     /// plain 'w' keystroke of `Menu`) so the tab-bar button works from any tab:
     /// a bare 'w' would just be typed into whatever session is showing instead
     /// of opening the list. Converted to the Ctrl+B w prefix in `keys_for`.
-    OpenWs,
+    OpenDesk,
     /// Run a named key action -- what the command palette does. The name is a
     /// keys.rs action; the window turns it into the same keystroke pressing it
     /// would send, so the palette needs to know nothing about the keys
@@ -813,7 +813,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .unwrap_or_default()
                 .to_string(),
         },
-        Some("openws") => Ev::OpenWs,
+        Some("opendesk") => Ev::OpenDesk,
         Some("runkey") => Ev::RunKey {
             name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },

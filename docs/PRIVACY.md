@@ -13,7 +13,7 @@ Everything the program keeps is an ordinary file on your own disk, next to the
 program (the portable download) or under
 `%LOCALAPPDATA%\SHIKISHA-TERM` (the Microsoft Store copy):
 
-- your settings, workspaces and automation scripts,
+- your settings, desks and automation scripts,
 - what the terminals showed, and the transcripts of AI discussions you saved,
 - logs of what the program itself did.
 

@@ -1,7 +1,7 @@
 //! Web Push: a notification on a phone with nobody in the middle.
 //!
 //! The other destinations (src/notify.rs) reach a phone by way of an account
-//! somebody else runs — a Slack workspace, a Telegram bot, a Discord webhook.
+//! somebody else runs — a Slack desk, a Telegram bot, a Discord webhook.
 //! They work, and they mean the answer an AI gave on this machine travels
 //! through a company's servers to get back to the person who asked for it.
 //!

@@ -1,5 +1,5 @@
 {
-  "//": "ワークスペース定義ファイル。config.json の workspaces から file で参照する",
+  "//": "デスク定義ファイル。config.json の desks から file で参照する",
   "name": "ProjectX",
   "automation": "scripts/projectx",
   "//folders": "1つの作業フォルダと、そこで働くタブ。フォルダを分けたいときだけ groups を増やす",

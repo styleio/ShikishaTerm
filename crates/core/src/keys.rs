@@ -44,7 +44,7 @@ pub struct Action {
 /// Every action, in the order the help screen shows them.
 ///
 /// The order is the order of a working day rather than the alphabet: what you
-/// do to tabs, then to panes, then to the workspace, then the rarer things.
+/// do to tabs, then to panes, then to the desk, then the rarer things.
 pub const ACTIONS: &[Action] = &[
     Action { name: "quit", key: 'q', also: &[], desc: "keys.quit" },
     Action { name: "tab_next", key: 'n', also: &[], desc: "keys.tab_next" },
@@ -61,8 +61,8 @@ pub const ACTIONS: &[Action] = &[
     Action { name: "side_bar", key: 'g', also: &[], desc: "keys.side_bar" },
     Action { name: "divider_left", key: '<', also: &[], desc: "keys.divider_left" },
     Action { name: "divider_right", key: '>', also: &[], desc: "keys.divider_right" },
-    Action { name: "workspace_list", key: 'w', also: &[], desc: "keys.workspace_list" },
-    Action { name: "workspace_next", key: 'W', also: &[], desc: "keys.workspace_next" },
+    Action { name: "desk_list", key: 'w', also: &[], desc: "keys.desk_list" },
+    Action { name: "desk_next", key: 'W', also: &[], desc: "keys.desk_next" },
     Action { name: "copy_mode", key: '[', also: &[], desc: "keys.copy_mode" },
     Action { name: "copy_answer", key: 'c', also: &[], desc: "keys.copy_answer" },
     Action { name: "lock", key: 'l', also: &[], desc: "keys.lock" },
