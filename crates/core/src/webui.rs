@@ -7479,6 +7479,10 @@ function projectEntry(name, g) {
     p = {name};
     current.projects.push(p);
   }
+  // Where its own checkout is, so the project's worktrees -- folders that do
+  // not say which project they are in -- are still found to be part of it.
+  // Only asked of the checkout's own page, and a written answer is kept
+  if (!(p.at || "").trim() && (g.cwd || "").trim()) p.at = g.cwd.trim();
   // The folder says which project it is, so the tie survives a rename of the
   // folder and a second clone somewhere else
   if (!(g.project || "").trim()) g.project = name;
@@ -8987,7 +8991,11 @@ function automsg(t, warn) { const m = document.getElementById("automsg");
 // lands in is a folder like any other. Mirrors foldered() in config.rs, which
 // says the same thing on the way to launching them
 function foldersOf(w) {
-  const folders = (w.folders || []).map(f => ({name:f.name || "", id:f.id || "",
+  // Everything the folder says is kept, not only what this screen draws: the
+  // app writes keys of its own onto a folder (the machine it is on, the project
+  // it belongs to, where it came from), and a key dropped here is a key the
+  // next save erases
+  const folders = (w.folders || []).map(f => Object.assign({}, f, {name:f.name || "", id:f.id || "",
                                                cwd:f.cwd || "", tabs:f.tabs || []}));
   if (!folders.length) folders.push({name:"", id:"", cwd:"", tabs:[]});
   // Tabs written the old way, beside the folders instead of inside one. The
@@ -9005,7 +9013,7 @@ function foldersOf(w) {
 // The screen keeps one flat list of tabs, each remembering which folder it is in
 function readFolders(desk, w) {
   const fs = foldersOf(w);
-  desk.folders = fs.map(f => ({name:f.name, id:f.id, cwd:f.cwd}));
+  desk.folders = fs.map(f => { const g = Object.assign({}, f); delete g.tabs; return g; });
   desk.tabs = [];
   fs.forEach((f, i) => flatten(f.tabs, 0, i, desk.tabs));
 }
@@ -9256,17 +9264,21 @@ function payload() {
   // A group is written with its own tabs nested back under it. Its name and id
   // are worth writing only when someone typed them; the folder always is
   const foldersOut = w => (w.folders && w.folders.length ? w.folders : [{}]).map((g, i) => {
-    const o = {};
-    for (const k of ["name", "id", "cwd"]) if ((g[k] || "").trim()) o[k] = g[k].trim();
+    // Everything the folder already said, carried through. The app writes keys
+    // this screen never shows -- the machine a folder is on, the project it is
+    // a piece of, where it came from -- and a save that wrote only the keys it
+    // knew was how a folder on a server turned into a folder here
+    const o = Object.assign({}, g);
+    delete o.tabs;
+    for (const k of ["name", "id", "cwd"]) {
+      if ((g[k] || "").trim()) o[k] = g[k].trim(); else delete o[k];
+    }
     // The branches this folder guards, when it has an answer of its own. An
     // empty list is an answer too ("nothing here"), so what decides is whether
     // there is a list at all
-    if (Array.isArray(g.protect)) o.protect = g.protect;
-    // What it would take to make this folder on a machine that does not have
-    // it. Written by the app when the folder is made and never shown on this
-    // screen -- so it has to be carried through a save, or saving the settings
-    // is how the answer gets lost
-    if (g.source) o.source = g.source;
+    if (!Array.isArray(g.protect)) delete o.protect;
+    for (const k of ["project", "host"]) if (!(g[k] || "").trim()) delete o[k];
+    if (!g.source) delete o.source;
     o.tabs = nest(w.tabs.filter(t => (t.group || 0) === i));
     return o;
   });
@@ -10179,6 +10191,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Saving the settings keeps what a folder says that this screen never
+    /// draws.
+    ///
+    /// The screen loaded a folder as its name, id and folder, and saved it as
+    /// those plus two keys it knew of. The app writes more onto a folder -- the
+    /// machine it is on, the project it is a piece of, where it came from -- and
+    /// every save erased them: a folder on a server became a folder here, and a
+    /// project's setup command stopped reaching its worktrees.
+    #[test]
+    fn a_save_keeps_what_a_folder_says_that_this_screen_does_not_show() {
+        let read = PAGE.find("function readFolders(").expect("readFolders が無い");
+        let read = &PAGE[read..read + 400];
+        assert!(!read.contains("({name:f.name, id:f.id, cwd:f.cwd})"), "読み込みで決まった鍵だけ残している");
+        let of = PAGE.find("function foldersOf(").expect("foldersOf が無い");
+        assert!(PAGE[of..of + 600].contains("Object.assign({}, f,"), "読み込みで鍵を落としている");
+        let out = PAGE.find("const foldersOut = ").expect("foldersOut が無い");
+        let out = &PAGE[out..out + 900];
+        assert!(out.contains("Object.assign({}, g)"), "保存で知っている鍵だけ書いている");
+        assert!(!out.contains("const o = {};"), "保存で知っている鍵だけ書いている");
     }
 
     #[test]
