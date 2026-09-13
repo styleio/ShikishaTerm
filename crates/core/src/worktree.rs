@@ -1265,14 +1265,14 @@ mod tests {
         std::fs::write(git.join("worktrees/feature-x/gitdir"), format!("{}\n", wt.join(".git").display())).unwrap();
 
         let said = plan(&main, "feature-x", None).unwrap_err().to_string();
-        assert!(said.contains(&wt.display().to_string()), "どのフォルダで開いているかを言わない: {said}");
+        assert!(said.contains(&wt.display().to_string()), "it does not say which folder it is opening in: {said}");
         let said = plan(&main, "main", None).unwrap_err().to_string();
         // The checkout is named the way the planner names it: a temp folder can
         // be spelled with a short name (RUNNER~1) that the planner writes long
         let checkout = crate::repo::main_checkout(&main).unwrap();
         assert!(said.contains(&checkout.display().to_string()), "{said}");
         // A branch that exists and is open nowhere is simply checked out
-        let p = plan(&main, "spare", None).expect("空いているブランチは開ける");
+        let p = plan(&main, "spare", None).expect("a free branch can be opened");
         assert!(!p.fresh);
     }
 
@@ -1281,10 +1281,10 @@ mod tests {
         let main = repo("place");
         let at = folder_for(&main, "feature/login");
         // The project's folder is left alone: nothing of ours appears beside it
-        assert!(!at.starts_with(main.parent().unwrap()), "本体の隣に置いている: {at:?}");
+        assert!(!at.starts_with(main.parent().unwrap()), "it is placed beside the main checkout: {at:?}");
         // One place holds all of them, under the project they belong to
         assert!(at.starts_with(branches_root().join("proj-place")), "{at:?}");
-        assert!(at.ends_with("feature/login"), "枝の名前がそのまま入れ子になる: {at:?}");
+        assert!(at.ends_with("feature/login"), "the branch name nests as it is: {at:?}");
         // Two branches that differ only in shape never want the same folder
         assert_ne!(folder_for(&main, "feature/login"), folder_for(&main, "feature-login"));
         // Two projects of the same name in different places still collide here,
@@ -1319,12 +1319,12 @@ mod tests {
             template: Some("base".into()),
             ..Default::default()
         };
-        assert!(host.is_made(), "作る機械だと見なされていない");
+        assert!(host.is_made(), "it is not treated as a machine that gets made");
 
         let p = plan_on(&host, "polite-marmot", Some("origin/master"), None, "https://example.test/p.git", None)
-            .expect("計画できる");
+            .expect("it can be planned");
         let steps = p.argvs();
-        assert_eq!(steps.len(), 2, "2段になっていない: {steps:?}");
+        assert_eq!(steps.len(), 2, "not two steps: {steps:?}");
         // The project arrives first, on the branch the remote calls it, with
         // the remote's own prefix left off -- a clone has no remotes yet
         assert_eq!(
@@ -1333,7 +1333,7 @@ mod tests {
         );
         assert_eq!(steps[1], ["git", "-C", "/home/user/polite-marmot", "switch", "-c", "polite-marmot"]);
         // Both of them are what the person reads
-        assert_eq!(p.line().lines().count(), 2, "片方しか見えていない: {}", p.line());
+        assert_eq!(p.line().lines().count(), 2, "only one of them is visible: {}", p.line());
 
         // Nowhere to fetch from is a refusal, not a clone of nothing
         assert!(plan_on(&host, "polite-marmot", Some("origin/master"), None, "", None).is_err());
@@ -1346,7 +1346,7 @@ mod tests {
             ..Default::default()
         };
         assert!(!there.is_made());
-        let q = plan_on(&there, "polite-marmot", Some("main"), None, "", None).expect("計画できる");
+        let q = plan_on(&there, "polite-marmot", Some("main"), None, "", None).expect("it can be planned");
         assert_eq!(q.argvs().len(), 1);
         assert!(q.line().contains("worktree add"), "{}", q.line());
     }
@@ -1367,8 +1367,8 @@ mod tests {
         let fanned = fan_on(&there, "login", Some("main"), &["claude".into(), "codex".into()], "", None);
         assert_eq!(fanned.len(), 2);
         for (ai, plan) in &fanned {
-            let plan = plan.as_ref().expect("計画できる");
-            assert_eq!(plan.where_at(), "bench", "{ai} がこのマシンで計画された");
+            let plan = plan.as_ref().expect("it can be planned");
+            assert_eq!(plan.where_at(), "bench", "{ai} was planned on this machine");
             assert_eq!(plan.branch, format!("login-{ai}"));
             assert!(plan.folder.to_string_lossy().starts_with("/srv/p"), "{}", plan.folder.display());
         }
@@ -1380,9 +1380,9 @@ mod tests {
         plan.main = local.clone();
         plan.folder = stray.clone();
         let missed = carry_into(&plan, &[".env".into()]);
-        assert_eq!(missed, [".env"], "運べていないのに運んだことになっている");
-        assert!(!stray.exists(), "向こうのパスの名前で、このマシンにフォルダができた");
-        assert_eq!(plan.like(&local), local.as_path(), "並べる基準が向こうのパスになっている");
+        assert_eq!(missed, [".env"], "it could not carry it, but counts as carried");
+        assert!(!stray.exists(), "a folder was made on this machine under the far path's name");
+        assert_eq!(plan.like(&local), local.as_path(), "the basis for placing it is the far path");
     }
 
     /// A project with a name of its own keeps its branches apart from another
@@ -1419,13 +1419,13 @@ mod tests {
         let main = repo("plainsetup");
         let told = crate::devcontainer::told(&main, Some("cargo fetch
 tools/conpty.ps1"));
-        let env = told.expect("設定から拾えていない");
-        assert_eq!(env.setup, ["cargo fetch", "tools/conpty.ps1"], "1行に1つ");
-        assert!(!env.from.is_empty(), "どこから来たのか言えていない");
+        let env = told.expect("it was not picked up from the settings");
+        assert_eq!(env.setup, ["cargo fetch", "tools/conpty.ps1"], "one per line");
+        assert!(!env.from.is_empty(), "it cannot say where it came from");
 
         let p = plan_for(&main, Some("ours"), "work", Some("main"), None, Some(env))
-            .expect("計画できる");
-        assert_eq!(p.argvs().len(), 3, "枝と2行: {:?}", p.argvs());
+            .expect("it can be planned");
+        assert_eq!(p.argvs().len(), 3, "the branch and two lines: {:?}", p.argvs());
         assert!(p.argvs()[1].last().is_some_and(|l| l.contains("cargo fetch")));
         assert!(p.argvs()[2].last().is_some_and(|l| l.contains("conpty")));
 
@@ -1453,16 +1453,16 @@ tools/conpty.ps1"));
             r#"{"image":"node:22","onCreateCommand":"npm ci","postCreateCommand":["npm","run","build"]}"#,
         );
         let p = plan_on(&host, "work", Some("origin/main"), None, "https://example.test/p.git", env)
-            .expect("計画できる");
+            .expect("it can be planned");
         let steps = p.argvs();
-        assert_eq!(steps.len(), 4, "取得・枝・2つの支度: {steps:?}");
+        assert_eq!(steps.len(), 4, "fetch, branch and two preparation steps: {steps:?}");
         assert_eq!(steps[2], ["sh", "-lc", "cd /home/user/work && npm ci"]);
         assert_eq!(steps[3], ["sh", "-lc", "cd /home/user/work && npm run build"]);
         // The project's word about the image beats the machine's setting: a
         // repository that names one has said the thing that matters most
         let picked = |i| crate::e2b::template_for(&host, i);
         assert_eq!(picked(p.env.as_ref().and_then(|e| e.image.as_deref())), "node:22");
-        assert_eq!(picked(None), "base", "何も言わなければ機械の設定");
+        assert_eq!(picked(None), "base", "say nothing and the machine's setting applies");
         // Every one of them is read before any of them runs
         assert_eq!(p.line().lines().count(), 4, "{}", p.line());
 
@@ -1476,8 +1476,8 @@ tools/conpty.ps1"));
         };
         let q = plan_on(&there, "work", Some("main"), None, "",
                         crate::devcontainer::read(r#"{"postCreateCommand":"npm ci"}"#))
-            .expect("計画できる");
-        assert_eq!(q.argvs().len(), 2, "既にある機械で支度をしていない: {:?}", q.argvs());
+            .expect("it can be planned");
+        assert_eq!(q.argvs().len(), 2, "no preparation on a machine that already exists: {:?}", q.argvs());
         assert!(q.argvs()[1].last().is_some_and(|l| l.contains("npm ci")), "{:?}", q.argvs()[1]);
         // Nothing is fetched there: the project is on that machine already
         assert!(q.argvs()[0].contains(&"worktree".to_string()));
@@ -1486,11 +1486,11 @@ tools/conpty.ps1"));
         let main = repo("prep");
         let here = plan_into(&main, "work", Some("main"), None,
                              crate::devcontainer::read(r#"{"postCreateCommand":"cargo fetch"}"#))
-            .expect("計画できる");
-        assert_eq!(here.argvs().len(), 2, "この PC で支度をしていない");
+            .expect("it can be planned");
+        assert_eq!(here.argvs().len(), 2, "no preparation on this PC");
         assert!(here.argvs()[1].last().is_some_and(|l| l.contains("cargo fetch")));
         // Turned off, nothing of it is there
-        let bare = plan_into(&main, "work", Some("main"), None, None).expect("計画できる");
+        let bare = plan_into(&main, "work", Some("main"), None, None).expect("it can be planned");
         assert_eq!(bare.argvs().len(), 1);
     }
 
@@ -1504,18 +1504,18 @@ tools/conpty.ps1"));
         let main = repo("elsewhere");
         let mine = scratch("chosen").join("right here");
         let _ = std::fs::remove_dir_all(&mine);
-        let p = plan_into(&main, "polite-marmot", Some("main"), Some(&mine), None).expect("計画できる");
-        assert_eq!(p.folder, mine, "指定した場所が使われていない");
-        assert_ne!(p.folder, folder_for(&main, "polite-marmot"), "既定に引き戻されている");
+        let p = plan_into(&main, "polite-marmot", Some("main"), Some(&mine), None).expect("it can be planned");
+        assert_eq!(p.folder, mine, "the place given is not used");
+        assert_ne!(p.folder, folder_for(&main, "polite-marmot"), "it was pulled back to the default");
         // And it is the place the command names, not just the one on screen
         assert!(p.line().contains("\"") && p.line().contains("right here"), "{}", p.line());
 
         // Nothing named: the app's own answer stands
-        let same = plan_into(&main, "polite-marmot", Some("main"), None, None).expect("計画できる");
+        let same = plan_into(&main, "polite-marmot", Some("main"), None, None).expect("it can be planned");
         assert_eq!(same.folder, folder_for(&main, "polite-marmot"));
         // An empty name is the same as none
         let blank = plan_into(&main, "polite-marmot", Some("main"), Some(Path::new("")), None)
-            .expect("計画できる");
+            .expect("it can be planned");
         assert_eq!(blank.folder, same.folder);
 
         // A place already taken is refused here, not when the button is pressed
@@ -1534,7 +1534,7 @@ tools/conpty.ps1"));
         let main = repo("long");
         let deep = "feature/".repeat(24) + "end";
         let at = folder_for(&main, &deep);
-        assert!(at.starts_with(away_from_home()), "長すぎるのに逃がしていない: {at:?}");
+        assert!(at.starts_with(away_from_home()), "too long, but not moved somewhere shorter: {at:?}");
         // The short one is left where branches belong
         assert!(folder_for(&main, "polite-marmot").starts_with(branches_root()));
     }
@@ -1545,7 +1545,7 @@ tools/conpty.ps1"));
         let root = real_branches_root();
         match home_dir().filter(|h| !synced(h) && writable(h)) {
             Some(home) => {
-                assert!(root.starts_with(&home), "自分のフォルダの下に無い: {root:?}");
+                assert!(root.starts_with(&home), "not under the person's own folder: {root:?}");
                 // `Path::ends_with` matches whole path parts, not the end
                 // of the text, so one spelling answers on every system
                 assert!(root.ends_with("SHIKISHA-TERM/branches"), "{root:?}");
@@ -1572,7 +1572,7 @@ tools/conpty.ps1"));
             ["git", "-C", "D:/work/myproject", "worktree", "add", "-b", "feature/login",
              "D:/work/myproject.worktrees/feature/login", "origin/main"]
         );
-        assert_eq!(plan.line(), plan.argv().join(" "), "見せる行と走る行が同じ");
+        assert_eq!(plan.line(), plan.argv().join(" "), "the line shown and the line run are the same");
         // A branch that already exists is checked out rather than made, and
         // then there is nothing for it to grow from
         let old = Plan { fresh: false, ..plan };
@@ -1587,10 +1587,10 @@ tools/conpty.ps1"));
     fn a_name_git_would_refuse_is_refused_here_first() {
         for bad in ["", " ", "/leading", "trailing/", "two//slashes", "up..down",
                     "back\\slash", "with space", "star*", "colon:here", "x.lock"] {
-            assert!(!name_is_usable(bad.trim()) || bad.trim().is_empty(), "通してはいけない: {bad:?}");
+            assert!(!name_is_usable(bad.trim()) || bad.trim().is_empty(), "must not be let through: {bad:?}");
         }
         for good in ["main", "feature/login", "fix/crash-on-open", "work-2", "release/1.2.3"] {
-            assert!(name_is_usable(good), "普通の名前が通らない: {good:?}");
+            assert!(name_is_usable(good), "an ordinary name does not get through: {good:?}");
         }
     }
 
@@ -1602,33 +1602,33 @@ tools/conpty.ps1"));
     #[test]
     fn a_branch_can_be_called_something_else_later() {
         let Some(main) = real_repo("rename") else { return };
-        let plan = plan(&main, "mighty-gannet", Some("main")).expect("計画できる");
-        create(&plan).expect("作れる");
+        let plan = plan(&main, "mighty-gannet", Some("main")).expect("it can be planned");
+        create(&plan).expect("it can be made");
         let folder = plan.folder.clone();
         git(&main, &["config", &format!("branch.{}.shikishaBase", "mighty-gannet"), "main"]);
 
         // Read before it runs, and it is the line that runs
-        let r = rename_plan(&folder, " fix/crash ").expect("改名を計画できる");
+        let r = rename_plan(&folder, " fix/crash ").expect("a rename can be planned");
         assert_eq!(r.from, "mighty-gannet");
-        assert_eq!(r.to, "fix/crash", "前後の空白は落とす");
+        assert_eq!(r.to, "fix/crash", "surrounding spaces are dropped");
         assert!(r.line().contains("branch -m mighty-gannet fix/crash"), "{}", r.line());
-        rename(&r).expect("改名できる");
+        rename(&r).expect("it can be renamed");
 
         assert_eq!(crate::repo::branch_of(&folder).as_deref(), Some("fix/crash"));
         // Where it grew from is a fact about the branch, so it comes along
         let note = std::process::Command::new("git")
             .arg("-C").arg(&folder)
             .args(["config", "--get", "branch.fix/crash.shikishaBase"])
-            .output().expect("git が動く");
-        assert_eq!(String::from_utf8_lossy(&note.stdout).trim(), "main", "生まれの記録が消えた");
+            .output().expect("git runs");
+        assert_eq!(String::from_utf8_lossy(&note.stdout).trim(), "main", "the record of where it came from is gone");
         // The folder stays put: it was named on the first day and nothing moves
-        assert!(folder.exists(), "フォルダが動いてしまった");
+        assert!(folder.exists(), "the folder moved");
 
         // A name git would refuse never reaches git
         assert!(rename_plan(&folder, "two words").is_err());
         assert!(rename_plan(&folder, "").is_err());
         // The project's own folder is not a branch cut from it
-        assert!(rename_plan(&main, "whatever").is_err(), "本体の枝を改名できてしまう");
+        assert!(rename_plan(&main, "whatever").is_err(), "the main checkout's branch can be renamed");
     }
 
     /// A repository git itself made, or nothing. Skipped rather than failed
@@ -1662,11 +1662,11 @@ tools/conpty.ps1"));
         let main = repo("suggest");
         let drawn: std::collections::HashSet<String> =
             (0..20).map(|_| suggest(&main)).collect();
-        assert!(drawn.len() > 15, "20回引いて{}種類しか出ない", drawn.len());
+        assert!(drawn.len() > 15, "20 draws gave only {} different names", drawn.len());
         for name in &drawn {
-            assert!(name_is_usable(name), "git が受け取らない名前: {name:?}");
-            assert_eq!(name.matches('-').count(), 1, "2語でつながっていない: {name:?}");
-            assert!(!name.starts_with("work-"), "数字の名前に落ちている: {name:?}");
+            assert!(name_is_usable(name), "a name git will not take: {name:?}");
+            assert_eq!(name.matches('-').count(), 1, "not two words joined: {name:?}");
+            assert!(!name.starts_with("work-"), "it fell back to a numbered name: {name:?}");
         }
     }
 
@@ -1684,7 +1684,7 @@ tools/conpty.ps1"));
         let out = fan(&main, "kanban", Some("main"), &ais);
         let names: Vec<String> = out.iter().map(|(_, p)| p.as_ref().unwrap().branch.clone()).collect();
         assert_eq!(names, ["kanban-claude", "kanban-codex", "kanban-gemini"]);
-        assert_eq!(out[2].0, "gemini", "AI の名前は整えて持つ");
+        assert_eq!(out[2].0, "gemini", "the AI's name is kept tidied");
         // Each gets its own folder, and every line is the one that will run
         let folders: std::collections::HashSet<_> =
             out.iter().map(|(_, p)| p.as_ref().unwrap().folder.clone()).collect();
@@ -1692,7 +1692,7 @@ tools/conpty.ps1"));
         assert!(out.iter().all(|(_, p)| p.as_ref().unwrap().line().contains("worktree add")));
         // A name git would refuse is refused per branch, and the others still plan
         let bad = fan(&main, "kan ban", Some("main"), &ais);
-        assert!(bad.iter().all(|(_, p)| p.is_err()), "空白入りの名前が通った");
+        assert!(bad.iter().all(|(_, p)| p.is_err()), "a name with a space got through");
     }
 
     #[test]
@@ -1703,7 +1703,7 @@ tools/conpty.ps1"));
         let git = |args: &[&str]| {
             let mut run = std::process::Command::new("git");
             run.arg("-C").arg(&main).args(args);
-            let out = crate::detach_console(&mut run).output().expect("git が要る");
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         git(&["init", "-q", "-b", "main"]);
@@ -1714,22 +1714,22 @@ tools/conpty.ps1"));
         git(&["commit", "-qm", "first"]);
 
         let cut = plan(&main, "feature/login", None).unwrap();
-        assert!(cut.fresh, "まだ無い枝");
-        assert_eq!(cut.base, "main", "remote が無ければ今いる所から、その名前で");
+        assert!(cut.fresh, "a branch that does not exist yet");
+        assert_eq!(cut.base, "main", "with no remote, from where it is now, under that name");
         create(&cut).unwrap();
 
         let made = &cut.folder;
-        assert!(made.join("readme.md").exists(), "中身が入っている");
+        assert!(made.join("readme.md").exists(), "the contents are there");
         assert_eq!(crate::repo::branch_of(made).as_deref(), Some("feature/login"));
-        assert_eq!(crate::repo::family_of(made), crate::repo::family_of(&main), "同じ家族");
-        assert!(crate::repo::is_linked(made), "本体から切った枝である");
+        assert_eq!(crate::repo::family_of(made), crate::repo::family_of(&main), "the same family");
+        assert!(crate::repo::is_linked(made), "it is a branch cut from the main checkout");
         // Both asked the same way. Comparing against the path this test wrote
         // would be comparing an answer with a spelling, and a machine whose
         // temporary folder is handed out short (`RUNNER~1`) has two of those
         assert_eq!(
             crate::repo::main_checkout(made),
             crate::repo::main_checkout(&main),
-            "枝から本体に戻れていない"
+            "it cannot get back to the main checkout from the branch"
         );
 
         // Where it grew from, written into the repository itself
@@ -1739,15 +1739,15 @@ tools/conpty.ps1"));
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "main");
 
         // Asking for the same branch twice does not quietly make a second one
-        assert!(create(&cut).is_err(), "同じ場所に二度作らない");
+        assert!(create(&cut).is_err(), "it does not make it twice in the same place");
         // Nor does it get as far as the button: a folder already standing there
         // is said while the name is still being typed
-        assert!(plan(&main, "feature/login", None).is_err(), "押すまで分からない");
+        assert!(plan(&main, "feature/login", None).is_err(), "it is not known until pressed");
         // With the folder gone, the branch that now exists is checked out
         // rather than made again
-        crate::worktree::discard(made).expect("片付く");
+        crate::worktree::discard(made).expect("cleaned up");
         let again = plan(&main, "feature/login", None).unwrap();
-        assert!(!again.fresh, "既にある枝は作り直さない");
+        assert!(!again.fresh, "an existing branch is not made again");
 
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
@@ -1761,7 +1761,7 @@ tools/conpty.ps1"));
         let git = |args: &[&str]| {
             let mut run = std::process::Command::new("git");
             run.arg("-C").arg(&main).args(args);
-            let out = crate::detach_console(&mut run).output().expect("git が要る");
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         git(&["init", "-q", "-b", "main"]);
@@ -1778,22 +1778,22 @@ tools/conpty.ps1"));
         let offered = carryables(&main);
         let named = |n: &str| offered.iter().find(|c| c.name == n);
         // Only what git was told to ignore, and only what is really there
-        assert!(named("readme.md").is_none(), "追跡されているものは出さない");
+        assert!(named("readme.md").is_none(), "tracked files are not offered");
         assert!(named(".gitignore").is_none());
-        assert!(named("build").is_none(), "無いものは出さない");
-        let modules = named("node_modules").expect("node_modules が出ていない");
-        assert!(modules.folder && modules.on, "重いものは既定で持って行く");
-        let env = named(".env").expect(".env が出ていない");
-        assert!(!env.folder && !env.on, "生きた鍵は既定では持って行かない");
+        assert!(named("build").is_none(), "missing things are not offered");
+        let modules = named("node_modules").expect("node_modules is not offered");
+        assert!(modules.folder && modules.on, "heavy things are taken along by default");
+        let env = named(".env").expect(".env is not offered");
+        assert!(!env.folder && !env.on, "live keys are not taken along by default");
 
         // Bringing them: a folder is linked, a file is copied
         let cut = plan(&main, "feature/login", None).unwrap();
         create(&cut).unwrap();
         let missed = carry_into(&cut, &["node_modules".to_string(), ".env".to_string()]);
-        assert!(missed.is_empty(), "持って行けなかったもの: {missed:?}");
+        assert!(missed.is_empty(), "what could not be taken along: {missed:?}");
         assert!(
             cut.folder.join("node_modules").join("left-pad").join("index.js").exists(),
-            "リンクの向こうが見えていない"
+            "what the link points to cannot be seen"
         );
         assert_eq!(std::fs::read_to_string(cut.folder.join(".env")).unwrap(), "TOKEN=live\n");
         // The copy is a copy: editing it in the branch leaves the original be
@@ -1821,7 +1821,7 @@ tools/conpty.ps1"));
         let git = |args: &[&str]| {
             let mut run = std::process::Command::new("git");
             run.arg("-C").arg(&main).args(args);
-            let out = crate::detach_console(&mut run).output().expect("git が要る");
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         git(&["init", "-q", "-b", "main"]);
@@ -1836,24 +1836,24 @@ tools/conpty.ps1"));
 
         // The project's own folder is not a branch and is never thrown away,
         // however it is asked
-        assert!(discard(&main).is_err(), "本体を消してはいけない");
+        assert!(discard(&main).is_err(), "the main checkout must not be deleted");
         assert!(main.join("readme.md").exists());
 
         // Work that only exists here is the one thing this must not take
         std::fs::write(cut.folder.join("notes.md"), "half an idea\n").unwrap();
-        assert!(discard(&cut.folder).is_err(), "未コミットがあるのに消した");
-        assert!(cut.folder.join("notes.md").exists(), "消えてしまった");
+        assert!(discard(&cut.folder).is_err(), "it deleted with uncommitted changes");
+        assert!(cut.folder.join("notes.md").exists(), "it is gone");
 
         // Once there is nothing to lose, it goes -- and git stops listing it
         std::fs::remove_file(cut.folder.join("notes.md")).unwrap();
         discard(&cut.folder).unwrap();
-        assert!(!cut.folder.exists(), "フォルダが残っている");
+        assert!(!cut.folder.exists(), "the folder is still there");
         let mut ask = std::process::Command::new("git");
         ask.arg("-C").arg(&main).args(["worktree", "list", "--porcelain"]);
         let listed = crate::detach_console(&mut ask).output().unwrap();
         assert!(
             !String::from_utf8_lossy(&listed.stdout).contains("feature/gone"),
-            "git がまだ持っている"
+            "git still holds it"
         );
         // Asking again is not an error: it is already how it was asked to be
         discard(&cut.folder).unwrap();
@@ -1879,17 +1879,17 @@ tools/conpty.ps1"));
 ").unwrap();
 
         let found = bases(&main);
-        assert_eq!(found.first().map(String::as_str), Some("origin/main"), "既定が先頭: {found:?}");
+        assert_eq!(found.first().map(String::as_str), Some("origin/main"), "the default comes first: {found:?}");
         for want in ["origin/main", "main", "feature/login", "old-thing"] {
-            assert!(found.iter().any(|b| b == want), "{want} が無い: {found:?}");
+            assert!(found.iter().any(|b| b == want), "{want} is missing: {found:?}");
         }
         // The pointer at another branch is not a branch anyone starts from
-        assert!(!found.iter().any(|b| b.ends_with("HEAD")), "HEAD を出している: {found:?}");
+        assert!(!found.iter().any(|b| b.ends_with("HEAD")), "it offers HEAD: {found:?}");
         // Said once each
         let mut sorted = found.clone();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), found.len(), "重複がある: {found:?}");
+        assert_eq!(sorted.len(), found.len(), "there are duplicates: {found:?}");
     }
 
     #[test]

@@ -5195,10 +5195,10 @@ mod stamp_tests {
     #[test]
     fn the_stamp_sorts_by_time() {
         let s = super::local_stamp("%Y%m%d%H%M%S");
-        assert_eq!(s.len(), 14, "桁が違う: {s}");
-        assert!(s.chars().all(|c| c.is_ascii_digit()), "数字以外がある: {s}");
-        let year: u32 = s[..4].parse().expect("年が読めない");
-        assert!((2020..2200).contains(&year), "年がおかしい: {s}");
+        assert_eq!(s.len(), 14, "wrong number of digits: {s}");
+        assert!(s.chars().all(|c| c.is_ascii_digit()), "there is something that is not a digit: {s}");
+        let year: u32 = s[..4].parse().expect("the year cannot be read");
+        assert!((2020..2200).contains(&year), "the year is wrong: {s}");
         let month: u32 = s[4..6].parse().unwrap();
         let day: u32 = s[6..8].parse().unwrap();
         assert!((1..=12).contains(&month) && (1..=31).contains(&day), "{s}");
@@ -5275,7 +5275,7 @@ mod tests {
             .expect("table");
         assert!(
             plain.get::<mlua::Value>("id").map(|v| v.is_nil()).unwrap_or(false),
-            "id が無いタブは nil であるべき (空文字だと id無し同士が一致してしまう)"
+            "a tab with no id should be nil (an empty string would make id-less tabs match each other)"
         );
     }
 
@@ -5296,7 +5296,7 @@ mod tests {
         let names: Vec<String> =
             crate::grants::CATALOG.iter().map(|c| c.name.to_string()).collect();
         let src = include_str!("hooks.rs");
-        assert!(names.len() > 40, "命令の抽出に失敗している ({} 件)", names.len());
+        assert!(names.len() > 40, "extracting the commands failed ({} found)", names.len());
 
         // The `tab` table an event receives, built in tab_table below
         let mut fields: Vec<&str> = Vec::new();
@@ -5309,7 +5309,7 @@ mod tests {
                 }
             }
         }
-        assert!(fields.len() > 5, "tab の項目の抽出に失敗している");
+        assert!(fields.len() > 5, "extracting the tab fields failed");
 
         for (doc, text) in [
             ("AUTOMATION.md", include_str!("../../../docs/AUTOMATION.md")),
@@ -5321,13 +5321,13 @@ mod tests {
                 .collect();
             assert!(
                 missing.is_empty(),
-                "{doc} に載っていない命令: {missing:?} (AIに渡す仕様書なので、無い＝使えない)"
+                "commands missing from {doc}: {missing:?} (this is the spec handed to the AI, so missing means unusable)"
             );
             let no_var: Vec<&&str> = fields
                 .iter()
                 .filter(|f| !text.contains(&format!("tab.{f}")))
                 .collect();
-            assert!(no_var.is_empty(), "{doc} に載っていない tab の項目: {no_var:?}");
+            assert!(no_var.is_empty(), "tab fields missing from {doc}: {no_var:?}");
         }
     }
 
@@ -5364,12 +5364,12 @@ mod tests {
                 }
                 assert!(
                     body.contains(&format!("local function {helper}(")),
-                    "テンプレートが {helper} を呼んでいるのに、そのテンプレート内に定義が無い"
+                    "a template calls {helper} but does not define it within itself"
                 );
                 checked += 1;
             }
         }
-        assert!(checked > 0, "テンプレートを1つも見ていない (目印が変わった?)");
+        assert!(checked > 0, "not a single template was checked (did the marker change?)");
     }
 
     #[test]
@@ -5441,7 +5441,7 @@ mod tests {
         ));
 
         e.fire("on_question", &ctx(1, ""), Some("ファイルを削除しますか?"));
-        assert!(e.drain_commands().is_empty(), "危険系はnil=人間へ");
+        assert!(e.drain_commands().is_empty(), "dangerous ones return nil = to a person");
     }
 
     #[test]
@@ -5457,7 +5457,7 @@ mod tests {
         )
         .unwrap();
         e.fire("on_start", &ctx(1, ""), None);
-        assert!(e.drain_commands().is_empty(), "まだ待機中");
+        assert!(e.drain_commands().is_empty(), "still waiting");
 
         // Condition not met -> stays pending
         e.tick_pending(&|_| Some("loading...".to_string()));
@@ -5503,7 +5503,7 @@ mod tests {
         e.fire("on_done", &ctx(1, "code"), None);
         let cmds = e.drain_commands();
         let Command::SendPrompt { target, .. } = &cmds[0] else {
-            panic!("送信コマンドが積まれるはず");
+            panic!("a send command should have been queued");
         };
         // Even after reordering, the same id still resolves to the correct tab
         let key = |n: &str| TabKey { id: Some(n.to_string()) };
@@ -5512,7 +5512,7 @@ mod tests {
         // A nonexistent id can't resolve (avoids false hits)
         assert_eq!(target.resolve(&[key("別名")]), None);
         // ...and neither can the name on screen, however tempting it looks
-        assert_eq!(target.resolve(&[key("rev")]), None, "別の呼び名では届かない");
+        assert_eq!(target.resolve(&[key("rev")]), None, "a different name does not reach it");
     }
 
     #[test]
@@ -5529,9 +5529,9 @@ mod tests {
         .unwrap();
         e.fire("on_done", &ctx(1, ""), None);
         let cmds = e.drain_commands();
-        assert_eq!(cmds.len(), 2, "show 2回ぶん積まれる");
+        assert_eq!(cmds.len(), 2, "two shows are queued");
         let Command::ShowTab { target } = &cmds[0] else {
-            panic!("ShowTabが積まれるはず");
+            panic!("a ShowTab should have been queued");
         };
         // An id resolves to the screen's index (sessions and browsers are listed together)
         let key = |n: &str| TabKey { id: Some(n.to_string()) };
@@ -5539,7 +5539,7 @@ mod tests {
         // 0 is the dashboard (INDEX). resolve doesn't catch it; main handles it specially
         assert!(
             matches!(&cmds[1], Command::ShowTab { target: TabRef::Index(0) }),
-            "show(0) は INDEX"
+            "show(0) is INDEX"
         );
     }
 
@@ -5580,7 +5580,7 @@ mod tests {
         e.fire("on_start", &ctx(1, ""), None);
         let path = super::rally_record_path();
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.starts_with("-- SHIKISHA"), "ヘッダが要る");
+        assert!(content.starts_with("-- SHIKISHA"), "a header is needed");
         assert!(content.contains(r##"shikisha.browser_click("br", "#login")"##));
         assert!(content.contains(r##"shikisha.browser_fill("br", "#body", "hi")"##));
         let _ = std::fs::remove_file(&path);
@@ -5602,7 +5602,7 @@ mod tests {
             reason: Some("エディタ表示".into()),
             ..Default::default()
         }]);
-        let id = e.load_browser_agent("br", &stops).expect("内蔵司令塔が読めない");
+        let id = e.load_browser_agent("br", &stops).expect("the built-in conductor cannot be read");
         e.set_tab(1, id);
         e.fire("on_start", &ctx(1, ""), None);
         let cmds = e.drain_commands();
@@ -5612,7 +5612,7 @@ mod tests {
                     if text.contains("in.lua")
                         && text.contains("browser_go")
                         && text.contains("input field"))),
-            "on_start がブラウザ操作プロトコル(入力欄でゴール)を送っていない: {cmds:?}"
+            "on_start does not send the browser protocol (goal via the input field): {cmds:?}"
         );
     }
 
@@ -5665,7 +5665,7 @@ mod tests {
                 Command::SendPrompt { text, .. } => Some(text.clone()),
                 _ => None,
             })
-            .expect("何も送っていない");
+            .expect("nothing was sent");
         assert_eq!(sent, "the answer|> menu
   1. yes|line one
 |9");
@@ -5686,7 +5686,7 @@ mod tests {
         let cmds = e.drain_commands();
         assert!(
             cmds.iter().any(|c| matches!(c, Command::SendPrompt { text, .. } if text == "[]40")),
-            "記録の無いタブの読み出しが失敗している: {cmds:?}"
+            "reading a tab with no record failed: {cmds:?}"
         );
     }
 
@@ -5703,7 +5703,7 @@ mod tests {
     fn a_move_written_for_a_turn_that_is_over_is_not_used_for_the_next_one() {
         let _g = OwnRally::new();
         let mut e = HookEngine::new().unwrap();
-        let id = e.load_browser_agent("br", "{}").expect("内蔵司令塔が読めない");
+        let id = e.load_browser_agent("br", "{}").expect("the built-in conductor cannot be read");
         e.set_tab(1, id);
         e.fire("on_start", &ctx(1, ""), None);
         let opening = e
@@ -5717,7 +5717,7 @@ mod tests {
             .join("\n");
         assert!(
             opening.contains("in.1.lua"),
-            "最初の手番の紙に番号がついていない: {opening}"
+            "the first turn's file has no number: {opening}"
         );
 
         let run = crate::exchange::latest_run().expect("run folder");
@@ -5736,7 +5736,7 @@ mod tests {
             .join("\n");
         assert!(
             after.contains("in.2.lua") && !after.contains("in.1.lua"),
-            "手番が進んだのに、同じ紙を指したままになっている: {after}"
+            "the turn moved on, but it still points at the same file: {after}"
         );
 
         // Now the late copy of turn 1's move arrives, after turn 1 was answered
@@ -5746,11 +5746,11 @@ mod tests {
         assert!(
             cmds.iter().any(|c| matches!(c,
                 Command::Note { text, .. } if text.contains("previous turn"))),
-            "遅れて届いた手が、黙って捨てられている: {cmds:?}"
+            "a move that arrived late is quietly thrown away: {cmds:?}"
         );
         assert!(
             !run.join("in.1.lua").exists(),
-            "使わないと決めた紙が残っている"
+            "a file decided not to be used is still there"
         );
     }
 
@@ -5782,20 +5782,20 @@ mod tests {
         assert!(
             cmds.iter().any(|c| matches!(c,
                 Command::Note { target: TabRef::Index(1), text } if text.contains("nothing waiting"))),
-            "見送ったことが、そのタブの画面に出ていない: {cmds:?}"
+            "skipping it is not shown on that tab's screen: {cmds:?}"
         );
         assert!(
             cmds.iter()
                 .any(|c| matches!(c, Command::Log(t) if t.contains("nothing waiting"))),
-            "見送ったことが記録に残っていない: {cmds:?}"
+            "skipping it is not recorded: {cmds:?}"
         );
         assert!(
             !cmds.iter().any(|c| matches!(c, Command::Log(t) if t.contains("Lua error"))),
-            "見送りが失敗として記録されている: {cmds:?}"
+            "skipping is recorded as a failure: {cmds:?}"
         );
         assert!(
             !cmds.iter().any(|c| matches!(c, Command::SendPrompt { .. })),
-            "skip の下の行が実行されている: {cmds:?}"
+            "lines below skip were run: {cmds:?}"
         );
 
         // No reason is still a decision worth recording
@@ -5804,7 +5804,7 @@ mod tests {
         assert!(
             cmds.iter().any(|c| matches!(c, Command::Note { .. }))
                 && !cmds.iter().any(|c| matches!(c, Command::SendPrompt { .. })),
-            "理由なしの skip が働いていない: {cmds:?}"
+            "skip without a reason does not work: {cmds:?}"
         );
 
         // ...and the next run is untouched. Skipping is not a broken script
@@ -5813,7 +5813,7 @@ mod tests {
         assert!(
             cmds.iter().any(|c| matches!(c,
                 Command::SendPrompt { text, .. } if text == "carried on")),
-            "見送った後の回まで止まっている: {cmds:?}"
+            "it stays stopped even for the round after the skip: {cmds:?}"
         );
     }
 
@@ -5884,7 +5884,7 @@ mod tests {
             for promise in promises {
                 assert!(
                     text.contains(promise),
-                    "{who} の最初の指示に約束「{promise}」が無い: {text}"
+                    "{who}'s first instructions do not contain the promise '{promise}': {text}"
                 );
             }
         }
@@ -5933,7 +5933,7 @@ mod tests {
             e.drain_commands()
                 .iter()
                 .any(|c| matches!(c, Command::Log(m) if m.contains("mine ran"))),
-            "狙いを外したのに、そのタブ自身の自動化が戻っていない"
+            "the target was removed, but the tab's own automation did not come back"
         );
     }
 
@@ -5964,7 +5964,7 @@ mod tests {
         let empty: &[crate::config::StopCond] = &[];
         let stops = crate::config::stops_to_lua(empty);
         let mut e = HookEngine::new().unwrap();
-        let id = e.load_browser_agent("br", &stops).expect("内蔵司令塔が読めない");
+        let id = e.load_browser_agent("br", &stops).expect("the built-in conductor cannot be read");
         e.set_tab(1, id);
         e
     }
@@ -6064,7 +6064,7 @@ mod tests {
                 false,
                 "",
             )
-            .expect("議論の内蔵司令塔が読めない");
+            .expect("the built-in discussion conductor cannot be read");
         e.set_tab(1, a);
         e.fire("on_start", &ctx(1, ""), None);
         let cmds = e.drain_commands();
@@ -6072,7 +6072,7 @@ mod tests {
             cmds.iter().any(|c| matches!(c,
                 Command::SendPrompt { text, .. }
                     if text.contains("say.1.txt") && text.contains("participant") && text.contains("open the discussion"))),
-            "口火役の on_start が待機の案内をしていない: {cmds:?}"
+            "the opener's on_start does not explain the waiting: {cmds:?}"
         );
     }
 
@@ -6093,9 +6093,9 @@ mod tests {
             Command::SetResult { code, reason, origin } => {
                 assert_eq!(*code, 0);
                 assert_eq!(reason, "投稿できた");
-                assert_eq!(*origin, 3, "発したタブの番号を持つ");
+                assert_eq!(*origin, 3, "it carries the number of the tab it came from");
             }
-            other => panic!("SetResultが積まれるはず: {other:?}"),
+            other => panic!("a SetResult should have been queued: {other:?}"),
         }
     }
 
@@ -6127,19 +6127,19 @@ mod tests {
             })
             .collect();
         let find = |k: &str| logs.iter().find(|l| l.starts_with(k)).cloned().unwrap_or_default();
-        assert!(find("os=").contains("os"), "os が露出している: {:?}", find("os="));
-        assert!(find("write=").contains("write_file"), "write_file が使えてしまう: {:?}", find("write="));
-        assert!(find("load=").contains("load"), "load が使えてしまう: {:?}", find("load="));
+        assert!(find("os=").contains("os"), "os is exposed: {:?}", find("os="));
+        assert!(find("write=").contains("write_file"), "write_file can be used: {:?}", find("write="));
+        assert!(find("load=").contains("load"), "load can be used: {:?}", find("load="));
         assert!(
             find("wrong=").contains("Browser not allowed"),
-            "他タブを操作できてしまう: {:?}",
+            "other tabs can be driven: {:?}",
             find("wrong=")
         );
-        assert_eq!(find("hasclick="), "hasclick=nil", "browser_click は使えるはず");
-        assert_eq!(find("haspress="), "haspress=nil", "browser_press は使えるはず");
+        assert_eq!(find("hasclick="), "hasclick=nil", "browser_click should be usable");
+        assert_eq!(find("haspress="), "haspress=nil", "browser_press should be usable");
         assert!(
             find("badkey=").contains("Unknown key"),
-            "不正なキー名を弾いていない: {:?}",
+            "a bad key name is not rejected: {:?}",
             find("badkey=")
         );
     }
@@ -6224,7 +6224,7 @@ mod tests {
         for word in ["right", "row", "down", "col"] {
             assert!(
                 e.call_primitive("split_pane", &[serde_json::json!(word)]).is_ok(),
-                "{word} が通らない"
+                "{word} does not get through"
             );
         }
     }
@@ -6302,12 +6302,12 @@ mod tests {
             "run_scoped",  // the walled evaluator
             "lua",         // the full-powered one
         ] {
-            assert!(names.contains(&expected.to_string()), "{expected} が一覧に無い");
+            assert!(names.contains(&expected.to_string()), "{expected} is not in the list");
         }
         assert_eq!(
             e.call_primitive("list", &[]).unwrap(),
             serde_json::to_value(&names).unwrap(),
-            "内側から見た一覧と外側から見た一覧は同じもの"
+            "the list seen from inside and from outside is the same thing"
         );
     }
 
@@ -6343,13 +6343,13 @@ mod tests {
             return; // built outside a checkout
         }
         let rows = e.call_primitive("git_status", &[serde_json::json!("work")]).unwrap();
-        assert!(rows.is_array(), "変更の一覧が配列で返る: {rows:?}");
+        assert!(rows.is_array(), "the list of changes comes back as an array: {rows:?}");
         let head = e.call_primitive("git_branch", &[serde_json::json!("work")]).unwrap();
         assert!(head.is_object() || head.is_null(), "{head:?}");
         let lost = e.call_primitive("git_status", &[serde_json::json!("floating")]).unwrap_err();
         assert!(
             lost.contains(&crate::i18n::t("err.git.no_tab")),
-            "フォルダの無いタブはそう言われる: {lost}"
+            "a tab with no folder is told so: {lost}"
         );
     }
 
@@ -6387,7 +6387,7 @@ mod tests {
         .unwrap();
         let hunks =
             crate::git::split_hunks(&crate::git::diff(&dir, Some("f.txt"), false).unwrap());
-        assert_eq!(hunks.len(), 2, "離れた2箇所は2つの hunk");
+        assert_eq!(hunks.len(), 2, "two places far apart are two hunks");
         crate::git::apply(&dir, &hunks[0].patch, true, false).unwrap();
 
         let e = HookEngine::new().unwrap();
@@ -6398,11 +6398,11 @@ mod tests {
         let row = rows
             .as_array()
             .and_then(|r| r.iter().find(|r| r["path"] == "f.txt"))
-            .expect("変えたファイルが一覧に出る");
-        assert_eq!(row["index"], "M", "ステージ側は変更済み");
-        assert_eq!(row["work"], "M", "作業ツリー側も変更済み");
-        assert_eq!(row["staged"], true, "半分は次のコミットに入っている");
-        assert_eq!(row["unstaged"], true, "残りの半分はまだ入っていない");
+            .expect("the changed file shows in the list");
+        assert_eq!(row["index"], "M", "the staged side is modified");
+        assert_eq!(row["work"], "M", "the working tree side is modified too");
+        assert_eq!(row["staged"], true, "half is in the next commit");
+        assert_eq!(row["unstaged"], true, "the other half is not in yet");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -6415,7 +6415,7 @@ mod tests {
             let err = e
                 .call_primitive_as(None, crate::grants::Subject::Ai, name, &[])
                 .unwrap_err();
-            assert!(err.contains(name), "{name} が断られる理由に名前が入る: {err}");
+            assert!(err.contains(name), "the reason {name} is refused includes the name: {err}");
         }
     }
 
@@ -6426,7 +6426,7 @@ mod tests {
         // nothing to draw -- which is the hardest day to reproduce
         let e = HookEngine::new().unwrap();
         let empty = e.call_primitive("lua", &[serde_json::json!("return {}")]).unwrap();
-        assert_eq!(empty, serde_json::json!([null, []]), "空のテーブルは空の配列");
+        assert_eq!(empty, serde_json::json!([null, []]), "an empty table is an empty array");
         let filled = e.call_primitive("lua", &[serde_json::json!("return {1, 2}")]).unwrap();
         assert_eq!(filled, serde_json::json!([null, [1, 2]]));
         // A table with names in it is still an object
@@ -6446,12 +6446,12 @@ mod tests {
         let missing: Vec<&String> = live.difference(&listed).collect();
         assert!(
             missing.is_empty(),
-            "grants.rs の CATALOG に行が無い命令: {missing:?} — グループと既定を書いて足すこと"
+            "commands with no row in CATALOG in grants.rs: {missing:?} — add them with a group and a default"
         );
         let stale: Vec<&String> = listed.difference(&live).collect();
         assert!(
             stale.is_empty(),
-            "CATALOG に残っているが、もう存在しない命令: {stale:?} — 行を消すこと"
+            "commands still in CATALOG that no longer exist: {stale:?} — remove the rows"
         );
     }
 
@@ -6471,7 +6471,7 @@ mod tests {
         ] {
             let section = text
                 .split_once("## 9")
-                .unwrap_or_else(|| panic!("{name}: 命令の一覧 (9章) が見つからない"))
+                .unwrap_or_else(|| panic!("{name}: the list of commands (chapter 9) was not found"))
                 .1;
             let mut listed = std::collections::BTreeSet::new();
             let mut rest = section;
@@ -6489,12 +6489,12 @@ mod tests {
             let missing: Vec<&String> = known.difference(&listed).collect();
             assert!(
                 missing.is_empty(),
-                "{name} の9章に載っていない命令: {missing:?} — 引数と説明を書いて足すこと"
+                "commands missing from chapter 9 of {name}: {missing:?} — add them with arguments and a description"
             );
             let gone: Vec<&String> = listed.difference(&known).collect();
             assert!(
                 gone.is_empty(),
-                "{name} の9章が、もう存在しない命令を載せている: {gone:?}"
+                "chapter 9 of {name} lists commands that no longer exist: {gone:?}"
             );
         }
     }
@@ -6505,11 +6505,11 @@ mod tests {
         // is exactly the wall this screen exists to avoid
         for c in crate::grants::CATALOG {
             let key = crate::grants::text_key(c.name);
-            assert_ne!(crate::i18n::t(&key), key, "{key} を lang/en.json に足すこと");
+            assert_ne!(crate::i18n::t(&key), key, "add {key} to lang/en.json");
         }
         for g in crate::grants::Group::ORDER {
             let key = crate::grants::group_key(g);
-            assert_ne!(crate::i18n::t(&key), key, "{key} を lang/en.json に足すこと");
+            assert_ne!(crate::i18n::t(&key), key, "add {key} to lang/en.json");
         }
     }
 
@@ -6534,7 +6534,7 @@ mod tests {
             .map(|c| c.name.to_string())
             .collect();
         marked.sort();
-        assert_eq!(bound, marked, "牢屋の語彙と CATALOG の scoped 印がずれている");
+        assert_eq!(bound, marked, "the sandbox vocabulary and the scoped marks in CATALOG disagree");
     }
 
     #[test]
@@ -6543,10 +6543,10 @@ mod tests {
         let ai = e
             .call_primitive_as(None, crate::grants::Subject::Ai, "lua", &[serde_json::json!("return 1")])
             .unwrap_err();
-        assert!(ai.contains("lua"), "断る理由に命令の名前が入る: {ai}");
+        assert!(ai.contains("lua"), "the reason for refusing includes the command's name: {ai}");
         assert!(
             ai.contains(&crate::i18n::t("grant.who.ai")),
-            "誰に対して閉じているのかが書いてある: {ai}"
+            "it says who it is closed to: {ai}"
         );
         // ...and the person it was written for still has it
         assert_eq!(
@@ -6569,10 +6569,10 @@ mod tests {
         };
         let ai = seen(crate::grants::Subject::Ai);
         let human = seen(crate::grants::Subject::Human);
-        assert!(!ai.contains(&"lua".to_string()), "AIの一覧に閉じた命令が並んでいる");
+        assert!(!ai.contains(&"lua".to_string()), "a closed command is listed for the AI");
         assert!(!ai.contains(&"write_path".to_string()));
-        assert!(human.contains(&"lua".to_string()), "人の一覧からは消えていない");
-        assert!(ai.contains(&"send_to_tab".to_string()), "普通の命令はAIにも開いている");
+        assert!(human.contains(&"lua".to_string()), "it is not gone from the list for people");
+        assert!(ai.contains(&"send_to_tab".to_string()), "ordinary commands are open to the AI too");
     }
 
     #[test]
@@ -6616,12 +6616,12 @@ mod tests {
             )
             .unwrap();
         let said = out[0].as_str().unwrap_or_default().to_string();
-        assert!(said.contains(&refused), "AIの手は止まる: {said}");
+        assert!(said.contains(&refused), "the AI's move is stopped: {said}");
         // ...and the person's own run button is untouched by that decision
         let mine = e
             .run_browser_lua("br", "shikisha.browser_click('br', '#x')")
             .unwrap_or_default();
-        assert!(!mine.contains(&refused), "人の手まで止めてしまっている: {mine}");
+        assert!(!mine.contains(&refused), "it stops a person's move too: {mine}");
     }
 
     #[test]
@@ -6635,7 +6635,7 @@ mod tests {
         assert_eq!(
             e.call_primitive("lua", &[serde_json::json!(code)]).unwrap(),
             serde_json::json!([null, 3]),
-            "エラー無し(nil)に続いて、チャンクが返した値そのもの"
+            "no error (nil), followed by exactly what the chunk returned"
         );
         let targets: Vec<usize> = e
             .drain_commands()
@@ -6674,7 +6674,7 @@ mod tests {
             .expect("an endless loop has to come back as an error");
         assert!(
             err.contains(&crate::i18n::t("err.hooks.step_limit")),
-            "止めた理由が読み手に伝わる文言で返る: {err}"
+            "the reason it stopped comes back in words the reader understands: {err}"
         );
         // ...and the ceiling belongs to the entry, not to the process: the
         // very next run starts with a full allowance (None = no error)
@@ -6722,13 +6722,13 @@ mod tests {
             })
             .collect();
         let find = |k: &str| logs.iter().find(|l| l.starts_with(k)).cloned().unwrap_or_default();
-        assert_eq!(find("ret="), "ret=nil/2", "returnの値が返る");
-        assert_eq!(find("expr="), "expr=nil/あい", "裸の式もREPL式に値になる");
-        assert_eq!(find("stmt="), "stmt=nil/nil", "何も返さない文はout=nil");
+        assert_eq!(find("ret="), "ret=nil/2", "the return value comes back");
+        assert_eq!(find("expr="), "expr=nil/あい", "a bare expression becomes a value, REPL-style");
+        assert_eq!(find("stmt="), "stmt=nil/nil", "a statement that returns nothing gives out=nil");
         let tbl = find("tbl=");
         assert!(
             tbl.starts_with("tbl=nil/{") && tbl.contains('1') && tbl.contains("k=v"),
-            "テーブルは中身が見える形で文字列化される: {tbl}"
+            "a table is stringified so its contents can be seen: {tbl}"
         );
     }
 
@@ -6738,7 +6738,7 @@ mod tests {
         // The template (docs/rally-example) must parse, and the essentials of start and judging must work
         let dir = crate::repo_root().join("docs/rally-example");
         let mut e = HookEngine::new().unwrap();
-        let id = e.load_path(&dir).expect("雛形が読めない (構文エラー?)");
+        let id = e.load_path(&dir).expect("the template cannot be read (a syntax error?)");
         e.set_base(id);
 
         // on_start: sends the file-handoff protocol to the AI (has it write to in.lua rather than the screen)
@@ -6748,7 +6748,7 @@ mod tests {
             cmds.iter().any(|c| matches!(c,
                 Command::SendPrompt { text, .. }
                     if text.contains("in.lua") && text.contains("browser_go"))),
-            "on_start がファイル受け渡しのプロトコルを送っていない: {cmds:?}"
+            "on_start does not send the file hand-off protocol: {cmds:?}"
         );
 
         // on_done: the judge's safety net must emit an exit code (deterministically, even with no browser).
@@ -6760,12 +6760,12 @@ mod tests {
         let cmds = e.drain_commands();
         assert!(
             cmds.iter().any(|c| matches!(c, Command::SetResult { code: 125, .. })),
-            "審判(tokens上限)が終了コードを出していない: {cmds:?}"
+            "the judge (token limit) did not give an exit code: {cmds:?}"
         );
 
         // Must not auto-react to a conversation a human started (chain_depth=0)
         e.fire("on_done", &ctx(1, ""), None);
-        assert!(e.drain_commands().is_empty(), "人間の入力に自動反応してはいけない");
+        assert!(e.drain_commands().is_empty(), "it must not react to a person's input automatically");
     }
 
     #[test]
@@ -6778,7 +6778,7 @@ mod tests {
         assert_eq!(
             r.resolve(&[plain("実装"), with_id("reviewer", "レビュー担当")]),
             Some(2),
-            "タブ名を変えても壊れない"
+            "renaming the tab does not break it"
         );
         // Even with duplicate tab names, the ID still disambiguates
         let dup = [with_id("a", "claude"), with_id("b", "claude")];
@@ -6835,7 +6835,7 @@ mod tests {
         e.cancel_tab(1);
         std::thread::sleep(std::time::Duration::from_millis(1100));
         e.tick_pending(&|_| None);
-        assert!(e.drain_commands().is_empty(), "破棄後は再開されない");
+        assert!(e.drain_commands().is_empty(), "it does not resume after being discarded");
     }
 
     #[test]
@@ -6855,9 +6855,9 @@ mod tests {
         e.fire("on_question", &ctx(1, ""), Some("Do you want to proceed?"));
         e.fire("on_question", &ctx(1, ""), Some("ファイルを削除しますか"));
         let cmds = e.drain_commands();
-        assert!(matches!(&cmds[0], Command::Log(m) if m == "hi tab1"), "共通関数が使える");
+        assert!(matches!(&cmds[0], Command::Log(m) if m == "hi tab1"), "the shared function can be used");
         assert!(matches!(&cmds[1], Command::SendKeys { keys, .. } if keys == "1\r"));
-        assert_eq!(cmds.len(), 2, "削除確認は人間へ回るので送信されない");
+        assert_eq!(cmds.len(), 2, "the delete confirmation goes to a person, so nothing is sent");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -6977,7 +6977,7 @@ end
                 _ => None,
             })
             .collect();
-        assert_eq!(logs, vec!["n=1"], "別ファイルでも共有変数は共有される");
+        assert_eq!(logs, vec!["n=1"], "shared variables are shared across files too");
     }
 
 
@@ -7026,15 +7026,15 @@ end"#,
                 _ => None,
             })
             .collect();
-        assert_eq!(drafted.len(), 1, "下書きが1つだけ出るはず: {cmds:?}");
+        assert_eq!(drafted.len(), 1, "exactly one draft should come out: {cmds:?}");
         assert!(
             drafted[0].starts_with("tmp/LP20260806154212.html を読んでください。"),
-            "名前が渡っていない: {:?}",
+            "the name was not passed: {:?}",
             drafted[0]
         );
         assert!(
             drafted[0].ends_with("\n\n"),
-            "人が書き足すための空行が無い: {:?}",
+            "there is no empty line for a person to add to: {:?}",
             drafted[0]
         );
 
@@ -7048,7 +7048,7 @@ end"#,
         assert_eq!(
             logs,
             vec!["覚えている: tmp/LP20260806154212.html"],
-            "別ファイルへ名前が渡っていない"
+            "the name was not passed to the other file"
         );
     }
 
@@ -7129,15 +7129,15 @@ end"##
         }
         assert!(logs.contains(&"find=visible".to_string()), "{logs:?}");
         assert!(logs.contains(&"none=not_found".to_string()), "{logs:?}");
-        assert!(logs.contains(&"xpath=山田".to_string()), "XPathが効いていない: {logs:?}");
+        assert!(logs.contains(&"xpath=山田".to_string()), "XPath is not working: {logs:?}");
         assert!(
             logs.contains(&"out=押された:それは\"良い\"案です'".to_string()),
-            "値が崩れているか、押せていない: {logs:?}"
+            "the value is garbled, or it could not press: {logs:?}"
         );
-        assert!(logs.contains(&"raise=false".to_string()), "既定で止まっていない: {logs:?}");
+        assert!(logs.contains(&"raise=false".to_string()), "it does not stop by default: {logs:?}");
         assert!(
             logs.contains(&"continue=not_found".to_string()),
-            "on_missing=continue で進めていない: {logs:?}"
+            "on_missing=continue did not carry on: {logs:?}"
         );
         assert!(logs.contains(&"html=true".to_string()), "{logs:?}");
     }
@@ -7149,8 +7149,8 @@ end"##
         let e = e.unwrap();
         let io_val: Value = e.lua.globals().get("io").unwrap();
         let os_val: Value = e.lua.globals().get("os").unwrap();
-        assert!(matches!(io_val, Value::Nil), "ioは無効のはず");
-        assert!(matches!(os_val, Value::Nil), "osは無効のはず");
+        assert!(matches!(io_val, Value::Nil), "io should be disabled");
+        assert!(matches!(os_val, Value::Nil), "os should be disabled");
     }
 }
 
@@ -7197,12 +7197,12 @@ mod ending_tests {
         assert_eq!(ending_hook(TabState::Limit), "on_limit");
         assert_eq!(ending_hook(TabState::Background), "on_background");
         for s in [TabState::Busy, TabState::Wait, TabState::Question, TabState::Exited] {
-            assert_eq!(ending_hook(s), "on_done", "{} の受け皿", s.label());
+            assert_eq!(ending_hook(s), "on_done", "where {} is received", s.label());
         }
         // Every name it can answer has to be a hook a script may define, or it
         // would resolve to nothing for the rest of time
         for s in [TabState::Done, TabState::Failed, TabState::Limit, TabState::Background] {
-            assert!(HOOK_NAMES.contains(&ending_hook(s)), "{} の受け皿が未登録", s.label());
+            assert!(HOOK_NAMES.contains(&ending_hook(s)), "nothing is registered to receive {}", s.label());
         }
     }
 
@@ -7223,7 +7223,7 @@ mod ending_tests {
         assert_eq!(
             said(&mut e),
             ["done:FAILED", "done:LIMIT", "done:BACKGROUND", "done:DONE"],
-            "on_done しか書いていない台本が、終わり方を取りこぼしている"
+            "a script that only defines on_done misses some ways of ending"
         );
     }
 
@@ -7246,7 +7246,7 @@ mod ending_tests {
         assert_eq!(
             said(&mut e),
             ["failed", "done", "done"],
-            "名前のついた終わり方が on_done と二重に鳴っている"
+            "a named way of ending fires twice, along with on_done"
         );
     }
 }

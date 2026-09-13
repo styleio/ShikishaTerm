@@ -10052,9 +10052,9 @@ mod tests {
     fn the_board_can_register_a_phone_for_push() {
         let page = super::page_for(false);
         assert_eq!(page.matches("async function shikishaSubscribe(").count(), 1);
-        assert!(!page.contains("{{PUSH_JS}}"), "登録の JavaScript が流し込まれていない");
-        assert!(page.contains("id=\"pushbar\""), "通知を受け取るバーが無い");
-        assert!(page.contains("S.push_wanted"), "スマホが求められているかを見ていない");
+        assert!(!page.contains("{{PUSH_JS}}"), "the registration JavaScript was not injected");
+        assert!(page.contains("id=\"pushbar\""), "there is no bar to receive notifications");
+        assert!(page.contains("S.push_wanted"), "it does not check whether the phone is wanted");
     }
 
     /// Every message this screen shows goes through the one shared toast.
@@ -10067,21 +10067,21 @@ mod tests {
     fn every_message_is_the_shared_toast() {
         let page = super::page_for(false);
         for once in ["let toastTimer", "function toast(", "function hideToast("] {
-            assert_eq!(page.matches(once).count(), 1, "{once} が重複または欠落している");
+            assert_eq!(page.matches(once).count(), 1, "{once} is duplicated or missing");
         }
         assert!(
             !page.contains("attachtoast") && !page.contains("attachToast"),
-            "この画面だけの古いトーストが残っている"
+            "an old toast used only by this screen is still there"
         );
         assert!(
             !page.contains(r#"getElementById("flash")"#),
-            "消えないメッセージ行が残っている"
+            "a message line that never goes away is still there"
         );
         // The app's message is state, so it must be shown by comparing it —
         // otherwise every repaint would put a dismissed message straight back up
         assert!(
             page.contains("if (S.flash !== lastFlash)"),
-            "アプリからのメッセージが値の変化で出ていない"
+            "messages from the app are not shown when the value changes"
         );
     }
 
@@ -10112,24 +10112,24 @@ mod tests {
         if let Some(at) = p.find(head) {
             let opened = p[..at]
                 .rfind("for (const k of [")
-                .expect("動的に読む一覧が見つからない");
+                .expect("the list read at run time was not found");
             let list = &p[opened..at];
-            let list = &list[list.find('[').unwrap() + 1..list.find(']').expect("閉じていない")];
+            let list = &list[list.find('[').unwrap() + 1..list.find(']').expect("not closed")];
             for k in list.split(',') {
                 let k = k.trim().trim_matches('"');
                 if k.is_empty() {
                     continue;
                 }
                 let key = format!("tui.help.{k}");
-                assert!(en.get(&key).is_some(), "lang/en.json に無いキー: {key}");
+                assert!(en.get(&key).is_some(), "a key missing from lang/en.json: {key}");
                 checked += 1;
             }
         }
         // Not a count: the list is as long as it happens to be. What matters is
         // that the form is still there to be read, and that reading it found
         // something -- a silent zero is how a check stops checking
-        assert!(p.contains(head), "動的に読む形が消えた: {head}");
-        assert!(checked > 0, "動的な訳語を読めていない");
+        assert!(p.contains(head), "the shape that is read at run time is gone: {head}");
+        assert!(checked > 0, "no translation read at run time was checked");
     }
 
     /// The board's "edit settings" entry must never be forwarded as a keystroke.
@@ -10147,17 +10147,17 @@ mod tests {
             .iter()
             .find(|(_, w)| *w == "tui.menu.settings")
             .copied()
-            .expect("盤面に設定の項目が無い");
+            .expect("the board has no settings item");
         assert!(
             super::WINDOW_ONLY_MENU.contains(&key),
-            "設定の打鍵は窓にしか届かない。遠隔の門は {key} を通してはいけない"
+            "settings keystrokes only reach the window. The remote gate must not let {key} through"
         );
         // The board performs settings itself rather than forwarding a keystroke.
         // Checked as one entry in MENU_OWN, not the whole object, so adding
         // another self-performed entry (the Vault) does not trip this
         assert!(
             super::page().contains(&format!("\"{word}\": () => openSettings()")),
-            "盤面が設定の項目を自前で担っていない"
+            "the board is not handling the settings item itself"
         );
     }
 
@@ -10181,17 +10181,17 @@ mod tests {
             .collect();
         assert!(
             !unreachable.is_empty(),
-            "窓専用の項目が盤面から消えたなら、この検査ごと畳んでよい"
+            "if the window-only items are gone from the board, this whole check can go too"
         );
         for key in unreachable {
             assert!(
                 page.contains("MENU_WINDOW_ONLY.includes(k)"),
-                "{key}: 遠くからは押せないのに、盤面がそれを見せていない"
+                "{key}: it cannot be pressed from afar, and the board does not show that"
             );
         }
         assert!(
             page.contains("windowonly") && page.contains("tui.menu.window_only"),
-            "印(見た目と但し書き)が page から失われている"
+            "the marker (its look and its note) is gone from the page"
         );
     }
 
@@ -10210,22 +10210,22 @@ mod tests {
     fn a_press_is_not_interrupted_by_a_redraw() {
         let p = super::page();
         // The redraw entry point must hold back updates while a press is in progress
-        let at = p.find("window.__state = function").expect("状態の入口が無い");
+        let at = p.find("window.__state = function").expect("there is no entry point for state");
         let head = &p[at..at + 200];
         assert!(
             head.contains("holding") && head.contains("queued"),
-            "状態が届いたら、押している最中でも作り直してしまう"
+            "a state arriving rebuilds the screen even while something is being pressed"
         );
         // On release, any held-back redraw must be flushed (so the screen doesn't freeze after a press)
         assert!(
             p.contains("addEventListener(\"pointerup\", release"),
-            "離したときに、預かった描き直しを流していない"
+            "releasing does not flush the redraw that was held back"
         );
         // The escape hatch for when the pointer is released outside the window. Without it, a stuck "held" state freezes the screen
         assert!(
             p.contains("addEventListener(\"pointercancel\", release")
                 && p.contains("addEventListener(\"blur\", release"),
-            "押しっぱなしのまま画面が止まる道が残っている"
+            "there is still a way for the screen to freeze while something is held down"
         );
     }
 
@@ -10243,11 +10243,11 @@ mod tests {
         let p = super::page();
         assert!(
             p.contains("set.has(folder) ? set.delete(folder) : set.add(folder);\n  drawTabs();"),
-            "折りたたみが一覧を描き直していない（次の状態が届くまで画面が変わらない）"
+            "folding does not redraw the list (the screen does not change until the next state arrives)"
         );
         assert!(
             p.contains("troubleOpen = !troubleOpen; drawTabs();"),
-            "警告の開閉が一覧を描き直していない"
+            "opening or closing the warnings does not redraw the list"
         );
     }
 
@@ -10261,49 +10261,49 @@ mod tests {
         // language for other tests running concurrently (a dashboard test
         // once failed this way looking for CHAIN)
         let p = super::page();
-        assert!(!p.contains("{{"), "差し込み先が残っている");
-        assert!(p.contains("const T = {"), "訳語が入っていない");
+        assert!(!p.contains("{{"), "a placeholder is left unfilled");
+        assert!(p.contains("const T = {"), "the translations are not in it");
         // Every colour the page draws with, including the terminal's sixteen
-        assert!(p.contains("--bg:") && p.contains("--c15:"), "配色が入っていない");
+        assert!(p.contains("--bg:") && p.contains("--c15:"), "the colors are not in it");
         assert!(
             p.contains("color-scheme:dark") || p.contains("color-scheme:light"),
-            "ブラウザ側が描く部分の明暗が指定されていない"
+            "light or dark is not set for what the browser draws itself"
         );
-        assert!(p.contains("const BUILD = \""), "ビルド刻印が入っていない");
+        assert!(p.contains("const BUILD = \""), "the build stamp is not in it");
         // A stale page (a phone keeping the board open across app updates)
         // must reload itself, and the 🎯 picker must exclude plain terminals
-        assert!(p.contains("S.build !== BUILD"), "古いページの自動リロードが無い");
+        assert!(p.contains("S.build !== BUILD"), "there is no automatic reload for an old page");
         assert!(
             p.contains("t.kind === \"browser\" || t.ai"),
-            "🎯候補がAI/ブラウザに絞られていない"
+            "the 🎯 candidates are not limited to AI tabs and browsers"
         );
         // The 🎯 panel itself exists only on AI-operator tabs; a plain
         // terminal gets 🤖 instead, and its pen is a color emoji (the text
         // glyph ✎ has no glyph in some fonts — pressable but invisible)
         assert!(
             p.contains("if (t && t.ai) return base.concat(\"target\")"),
-            "🎯パネルがAIタブ限定になっていない"
+            "the 🎯 panel is not limited to AI tabs"
         );
-        assert!(p.contains("✏️"), "ペンがカラー絵文字になっていない");
+        assert!(p.contains("✏️"), "the pen is not a color emoji");
         // A horizontal accent rule says "the focus is here" and nothing else.
         // The composer's own seam once said it too, inside the pane the
         // focused caption had just underlined, and the eye read a pane
         // boundary where there was none
         assert!(
             !p.contains("background:var(--panel); border-top:1px solid var(--brand); }"),
-            "入力欄の継ぎ目がフォーカス線と同じ青を使っている"
+            "the seam of the input bar uses the same blue as the focus line"
         );
         assert!(
             p.contains(".pane.focused .phead { color:var(--text); background:var(--raise);"),
-            "フォーカス中のペインの見出しが見分けられない"
+            "the heading of the focused pane cannot be told apart"
         );
         // Two panes showing nothing must still look like two panes. The
         // divider carries the only line there is -- the panes have no border
         assert!(
             p.contains(".pdiv::after { content:\"\"; position:absolute; background:var(--line); }"),
-            "ペイン同士の境目に線が引かれていない"
+            "there is no line drawn between panes"
         );
-        assert!(!p.contains("\"✎\""), "見えない文字グリフのペンが残っている");
+        assert!(!p.contains("\"✎\""), "the pen drawn as a glyph that cannot be seen is still there");
     }
 
     /// The composer belongs to the pane you are typing at, not to the window.
@@ -10319,16 +10319,16 @@ mod tests {
         let p = super::page();
         assert!(
             p.contains("bottom:calc(var(--fb) + var(--kbd, 0px))"),
-            "サブ入力欄の位置が、フォーカス中のペイン基準になっていない"
+            "the input bar is not positioned against the focused pane"
         );
         assert!(
             !p.contains("castDock.style.bottom"),
-            "キーボード分の持ち上げがペインの位置を上書きしている"
+            "the lift for the keyboard overrides the pane's position"
         );
         // The pen that summons it is anchored to the same pane
         assert!(
             p.contains("bottom:calc(var(--fb) + 16px)"),
-            "ペンがフォーカス中のペインに付いていない"
+            "the pen is not attached to the focused pane"
         );
         // A browser placed in a pane is a native window drawn over this page,
         // so the moment it forgets its pane it covers the pen and the pane
@@ -10336,11 +10336,11 @@ mod tests {
         // for the composer is a term added to it, never the whole of it
         assert!(
             p.contains("bottom:calc(var(--fb) + var(--dock, 0px) + var(--askh, 0px))"),
-            "ブラウザの位置が、フォーカス中のペイン基準になっていない"
+            "the browser is not positioned against the focused pane"
         );
         assert!(
             !p.contains("page.style.bottom"),
-            "ドックのぶんの余白がペインの位置を上書きしている"
+            "the space for the dock overrides the pane's position"
         );
     }
 
@@ -10358,21 +10358,21 @@ mod tests {
         let p = super::page();
         assert!(
             p.contains("calc(var(--fx) + (100% - var(--fx) - var(--fr)) / 2),"),
-            "トーストが窓の中央のまま（ペインに座っていない）"
+            "the toast is still centered on the window (it does not sit in the pane)"
         );
         assert!(
             p.contains("--toast-bottom:calc(var(--fb) + 52px)"),
-            "トーストがペインの底ではなく窓の底に付いている"
+            "the toast sits at the bottom of the window instead of the bottom of the pane"
         );
         // As wide as its pane, but never so narrow a sentence cannot be read,
         // and never past the content area
         assert!(
             p.contains("--toast-max:min(max(calc(100% - var(--fx) - var(--fr) - 24px), 320px), calc(100% - 24px), 560px)"),
-            "狭いペインでトーストが読めない幅になる"
+            "in a narrow pane the toast becomes too narrow to read"
         );
         assert!(
             p.contains("--toast-x:clamp(calc(var(--toast-max) / 2 + 12px),"),
-            "ペインより広いトーストが画面の外にはみ出す"
+            "a toast wider than the pane runs off the screen"
         );
     }
 
@@ -10393,22 +10393,22 @@ mod tests {
         assert!(
             p.contains("const laid = f && f.getClientRects().length > 0;")
                 && p.contains("const b = laid ? f.getBoundingClientRect() : m;"),
-            "隠れたペインの矩形（全部ゼロ）をそのまま使っている"
+            "it uses the rectangle of a hidden pane (all zeros) as it is"
         );
         // One answer to "is a screen covering the panes", and the things that
         // belong to a pane all ask it
         assert_eq!(
             p.matches("const covering = () =>").count(),
             1,
-            "「ペインが覆われているか」の答えが1箇所ではない"
+            "there is more than one place that answers 'is the pane covered'"
         );
         assert!(
             p.contains("if (covering() || (REMOTE && (screen.hidden || web || !onTermPty()))) closeBar();"),
-            "打ち込む先が無い画面でサブ入力欄が開いたままになる"
+            "the input bar stays open on a screen with nothing to type into"
         );
         assert!(
             p.contains("const here = !covering()"),
-            "打ち込む先が無い画面にペンが出る"
+            "the pen shows on a screen with nothing to type into"
         );
     }
 
@@ -10431,15 +10431,15 @@ mod tests {
         let p = super::page();
         assert!(
             p.contains("&& boxes.every((el) => el.querySelector(\".pbody\").getClientRects().length > 0);"),
-            "覆われたペインの矩形（全部ゼロ）から行数・桁数を出している"
+            "it works out rows and columns from the rectangle of a covered pane (all zeros)"
         );
         assert!(
             p.contains("if (laid) lastPanes = boxes.map((el) => {"),
-            "ペインが覆われている間の測定値を採用してしまう"
+            "it takes measurements made while the pane is covered"
         );
         assert!(
             p.contains("const panes = lastPanes || [];") && p.contains("const f = lastFit || fit("),
-            "覆われている間、最後にちゃんと測れた値を使っていない"
+            "while covered, it does not use the last good measurement"
         );
     }
 
@@ -10458,40 +10458,40 @@ mod tests {
         let p = super::page();
         assert!(
             !p.contains("modelchat"),
-            "モデルのペインが自前の入力欄を持っている（サブ入力欄が2つある）"
+            "the model pane has its own input box (there are two input bars)"
         );
         assert_eq!(
             p.matches("id:\"castinput\"").count(),
             1,
-            "サブ入力欄を組み立てる場所が1つではない"
+            "the input bar is put together in more than one place"
         );
         // One place decides where a finished line goes, and both doors that
         // finish a line go through it
-        assert!(p.contains("function sendLine(text, tab) {"), "行の渡し方を決める一箇所が無い");
-        assert!(p.contains("    sendLine(t);"), "サブ入力欄の Send が自前で送っている");
+        assert!(p.contains("function sendLine(text, tab) {"), "there is no single place that decides how a line is handed over");
+        assert!(p.contains("    sendLine(t);"), "the input bar's Send sends on its own");
         assert!(
             p.contains("sendLine(topic, S.discuss_start);"),
-            "討論の議題欄が自前で送っている（口火役がモデルだと届かない）"
+            "the discussion topic box sends on its own (it never arrives when the opener is a model)"
         );
         // ...and the line always says who it is for. Delivered to "whoever is
         // in front", the topic box's own view switch could arrive after it
         assert_eq!(
             p.matches("kind:\"say\"").count(),
             1,
-            "行を渡す口が1つではない"
+            "there is more than one way to hand over a line"
         );
         assert!(
             p.contains(r#"send({kind:"say", tab: (tab == null ? S.active : tab), text}); return;"#),
-            "渡す行に宛名が付いていない"
+            "the line handed over has no addressee"
         );
         // Actions only there (plus the key row on a phone) -- no 🎯, no 🤖, no 📼
         assert!(
             p.contains("if (t && t.model) return base;"),
-            "モデルのペインにアクション以外のパネルが出る"
+            "the model pane shows panels other than actions"
         );
         assert!(
             p.contains(r#"const base = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions"] : ["actions"];"#),
-            "スマホの特殊キーが基本パネルから外れている"
+            "the phone's special keys have dropped out of the basic panels"
         );
     }
 
@@ -10507,22 +10507,22 @@ mod tests {
     #[test]
     fn the_pen_is_decided_by_where_we_are_now() {
         let p = super::page();
-        assert!(p.contains("function syncPen()"), "ペンの可否を決める一箇所が無い");
+        assert!(p.contains("function syncPen()"), "there is no single place that decides whether the pen is allowed");
         assert_eq!(
             p.matches("fab.style.display =").count(),
             1,
-            "ペンの表示を書く場所が2つ以上ある（片方が場所を決め打ちして固まる）"
+            "the pen's visibility is written in more than one place (one hard-codes the place and gets stuck)"
         );
         assert!(
             p.contains(r#"(typeof REMOTE !== "undefined" && REMOTE) ? onTermPty() : !onBrowserTab()"#),
-            "どこに居るかの判定が入っていない"
+            "the check for where it is has gone"
         );
         // Both ways in and out of the composer, plus every state push, go
         // through it — the last one is what makes walking to another tab work
         assert!(
             p.contains("castDock.style.display = \"flex\"; syncPen();")
                 && p.contains("syncPen();\n  drawTitle();\n  drawTabs();"),
-            "開閉と状態更新のどこかが自分で決めている"
+            "somewhere in opening, closing or updating state decides this on its own"
         );
     }
 
@@ -10542,15 +10542,15 @@ mod tests {
         let p = super::page();
         assert!(
             p.contains("width:calc(100% - var(--fx) - var(--fr));"),
-            "中継画面の幅がペインの幅になっていない"
+            "the width of the relayed screen is not the pane's width"
         );
         assert!(
             p.contains("height:calc(100% - var(--fy) - var(--navh) - var(--fb) - var(--askh, 0px));"),
-            "中継画面の高さがペインの高さになっていない"
+            "the height of the relayed screen is not the pane's height"
         );
         assert!(
             !p.contains("width:auto; height:auto;"),
-            "置換要素の寸法を auto に戻すと、届いたフレームの原寸で描かれる"
+            "setting a replaced element's size back to auto draws the arriving frame at its natural size"
         );
     }
 
@@ -10579,15 +10579,15 @@ mod tests {
             script.push('\n');
             rest = &rest[end..];
         }
-        assert!(script.len() > 10_000, "ページから台本を取り出せていない: {}文字", script.len());
+        assert!(script.len() > 10_000, "the script could not be pulled out of the page: {} characters", script.len());
         let file = std::env::temp_dir().join(format!("shikisha-board-{}.js", std::process::id()));
-        std::fs::write(&file, &script).expect("台本を書き出せない");
+        std::fs::write(&file, &script).expect("could not write the script out");
         let checked = std::process::Command::new("node").arg("--check").arg(&file).output();
         let _ = std::fs::remove_file(&file);
         match checked {
             Ok(done) => assert!(
                 done.status.success(),
-                "盤面の台本が構文エラーで丸ごと死ぬ:\n{}",
+                "the board script dies whole on a syntax error:\n{}",
                 String::from_utf8_lossy(&done.stderr)
             ),
             Err(e) => eprintln!("node が無いので構文検査は行われていない ({e})。CI では走る"),
@@ -10607,26 +10607,26 @@ mod tests {
         // Which of the two is up, decided from the tab's own `away`
         assert!(
             p.contains(r#"const drawnOn = (web && REMOTE && seen && seen.away) ? String(seen.away) : "";"#),
-            "ページがどこで描かれているかを盤面が見ていない"
+            "the board does not check where the page is being drawn"
         );
         assert!(
             p.contains("cast.hidden = !(web && REMOTE) || !!drawnOn;"),
-            "見えるはずのない中継画面が出たままになる"
+            "a relayed screen that should not be visible stays up"
         );
         assert!(
             p.contains("if (web && REMOTE && !drawnOn) castStart(); else castStop();"),
-            "届かない絵を要求している"
+            "it asks for a picture that cannot arrive"
         );
         // ...and that the words are the ones the refusal itself uses, with the
         // device's name in them. A second sentence saying the same thing in
         // other words is a second thing to keep true
         assert!(
             p.contains(r#"(T["err.far.no_cast"] || "").replace("{who}", drawnOn)"#),
-            "断りの文言を盤面が使っていない"
+            "the board does not use the wording for the refusal"
         );
         assert!(
             crate::i18n::t("err.far.no_cast").contains("{who}"),
-            "文言に端末の呼び名が入る場所が無い"
+            "the wording has no place for the device's name"
         );
     }
 
@@ -10640,30 +10640,30 @@ mod tests {
     #[test]
     fn the_tab_bar_is_one_number_wide() {
         let p = super::page();
-        assert!(p.contains("#tabs { grid-row:2/4; width:var(--tabw);"), "タブバーの幅が固定のまま");
+        assert!(p.contains("#tabs { grid-row:2/4; width:var(--tabw);"), "the tab bar's width is still fixed");
         // The grip never leaves the screen, or a bar put away could not be
         // pulled back out
         assert!(
             p.contains("left:max(0px, calc(var(--tabw) - 4px))"),
-            "しまったタブバーを掴み直せる位置に取っ手が無い"
+            "there is no handle where the put-away tab bar can be grabbed again"
         );
-        assert!(p.contains("window.__toggleTabBar"), "キーからしまう入口が無い");
+        assert!(p.contains("window.__toggleTabBar"), "there is no way to put it away from the keys");
         // A drag switches off every pointer target but the handles. Leave the
         // grip out of that list and its own double-click stops arriving
         assert!(
             p.contains(
                 "body.dragdiv .pdiv, body.dragdiv #tabgrip, body.dragdiv #sidegrip { pointer-events:auto; }"
             ),
-            "ドラッグ中に取っ手自身がポインタを失う"
+            "the handle itself loses the pointer while dragging"
         );
         // The bounds are the app's, handed in rather than written twice
         assert!(
             !p.contains("{{TAB_W"),
-            "幅の値がページに差し込まれていない"
+            "the width value is not filled into the page"
         );
         assert!(
             p.contains(&format!("const TABW_MIN = {}", crate::config::TAB_BAR_MIN_PX)),
-            "ページとアプリで下限が食い違っている"
+            "the page and the app disagree about the minimum"
         );
     }
 
@@ -10675,26 +10675,26 @@ mod tests {
         let p = super::page();
         assert!(
             p.contains("#side { grid-column:3; grid-row:2/4; width:var(--sidew);"),
-            "右の欄が3列目に置かれていないか、幅が固定のまま"
+            "the right panel is not in the third column, or its width is still fixed"
         );
         assert!(
             p.contains("right:max(0px, calc(var(--sidew) - 4px))"),
-            "しまった欄を掴み直せる位置に取っ手が無い"
+            "there is no handle where the put-away panel can be grabbed again"
         );
-        assert!(p.contains("window.__toggleSideBar"), "キーからしまう入口が無い");
-        assert!(!p.contains("{{SIDE_W"), "幅の値がページに差し込まれていない");
+        assert!(p.contains("window.__toggleSideBar"), "there is no way to put it away from the keys");
+        assert!(!p.contains("{{SIDE_W"), "the width value is not filled into the page");
         assert!(
             p.contains(&format!("const SIDEW_MIN = {}", crate::config::SIDE_BAR_MIN_PX)),
-            "ページとアプリで下限が食い違っている"
+            "the page and the app disagree about the minimum"
         );
         // Three columns, or the third one has nowhere to stand
         assert!(
             p.contains("grid-template-columns:auto 1fr auto"),
-            "盤面が3列になっていない"
+            "the board does not have three columns"
         );
         // One panel, wherever it is put: a second copy of the markup would be
         // a second thing to keep right
-        assert_eq!(p.matches("id=\"gitpanel\"").count(), 1, "git の画面が2つある");
+        assert_eq!(p.matches("id=\"gitpanel\"").count(), 1, "there are two git screens");
     }
 
     /// A page that covers the window stops at the window's own bar. The frame
@@ -10706,12 +10706,12 @@ mod tests {
         let p = super::page();
         assert!(
             p.contains("full:[0, barH, Math.round(window.innerWidth), Math.round(window.innerHeight) - barH]"),
-            "覆うページが帯の上まで乗る"
+            "a page that covers the window goes over the bar"
         );
         // Zero where there is no bar to leave alone
         assert!(
             p.contains("bar && !bar.hidden ? Math.round(bar.getBoundingClientRect().height) : 0"),
-            "帯が無い面で余白を空けてしまう"
+            "it leaves room on a surface that has no bar"
         );
     }
 
@@ -10721,33 +10721,33 @@ mod tests {
     #[test]
     fn the_editor_keeps_a_draft() {
         let p = super::page();
-        assert_eq!(p.matches("id=\"editpanel\"").count(), 1, "エディタの画面が2つある");
+        assert_eq!(p.matches("id=\"editpanel\"").count(), 1, "there are two editor screens");
         // A file changed outside: reloaded only when there is nothing to lose
         assert!(
             p.contains("if (ED.dirty) {\n          ED.outside = true;"),
-            "書きかけのまま読み直してしまう"
+            "it reloads while there are unsaved changes"
         );
         // Opening another file, or closing this one, puts the draft aside first
         // and brings it back when that file is opened again
-        let switching = p.find("if (ED.key !== key || (want && want !== ED.path)) {").expect("切り替えが無い");
-        assert!(p[switching..switching + 400].matches("edStash();").count() == 2, "別のファイルを開くと書きかけが消える");
-        assert!(p.contains("const draft = edDrafts.get(key);"), "書きかけが戻ってこない");
+        let switching = p.find("if (ED.key !== key || (want && want !== ED.path)) {").expect("there is no switch");
+        assert!(p[switching..switching + 400].matches("edStash();").count() == 2, "opening another file loses the unsaved changes");
+        assert!(p.contains("const draft = edDrafts.get(key);"), "the unsaved changes do not come back");
         // The save carries the mark it was given, so the app can refuse
         assert!(
             p.contains(r#"editAsk("write", {path: ED.path, text: edAce ? edAce.getValue() : ED.text, mark: ED.mark});"#),
-            "保存が印を持って行かない"
+            "saving does not carry the mark"
         );
         // Nothing writes on its own: the only ways in are the button and the key
-        assert!(!p.contains("autosave") && !p.contains("setInterval(editSave"), "勝手に保存している");
-        assert!(p.contains(r#"bindKey: {win: "Ctrl-S", mac: "Cmd-S"}"#), "Ctrl+S が無い");
+        assert!(!p.contains("autosave") && !p.contains("setInterval(editSave"), "it saves on its own");
+        assert!(p.contains(r#"bindKey: {win: "Ctrl-S", mac: "Cmd-S"}"#), "there is no Ctrl+S");
         // The place handed to the AI is the one form every one of them reads
         assert!(
             p.contains(r#"ED.path + ":" + from + "-" + to"#),
-            "選択範囲が path:from-to にならない"
+            "the selection does not become path:from-to"
         );
         // The library is asked for from this program, not from the internet
-        assert!(p.contains(r#"tag.src = "vendor/ace/ace.js";"#), "ライブラリを外から取ろうとしている");
-        assert!(!p.contains("cdn."), "外部 CDN を引いている");
+        assert!(p.contains(r#"tag.src = "vendor/ace/ace.js";"#), "it tries to fetch the library from outside");
+        assert!(!p.contains("cdn."), "it pulls from an external CDN");
     }
 
     /// The window's frame is the page's: the bar is there, it can be taken
@@ -10756,33 +10756,33 @@ mod tests {
     #[test]
     fn the_window_wears_its_own_bar() {
         let p = super::page();
-        assert!(p.contains(r#"<div id="titlebar"></div>"#), "帯そのものが無い");
+        assert!(p.contains(r#"<div id="titlebar"></div>"#), "the bar itself is missing");
         // The whole of its state is these four acts
         for act in ["drag", "minimize", "maximize", "close"] {
-            assert!(p.contains(&format!("winAct(\"{act}\")")), "{act} がどこからも呼ばれない");
+            assert!(p.contains(&format!("winAct(\"{act}\")")), "nothing ever calls {act}");
         }
         // Taken hold of by the bar itself, never by a button sitting on it
         assert!(
             p.contains(
                 r#"bar.onmousedown = e => { if (e.button === 0 && !e.target.closest("button")) holdBar(e); };"#
             ),
-            "帯を掴む所が無いか、ボタンの上でも掴んでしまう"
+            "there is nowhere to grab the bar, or it grabs even over the buttons"
         );
         // Dragged only once the pointer moves: a drag started on the press takes
         // the release with it, and the double-click never arrives
         assert!(p.contains("if (Math.abs(e.screenX - down.screenX) + Math.abs(e.screenY - down.screenY) < 4) return;"));
         // Whose window this is, at the end a window says it
-        assert!(p.contains(r#"src: "/pwa/icon-192.png""#), "窓の絵が帯に無い");
+        assert!(p.contains(r#"src: "/pwa/icon-192.png""#), "the window's picture is not on the bar");
         // A page that is not in this window draws no frame for it
         assert!(
             p.contains(r#"if (REMOTE) document.getElementById("app").classList.add("noframe");"#),
-            "スマホに窓の操作が出てしまう"
+            "the window controls show on the phone"
         );
         // The splash must not cover the bar: the frame is ours, and a covered
         // bar is a window nobody can move while the board is coming up
         assert!(
             p.contains("#splash { position:fixed; inset:var(--titleh) 0 0 0;"),
-            "起動画面が帯を覆っている"
+            "the start-up screen covers the bar"
         );
     }
 
@@ -10791,21 +10791,21 @@ mod tests {
     #[test]
     fn the_file_list_stands_in_the_column() {
         let p = super::page();
-        assert_eq!(p.matches("id=\"filepanel\"").count(), 1, "ファイル一覧の画面が2つある");
-        let strip = p.find("const SIDE_PANELS").expect("欄の帯の定義が無い");
-        let files = p[strip..].find("\"files\"").expect("帯にファイルが無い");
-        let git = p[strip..].find("\"git\"").expect("帯に変更が無い");
-        assert!(files < git, "帯の並びがファイル→変更になっていない");
+        assert_eq!(p.matches("id=\"filepanel\"").count(), 1, "there are two file list screens");
+        let strip = p.find("const SIDE_PANELS").expect("the definition of the panel strip is missing");
+        let files = p[strip..].find("\"files\"").expect("the strip has no files");
+        let git = p[strip..].find("\"git\"").expect("the strip has no changes");
+        assert!(files < git, "the strip is not ordered files, then changes");
         // Every answer has a way back to the page, on both surfaces
-        assert!(p.contains("window.__files = function"), "答えの受け口が無い");
+        assert!(p.contains("window.__files = function"), "there is no place to receive the answer");
         assert!(
             p.contains("if (d.files) window.__files(d.files);"),
-            "スマホにファイル一覧の答えが届かない"
+            "the file list's answer never reaches the phone"
         );
         // A file is opened where there is room to read it
         assert!(
             p.contains(r#"send({kind: "editopen", panel: t.id || t.name || "", path});"#),
-            "押してもファイルが開かない"
+            "pressing does not open the file"
         );
     }
 
@@ -10831,7 +10831,7 @@ mod tests {
                     ids.push(id.to_string());
                 }
         }
-        assert!(!ids.is_empty(), "hidden を使っている要素が見つからない");
+        assert!(!ids.is_empty(), "no element using hidden was found");
 
         for id in ids {
             // Whether that id has its own display rule
@@ -10844,7 +10844,7 @@ mod tests {
             if sets_display {
                 assert!(
                     PAGE.contains(&format!("#{id}[hidden]")),
-                    "#{id} は display を書いているのに、hidden で消す指定が無い"
+                    "#{id} sets display, but has no rule that hides it with hidden"
                 );
             }
         }
@@ -10875,11 +10875,11 @@ mod tests {
                 if name.is_empty() {
                     continue;
                 }
-                assert!(!seen.contains(&name), "{name} が2回宣言されている");
+                assert!(!seen.contains(&name), "{name} is declared twice");
                 seen.push(name);
             }
         }
-        assert!(seen.contains(&"send"), "走査が効いていない");
+        assert!(seen.contains(&"send"), "the scan is not working");
     }
 
     /// Every field of the state must be used somewhere on the page.
@@ -10893,7 +10893,7 @@ mod tests {
             "holder", "depth", "max", "awaiting_human", "locked", "profile",
             "activity", "state", "name", "index",
         ] {
-            assert!(PAGE.contains(field), "状態の {field} を誰も見ていない");
+            assert!(PAGE.contains(field), "nobody reads {field} from the state");
         }
     }
 
@@ -10911,15 +10911,15 @@ mod tests {
     fn a_press_ends_only_when_the_window_does() {
         assert!(
             PAGE.contains(r#"addEventListener("blur", release);"#),
-            "ウィンドウ以外の blur でも押下ガードを解除している"
+            "it releases the press guard on a blur that is not the window's"
         );
         assert!(
             !PAGE.contains(r#"addEventListener("blur", release, true);"#),
-            "capture 付きの blur に戻っている (要素の blur でガードが外れる)"
+            "it is back to a capturing blur (an element's blur releases the guard)"
         );
         // The presses themselves still have to be seen before anything else
         for armed in [r#"addEventListener("pointerdown""#, r#"addEventListener("pointerup", release, true)"#] {
-            assert!(PAGE.contains(armed), "押下の検知が消えている: {armed}");
+            assert!(PAGE.contains(armed), "press detection is gone: {armed}");
         }
     }
 
@@ -10936,11 +10936,11 @@ mod tests {
     fn a_press_outlives_the_redraw_that_ends_it() {
         assert!(
             PAGE.contains("setTimeout(() => window.__state(j), 0);"),
-            "押している間に溜めた再描画を、その場で流している (クリックが消える)"
+            "the redraws held during a press are flushed on the spot (clicks are lost)"
         );
         assert!(
             !PAGE.contains("queued = null; window.__state(j); }"),
-            "pointerup と同じ処理の中で再描画する古い配線に戻っている"
+            "it is back to the old wiring that redraws inside the same handler as pointerup"
         );
     }
 
@@ -10955,15 +10955,15 @@ mod tests {
     fn the_restart_button_follows_what_the_app_says() {
         assert!(
             PAGE.contains("if (!REMOTE || !(S && S.restartable)) { restartArmed = 0; return null; }"),
-            "再起動ボタンが本体の判断を読んでいない"
+            "the restart button does not read the app's decision"
         );
         assert!(
             PAGE.contains("b.hidden = !(t && t.restartable);"),
-            "ペインの再起動ボタンが本体の判断を読んでいない"
+            "the pane's restart button does not read the app's decision"
         );
         assert!(
             !PAGE.contains("if (!onTerminal()) { restartArmed = 0; return null; }"),
-            "画面側が独自に判断する古い配線に戻っている"
+            "it is back to the old wiring where the screen decides for itself"
         );
     }
 
@@ -10981,16 +10981,16 @@ mod tests {
         // a restart eats a day's work
         assert!(
             PAGE.contains(r#"send({kind:"restartpane", id:p.id, keep});"#),
-            "ペインの見出しから再起動を送っていない"
+            "the pane heading does not send the restart"
         );
         assert!(
             PAGE.contains(r#"for (const [cls, keep] of [[".rk", true], [".rf", false]])"#),
-            "引き継ぐ/引き継がないの二つが揃っていない"
+            "keep and do-not-keep are not both there"
         );
         // A live pane asks twice, and only one arming is live at a time
         assert!(
             PAGE.contains(r#"if (armedPane === cls + p.id || (t && t.state === "EXIT"))"#),
-            "動いているペインを一押しで落とせてしまう"
+            "a running pane can be taken down with a single press"
         );
     }
 
@@ -11007,16 +11007,16 @@ mod tests {
     fn a_finger_drag_follows_the_finger_past_the_first_redraw() {
         assert!(
             PAGE.contains(r#"on.addEventListener("touchmove", dgMove, {passive:false});"#),
-            "指の動きを画面側で聞くと、最初の描き直しで耳が聞こえなくなる"
+            "listening for finger movement on the screen goes deaf after the first redraw"
         );
         assert!(
             !PAGE.contains(r#"scr.addEventListener("touchmove""#),
-            "指の動きが画面側で聞かれている"
+            "finger movement is being listened for on the screen"
         );
-        assert!(PAGE.contains("function dgMoveFrame(px)"), "枠の中の移動をブラウザ任せにしている");
-        assert!(PAGE.contains("if (dgBusy || dgOwed === 0) return;"), "問い合わせが同時に何本も出る");
-        assert!(PAGE.contains("dgCoast = requestAnimationFrame(step);"), "離した後に滑らない");
-        assert!(!PAGE.contains("pageBy(d > 0 ? 1 : -1)"), "スワイプが1ページ送りに戻っている");
+        assert!(PAGE.contains("function dgMoveFrame(px)"), "moving within the frame is left to the browser");
+        assert!(PAGE.contains("if (dgBusy || dgOwed === 0) return;"), "several requests go out at once");
+        assert!(PAGE.contains("dgCoast = requestAnimationFrame(step);"), "it does not glide after being released");
+        assert!(!PAGE.contains("pageBy(d > 0 ? 1 : -1)"), "a swipe is back to turning one page");
     }
 
     /// Send from the composer goes to the pane in front, and only a git panel
@@ -11028,13 +11028,13 @@ mod tests {
     /// the typed words, refused on main and so, to the person, simply dead.
     #[test]
     fn send_reaches_the_pane_and_commits_only_on_a_git_panel() {
-        let at = PAGE.find("function sendBar() {").expect("sendBar がない");
-        let body = &PAGE[at..at + PAGE[at..].find("\n}\n").expect("sendBar の終わりがない")];
+        let at = PAGE.find("function sendBar() {").expect("there is no sendBar");
+        let body = &PAGE[at..at + PAGE[at..].find("\n}\n").expect("sendBar has no end")];
         assert!(
             body.contains("if (gitSurfaceTab()) { gitCommit(); return; }"),
-            "送信がgitパネルのタブ以外でもコミットになる"
+            "sending commits even on a tab that is not the git panel"
         );
-        assert!(!body.contains("if (gitTab())"), "送信がリポジトリ内のタブ全部をgitパネル扱いしている");
+        assert!(!body.contains("if (gitTab())"), "sending treats every tab in the repository as the git panel");
     }
 
     /// The folder picker is a framed dialog, drawn in this app's own marks.
@@ -11050,18 +11050,18 @@ mod tests {
         let dialog = PAGE.split(r#"<div id="browse" hidden>"#).nth(1)
             .and_then(|r| r.split("</div>\n  </div>").next()).unwrap_or_default();
         for part in ["vhead", "pfilter", "pplaces", "pcrumb", "prows", "pfoot", "pmake", "pcancel", "go"] {
-            assert!(dialog.contains(part), "選ぶダイアログに {part} が無い");
+            assert!(dialog.contains(part), "the chooser dialog has no {part}");
         }
         let code = PAGE.split("const PICK_ICON = {").nth(1)
             .and_then(|r| r.split("// Another branch of the project").next()).unwrap_or_default();
-        assert!(!code.is_empty(), "選ぶダイアログの台本が見つからない");
+        assert!(!code.is_empty(), "the chooser dialog's script was not found");
         assert!(!code.chars().any(|c| ('\u{1F300}'..='\u{1FAFF}').contains(&c)),
-                "選ぶダイアログに絵文字が残っている");
-        assert!(code.contains(r#"el("span", {class:"in""#), "行に入口の › が無い");
+                "emoji are still in the chooser dialog");
+        assert!(code.contains(r#"el("span", {class:"in""#), "a row has no › to enter it");
         assert!(code.contains(r#"b.querySelector(".go").classList.toggle("held", !path);"#),
-                "選べないときに黙って押せなくしている");
+                "it quietly stops the button working when nothing can be chosen");
         assert!(code.contains(r#"send({kind:"browse", path:st.at || "", open:false, make:name});"#),
-                "新しいフォルダが今いる場所に作られない");
+                "the new folder is not made where you are");
     }
 
     /// Each + has one meaning. A folder's is another worktree; the foot of the
@@ -11071,17 +11071,17 @@ mod tests {
     #[test]
     fn every_plus_means_one_thing() {
         assert!(PAGE.contains("onclick:e => { e.stopPropagation(); openBranch(g); }}, \"+\")"),
-                "作業フォルダの + がワークツリー専用になっていない");
+                "the working folder's + is not only for worktrees");
         assert!(PAGE.contains(r#"class:"tab addtab" + (bare ? " pulse" : ""), onclick:() => openBrowse("")"#),
-                "一覧の下の + が作業フォルダの追加だけになっていない");
-        assert!(!PAGE.contains("function addMenu("), "ワークツリーと作業フォルダを並べる古いメニューが残っている");
+                "the + under the list is not only for adding a working folder");
+        assert!(!PAGE.contains("function addMenu("), "the old menu that offers worktree and working folder side by side is still there");
         // Nothing to cut a worktree from, so no + that can only fail
-        assert!(PAGE.contains("if (!g.color) return null;"), "リポジトリでない作業フォルダにワークツリーの + が出る");
+        assert!(PAGE.contains("if (!g.color) return null;"), "a working folder that is not a repository shows the worktree +");
         // And the empty folder still has a way to its first tab
         assert!(PAGE.contains("onclick:() => addTabHere(g)},\n    el(\"span\", {class:\"nm\"}, T[\"tui.pane.add\"]"),
-                "空の作業フォルダに最初のタブを入れる入口が無い");
+                "there is no way to put the first tab in an empty working folder");
         assert!(PAGE.contains(r##"step === 2 ? document.querySelector("#tabs .tab.fnew")"##),
-                "初回案内の2歩目が、もう意味の変わった + を指している");
+                "the second step of the first-run guide points at a + whose meaning has changed");
     }
 
     /// The bar of tabs takes its height out of the panes, not out of nothing.
@@ -11096,40 +11096,40 @@ mod tests {
     fn the_bar_of_tabs_makes_room_for_itself() {
         assert!(
             PAGE.contains("#panes { position:absolute; inset:0; top:var(--striph, 0px); }"),
-            "帯のぶんペインが下がっていない"
+            "the panes are not moved down by the strip's height"
         );
         assert!(
             PAGE.contains(r#"main.style.setProperty("--striph", (!strip || strip.hidden) ? "0px" : "32px");"#),
-            "帯の高さが場所を取っていない"
+            "the strip's height does not take up room"
         );
         // Without panes (a phone) the content area is measured too, and it also
         // starts under the strip: the editor's bar was drawn over the tabs
         assert!(
             PAGE.contains(r#"main.style.setProperty("--fy", (b.top - m.top + under) + "px");"#),
-            "ペインの無い画面で、帯の下から始まっていない"
+            "on a screen with no panes, it does not start below the strip"
         );
         // Appearing or disappearing changes every pane's height, so the
         // measurement has to follow it rather than wait for a window resize
-        assert!(PAGE.contains("if (was !== strip.hidden) layout();"), "出入りで測り直していない");
+        assert!(PAGE.contains("if (was !== strip.hidden) layout();"), "it does not measure again when it comes and goes");
         // And it obeys the two heights a pressable thing is allowed
         assert!(PAGE.contains("#strip { position:absolute; left:0; right:0; top:0; height:32px;"),
-                "帯の高さが規約の2つ (36px / 32px) のどちらでもない");
+                "the strip's height is neither of the two in the guide (36px / 32px)");
         // The + stays put while the tabs scroll past it. Measured at 820px
         // wide before this: the sixth tab was cut off mid-word and the +,
         // the only way to add one from here, had left the window entirely
-        assert!(PAGE.contains("#strip .stabs { flex:0 1 auto;"), "+ が最後のタブの直後に来ない");
+        assert!(PAGE.contains("#strip .stabs { flex:0 1 auto;"), "the + does not come right after the last tab");
         assert!(
             PAGE.contains(r#"strip.append(tabs);"#)
                 && PAGE.split("strip.append(tabs);").nth(1).unwrap_or_default().contains("snew"),
-            "+ がタブと一緒に流れて画面から出る"
+            "the + flows with the tabs and goes off the screen"
         );
         // They shrink before they vanish, down to a floor that still says
         // which state, which AI and the start of the name
         assert!(PAGE.contains("#strip .stab { display:flex; align-items:center; gap:var(--s1); flex:0 1 auto;
     min-width:64px;"),
-                "タブが縮まずに溢れる");
+                "the tabs overflow instead of shrinking");
         // ...and switching to one that is out of sight brings it into sight
-        assert!(PAGE.contains("if (sel && stripSel !== S.active) {"), "選んだタブが見えない場所のまま");
+        assert!(PAGE.contains("if (sel && stripSel !== S.active) {"), "the selected tab stays somewhere it cannot be seen");
     }
 
     /// Every AI this app can name has a mark, and none of them is a logo.
@@ -11145,31 +11145,31 @@ mod tests {
             .split("const AI_MARK = {")
             .nth(1)
             .and_then(|r| r.split("};").next())
-            .expect("AI の記号表が画面から消えている");
+            .expect("the table of AI marks is gone from the screen");
         // The CLIs `Tab::ai_kind` answers with, spelled there and here
         for key in ["claude", "codex", "gemini", "aider"] {
-            assert!(table.contains(&format!("{key}:")), "{key} の記号が無い");
+            assert!(table.contains(&format!("{key}:")), "{key} has no mark");
         }
         // A key with no entry still gets one
-        assert!(table.contains(r#""": "#), "知らないAIの受け皿が無い");
+        assert!(table.contains(r#""": "#), "there is no fallback for an AI it does not know");
         // The one that is the mark rather than a stand-in for it stays out
-        assert!(!table.contains("grok"), "商標そのものの字が入っている");
-        assert!(!PAGE.contains("\u{1D54F}"), "X の字が入っている");
+        assert!(!table.contains("grok"), "a trademark's own lettering is in it");
+        assert!(!PAGE.contains("\u{1D54F}"), "the X glyph is in it");
         // A terminal is marked too, and not with somebody else's mark. The
         // chevron belonged to aider until terminals -- which had nothing at
         // all -- turned out to be the reason anybody knows what one means
-        assert!(PAGE.contains("const KIND_MARK = { pty: \"❯\" };"), "端末に記号が無い");
-        assert!(table.contains("aider: \"❖\""), "aider が端末と同じ字のまま");
+        assert!(PAGE.contains("const KIND_MARK = { pty: \"❯\" };"), "terminals have no mark");
+        assert!(table.contains("aider: \"❖\""), "aider still has the same mark as a terminal");
         // Only a terminal. A page, a file and a diff are not terminals, and a
         // prompt drawn on one of them is a lie about what it is
-        assert!(!PAGE.contains("KIND_MARK = { pty: \"❯\", "), "端末でないものに端末の印が出る");
+        assert!(!PAGE.contains("KIND_MARK = { pty: \"❯\", "), "things that are not terminals get the terminal mark");
         // Drawn as text, not as an emoji: a colour font ignores --ai
-        assert!(PAGE.contains(r#"glyph + "︎""#), "字形の指定が無く、色が効かない");
+        assert!(PAGE.contains(r#"glyph + "︎""#), "there is no presentation selector, so the color does not apply");
         // And worn after the status dot, so its column survives
         let row = PAGE.split("function tabRow(").nth(1).unwrap_or_default();
         let dot = row.find(r#"el("span", {class:"dot " + t.state})"#);
         let mark = row.find("markFor(t),");
-        assert!(dot.is_some() && mark.is_some() && dot < mark, "記号が点より前に出ている");
+        assert!(dot.is_some() && mark.is_some() && dot < mark, "the mark comes before the dot");
     }
 
     /// The order the sidebar reads states in covers every state there is.
@@ -11195,15 +11195,15 @@ mod tests {
             .split("const STATE_RANK = [")
             .nth(1)
             .and_then(|r| r.split(']').next())
-            .expect("STATE_RANK が画面から消えている");
+            .expect("STATE_RANK is gone from the screen");
         let ranked: Vec<&str> =
             list.split(',').map(|s| s.trim().trim_matches('"')).filter(|s| !s.is_empty()).collect();
         for s in EVERY {
-            assert!(ranked.contains(&s.label()), "{} が並び順に入っていない", s.label());
+            assert!(ranked.contains(&s.label()), "{} is not in the order", s.label());
         }
-        assert_eq!(ranked.len(), EVERY.len(), "並び順に余計なものが混ざっている: {ranked:?}");
+        assert_eq!(ranked.len(), EVERY.len(), "something extra is mixed into the order: {ranked:?}");
         // And the one that must come first does
-        assert_eq!(ranked[0], TabState::Question.label(), "人を待たせる状態が先頭ではない");
+        assert_eq!(ranked[0], TabState::Question.label(), "the state that keeps a person waiting is not first");
     }
 
     /// Several tabs in one folder get a heading, and a folded folder speaks
@@ -11211,30 +11211,30 @@ mod tests {
     /// rows that have to be read one at a time.
     #[test]
     fn a_folder_with_several_tabs_can_be_put_away_as_one() {
-        assert!(PAGE.contains("if (mine.length >= 2) {"), "束の見出しが1つのタブにも出る/出ない");
-        assert!(PAGE.contains(r#"fold("tabs:" + g.folder)"#), "束を畳む札が無い");
+        assert!(PAGE.contains("if (mine.length >= 2) {"), "the bundle heading shows (or does not) for a single tab");
+        assert!(PAGE.contains(r#"fold("tabs:" + g.folder)"#), "there is no tab to fold the bundle");
         // A set of tabs starts put away: only a set somebody opened is shown row by row
-        assert!(PAGE.contains(r#"const away = !opened.has("tabs:" + g.folder);"#), "タブの束が開いた状態で始まる");
-        assert!(PAGE.contains(r#"const set = folder.startsWith("tabs:") ? opened : folded;"#), "束の開閉が畳みの記録と混ざる");
-        assert!(PAGE.contains("function pillsRow(mine)"), "畳んだときの表示が無い");
+        assert!(PAGE.contains(r#"const away = !opened.has("tabs:" + g.folder);"#), "a bundle of tabs starts out open");
+        assert!(PAGE.contains(r#"const set = folder.startsWith("tabs:") ? opened : folded;"#), "opening a bundle is mixed up with the record of what is folded");
+        assert!(PAGE.contains("function pillsRow(mine)"), "there is nothing shown when folded");
         // Put away, the set is one box that opens from anywhere on it, with a ›
         // at its end -- the pills inside are not buttons of their own
-        assert!(PAGE.contains(r#"return el("div", {class:"bundle away""#), "畳んだ束が1つの箱になっていない");
-        assert!(PAGE.contains(r#"el("span", {class:"caret"}, "›"));"#), "畳んだ束の右端に › が無い");
-        assert!(!PAGE.contains(r#"onclick:() => send({kind:"select", tab:ts[0].index})"#), "束の中の札が別の意味のボタンになっている");
+        assert!(PAGE.contains(r#"return el("div", {class:"bundle away""#), "a folded bundle is not one box");
+        assert!(PAGE.contains(r#"el("span", {class:"caret"}, "›"));"#), "a folded bundle has no › at its right end");
+        assert!(!PAGE.contains(r#"onclick:() => send({kind:"select", tab:ts[0].index})"#), "a pill inside the bundle has become a button that means something else");
         // The folder's name goes to the folder; putting it away is the caret's
         assert!(
             PAGE.contains(r#"onclick:() => send({kind:"folderview", folder:g.folder || ""})},"#),
-            "作業フォルダ名を押しても最後のタブへ行かない"
+            "pressing the working folder's name does not go to its last tab"
         );
         assert!(
             PAGE.contains(r#"onclick:e => { e.stopPropagation(); fold(g.folder); }}, shut ? "▸" : "▾"),"#),
-            "作業フォルダを畳む場所が ▸ でない"
+            "the place to fold a working folder is not ▸"
         );
         // Shut, the heading wears the state of whatever is waiting inside
         assert!(
             PAGE.contains("if (shut && (mine || []).length) {"),
-            "畳んだ作業フォルダが中の状態を言っていない"
+            "a folded working folder does not say what state is inside it"
         );
     }
 
@@ -11270,10 +11270,10 @@ mod tests {
         for s in EVERY {
             let label = s.label();
             if matches!(s, TabState::Wait) {
-                assert!(!styled(label), "{label} は既定の灰色のままでよい");
+                assert!(!styled(label), "{label} can stay the default gray");
                 continue;
             }
-            assert!(styled(label), "{label} の点に規則が無く、待機と同じ灰色で描かれる");
+            assert!(styled(label), "{label} has no rule for its dot, so it is drawn the same gray as idle");
         }
         // Filled or ringed, never nothing: the ring is how a state says "this
         // is news you cannot act on yet", and a missing one reads as filled
@@ -11286,7 +11286,7 @@ mod tests {
                 .to_string();
             assert!(
                 rule.contains("inset 0 0 0 2px"),
-                "{ringed} は輪郭で描く決めごとなのに塗られている: {rule}"
+                "{ringed} is meant to be drawn as an outline, but it is filled: {rule}"
             );
         }
         // And exactly one state blinks. Anything more is a processor core
@@ -11302,7 +11302,7 @@ mod tests {
                     .any(|rule| rule.contains("animation:"))
             })
             .collect();
-        assert_eq!(blinking, ["BUSY"], "点滅してよい状態は処理中だけ");
+        assert_eq!(blinking, ["BUSY"], "the only state allowed to blink is busy");
     }
 
     /// Every Enter that does something has to let a conversion through.
@@ -11314,12 +11314,12 @@ mod tests {
     #[test]
     fn enter_that_finishes_a_conversion_is_not_an_answer() {
         let page = PAGE;
-        assert!(page.contains("const typingIME ="), "IME中かどうかを言う場所が無い");
+        assert!(page.contains("const typingIME ="), "there is no place that says whether an IME is composing");
         let acts = page.matches("e.key === \"Enter\"").count();
         let guards = page.matches("typingIME(e)").count();
         assert!(
             guards >= acts,
-            "Enter を拾う箇所 {acts} に対し、変換中を通す守りが {guards} しかない"
+            "there are {acts} places that catch Enter, but only {guards} guards that let composition through"
         );
     }
 
@@ -11333,39 +11333,39 @@ mod tests {
         assert!(
             PAGE.contains("const at = (S.tabs || []).find(t => t.index === S.active);")
                 && PAGE.contains("tabpos = sibs.indexOf(at);"),
-            "歯車が見ているタブの位置を拾わない"
+            "the gear does not pick up the position of the tab being looked at"
         );
-        assert!(PAGE.contains("if (tabpos != null) p.tabpos = tabpos;"), "スマホの道に位置が乗らない");
+        assert!(PAGE.contains("if (tabpos != null) p.tabpos = tabpos;"), "the position is not carried on the phone's path");
         assert!(
             PAGE.contains("const p = {desk: (S && S.desk_index) || 0};"),
-            "スマホの道にデスクが乗らない（無いと基本カードに落ちる）"
+            "the desk is not carried on the phone's path (without it, it falls back to the basic card)"
         );
-        assert!(PAGE.contains("tabpos: tabpos});"), "窓の道に位置が乗らない");
+        assert!(PAGE.contains("tabpos: tabpos});"), "the position is not carried on the window's path");
     }
 
     /// The subscription's reading is shown only over a Claude tab, and only
     /// when there is one.
     #[test]
     fn the_usage_reading_follows_a_claude_tab_in_view() {
-        assert!(PAGE.contains(r#"if (!t || t.ai !== "claude" || !S.usage) return null;"#), "Claude 以外のタブで出る");
+        assert!(PAGE.contains(r#"if (!t || t.ai !== "claude" || !S.usage) return null;"#), "it shows on tabs other than Claude");
         // A bar per window, with words beside it -- not a number in a pill
-        assert!(PAGE.contains(r#"fill.style.width = Math.max(0, Math.min(100, w.pct)) + "%";"#), "棒が無い");
-        assert!(PAGE.contains(r#"el("span", {class:"wsay"}, w.used + (w.resets ? " " + w.resets : ""))"#), "言葉が無い");
-        assert!(PAGE.contains(r#"#status .usage .win + .win::before { content:"·";"#), "窓の間の点が無い");
-        assert!(PAGE.contains("    limitPill(),\n    usagePill(),"), "下段に無い");
+        assert!(PAGE.contains(r#"fill.style.width = Math.max(0, Math.min(100, w.pct)) + "%";"#), "there is no bar");
+        assert!(PAGE.contains(r#"el("span", {class:"wsay"}, w.used + (w.resets ? " " + w.resets : ""))"#), "there are no words");
+        assert!(PAGE.contains(r#"#status .usage .win + .win::before { content:"·";"#), "there is no dot between the windows");
+        assert!(PAGE.contains("    limitPill(),\n    usagePill(),"), "it is not in the lower row");
         // The row must stay the width of its column, or the reading pushes
         // STOP off the right edge (it did, at 1280px, on 2026-09-09)
-        assert!(PAGE.contains("flex-wrap:nowrap; min-width:0; overflow:hidden; }"), "下段が窓より広がる");
-        assert!(PAGE.contains("#status .usage .wsay { overflow:hidden; text-overflow:ellipsis; min-width:0;"), "言葉が縮まない");
+        assert!(PAGE.contains("flex-wrap:nowrap; min-width:0; overflow:hidden; }"), "the lower row grows wider than the window");
+        assert!(PAGE.contains("#status .usage .wsay { overflow:hidden; text-overflow:ellipsis; min-width:0;"), "the words do not shrink");
     }
 
     /// A usage-limit notice is the tab's own, so it is shown only over the
     /// tab being looked at, and pressing it puts it away.
     #[test]
     fn the_limit_notice_follows_the_tab_in_view() {
-        assert!(PAGE.contains("const t = (S && S.tabs || []).find(t => t.index === S.active);\n  if (!t || !t.limit) return null;"), "見ているタブ以外の知らせが出る");
-        assert!(PAGE.contains(r#"send({kind:"limit_ack", tab:t.index})"#), "押しても消えない");
-        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n    el(\"span\", {class:\"grow\"}),"), "下段に札が無い");
+        assert!(PAGE.contains("const t = (S && S.tabs || []).find(t => t.index === S.active);\n  if (!t || !t.limit) return null;"), "it shows notices for tabs other than the one being looked at");
+        assert!(PAGE.contains(r#"send({kind:"limit_ack", tab:t.index})"#), "pressing it does not make it go away");
+        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n    el(\"span\", {class:\"grow\"}),"), "there is no pill in the lower row");
     }
 
     /// Two pointers and no more, each beside the thing it names, closed by
@@ -11373,28 +11373,28 @@ mod tests {
     /// gear: the window asks the app, the phone follows a link.
     #[test]
     fn the_first_run_pointer_the_thanks_card_and_the_manual_link_are_drawn() {
-        assert!(PAGE.contains(r##"const coachAt = step => step === 1 ? document.querySelector("#tabs .tab.addtab")"##), "1歩目の刺す先が無い");
+        assert!(PAGE.contains(r##"const coachAt = step => step === 1 ? document.querySelector("#tabs .tab.addtab")"##), "there is nothing for step 1 to point at");
         // The second step points at the line that starts an AI in an empty folder.
         // The folder's own + means another worktree now, which is not "start one here"
-        assert!(PAGE.contains(r##": step === 2 ? document.querySelector("#tabs .tab.fnew") : null;"##), "2歩目の刺す先が無い");
-        assert!(PAGE.contains(r#"send({kind:"coach", step:coachShut});"#), "閉じたことが伝わらない");
+        assert!(PAGE.contains(r##": step === 2 ? document.querySelector("#tabs .tab.fnew") : null;"##), "there is nothing for step 2 to point at");
+        assert!(PAGE.contains(r#"send({kind:"coach", step:coachShut});"#), "closing it is never reported");
         // Doing the thing is an answer to being asked. Without this the bubble
         // sat over the screen it had just sent somebody to, until its ✕
         assert!(
             PAGE.contains("if (!at || !at.contains(e.target)) return;")
                 && PAGE.contains(r#"send({kind:"coach", step});"#),
-            "刺した先を押しても閉じない"
+            "pressing what it points at does not close it"
         );
-        assert!(PAGE.contains("if (t.textContent !== text) t.textContent = text;"), "毎フレーム作り直している");
-        assert!(PAGE.contains(r#"const next = (S.coach || 0) === 2 ? " pulse" : "";"#), "2歩目で + が光らない");
-        assert!(PAGE.contains("if (S.thanks && !REMOTE) {"), "スマホにお礼の札が出る");
+        assert!(PAGE.contains("if (t.textContent !== text) t.textContent = text;"), "it rebuilds every frame");
+        assert!(PAGE.contains(r#"const next = (S.coach || 0) === 2 ? " pulse" : "";"#), "the + does not light up on step 2");
+        assert!(PAGE.contains("if (S.thanks && !REMOTE) {"), "the thank-you pill shows on the phone");
         assert!(PAGE.contains(r#"send({kind:"thanks", open:true})"#) && PAGE.contains(r#"send({kind:"thanks", open:false})"#));
         // The update card: the same part, both buttons answer, neither installs
-        assert!(PAGE.contains("if (S.update) {"), "更新の札が無い");
+        assert!(PAGE.contains("if (S.update) {"), "there is no update pill");
         assert!(PAGE.contains(r#"send({kind:"update", open:true})"#) && PAGE.contains(r#"send({kind:"update", open:false})"#));
-        assert!(!PAGE.contains("/api/update/install"), "札から直接入れている");
-        assert!(PAGE.contains(r#"el("a", {class:"help", href:manual, target:"_blank", rel:"noopener","#), "スマホの ? がリンクでない");
-        assert!(PAGE.contains(r#"send({kind:"help"})"#), "窓の ? がアプリに頼まない");
+        assert!(!PAGE.contains("/api/update/install"), "it installs straight from the pill");
+        assert!(PAGE.contains(r#"el("a", {class:"help", href:manual, target:"_blank", rel:"noopener","#), "the phone's ? is not a link");
+        assert!(PAGE.contains(r#"send({kind:"help"})"#), "the window's ? does not ask the app");
     }
 
     /// The branch dialog says what the new folder runs, and can make one
@@ -11402,14 +11402,14 @@ mod tests {
     /// answers, so what was shown is what happens.
     #[test]
     fn the_branch_dialog_says_what_runs_and_can_fan_out() {
-        assert!(PAGE.contains(r#"make:false, carry:carrying(), start:starting(), ais:fanning(),"#), "尋ねる道に起動先が乗らない");
-        assert!(PAGE.contains(r#"make:true, carry:carrying(), start:starting(), ais:fanning(),"#), "作る道に起動先が乗らない");
+        assert!(PAGE.contains(r#"make:false, carry:carrying(), start:starting(), ais:fanning(),"#), "where to start is not carried on the path that asks");
+        assert!(PAGE.contains(r#"make:true, carry:carrying(), start:starting(), ais:fanning(),"#), "where to start is not carried on the path that makes");
         // The place travels on both roads too. On one only, the line somebody
         // read would be about a folder the button then did not use
         assert_eq!(
             PAGE.matches(r#"at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing()});"#).count(),
             2,
-            "場所・機械・支度が両方の道に乗っていない"
+            "place, machine and preparation are not carried on both paths"
         );
         // With the fan-out ticked, the single choice is not sent as well
         assert!(PAGE.contains(r#"function starting() { return fanning().length ? "" : branchStart; }"#));
@@ -11425,26 +11425,26 @@ mod tests {
     /// no branch open, or a branch whose project is not open, is drawn flat.
     #[test]
     fn a_project_and_its_branches_are_drawn_as_one_household() {
-        assert!(PAGE.contains(r#"el("div", {class:"family"})"#), "家族の箱が無い");
+        assert!(PAGE.contains(r#"el("div", {class:"family"})"#), "there is no family box");
         assert!(
             PAGE.contains("const heads = g => !!g.family && !g.linked && kinOf(g).some(o => o.linked);")
                 && PAGE.contains("const housed = g => !!g.family && g.linked && kinOf(g).some(o => !o.linked);"),
-            "元と枝が両方あるときだけ家族、の条件が消えている"
+            "the rule that a family is only when both the original and a branch exist is gone"
         );
-        assert!(PAGE.contains(r#"fold("kin:" + g.family)"#), "枝をまとめて畳む札が無い");
+        assert!(PAGE.contains(r#"fold("kin:" + g.family)"#), "there is no tab to fold the branches together");
         // `kin` is `housed(g)` once the chosen grouping has had its say: the
         // household is a grouping of its own and steps aside for another
         assert!(
             PAGE.contains(r#"const kin = axis === "none" && housed(g)"#),
-            "別の軸を選んでも家族の箱が残る"
+            "the family box stays even when another axis is chosen"
         );
         assert!(
             PAGE.contains(r#"if (kin && folded.has("kin:" + g.family)) continue;"#),
-            "畳んだ枝の見出しが消えない"
+            "the heading of folded branches does not go away"
         );
-        assert!(PAGE.contains(r#"row.append(el("span", {class:"on""#), "元が乗っているブランチの札が無い");
-        assert!(PAGE.contains(".family .tab.folder.cut { padding-left:24px; }"), "枝の見出しが一段入っていない");
-        assert!(PAGE.contains(".family .tab.intab.deep { padding-left:40px; }"), "枝のタブが見出しに揃っていない");
+        assert!(PAGE.contains(r#"row.append(el("span", {class:"on""#), "there is no pill for the branch the original is on");
+        assert!(PAGE.contains(".family .tab.folder.cut { padding-left:24px; }"), "the branch heading is not indented one step");
+        assert!(PAGE.contains(".family .tab.intab.deep { padding-left:40px; }"), "a branch's tabs are not aligned with its heading");
         // Tabs are numbered on their rows, so moving a heading never moves a number
         assert!(PAGE.contains(r#"el("span", {class:"num"}, String(t.index))"#));
         // A browser belongs to no folder and comes after every folder
@@ -11458,13 +11458,13 @@ mod tests {
     /// walked from tabs, and a new folder has none.
     #[test]
     fn an_empty_folder_is_drawn_and_its_plus_blinks() {
-        assert!(PAGE.contains("if (g.empty) { into.append(emptyRow(g)); continue; }"), "空のフォルダが描かれない");
+        assert!(PAGE.contains("if (g.empty) { into.append(emptyRow(g)); continue; }"), "an empty folder is not drawn");
         // What blinks is the line that puts the first tab in, on the step that asks for it
         assert!(PAGE.contains(r#"el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)}"#),
-                "空のフォルダで次に押すものが光らない");
+                "in an empty folder the next thing to press does not light up");
         assert!(
             PAGE.contains("const bare = (S.coach || 0) === 1;"),
-            "何も無い機で「作業フォルダを追加」が光らない"
+            "on a machine with nothing yet, 'Add a working folder' does not light up"
         );
     }
 
@@ -11479,39 +11479,39 @@ mod tests {
         assert!(
             PAGE.contains("const p = {addtab: (S && S.desk_index) || 0};")
                 && PAGE.contains("walkToSettings(p);"),
-            "スマホの + が設定ページへ歩いて行かない"
+            "the phone's + does not walk to the settings page"
         );
         // The window still takes the keystroke path (the WebView is its to open),
         // and carries the pane as well -- an empty pane's invitation names both
         // the folder it was asked from and the pane the tab is to land in
         assert!(
             PAGE.contains(r#"send({kind:"addtab", folder: at, pane: pane == null ? null : pane});"#),
-            "窓側の道が消えている"
+            "the window's path is gone"
         );
         // The invitation inside an empty pane goes down the same road. It used
         // to send the pane and no folder, so splitting while working in the
         // third folder and pressing it added a tab to the first
         assert!(
             PAGE.contains("addTabHere(activeFolder(), p.id);"),
-            "空のペインの誘いが、どのフォルダかを言わずに送っている"
+            "the empty pane's invitation sends without saying which folder"
         );
         assert!(
             !PAGE.contains(r#"send({kind:"addtab", pane:p.id});"#),
-            "ペインの + がフォルダを落とす古い配線に戻っている"
+            "the pane's + is back to the old wiring that drops the folder"
         );
         assert!(
             !PAGE.contains(r#"onclick:() => send({kind:"addtab"})"#),
-            "+ が全surface共通で intent を送る古い配線に戻っている"
+            "the + is back to the old wiring that sends an intent shared by every surface"
         );
         // ...and both roads carry which folder it was asked for from. Without
         // it the form adds the tab to the first folder, wherever it was asked
         assert!(
             PAGE.contains("if (at) p.folder = at;"),
-            "スマホの + がフォルダを落としている"
+            "the phone's + drops the folder"
         );
         assert!(
             PAGE.contains("const at = g && g.folder ? g.folder : \"\";"),
-            "+ を押したフォルダが読まれていない"
+            "the folder where + was pressed is not read"
         );
     }
 
@@ -11529,19 +11529,19 @@ mod tests {
     fn dismissing_the_composer_survives_a_tap() {
         assert!(
             PAGE.contains("if (REMOTE && onTermPty()) { if (!castClosed()) openTermBar(); return; }"),
-            "画面タップが✕を無視して入力欄を開き直す"
+            "tapping the screen ignores the ✕ and opens the input bar again"
         );
         // One reader, so the meaning of the ✕ can't drift between callers
         assert_eq!(
             PAGE.matches(r#"localStorage.getItem("shikishaCastClosed2")"#).count(),
             1,
-            "✕の記憶を読む場所が複数ある (食い違いのもと)"
+            "the ✕ is remembered in more than one place (a source of disagreement)"
         );
         // Clearing it stays a deliberate act: the pen's toggle, nothing else
         assert_eq!(
             PAGE.matches("rememberCastClosed(false)").count(),
             1,
-            "✕の解除が増えている (勝手に開き直る道が復活している)"
+            "there are more ways to undo the ✕ (the path that reopens on its own is back)"
         );
     }
 
@@ -11555,23 +11555,23 @@ mod tests {
     #[test]
     fn the_page_is_never_machine_translated() {
         let html = super::page();
-        assert!(html.contains("translate=\"no\""), "ページ全体の翻訳拒否が無い");
+        assert!(html.contains("translate=\"no\""), "the whole page does not refuse translation");
         assert!(
             html.contains(r#"<meta name="google" content="notranslate">"#),
-            "翻訳の申し出を止める meta が無い"
+            "there is no meta tag to stop the offer to translate"
         );
         assert!(
             html.contains(r#"<pre id="screen" class="notranslate""#),
-            "端末の中身が個別に守られていない"
+            "the terminal's contents are not protected on their own"
         );
         // A real language code, not the raw placeholder
         let lang = crate::i18n::lang();
-        assert!(!lang.is_empty() && !lang.contains('{'), "lang が空/未置換: {lang}");
+        assert!(!lang.is_empty() && !lang.contains('{'), "lang is empty or not filled in: {lang}");
         assert!(
             html.contains(&format!("<html lang=\"{lang}\"")),
-            "lang 属性が入っていない (翻訳の誤検出はここから始まる)"
+            "there is no lang attribute (mistaken translation starts here)"
         );
-        assert!(!html.contains("{{__lang__}}"), "lang のプレースホルダが残っている");
+        assert!(!html.contains("{{__lang__}}"), "the lang placeholder is left in");
     }
 
     /// The terminal is handed over as rows, and the page keeps them as
@@ -11587,35 +11587,35 @@ mod tests {
         let mut p: vt100::Parser = vt100::Parser::new(4, 20, 0);
         p.process(b"one\r\ntwo\r\nthree");
         let rows = screen_rows(p.screen());
-        assert_eq!(rows.len(), 4, "行の数が画面の高さと違う: {rows:?}");
+        assert_eq!(rows.len(), 4, "the number of rows differs from the screen's height: {rows:?}");
         assert!(
             rows.iter().all(|r| !r.contains('\n')),
-            "1行の中に改行が混ざっている: {rows:?}"
+            "a newline is mixed into a single row: {rows:?}"
         );
         // The one-string form is still the same picture (the phone, an
         // unfocused pane and the tests all read it)
         assert_eq!(screen_html(p.screen()), rows.join("\n"));
-        assert!(PAGE.contains("window.__rows = function"), "行だけを直す口が無い");
+        assert!(PAGE.contains("window.__rows = function"), "there is no way to fix just the rows");
         // ...and the phone reaches it too. Without this line the relay could
         // only ever hand over whole grids, which is what made scrolling from a
         // phone stutter: every row moves, so every frame was a full rebuild
         assert!(
             PAGE.contains("if (d.rows) { window.__rows(d.rows);"),
-            "遠隔の状態ソケットが行の修復を受け取れない"
+            "the remote state socket cannot receive row repairs"
         );
         // A whole grid still has to leave the reader's scroll alone: replacing
         // the elements pulls the frame out from under a finger mid-scroll
         assert!(
             PAGE.contains("if (s.children.length === rows.length)"),
-            "同じ高さの画面が来たときに要素を作り直してしまう"
+            "it rebuilds the elements when a screen of the same height arrives"
         );
         assert!(
             PAGE.contains(r#"'<div class="r">'"#),
-            "行が別々の要素になっていない"
+            "the rows are not separate elements"
         );
         assert!(
             PAGE.contains("#screen .r { min-height:1.25em; }"),
-            "空の行が高さを失う"
+            "an empty row loses its height"
         );
     }
 
@@ -11628,11 +11628,11 @@ mod tests {
     fn only_the_terminal_contents_are_selectable() {
         assert!(
             PAGE.contains("#screen { user-select:text; }"),
-            "ターミナルの中身が選べる指定が無い"
+            "there is no rule that makes the terminal's contents selectable"
         );
         assert!(
             PAGE.contains(".tab") && PAGE.contains("user-select:none"),
-            "タブバーが選択に混ざる"
+            "the tab bar gets mixed into the selection"
         );
     }
 
@@ -11646,35 +11646,35 @@ mod tests {
     /// until somebody's server had the wrong files on it
     #[test]
     fn the_file_panel_asks_for_the_same_things_a_script_does() {
-        assert!(PAGE.contains("id=\"sftppanel\" hidden"), "ファイルのパネルの置き場所が無い");
+        assert!(PAGE.contains("id=\"sftppanel\" hidden"), "there is no place for the file panel");
         assert!(
             PAGE.contains("send({kind:\"sftp\", panel: t.id || t.name || \"\", act, args: args || {}})"),
-            "パネルの頼み方が一本になっていない"
+            "the panel does not ask through one path"
         );
         for act in ["\"local\"", "\"remote\"", "\"put\"", "\"get\"", "\"mkdir\"", "\"rename\"", "\"rm\""] {
-            assert!(PAGE.contains(act), "頼めるはずのこと {act} が画面に無い");
+            assert!(PAGE.contains(act), "{act}, which it should be able to ask for, is not on the screen");
         }
         // A whole folder is not one of them: there is no command that copies
         // one, by design, and a screen that quietly looped would be that
         // command under another name
-        assert!(PAGE.contains("sftp.folders_only"), "フォルダを送れないことを言っていない");
+        assert!(PAGE.contains("sftp.folders_only"), "it does not say that folders cannot be sent");
         // Grey buttons that answer, and the question before anything is replaced
-        assert!(PAGE.contains("sftp.why.no_server"), "止まっている理由が無い");
-        assert!(PAGE.contains("id=\"sask\" hidden"), "取り消せないことを聞く窓が無い");
+        assert!(PAGE.contains("sftp.why.no_server"), "there is no reason given for being stopped");
+        assert!(PAGE.contains("id=\"sask\" hidden"), "there is no dialog that asks before something that cannot be undone");
         // The panel is a connection, not a chooser of one. Nothing here offers
         // a list of other tabs to borrow from: the address is this tab's own,
         // and what the screen offers is the way to its settings
-        assert!(!PAGE.contains("sftpPickServer"), "接続を他のタブから選ばせている");
-        assert!(!PAGE.contains("\"point\""), "接続を指し直す道が残っている");
-        assert!(PAGE.contains("sftp.open_settings"), "設定への入口が無い");
+        assert!(!PAGE.contains("sftpPickServer"), "it has you pick the connection from other tabs");
+        assert!(!PAGE.contains("\"point\""), "a way to point the connection somewhere else is still there");
+        assert!(PAGE.contains("sftp.open_settings"), "there is no way into the settings");
         // A phone gets a panel's answers down the state socket. Without this
         // the panel asks its questions into the dark and waits for ever, which
         // is silence rather than a failure and so is worth pinning down
-        assert!(PAGE.contains("if (d.sftp) window.__sftp(d.sftp);"), "スマホに答えが届かない");
-        assert!(PAGE.contains("if (d.git) window.__git(d.git);"), "スマホに git の答えが届かない");
+        assert!(PAGE.contains("if (d.sftp) window.__sftp(d.sftp);"), "the answer never reaches the phone");
+        assert!(PAGE.contains("if (d.git) window.__git(d.git);"), "git's answer never reaches the phone");
         assert!(
             PAGE.contains("if (d.files) window.__files(d.files);"),
-            "スマホにファイル一覧の答えが届かない"
+            "the file list's answer never reaches the phone"
         );
     }
 
@@ -11686,39 +11686,39 @@ mod tests {
     /// space that opens up avoids all of that.
     #[test]
     fn the_bar_is_drawn_by_the_app_not_injected_into_the_page() {
-        assert!(PAGE.contains("id=\"nav\""), "バーの置き場所が無い");
-        assert!(PAGE.contains("id=\"page\""), "ページを置く場所が無い");
+        assert!(PAGE.contains("id=\"nav\""), "there is no place for the bar");
+        assert!(PAGE.contains("id=\"page\""), "there is no place to put the page");
         // The bar asking the person something is the board's own, drawn under
         // the page (never inside it, where the page could press it), and
         // pressing it names the page it stands under
-        assert!(PAGE.contains("id=\"ask\" hidden"), "呼びかけの帯を置く場所が無い");
-        assert!(PAGE.contains("<div class=\"pask\"></div>"), "他ペインの帯を置く場所が無い");
+        assert!(PAGE.contains("id=\"ask\" hidden"), "there is no place for the banner that calls for attention");
+        assert!(PAGE.contains("<div class=\"pask\"></div>"), "there is no place for another pane's banner");
         assert!(
             PAGE.contains("send({kind:\"button\", name: t.id});"),
-            "帯のボタンがどのページのものか言わない"
+            "the banner's button does not say which page it belongs to"
         );
         assert!(
             PAGE.contains("setProperty(\"--askh\", a.hidden ? \"0px\" : \"44px\")"),
-            "帯を出してもページが上がらない"
+            "showing the banner does not move the page up"
         );
         // Where the page sits is pushed down by exactly the bar's height.
         // Reserved out of the focused pane's rectangle rather than written onto
         // each layer: with panes, "the top" is no longer the top of the window
         assert!(
             PAGE.contains("setProperty(\"--navh\", n.hidden ? \"0px\" : \"36px\")"),
-            "バーを出してもページが下がらない"
+            "showing the bar does not move the page down"
         );
         // Everything that stands where the page stands is pushed down by the
         // same amount: the page itself, the relay canvas, and the line said in
         // the relay's place for a page drawn on somebody else's device. Any one
         // of them left out tucks its top edge behind the bar
         for id in ["#page {", "#cast {", "#nocast {"] {
-            let at = PAGE.find(id).unwrap_or_else(|| panic!("{id} の規則が無い"));
+            let at = PAGE.find(id).unwrap_or_else(|| panic!("there is no rule for {id}"));
             let rule = &PAGE[at..];
             let rule = &rule[..rule.find('}').unwrap_or(rule.len())];
             assert!(
                 rule.contains("top:calc(var(--fy) + var(--navh))"),
-                "{id} がバーの分だけ下がらない"
+                "{id} does not move down by the bar's height"
             );
         }
         // Rows/columns come from #main; the browser view's placement comes
@@ -11726,7 +11726,7 @@ mod tests {
         // terminal just because the bar appeared
         assert!(
             PAGE.contains("document.getElementById(\"page\").getBoundingClientRect()"),
-            "置き場所を #page から取っていない"
+            "the position is not taken from #page"
         );
     }
 
@@ -11734,13 +11734,13 @@ mod tests {
     /// If they did, typing what feels like a destination would actually send text to the AI.
     #[test]
     fn typing_an_address_does_not_reach_the_terminal() {
-        assert!(PAGE.contains("e.stopPropagation();"), "打鍵を止めていない");
+        assert!(PAGE.contains("e.stopPropagation();"), "it does not stop the keystrokes");
         // Selection or a click must never steal focus away from the input field
         assert!(
             PAGE.contains("if (a && a.closest && a.closest(\"#nav\")) return;"),
-            "入力中に焦点を奪っている"
+            "it steals focus while typing"
         );
-        assert!(PAGE.contains("if (inBar(e)) return;"), "バーの中で端末の作法が働く");
+        assert!(PAGE.contains("if (inBar(e)) return;"), "the terminal's key handling works inside the bar");
     }
 
     /// The ball is a moving element, not a character.
@@ -11748,9 +11748,9 @@ mod tests {
     /// This is half the reason for having a window at all — a plain grid of cells would have made do with a ● character.
     #[test]
     fn the_ball_is_a_moving_thing_not_a_character() {
-        assert!(PAGE.contains("#ball"), "ボールの要素が無い");
-        assert!(PAGE.contains("transition:left"), "動かない");
-        assert!(!PAGE.contains("\u{25CF}"), "文字の●で描いている");
+        assert!(PAGE.contains("#ball"), "there is no ball element");
+        assert!(PAGE.contains("transition:left"), "it does not move");
+        assert!(!PAGE.contains("\u{25CF}"), "it is drawn with the ● character");
     }
 }
 
@@ -11783,25 +11783,25 @@ mod color_tests {
         for piece in html.split("<span").skip(1) {
             assert!(
                 piece.contains("width:calc(var(--cw)*"),
-                "マス数を持たない区間がある: {piece}"
+                "a span has no cell count: {piece}"
             );
         }
         // A full-width character is 2 cells
         assert!(
             html.contains("width:calc(var(--cw)*2)"),
-            "全角が2マスになっていない: {html}"
+            "a full-width character is not two cells: {html}"
         );
         // A run of 3 half-width characters is 3 cells
         let three = render("\u{1b}[31mabc\u{1b}[0m");
         assert!(
             three.contains("width:calc(var(--cw)*3)"),
-            "半角3文字が3マスになっていない: {three}"
+            "three half-width characters are not three cells: {three}"
         );
         // Box-drawing characters are also 1 cell — the terminal counts them that way, so rendering matches
         let line = render("\u{1b}[31m\u{2502}\u{1b}[0m");
         assert!(
             line.contains("width:calc(var(--cw)*1)"),
-            "罫線が1マスになっていない: {line}"
+            "a box-drawing character is not one cell: {line}"
         );
     }
 
@@ -11818,16 +11818,16 @@ mod color_tests {
         assert_eq!(
             html.matches("width:calc(var(--cw)*2)").count(),
             3,
-            "全角がまとめられている: {html}"
+            "full-width characters are lumped together: {html}"
         );
-        assert!(html.contains("text-align:center;"), "マスの中で寄っている: {html}");
+        assert!(html.contains("text-align:center;"), "it leans to one side within its cell: {html}");
 
         // ASCII characters fit their cell exactly, so merging them is fine (avoids extra elements)
         let ascii = render("\u{1b}[31mabcdef\u{1b}[0m");
         assert_eq!(
             ascii.matches("width:calc(var(--cw)*").count(),
             1,
-            "英数字まで1文字ずつ切っている: {ascii}"
+            "it splits even letters and digits one by one: {ascii}"
         );
     }
 
@@ -11840,14 +11840,14 @@ mod color_tests {
     fn the_text_and_the_cursor_share_one_cell_width() {
         assert!(
             !render("ab").contains("ch;"),
-            "フォントが言う字送りで桁を置いている"
+            "it places columns by the advance the font reports"
         );
         assert!(
             PAGE.contains("scr.style.setProperty(\"--cw\", cellW + \"px\")"),
-            "測った幅を中身へ渡していない"
+            "the measured width is not passed to the contents"
         );
         // The cursor is also placed from that same cellW
-        assert!(PAGE.contains("col * cellW"), "カーソルが別の数で置かれている");
+        assert!(PAGE.contains("col * cellW"), "the cursor is placed by a different number");
     }
 
     /// Trailing whitespace at the end of a line doesn't need a fixed position.
@@ -11859,7 +11859,7 @@ mod color_tests {
         assert!(first.starts_with("<span"), "{first}");
         assert!(
             first.trim_end().ends_with("</span>") || first.ends_with(' '),
-            "行末の空白まで箱に入れている: {first:?}"
+            "trailing spaces are put in a box too: {first:?}"
         );
     }
 
@@ -11872,24 +11872,24 @@ mod color_tests {
         // One of the sixteen names a variable and the theme decides what
         // that variable is: this is where a colour scheme reaches a cell
         let h = render("\x1b[31mred\x1b[0m plain");
-        assert!(h.contains("color:var(--c1)"), "前景色が出ていない: {h}");
-        assert!(h.contains(">red<"), "色の中身が入っていない: {h}");
-        assert!(h.contains("plain"), "色なしの部分が消えている: {h}");
+        assert!(h.contains("color:var(--c1)"), "the foreground color is not there: {h}");
+        assert!(h.contains(">red<"), "the colored text is not there: {h}");
+        assert!(h.contains("plain"), "the uncolored part is gone: {h}");
 
         // Background, bold, underline
-        assert!(render("\x1b[44mx").contains("background:var(--c4)"), "背景色");
-        assert!(render("\x1b[1mx").contains("font-weight:700"), "太字");
-        assert!(render("\x1b[4mx").contains("text-decoration:underline"), "下線");
+        assert!(render("\x1b[44mx").contains("background:var(--c4)"), "background color");
+        assert!(render("\x1b[1mx").contains("font-weight:700"), "bold");
+        assert!(render("\x1b[4mx").contains("text-decoration:underline"), "underline");
 
         // Inverse swaps the foreground and background
         let inv = render("\x1b[7mx");
-        assert!(inv.contains("background:") && inv.contains("color:"), "反転: {inv}");
+        assert!(inv.contains("background:") && inv.contains("color:"), "inverse: {inv}");
 
         // The 256-color cube and the grayscale ramp
-        assert!(render("\x1b[38;5;196mx").contains("color:#ff0000"), "立方体の赤");
-        assert!(render("\x1b[38;5;232mx").contains("color:#080808"), "灰色の下端");
+        assert!(render("\x1b[38;5;196mx").contains("color:#ff0000"), "red from the color cube");
+        assert!(render("\x1b[38;5;232mx").contains("color:#080808"), "bottom of the gray ramp");
         // 24-bit
-        assert!(render("\x1b[38;2;18;52;86mx").contains("color:#123456"), "24bit色");
+        assert!(render("\x1b[38;2;18;52;86mx").contains("color:#123456"), "24-bit color");
     }
 
     /// Characters shown on screen are never interpreted as HTML markup.
@@ -11899,9 +11899,9 @@ mod color_tests {
     #[test]
     fn output_is_never_treated_as_markup() {
         let h = render("<script>alert(1)</script> & <b>");
-        assert!(!h.contains("<script>"), "生のタグが残っている: {h}");
-        assert!(h.contains("&lt;script&gt;"), "エスケープされていない: {h}");
-        assert!(h.contains("&amp;"), "アンパサンドが素通り: {h}");
+        assert!(!h.contains("<script>"), "a raw tag is left in: {h}");
+        assert!(h.contains("&lt;script&gt;"), "it is not escaped: {h}");
+        assert!(h.contains("&amp;"), "the ampersand passes through: {h}");
     }
 
     /// Runs with the same appearance are merged into one.
@@ -11911,7 +11911,7 @@ mod color_tests {
     #[test]
     fn runs_of_the_same_look_are_merged() {
         let h = render("\x1b[31maaaaaaaaaa");
-        assert_eq!(h.matches("<span").count(), 1, "文字ごとに分かれている: {h}");
+        assert_eq!(h.matches("<span").count(), 1, "it is split per character: {h}");
 
         // A change in appearance splits the run
         let h = render("\x1b[31ma\x1b[32mb\x1b[31mc");

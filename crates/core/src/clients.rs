@@ -275,9 +275,9 @@ pub(crate) mod tests {
 
             assert!(revoke(&phone.id).unwrap(), "消えたと言わない");
             assert!(who(&phone_key).is_none(), "取り上げた鍵がまだ開く");
-            assert_eq!(who(&laptop_key).map(|c| c.id), Some(laptop.id), "巻き添えで閉め出された");
+            assert_eq!(who(&laptop_key).map(|c| c.id), Some(laptop.id), "it was locked out by mistake");
 
-            assert!(!revoke(&phone.id).unwrap(), "二度目も消したと言っている");
+            assert!(!revoke(&phone.id).unwrap(), "it says it removed it a second time too");
         });
     }
 

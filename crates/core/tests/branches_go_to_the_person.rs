@@ -28,7 +28,7 @@ fn a_branch_lands_under_the_person_and_never_beside_the_project() {
     // The project's own folder is left exactly as it was
     assert!(
         !at.starts_with(project.parent().unwrap()),
-        "本体の隣に置いている: {at:?}"
+        "it is placed beside the main checkout: {at:?}"
     );
     // Under the project it belongs to, with the branch's shape kept
     assert!(at.ends_with("myproject/feature/login"), "{at:?}");

@@ -1588,14 +1588,14 @@ mod tests {
     #[ignore = "needs a browser on this machine"]
     fn a_real_browser_opens_a_page_and_says_what_is_in_it() {
         let Some(exe) = found() else {
-            panic!("この機械にブラウザが無い（--ignored で走らせる前に入れる）");
+            panic!("this machine has no browser (install one before running with --ignored)");
         };
         println!("browser: {}", exe.display());
 
-        let chrome = Chrome::start().expect("ブラウザが起動しない");
+        let chrome = Chrome::start().expect("the browser does not start");
         let version = chrome
             .call("Browser.getVersion", serde_json::json!({}))
-            .expect("版を答えない");
+            .expect("it does not say its version");
         println!("version: {}", version.get("product").and_then(|v| v.as_str()).unwrap_or("?"));
 
         // A page of our own making, so the test does not depend on the network
@@ -1603,12 +1603,12 @@ mod tests {
         // as windows-1252 and every character above ASCII comes back as
         // something else. Found by this test saying exactly that
         let page = "data:text/html;charset=utf-8,                    <title>shikisha</title><h1 id=t>ここに書いた</h1>";
-        let session = chrome.open(page).expect("ページが開かない");
+        let session = chrome.open(page).expect("the page does not open");
 
         // The page has to have finished before it can be read
         chrome
             .call_page(&session, "Page.enable", serde_json::json!({}))
-            .expect("Page を有効にできない");
+            .expect("Page cannot be enabled");
         std::thread::sleep(std::time::Duration::from_millis(700));
 
         let got = chrome
@@ -1620,20 +1620,20 @@ mod tests {
                     "returnByValue": true,
                 }),
             )
-            .expect("読み返せない");
+            .expect("cannot read it back");
         let text = got
             .get("result")
             .and_then(|r| r.get("value"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        assert_eq!(text, "ここに書いた", "書いたものが読み返せない: {got}");
+        assert_eq!(text, "ここに書いた", "what was written cannot be read back: {got}");
 
         // And a picture of it, which is what a phone is shown
         let shot = chrome
             .call_page(&session, "Page.captureScreenshot", serde_json::json!({"format": "png"}))
-            .expect("撮れない");
+            .expect("cannot take it");
         let png = shot.get("data").and_then(|v| v.as_str()).unwrap_or("");
-        assert!(png.len() > 1000, "絵が小さすぎる: {} 文字", png.len());
+        assert!(png.len() > 1000, "the picture is too small: {} characters", png.len());
         println!("screenshot: {} 文字の PNG", png.len());
     }
 
@@ -1648,28 +1648,28 @@ mod tests {
     #[ignore = "fetches a browser (a few hundred megabytes, once)"]
     fn a_machine_with_no_browser_gets_one() {
         let started = std::time::Instant::now();
-        let exe = fetch().expect("ブラウザを取得できない");
+        let exe = fetch().expect("cannot get the browser");
         println!("browser: {} ({:?})", exe.display(), started.elapsed());
-        assert!(exe.is_file(), "取得したはずの場所に無い");
+        assert!(exe.is_file(), "it is not where it was fetched to");
 
         // Asked again, it hands back the same one without fetching anything
         let again = std::time::Instant::now();
-        assert_eq!(fetch().expect("2度目"), exe);
+        assert_eq!(fetch().expect("the second time"), exe);
         assert!(
             again.elapsed() < std::time::Duration::from_secs(2),
-            "2度目も落としに行っている: {:?}",
+            "the second time also goes to download it: {:?}",
             again.elapsed()
         );
 
         // The finder prefers it over whatever else is on this machine --
         // a known version being the whole reason it was fetched
-        assert_eq!(found().as_deref(), Some(exe.as_path()), "自前のものを選んでいない");
+        assert_eq!(found().as_deref(), Some(exe.as_path()), "it does not choose its own copy");
 
         // And it is a browser: it starts, and it is the version that was asked for
-        let chrome = Chrome::start().expect("取得したブラウザが起動しない");
-        let said = chrome.call("Browser.getVersion", serde_json::json!({})).expect("版を答えない");
+        let chrome = Chrome::start().expect("the fetched browser does not start");
+        let said = chrome.call("Browser.getVersion", serde_json::json!({})).expect("it does not say its version");
         let product = said.get("product").and_then(|v| v.as_str()).unwrap_or("");
-        assert!(product.contains(PINNED), "固定した版ではない: {product}");
+        assert!(product.contains(PINNED), "not the pinned version: {product}");
         println!("version: {product}");
     }
 
@@ -1681,7 +1681,7 @@ mod tests {
         assert_eq!(folder_name("a/b"), "ab");
         assert_eq!(folder_name(""), "default");
         assert_eq!(folder_name("..."), "default");
-        assert_ne!(folder_name("work"), folder_name("home"), "別名が同じ場所になる");
+        assert_ne!(folder_name("work"), folder_name("home"), "different names end up in the same place");
     }
 
     /// A page may say what happened to it, and may not ask for anything --
@@ -1696,14 +1696,14 @@ mod tests {
         );
         assert!(
             matches!(told, Some(Ev::Ready { from: Some(ref n), .. }) if n == "p"),
-            "報告に別の名前を名乗らせている: {told:?}"
+            "the report is made to carry a different name: {told:?}"
         );
         // Asking for something is not a report
         assert!(from_page(Ev::Say { tab: 0, text: "cat /etc/shadow".into() }, "p").is_none());
         // Nothing is asked through the binding, so nothing answers through it
         assert!(
             from_page(Ev::Result { id: 1, ok: true, value: "\"y\"".into() }, "p").is_none(),
-            "誰も聞いていない答えを受け取っている"
+            "it accepts an answer nobody asked for"
         );
     }
 
@@ -1719,7 +1719,7 @@ mod tests {
         use crate::pageops;
         use shikisha_shared::{BrowserHost, BrowserProfile, Found, Go, Input, Sel};
 
-        assert!(found().is_some(), "この機械にブラウザが無い");
+        assert!(found().is_some(), "this machine has no browser");
         let site = serve();
         let store = std::env::temp_dir().join(format!("shikisha-pages-{}", crate::random_hex(8)));
         let pages = Pages::under(store, true);
@@ -1727,13 +1727,13 @@ mod tests {
 
         pages
             .open_child("p", &site, (0, 0, 900, 700), BrowserProfile::shared_default())
-            .expect("ページが開かない");
+            .expect("the page does not open");
 
         // The page reports for itself, through a binding that stands where
         // the window's channel stands. Nothing below works if this does not
-        let (url, complete) = wait_ready(&pages).expect("ページが読み込み完了を報告しない");
-        assert_eq!(url, site, "違う住所を報告している");
-        assert!(complete, "画像や CSS を待たずに完了と言っている");
+        let (url, complete) = wait_ready(&pages).expect("the page does not report that loading finished");
+        assert_eq!(url, site, "it reports a different address");
+        assert!(complete, "it says it finished without waiting for images and CSS");
 
         // ── looking ──────────────────────────────────────────────────────
         assert_eq!(pages.find(Some("p"), &Sel::Css("#here".into()), t).unwrap(), Found::Visible);
@@ -1754,7 +1754,7 @@ mod tests {
         assert_eq!(
             pages.text(Some("p"), &Sel::Css("#log".into()), t).unwrap().as_deref(),
             Some("押された"),
-            "押したことになっていない"
+            "the press did not register"
         );
         // The crux of it: a value must never become code. This is what AI
         // output, and text read straight off a page, look like at their worst
@@ -1766,62 +1766,62 @@ mod tests {
         assert_eq!(
             pages.text(Some("p"), &Sel::Css("#q".into()), t).unwrap().as_deref(),
             Some(nasty),
-            "入れた値が変わって返ってくる"
+            "the value put in comes back changed"
         );
 
         // ── the digest, and the refs it hands out ────────────────────────
-        let digest = pages.digest(Some("p"), t).expect("digest が取れない");
-        assert!(digest.contains("押す"), "盤面に見えるものが digest に無い: {digest}");
+        let digest = pages.digest(Some("p"), t).expect("the digest cannot be taken");
+        assert!(digest.contains("押す"), "what is visible on the board is not in the digest: {digest}");
         let number = |label: &str| -> u32 {
             digest
                 .lines()
                 .find(|l| l.contains(label))
                 .and_then(|l| l.split(']').next())
                 .and_then(|l| l.trim_start_matches('[').trim().parse().ok())
-                .unwrap_or_else(|| panic!("{label} の ref が digest に無い:\n{digest}"))
+                .unwrap_or_else(|| panic!("the ref for {label} is not in the digest:\n{digest}"))
         };
         // A genuine mouse event, which is the whole reason refs exist
-        let rep = pages.click(Some("p"), &Sel::Ref(number("触る")), t).expect("ref を押せない");
+        let rep = pages.click(Some("p"), &Sel::Ref(number("触る")), t).expect("the ref cannot be pressed");
         assert_eq!(rep.state, Found::Visible);
-        assert!(rep.echo.unwrap_or_default().contains("触る"), "何を押したか答えていない");
+        assert!(rep.echo.unwrap_or_default().contains("触る"), "it does not say what it pressed");
         assert_eq!(
             pages.text(Some("p"), &Sel::Css("#tapped".into()), t).unwrap().as_deref(),
             Some("触られた"),
-            "本物の入力が届いていない"
+            "real input did not arrive"
         );
         // And a ref that no longer means anything says so
         let err = pages.click(Some("p"), &Sel::Ref(999), t).unwrap_err().to_string();
-        assert!(!err.is_empty(), "無い ref を黙って押している");
+        assert!(!err.is_empty(), "it quietly presses a ref that does not exist");
 
         // ── carrying a login from one place to another ───────────────────
-        let cookies = pages.cookies_out(Some("p"), t).expect("cookie が読めない");
+        let cookies = pages.cookies_out(Some("p"), t).expect("the cookies cannot be read");
         assert!(
             cookies.as_array().is_some_and(|c| {
                 c.iter().any(|k| k.get("value").and_then(|n| n.as_str()) == Some("mark"))
             }),
-            "ブラウザが持っている cookie が出てこない: {cookies}"
+            "the cookies the browser holds do not come out: {cookies}"
         );
-        let store = pages.storage_out(Some("p"), t).expect("localStorage が読めない");
-        assert!(store.to_string().contains("しるし"), "localStorage が出てこない: {store}");
-        pages.cookies_in(Some("p"), &cookies, t).expect("cookie が戻せない");
-        pages.storage_in(Some("p"), &store, t).expect("localStorage が戻せない");
+        let store = pages.storage_out(Some("p"), t).expect("localStorage cannot be read");
+        assert!(store.to_string().contains("しるし"), "localStorage does not come out: {store}");
+        pages.cookies_in(Some("p"), &cookies, t).expect("the cookies cannot be put back");
+        pages.storage_in(Some("p"), &store, t).expect("localStorage cannot be put back");
 
         // ── a picture of it, which is what a phone is shown ──────────────
-        let png = pages.snapshot(Some("p"), t).expect("撮れない");
-        assert!(png.len() > 2_000, "絵が小さすぎる: {} バイト", png.len());
-        assert_eq!(&png[..4], b"\x89PNG", "PNG ではない");
+        let png = pages.snapshot(Some("p"), t).expect("cannot take it");
+        assert!(png.len() > 2_000, "the picture is too small: {} bytes", png.len());
+        assert_eq!(&png[..4], b"\x89PNG", "not a PNG");
 
         // ── a request made from inside the page ──────────────────────────
         let got = pages
             .fetch(Some("p"), &format!("{site}next"), &serde_json::json!({}), t)
-            .expect("fetch できない");
-        assert!(got.contains("\"status\":200"), "fetch の答えが変: {got}");
-        assert!(got.contains("次の画面"), "本文が入っていない: {got}");
+            .expect("fetch fails");
+        assert!(got.contains("\"status\":200"), "fetch's answer is odd: {got}");
+        assert!(got.contains("次の画面"), "the body is not in it: {got}");
 
         // ── being watched, and touched from wherever it is watched ───────
-        pages.screencast(Some("p"), true).expect("配信が始まらない");
-        let (w, h) = wait_frame(&pages).expect("絵が一枚も来ない");
-        assert!(w >= 1 && h >= 1, "絵の寸法が無い");
+        pages.screencast(Some("p"), true).expect("the stream does not start");
+        let (w, h) = wait_frame(&pages).expect("not a single picture arrives");
+        assert!(w >= 1 && h >= 1, "the picture has no size");
         // Where something is, as a fraction of the screen -- which is how a
         // finger on a phone arrives, having touched a picture of the page
         let spot = |id: &str| -> Vec<f64> {
@@ -1838,46 +1838,46 @@ mod tests {
                         Some("p"),
                         Input::Mouse { phase: phase.into(), x: at[0], y: at[1], down: false },
                     )
-                    .expect("触れない");
+                    .expect("cannot touch");
             }
         };
         tap(&spot("reach"));
         assert_eq!(
             pages.text(Some("p"), &Sel::Css("#reached".into()), t).unwrap().as_deref(),
             Some("届いた"),
-            "遠くからの指が届いていない"
+            "the finger from afar did not arrive"
         );
         // Typing arrives the same way, and lands wherever the last touch put
         // the cursor -- which is what makes a phone able to fill in a form
         pages.fill(Some("p"), &Sel::Css("#q".into()), "", t).unwrap();
         tap(&spot("q"));
-        pages.inject(Some("p"), Input::Text { text: "遠くから".into() }).expect("打てない");
+        pages.inject(Some("p"), Input::Text { text: "遠くから".into() }).expect("cannot type");
         assert_eq!(
             pages.text(Some("p"), &Sel::Css("#q".into()), t).unwrap().as_deref(),
             Some("遠くから"),
-            "打った文字が入っていない"
+            "the typed text did not go in"
         );
-        pages.screencast(Some("p"), false).expect("配信が止まらない");
+        pages.screencast(Some("p"), false).expect("the stream does not stop");
 
         // ── where it is, and where it has been ───────────────────────────
         pages.ask_where(Some("p")).unwrap();
-        let (at, back) = wait_where(&pages).expect("今どこかを答えない");
+        let (at, back) = wait_where(&pages).expect("it does not say where it is now");
         assert_eq!(at, site);
-        assert!(!back, "最初のページなのに戻れると言っている");
-        pages.go(Some("p"), Go::To(format!("{site}next"))).expect("移動できない");
-        wait_ready(&pages).expect("移動先が読み込み完了を報告しない");
+        assert!(!back, "it says it can go back on the first page");
+        pages.go(Some("p"), Go::To(format!("{site}next"))).expect("cannot move");
+        wait_ready(&pages).expect("the destination does not report that loading finished");
         assert!(pages.href(Some("p"), t).unwrap().ends_with("/next"));
         pages.ask_where(Some("p")).unwrap();
-        let (_, back) = wait_where(&pages).expect("移動後にどこかを答えない");
-        assert!(back, "1つ前があるのに戻れないと言っている");
-        pages.go(Some("p"), Go::Back).expect("戻れない");
-        wait_ready(&pages).expect("戻った先が読み込み完了を報告しない");
-        assert_eq!(pages.href(Some("p"), t).unwrap(), site, "戻っていない");
+        let (_, back) = wait_where(&pages).expect("it does not say where it is after moving");
+        assert!(back, "there is a previous page, but it says it cannot go back");
+        pages.go(Some("p"), Go::Back).expect("cannot go back");
+        wait_ready(&pages).expect("where it went back to does not report that loading finished");
+        assert_eq!(pages.href(Some("p"), t).unwrap(), site, "it did not go back");
 
-        pages.close_child("p").expect("閉じられない");
+        pages.close_child("p").expect("cannot close it");
         assert!(
             pages.find(Some("p"), &Sel::Css("#here".into()), t).is_err(),
-            "閉じたページがまだ操作できる"
+            "a closed page can still be driven"
         );
         println!("すべて通過");
     }
@@ -1891,16 +1891,16 @@ mod tests {
         use crate::host::Shell as _;
         use shikisha_shared::{BrowserProfile, Sel};
 
-        assert!(found().is_some(), "この機械にブラウザが無い");
+        assert!(found().is_some(), "this machine has no browser");
         let site = serve();
         let store = std::env::temp_dir().join(format!("shikisha-seam-{}", crate::random_hex(8)));
         let mut shell =
             crate::host::Headless::browsing(24, 80, Rc::new(crate::placed::Placed::under(store, true)));
 
-        let (host, rect) = shell.host().expect("窓の無いランタイムがページを断っている");
-        assert!(rect.2 > 0 && rect.3 > 0, "ページの寸法が無い: {rect:?}");
+        let (host, rect) = shell.host().expect("the runtime with no window refuses the page");
+        assert!(rect.2 > 0 && rect.3 > 0, "the page has no size: {rect:?}");
         host.open_child("p", &site, rect, BrowserProfile::shared_default())
-            .expect("ページが開かない");
+            .expect("the page does not open");
 
         // The loop's own move: wait a moment, and see what arrived
         let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
@@ -1910,7 +1910,7 @@ mod tests {
         let loaded = std::mem::take(&mut shell.mail().loads);
         assert!(
             loaded.iter().any(|(name, url, _)| name == "p" && url == &site),
-            "読み込み完了が郵便受けに届いていない: {loaded:?}"
+            "loading finished did not reach the mailbox: {loaded:?}"
         );
         assert_eq!(
             host.text(Some("p"), &Sel::Css("#here".into()), 10_000).unwrap().as_deref(),
@@ -2008,6 +2008,6 @@ mod tests {
         let (host, path) = split_ws("ws://127.0.0.1:9222/devtools/browser/abc-123").unwrap();
         assert_eq!(host, "127.0.0.1:9222");
         assert_eq!(path, "/devtools/browser/abc-123");
-        assert!(split_ws("http://127.0.0.1:9222/").is_err(), "ws でない住所を受けた");
+        assert!(split_ws("http://127.0.0.1:9222/").is_err(), "it accepted an address that is not ws");
     }
 }

@@ -1511,7 +1511,7 @@ mod frame_bench {
                 120,
                 TabOptions::default(),
             )
-            .expect("起動");
+            .expect("started");
             let start = Instant::now();
             let mut had: Vec<String>;
             let mut arrived = None;
@@ -1623,7 +1623,7 @@ mod frame_bench {
             120,
             TabOptions::default(),
         )
-        .expect("起動");
+        .expect("started");
         settle(&tab, Duration::from_millis(600), Duration::from_secs(10));
         // The codepage is the one condition worth being able to change.
         //

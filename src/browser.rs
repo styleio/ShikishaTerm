@@ -540,14 +540,14 @@ mod profile_tests {
         let a = profile_dir(&BrowserProfile::new("work", false));
         let b = profile_dir(&BrowserProfile::new("home", false));
         let same = profile_dir(&BrowserProfile::new("work", false));
-        assert_ne!(a, b, "別プロファイルが同じ入れ物を使っている");
-        assert_eq!(a, same, "同じ名前なら同じ入れ物 (ログインが残る)");
+        assert_ne!(a, b, "different profiles use the same container");
+        assert_eq!(a, same, "the same name means the same container (the sign-in is kept)");
         // Private is a fresh area EVERY time, which is what makes reopening one a
         // reset rather than a reload — the site meets someone it has never seen
         let p1 = profile_dir(&BrowserProfile::new("", true));
         let p2 = profile_dir(&BrowserProfile::new("", true));
-        assert_ne!(p1, p2, "プライベートが同じ入れ物を使い回している");
-        assert!(p1.starts_with(profiles_root().join("_private")), "掃除の対象から外れている: {p1:?}");
+        assert_ne!(p1, p2, "private windows reuse the same container");
+        assert!(p1.starts_with(profiles_root().join("_private")), "it is left out of the sweep: {p1:?}");
         // The shell is not one of the profiles, and never collides with a named one
         assert_ne!(shell_data_dir(), a);
         assert_ne!(shell_data_dir(), profile_dir(&BrowserProfile::shared_default()));
@@ -2784,7 +2784,7 @@ mod nav_tests {
         assert_eq!(
             openable("  https://a.example/x?y=1  ").as_deref(),
             Some("https://a.example/x?y=1"),
-            "前後の空白は落とす"
+            "surrounding spaces are dropped"
         );
         assert_eq!(
             openable("http://127.0.0.1:8080/").as_deref(),
@@ -2793,17 +2793,17 @@ mod nav_tests {
         assert_eq!(
             openable("HTTPS://Example.com/A").as_deref(),
             Some("https://Example.com/A"),
-            "貼り付けた大文字スキームも通す（後段の検査は小文字前提）"
+            "a pasted upper-case scheme gets through too (the later checks assume lower case)"
         );
         for empty in ["", "   "] {
-            assert!(openable(empty).is_none(), "開けてしまう: {empty}");
+            assert!(openable(empty).is_none(), "it opens: {empty}");
         }
         // Dangerous schemes never reach the page — they become an inert search instead
         for bad in ["file:///C:/secret.txt", "ftp://x/y", "javascript:alert(1)"] {
             let got = openable(bad).unwrap_or_default();
             assert!(
                 got.starts_with("https://www.google.com/search?q="),
-                "検索に落ちていない: {bad} -> {got}"
+                "it did not fall back to a search: {bad} -> {got}"
             );
         }
     }
@@ -2888,7 +2888,7 @@ mod nav_tests {
         ));
         match read(r#"{"kind":"go","what":"to","url":"example.com"}"#) {
             Some(Ev::Go { go: Go::To(u) }) => assert_eq!(u, "example.com"),
-            other => panic!("行き先が読めていない: {other:?}"),
+            other => panic!("the destination was not read: {other:?}"),
         }
         // Discard unknown instructions. Doing nothing is better than silently doing something else
         assert!(read(r#"{"kind":"go","what":"quit"}"#).is_none());
@@ -2905,7 +2905,7 @@ mod nav_tests {
         let brands = v["userAgentMetadata"]["brands"].as_array().unwrap();
         let names: Vec<&str> = brands.iter().filter_map(|b| b["brand"].as_str()).collect();
         assert!(names.contains(&"Google Chrome"), "{names:?}");
-        assert!(!names.iter().any(|n| n.contains("WebView")), "名乗りと食い違う: {names:?}");
+        assert!(!names.iter().any(|n| n.contains("WebView")), "it disagrees with what it calls itself: {names:?}");
         assert_eq!(brands[0]["version"], "151");
 
         // Edge names itself twice; both have to be there or the pair is odd
@@ -2936,15 +2936,15 @@ mod nav_tests {
             Some(Ev::Inject { input: Input::View { w, h }, .. }) => {
                 assert_eq!((w, h), (390.0, 780.0));
             }
-            other => panic!("画面の形が読めていない: {other:?}"),
+            other => panic!("the shape of the screen was not read: {other:?}"),
         }
         let z: serde_json::Value =
             serde_json::from_str(r#"{"kind":"inject","what":"view","w":0,"h":-5}"#).unwrap();
         match parse_intent(&z) {
             Some(Ev::Inject { input: Input::View { w, h }, .. }) => {
-                assert!(w >= 1.0 && h >= 1.0, "ゼロ割りの芽: {w}x{h}");
+                assert!(w >= 1.0 && h >= 1.0, "a divide by zero waiting to happen: {w}x{h}");
             }
-            other => panic!("画面の形が読めていない: {other:?}"),
+            other => panic!("the shape of the screen was not read: {other:?}"),
         }
     }
 
@@ -2960,21 +2960,21 @@ mod nav_tests {
         // The gear names the tab in view by its place in the folder
         match read(r#"{"kind":"opensettings","tabpos":1,"folder":"D:/work"}"#) {
             Some(Ev::OpenSettings { tabpos, folder, section, ret }) => {
-                assert_eq!(tabpos, Some(1), "見ていたタブの位置が落ちた");
+                assert_eq!(tabpos, Some(1), "the position of the tab being looked at was dropped");
                 assert_eq!(folder.as_deref(), Some("D:/work"));
                 assert!(section.is_none() && !ret);
             }
-            other => panic!("opensettings が読めていない: {other:?}"),
+            other => panic!("opensettings was not read: {other:?}"),
         }
         match read(r#"{"kind":"opensettings"}"#) {
-            Some(Ev::OpenSettings { tabpos, .. }) => assert!(tabpos.is_none(), "位置が無いのに入った"),
-            other => panic!("opensettings が読めていない: {other:?}"),
+            Some(Ev::OpenSettings { tabpos, .. }) => assert!(tabpos.is_none(), "it came in though there was no position"),
+            other => panic!("opensettings was not read: {other:?}"),
         }
         match read(r#"{"kind":"say","tab":3,"text":"hello"}"#) {
             Some(Ev::Say { tab, text }) => {
-                assert_eq!((tab, text.as_str()), (3, "hello"), "宛名と本文が揃っていない");
+                assert_eq!((tab, text.as_str()), (3, "hello"), "the addressee and the text do not match");
             }
-            other => panic!("say が読めていない: {other:?}"),
+            other => panic!("say was not read: {other:?}"),
         }
     }
 }
@@ -3013,11 +3013,11 @@ mod tests {
     #[test]
     fn the_board_is_built_into_a_window_that_has_a_size() {
         let src = include_str!("browser.rs");
-        let show = src.find("Cmd::Show => {").expect("Cmd::Show が無い");
+        let show = src.find("Cmd::Show => {").expect("there is no Cmd::Show");
         let body = &src[show..show + 2500];
-        let restored = body.find("window.set_minimized(false)").expect("最小化を戻していない");
-        let built = body.find("match shell_of()").expect("盤面を作り直していない");
-        assert!(restored < built, "最小化のまま盤面を作っている");
+        let restored = body.find("window.set_minimized(false)").expect("it does not bring the window back from minimized");
+        let built = body.find("match shell_of()").expect("it does not rebuild the board");
+        assert!(restored < built, "it builds the board while still minimized");
     }
 
     /// A page placed in the window may report, and may not ask. Every intent
@@ -3029,7 +3029,7 @@ mod tests {
     fn a_stranger_page_may_report_but_never_ask() {
         let read = |s: &str| {
             let v: serde_json::Value = serde_json::from_str(s).unwrap();
-            parse_intent(&v).unwrap_or_else(|| panic!("parse_intent が読めない: {s}"))
+            parse_intent(&v).unwrap_or_else(|| panic!("parse_intent cannot read: {s}"))
         };
         for s in [
             r#"{"kind":"say","tab":1,"text":"rm -rf ~"}"#,
@@ -3058,7 +3058,7 @@ mod tests {
             // one report that must never be believed
             r#"{"kind":"button","name":"web"}"#,
         ] {
-            assert!(!allowed_from_page(&read(s)), "よそのページから通ってしまう: {s}");
+            assert!(!allowed_from_page(&read(s)), "it gets through from a page that is not ours: {s}");
         }
         for s in [
             r#"{"kind":"touched"}"#,
@@ -3068,7 +3068,7 @@ mod tests {
             r#"{"kind":"loading","busy":false}"#,
             r#"{"kind":"result","id":1,"ok":true,"value":"x"}"#,
         ] {
-            assert!(allowed_from_page(&read(s)), "ページの報告が落とされる: {s}");
+            assert!(allowed_from_page(&read(s)), "a page's report is dropped: {s}");
         }
     }
 
@@ -3084,7 +3084,7 @@ mod tests {
         assert!(
             stranger(r#"{"kind":"say","tab":1,"text":"SECURITY_REVIEW_MARKER"}"#, &mut asked)
                 .is_none(),
-            "よそのページの say が端末へ届く"
+            "a say from a page that is not ours reaches the terminal"
         );
         assert!(stranger(r#"{"kind":"key","text":"x"}"#, &mut asked).is_none());
         assert!(stranger(r#"{"kind":"runlua","code":"1"}"#, &mut asked).is_none());
@@ -3093,19 +3093,19 @@ mod tests {
         // A page cannot press the bar for the person
         assert!(
             stranger(r#"{"kind":"button","name":"web"}"#, &mut asked).is_none(),
-            "ページが帯のボタンを押せる"
+            "a page can press the banner's button"
         );
         // A report gets the pane's name, not the one it wrote
         match stranger(r#"{"kind":"touched","from":"settings"}"#, &mut asked) {
             Some(Ev::Touched { from }) => assert_eq!(from.as_deref(), Some("web")),
-            other => panic!("フォーカスの報告が届かない: {other:?}"),
+            other => panic!("the focus report does not arrive: {other:?}"),
         }
         match stranger(r#"{"kind":"ready","url":"https://a.example/"}"#, &mut asked) {
             Some(Ev::Ready { from, url, .. }) => {
                 assert_eq!(from.as_deref(), Some("web"));
                 assert_eq!(url, "https://a.example/");
             }
-            other => panic!("読み込み完了の報告が届かない: {other:?}"),
+            other => panic!("the load-finished report does not arrive: {other:?}"),
         }
         // Our own page, speaking from our address, still asks
         assert!(matches!(
@@ -3124,7 +3124,7 @@ mod tests {
         ));
         match heard(r#"{"kind":"button","name":"br"}"#, None, true, &mut asked) {
             Some(Ev::Button { from }) => assert_eq!(from.as_deref(), Some("br")),
-            other => panic!("盤面の帯の押下が届かない: {other:?}"),
+            other => panic!("a press on the board's banner does not arrive: {other:?}"),
         }
     }
 
@@ -3141,7 +3141,7 @@ mod tests {
         // The neighbour answers first, with the right id
         assert!(
             heard(&answer(7), Some("evil"), false, &mut asked).is_none(),
-            "隣のページが答えを差し替えられる"
+            "a neighboring page can replace the answer"
         );
         // Then the page that was asked
         assert!(matches!(
@@ -3164,7 +3164,7 @@ mod tests {
             many.ask(id, None);
         }
         assert_eq!(many.of.len(), Asked::KEPT);
-        assert!(!many.answered(0, None), "上限を超えても古い問いが残る");
+        assert!(!many.answered(0, None), "old questions stay even past the limit");
         assert!(many.answered(Asked::KEPT as u64 + 9, None));
     }
 
@@ -3176,9 +3176,9 @@ mod tests {
     fn our_pages_come_from_two_servers() {
         let own = vec!["http://127.0.0.1:8787/".to_string(), "http://127.0.0.1:51604/?token=x".to_string()];
         assert!(from_ours(&own, "http://127.0.0.1:8787/?token=abc"));
-        assert!(from_ours(&own, "http://127.0.0.1:51604/?token=abc&desk=2"), "設定ページがよそ者扱い");
+        assert!(from_ours(&own, "http://127.0.0.1:51604/?token=abc&desk=2"), "the settings page is treated as a stranger");
         assert!(from_ours(&own, "http://127.0.0.1:51604/result?token=abc&run=1"));
-        assert!(!from_ours(&own, "http://127.0.0.1:3000/"), "同じ機械の別サーバが自前扱い");
+        assert!(!from_ours(&own, "http://127.0.0.1:3000/"), "another server on the same machine is treated as ours");
         assert!(!from_ours(&own, "https://example.com/"));
         assert!(!from_ours(&[], "http://127.0.0.1:8787/"));
     }
@@ -3191,10 +3191,10 @@ mod tests {
         assert!(same_origin("http://127.0.0.1:8787/?token=abc", own));
         assert!(same_origin("http://127.0.0.1:8787/settings?x=1#y", own));
         assert!(same_origin("HTTP://127.0.0.1:8787/", own));
-        assert!(!same_origin("http://127.0.0.1:8788/", own), "別のポートが同一視される");
-        assert!(!same_origin("https://127.0.0.1:8787/", own), "別のスキームが同一視される");
-        assert!(!same_origin("http://localhost:8787/", own), "別のホスト名が同一視される");
-        assert!(!same_origin("http://127.0.0.1:8787.evil.example/", own), "前方一致で通る");
+        assert!(!same_origin("http://127.0.0.1:8788/", own), "a different port is treated as the same");
+        assert!(!same_origin("https://127.0.0.1:8787/", own), "a different scheme is treated as the same");
+        assert!(!same_origin("http://localhost:8787/", own), "a different host name is treated as the same");
+        assert!(!same_origin("http://127.0.0.1:8787.evil.example/", own), "a prefix match gets through");
         assert!(!same_origin("http://evil.example/http://127.0.0.1:8787/", own));
         assert!(!same_origin("about:blank", own));
         assert!(!same_origin("", own));
@@ -3216,7 +3216,7 @@ mod tests {
         for name in ["__shikisha_pen", "__shikisha_toast"] {
             assert!(
                 PLACED_JS.contains(&format!("window.{name} = function")),
-                "{name} を置いていない"
+                "{name} is not placed"
             );
         }
         // In a shadow root, or the page's own CSS reaches it (and ours reaches
@@ -3224,7 +3224,7 @@ mod tests {
         assert!(
             PLACED_JS.contains("toastEl.id = \"__shikisha_toast\"")
                 && PLACED_JS.matches("attachShadow").count() >= 2,
-            "影の中に置いていない / 名前が付いていない"
+            "it is not placed in the shadow root / it has no name"
         );
     }
 
@@ -3309,9 +3309,9 @@ mod tests {
         let asked = asked.lock().unwrap().clone();
         assert!(
             asked.iter().any(|line| line.contains("127.0.0.1:39997")),
-            "ループバックがプロキシを迂回している（この機能の要): {asked:?}"
+            "loopback bypasses the proxy (the whole point of this feature): {asked:?}"
         );
-        assert!(!text.is_empty(), "プロキシが返したページが表示されていない");
+        assert!(!text.is_empty(), "the page the proxy returned is not shown");
         // Everything the browser does goes this way, not only what a page
         // asked for: this run also caught WebView2 reaching for a Microsoft
         // service of its own accord. A proxy is the whole browser environment
@@ -3359,7 +3359,7 @@ mod tests {
     #[test]
     #[ignore]
     fn browser_page_ops() {
-        let b = Browser::spawn(&serve(PAGE), "SHIKISHA-TERM ops probe").expect("窓が開かない");
+        let b = Browser::spawn(&serve(PAGE), "SHIKISHA-TERM ops probe").expect("the window does not open");
         let t = 20_000;
 
         // Distinguish "not in the DOM" from "in the DOM but off-screen".
@@ -3372,7 +3372,7 @@ mod tests {
         let name = b
             .text(None, &Sel::Xpath("//td[text()='氏名']/following-sibling::td".into()), t)
             .unwrap();
-        assert_eq!(name.as_deref(), Some("山田"), "XPathで隣のセルが取れない");
+        assert_eq!(name.as_deref(), Some("山田"), "XPath cannot get the neighboring cell");
 
         // Click it
         assert_eq!(b.click(None, &Sel::Css("#go".into()), t).unwrap().state, Found::Visible);
@@ -3380,7 +3380,7 @@ mod tests {
         assert_eq!(
             b.text(None, &Sel::Css("#log".into()), t).unwrap().as_deref(),
             Some("pushed"),
-            "押した結果がページに出ていない"
+            "the result of the press does not show on the page"
         );
 
         // Fill it. Not just writing the value — the `input` event must fire too
@@ -3397,7 +3397,7 @@ mod tests {
         assert_eq!(
             b.wait_result(id, std::time::Duration::from_millis(t)).unwrap(),
             "1",
-            "input イベントが飛んでいない"
+            "the input event was not fired"
         );
 
         // This is the crux: the value must never become code.
@@ -3410,7 +3410,7 @@ mod tests {
         assert_eq!(
             b.text(None, &Sel::Css("#q".into()), t).unwrap().as_deref(),
             Some(nasty),
-            "値が一字一句そのまま入っていない"
+            "the value did not go in exactly as given"
         );
 
         // A value containing newlines. A single-line `input` drops
@@ -3424,19 +3424,19 @@ mod tests {
         assert_eq!(
             b.text(None, &Sel::Css("#multi".into()), t).unwrap().as_deref(),
             Some(multi.as_str()),
-            "改行やタブを含む値が崩れている"
+            "a value with newlines or tabs is mangled"
         );
         let id = b.eval("return typeof window.__pwned;").unwrap();
         assert_eq!(
             b.wait_result(id, std::time::Duration::from_millis(t)).unwrap(),
             "\"undefined\"",
-            "渡した値がコードとして実行された"
+            "the value passed in was run as code"
         );
 
         // The full parsed HTML
         let html = b.html(None, t).unwrap();
-        assert!(html.contains("ここにいる"), "HTMLが取れていない");
-        assert!(html.len() > 200, "HTMLが短すぎる: {}", html.len());
+        assert!(html.contains("ここにいる"), "the HTML was not retrieved");
+        assert!(html.len() > 200, "the HTML is too short: {}", html.len());
         println!("HTML {} 文字 / すべて通過", html.chars().count());
 
         drop(b);
@@ -3452,9 +3452,9 @@ mod tests {
     #[test]
     #[ignore]
     fn a_page_can_sit_inside_the_window() {
-        let b = Browser::spawn(&serve(PAGE), "child probe").expect("窓が開かない");
+        let b = Browser::spawn(&serve(PAGE), "child probe").expect("the window does not open");
         b.open_child("side", "https://example.com/", (400, 0, 400, 500), BrowserProfile::shared_default())
-            .expect("置けない");
+            .expect("cannot place it");
         std::thread::sleep(std::time::Duration::from_secs(3));
         // Its position can be changed
         b.child_bounds("side", (200, 0, 600, 500)).unwrap();
@@ -3469,7 +3469,7 @@ mod tests {
         assert_eq!(
             b.wait_result(id, std::time::Duration::from_secs(10)).unwrap(),
             "2",
-            "子を置いたら外皮が動かなくなった"
+            "placing a child stopped the outer window working"
         );
         println!("子ページの出し入れ: 通過");
         drop(b);
@@ -3485,12 +3485,12 @@ mod tests {
         assert!(is_openable("https://example.com/a"));
         assert!(is_openable("http://127.0.0.1:8080/"));
 
-        assert!(!is_openable("file:///C:/tmp/a.html"), "file: は落ちる");
-        assert!(!is_openable("data:text/html,<b>x"), "data: は落ちる");
+        assert!(!is_openable("file:///C:/tmp/a.html"), "file: is rejected");
+        assert!(!is_openable("data:text/html,<b>x"), "data: is rejected");
         assert!(!is_openable("about:blank"));
-        assert!(!is_openable("https://"), "ホストが無い");
+        assert!(!is_openable("https://"), "there is no host");
         assert!(!is_openable(""));
-        assert!(!is_openable("https://example.com/a\nhttps://evil"), "改行の混入");
+        assert!(!is_openable("https://example.com/a\nhttps://evil"), "a newline slipped in");
     }
 
     /// The window opens, JS runs, results come back, and closing it
@@ -3522,15 +3522,15 @@ mod tests {
         });
         let url = format!("http://127.0.0.1:{port}/");
 
-        let b = Browser::spawn(&url, "SHIKISHA-TERM browser probe").expect("窓が開かない");
+        let b = Browser::spawn(&url, "SHIKISHA-TERM browser probe").expect("the window does not open");
 
         let id = b.eval("return 40 + 2;").unwrap();
-        let v = b.wait_result(id, Duration::from_secs(20)).expect("結果なし");
+        let v = b.wait_result(id, Duration::from_secs(20)).expect("no result");
         println!("eval(40+2) = {v}");
         assert_eq!(v, "42");
 
         let id = b.eval("return document.querySelector('#aaa').textContent;").unwrap();
-        let v = b.wait_result(id, Duration::from_secs(20)).expect("結果なし");
+        let v = b.wait_result(id, Duration::from_secs(20)).expect("no result");
         println!("querySelector = {v}");
         assert_eq!(v, "\"hello\"");
 
@@ -3575,14 +3575,14 @@ mod tests {
             }
         });
         let url = format!("http://127.0.0.1:{port}/");
-        let b = Browser::spawn(&url, "SHIKISHA-TERM digest probe").expect("窓が開かない");
+        let b = Browser::spawn(&url, "SHIKISHA-TERM digest probe").expect("the window does not open");
 
-        let text = b.digest(None, 20_000).expect("digestが取れない");
+        let text = b.digest(None, 20_000).expect("the digest could not be taken");
         println!("{text}");
-        assert!(text.contains("button \"押す\""), "ボタンがAXレーンから載る:\n{text}");
+        assert!(text.contains("button \"押す\""), "the button comes in from the AX lane:\n{text}");
         assert!(text.contains("リンク") && text.contains("https://example.com/x"), "{text}");
-        assert!(text.contains("名前"), "入力欄の名前(placeholder由来)が載る:\n{text}");
-        assert!(text.contains("div*") && text.contains("丸いやつ"), "JSクリッカブルが補完される:\n{text}");
+        assert!(text.contains("名前"), "the input box's name (from its placeholder) comes in:\n{text}");
+        assert!(text.contains("div*") && text.contains("丸いやつ"), "JS clickables are filled in:\n{text}");
 
         // A line reads `[N] role "name" …` — pull N for the line matching `needle`
         let ref_of = |needle: &str| -> u32 {
@@ -3591,7 +3591,7 @@ mod tests {
                 .and_then(|l| l.strip_prefix('['))
                 .and_then(|l| l.split(']').next())
                 .and_then(|n| n.parse().ok())
-                .unwrap_or_else(|| panic!("refが取れない: {needle}"))
+                .unwrap_or_else(|| panic!("no ref found: {needle}"))
         };
 
         // A genuine click fires the page's own onclick, and the echo names
@@ -3599,22 +3599,22 @@ mod tests {
         let rb = ref_of("押す");
         let rep = b.click(None, &Sel::Ref(rb), 10_000).unwrap();
         assert_eq!(rep.state, Found::Visible);
-        let echo = rep.echo.expect("refクリックはエコーを返す");
+        let echo = rep.echo.expect("a ref click returns an echo");
         assert!(
             echo.contains("button") && echo.contains("押す"),
-            "何を押したか名乗る: {echo}"
+            "it names what it pressed: {echo}"
         );
         // The durable anchor for the replay journal: the button has a
         // human-made id, so the anchor is its css form
         assert_eq!(
             rep.anchor,
             Some(("css".to_string(), "#b".to_string())),
-            "idを持つ要素のアンカーは #id"
+            "the anchor for an element with an id is #id"
         );
         std::thread::sleep(Duration::from_millis(400));
         let id = b.eval("return document.getElementById('log').textContent;").unwrap();
         let v = b.wait_result(id, Duration::from_secs(10)).unwrap();
-        assert_eq!(v, "\"clicked\"", "本物のマウスイベントがonclickを発火させる");
+        assert_eq!(v, "\"clicked\"", "a real mouse event fires onclick");
 
         // Ref-fill types multibyte as char key events; ref-text reads it back
         let ri = ref_of("名前");
@@ -3622,7 +3622,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(400));
         let id = b.eval("return document.getElementById('i').value;").unwrap();
         let v = b.wait_result(id, Duration::from_secs(10)).unwrap();
-        assert_eq!(v, "\"俳句テスト\"", "charキーイベントでマルチバイトが入る");
+        assert_eq!(v, "\"俳句テスト\"", "char key events put in multibyte text");
         assert_eq!(
             b.text(None, &Sel::Ref(ri), 10_000).unwrap().as_deref(),
             Some("俳句テスト")
@@ -3631,7 +3631,7 @@ mod tests {
         // A stale/unknown ref refuses with guidance instead of clicking air
         let err = b.click(None, &Sel::Ref(999), 10_000).unwrap_err().to_string();
         println!("999 -> {err}");
-        assert!(err.contains("999"), "どのrefが悪いか言う: {err}");
+        assert!(err.contains("999"), "it says which ref is bad: {err}");
 
         // A duplicated element (same text, same href — the Google-btnK shape)
         // still gets an anchor: the candidate pinned to its own position
@@ -3642,14 +3642,14 @@ mod tests {
             .and_then(|l| l.strip_prefix('['))
             .and_then(|l| l.split(']').next())
             .and_then(|n| n.parse::<u32>().ok())
-            .expect("2つ目の重複リンクのref");
+            .expect("the ref of the second duplicate link");
         let rep = b.click(None, &Sel::Ref(dup2), 10_000).unwrap();
-        let (kind, v) = rep.anchor.expect("重複でもアンカーが出る");
+        let (kind, v) = rep.anchor.expect("an anchor comes out even for a duplicate");
         println!("dup anchor = {kind} {v}");
         assert_eq!(kind, "xpath");
         assert!(
             v.starts_with('(') && v.ends_with(")[2]"),
-            "2つ目の要素は位置ピン留めになる: {v}"
+            "the second element is pinned by position: {v}"
         );
 
         drop(b);
@@ -3694,12 +3694,12 @@ mod tests {
             }
         });
         let url = format!("http://127.0.0.1:{port}/");
-        let b = Browser::spawn(&url, "SHIKISHA-TERM hidden probe").expect("窓が開かない");
+        let b = Browser::spawn(&url, "SHIKISHA-TERM hidden probe").expect("the window does not open");
         // A page placed at zero size = hidden (how the app hides pages)
         b.open_child("c", &url, (0, 0, 0, 0), BrowserProfile::new("", true)).unwrap();
         std::thread::sleep(Duration::from_millis(2500));
 
-        let text = b.digest(Some("c"), 20_000).expect("非表示ページのdigestが取れない");
+        let text = b.digest(Some("c"), 20_000).expect("the digest of a hidden page could not be taken");
         println!("{text}");
         let ref_of = |needle: &str| -> u32 {
             text.lines()
@@ -3707,14 +3707,14 @@ mod tests {
                 .and_then(|l| l.strip_prefix('['))
                 .and_then(|l| l.split(']').next())
                 .and_then(|n| n.parse().ok())
-                .unwrap_or_else(|| panic!("refが取れない: {needle}"))
+                .unwrap_or_else(|| panic!("no ref found: {needle}"))
         };
 
         let t0 = std::time::Instant::now();
         assert_eq!(
             b.click(Some("c"), &Sel::Ref(ref_of("押す")), 10_000).unwrap().state,
             Found::Visible,
-            "非表示でもクリックは成立する"
+            "a click works even when hidden"
         );
         println!("click took {}ms", t0.elapsed().as_millis());
         std::thread::sleep(Duration::from_millis(400));
@@ -3722,7 +3722,7 @@ mod tests {
         assert_eq!(
             b.wait_result(id, Duration::from_secs(10)).unwrap(),
             "\"clicked\"",
-            "onclickが発火する"
+            "onclick fires"
         );
 
         assert_eq!(
@@ -3732,7 +3732,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(400));
         let id = b.eval_in(Some("c"), "return document.getElementById('i').value;").unwrap();
         let v = b.wait_result(id, Duration::from_secs(10)).unwrap();
-        assert_eq!(v, "\"俳句\"", "非表示でも値は必ず入る");
+        assert_eq!(v, "\"俳句\"", "the value always goes in even when hidden");
 
         // The wake must have made GENUINE input land — not the fallbacks
         let id = b.eval_in(Some("c"), "return JSON.stringify(window.__ev);").unwrap();
@@ -3740,11 +3740,11 @@ mod tests {
         println!("genuine-input evidence = {ev}");
         assert!(
             ev.contains("\\\"md\\\":1") || ev.contains("md\":1"),
-            "本物マウス (mousedown) が非表示ページに届くはず: {ev}"
+            "a real mouse (mousedown) should reach a hidden page: {ev}"
         );
         assert!(
             !ev.contains("bi\":0"),
-            "本物の打鍵 (beforeinput) が非表示ページに届くはず: {ev}"
+            "real keystrokes (beforeinput) should reach a hidden page: {ev}"
         );
 
         drop(b);
@@ -3804,20 +3804,20 @@ mod tests {
             }
         });
         let url = format!("http://127.0.0.1:{port}/");
-        let b = Browser::spawn(&url, "SHIKISHA-TERM auto-wait probe").expect("窓が開かない");
+        let b = Browser::spawn(&url, "SHIKISHA-TERM auto-wait probe").expect("the window does not open");
 
         // Back-to-back, replay-style: no pauses between any of these
         let t0 = std::time::Instant::now();
         let r = b.click(None, &Sel::Css("#late".into()), 10_000).unwrap();
         let waited = t0.elapsed().as_millis();
-        assert_eq!(r.state, Found::Visible, "まだ無い要素を待ってクリックできる");
+        assert_eq!(r.state, Found::Visible, "it can wait for an element that is not there yet and click it");
         println!("late click waited {waited}ms");
-        assert!(waited >= 500, "700ms後に現れる要素を待ったはず: {waited}ms");
+        assert!(waited >= 500, "it should have waited for an element that appears after 700ms: {waited}ms");
 
         assert_eq!(
             b.click(None, &Sel::Css("#move".into()), 10_000).unwrap().state,
             Found::Visible,
-            "アニメーション中の要素は安定を待ってクリック"
+            "an element being animated is clicked once it holds still"
         );
 
         // Navigate, then immediately act on the next page's late element
@@ -3825,14 +3825,14 @@ mod tests {
         assert_eq!(
             b.fill(None, &Sel::Css("#name".into()), "俳句", 10_000).unwrap().state,
             Found::Visible,
-            "遷移直後+遅延生成の入力欄に、待ち無しの連打で書ける"
+            "an input box made late, right after navigating, can be written to by rapid moves with no waits"
         );
         assert_eq!(b.click(None, &Sel::Css("#ok".into()), 10_000).unwrap().state, Found::Visible);
         std::thread::sleep(Duration::from_millis(300));
         let id = b.eval("return document.getElementById('out').textContent + ' @ ' + location.pathname;").unwrap();
         let v = b.wait_result(id, Duration::from_secs(10)).unwrap();
         println!("final: {v}");
-        assert_eq!(v, "\"俳句 @ /two\"", "連打リプレイが最後まで通る");
+        assert_eq!(v, "\"俳句 @ /two\"", "the rapid replay gets all the way through");
 
         // A truly absent element still says not_found — after the full wait
         let t0 = std::time::Instant::now();
@@ -3855,7 +3855,7 @@ mod tests {
     #[ignore]
     fn haiku_task_probe() {
         let b = Browser::spawn("https://www.google.com/", "SHIKISHA-TERM task probe")
-            .expect("窓が開かない");
+            .expect("the window does not open");
         std::thread::sleep(Duration::from_millis(1500));
 
         let ref_of = |text: &str, needle: &str| -> Option<u32> {
@@ -3868,16 +3868,16 @@ mod tests {
 
         // 1. Find and fill the search box
         let d1 = b.digest(None, 20_000).expect("digest 1");
-        let q = ref_of(&d1, "combobox").or_else(|| ref_of(&d1, "textbox")).expect("検索窓");
+        let q = ref_of(&d1, "combobox").or_else(|| ref_of(&d1, "textbox")).expect("the search box");
         let rep = b.fill(None, &Sel::Ref(q), "俳句", 10_000).expect("fill");
         println!("fill -> {:?} {:?}", rep.state, rep.echo);
         assert_eq!(rep.state, Found::Visible);
 
         // 2. Submit with Enter (the key goes to the focused element = the box)
         b.inject(None, Input::Key { named: "enter".into(), ctrl: false, alt: false }).unwrap();
-        let url = b.wait_ready(Duration::from_secs(20)).expect("検索結果が来ない");
+        let url = b.wait_ready(Duration::from_secs(20)).expect("search results do not arrive");
         println!("results: {url}");
-        assert!(url.contains("/search"), "検索結果ページに遷移: {url}");
+        assert!(url.contains("/search"), "it moves to the search results page: {url}");
         std::thread::sleep(Duration::from_millis(1200));
 
         // 3. Digest the results and click the Wikipedia link by number
@@ -3897,7 +3897,7 @@ mod tests {
             .find(|l| l.contains("§ウェブ検索結果") || l.contains("§検索結果"))
             .or_else(|| wiki_links.iter().find(|l| !l.contains("§AI")))
             .copied()
-            .expect("結果セクションのWikipediaリンクがdigestに載る");
+            .expect("the Wikipedia link in the results section comes into the digest");
         println!("wiki line: {wiki}");
         let r: u32 = wiki
             .strip_prefix('[')
@@ -3909,11 +3909,11 @@ mod tests {
         let echo = rep.echo.clone().unwrap_or_default();
         assert!(
             echo.contains("俳句") || echo.to_lowercase().contains("wikipedia"),
-            "エコーがWikipediaリンクを名乗る: {echo}"
+            "the echo names the Wikipedia link: {echo}"
         );
-        let url = b.wait_ready(Duration::from_secs(20)).expect("Wikipediaへ遷移しない");
+        let url = b.wait_ready(Duration::from_secs(20)).expect("it does not move to Wikipedia");
         println!("landed: {url}");
-        assert!(url.contains("ja.wikipedia.org/wiki"), "Wikipediaに着地: {url}");
+        assert!(url.contains("ja.wikipedia.org/wiki"), "landed on Wikipedia: {url}");
 
         drop(b);
         std::thread::sleep(Duration::from_millis(600));
@@ -3928,11 +3928,11 @@ mod tests {
     #[ignore]
     fn google_probe() {
         let b = Browser::spawn("https://www.google.com/", "SHIKISHA-TERM google probe")
-            .expect("窓が開かない");
+            .expect("the window does not open");
         std::thread::sleep(Duration::from_millis(1500));
 
         let t0 = std::time::Instant::now();
-        let text = b.digest(None, 20_000).expect("digestが取れない");
+        let text = b.digest(None, 20_000).expect("the digest could not be taken");
         println!("digest: {}ms, {} lines\n{text}", t0.elapsed().as_millis(), text.lines().count());
 
         let ref_of = |needle: &str| -> Option<u32> {
@@ -3944,7 +3944,7 @@ mod tests {
         };
         let box_ref = ref_of("combobox")
             .or_else(|| ref_of("textbox"))
-            .expect("検索窓が見つからない");
+            .expect("the search box was not found");
         println!("search box = ref {box_ref}");
 
         let t0 = std::time::Instant::now();
@@ -3952,12 +3952,12 @@ mod tests {
         println!("fill: {:?} in {}ms", r, t0.elapsed().as_millis());
 
         std::thread::sleep(Duration::from_millis(800));
-        let text2 = b.digest(None, 20_000).expect("2度目のdigestが取れない");
+        let text2 = b.digest(None, 20_000).expect("the second digest could not be taken");
         let btn = text2
             .lines()
             .find(|l| l.contains("button") && l.contains("検索") && !l.contains("画像"))
             .map(str::to_string)
-            .expect("検索ボタンが見つからない");
+            .expect("the search button was not found");
         println!("button line: {btn}");
         let btn_ref: u32 = btn
             .strip_prefix('[')
