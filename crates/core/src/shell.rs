@@ -492,7 +492,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      top) and would otherwise need its own arithmetic. Undivided they are all
      zero, which is exactly what these rules hard-coded before panes existed. */
   #main { position:relative; overflow:hidden;
-    --fx:0px; --fy:0px; --fr:0px; --fb:0px; --navh:0px; --askh:0px; --striph:0px; }
+    --fx:0px; --fy:0px; --fr:0px; --fb:0px; --dx:0px; --dr:0px; --navh:0px; --askh:0px; --striph:0px; }
   /* The panes themselves. Only the ones that aren't focused draw anything here
      — the focused pane's rectangle is filled by the full renderer above. */
   #panes { position:absolute; inset:0; top:var(--striph, 0px); }
@@ -675,7 +675,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      straight to `bottom` erased the pane offset and pinned the bar to the
      window's floor -- summoned from the top pane, it appeared at the bottom
      one. The key row scrolls horizontally, the input sits on the bottom row */
-  #castdock { position:absolute; left:var(--fx); right:var(--fr);
+  /* --dx/--dr, not --fx/--fr: the pane's own edges, unless the pane is too
+     narrow to hold the bar (measureFocused) */
+  #castdock { position:absolute; left:var(--dx); right:var(--dr);
     bottom:calc(var(--fb) + var(--kbd, 0px)); z-index:18;
     display:none; flex-direction:column; }
   /* Desktop-only summon button for the composer bar (bottom-right, above the bar). */
@@ -884,13 +886,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      text, which is a library's business and not ours */
   #editpanel[hidden] { display:none; }
   #editpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
-    bottom:var(--fb); display:flex; flex-direction:column; overflow:hidden;
+    bottom:calc(var(--fb) + var(--dock, 0px)); display:flex; flex-direction:column; overflow:hidden;
     font-size:13px;
     /* In the panes' own band (§4 of the style guide). The library inside
        gives its own parts z-indexes, and without one here they would be
        measured against the whole window rather than against this panel */
     z-index:4; }
-  #editpanel .ebar { flex:0 0 auto; display:flex; align-items:center; gap:var(--s2);
+  /* Wraps rather than clips: in a pane a third of a laptop's width, Save was
+     cut in half and the ✕ was past the edge, so the file could be neither
+     saved nor put away from where it was */
+  #editpanel .ebar { flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2);
     padding:6px 10px; border-bottom:1px solid var(--line); }
   #editpanel .ewhere { min-width:0; overflow:hidden; text-overflow:ellipsis;
     white-space:nowrap; color:var(--dim); font-size:12px; }
@@ -907,7 +912,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      to know before they press anything */
   #editpanel .emark { flex:0 0 auto; font-size:11px; color:var(--warn); }
   #editpanel .esay { flex:0 0 auto; padding:6px 10px; font-size:11.5px; color:var(--faint);
-    border-top:1px solid var(--line); display:flex; align-items:center; gap:var(--s3); }
+    border-top:1px solid var(--line); display:flex; flex-wrap:wrap; align-items:center; gap:var(--s3); }
+  #editpanel .esay button { white-space:nowrap; }
   #editpanel .esay.bad { color:var(--stop); }
   #editpanel .ehost { flex:1 1 auto; min-height:0; position:relative; }
   #editpanel .eempty { flex:1 1 auto; padding:var(--s4) var(--s3); color:var(--faint);
@@ -4931,6 +4937,13 @@ function editSave() {
   // file has moved on since, and says so -- it does not win the race
   editAsk("write", {path: ED.path, text: edAce ? edAce.getValue() : ED.text, mark: ED.mark});
 }
+// Keep what is here, over what changed on disk. The one save that does not
+// carry the mark, and so the one the app does not refuse: offered only once the
+// person has been told the file moved on, so it is a choice and never a race
+function editOverwrite() {
+  if (!ED.path || ED.loading) return;
+  editAsk("write", {path: ED.path, text: edAce ? edAce.getValue() : ED.text, mark: ""});
+}
 function editReload() {
   if (!ED.path) return;
   ED.loading = true; ED.said = ""; ED.bad = false;
@@ -4980,7 +4993,9 @@ function drawEdit() {
     if (cut >= 0) u.where.append(document.createTextNode(ED.path.slice(0, cut + 1)));
     u.where.append(el("b", {}, name));
   }
-  u.mark.textContent = ED.outside ? "" : (ED.dirty ? (T["tui.edit.dirty"] || "") : "");
+  // Still said while the file has changed underneath: the draft is still not
+  // saved, and that is half of what the choice below is about
+  u.mark.textContent = ED.dirty ? (T["tui.edit.dirty"] || "") : "";
   const shown = !!ED.path;
   u.save.style.display = shown ? "" : "none";
   u.tell.style.display = shown ? "" : "none";
@@ -4997,8 +5012,12 @@ function drawEdit() {
     // pressing save and being told nothing is how work goes missing
     u.say.className = "esay" + (ED.bad ? " bad" : "");
     u.say.style.color = ED.bad ? "" : "var(--warn)";
+    // Both ways out, because the sentence names both: a notice that says
+    // "or save over it" with no way to do that sends the person to Save,
+    // which is refused
     u.say.append(document.createTextNode((ED.bad && ED.said) || T["tui.edit.outside"] || ""),
-      el("button", {class: "quiet", onclick: editReload}, T["tui.edit.reload"] || ""));
+      el("button", {class: "quiet", onclick: editReload}, T["tui.edit.reload"] || ""),
+      el("button", {class: "quiet", onclick: editOverwrite}, T["tui.edit.overwrite"] || ""));
   } else {
     u.say.style.color = "";
     u.say.append(document.createTextNode(ED.said || ""));
@@ -5406,6 +5425,9 @@ let lastRC = "";
 // that covers them -- INDEX, the settings form -- must not be allowed to speak
 // for their size; see report().
 let lastPanes = null, lastFit = null;
+// The narrowest the composer is drawn: the switcher, a couple of actions and
+// the gear on one row, and a field wide enough to see what is being typed
+const DOCK_MIN = 420;
 // The focused pane's rectangle, in the pixels every layer above it draws with:
 // the placed browser, the composer, the pen.
 //
@@ -5434,6 +5456,23 @@ function measureFocused() {
   main.style.setProperty("--fy", (b.top - m.top) + "px");
   main.style.setProperty("--fr", (m.right - b.right) + "px");
   main.style.setProperty("--fb", (m.bottom - b.bottom) + "px");
+  // The composer sits at the foot of the pane it is for, and is as wide as
+  // that pane -- until the pane is narrower than a row of controls and a field
+  // can be. Three panes beside a column leave one at 170px, where Send stood
+  // on its end, one letter per line, and the field was a sliver. Below
+  // DOCK_MIN it spreads over its neighbours, evenly on both sides, and never
+  // past the edges of the content area
+  const need = Math.min(DOCK_MIN, m.width);
+  let dl = b.left - m.left, dr = m.right - b.right;
+  const short = need - (b.right - b.left);
+  if (short > 0) {
+    dl -= short / 2;
+    dr -= short / 2;
+    if (dl < 0) { dr += dl; dl = 0; }
+    if (dr < 0) { dl = Math.max(0, dl + dr); dr = 0; }
+  }
+  main.style.setProperty("--dx", dl + "px");
+  main.style.setProperty("--dr", dr + "px");
 }
 
 function report() {
@@ -7062,7 +7101,10 @@ function syncBrowserReserve() {
   // the relay picture is not held back by it (the dock lies over the black
   // band under the picture), but the bar still has to clear it
   const page = document.getElementById("main");
-  if (!onBrowserTab()) {
+  // A file being edited is held up by it too. Its last line is where the
+  // editor says the file changed underneath and offers the two ways out, and
+  // under the composer that line could not be read or pressed
+  if (!onBrowserTab() && !editorTab()) {
     if (page.style.getPropertyValue("--dock")) {
       page.style.removeProperty("--dock");
       scheduleReport();
@@ -7079,6 +7121,8 @@ function syncBrowserReserve() {
   if (page.style.getPropertyValue("--dock") !== want) {
     page.style.setProperty("--dock", want);
     scheduleReport();
+    // The editor measures itself only when the window changes size
+    if (edAce) requestAnimationFrame(() => edAce.resize());
   }
 }
 // Full name (for the switcher's hover title / accessibility).
