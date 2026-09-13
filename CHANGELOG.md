@@ -8,10 +8,53 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
-The runtime with no window grew a browser, and the devices looking at it stopped
-being spectators.
+## [0.11.0] - 2026-09-13
+
+Parallel work got a home of its own, the runtime with no window grew a
+browser, and the devices looking at it stopped being spectators.
 
 ### Added
+- **A worktree in two presses.** "Parallel work (git worktree)" on a project
+  opens a dialog that already has a name in it, says which project it is cut
+  from, where it will run and where the folder will be, and shows the line that
+  will actually run before anything does. A name that is taken, or a branch
+  already open in another folder, is said while you type rather than by git
+  after you press. Worktrees are kept together under your home folder instead
+  of beside the project, and a branch can be renamed later from its folder's
+  page in the settings.
+- **A worktree on another machine.** Machines are registered once in the
+  settings ("Where it runs") --- an SSH server, or a sandbox made on demand ---
+  with their password or key kept in the secret store. A worktree made there
+  is written down as being there: its tabs are terminals on that machine,
+  standing in that folder, and the file panel reads that machine's files.
+- **A project can say how it gets ready.** A `devcontainer.json` in the
+  repository is read, and its setup commands can run in every new worktree. A
+  project without one is offered one worked out from what it already carries,
+  and nothing is written until you say so. A project that cannot have one
+  (built for Windows, for a phone, against hardware) can keep a plain setup
+  command in the settings instead.
+- **How a turn ended, not only that it did.** A tab shows whether its turn
+  finished, failed, stopped at a usage limit, or ended with work still running
+  in the background, and automation can answer each one separately
+  (`on_failed`, `on_limit`, `on_background`) or all of them with `on_done` as
+  before. A tab nobody has spoken to yet shows as waiting.
+- **A board that can be sorted the way you look for things.** The list of tabs
+  can be left as it is, grouped by state, or grouped by project; a folder's tabs
+  fold away as one and the folded row still shows what they are doing. Each AI
+  has a mark of its own.
+- **Settings a desk answers for itself.** Where notifications go, which model
+  connections its tabs may use, what doors its automation has, who may run
+  what, which GitHub account it speaks as and which branches it protects can
+  each be set per desk. What a desk does not say, the app's settings answer.
+- **Gemini CLI reports what it is doing** through its hooks, the same way the
+  other AI CLIs do.
+- **Deleting something in the settings asks first**, in the app's own dialog,
+  with Cancel as the choice already in front of you.
+- **A laptop's browser shows the panes and can arrange them.** A board opened
+  in a browser wide enough for it, or in a window opened with `--connect`,
+  draws the same panes as the window, with each pane's terminal, and splitting,
+  closing, focusing and dragging a divider all work from there. A phone still
+  shows one thing at a time.
 - **A file opens where you can read it, and you can change it there.** Pressing
   a file in that list divides the screen and opens it beside what is running.
   It is a place to read and to fix a line --- colour, brackets and indentation,
@@ -93,6 +136,10 @@ being spectators.
   is plain or encrypted as the board's address says, which is what
   `tailscale serve` puts in front of one.
 
+### Changed
+- **Workspaces are now called desks.** Settings from earlier versions are
+  carried forward on the first start, with a backup taken first.
+
 ### Fixed
 - **A runtime with no window threw away every keystroke.** Everything done from
   afar that is not a queue of its own --- typing, picking a tab, the board's
@@ -118,6 +165,31 @@ being spectators.
   them took a book of its own.
 - **A page restored from the back/forward cache announced nothing**, so the
   runtime never learned it had arrived somewhere new.
+- **A device whose key was taken away went on receiving the screen** through
+  the page it already had open. It is now told it was disconnected, at once.
+- **Saving the settings erased what a folder knew about itself** --- the
+  machine it is on, the project it belongs to, its own protected branches ---
+  so a folder on a server became a folder on this PC.
+- **A desk's list of model connections was not in force for the tabs started
+  at launch**, only after switching desks.
+- **Closing the window while it was minimised** brought back an empty frame
+  from the notification area.
+- **Opening another file in the editor threw away unsaved typing** in the one
+  before it.
+- **A sign-in window opened by a page could not be driven**, and did not close
+  when it asked to; a page opened in the background was drawn over the
+  terminal in front; a page out of sight could not be clicked or filled by
+  selector.
+- **A divider beside an empty pane could not be grabbed**; the empty pane's
+  "+ Add tab" was on top of it.
+- **Tabs after the ninth could not be picked** from the list, the title bar's
+  double-click did not maximise, and the window forgot its layout on every
+  start.
+- **A `devcontainer.json` or profile saved with a byte-order mark** (as Notepad
+  saves it) was ignored.
+- **A wrong master password was reported as a missing one.**
+- **On a phone, the editor's bar lay over the tabs** and a terminal's first
+  lines were hidden under them.
 
 ## [0.10.0] - 2026-09-11
 
@@ -1838,7 +1910,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/styleio/ShikishaTerm/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/styleio/ShikishaTerm/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/styleio/ShikishaTerm/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/styleio/ShikishaTerm/compare/v0.7.0...v0.8.0

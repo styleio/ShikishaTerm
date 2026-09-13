@@ -3656,7 +3656,7 @@ checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "shikisha-core"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3695,7 +3695,7 @@ dependencies = [
 
 [[package]]
 name = "shikisha-serve"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "shikisha-core",
@@ -3703,7 +3703,7 @@ dependencies = [
 
 [[package]]
 name = "shikisha-shared"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -3712,7 +3712,7 @@ dependencies = [
 
 [[package]]
 name = "shikisha-term"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
