@@ -3290,22 +3290,30 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // A commit refused on a shared branch is not a failure, it
                     // is a question -- and the panel asks it in its own words,
                     // so the reason is named rather than shown as Lua said it
-                    let shared = act == "commit"
-                        && eng
-                            .call_primitive_as(
+                    let on = (act == "commit")
+                        .then(|| {
+                            eng.call_primitive_as(
                                 None,
                                 grants::Subject::Human,
                                 "git_branch",
                                 std::slice::from_ref(&who),
                             )
                             .ok()
-                            .and_then(|b| b.get("protected").and_then(|p| p.as_bool()))
-                            .unwrap_or(false);
+                        })
+                        .flatten();
+                    let shared = on
+                        .as_ref()
+                        .and_then(|b| b.get("protected").and_then(|p| p.as_bool()))
+                        .unwrap_or(false);
                     serde_json::json!({
                         "act": act,
                         "ok": false,
                         "error": plain_error(&e),
                         "why": if shared { "protected" } else { "" },
+                        // Named here: the panel's own idea of the branch is
+                        // only there once it has read the status, and a
+                        // commit sent before that said "  is protected"
+                        "branch": on.as_ref().and_then(|b| b.get("name").cloned()),
                     })
                 }
             };

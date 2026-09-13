@@ -5631,7 +5631,8 @@ const manualHref = name => "/help?token=" + encodeURIComponent(TOKEN)
 // second copy of sixty rows would be a second place for the list to drift from
 // what the app enforces. `owner` is the object the rows are written into --
 // `current` for the app, a desk for a desk.
-function permissionsTable(owner) {
+// `edited` hears about every change, for a page that says how many rows differ
+function permissionsTable(owner, edited) {
   // Read without writing: merely opening this card must not make the settings
   // look edited. The key appears in the file the first time a box disagrees
   // with the standard answer, and leaves again when it agrees once more
@@ -5651,6 +5652,7 @@ function permissionsTable(owner) {
     if (Object.keys(all).length || owner !== current) owner.automation_permissions = all;
     else delete owner.automation_permissions;
     refreshSave();
+    if (edited) edited();
   };
 
   const body = el("div", {});
@@ -5712,6 +5714,7 @@ function permissionsTable(owner) {
     else owner.automation_permissions = {};
     refreshSave();
     draw();
+    if (edited) edited();
   }}, T["settings.permissions.reset"]);
   return {body, reset};
 }
@@ -7143,14 +7146,20 @@ function deskPermissionsCard(desk) {
   ownLabel.append(own, document.createTextNode(T["settings.desk.grants.own"]));
   const holder = el("div", {});
   const inForce = el("div", {class:"hint"});
-  const draw = () => {
-    holder.textContent = "";
+  // The count follows every box as it is ticked, not only the moment the table
+  // was taken: said once and left, it read "0 differ" over a table somebody
+  // had just changed
+  const count = () => {
     const rows = Object.keys(desk.automation_permissions || current.automation_permissions || {}).length;
     inForce.textContent = fill(
       desk.automation_permissions ? T["settings.desk.grants.now_own"] : T["settings.desk.grants.now_app"],
       {n: rows});
+  };
+  const draw = () => {
+    holder.textContent = "";
+    count();
     if (!desk.automation_permissions) return;
-    const {body, reset} = permissionsTable(desk);
+    const {body, reset} = permissionsTable(desk, count);
     holder.append(el("div", {class:"row"}, reset,
       el("a", {href:manualHref(""), target:"_blank"}, T["settings.permissions.manual"])), body);
   };
