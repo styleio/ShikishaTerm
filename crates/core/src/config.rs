@@ -1489,6 +1489,15 @@ pub struct DeskSpec {
     /// desk
     #[serde(default)]
     pub git: GitSpec,
+    /// The assistant AI this desk agreed to hand pictures to, by name
+    /// ("claude", "codex", "gemini"): the part of the screen framed for the
+    /// AI tools. Unset is no.
+    ///
+    /// A name and not a yes, because what was agreed to is sending pictures to
+    /// that one. Switching the assistant AI to another company's is a new
+    /// question, and a stored yes would answer it for the person
+    #[serde(default)]
+    pub send_pictures_to: Option<String>,
 }
 
 /// The name this desk's GitHub token is filed under, inside the desk's
@@ -2100,6 +2109,9 @@ pub struct Desk {
     /// What git does here. Its `protect` has already been handed to the
     /// folders, which is where anything asks about it
     pub git: GitSpec,
+    /// The assistant AI this desk agreed to hand pictures to (see
+    /// [`DeskSpec::send_pictures_to`])
+    pub send_pictures_to: Option<String>,
 }
 
 /// A value that may be written `@name`: the secret by that name, or the value
@@ -3183,6 +3195,7 @@ impl Config {
                     capabilities: Default::default(),
                     automation_permissions: Default::default(),
                     git,
+                    send_pictures_to: None,
                 });
             }
             return (out, errors);
@@ -3257,6 +3270,7 @@ impl Config {
                 capabilities: desk.capabilities.clone(),
                 automation_permissions: desk.automation_permissions.clone(),
                 git,
+                send_pictures_to: desk.send_pictures_to.as_deref().and_then(one_name),
             });
         }
         errors.extend(settle_desk_ids(&mut out));
@@ -3672,6 +3686,81 @@ pub fn save_setting(at: &[&str], value: serde_json::Value) {
     }
 }
 
+/// Record one of a desk's own settings back into the settings file, the same
+/// read-modify-write [`save_setting`] does. `None` removes the key. Returns
+/// whether it was written.
+///
+/// For answers a person gives while *using* a desk rather than while editing
+/// its settings -- agreeing, from a tool, to what the tool does. The desk is
+/// found by the id everything else calls it by
+pub fn save_desk_setting(desk_id: &str, key: &str, value: Option<serde_json::Value>) -> bool {
+    let path = config_file_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
+    else {
+        crate::append_hook_log(&format!("could not record {key} for a desk: settings are not readable"));
+        return false;
+    };
+    if !write_desk_value(&mut doc, desk_id, key, value) {
+        return false;
+    }
+    match serde_json::to_string_pretty(&doc) {
+        Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// The desk entry called `desk_id` in a parsed settings file, with `key` set
+/// to `value` (removed for `None`).
+///
+/// An entry that never had its id written is still the desk of that id -- it
+/// was given one from its name when read (see [`settle_desk_ids`]), and it is
+/// settled the same way here, over the same list in the same order. That id is
+/// written into the entry as well, so the answer stays with this desk when
+/// the name on screen changes
+fn write_desk_value(
+    doc: &mut serde_json::Value,
+    desk_id: &str,
+    key: &str,
+    value: Option<serde_json::Value>,
+) -> bool {
+    let want = desk_id.trim();
+    let Some(list) = doc.get_mut("desks").and_then(|d| d.as_array_mut()) else {
+        return false;
+    };
+    if want.is_empty() {
+        return false;
+    }
+    let mut named: Vec<Desk> = list
+        .iter()
+        .map(|e| Desk {
+            name: e.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            id: e.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            ..Default::default()
+        })
+        .collect();
+    settle_desk_ids(&mut named);
+    let Some(at) = named.iter().position(|d| d.id == want) else {
+        return false;
+    };
+    let Some(entry) = list[at].as_object_mut() else {
+        return false;
+    };
+    let written = entry.get("id").and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+    if written.is_empty() {
+        entry.insert("id".into(), serde_json::Value::String(want.to_string()));
+    }
+    match value {
+        Some(v) => {
+            entry.insert(key.to_string(), v);
+        }
+        None => {
+            entry.remove(key);
+        }
+    }
+    true
+}
+
 pub fn config_file_path() -> std::path::PathBuf {
     let candidates = config_candidates();
     candidates
@@ -3696,6 +3785,47 @@ pub fn load() -> Option<Config> {
 
 #[cfg(test)]
 mod tests {
+
+    /// An answer given from a tool lands on the desk it was given for, found
+    /// by its id -- including a desk whose id was never written and comes from
+    /// its name -- and nowhere else
+    #[test]
+    fn a_desk_answer_lands_on_that_desk() {
+        let mut doc = serde_json::json!({
+            "language": "ja",
+            "desks": [
+                {"name": "Work", "id": "work"},
+                {"name": "Home Stuff"},
+            ]
+        });
+        assert!(super::write_desk_value(&mut doc, "work", "send_pictures_to", Some("claude".into())));
+        assert_eq!(doc["desks"][0]["send_pictures_to"], "claude");
+        assert!(doc["desks"][1].get("send_pictures_to").is_none(), "隣のデスクに書かれた");
+
+        let settled = super::slug_id("Home Stuff");
+        assert!(super::write_desk_value(&mut doc, &settled, "send_pictures_to", Some("codex".into())));
+        assert_eq!(doc["desks"][1]["send_pictures_to"], "codex");
+        assert_eq!(doc["desks"][1]["id"], settled.as_str(), "名前から決まった呼び名が書き残されていない");
+
+        assert!(super::write_desk_value(&mut doc, "work", "send_pictures_to", None));
+        assert!(doc["desks"][0].get("send_pictures_to").is_none(), "取り消しが消えない");
+        assert!(!super::write_desk_value(&mut doc, "nobody", "send_pictures_to", Some("x".into())));
+        assert!(!super::write_desk_value(&mut doc, "", "send_pictures_to", Some("x".into())));
+        assert_eq!(doc["language"], "ja", "ほかの設定が変わった");
+    }
+
+    /// What a desk agreed to is read back as the name it was agreed for, and
+    /// a blank is no answer
+    #[test]
+    fn a_desk_reads_the_ai_it_agreed_to() {
+        let cfg: super::Config = serde_json::from_str(
+            r#"{"desks":[{"name":"A","id":"a","send_pictures_to":" gemini "},{"name":"B","id":"b","send_pictures_to":""}]}"#,
+        )
+        .unwrap();
+        let (desks, _) = cfg.resolve_desks();
+        assert_eq!(desks[0].send_pictures_to.as_deref(), Some("gemini"));
+        assert_eq!(desks[1].send_pictures_to, None);
+    }
 
     /// The screen offers an automation name while you type; the app settles on
     /// one when it reads a file nobody typed into. They have to be the same

@@ -1159,6 +1159,11 @@ pub struct NavState {
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct UiState {
     pub desk: String,
+    /// The desk on screen, by the id its settings and secrets are filed under.
+    /// What a tool asks with when an answer belongs to the desk -- a name on
+    /// screen can be shared by two
+    #[serde(default)]
+    pub desk_id: String,
     /// The folders this desk's tabs are working in. One means nothing is
     /// drawn: the heading only exists to tell folders apart
     #[serde(default)]

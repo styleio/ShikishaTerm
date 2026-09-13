@@ -291,6 +291,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             .get(ui.desk_index)
             .cloned()
             .unwrap_or_default(),
+        desk_id: ui.desk_ids.get(ui.desk_index).cloned().unwrap_or_default(),
         desks: ui.desk_names.clone(),
         desk_index: ui.desk_index,
         active: ui.active,
@@ -765,6 +766,9 @@ pub struct Ui {
     pub settings: bool,
     pub auto: Option<bool>,
     pub desk_names: Vec<String>,
+    /// What each of those desks is called by everything that is not a
+    /// person, in the same order
+    pub desk_ids: Vec<String>,
     pub desk_index: usize,
     pub desk_open: bool,
     pub help_open: bool,

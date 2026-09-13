@@ -325,9 +325,15 @@ pub enum Ev {
     /// screen the pointer is on, and open `tool` over the picture.
     ///
     /// Window-only. A phone has no screen this program can take -- its page
-    /// opens the same tool on a picture the person chooses, and asks this
-    /// machine for nothing
+    /// opens the same tool on a picture the person chooses
     Snip { tool: String, delay: u8 },
+    /// A question from the tool's own window (see `snip::answer` in core):
+    /// may a picture go to the assistant AI, record that the desk agreed, or
+    /// read one. `msg` is the page's question as it sent it.
+    ///
+    /// Made by the window from the tool page's message, never read from a
+    /// page's intent. A phone asks the same questions over its own route
+    SnipAsk { msg: String },
     /// A Lua quick-action fired from the bar. `index` is its position in
     /// config.actions; the code is looked up and run server-side (the page never
     /// holds Lua source). Allowed from afar — it runs the user's own action.
