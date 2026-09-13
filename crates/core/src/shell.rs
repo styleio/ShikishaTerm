@@ -4863,9 +4863,11 @@ let edUi = null, edAce = null, edAceAsked = false;
 // until it is saved or the person reloads the file, and put back when that file
 // is opened again
 const edDrafts = new Map();
+// Which editor tab and which file: two editor tabs can each have a draft of one file
+const edDraftKey = path => JSON.stringify([ED.key, path]);
 function edStash() {
   if (!ED.path || !ED.dirty || !edAce) return;
-  edDrafts.set(ED.key + " " + ED.path,
+  edDrafts.set(edDraftKey(ED.path),
     {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp});
 }
 
@@ -4939,7 +4941,7 @@ function editHeard(d) {
     // A draft left in this file comes back. It keeps the mark it was typed
     // against, so a save still cannot land on bytes that changed since; and if
     // they did change, that is said the same way as for a file open on screen
-    const key = ED.key + " " + d.path;
+    const key = edDraftKey(d.path);
     const draft = edDrafts.get(key);
     edDrafts.delete(key);
     if (draft) {
@@ -4959,7 +4961,7 @@ function editHeard(d) {
   }
   if (d.act === "write") {
     if (!d.ok) { ED.said = d.error || ""; ED.bad = true; drawEdit(); return; }
-    edDrafts.delete(ED.key + " " + ED.path);
+    edDrafts.delete(edDraftKey(ED.path));
     ED.mark = d.mark; ED.stamp = d.stamp || null;
     ED.text = edAce ? edAce.getValue() : ED.text;
     ED.dirty = false; ED.outside = false;
@@ -4983,7 +4985,7 @@ function editOverwrite() {
 function editReload() {
   if (!ED.path) return;
   // Reloading is choosing the file over the draft, so no draft comes back
-  edDrafts.delete(ED.key + " " + ED.path);
+  edDrafts.delete(edDraftKey(ED.path));
   ED.loading = true; ED.said = ""; ED.bad = false;
   editAsk("read", {path: ED.path});
 }
