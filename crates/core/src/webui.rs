@@ -32,8 +32,14 @@ pub struct RemoteInfo {
     /// for something, which on a pushed screen may be never.
     ///
     /// Absent in the settings-only mode, where nothing is live to end.
-    pub cut: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub cut: Option<Cut>,
 }
+
+/// How a connection is ended: named, and told to go.
+///
+/// Given by whoever is holding the connections, because the settings screen
+/// knows which one a person just revoked and nothing about how to stop it
+pub type Cut = Arc<dyn Fn(&str) + Send + Sync>;
 
 pub struct WebUi {
     pub url: String,
@@ -366,11 +372,10 @@ fn load_manual(config_path: &std::path::Path) -> String {
     for name in &names {
         for d in &dirs {
             for rel in [d.join("docs").join(name), d.join(name)] {
-                if let Ok(s) = std::fs::read_to_string(rel) {
-                    if !s.trim().is_empty() {
+                if let Ok(s) = std::fs::read_to_string(rel)
+                    && !s.trim().is_empty() {
                         return s;
                     }
-                }
             }
         }
     }
@@ -429,11 +434,6 @@ fn remote_for_display(shared: &Arc<std::sync::Mutex<RemoteInfo>>) -> (RemoteInfo
 }
 
 
-/// Brings our own process's dialog to the front when it appears.
-/// Windows forbids background processes from popping themselves to the front on their own,
-/// so we set the topmost attribute to keep it from hiding behind the browser
-
-
 /// Turns the chosen path into the form written to config.
 /// If it's under the config folder, makes it relative so the whole folder stays portable
 fn display_path(path: &std::path::Path, config_path: &std::path::Path) -> String {
@@ -447,15 +447,14 @@ fn display_path(path: &std::path::Path, config_path: &std::path::Path) -> String
 
 /// The place to open first. ~/.ssh for a key, the config's location for a folder
 fn default_pick_dir(kind: &str, config_path: &std::path::Path) -> Option<std::path::PathBuf> {
-    if kind == "key" {
-        if let Some(home) = std::env::var_os("USERPROFILE") {
+    if kind == "key"
+        && let Some(home) = std::env::var_os("USERPROFILE") {
             let ssh = std::path::PathBuf::from(&home).join(".ssh");
             if ssh.is_dir() {
                 return Some(ssh);
             }
             return Some(std::path::PathBuf::from(home));
         }
-    }
     config_path.parent().map(std::path::Path::to_path_buf)
 }
 
@@ -714,15 +713,14 @@ fn extract_cmd(text: &str) -> Result<String> {
             return Ok(cmd.to_string());
         }
     }
-    if let Some((_, rest)) = text.split_once("```") {
-        if let Some((body, _)) = rest.split_once("```") {
+    if let Some((_, rest)) = text.split_once("```")
+        && let Some((body, _)) = rest.split_once("```") {
             let body = body.trim_start_matches(|c: char| c.is_ascii_alphanumeric());
             let cmd = body.trim();
             if !cmd.is_empty() {
                 return Ok(cmd.to_string());
             }
         }
-    }
     anyhow::bail!("{}", crate::i18n::t("ai.suggest.no_cmd"))
 }
 
@@ -9920,6 +9918,21 @@ if (/^[a-z0-9_]+$/.test(asked)) {
 </script></body></html>
 "##;
 
+/// The desktop that can open a file dialog, if one is running.
+///
+/// Set once by whatever owns that desktop. The settings server never builds
+/// one: a build with no desktop simply has no picker, and the page that asked
+/// is answered "no" instead of waiting on a dialog nobody can see.
+static PICKER: std::sync::OnceLock<Box<dyn shikisha_shared::FilePicker>> = std::sync::OnceLock::new();
+
+pub fn use_file_picker(p: Box<dyn shikisha_shared::FilePicker>) {
+    let _ = PICKER.set(p);
+}
+
+fn picker() -> Option<&'static dyn shikisha_shared::FilePicker> {
+    PICKER.get().map(|p| p.as_ref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10304,7 +10317,7 @@ mod tests {
         assert!(after.contains(&laptop.id), "巻き添えで消えた: {after}");
         assert_eq!(
             ended.lock().unwrap().as_slice(),
-            [phone.id.clone()],
+            [phone.id.as_str()],
             "鍵は取り上げたが、その端末が見ている画面は止めていない"
         );
 
@@ -10622,19 +10635,4 @@ mod tests {
         ui.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-/// The desktop that can open a file dialog, if one is running.
-///
-/// Set once by whatever owns that desktop. The settings server never builds
-/// one: a build with no desktop simply has no picker, and the page that asked
-/// is answered "no" instead of waiting on a dialog nobody can see.
-static PICKER: std::sync::OnceLock<Box<dyn shikisha_shared::FilePicker>> = std::sync::OnceLock::new();
-
-pub fn use_file_picker(p: Box<dyn shikisha_shared::FilePicker>) {
-    let _ = PICKER.set(p);
-}
-
-fn picker() -> Option<&'static dyn shikisha_shared::FilePicker> {
-    PICKER.get().map(|p| p.as_ref())
 }

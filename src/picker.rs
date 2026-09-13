@@ -7,6 +7,9 @@
 
 use std::path::{Path, PathBuf};
 
+/// Brings our own process's dialog to the front when it appears.
+/// Windows forbids background processes from popping themselves to the front on their own,
+/// so we set the topmost attribute to keep it from hiding behind the browser
 #[cfg(windows)]
 fn raise_own_dialog() {
     use windows_sys::Win32::Foundation::{HWND, LPARAM};

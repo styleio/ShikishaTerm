@@ -320,11 +320,10 @@ impl GroupState {
     /// so every branch of the project changes together
     pub fn color_of(family: &std::path::Path, chosen: &std::collections::HashMap<String, String>) -> String {
         let key = family.display().to_string();
-        if let Some(c) = chosen.get(&key).or_else(|| chosen.get(&key.to_lowercase())) {
-            if !c.trim().is_empty() {
+        if let Some(c) = chosen.get(&key).or_else(|| chosen.get(&key.to_lowercase()))
+            && !c.trim().is_empty() {
                 return c.trim().to_string();
             }
-        }
         let mut h: u32 = 2166136261;
         for b in key.to_lowercase().bytes() {
             h = (h ^ b as u32).wrapping_mul(16777619);
@@ -700,12 +699,11 @@ impl BrowseState {
         let mut out = Vec::new();
         // Where this person's own things are, whichever way the system spells it
         for var in ["USERPROFILE", "HOME"] {
-            if let Ok(home) = std::env::var(var) {
-                if !home.is_empty() && std::path::Path::new(&home).is_dir() {
+            if let Ok(home) = std::env::var(var)
+                && !home.is_empty() && std::path::Path::new(&home).is_dir() {
                     out.push(home);
                     break;
                 }
-            }
         }
         // Then everything there is. Windows has one tree per drive and a name
         // for each; every other system has one tree, and `/` is its name
