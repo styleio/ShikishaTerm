@@ -1483,11 +1483,11 @@ pub fn delete_secret(
 ) -> anyhow::Result<()> {
     let mut root = read_secrets_value(path, password)?;
     if let Some(t) = root.get_mut("tokens").and_then(|v| v.as_object_mut()) {
-        t.remove(key);
+        t.shift_remove(key);
     }
     for side in ["descriptions", "meta"] {
         if let Some(d) = root.get_mut(side).and_then(|v| v.as_object_mut()) {
-            d.remove(key);
+            d.shift_remove(key);
         }
     }
     write_secrets_value(path, password, &root)
@@ -2783,7 +2783,7 @@ pub fn set_folder_color(family: &Path, color: &str) -> Result<()> {
     let map = root["folder_colors"].as_object_mut().expect("作ったばかり");
     match color.trim() {
         "" => {
-            map.remove(&key);
+            map.shift_remove(&key);
         }
         c => {
             map.insert(key, serde_json::json!(c));
@@ -2917,7 +2917,7 @@ pub fn rename_folder(desk_name: &str, cwd: &Path, name: &str) -> Result<()> {
         match name.trim() {
             "" => {
                 if let Some(o) = g.as_object_mut() {
-                    o.remove("name");
+                    o.shift_remove("name");
                 }
             }
             n => g["name"] = serde_json::json!(n),
@@ -3072,7 +3072,7 @@ pub(crate) fn ensure_folders(holder: &mut serde_json::Value) {
     }
     let legacy = holder
         .as_object_mut()
-        .and_then(|o| o.remove("tabs"))
+        .and_then(|o| o.shift_remove("tabs"))
         .and_then(|t| t.as_array().cloned())
         .filter(|t| !t.is_empty());
     if let Some(mut legacy) = legacy {
@@ -3508,6 +3508,14 @@ pub fn migrate_legacy_config() {
     if was.is_dir() && !now.exists() {
         let _ = std::fs::rename(&was, &now);
     }
+    // The desk that was open last is remembered under the same word, and a
+    // start that cannot find it opens the first desk instead of the one the
+    // person left
+    let data = root.join("data");
+    let (was, now) = (data.join("last-workspace"), data.join("last-desk"));
+    if was.is_file() && !now.exists() {
+        let _ = std::fs::rename(&was, &now);
+    }
     let new_cfg = root.join("config").join("config.json");
     let old_cfg = root.join("config.json");
     if new_cfg.exists() || !old_cfg.exists() {
@@ -3647,7 +3655,7 @@ fn write_aim(v: &mut serde_json::Value, tab_name: &str, target: Option<&str>, wr
                     // person's file is a question they would have to answer
                     // for themselves
                     None => {
-                        obj.remove("drives");
+                        obj.shift_remove("drives");
                     }
                 }
                 *written = true;

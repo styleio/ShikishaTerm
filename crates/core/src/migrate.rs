@@ -36,7 +36,14 @@ pub const BASELINE: &str = "0.8.0";
 /// How many backups are kept
 const KEEP: usize = 5;
 
-/// One reshaping: what version the file is in afterwards, and how
+/// One reshaping: what version the file is in afterwards, and how.
+///
+/// A step must leave a file already in its shape exactly as it is. A version
+/// number is not one build: between one release and the next, every build
+/// carries the same number, so a file stamped with that number may have been
+/// written by a build from before the step existed. The step for the recorded
+/// version is therefore run again, and only a file it actually changes is
+/// backed up and written
 pub struct Step {
     pub to: &'static str,
     pub apply: fn(&mut serde_json::Value) -> Result<()>,
@@ -60,12 +67,8 @@ fn to_0_10_0(doc: &mut serde_json::Value) -> Result<()> {
     let Some(root) = doc.as_object_mut() else {
         return Ok(());
     };
-    if let Some(list) = root.remove("workspaces") {
-        root.entry("desks").or_insert(list);
-    }
-    if let Some(note) = root.remove("//workspaces") {
-        root.entry("//desks").or_insert(note);
-    }
+    rename_key(root, "workspaces", "desks");
+    rename_key(root, "//workspaces", "//desks");
     for desk in root
         .get_mut("desks")
         .and_then(|d| d.as_array_mut())
@@ -80,6 +83,26 @@ fn to_0_10_0(doc: &mut serde_json::Value) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Gives a key a new name where it stands. A settings file is somebody's own
+/// document and the order they wrote it in is part of it -- a note sits above
+/// the thing it describes -- so the key keeps its place rather than being
+/// taken out and put back at the end. When the new name is already there, the
+/// old key is dropped and the new one is left as it is
+fn rename_key(map: &mut serde_json::Map<String, serde_json::Value>, old: &str, new: &str) {
+    if !map.contains_key(old) {
+        return;
+    }
+    let keep_new = map.contains_key(new);
+    *map = std::mem::take(map)
+        .into_iter()
+        .filter_map(|(k, v)| match k.as_str() {
+            k if k == old && keep_new => None,
+            k if k == old => Some((new.to_string(), v)),
+            _ => Some((k, v)),
+        })
+        .collect();
 }
 
 /// What the first start of this version did, for the person and the log
@@ -164,13 +187,16 @@ fn prune_backups(dir: &Path) {
     }
 }
 
-/// Runs every step later than `from` over the document, in order. Returns
+/// Runs every step for `from` and later over the document, in order. Returns
 /// the version the document is in afterwards, and the error of the step that
-/// failed, if one did. The document is left as the last good step left it
+/// failed, if one did. The document is left as the last good step left it.
+///
+/// The steps for `from` itself are included: see [`Step`] for why a file
+/// stamped with a version can still be waiting for that version's step
 pub fn run_steps(doc: &mut serde_json::Value, from: &str, steps: &[Step]) -> (String, Option<String>) {
     let mut at = from.to_string();
     for s in steps {
-        if !crate::update::is_newer(s.to, &at) {
+        if crate::update::is_newer(&at, s.to) {
             continue;
         }
         if let Err(e) = (s.apply)(doc) {
@@ -187,6 +213,15 @@ pub fn run_steps(doc: &mut serde_json::Value, from: &str, steps: &[Step]) -> (St
 fn read_doc(path: &Path) -> Option<serde_json::Value> {
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()
+}
+
+/// Everything that has to happen to a person's files before anything reads
+/// them, whichever program is starting: the window and the server with no
+/// window both call this, so a settings file is carried forward the same way
+/// wherever it is opened
+pub fn prepare() {
+    crate::config::migrate_legacy_config();
+    crate::update::set_outcome(on_start());
 }
 
 /// The first start of this version over this layout: back up, then carry
@@ -206,18 +241,42 @@ fn on_start_at(root: &Path, current: &str, steps: &[Step]) -> Outcome {
         }
         None => BASELINE.to_string(),
     };
-    if from == current {
-        // Already this version; a layout from before the stamp gets one now
+    if !has_settings {
+        if from == current {
+            return Outcome::default();
+        }
+        record(root, current);
+        return Outcome { from: Some(from), ..Default::default() };
+    }
+    // What the steps would make of each file, worked out before anything is
+    // touched. The settings file and every desk file alike: a desk file is
+    // the same shape as a desk inside the settings
+    let mut changed = Vec::new();
+    let mut stopped: Option<(String, String)> = None;
+    for f in owned_files(root) {
+        if f.file_name().is_some_and(|n| n == "secrets.json") {
+            continue;
+        }
+        let Some(mut doc) = read_doc(&f) else { continue };
+        let before = doc.clone();
+        let (at, err) = run_steps(&mut doc, &from, steps);
+        if doc != before {
+            changed.push((f, doc));
+        }
+        if let Some(e) = err {
+            stopped = Some((at, e));
+            break;
+        }
+    }
+    if from == current && changed.is_empty() && stopped.is_none() {
+        // Already this version and already in its shape; a layout from
+        // before the stamp gets one now
         if recorded_at(root).is_none() {
             record(root, current);
         }
         return Outcome::default();
     }
     let mut out = Outcome { from: Some(from.clone()), ..Default::default() };
-    if !has_settings {
-        record(root, current);
-        return out;
-    }
     match back_up(root, &from) {
         Ok(p) => out.backup = p,
         Err(e) => {
@@ -227,28 +286,21 @@ fn on_start_at(root: &Path, current: &str, steps: &[Step]) -> Outcome {
             return out;
         }
     }
-    // The steps run over the settings file and every desk file alike:
-    // a desk file is the same shape as a desk inside the settings
     let mut reached = current.to_string();
-    for f in owned_files(root) {
-        if f.file_name().is_some_and(|n| n == "secrets.json") {
-            continue;
-        }
-        let Some(mut doc) = read_doc(&f) else { continue };
-        let before = doc.clone();
-        let (at, err) = run_steps(&mut doc, &from, steps);
-        if doc != before
-            && let Ok(text) = serde_json::to_string_pretty(&doc)
-                && let Err(e) = crate::crypto::write_atomic(&f, &text) {
-                    out.failed = Some(format!("write {}: {e}", f.display()));
-                    break;
-                }
-        if let Some(e) = err {
-            out.failed = Some(e);
-            if crate::update::is_newer(&reached, &at) {
-                reached = at;
-            }
+    for (f, doc) in &changed {
+        if let Ok(text) = serde_json::to_string_pretty(doc)
+            && let Err(e) = crate::crypto::write_atomic(f, &text)
+        {
+            out.failed = Some(format!("write {}: {e}", f.display()));
             break;
+        }
+    }
+    if let Some((at, e)) = stopped
+        && out.failed.is_none()
+    {
+        out.failed = Some(e);
+        if crate::update::is_newer(&reached, &at) {
+            reached = at;
         }
     }
     match &out.failed {
@@ -275,48 +327,108 @@ fn on_start_at(root: &Path, current: &str, steps: &[Step]) -> Outcome {
 mod tests {
     use super::*;
 
-    fn bump(doc: &mut serde_json::Value) -> Result<()> {
-        let n = doc.get("n").and_then(|v| v.as_u64()).unwrap_or(0);
-        doc["n"] = serde_json::json!(n + 1);
+    // Test steps keep the promise real steps make: a file already in the
+    // shape a step gives is left exactly as it is
+    fn to_09(doc: &mut serde_json::Value) -> Result<()> {
+        doc["v09"] = serde_json::json!(true);
+        Ok(())
+    }
+    fn to_10(doc: &mut serde_json::Value) -> Result<()> {
+        doc["v10"] = serde_json::json!(true);
+        Ok(())
+    }
+    fn to_11(doc: &mut serde_json::Value) -> Result<()> {
+        doc["v11"] = serde_json::json!(true);
         Ok(())
     }
     fn fail(_: &mut serde_json::Value) -> Result<()> {
         anyhow::bail!("no")
     }
+    fn marks(doc: &serde_json::Value) -> Vec<&str> {
+        ["v09", "v10", "v11"].into_iter().filter(|k| doc.get(*k).is_some()).collect()
+    }
 
     /// A file four versions behind takes every step between, in order, and
-    /// none of the ones it has already taken
+    /// none from before the version it is stamped with
     #[test]
     fn a_skipped_version_is_not_skipped() {
         let steps = [
-            Step { to: "0.9.0", apply: bump },
-            Step { to: "0.10.0", apply: bump },
-            Step { to: "0.11.0", apply: bump },
+            Step { to: "0.9.0", apply: to_09 },
+            Step { to: "0.10.0", apply: to_10 },
+            Step { to: "0.11.0", apply: to_11 },
         ];
-        let mut doc = serde_json::json!({"n": 0, "kept": "as written"});
+        let mut doc = serde_json::json!({"kept": "as written"});
         let (at, err) = run_steps(&mut doc, "0.8.0", &steps);
         assert_eq!((at.as_str(), err), ("0.11.0", None));
-        assert_eq!(doc["n"], 3, "0.8 から 0.11 へは3段");
+        assert_eq!(marks(&doc), ["v09", "v10", "v11"], "0.8 から 0.11 へは3段");
         assert_eq!(doc["kept"], "as written", "知らないキーが消えた");
 
-        let mut doc = serde_json::json!({"n": 0});
+        let mut doc = serde_json::json!({});
         let (at, _) = run_steps(&mut doc, "0.10.0", &steps);
-        assert_eq!((at.as_str(), doc["n"].as_u64()), ("0.11.0", Some(1)), "済んだ段をもう一度やった");
+        assert_eq!(at, "0.11.0");
+        assert_eq!(marks(&doc), ["v10", "v11"], "刻印より前の段を当てた、または刻印の版の段を飛ばした");
     }
 
     /// A failing step stops the walk where it is, and says so
     #[test]
     fn a_failing_step_stops_the_walk_where_it_is() {
         let steps = [
-            Step { to: "0.9.0", apply: bump },
+            Step { to: "0.9.0", apply: to_09 },
             Step { to: "0.10.0", apply: fail },
-            Step { to: "0.11.0", apply: bump },
+            Step { to: "0.11.0", apply: to_11 },
         ];
-        let mut doc = serde_json::json!({"n": 0});
+        let mut doc = serde_json::json!({});
         let (at, err) = run_steps(&mut doc, "0.8.0", &steps);
         assert_eq!(at, "0.9.0", "失敗した段の手前で止まる");
         assert!(err.as_deref().is_some_and(|e| e.contains("0.9.0 -> 0.10.0")), "{err:?}");
-        assert_eq!(doc["n"], 1, "失敗した段より先を当てた");
+        assert_eq!(marks(&doc), ["v09"], "失敗した段より先を当てた");
+    }
+
+    fn scratch_root(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("shikisha-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        root
+    }
+
+    /// A settings file stamped with the version that is running can still be
+    /// waiting for that version's step.
+    ///
+    /// The desk rename landed after 0.10.0 was released and kept the number,
+    /// so everybody who had run 0.10.0 had `data/version` saying 0.10.0 and a
+    /// settings file with the old key. Skipping on "already this version"
+    /// brought the app up with no desks at all
+    #[test]
+    fn a_step_added_within_a_version_still_reaches_files_stamped_with_it() {
+        let root = scratch_root("same-version");
+        std::fs::write(
+            root.join("config/config.json"),
+            r#"{"language": "ja", "//workspaces": "note", "workspaces": [{"name": "Work", "folders": []}], "remote": {"port": 8787, "enabled": true}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        record(&root, "0.10.0");
+
+        let out = on_start_at(&root, "0.10.0", STEPS);
+        assert_eq!(out.failed, None);
+        let backup = out.backup.expect("書き換える前にバックアップが要る");
+        assert!(
+            std::fs::read_to_string(backup.join("config/config.json")).unwrap().contains("workspaces"),
+            "バックアップが移行前の中身ではない"
+        );
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("config/config.json")).unwrap()).unwrap();
+        assert_eq!(cfg["desks"][0]["name"], "Work", "デスクが引き継がれていない");
+        assert!(cfg.get("workspaces").is_none());
+        // Written back in the order the person wrote it, the renamed key in its old place
+        let keys: Vec<&str> = cfg.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["language", "//desks", "desks", "remote"], "キーの並びが変わった");
+        let inner: Vec<&str> = cfg["remote"].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(inner, ["port", "enabled"], "入れ子のキーの並びが変わった");
+
+        // The next start finds nothing to do and makes no second copy
+        assert_eq!(on_start_at(&root, "0.10.0", STEPS), Outcome::default(), "二度目に何かした");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The real steps, over every fixture, reach the present and stay a
@@ -374,23 +486,21 @@ mod tests {
     /// else, the stamp is written, and the second start does nothing
     #[test]
     fn the_first_start_of_a_version_backs_up_first() {
-        let root = std::env::temp_dir().join(format!("shikisha-migrate-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("config")).unwrap();
+        let root = scratch_root("migrate");
         std::fs::create_dir_all(root.join("desks")).unwrap();
-        std::fs::write(root.join("config/config.json"), r#"{"n": 0, "mine": true}"#).unwrap();
+        std::fs::write(root.join("config/config.json"), r#"{"mine": true}"#).unwrap();
         std::fs::write(root.join("config/secrets.json"), r#"{"s": 1}"#).unwrap();
-        std::fs::write(root.join("desks/p.json"), r#"{"n": 0}"#).unwrap();
-        let steps = [Step { to: "0.9.0", apply: bump }];
+        std::fs::write(root.join("desks/p.json"), r#"{}"#).unwrap();
+        let steps = [Step { to: "0.9.0", apply: to_09 }];
         let out = on_start_at(&root, "0.9.0", &steps);
         assert_eq!(out.from.as_deref(), Some(BASELINE), "刻印が無ければ基準の版");
         assert_eq!(out.failed, None);
         let backup = out.backup.expect("バックアップが無い");
-        assert_eq!(std::fs::read_to_string(backup.join("config/config.json")).unwrap(), r#"{"n": 0, "mine": true}"#);
+        assert_eq!(std::fs::read_to_string(backup.join("config/config.json")).unwrap(), r#"{"mine": true}"#);
         assert!(backup.join("config/secrets.json").is_file());
         assert!(backup.join("desks/p.json").is_file());
         let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("config/config.json")).unwrap()).unwrap();
-        assert_eq!((cfg["n"].as_u64(), cfg["mine"].as_bool()), (Some(1), Some(true)));
+        assert_eq!((marks(&cfg), cfg["mine"].as_bool()), (vec!["v09"], Some(true)));
         assert_eq!(std::fs::read_to_string(root.join("config/secrets.json")).unwrap(), r#"{"s": 1}"#, "secrets に触った");
         assert_eq!(recorded_at(&root).as_deref(), Some("0.9.0"));
         assert_eq!(on_start_at(&root, "0.9.0", &steps), Outcome::default(), "二度目に何かした");
@@ -401,7 +511,7 @@ mod tests {
 
         // A failing step: the file stays as the last good step left it, the
         // stamp does not reach the present, and the person is told
-        let steps = [Step { to: "0.9.0", apply: bump }, Step { to: "0.10.0", apply: fail }];
+        let steps = [Step { to: "0.9.0", apply: to_09 }, Step { to: "0.10.0", apply: fail }];
         let out = on_start_at(&root, "0.10.0", &steps);
         assert!(out.failed.is_some());
         assert_eq!(recorded_at(&root).as_deref(), Some("0.9.0"), "失敗したのに版が進んだ");

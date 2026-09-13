@@ -190,13 +190,10 @@ fn boot() -> Result<()> {
     // An update that was interrupted mid-swap is put back, and one that
     // finished is tidied, before any of the files it touched is read
     update::finish_last();
-    // Move the legacy layout (config.json under the root) into the config folder (once only).
-    // This must happen before loading, or we'd start up with the pre-migration empty config.
-    config::migrate_legacy_config();
-    // The first start of a version over these files: a copy is kept, then
-    // they are carried forward one step per version (migrate.rs). Before
+    // Old layouts are moved into place, and the first start of a version
+    // keeps a copy of the files and carries them forward (migrate.rs). Before
     // anything reads them, so what is read is already in this version's shape
-    update::set_outcome(migrate::on_start());
+    migrate::prepare();
     // Clean up the exchange hand-off area. Sweep old run folders left behind by an abnormal
     // exit, collecting them at startup (temp files from a normal exit are already gone by
     // the time they're consumed). Anything older than 30 days.

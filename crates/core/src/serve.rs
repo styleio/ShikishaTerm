@@ -21,6 +21,9 @@ const COLS: u16 = 140;
 
 /// Boot the runtime and keep going until it is stopped.
 pub fn run() -> Result<()> {
+    // The same carrying-forward the window does before it reads anything: a
+    // settings file from an older version is as likely to be on a server
+    crate::migrate::prepare();
     let mut shell = Headless::new(ROWS, COLS);
     crate::runtime::run(&mut shell)
 }
