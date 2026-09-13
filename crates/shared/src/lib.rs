@@ -225,6 +225,10 @@ pub enum Ev {
     /// `open` says whether this is looking or choosing. `make`, when not empty,
     /// is the name of a folder to make inside `path` before looking again
     Browse { path: String, open: bool, make: String },
+    /// A working folder's name was pressed in the list: go back to what was on
+    /// screen the last time it was the one being looked at -- the tab last
+    /// looked at there, and the split it stood in -- or to its first tab
+    FolderView { folder: String },
     /// A folder was renamed in the list, or taken out of it. An empty name
     /// hands it back to what the folder itself says
     FolderName { folder: String, name: String },
@@ -732,6 +736,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .and_then(|x| x.as_str())
                 .filter(|f| !f.is_empty())
                 .map(str::to_string),
+        },
+        Some("folderview") => Ev::FolderView {
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("foldername") => Ev::FolderName {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

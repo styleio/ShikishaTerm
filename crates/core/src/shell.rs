@@ -380,15 +380,21 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .bundle { display:flex; align-items:center; gap:var(--s2); padding:1px 0 1px 29px;
     color:var(--dim); font-size:12px; cursor:pointer; }
   .bundle .caret { flex:none; }
-  .bundle .worst { color:var(--muted); }
-  /* What a folded set says instead of its rows. One pill per state, each
+  /* Put away, the set is one box and the whole box is the button: the pills,
+     then a › at the right end saying it opens. Its left edge at 22px so the
+     first dot, inside the box's 1px border and the pill's 6px, lands in the
+     column every status dot above it stands in */
+  .bundle.away { margin:1px 8px 3px 22px; padding:2px 6px 2px 0; min-height:26px;
+    border:1px solid var(--line); border-radius:var(--r-ctl); gap:var(--s1); }
+  .bundle.away:hover { background:var(--hover); }
+  .bundle.away .caret { font-size:14px; line-height:1; color:var(--muted); }
+  .tab.folder.front .nm { opacity:1; color:var(--text); }
+  /* What a put-away set says instead of its rows. One pill per state, each
      wearing that state's dot and a chip for every tab in it -- so the row
-     grows with the number of states, not the number of tabs.
-     Indented 23px so that the first dot, once the pill's own 6px is added,
-     lands in the same column as every status dot above it */
-  .pills { display:flex; flex-wrap:wrap; gap:var(--s2); padding:1px 0 3px 23px; }
+     grows with the number of states, not the number of tabs */
+  .pills { flex:1; min-width:0; display:flex; flex-wrap:wrap; gap:var(--s1); }
   .pill { display:flex; align-items:center; gap:var(--s1); padding:2px 6px;
-    border-radius:var(--r-ctl); background:var(--raise); cursor:pointer; }
+    border-radius:var(--r-ctl); background:var(--raise); }
   /* Smaller than the status dot beside it, on purpose. An 8px box with this
      radius is a circle, and two circles of one size read as two of the same
      thing -- these are not: the dot is the state, the chips are what is in it */
@@ -1880,6 +1886,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       box-shadow:2px 0 14px rgba(0,0,0,.5);
       padding-top:calc(46px + env(safe-area-inset-top)); }   /* leaves room so the hamburger doesn't cover the first item */
     #app.drawer #tabs { transform:none; }
+    /* On a phone this box is how a folder's tabs are reached at all, so it is
+       as tall as the rows a finger already presses, not a strip under them */
+    #tabs .bundle.away { min-height:40px; }
     #app.drawer #backdrop { display:block; position:fixed; inset:0; z-index:20;
       background:rgba(0,0,0,.45); }
 
@@ -2417,10 +2426,7 @@ function drawTabs() {
     if (mine.length >= 2) {
       const away = !opened.has("tabs:" + g.folder);
       into.append(bundleRow(g, mine, away, kin));
-      if (away) {
-        into.append(pillsRow(mine, kin));
-        continue;
-      }
+      if (away) continue;
     }
     for (const t of mine) into.append(tabRow(t, g, kin, top));
   }
@@ -2559,10 +2565,17 @@ function folderRow(g, kin, head, mine) {
     if (g.linked) chip.style.color = g.color;
     else chip.style.background = g.color;
   }
-  const row = el("div", {class:"tab folder" + (g.linked ? " cut" : "") + (head ? " head" : ""),
-      title:g.folder || "", onclick:() => { fold(g.folder); }},
+  // Pressing the name goes to the folder: the tab last looked at in it, in the
+  // split it stood in (the app keeps those), or its first tab. Putting it away
+  // is the caret's alone. A name that folded instead left a phone -- where a
+  // folder's tabs start put away -- with a list that could be opened and shut
+  // but never led anywhere
+  const row = el("div", {class:"tab folder" + (g.linked ? " cut" : "") + (head ? " head" : "")
+        + (inFront(g) ? " front" : ""),
+      title:g.folder || "", onclick:() => send({kind:"folderview", folder:g.folder || ""})},
     chip,
-    el("span", {class:"caret"}, shut ? "▸" : "▾"),
+    el("span", {class:"caret", title:T["tui.folder.fold.title"] || "",
+        onclick:e => { e.stopPropagation(); fold(g.folder); }}, shut ? "▸" : "▾"),
     // On the row itself as well as in the count above, so a folded list
     // still shows which folder is the one with the problem
     ailMark(g),
@@ -2610,6 +2623,14 @@ function folderRow(g, kin, head, mine) {
   // one press away for somebody who knows to look
   row.addEventListener("contextmenu", e => { e.preventDefault(); folderMenu(e, g); });
   return row;
+}
+
+// Whether this folder is the one whose tab is in front, so its row can say so
+// -- pressing it then moves nothing, and the list should show why
+function inFront(g) {
+  const t = activeTab();
+  const gs = (S && S.groups) || [];
+  return !!(t && !S.board && t.group != null && gs[t.group] === g);
 }
 
 // The + at the end of a folder's row. One meaning only: another worktree of
@@ -3826,43 +3847,50 @@ const rankOf = st => { const i = STATE_RANK.indexOf(st); return i < 0 ? STATE_RA
 const worstOf = ts => (ts || []).map(t => t.state)
     .sort((a, b) => rankOf(a) - rankOf(b))[0] || "";
 
-// The heading over a folder's tabs, when it has more than one.
+// A folder's set of tabs, when it has more than one.
 //
-// Pressing it puts the whole set away. The count is on it because "how many
-// are in here" is the question a put-away set otherwise makes somebody open it
-// to answer
+// Put away, it is one box: a pill per state, and a › at its right end. The
+// whole box is the button, and it brings the tabs out row by row -- a pill
+// that went to a tab instead left a finger on a phone choosing between two
+// meanings in a strip a few millimetres tall. Going somewhere is the folder's
+// name's job (it goes to the tab last looked at). Brought out, it is the
+// heading over the rows, with the count, and pressing it puts them away.
 function bundleRow(g, mine, away, deep) {
   const word = mine.length === 1
       ? (T["tui.folder.tabs.one"] || "1 tab")
       : (T["tui.folder.tabs"] || "{n} tabs").replace("{n}", mine.length);
-  // Put away, the heading has to say the one thing the pills below it can
-  // only show in colour. A set folded on a tab that wants an answer, read by
-  // somebody who has never seen this app, is otherwise a row of dots
-  const worst = away ? (mine.find(t => t.state === worstOf(mine)) || {}).state_label : null;
+  const toggle = e => { e.stopPropagation(); fold("tabs:" + g.folder); };
+  if (away) {
+    // The words for what the pills can only show in colour, for the eye that
+    // does not know the colours yet: the state of whatever wants somebody first
+    const worst = (mine.find(t => t.state === worstOf(mine)) || {}).state_label;
+    return el("div", {class:"bundle away" + (deep ? " deep" : ""),
+        title:[word, worst, T["tui.folder.tabs.open"] || ""].filter(Boolean).join(" · "),
+        onclick:toggle},
+      pillsRow(mine),
+      el("span", {class:"caret"}, "›"));
+  }
   return el("div", {class:"bundle" + (deep ? " deep" : ""),
-      title:T["tui.folder.tabs.title"] || "",
-      onclick:e => { e.stopPropagation(); fold("tabs:" + g.folder); }},
+      title:T["tui.folder.tabs.title"] || "", onclick:toggle},
     el("span", {}, word),
-    worst ? el("span", {class:"worst"}, worst) : null,
     // Last, the way the branch count above it wears its own
-    el("span", {class:"caret"}, away ? "▸" : "▾"));
+    el("span", {class:"caret"}, "▾"));
 }
 
-// What a folded set of tabs shows instead of its rows: one pill per state.
+// What a put-away set of tabs shows instead of its rows: one pill per state.
 //
 // Tabs in the same state share a dot, so five finished tabs are one pill and
 // not five rows -- and the moment one of them starts working the set splits in
-// two and says so without being opened. Pressing a pill goes to the first tab
-// in it, which is the one somebody folding a set and then looking at it wants
-function pillsRow(mine, deep) {
-  const box = el("div", {class:"pills" + (deep ? " deep" : "")});
+// two and says so without being opened. The pills are not buttons of their
+// own; the box they sit in is (bundleRow)
+function pillsRow(mine) {
+  const box = el("span", {class:"pills"});
   const seen = [];
   for (const t of mine) if (!seen.includes(t.state)) seen.push(t.state);
   seen.sort((a, b) => rankOf(a) - rankOf(b));
   for (const st of seen) {
     const ts = mine.filter(t => t.state === st);
-    const pill = el("div", {class:"pill", title:(ts[0] && ts[0].state_label) || st,
-        onclick:() => send({kind:"select", tab:ts[0].index})},
+    const pill = el("span", {class:"pill", title:(ts[0] && ts[0].state_label) || st},
       el("span", {class:"dot " + st}));
     // One mark per tab. A tab that is not an AI at all (a shell, a page) gets
     // the plain chip instead -- it still has to be counted, and giving it an
@@ -11101,7 +11129,21 @@ mod tests {
         // A set of tabs starts put away: only a set somebody opened is shown row by row
         assert!(PAGE.contains(r#"const away = !opened.has("tabs:" + g.folder);"#), "タブの束が開いた状態で始まる");
         assert!(PAGE.contains(r#"const set = folder.startsWith("tabs:") ? opened : folded;"#), "束の開閉が畳みの記録と混ざる");
-        assert!(PAGE.contains("function pillsRow(mine, deep)"), "畳んだときの表示が無い");
+        assert!(PAGE.contains("function pillsRow(mine)"), "畳んだときの表示が無い");
+        // Put away, the set is one box that opens from anywhere on it, with a ›
+        // at its end -- the pills inside are not buttons of their own
+        assert!(PAGE.contains(r#"return el("div", {class:"bundle away""#), "畳んだ束が1つの箱になっていない");
+        assert!(PAGE.contains(r#"el("span", {class:"caret"}, "›"));"#), "畳んだ束の右端に › が無い");
+        assert!(!PAGE.contains(r#"onclick:() => send({kind:"select", tab:ts[0].index})"#), "束の中の札が別の意味のボタンになっている");
+        // The folder's name goes to the folder; putting it away is the caret's
+        assert!(
+            PAGE.contains(r#"onclick:() => send({kind:"folderview", folder:g.folder || ""})},"#),
+            "作業フォルダ名を押しても最後のタブへ行かない"
+        );
+        assert!(
+            PAGE.contains(r#"onclick:e => { e.stopPropagation(); fold(g.folder); }}, shut ? "▸" : "▾"),"#),
+            "作業フォルダを畳む場所が ▸ でない"
+        );
         // Shut, the heading wears the state of whatever is waiting inside
         assert!(
             PAGE.contains("if (shut && (mine || []).length) {"),

@@ -161,6 +161,9 @@ pub struct Mailbox {
     /// Folders being looked through, the one finally chosen, and the name of a
     /// folder to make where the list is standing: (path, open, make)
     pub browses: Vec<(String, bool, String)>,
+    /// Working folders pressed in the list: bring back what was on screen the
+    /// last time each was the one being looked at
+    pub folder_views: Vec<String>,
     /// Folders renamed in the list: (folder, the new name)
     pub folder_names: Vec<(String, String)>,
     /// Folders taken out of the list. The files stay where they are
@@ -344,6 +347,9 @@ impl Mailbox {
     }
     pub fn take_browses(&mut self) -> Vec<(String, bool, String)> {
         std::mem::take(&mut self.browses)
+    }
+    pub fn take_folder_views(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.folder_views)
     }
     pub fn take_folder_names(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.folder_names)

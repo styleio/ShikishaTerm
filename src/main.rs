@@ -614,6 +614,7 @@ impl WinSurface {
                 Ev::Help => self.mail.help_site = true,
                 Ev::LimitAck { tab } => self.mail.limit_acks.push(tab),
                 Ev::Select { tab } => self.mail.selects.push(tab),
+                Ev::FolderView { folder } => self.mail.folder_views.push(folder),
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
                 Ev::RunAction { index } => self.mail.run_actions.push(index),
