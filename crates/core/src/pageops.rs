@@ -164,12 +164,14 @@ pub fn click(s: &dyn Speaks, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> an
     if let Sel::Ref(r) = sel {
         return click_ref(s, to, *r, timeout_ms);
     }
-    Ok(OpReport::bare(act_with_wait(s, 
-        to,
-        "__shikisha_click",
-        vec![sel.json()],
-        timeout_ms,
-    )?))
+    // Woken like a click by ref. The wait for the element to settle counts
+    // animation frames, and a page the window has hidden draws none: without
+    // this, every click by selector on a page not in front waited out its
+    // whole deadline and came back with no answer
+    s.wake(to, true);
+    let out = act_with_wait(s, to, "__shikisha_click", vec![sel.json()], timeout_ms);
+    s.wake(to, false);
+    Ok(OpReport::bare(out?))
 }
 
 /// Put a value into an input field. A `{ref=N}` types genuine key events
@@ -185,12 +187,17 @@ pub fn fill(
     if let Sel::Ref(r) = sel {
         return fill_ref(s, to, *r, value, timeout_ms);
     }
-    Ok(OpReport::bare(act_with_wait(s, 
+    // The same wake, for the same frames (see `click`)
+    s.wake(to, true);
+    let out = act_with_wait(
+        s,
         to,
         "__shikisha_fill",
         vec![sel.json(), serde_json::Value::String(value.to_string())],
         timeout_ms,
-    )?))
+    );
+    s.wake(to, false);
+    Ok(OpReport::bare(out?))
 }
 
 /// The full parsed HTML
