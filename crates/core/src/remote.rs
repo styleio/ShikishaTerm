@@ -181,6 +181,8 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // opens the tool on a picture chosen on the phone and sends nothing, so
         // a request arriving from afar is not one the page makes
         Ev::Snip { .. } => false,
+        // The phone asks these at /api/snip, where the answer can come back
+        Ev::SnipAsk { .. } => false,
         // Putting the right-hand column away, or dragging its edge. A phone
         // has less width to spare than a window does, so this is the one it
         // needs most
@@ -1288,9 +1290,10 @@ fn handle(
     // has been cut cannot quietly let itself back in: a person has to open the
     // link again.
     // The tools that start from a picture. Handed out like the board's own
-    // page, before any token: it holds nothing of this machine's and asks this
-    // machine for nothing -- on a phone the picture is chosen on the phone, and
-    // everything done with it happens in the phone's own browser
+    // page, before any token: it holds nothing of this machine's, and on a
+    // phone the picture is chosen on the phone. What it asks this machine --
+    // reading the picture with the assistant AI -- goes through the board it
+    // is laid over, which holds the token, to /api/snip
     if method == "GET" && path == "/snip" {
         let resp = Response::from_string(crate::snip::page())
             .with_header(
@@ -2168,6 +2171,28 @@ fn handle(
         // target tab (so its AI can read it) and the saved path handed back to
         // type into the prompt. Larger cap than the other routes — this carries a
         // base64 file, not a short command.
+        // A question from the tool page, asked by the board on its behalf (see
+        // `snip::answer`). Answered on a thread of its own: reading a picture
+        // is an AI started and waited for, and every other request from this
+        // phone is served in turn on this one
+        ("POST", "/api/snip") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_ATTACH)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let desk = snapshot
+                .lock()
+                .unwrap()
+                .ui
+                .as_ref()
+                .map(|u| u.desk_id.clone())
+                .unwrap_or_default();
+            std::thread::spawn(move || {
+                let v = serde_json::from_str::<serde_json::Value>(&body).unwrap_or_default();
+                let _ = req.respond(json_response(crate::snip::answer(&v, &desk)));
+            });
+        }
         ("POST", "/api/attach") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_ATTACH)? else {
@@ -2248,8 +2273,8 @@ fn cookie_value(req: &tiny_http::Request, name: &str) -> String {
 /// once, and the cost was silent: `/api/replay` was added below and not here,
 /// so the phone's download button asked the settings proxy for it and the code
 /// that actually serves it — a dozen lines away — was never once reached.
-const OWN_VERBS: [&str; 7] = [
-    "state", "send", "auto", "intent", "attach", "read", "replay",
+const OWN_VERBS: [&str; 8] = [
+    "state", "send", "auto", "intent", "attach", "read", "replay", "snip",
 ];
 
 fn is_settings_path(path: &str) -> bool {
@@ -3509,7 +3534,7 @@ mod tests {
         }
         for p in [
             "/api/state", "/api/send", "/api/auto", "/api/intent", "/api/attach", "/api/read",
-            "/api/replay", "/", "/shell", "/ws-state",
+            "/api/replay", "/api/snip", "/", "/shell", "/ws-state",
         ] {
             assert!(!is_settings_path(p), "{p} is the remote's own route");
         }

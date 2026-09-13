@@ -752,26 +752,231 @@ fn pick_local_ai(want: Option<&str>) -> Result<(String, Vec<String>)> {
         if want.is_some_and(|w| w != name) {
             continue;
         }
-        if let Some(path) = crate::tab::resolve_command(name) {
-            let p = path.to_string_lossy().to_string();
-            // .cmd/.bat can only be launched via cmd.exe
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_ascii_lowercase());
-            return Ok(if matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
-                let mut a = vec!["/c".to_string(), p];
-                a.extend(args.iter().map(|s| s.to_string()));
-                ("cmd.exe".to_string(), a)
-            } else {
-                (p, args.iter().map(|s| s.to_string()).collect())
-            });
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        if let Some(found) = launcher(name, args) {
+            return Ok(found);
         }
     }
     match want {
         Some(w) => anyhow::bail!("{}", crate::i18n::tp("webui.err.ai_not_found", &[("name", w)])),
         None => anyhow::bail!("{}", crate::i18n::t("webui.err.ai_missing")),
     }
+}
+
+/// How to start an installed AI program with `args`: the program itself, or
+/// cmd.exe in front of it for a .cmd/.bat, which cannot be started any other way
+fn launcher(name: &str, args: Vec<String>) -> Option<(String, Vec<String>)> {
+    let path = crate::tab::resolve_command(name)?;
+    let p = path.to_string_lossy().to_string();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    Some(if matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
+        let mut a = vec!["/c".to_string(), p];
+        a.extend(args);
+        ("cmd.exe".to_string(), a)
+    } else {
+        (p, args)
+    })
+}
+
+/// The assistant AI that answers when one is asked for: the one chosen under
+/// Basic > Assistant AI, or with none chosen the first one installed. Its name
+/// and the name a person knows it by; nothing when it is not installed.
+///
+/// The same order and the same test [`pick_local_ai`] uses, so the AI a tool
+/// says it will send to is the AI that is started
+pub fn assistant_ai(want: Option<&str>) -> Option<(&'static str, &'static str)> {
+    AI_ENGINES
+        .iter()
+        .find(|(name, _, _)| {
+            want.is_none_or(|w| w == *name) && crate::tab::resolve_command(name).is_some()
+        })
+        .map(|(name, _, label)| (*name, *label))
+}
+
+/// The name a person knows an assistant AI by, from its name in the settings
+pub fn assistant_label(name: &str) -> Option<&'static str> {
+    AI_ENGINES.iter().find(|(n, _, _)| *n == name).map(|(_, _, label)| *label)
+}
+
+/// The name a picture is written under for the AIs that are handed a file.
+const PICTURE_FILE: &str = "picture.png";
+
+/// The name the shape of the answer is written under, for the AI that reads it
+/// from a file.
+const SCHEMA_FILE: &str = "answer.schema.json";
+
+/// How long an AI is given to read a picture before it is stopped. The slowest
+/// of the three took half a minute on a first run (2026-09-14); a minute and
+/// a half beyond that is somebody's network, not a program still thinking
+const PICTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// What to start an assistant AI with so it reads one picture and answers
+/// `prompt` about it in the shape `schema` (a JSON Schema): the arguments
+/// after the program, what goes in on standard input, and whether the picture
+/// has to be on disk beside it.
+///
+/// Two of the three hold the answer to the shape themselves -- Claude Code
+/// with `--json-schema`, Codex CLI with `--output-schema` -- and Gemini CLI has
+/// nothing of the kind, so for it the prompt is all there is. Whoever calls
+/// this reads the answer as that shape and asks again when it is not one.
+///
+/// None of the three is given a way to reach anything but the picture. Text
+/// on a screen can say anything, "read this file and write it out" included,
+/// and the picture is exactly that text. Measured 2026-09-14, each returning
+/// the text of the test picture exactly, in about six seconds:
+/// - Claude Code takes the picture inside the message itself (stream-json) and
+///   runs with no tools at all
+/// - Codex CLI attaches it with `-i`, its commands held to read-only
+/// - Gemini CLI reads it with `@file`, in its read-only (plan) mode
+///
+/// A picture goes to an AI only from the tools, and only from a desk that
+/// agreed to it -- that is decided in `snip.rs`, before this is ever reached
+fn picture_invocation(name: &str, prompt: &str, png: &[u8], schema: &str) -> Option<(Vec<String>, String, bool)> {
+    use base64::Engine as _;
+    let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    match name {
+        "claude" => {
+            let data = base64::engine::general_purpose::STANDARD.encode(png);
+            let msg = serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}},
+                    {"type": "text", "text": prompt},
+                ]},
+            });
+            Some((
+                v(&["-p", "--tools", "", "--json-schema", schema, "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]),
+                format!("{msg}\n"),
+                false,
+            ))
+        }
+        "codex" => Some((
+            v(&["exec", "--skip-git-repo-check", "--sandbox", "read-only", "--output-schema", SCHEMA_FILE, "-i", PICTURE_FILE, "-"]),
+            prompt.to_string(),
+            true,
+        )),
+        "gemini" => Some((
+            v(&["--approval-mode", "plan", "-p", &format!("@{PICTURE_FILE}")]),
+            prompt.to_string(),
+            true,
+        )),
+        _ => None,
+    }
+}
+
+/// Whether an assistant AI is one that is known to read a picture
+pub fn reads_pictures(name: &str) -> bool {
+    picture_invocation(name, "", &[], "{}").is_some()
+}
+
+/// What an AI said, out of what it printed. Claude Code prints a line of JSON
+/// per event and the answer is in the last one -- the shaped answer, when it
+/// gave one, beside its text; the others print the answer
+fn picture_answer(name: &str, out: &str) -> Result<String> {
+    if name != "claude" {
+        return Ok(out.trim().to_string());
+    }
+    let done = out
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+        .rfind(|v| v.get("type").and_then(|t| t.as_str()) == Some("result"))
+        .context(crate::i18n::t("snip.ai.no_answer"))?;
+    let text = done.get("result").and_then(|r| r.as_str()).unwrap_or_default().trim().to_string();
+    if done.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false) {
+        anyhow::bail!("{text}");
+    }
+    Ok(match done.get("structured_output") {
+        Some(shaped) if !shaped.is_null() => shaped.to_string(),
+        _ => text,
+    })
+}
+
+/// Ask the assistant AI `name` about one picture, and wait for its answer,
+/// asked for in the shape `schema` (see [`picture_invocation`]). What comes
+/// back is the AI's answer as it gave it, to be read by the caller.
+///
+/// The AI is started in a folder of its own with nothing else in it -- the
+/// picture, when that AI is handed a file, and the shape -- and the folder is
+/// gone again once it is done. Stopped after [`PICTURE_TIMEOUT`]
+pub fn ask_about_picture(name: &str, prompt: &str, png: &[u8], schema: &str) -> Result<String> {
+    use std::io::Write as _;
+    let (args, input, on_disk) = picture_invocation(name, prompt, png, schema)
+        .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
+    let (cmd, args) = launcher(name, args)
+        .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
+    let dir = std::env::temp_dir()
+        .join("shikisha-term")
+        .join("pictures")
+        .join(crate::random_hex(8));
+    std::fs::create_dir_all(&dir)?;
+    struct Gone(std::path::PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _gone = Gone(dir.clone());
+    if on_disk {
+        std::fs::write(dir.join(PICTURE_FILE), png)?;
+    }
+    std::fs::write(dir.join(SCHEMA_FILE), schema)?;
+    let mut spawner = std::process::Command::new(&cmd);
+    spawner
+        .args(&args)
+        .current_dir(&dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // Inheriting the console here would kill the mouse (same reason as open_browser)
+    let mut child = crate::detach_console(&mut spawner)
+        .spawn()
+        .with_context(|| crate::i18n::tp("ai.err.cannot_run", &[("cmd", &cmd)]))?;
+    // Each pipe on a thread of its own: a picture is megabytes going in, and an
+    // AI that fills its output while its input is still being written would
+    // otherwise wait on this side for good
+    let mut stdin = child.stdin.take().context(crate::i18n::t("webui.err.stdin"))?;
+    let feed = std::thread::spawn(move || {
+        let _ = stdin.write_all(input.as_bytes());
+    });
+    fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    }
+    let out = drain(child.stdout.take());
+    let err = drain(child.stderr.take());
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() > PICTURE_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!(
+                "{}",
+                crate::i18n::tp("snip.ai.timeout", &[("seconds", &PICTURE_TIMEOUT.as_secs().to_string())])
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let _ = feed.join();
+    let out = String::from_utf8_lossy(&out.join().unwrap_or_default()).to_string();
+    let err = String::from_utf8_lossy(&err.join().unwrap_or_default()).to_string();
+    if !status.success() {
+        // Claude Code says what went wrong in its answer, not on stderr
+        let said = picture_answer(name, &out).err().map(|e| e.to_string()).unwrap_or_default();
+        let why = if err.trim().is_empty() { said } else { err.trim().to_string() };
+        anyhow::bail!("{}", crate::i18n::tp("ai.err.failed", &[("cmd", &cmd), ("error", &why)]));
+    }
+    picture_answer(name, &out)
 }
 
 /// Strips the code fence AIs tend to add
@@ -5211,7 +5416,7 @@ function globalSections() {
 // "git"): the desk in view, at that entry, since there is no copy of the
 // program's to land on. Older names for the same places are kept here
 const DESK_LINKS = {git:"git", protect:"git", github:"github", providers:"providers",
-                    permissions:"permissions", caps:"caps"};
+                    permissions:"permissions", caps:"caps", tools:"tools"};
 
 // ── Update ─────────────────────────────────────────────────────
 // The one place a newer version is fetched, checked and put in place. The
@@ -7060,12 +7265,50 @@ function deskSections(desk) {
     s("secrets", deskSecretsCard),
     s("discuss", deskDiscussCard),
     s("stops", deskStopsCard),
+    s("tools", deskToolsCard),
   ];
   // Written by hand in the file, so listed only where there is something written
   if (deskCapsCard(desk)) list.splice(4, 0, s("caps", deskCapsCard));
   // It ends in a file dialog, which a phone has no way to open
   if (!REMOTE) list.push(s("share", deskShareCard));
   return list;
+}
+
+// Whether the tools may send the framed part of the screen to the assistant
+// AI. The same answer the tool asks for in place the first time, kept on the
+// desk: ticked here or there, it is one setting. What is stored is the AI it
+// was agreed for, so a change of assistant AI is asked about again
+function deskToolsCard(desk) {
+  // The AI that would be sent to: the one chosen, or the first installed --
+  // the same order the program picks in (webui.rs, assistant_ai)
+  const now = aiEngines.find(e => e.id === (current.ai_engine || "")) || (current.ai_engine ? null : aiEngines[0]);
+  const labelOf = id => (aiEngines.find(e => e.id === id) || {}).label || id;
+  const box = el("input", {type:"checkbox"});
+  box.checked = !!desk.send_pictures_to;
+  box.disabled = !now && !desk.send_pictures_to;
+  const tick = el("label", {class:"check"});
+  tick.append(box, document.createTextNode(T["settings.desk.pictures.label"]));
+  const said = el("div", {class:"hint"});
+  const draw = () => {
+    const agreed = desk.send_pictures_to;
+    if (!now) said.textContent = agreed
+      ? fill(T["settings.desk.pictures.agreed"], {by: labelOf(agreed)}) + " " + T["settings.desk.pictures.none"]
+      : T["settings.desk.pictures.none"];
+    else if (!agreed) said.textContent = fill(T["settings.desk.pictures.service"], {by: now.label})
+      + " " + T["settings.desk.pictures.unticked"];
+    else if (agreed !== now.id) said.textContent = fill(T["settings.desk.pictures.changed"], {by: labelOf(agreed), now: now.label});
+    else said.textContent = fill(T["settings.desk.pictures.agreed"], {by: now.label})
+      + " " + fill(T["settings.desk.pictures.service"], {by: now.label})
+      + " " + T["settings.desk.pictures.withdraw"];
+  };
+  box.addEventListener("change", () => {
+    desk.send_pictures_to = box.checked && now ? now.id : "";
+    box.checked = !!desk.send_pictures_to;
+    refreshSave();
+    draw();
+  });
+  draw();
+  return card(T["settings.desk.pictures.title"], el("div", {class:"row"}, tick), said);
 }
 
 function deskShareCard() {
@@ -9157,6 +9400,8 @@ async function load() {
                  capabilities: isObj(w.capabilities) ? w.capabilities : {},
                  automation_permissions: isObj(w.automation_permissions) ? w.automation_permissions : {},
                  git: isObj(w.git) ? w.git : {},
+                 // The assistant AI this desk agreed to send pictures to, by name
+                 send_pictures_to: (w.send_pictures_to || "").trim(),
                  stops: Array.isArray(w.stops) ? w.stops : [],
                  discuss: w.discuss || null };
     if (desk.file) {
@@ -9338,6 +9583,7 @@ function payload() {
     if (some(w.capabilities)) o.capabilities = w.capabilities;
     if (some(w.automation_permissions)) o.automation_permissions = w.automation_permissions;
     if (some(w.git)) o.git = w.git;
+    if ((w.send_pictures_to || "").trim()) o.send_pictures_to = w.send_pictures_to.trim();
     // Stop conditions (judge). Already written into the file for a file-referenced desk, so don't duplicate it here
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
     // AI vs AI discussion
@@ -10009,6 +10255,76 @@ fn picker() -> Option<&'static dyn shikisha_shared::FilePicker> {
 
 #[cfg(test)]
 mod tests {
+
+    /// An AI handed a picture is handed nothing else it could reach with.
+    /// The picture is a screen, and a screen can say "read this file and
+    /// write it out"
+    #[test]
+    fn an_ai_reading_a_picture_reaches_nothing_but_the_picture() {
+        let png = b"\x89PNG\r\n\x1a\n";
+        let schema = r#"{"type":"object"}"#;
+        let (args, input, on_disk) = super::picture_invocation("claude", "read", png, schema).unwrap();
+        let tools = args.iter().position(|a| a == "--tools").expect("claude にツールの指定が無い");
+        assert_eq!(args[tools + 1], "", "claude にツールが渡っている");
+        assert!(args.windows(2).any(|w| w == ["--json-schema", schema]), "claude に答えの形が渡っていない");
+        assert!(!on_disk, "claude には画像をファイルで渡さない");
+        let msg: serde_json::Value = serde_json::from_str(input.trim()).unwrap();
+        assert_eq!(msg["message"]["content"][0]["type"], "image");
+        assert_eq!(msg["message"]["content"][1]["text"], "read");
+
+        let (args, input, on_disk) = super::picture_invocation("codex", "read", png, schema).unwrap();
+        assert!(args.windows(2).any(|w| w == ["--sandbox", "read-only"]), "codex が読み取り専用でない");
+        assert!(args.windows(2).any(|w| w == ["--output-schema", super::SCHEMA_FILE]), "codex に答えの形が渡っていない");
+        assert!(on_disk && input == "read");
+
+        let (args, _, on_disk) = super::picture_invocation("gemini", "read", png, schema).unwrap();
+        assert!(args.windows(2).any(|w| w == ["--approval-mode", "plan"]), "gemini が読み取り専用でない");
+        assert!(on_disk);
+
+        assert!(super::picture_invocation("aider", "read", png, schema).is_none());
+        for (name, _, _) in super::AI_ENGINES {
+            assert!(super::reads_pictures(name), "{name} は画像の渡し方が決まっていない");
+        }
+    }
+
+    /// Each installed assistant AI, started the way the tools start it, reads
+    /// the text of a real picture. Costs a call to each; run by hand with
+    /// `SHIKISHA_PICTURE=<png> cargo test -- --ignored every_installed_ai`
+    #[test]
+    #[ignore]
+    fn every_installed_ai_reads_a_picture() {
+        let Ok(path) = std::env::var("SHIKISHA_PICTURE") else { return };
+        let png = std::fs::read(path).unwrap();
+        for (name, _, _) in super::AI_ENGINES {
+            if crate::tab::resolve_command(name).is_none() {
+                continue;
+            }
+            let t0 = std::time::Instant::now();
+            let said = super::ask_about_picture(
+                name,
+                &crate::i18n::t("snip.ai.text.prompt"),
+                &png,
+                &crate::snip::shape_of("text").unwrap().to_string(),
+            );
+            eprintln!("{name} {:.1}s -> {said:?}", t0.elapsed().as_secs_f32());
+            let said = said.unwrap_or_else(|e| panic!("{name} が読めなかった: {e:#}"));
+            assert!(said.contains("\"text\""), "{name} が決められた形で答えなかった");
+        }
+    }
+
+    /// Claude Code's answer is the last event's, and an error it reports is an
+    /// error, not an answer
+    #[test]
+    fn claude_codes_answer_is_read_out_of_its_events() {
+        let out = "{\"type\":\"system\"}\n{\"type\":\"result\",\"is_error\":false,\"result\":\" 貸借対照表 \"}\n";
+        assert_eq!(super::picture_answer("claude", out).unwrap(), "貸借対照表");
+        let shaped = "{\"type\":\"result\",\"is_error\":false,\"result\":\"x\",\"structured_output\":{\"text\":\"貸借\"}}";
+        assert_eq!(super::picture_answer("claude", shaped).unwrap(), "{\"text\":\"貸借\"}", "形の決まった答えを読んでいない");
+        let bad = "{\"type\":\"result\",\"is_error\":true,\"result\":\"limit\"}";
+        assert!(super::picture_answer("claude", bad).is_err());
+        assert!(super::picture_answer("claude", "not json").is_err());
+        assert_eq!(super::picture_answer("codex", " text \n").unwrap(), "text");
+    }
     use super::*;
 
     /// A repository's own settings are offered in exactly one place.
