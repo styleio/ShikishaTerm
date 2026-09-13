@@ -9048,7 +9048,7 @@ pub fn screen_rows(screen: &vt100::Screen) -> Vec<String> {
             // opened up between the end of the string and the cursor.
             // Boxing each character individually instead spreads the
             // shortfall evenly between characters, so it never accumulates anywhere.
-            if !wide && (ch.is_empty() || ch.chars().all(|c| c.is_ascii())) {
+            if !wide && (ch.is_empty() || ch.is_ascii()) {
                 span += 1;
                 if ch.is_empty() {
                     run.push(' ');
@@ -10085,11 +10085,10 @@ mod tests {
             if !t.contains("hidden") || !t.contains("id=\"") {
                 continue;
             }
-            if let Some(rest) = t.split("id=\"").nth(1) {
-                if let Some(id) = rest.split('"').next() {
+            if let Some(rest) = t.split("id=\"").nth(1)
+                && let Some(id) = rest.split('"').next() {
                     ids.push(id.to_string());
                 }
-            }
         }
         assert!(!ids.is_empty(), "hidden を使っている要素が見つからない");
 
