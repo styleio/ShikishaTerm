@@ -276,7 +276,17 @@ type PagesOpen = Arc<Mutex<std::collections::HashMap<String, crate::faraway::Lin
 
 /// Destinations for relay frames (one per connected WS client).
 /// A line that can no longer send is cleaned up on the next frame
-type FrameClients = Arc<Mutex<Vec<Sender<Vec<u8>>>>>;
+type FrameClients = Arc<Mutex<Vec<FrameClient>>>;
+
+/// One viewer of the relayed picture, and the session that opened the line.
+///
+/// The session travels with the line because a line outlives the moment it was
+/// let in: taking one device's key away has to find the pictures that device
+/// is already being sent, and nothing else about a sender says whose it is
+struct FrameClient {
+    tx: Sender<Vec<u8>>,
+    session: String,
+}
 /// Destinations for state pushes — the terminal screen and UI, sent over a
 /// WebSocket instead of the phone polling. One text sender per connected viewer.
 type StateClients = Arc<Mutex<Vec<StateClient>>>;
@@ -291,7 +301,12 @@ type StateClients = Arc<Mutex<Vec<StateClient>>>;
 struct StateClient {
     tx: Sender<String>,
     pending: Arc<AtomicUsize>,
+    /// The session that opened this line (see [`FrameClient`])
+    session: String,
 }
+
+/// What a line whose session has ended is told, just before it is let go
+const CUT_MESSAGE: &str = "{\"cut\":true}";
 
 pub struct RemoteUi {
     pub url: String,
@@ -451,6 +466,14 @@ pub struct Gate {
     /// full-machine credential; a reply link is a short ticket posted into
     /// chat rooms on purpose. Neither may be tried at machine speed.
     misses: Mutex<Misses>,
+    /// The lines already carrying the screen and the picture.
+    ///
+    /// Held here because this is where a device's key is taken away -- the
+    /// settings page reaches the gate and nothing else. Dropping a device's
+    /// sessions stopped its next request, and the page it already had went on
+    /// being sent every change on the PC for as long as it stayed open
+    state_lines: StateClients,
+    frame_lines: FrameClients,
 }
 
 /// The score of wrong passwords, and what it costs.
@@ -559,10 +582,25 @@ impl Gate {
         self.pw.clear();
     }
 
-    /// Forget only what this device holds.
+    /// Forget only what this device holds, and let go of the lines it is
+    /// already being sent the screen down -- telling each one first, so the
+    /// page goes dark at once rather than keeping the last picture it had
     pub fn drop_client(&self, owner: &str) {
         self.grants.drop_owner(owner);
         self.pw.drop_owner(owner);
+        self.let_go_of_ended_lines();
+    }
+
+    /// Every line whose session is no longer granted is told and dropped
+    fn let_go_of_ended_lines(&self) {
+        self.state_lines.lock().unwrap().retain(|c| {
+            let live = self.granted(&c.session);
+            if !live {
+                let _ = c.tx.send(CUT_MESSAGE.to_string());
+            }
+            live
+        });
+        self.frame_lines.lock().unwrap().retain(|c| self.granted(&c.session));
     }
 }
 
@@ -709,6 +747,8 @@ impl RemoteUi {
             pw: Ids::new(),
             grants: Ids::new(),
             misses: Mutex::new(Misses::new(Instant::now())),
+            state_lines: Arc::clone(&state_clients),
+            frame_lines: Arc::clone(&frame_clients),
         });
         let book = Arc::new(crate::reply::Book::new());
 
@@ -959,7 +999,7 @@ impl RemoteUi {
         // Say it on the way out. The phone's own poll would notice within a
         // second and a half; the screen it is holding should go dark the
         // instant the person here decides it does.
-        self.push_state("{\"cut\":true}".to_string());
+        self.push_state(CUT_MESSAGE.to_string());
         self.frame_clients.lock().unwrap().clear();
         self.state_clients.lock().unwrap().clear();
     }
@@ -974,7 +1014,8 @@ impl RemoteUi {
     /// Drop lines that can't receive it (the peer closed or is backed up)
     pub fn push_frame(&self, jpeg: Vec<u8>) {
         let mut clients = self.frame_clients.lock().unwrap();
-        clients.retain(|tx| tx.send(jpeg.clone()).is_ok());
+        // A line whose session has ended since it opened gets nothing more
+        clients.retain(|c| self.gate.granted(&c.session) && c.tx.send(jpeg.clone()).is_ok());
     }
 
     /// Whether at least one client is watching the relay (if nobody is
@@ -1011,6 +1052,12 @@ impl RemoteUi {
     pub fn push_state(&self, msg: String) {
         let mut clients = self.state_clients.lock().unwrap();
         clients.retain(|c| {
+            // A line whose session has ended since it opened is told so and let
+            // go, whatever this message was: it is not that viewer's any more
+            if !self.gate.granted(&c.session) {
+                let _ = c.tx.send(CUT_MESSAGE.to_string());
+                return false;
+            }
             // Counted before the send, so the writer thread -- which may drain
             // it before this line returns -- can only ever take the count back
             // down, and never below zero
@@ -1219,7 +1266,19 @@ fn handle(
         // A device arriving on the pairing key is written into the book here
         // and given a key of its own, so that from now on it can be named, and
         // shut out, without touching anybody else
-        match opened_by(&query_value(req.url(), "t"), &token) {
+        // A device that already holds a key of its own and is still in the
+        // book is that device, whatever link it arrived on. With the token
+        // fixed the link keeps the pairing key in it, so every reload arrived
+        // "pairing" and was written in again: two phones reloading a few times
+        // were a list of eight devices, none of which could be told apart
+        let opener = match opened_by(&query_value(req.url(), "t"), &token) {
+            Some(Opener::Pairing) => match crate::clients::who(&cookie_value(&req, "rk")) {
+                Some(known) => Some(Opener::Paired(known)),
+                None => Some(Opener::Pairing),
+            },
+            other => other,
+        };
+        match opener {
             Some(Opener::Pairing) => {
                 let paired = crate::clients::pair("").ok();
                 let owner = paired.as_ref().map(|(row, _)| row.id.clone());
@@ -1689,6 +1748,7 @@ fn handle(
             state_clients.lock().unwrap().push(StateClient {
                 tx: stx,
                 pending: Arc::clone(&pending),
+                session: session.clone(),
             });
             std::thread::spawn(move || {
                 let mut w = crate::ws::WsWriter::new(stream);
@@ -1726,7 +1786,7 @@ fn handle(
             );
             let stream = req.upgrade("websocket", resp);
             let (ftx, frx) = channel::<Vec<u8>>();
-            frame_clients.lock().unwrap().push(ftx);
+            frame_clients.lock().unwrap().push(FrameClient { tx: ftx, session: session.clone() });
             // New viewer. Tell the main loop "emit one frame of the current screen"
             keyframe_wanted.store(true, Ordering::SeqCst);
             std::thread::spawn(move || {
@@ -2490,27 +2550,32 @@ mod tests {
         /// Everything below it needs the session this hands back.
         fn pair(&mut self, token: &str) {
             let r = self.get(&format!("/?t={token}"));
-            let set = r
+            // Every cookie the answer sets, as a browser keeps them all: the
+            // session, and the device's own key when one is handed out. Keeping
+            // only the session was not what a phone does, and it hid a phone
+            // that reloads the link being written into the book again
+            let set: Vec<String> = r
                 .headers()
-                .get("set-cookie")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            let rs = set
-                .split(';')
-                .find(|kv| kv.trim_start().starts_with("rs="))
-                .unwrap_or_else(|| panic!("no session handed to a phone that opened the link: {set}"));
-            // The new session replaces the old one; anything else this browser
-            // holds it keeps, as a browser does
+                .get_all("set-cookie")
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .filter_map(|v| v.split(';').next())
+                .map(|kv| kv.trim().to_string())
+                .collect();
+            assert!(
+                set.iter().any(|kv| kv.starts_with("rs=")),
+                "no session handed to a phone that opened the link: {set:?}"
+            );
+            let names: Vec<&str> = set.iter().filter_map(|kv| kv.split('=').next()).collect();
+            // What is set anew replaces what was held under that name; anything
+            // else this browser holds it keeps
             let kept = self
                 .cookie
                 .split(';')
                 .map(str::trim)
-                .filter(|c| !c.is_empty() && !c.starts_with("rs="))
+                .filter(|c| !c.is_empty() && !names.iter().any(|n| c.starts_with(&format!("{n}="))))
                 .map(str::to_string);
-            self.cookie = std::iter::once(rs.trim().to_string())
-                .chain(kept)
-                .collect::<Vec<_>>()
-                .join("; ");
+            self.cookie = set.iter().cloned().chain(kept).collect::<Vec<_>>().join("; ");
         }
 
         /// Keep another cookie alongside the session (the password gate's, the
@@ -2993,6 +3058,49 @@ mod tests {
     /// Re-opening the link on a phone that is already paired keeps the session
     /// it has, so a habit of reloading can't push the other devices out of a
     /// bounded list.
+    /// A phone that opens the link again is the phone it was, not another one.
+    ///
+    /// With the token fixed the link keeps the pairing key in it, so a reload
+    /// is an arrival on the pairing key. Each one used to write the device into
+    /// the book again, and the list of devices became a list of reloads
+    #[test]
+    fn a_device_that_opens_the_link_again_is_still_one_device() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let ui = RemoteUi::start(
+            "127.0.0.1".parse().unwrap(),
+            0,
+            "pairing-key-55555".into(),
+            String::new(),
+        )
+        .unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        let mut phone = Phone::new(&base);
+        phone.pair("pairing-key-55555");
+        let after_first = ui.clients().len();
+        phone.pair("pairing-key-55555");
+        phone.pair("pairing-key-55555");
+        assert_eq!(ui.clients().len(), after_first, "開き直すたびに端末が増えた");
+        assert_eq!(phone.state("pairing-key-55555"), 200);
+
+        // A second device is still a second device
+        let mut laptop = Phone::new(&base);
+        laptop.pair("pairing-key-55555");
+        assert_eq!(ui.clients().len(), after_first + 1);
+
+        // And a device whose key was taken away pairs afresh when it opens the
+        // link again -- that is what opening the link is for
+        let phone_id = ui
+            .clients()
+            .into_iter()
+            .map(|c| c.id)
+            .find(|id| crate::clients::who(phone.cookie.split("rk=").nth(1).unwrap_or("").split(';').next().unwrap_or("")).is_some_and(|c| &c.id == id))
+            .expect("the phone's own key names no row");
+        assert!(ui.cut_client(&phone_id));
+        phone.pair("pairing-key-55555");
+        assert_eq!(ui.clients().len(), after_first + 1, "取り上げた端末が戻れない、または二重に入った");
+        ui.shutdown();
+    }
+
     #[test]
     fn reloading_the_link_keeps_the_session_it_already_has() {
         let ids = Ids::new();
@@ -3200,8 +3308,18 @@ mod tests {
         phone.also(&cookie);
         assert_eq!(phone.state("tok123456789012"), 200, "クッキー提示でも開かない");
 
-        // No token at all stays refused even with the cookies
-        assert_eq!(phone.status("/api/state"), 403, "トークン無しは常に拒否");
+        // No token and no key of its own stays refused, whatever else it holds.
+        // (The device's own key is a key: a phone holding it is let in without
+        // the token, which is what the key is for)
+        let mut keyless = Phone::new(&base);
+        keyless.cookie = phone
+            .cookie
+            .split(';')
+            .map(str::trim)
+            .filter(|c| !c.is_empty() && !c.starts_with("rk="))
+            .collect::<Vec<_>>()
+            .join("; ");
+        assert_eq!(keyless.status("/api/state"), 403, "トークンも鍵も無いのに通る");
 
         // The disconnect takes the password with it: the device unlocks again
         // only after the person there says so
@@ -3473,6 +3591,102 @@ mod tests {
     /// Confirms /ws handshakes and that a JPEG pushed via push_frame arrives
     /// as a WS binary frame. Verified end to end with just a raw TCP
     /// connection and our own ws module (no phone or external tool needed)
+    /// Taking one device's key away ends the screen that device already has.
+    ///
+    /// Its next request was refused, and that was all: the state socket it had
+    /// opened before went on carrying every change on the PC -- measured with
+    /// two phones, the revoked one followed a tab switch minutes afterwards.
+    /// Now the line is told it was cut and let go, and the other device's line
+    /// carries on
+    #[test]
+    fn a_revoked_device_stops_being_sent_the_screen() {
+        let _book = crate::clients::tests::OwnBook::new();
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok-revoke-0001".into(), String::new()).unwrap();
+        let hostport = ui.url.trim_start_matches("http://").split("/?").next().unwrap().to_string();
+        let base = format!("http://{hostport}");
+
+        // Opens the state socket as a paired browser would and reads its first
+        // two seeded messages, so what comes after is what was pushed
+        let open = |cookie: &str| {
+            let mut sock = TcpStream::connect(&hostport).unwrap();
+            sock.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+            sock.write_all(
+                format!(
+                    "GET /ws-state?t=tok-revoke-0001 HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n\
+                     Connection: Upgrade\r\nCookie: {cookie}\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                     Sec-WebSocket-Version: 13\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            let mut head = Vec::new();
+            let mut one = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                sock.read_exact(&mut one).unwrap();
+                head.push(one[0]);
+            }
+            assert!(String::from_utf8_lossy(&head).contains("101"));
+            sock
+        };
+        // One server frame's text, or None when the line has closed
+        let read_text = |sock: &mut TcpStream| -> Option<String> {
+            let mut hdr = [0u8; 2];
+            sock.read_exact(&mut hdr).ok()?;
+            if hdr[0] & 0x0F == 0x8 {
+                return None;
+            }
+            let mut len = (hdr[1] & 0x7F) as usize;
+            if len == 126 {
+                let mut ext = [0u8; 2];
+                sock.read_exact(&mut ext).ok()?;
+                len = u16::from_be_bytes(ext) as usize;
+            } else if len == 127 {
+                let mut ext = [0u8; 8];
+                sock.read_exact(&mut ext).ok()?;
+                len = u64::from_be_bytes(ext) as usize;
+            }
+            let mut payload = vec![0u8; len];
+            sock.read_exact(&mut payload).ok()?;
+            Some(String::from_utf8_lossy(&payload).to_string())
+        };
+
+        let mut phone = Phone::new(&base);
+        let before = ui.clients();
+        phone.pair("tok-revoke-0001");
+        let phone_id = ui
+            .clients()
+            .into_iter()
+            .find(|c| !before.iter().any(|b| b.id == c.id))
+            .expect("pairing wrote no row")
+            .id;
+        let mut laptop = Phone::new(&base);
+        laptop.pair("tok-revoke-0001");
+
+        let mut phone_line = open(&phone.cookie);
+        let mut laptop_line = open(&laptop.cookie);
+        for line in [&mut phone_line, &mut laptop_line] {
+            read_text(line);
+            read_text(line);
+        }
+
+        // The settings page's road: the key goes, and the gate is told
+        assert!(crate::clients::revoke(&phone_id).unwrap());
+        ui.sessions().drop_client(&phone_id);
+
+        assert_eq!(read_text(&mut phone_line).as_deref(), Some(CUT_MESSAGE), "切った端末に切断を言わない");
+        ui.push_state("{\"ui\":\"after\"}".to_string());
+        assert_eq!(read_text(&mut phone_line), None, "切った端末に画面が送られ続けている");
+        assert_eq!(
+            read_text(&mut laptop_line).as_deref(),
+            Some("{\"ui\":\"after\"}"),
+            "巻き添えで残った端末の画面が止まった"
+        );
+        ui.shutdown();
+    }
+
     #[test]
     fn ws_upgrades_and_delivers_a_frame() {
         let _book = crate::clients::tests::OwnBook::new();

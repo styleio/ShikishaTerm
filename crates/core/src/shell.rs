@@ -4739,7 +4739,11 @@ function sideWidth() {
 function setSideWidth(px) {
   const w = px <= 0 ? 0 : Math.max(SIDEW_MIN, Math.min(SIDEW_MAX, Math.round(px)));
   document.documentElement.style.setProperty("--sidew", w + "px");
-  send({kind:"sidewidth", px: w});
+  // The width is the window's setting. On a phone the column is not a column
+  // but a sheet over the whole page, opened and put away for a moment -- and
+  // written down, putting it away on the phone put it away on the PC next
+  // time it started, while a PC that kept it open opened every phone onto it
+  if (!phoneWidth()) send({kind:"sidewidth", px: w});
   drawSide();
   drawTitle();
   scheduleReport();
@@ -4786,6 +4790,10 @@ window.__toggleSideBar = function () {
   // comes back after a file took the screen
   grip.onclick = () => { if (phoneWidth()) window.__toggleSideBar(); };
   settleSideWidth();
+  // A phone opens on what is running, not on the sheet the PC left open
+  if (phoneWidth() && sideWidth() > 0) {
+    document.documentElement.style.setProperty("--sidew", "0px");
+  }
 })();
 
 // A git panel launched as a tab of its own is the same panel, and there is one
