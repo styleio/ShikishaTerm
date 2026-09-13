@@ -2037,14 +2037,16 @@ mod tests {
         t.kill();
     }
 
-    /// Startup output alone reaches DONE, and that must not be treated as an answer.
+    /// Startup output alone is not a finished turn: the tab is waiting.
     ///
     /// Any program outputs something at startup, so the screen goes through
-    /// "moves → stops" and the state necessarily becomes DONE. If this were
-    /// treated as a completed response, a banner nobody asked for would get
-    /// forwarded to other tabs by automation
+    /// "moves → stops", which reads as the end of a turn. Shown as DONE, a
+    /// shell that had only printed its prompt looked exactly like one that had
+    /// just finished a job; treated as an answer, a banner nobody asked for
+    /// would get forwarded to other tabs by automation. After real input, the
+    /// same quiet is a real DONE
     #[test]
-    fn startup_output_reaches_done_but_is_not_an_answer() {
+    fn startup_output_is_waiting_not_done() {
         use super::{Tab, TabOptions};
         use crate::detect::TabState;
         use std::time::{Duration, Instant};
@@ -2052,27 +2054,37 @@ mod tests {
         let argv = vec![crate::test_shell()];
         let mut t = Tab::spawn("shell".into(), &argv, None, 20, 60, TabOptions::default()).unwrap();
 
-        // Confirm that startup output alone reaches DONE (checking the premise)
+        // Let the startup output come and go
         let start = Instant::now();
         let mut saw_done = false;
-        for _ in 0..120 {
+        let mut settled = 0;
+        for _ in 0..160 {
             std::thread::sleep(Duration::from_millis(50));
-            if t.tick(start).1 == TabState::Done {
-                saw_done = true;
-                break;
+            let s = t.tick(start).1;
+            saw_done |= s == TabState::Done;
+            if t.had_output() && s == TabState::Wait {
+                settled += 1;
+                if settled > 50 {
+                    break;
+                }
             }
         }
-        assert!(saw_done, "起動しただけで DONE になる");
-
-        // Nobody submitted any input, so this must not be treated as a response
-        assert!(
-            !t.was_prompted(),
-            "何も聞いていないのに応答完了として扱われている"
-        );
+        assert!(!saw_done, "起動しただけで DONE（完了）になる");
+        assert_eq!(t.state, TabState::Wait, "起動後は待機のはず");
+        assert!(!t.was_prompted(), "何も聞いていないのに応答完了として扱われている");
 
         // A DONE that comes after real input is a genuine response
         t.write_bytes(b"echo hi\r").unwrap();
         assert!(t.was_prompted(), "入力したら応答を待つ状態になる");
+        let mut done_after = false;
+        for _ in 0..200 {
+            std::thread::sleep(Duration::from_millis(50));
+            if t.tick(start).1 == TabState::Done {
+                done_after = true;
+                break;
+            }
+        }
+        assert!(done_after, "入力のあとの静けさは完了になる");
 
         t.kill();
     }
@@ -3615,6 +3627,18 @@ impl Tab {
             // read before the refinements below can rename this state
         );
         self.last_screen = screen_text;
+        // Nothing has been asked of this tab yet, so nothing can have been
+        // answered. A program's startup moves the screen and then stops, which
+        // the screen alone reads as the end of a turn: a shell that had only
+        // printed its prompt was shown as "done", the same as one that had just
+        // finished a job somebody gave it. Until something is said here it is
+        // waiting -- unless the program itself, or a script, said otherwise
+        if self.state == TabState::Done
+            && !self.spoke.load(Ordering::Relaxed)
+            && self.detector.hook_word().is_none()
+        {
+            self.state = TabState::Wait;
+        }
         // A model bridge is working with nothing on screen to show for it: the
         // request is in flight over HTTP and not a pixel moves until the reply
         // lands. The detector only ever watches the screen, so it read that
@@ -4002,6 +4026,8 @@ impl Tab {
     /// Without this, DONE gets ignored with prompted=false and the discussion never proceeds
     fn mark_turn_start(&self) {
         self.prompted.store(true, Ordering::Relaxed);
+        // A turn was asked for, so the quiet after it is an answer
+        self.spoke.store(true, Ordering::Relaxed);
         self.submitted_output
             .store(self.output_count(), Ordering::Relaxed);
         self.response_marker
