@@ -46,6 +46,20 @@ const CALLBACK: u32 = WM_APP + 0x0348;
 const ID: u32 = 1;
 const MENU_OPEN: usize = 1;
 const MENU_QUIT: usize = 2;
+/// The program's own picture, by the number `build.rs` files it under.
+///
+/// `MAKEINTRESOURCE(1)`: not a pointer to anything, but a number dressed as
+/// one, which is how Windows asks for a resource by id. Spelled with
+/// `without_provenance` because that is exactly what it is -- an address with
+/// nothing behind it.
+///
+/// It was once `1 as *const u16`, which a lint rewrote to
+/// `std::ptr::dangling()`. Those look alike and are not: a dangling pointer's
+/// address is the type's alignment, and for `u16` that is 2. Resource 2 does
+/// not exist, so the tray and the taskbar both loaded nothing and showed an
+/// empty square. The tests pin the number so that cannot happen quietly again
+pub(crate) const OUR_ICON: *const u16 = std::ptr::without_provenance(1);
+
 /// A press made with the keyboard (Enter or Space on the icon)
 const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 /// What the shell says about the icon when asked in the modern way
@@ -109,7 +123,6 @@ impl Tray {
     /// stands in front of the window's procedure to read what the shell says
     /// about it. `on` is told of every press; `open` and `quit` are the menu
     pub fn add(hwnd: isize, tip: &str, on: impl Fn(Pressed) + Send + 'static, open: &str, quit: &str) -> Self {
-        const OUR_ICON: *const u16 = std::ptr::dangling::<u16>(); // MAKEINTRESOURCE(1)
         *SINK.lock().unwrap() = Some(Sink { on: Box::new(on), open: open.into(), quit: quit.into() });
         unsafe {
             let previous = SetWindowLongPtrW(hwnd as *mut c_void, GWLP_WNDPROC, procedure as *const () as isize);
@@ -262,6 +275,26 @@ fn menu(hwnd: isize, open: &str, quit: &str) -> Pressed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The picture is asked for by the number it was filed under.
+    ///
+    /// Both halves, because either can move: this side is the number the
+    /// window and the tray ask for, and `build.rs` is where the picture is
+    /// filed. A mismatch is not an error anywhere -- Windows answers "no such
+    /// icon" by drawing nothing, and the program looks as if it has lost its
+    /// face
+    #[test]
+    fn the_icon_is_asked_for_by_the_number_it_is_filed_under() {
+        assert_eq!(OUR_ICON as usize, 1, "リソース番号がずれている");
+        let build = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("build.rs"),
+        )
+        .expect("build.rs が読めない");
+        // `set_icon` files it as the first icon, number 1. A different id
+        // would have to be said with `set_icon_with_id`
+        assert!(build.contains("set_icon(\"assets/icon.ico\")"), "埋め込み方が変わった");
+        assert!(!build.contains("set_icon_with_id"), "番号を明示するなら、ここも合わせる");
+    }
 
     /// A field is always terminated, however long the text: a tip that ran
     /// to the end of the buffer would read on into whatever follows it

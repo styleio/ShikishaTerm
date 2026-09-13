@@ -1289,7 +1289,7 @@ fn wear_our_own_icon(hwnd: isize) {
         GetSystemMetrics, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW,
         SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SendMessageW, WM_SETICON,
     };
-    const OUR_ICON: *const u16 = std::ptr::dangling::<u16>(); // MAKEINTRESOURCE(1)
+    use crate::tray::OUR_ICON;
     unsafe {
         let module = GetModuleHandleW(std::ptr::null());
         let hwnd = hwnd as *mut std::ffi::c_void;
