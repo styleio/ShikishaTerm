@@ -2381,6 +2381,9 @@ function drawTabs() {
 // the two is up is the app's decision (it knows what has been pointed at
 // before); this only draws it. Closed with its ✕, or by doing the thing
 let coachShut = 0;
+// Whether the bar has been brought out for the pointer this run. Once: a person
+// who shuts it again while the pointer is up has said what they want
+let coachOpenedBar = false;
 // What each step points at. Asked for by name rather than held on to, because
 // the list it lives in is rebuilt several times a second
 const coachAt = step => step === 1 ? document.querySelector("#tabs .tab.addtab")
@@ -2403,6 +2406,14 @@ document.addEventListener("pointerdown", e => {
 function drawCoach() {
   let box = document.getElementById("coach");
   const step = (S && S.coach) || 0;
+  // Both things the pointer points at live in the tab bar, and the bar starts
+  // put away. Somebody with no folder yet would get a bubble pointing at nothing
+  // and no way to the one thing they need, so the bar is brought out for them --
+  // once, and not written down, so the next start opens the way the settings say
+  if (step && step !== coachShut && !coachOpenedBar && tabWidth() === 0) {
+    coachOpenedBar = true;
+    showTabWidth(lastTabW);
+  }
   const anchor = coachAt(step);
   if (!step || step === coachShut || !anchor) {
     if (box) box.hidden = true;
@@ -4623,11 +4634,17 @@ function tabWidth() {
 // opens the same way. The terminal is re-measured because it just got wider or
 // narrower, and an AI handed the wrong column count wraps its screen wrongly.
 function setTabWidth(px) {
+  const w = showTabWidth(px);
+  send({kind:"tabwidth", px: w});
+}
+// The same, without telling the app to write it down. For the one time the
+// page opens the bar on somebody's behalf rather than because they asked
+function showTabWidth(px) {
   const w = px <= 0 ? 0 : Math.max(TABW_MIN, Math.min(TABW_MAX, Math.round(px)));
   document.documentElement.style.setProperty("--tabw", w + "px");
-  send({kind:"tabwidth", px: w});
   drawTitle();
   scheduleReport();
+  return w;
 }
 // The bar has come to rest at whatever it is now: that is a width worth
 // coming back to
@@ -9419,6 +9436,22 @@ pub fn served_page(sticky: bool, by: Served) -> String {
     built(sticky, by)
 }
 
+/// How wide the tab bar opens on the page being built.
+///
+/// The window has a title bar with a switch in it, so a bar that starts put
+/// away is one press from coming back. A page served to another machine has no
+/// title bar: a laptop's browser showing the panes would open with the list of
+/// tabs shut and nothing on screen that brings it back. So a page served
+/// elsewhere never starts shut -- it opens at the width the window last had
+/// open, or the built-in one. A phone lays the list out as a drawer of its own
+/// and never reads this
+fn tab_width_for(by: Served, written: u16) -> u16 {
+    match (by, written) {
+        (Served::Remote, 0) => crate::config::TAB_BAR_DEFAULT_PX,
+        (_, w) => w,
+    }
+}
+
 fn built(sticky: bool, by: Served) -> String {
     // Read here rather than threaded in: the page is built in several places
     // (window, phone, tests) and every one of them wants the same look
@@ -9444,7 +9477,7 @@ fn built(sticky: bool, by: Served) -> String {
     .replace("{{__lang__}}", &crate::i18n::lang())
     .replace("{{FONT}}", &look.font_css())
     .replace("{{FONT_SIZE}}", &look.size_px().to_string())
-    .replace("{{TAB_W}}", &crate::config::tab_bar_px().to_string())
+    .replace("{{TAB_W}}", &tab_width_for(by, crate::config::tab_bar_px()).to_string())
     .replace("{{SIDE_W}}", &crate::config::side_bar_px().to_string())
     .replace("{{SIDE_W_MIN}}", &crate::config::SIDE_BAR_MIN_PX.to_string())
     .replace("{{SIDE_W_MAX}}", &crate::config::SIDE_BAR_MAX_PX.to_string())
@@ -9483,7 +9516,7 @@ fn built(sticky: bool, by: Served) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{PAGE, screen_html, screen_rows};
+    use super::{PAGE, Served, screen_html, screen_rows, tab_width_for};
 
     /// The phone's board carries the one shared way of registering for push
     /// (src/push.rs), exactly once, and the bar that offers it.
@@ -10104,6 +10137,29 @@ mod tests {
             p.contains(&format!("const TABW_MIN = {}", crate::config::TAB_BAR_MIN_PX)),
             "ページとアプリで下限が食い違っている"
         );
+    }
+
+    /// The window opens on the terminal; everything else that shows the board
+    /// still has a way to the list.
+    ///
+    /// Nothing written down means the bar is put away in the window, where the
+    /// switch for it is in the title bar. A page served to another machine has
+    /// no title bar, so it never starts shut. And a first run, whose pointer
+    /// lives in the bar, brings the bar out for it without writing that down
+    #[test]
+    fn the_tab_bar_starts_put_away_where_there_is_a_way_back() {
+        let def = crate::config::TAB_BAR_DEFAULT_PX;
+        assert_eq!(tab_width_for(Served::Window, 0), 0, "窓で既定が開いている");
+        assert_eq!(tab_width_for(Served::Window, 320), 320, "書いた幅が守られない");
+        assert_eq!(tab_width_for(Served::Remote, 0), def, "開閉ボタンの無い画面で閉じて始まる");
+        assert_eq!(tab_width_for(Served::Remote, 320), 320);
+
+        // The first-run pointer brings the bar out, once, and says nothing to the
+        // app about it -- the save happens only through setTabWidth
+        assert!(PAGE.contains("if (step && step !== coachShut && !coachOpenedBar && tabWidth() === 0) {"));
+        assert!(PAGE.contains("    showTabWidth(lastTabW);"), "案内のために開いていない");
+        let quiet = PAGE.split("function showTabWidth(px) {").nth(1).and_then(|t| t.split("\n}").next()).unwrap();
+        assert!(!quiet.contains("tabwidth"), "案内のために開いた幅を保存している");
     }
 
     /// The column on the right is held to the same three promises: one number
