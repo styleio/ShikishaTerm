@@ -44,9 +44,15 @@ pub const AUTOMATION: &str = r##"
     return on ? "visible" : "off_screen";
   };
 
+  // What is typed, for the things a person types into; what is shown, for
+  // everything else. Asking "has a value" instead read a button as "" (every
+  // button has an empty one) and a list item as its number
   window.__shikisha_text = function (sel) {
     const el = window.__shikisha_q(sel);
-    return el ? (el.value !== undefined ? el.value : el.innerText) : null;
+    if (!el) return null;
+    const typed = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ||
+      el instanceof HTMLSelectElement;
+    return typed ? el.value : el.innerText;
   };
 
   // Where this page actually is. Asked before a stored password is typed into
@@ -432,3 +438,15 @@ pub const AUTOMATION: &str = r##"
   });
 })();
 "##;
+
+#[cfg(test)]
+mod tests {
+    /// The text of a button is its label, not its empty form value.
+    #[test]
+    fn a_button_reads_as_its_label() {
+        let at = super::AUTOMATION.find("window.__shikisha_text = function").expect("__shikisha_text が無い");
+        let body = &super::AUTOMATION[at..at + 400];
+        assert!(body.contains("el instanceof HTMLInputElement"), "値を持つかどうかで判定している");
+        assert!(!body.contains("el.value !== undefined"), "ボタンが空文字で読まれる");
+    }
+}
