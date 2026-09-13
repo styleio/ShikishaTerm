@@ -543,7 +543,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     pointer-events:auto; z-index:4; }
   .pane.empty .pnew { display:flex; }
   .pane .pnew:hover { color:var(--brand); background:var(--hover); }
-  .pdiv { position:absolute; z-index:3; }
+  /* Above an empty pane's "+ Add tab" (4), which fills its pane edge to edge:
+     under it, the half of the handle hanging over an empty pane was that
+     button, and grabbing the divider there opened the add-tab form */
+  .pdiv { position:absolute; z-index:5; }
   .pdiv.v { cursor:col-resize; }
   .pdiv.h { cursor:row-resize; }
   .pdiv::after { content:""; position:absolute; background:var(--line); }
@@ -4257,7 +4260,10 @@ window.__state = function (json) {
   // page. A model pane's conversation arrives whole, so it has no pages.
   const pager = document.getElementById("pageui");
   if (pager) {
-    const showPager = REMOTE && !screen.hidden && !web && !onModelTab();
+    // A phone's, not a laptop's: a browser with a mouse wheel scrolls like the
+    // window does, and two round buttons in the middle of a pane covered the
+    // terminal they were meant to page
+    const showPager = REMOTE && phoneWidth() && !screen.hidden && !web && !onModelTab();
     pager.classList.toggle("on", showPager);
     if (!showPager) pgReset();
     // 📖 rides with the pager because it answers the same need — reading what
@@ -6226,7 +6232,7 @@ report();
 // line of output). If the socket can't hold — a flaky link, an older server — a
 // slow poll takes over until it reconnects.
 if (REMOTE) {
-  let wsUp = false, sws = null, downSince = 0;
+  let wsUp = false, sws = null, downSince = 0, socketPanes = false;
   // Say what happened when the feed stops. The PC can end this session
   // deliberately (its "disconnect": every request then answers 403 and this
   // page is done until someone opens the link again), or the link can simply
@@ -6290,6 +6296,11 @@ if (REMOTE) {
     // the shape changed or most of it moved anyway.
     if (d.rows) { window.__rows(d.rows); pgArrived(); }
     if (d.screen_html != null) { window.__screen(d.screen_html); pgArrived(); }
+    // The panes, the way the window is given them: how the content area is
+    // divided, and a picture of each pane not in front. Only asked for by a
+    // screen wide enough to lay them out (see `connectState`)
+    if (d.panes && !phoneWidth()) window.__panes(JSON.stringify(d.panes));
+    if (d.panescreen && !phoneWidth()) window.__panescreen(d.panescreen.id, d.panescreen.html);
     // 📼 pushes: a recorded Lua line for the composer, or a ▶ run's verdict
     // (null = clean, so test for the key's presence, not its truthiness).
     if (d.recorded != null) window.__recorded(d.recorded);
@@ -6308,7 +6319,11 @@ if (REMOTE) {
     if (remoteCut) return;
     try {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      sws = new WebSocket(proto + "//" + location.host + "/ws-state?t=" + encodeURIComponent(TOKEN));
+      // A laptop lays the board out in panes, as the window does; a phone shows
+      // one thing at a time and is not sent pictures of panes it never draws
+      socketPanes = !phoneWidth();
+      sws = new WebSocket(proto + "//" + location.host + "/ws-state?t=" + encodeURIComponent(TOKEN) +
+        (socketPanes ? "&panes=1" : ""));
     } catch (e) { setTimeout(connectState, 1500); return; }
     sws.onopen = () => { wsUp = true; connected(); };
     sws.onmessage = (e) => { try { applyState(JSON.parse(e.data)); } catch (x) {} };
@@ -6316,6 +6331,21 @@ if (REMOTE) {
     sws.onerror = () => { try { sws.close(); } catch (x) {} };
   };
   connectState();
+  // A window dragged across the phone width, or a tablet turned: the line is
+  // opened again asking for what this shape draws. Going narrow, the panes are
+  // taken down here and now -- the pane in front goes back to being the whole
+  // screen, which is what a phone shows
+  addEventListener("resize", () => {
+    if (!wsUp || remoteCut || socketPanes === !phoneWidth()) return;
+    if (phoneWidth()) {
+      PANES = null;
+      document.getElementById("panes").textContent = "";
+      paintDividers([]);
+      measureFocused();
+      report();
+    }
+    try { sws.close(); } catch (x) {}
+  });
   // Fallback poll — only does anything while the socket is down. It's also the
   // reliable place to notice a revoked token: a WS handshake failure is opaque,
   // but a plain fetch returns the 403 outright.

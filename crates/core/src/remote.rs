@@ -53,6 +53,10 @@ pub struct Snapshot {
     /// Screen of the tab being viewed (colored HTML)
     #[serde(default)]
     pub screen_html: String,
+    /// The messages that bring a viewer who draws panes up to date: the
+    /// division of the content area, then each other pane's picture
+    #[serde(skip)]
+    pub panes: Vec<String>,
     pub desk: String,
     pub tabs: Vec<RemoteTab>,
     pub auto_enabled: bool,
@@ -303,6 +307,10 @@ struct StateClient {
     pending: Arc<AtomicUsize>,
     /// The session that opened this line (see [`FrameClient`])
     session: String,
+    /// Whether this viewer lays the content area out in panes. A laptop's
+    /// browser does; a phone shows one thing at a time and would only be
+    /// paying, in data, for pictures of panes it never draws
+    panes: bool,
 }
 
 /// What a line whose session has ended is told, just before it is let go
@@ -1050,6 +1058,23 @@ impl RemoteUi {
     /// Push one state message (a small JSON object with `ui` or `screen_html`)
     /// to every connected viewer. Drop lines whose peer has gone.
     pub fn push_state(&self, msg: String) {
+        self.push_to(msg, false);
+    }
+
+    /// Push one message about the panes -- how the content area is divided, or
+    /// what a pane that is not in front shows -- to the viewers that lay the
+    /// board out in panes. Nobody else is sent it
+    pub fn push_panes(&self, msg: String) {
+        self.push_to(msg, true);
+    }
+
+    /// Whether any viewer lays the board out in panes. When none does, the
+    /// pictures of the other panes are not even built
+    pub fn has_pane_clients(&self) -> bool {
+        self.state_clients.lock().unwrap().iter().any(|c| c.panes)
+    }
+
+    fn push_to(&self, msg: String, panes_only: bool) {
         let mut clients = self.state_clients.lock().unwrap();
         clients.retain(|c| {
             // A line whose session has ended since it opened is told so and let
@@ -1057,6 +1082,9 @@ impl RemoteUi {
             if !self.gate.granted(&c.session) {
                 let _ = c.tx.send(CUT_MESSAGE.to_string());
                 return false;
+            }
+            if panes_only && !c.panes {
+                return true;
             }
             // Counted before the send, so the writer thread -- which may drain
             // it before this line returns -- can only ever take the count back
@@ -1722,6 +1750,10 @@ fn handle(
                     .map_err(Into::into);
             }
             let accept = crate::ws::accept_key(&key);
+            let wants_panes = req
+                .url()
+                .split_once('?')
+                .is_some_and(|(_, q)| q.split('&').any(|kv| kv == "panes=1"));
             let resp = Response::empty(101).with_header(
                 Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
             );
@@ -1744,11 +1776,21 @@ fn handle(
                 if let Ok(scr) = serde_json::to_string(&snap.screen_html) {
                     seed(format!("{{\"screen_html\":{scr}}}"));
                 }
+                // The panes as they stand, for a viewer that draws them: the
+                // division and the other panes' pictures only go out when they
+                // change, and a viewer arriving between changes would otherwise
+                // see one pane and nothing beside it
+                if wants_panes {
+                    for m in &snap.panes {
+                        seed(m.clone());
+                    }
+                }
             }
             state_clients.lock().unwrap().push(StateClient {
                 tx: stx,
                 pending: Arc::clone(&pending),
                 session: session.clone(),
+                panes: wants_panes,
             });
             std::thread::spawn(move || {
                 let mut w = crate::ws::WsWriter::new(stream);
@@ -3683,6 +3725,87 @@ mod tests {
             read_text(&mut laptop_line).as_deref(),
             Some("{\"ui\":\"after\"}"),
             "巻き添えで残った端末の画面が止まった"
+        );
+        ui.shutdown();
+    }
+
+    /// A laptop that lays the board out in panes is told about the panes; a
+    /// phone, which shows one thing at a time, is not sent them.
+    ///
+    /// A browser on a laptop was handed neither the division of the content
+    /// area nor the other panes' pictures, so it drew one terminal where the
+    /// window drew four. And one that arrives between changes is seeded with
+    /// how the panes stand, or it would see nothing beside the pane in front
+    #[test]
+    fn the_panes_go_to_the_viewers_that_draw_them() {
+        let _book = crate::clients::tests::OwnBook::new();
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok-panes-00001".into(), String::new()).unwrap();
+        let hostport = ui.url.trim_start_matches("http://").split("/?").next().unwrap().to_string();
+        let base = format!("http://{hostport}");
+        ui.snapshot.lock().unwrap().panes = vec!["{\"panes\":\"seed\"}".to_string()];
+
+        let open = |cookie: &str, query: &str| {
+            let mut sock = TcpStream::connect(&hostport).unwrap();
+            sock.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+            sock.write_all(
+                format!(
+                    "GET /ws-state?t=tok-panes-00001{query} HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n\
+                     Connection: Upgrade\r\nCookie: {cookie}\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                     Sec-WebSocket-Version: 13\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            let mut head = Vec::new();
+            let mut one = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                sock.read_exact(&mut one).unwrap();
+                head.push(one[0]);
+            }
+            assert!(String::from_utf8_lossy(&head).contains("101"));
+            sock
+        };
+        let read_text = |sock: &mut TcpStream| -> Option<String> {
+            let mut hdr = [0u8; 2];
+            sock.read_exact(&mut hdr).ok()?;
+            let mut len = (hdr[1] & 0x7F) as usize;
+            if len == 126 {
+                let mut ext = [0u8; 2];
+                sock.read_exact(&mut ext).ok()?;
+                len = u16::from_be_bytes(ext) as usize;
+            }
+            let mut payload = vec![0u8; len];
+            sock.read_exact(&mut payload).ok()?;
+            Some(String::from_utf8_lossy(&payload).to_string())
+        };
+
+        let mut phone = Phone::new(&base);
+        phone.pair("tok-panes-00001");
+        let mut laptop = Phone::new(&base);
+        laptop.pair("tok-panes-00001");
+        let mut phone_line = open(&phone.cookie, "");
+        let mut laptop_line = open(&laptop.cookie, "&panes=1");
+
+        // Both are seeded with the ui and the screen; only the laptop with the panes
+        for line in [&mut phone_line, &mut laptop_line] {
+            assert!(read_text(line).is_some_and(|m| m.starts_with("{\"ui\"")));
+            assert!(read_text(line).is_some_and(|m| m.starts_with("{\"screen_html\"")));
+        }
+        assert_eq!(read_text(&mut laptop_line).as_deref(), Some("{\"panes\":\"seed\"}"), "来たばかりの端末にペインの今が渡らない");
+        // Registered once seeded; asked after the seed has arrived, not before
+        assert!(ui.has_pane_clients(), "ペインを描く端末が居るのに居ないことになっている");
+
+        ui.push_panes("{\"panes\":\"moved\"}".to_string());
+        ui.push_state("{\"ui\":\"after\"}".to_string());
+        assert_eq!(read_text(&mut laptop_line).as_deref(), Some("{\"panes\":\"moved\"}"), "ペインの変化がノートPCに届かない");
+        assert_eq!(read_text(&mut laptop_line).as_deref(), Some("{\"ui\":\"after\"}"));
+        assert_eq!(
+            read_text(&mut phone_line).as_deref(),
+            Some("{\"ui\":\"after\"}"),
+            "スマホにペインの絵が送られている"
         );
         ui.shutdown();
     }

@@ -825,6 +825,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut last_remote_ui: Option<String> = None;
     let mut last_remote_rows: Vec<String> = Vec::new();
     let mut last_remote_push = Instant::now() - Duration::from_secs(1);
+    // The panes, for the viewers from afar that lay the board out in them
+    let mut pane_relay = PaneRelay::default();
     /// How often a viewer that has said nothing is written to anyway.
     const BEAT: Duration = Duration::from_secs(3);
     // When the last heartbeat went out. A phone is only ever found to be gone
@@ -1179,6 +1181,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // Fresh server = fresh viewers; forget what the old one pushed.
                     last_remote_ui = None;
                     last_remote_rows = Vec::new();
+                    pane_relay = PaneRelay::default();
                     // Announce the INTENT (the bind hasn't landed yet); a bind
                     // failure still surfaces as a flash from the install above.
                     remote_changed = Some(if want.enabled {
@@ -1883,6 +1886,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // What the screen push last sent, so a viewer that joins now
                     // is handed the same picture the ones already here can see
                     screen_html: last_remote_rows.join("\n"),
+                    panes: if r.has_pane_clients() { pane_relay.seed() } else { Vec::new() },
                     desk: desks
                         .get(desk_index)
                         .map(|w| w.name.clone())
@@ -2708,6 +2712,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             last_remote_push = Instant::now();
                         }
                     }
+                }
+                // The division of the content area and the panes not in front,
+                // to the viewers that draw them. With none of those watching,
+                // nothing is built -- and what was said is forgotten, so the
+                // first one to arrive is told everything rather than a
+                // difference from a picture it never saw
+                if r.has_pane_clients() {
+                    for m in pane_relay.changes(&pane_layout, &surfaces, &tabs) {
+                        r.push_panes(m);
+                    }
+                } else {
+                    pane_relay = PaneRelay::default();
                 }
             }
         // The window's size can change. If we don't hand it back over, a placed
@@ -5804,6 +5820,80 @@ pub fn projects_here(desk: Option<&config::Desk>) -> Vec<crate::uistate::Project
     }
     out
 }
+/// What a viewer from afar needs to lay the board out in panes.
+///
+/// The window is handed the division of the content area and a picture of
+/// every pane that is not in front, by being called directly (see the
+/// window's `draw`). A browser on a laptop was handed neither, so it drew one
+/// terminal where the window drew four, and a split made from it split a
+/// screen it could not see. This keeps what was last said, so only what
+/// changed goes out, and can say all of it again to a viewer who just arrived.
+#[derive(Default)]
+pub struct PaneRelay {
+    layout: String,
+    /// Per pane: what its picture was built from, and the picture
+    screens: std::collections::HashMap<crate::layout::PaneId, (PictureKey, String)>,
+}
+
+/// What a pane's picture was built from: the session, how much it had
+/// written, its size and how far it was scrolled back
+type PictureKey = (usize, u64, u16, u16, usize);
+
+impl PaneRelay {
+    /// The messages that bring a viewer up to date with how things are now.
+    pub fn changes(&mut self, layout: &crate::layout::Layout, surfaces: &[Surface], tabs: &[Tab]) -> Vec<String> {
+        let mut out = Vec::new();
+        let lay = crate::view::panes_json(layout);
+        if lay != self.layout {
+            let live: std::collections::HashSet<_> = layout.leaves().into_iter().map(|(id, _)| id).collect();
+            self.screens.retain(|id, _| live.contains(id));
+            // The pane in front is drawn by the full renderer, so its copy is
+            // emptied on the page; forget it, or it would not be sent again
+            // once focus moves on
+            self.screens.remove(&layout.focus());
+            out.push(format!("{{\"panes\":{lay}}}"));
+            self.layout = lay;
+        }
+        for (id, surface) in layout.leaves() {
+            if id == layout.focus() {
+                continue;
+            }
+            let Some((i, t)) = session_at(surfaces, surface).and_then(|i| tabs.get(i).map(|t| (i, t))) else {
+                continue;
+            };
+            let (key, html) = {
+                let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+                let s = p.screen();
+                let (rows, cols) = s.size();
+                let key = (i, t.output_count(), rows, cols, s.scrollback());
+                if self.screens.get(&id).is_some_and(|(k, _)| *k == key) {
+                    continue;
+                }
+                (key, crate::shell::screen_html(s))
+            };
+            if self.screens.get(&id).map(|(_, h)| h.as_str()) != Some(html.as_str()) {
+                out.push(pane_screen_message(id, &html));
+            }
+            self.screens.insert(id, (key, html));
+        }
+        out
+    }
+
+    /// Everything, for a viewer who has only just arrived
+    pub fn seed(&self) -> Vec<String> {
+        if self.layout.is_empty() {
+            return Vec::new();
+        }
+        let mut out = vec![format!("{{\"panes\":{}}}", self.layout)];
+        out.extend(self.screens.iter().map(|(id, (_, html))| pane_screen_message(*id, html)));
+        out
+    }
+}
+
+fn pane_screen_message(id: crate::layout::PaneId, html: &str) -> String {
+    serde_json::json!({ "panescreen": { "id": id, "html": html } }).to_string()
+}
+
 /// Looks up a session's location from its screen number (1-based)
 /// The surface a screen number stands for. Numbers are 1-based; 0 is no
 /// surface at all -- a pane with nothing in it yet
@@ -7551,6 +7641,40 @@ mod tests {
             value: value.into(),
             xpath,
             hint: hint.into(),
+        }
+    }
+
+    /// A viewer from afar is told the division once, each other pane's picture
+    /// when it changes, and all of it again when it has only just arrived.
+    #[test]
+    fn a_viewer_from_afar_is_told_about_the_panes() {
+        let opts = tab::TabOptions { cwd: Some(std::env::temp_dir()), ..Default::default() };
+        let mut tabs = vec![
+            Tab::spawn("a".into(), &[crate::test_shell()], None, 10, 40, opts.clone()).unwrap(),
+            Tab::spawn("b".into(), &[crate::test_shell()], None, 10, 40, opts).unwrap(),
+        ];
+        let surfaces = vec![Surface::Session(0), Surface::Session(1)];
+        let mut layout = crate::layout::Layout::single(1);
+        let mut relay = PaneRelay::default();
+
+        // Undivided: the division, and no other pane to picture
+        let first = relay.changes(&layout, &surfaces, &tabs);
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert!(first[0].starts_with("{\"panes\":"));
+        assert!(relay.changes(&layout, &surfaces, &tabs).is_empty(), "変わっていないのに送っている");
+
+        // Divided: the new division, and a picture of the pane left behind
+        layout.split(crate::layout::Dir::Row, 2);
+        let split = relay.changes(&layout, &surfaces, &tabs);
+        assert!(split[0].starts_with("{\"panes\":"), "{split:?}");
+        assert_eq!(split.iter().filter(|m| m.contains("\"panescreen\"")).count(), 1, "{split:?}");
+        assert!(relay.changes(&layout, &surfaces, &tabs).is_empty(), "同じ絵をもう一度送っている");
+
+        // A viewer who just arrived is told all of it
+        let seed = relay.seed();
+        assert_eq!(seed.len(), 2, "{seed:?}");
+        for t in tabs.iter_mut() {
+            t.kill();
         }
     }
 
