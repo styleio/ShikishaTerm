@@ -356,6 +356,7 @@
   "prompt.password.set_note": "secretsファイルを暗号化します（Argon2id + AES-GCM）",
   "prompt.password.keys": "Enter: 確定 / Esc: キャンセル",
   "prompt.password.skipped": "secretsを復号せずに起動しました（通知は使えません）",
+  "prompt.password.wrong": "マスターパスワードが違います。secrets を開かずに起動しました（通知は使えません）",
   "settings.title": "SHIKISHA-TERM 設定",
   "settings.global": "全体設定",
   "settings.sec.basic": "基本",

@@ -504,6 +504,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             .map(|t| crypto::is_encrypted(&t))
             .unwrap_or(false)
         {
+            let mut refused = false;
             for attempt in 1..=3 {
                 let note = if attempt == 1 {
                     i18n::t("prompt.password.note")
@@ -519,8 +520,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .unwrap_or(false);
                         if ok {
                             password = Some(pw);
+                            refused = false;
                             break;
                         }
+                        refused = true;
                     }
                     // On cancel, continue without secrets (only notifications become unusable)
                     None => {
@@ -529,6 +532,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         break;
                     }
                 }
+            }
+            // A password was given and it was not the one. Said as that: a
+            // service handed a wrong credential otherwise came up saying only
+            // that "a master password is required", which reads as though none
+            // had arrived and sends somebody to check the wrong thing
+            if refused {
+                startup_errors.push(i18n::t("prompt.password.wrong"));
             }
         }
 
@@ -830,7 +840,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The board flashes only the first of these, and a flash fades. Every one
     // of them goes to the log as well, so that a script that never ran can be
     // told apart, afterwards, from a script that ran and did nothing
-    for e in &startup_errors {
+    // Once each: two readers of one locked store both say it is locked, and the
+    // same sentence twice reads like two problems
+    let mut said_already = std::collections::HashSet::new();
+    for e in startup_errors.iter().filter(|e| said_already.insert(e.as_str())) {
         append_hook_log(&format!("Startup: {e}"));
     }
     let mut flash: Option<String> = startup_errors

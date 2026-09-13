@@ -366,6 +366,7 @@
   "prompt.password.set_note": "The secrets file will be encrypted (Argon2id + AES-GCM)",
   "prompt.password.keys": "Enter: confirm / Esc: cancel",
   "prompt.password.skipped": "Started without decrypting secrets (notifications are unavailable)",
+  "prompt.password.wrong": "The master password is wrong. Started without opening the secrets (notifications are unavailable).",
   "settings.title": "SHIKISHA-TERM Settings",
   "settings.global": "General",
   "settings.sec.basic": "Basic",
