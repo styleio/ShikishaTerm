@@ -8,7 +8,7 @@ serde_json = { version = "1.0.151", features = ["preserve_order"] }
 
 [package]
 name = "shikisha-term"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 description = "Run Claude Code, Codex and Gemini side by side and let them hand work to each other. A portable terminal for orchestrating AI CLIs on Windows."
 authors = ["styleio"]

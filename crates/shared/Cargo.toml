@@ -1,6 +1,6 @@
 [package]
 name = "shikisha-shared"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 description = "The words the runtime and its shell say to each other."
 license = "MIT"
