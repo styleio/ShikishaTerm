@@ -227,36 +227,18 @@ pub struct Config {
     /// actually in.
     #[serde(default)]
     pub side_bar_width: Option<u16>,
-    /// Registered notification destinations (Lua can only send to destinations registered here).
-    /// Recommended to keep tokens separated out in secrets.json (gitignored)
-    #[serde(default)]
-    pub notify: std::collections::HashMap<String, crate::notify::Destination>,
-    /// The destination `shikisha.notify(text)` reaches when none is named —
-    /// like the default assistant AI, but for notifications. Unset with
-    /// exactly one destination configured, that one serves as the primary
-    #[serde(default)]
-    pub primary_notify: Option<String>,
-    /// Load secrets such as notification destinations from a separate file (e.g. "secrets.json")
+    // Where notifications go, the model connections, the automation doors, who
+    // may run what, and what git does are not here: each belongs to a desk
+    // (see `DeskConfig`), whole, with nothing of the app's underneath. An app
+    // answer a desk inherits until somebody unticks it is the one that sends
+    // work's code to a personal account on the day nobody thought to look
+    /// Load secrets from a separate file (e.g. "secrets.json")
     #[serde(default)]
     pub secrets: Option<String>,
     /// The AI that writes automation code ("claude" / "codex" / "gemini").
     /// Uses whichever is found if empty
     #[serde(default)]
     pub ai_engine: Option<String>,
-    /// Capabilities granted to automation (file/HTTP). Default is empty = nothing allowed.
-    /// Not editable from the GUI since this is an advanced feature
-    #[serde(default)]
-    pub capabilities: crate::caps::CapabilitySpec,
-    /// The git panel's "have the AI write it" button
-    #[serde(default)]
-    pub git: GitSpec,
-    /// Who may call which automation command: the person's own automation, an
-    /// AI, or both. Only the rows somebody changed are written here -- every
-    /// other command answers from the defaults in `grants.rs`, so a command
-    /// added after this file was written arrives with the answer its author
-    /// chose rather than with whatever an old file happened to say
-    #[serde(default)]
-    pub automation_permissions: crate::grants::GrantSpec,
     /// Remote UI viewable from a phone etc. Disabled by default.
     ///
     /// App-wide, and deliberately so. Every part of it describes one server on
@@ -334,11 +316,6 @@ pub struct Config {
     /// Uses cast_keys_default() when omitted
     #[serde(default)]
     pub cast_keys: Option<Vec<String>>,
-    /// Connection info for the model bridge (OpenAI-compatible API). name -> {base_url, api_key, headers}.
-    /// The bridge that lets discussions and browser operation use cheap/local models (DeepSeek/Qwen/Ollama etc).
-    /// A `model <name>/<model>` tab looks this up when it launches
-    #[serde(default)]
-    pub providers: std::collections::HashMap<String, ProviderSpec>,
 }
 
 /// Connection info for an OpenAI-compatible API (DeepSeek cloud / Ollama local / OpenRouter / Azure etc).
@@ -857,10 +834,11 @@ impl Place {
 pub fn orphan_secrets(cfg: &Config, keys: &[String]) -> Vec<String> {
     let (spaces, _) = cfg.resolve_desks();
     // A destination keeps its token as "@name". Two fields carry one, and
-    // the rest of the destinations have nothing to keep
-    let refs: std::collections::HashSet<String> = cfg
-        .notify
-        .values()
+    // the rest of the destinations have nothing to keep. Every desk's, since
+    // each keeps its own
+    let refs: std::collections::HashSet<String> = spaces
+        .iter()
+        .flat_map(|s| s.notify.values())
         .flat_map(|d| match d {
             crate::notify::Destination::Slack { webhook }
             | crate::notify::Destination::Discord { webhook } => vec![webhook.clone()],
@@ -872,10 +850,14 @@ pub fn orphan_secrets(cfg: &Config, keys: &[String]) -> Vec<String> {
     keys.iter()
         .filter(|k| {
             let k = k.as_str();
-            if let Some(name) = k.strip_prefix("provider/") {
-                return !cfg.providers.contains_key(name);
+            // provider/<desk>/<name>
+            if let Some(rest) = k.strip_prefix("provider/") {
+                let Some((desk, name)) = rest.split_once('/') else {
+                    return false;
+                };
+                return !spaces.iter().any(|s| s.id == desk && s.providers.contains_key(name));
             }
-            if k.starts_with("notify/") || k.starts_with("notify_") {
+            if k.starts_with("notify/") {
                 return !refs.contains(k);
             }
             if let Some(rest) = k.strip_prefix("ssh/") {
@@ -1001,8 +983,6 @@ impl SecretMeta {
 /// secrets.json: a file holding only credentials, kept separate (never share)
 #[derive(Debug, Deserialize, Default)]
 pub struct Secrets {
-    #[serde(default)]
-    pub notify: std::collections::HashMap<String, crate::notify::Destination>,
     /// Auth info used by the HTTP gateway (not readable from scripts)
     #[serde(default)]
     pub tokens: std::collections::HashMap<String, String>,
@@ -1019,53 +999,18 @@ pub struct Secrets {
 }
 
 impl Config {
-    /// Merge the secrets file's contents into config.json's notify
-    /// (secrets wins on name collision). secrets may be encrypted
-    pub fn resolve_notify(
-        &self,
-        password: Option<&str>,
-    ) -> (
-        std::collections::HashMap<String, crate::notify::Destination>,
-        Option<String>,
-    ) {
-        let mut map = self.notify.clone();
-        let mut tokens: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        let mut err = None;
-        if let Some(path) = self.secrets_path().filter(|p| p.exists()) {
-            match crate::crypto::read_maybe_encrypted(&path, password).and_then(|t| {
+    /// What is wrong with the secrets file, if it cannot be read. The readers
+    /// below treat a file they cannot open as empty, which is right for them
+    /// and silent for the person -- this is the part that says so
+    pub fn secrets_problem(&self, password: Option<&str>) -> Option<String> {
+        let path = self.secrets_path().filter(|p| p.exists())?;
+        crate::crypto::read_maybe_encrypted(&path, password)
+            .and_then(|t| {
                 serde_json::from_str::<Secrets>(&t)
                     .with_context(|| crate::i18n::t("err.config.secrets_json_invalid"))
-            }) {
-                Ok(s) => {
-                    map.extend(s.notify);
-                    tokens = s.tokens;
-                }
-                Err(e) => err = Some(format!("secrets: {e:#}")),
-            }
-        }
-        // A "@name" webhook/token is expanded from the tokens store, so the
-        // sensitive value stays encrypted in secrets.json rather than sitting in
-        // config.json (same convention as a provider's api_key).
-        let deref = |v: &str| -> String {
-            match v.strip_prefix('@') {
-                Some(k) => tokens.get(k).cloned().unwrap_or_default(),
-                None => v.to_string(),
-            }
-        };
-        for d in map.values_mut() {
-            match d {
-                crate::notify::Destination::Slack { webhook }
-                | crate::notify::Destination::Discord { webhook } => *webhook = deref(webhook),
-                crate::notify::Destination::Telegram { token, chat_id } => {
-                    *token = deref(token);
-                    *chat_id = deref(chat_id);
-                }
-                // Nothing to keep secret: neither has an address or an account.
-                crate::notify::Destination::Windows {}
-                | crate::notify::Destination::Phone {} => {}
-            }
-        }
-        (map, err)
+            })
+            .err()
+            .map(|e| format!("secrets: {e:#}"))
     }
 
     /// Path to the secrets file. A relative path is resolved next to config.json.
@@ -1122,44 +1067,6 @@ impl Config {
         list_secrets(&path, password)
             .map(|list| list.into_iter().collect())
             .unwrap_or_default()
-    }
-
-    /// Resolve connection info from a provider name. Returns (base_url, outgoing headers).
-    /// An "@name" inside a value is expanded from secrets.json's tokens.
-    /// If headers is unset and api_key is present, builds an Authorization: Bearer header.
-    /// This is passed into the model bridge child process's env (key decryption happens only here, in the parent)
-    pub fn resolve_provider(
-        &self,
-        name: &str,
-        password: Option<&str>,
-    ) -> Option<ProviderConn> {
-        let p = self.providers.get(name)?;
-        if p.base_url.trim().is_empty() {
-            return None;
-        }
-        let tokens = self.resolve_tokens(password);
-        let deref = |v: &str| -> String {
-            match v.strip_prefix('@') {
-                Some(k) => tokens.get(k).cloned().unwrap_or_default(),
-                None => v.to_string(),
-            }
-        };
-        let mut headers = std::collections::HashMap::new();
-        if !p.headers.is_empty() {
-            for (k, v) in &p.headers {
-                headers.insert(k.clone(), deref(v));
-            }
-        } else if let Some(key) = p.api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            headers.insert("Authorization".into(), format!("Bearer {}", deref(key)));
-        }
-        Some(ProviderConn {
-            url: p.base_url.trim().to_string(),
-            headers,
-            timeout: match p.timeout_sec.unwrap_or(PROVIDER_TIMEOUT_DEFAULT_SEC) {
-                0 => None,
-                secs => Some(std::time::Duration::from_secs(secs)),
-            },
-        })
     }
 }
 
@@ -1540,60 +1447,48 @@ pub struct DeskSpec {
     #[serde(default)]
     pub discuss: Option<DiscussSpec>,
 
-    /// The notification destinations this desk can reach, out of the ones
-    /// registered app-wide. Absent means every one of them, which is what a
-    /// desk that has never been asked the question says.
-    ///
-    /// Here because the destinations are the one setting where sharing the
-    /// app's answer is itself the accident: work's AI finishing its task and
-    /// the message arriving in a personal chat is not a preference anybody can
-    /// hold, and no amount of care when writing the script prevents it
+    // Everything below is this desk's alone. There is no app answer behind any
+    // of it: a desk that registered no notification destination reaches none,
+    // and one that registered no model connection launches no model tab. The
+    // desks exist to keep two accounts apart, and an answer inherited from the
+    // app until somebody thinks to untick it is the one that walks across
+
+    /// Notification destinations (Lua can only send to destinations registered
+    /// here). A value written `@name` is read from the secret store, so a
+    /// webhook is not kept in the settings file in the clear
     #[serde(default)]
-    pub notify: Option<Vec<String>>,
-    /// The destination an unnamed `shikisha.notify(text)` reaches from this
-    /// desk. Absent means the app's own answer
+    pub notify: std::collections::HashMap<String, crate::notify::Destination>,
+    /// The destination an unnamed `shikisha.notify(text)` reaches. Unset with
+    /// exactly one destination registered, that one serves
     #[serde(default)]
     pub primary_notify: Option<String>,
-    /// The model connections (`model <name>/<model>`) this desk can use,
-    /// out of the ones registered app-wide. Absent means every one of them.
-    ///
-    /// The connection carries the account the inference is billed to and the
-    /// account the text is handed to, so sharing one between work and private
-    /// work is the accident rather than a convenience: a tab here naming the
-    /// other side's connection would send this repository's code to it and be
-    /// obeyed
+    /// Model connections (OpenAI-compatible APIs): name -> {base_url, api_key,
+    /// headers}. A `model <name>/<model>` tab here looks its name up in this
+    /// list and nowhere else -- the account behind a connection is billed for
+    /// the work and handed the code
     #[serde(default)]
-    pub providers: Option<Vec<String>>,
+    pub providers: std::collections::HashMap<String, ProviderSpec>,
     /// What automation running here may reach outside the terminal: the named
     /// file and HTTP gateways, and the folders and hosts raw paths are allowed
-    /// in. Absent means the app's own answer.
-    ///
-    /// A gateway is a door with a token already attached, and a folder in
-    /// `allow_dirs` is a folder a script here can read. One set of doors for
-    /// every desk means the script in the private desk has the
-    /// company's doors, which is the whole accident
+    /// in. Empty means nothing
     #[serde(default)]
-    pub capabilities: Option<crate::caps::CapabilitySpec>,
-    /// Who may call which automation command here: this desk's table, or
-    /// the app's when it has none.
-    ///
-    /// Its own table rather than its own rows on top of the app's, because a
-    /// table of who-may-do-what read from two places cannot be read at all: the
-    /// row somebody did not think to look in the other place for is exactly the
-    /// one that matters. Rows still absent from the table answer from the
-    /// defaults in `grants.rs`, the same as always
+    pub capabilities: crate::caps::CapabilitySpec,
+    /// Who may call which automation command here. Only the rows somebody
+    /// changed are written; every other command answers from the defaults in
+    /// `grants.rs`, so a command added later arrives with the answer its
+    /// author chose
     #[serde(default)]
-    pub automation_permissions: Option<crate::grants::GrantSpec>,
+    pub automation_permissions: crate::grants::GrantSpec,
     /// What git does here: the branches a commit refuses to land on for the
     /// folders that have not said otherwise, and how the commit message is
-    /// written. Absent means the app's own answer.
+    /// written.
     ///
     /// The token is not here. Which account reaches GitHub from this desk
     /// is the secret `<desk>.github` (see [`GITHUB_SECRET`]) -- a value
     /// belongs in the secret store, and the store already files one per
     /// desk
     #[serde(default)]
-    pub git: Option<GitSpec>,
+    pub git: GitSpec,
 }
 
 /// The name this desk's GitHub token is filed under, inside the desk's
@@ -2189,27 +2084,91 @@ pub struct Desk {
     pub stops: Vec<StopCond>,
     /// AI-vs-AI discussion settings
     pub discuss: Option<DiscussSpec>,
-    /// The notification destinations reachable from here. Already the whole
-    /// answer: a list is this desk's own, and `None` is "every registered
-    /// one", which is what the app says for a desk that named none. The
-    /// notifier is never told which of the two it was handed
-    pub notify: Option<Vec<String>>,
-    /// The destination an unnamed notify reaches from here, settled the same
-    /// way -- this desk's, or the app's when it can be reached from here
+    /// This desk's notification destinations, as written: an `@name` value is
+    /// still a name here, read from the store when the desk is handed over
+    /// (see [`desk_notify`])
+    pub notify: std::collections::HashMap<String, crate::notify::Destination>,
+    /// Where an unnamed notify goes from here
     pub primary_notify: Option<String>,
-    /// The model connections usable from here. Already the whole answer: a list
-    /// is this desk's own, and `None` is "every registered one"
-    pub providers: Option<Vec<String>>,
-    /// What automation running here may reach outside the terminal. Already the
-    /// whole answer -- this desk's doors, or the app's for a desk that
-    /// named none -- so nothing downstream asks twice
+    /// This desk's model connections, as written (see [`desk_providers`])
+    pub providers: std::collections::HashMap<String, ProviderSpec>,
+    /// What automation running here may reach outside the terminal
     pub capabilities: crate::caps::CapabilitySpec,
-    /// Who may call which automation command here, settled the same way. Rows it
-    /// does not mention answer from the defaults in `grants.rs`
+    /// Who may call which automation command here. Rows it does not mention
+    /// answer from the defaults in `grants.rs`
     pub automation_permissions: crate::grants::GrantSpec,
-    /// What git does here, settled the same way. Its `protect` has already been
-    /// handed to the folders, which is where anything asks about it
+    /// What git does here. Its `protect` has already been handed to the
+    /// folders, which is where anything asks about it
     pub git: GitSpec,
+}
+
+/// A value that may be written `@name`: the secret by that name, or the value
+/// itself. A name with nothing stored under it is empty, which the far end
+/// refuses in its own words rather than being handed something invented
+fn deref_secret(v: &str, look: &dyn Fn(&str) -> Option<String>) -> String {
+    match v.strip_prefix('@') {
+        Some(k) => look(k).unwrap_or_default(),
+        None => v.to_string(),
+    }
+}
+
+/// This desk's notification destinations, with every `@name` read from the
+/// secret store. `look` is the store's own door
+pub fn desk_notify(
+    desk: &Desk,
+    look: &dyn Fn(&str) -> Option<String>,
+) -> std::collections::HashMap<String, crate::notify::Destination> {
+    let mut map = desk.notify.clone();
+    for d in map.values_mut() {
+        match d {
+            crate::notify::Destination::Slack { webhook }
+            | crate::notify::Destination::Discord { webhook } => *webhook = deref_secret(webhook, look),
+            crate::notify::Destination::Telegram { token, chat_id } => {
+                *token = deref_secret(token, look);
+                *chat_id = deref_secret(chat_id, look);
+            }
+            // Nothing to keep secret: neither has an address or an account.
+            crate::notify::Destination::Windows {} | crate::notify::Destination::Phone {} => {}
+        }
+    }
+    map
+}
+
+/// This desk's model connections, resolved into what one request needs.
+/// A connection with no address is left out: there is nothing to ask
+pub fn desk_providers(
+    desk: &Desk,
+    look: &dyn Fn(&str) -> Option<String>,
+) -> std::collections::HashMap<String, ProviderConn> {
+    desk.providers
+        .iter()
+        .filter_map(|(name, p)| provider_conn(p, look).map(|c| (name.clone(), c)))
+        .collect()
+}
+
+/// One connection resolved. If `headers` is unset and there is an api_key, it
+/// becomes an `Authorization: Bearer` header. Key decryption happens only here,
+/// in the program -- a model tab's process is handed the result
+pub fn provider_conn(p: &ProviderSpec, look: &dyn Fn(&str) -> Option<String>) -> Option<ProviderConn> {
+    if p.base_url.trim().is_empty() {
+        return None;
+    }
+    let mut headers = std::collections::HashMap::new();
+    if !p.headers.is_empty() {
+        for (k, v) in &p.headers {
+            headers.insert(k.clone(), deref_secret(v, look));
+        }
+    } else if let Some(key) = p.api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        headers.insert("Authorization".into(), format!("Bearer {}", deref_secret(key, look)));
+    }
+    Some(ProviderConn {
+        url: p.base_url.trim().to_string(),
+        headers,
+        timeout: match p.timeout_sec.unwrap_or(PROVIDER_TIMEOUT_DEFAULT_SEC) {
+            0 => None,
+            secs => Some(std::time::Duration::from_secs(secs)),
+        },
+    })
 }
 
 impl Desk {
@@ -2641,41 +2600,10 @@ fn resolve_folders(
     (folders, tabs, moved)
 }
 
-/// Where this desk's notifications can go, and where an unnamed one goes.
-///
-/// Settled here, once, the same way a folder's protected branches are: what the
-/// desk said, or what the app said for the desks that said nothing.
-///
-/// The app's own default destination is only inherited when this desk can
-/// reach it. A desk that has listed its own destinations has drawn a line,
-/// and quietly leaving the app's personal chat as the one an unnamed
-/// `notify(text)` lands in would walk straight back across it -- so when the
-/// line excludes it, this desk has no default and says so, rather than
-/// having one it cannot use
-fn settle_notify(
-    own: Option<&Vec<String>>,
-    own_primary: Option<&String>,
-    app_primary: Option<&String>,
-) -> (Option<Vec<String>>, Option<String>) {
-    let only = named(own);
-    let reachable = |n: &String| only.as_ref().is_none_or(|l| l.contains(n));
-    let primary = own_primary
-        .and_then(|s| one_name(s))
-        .or_else(|| app_primary.and_then(|s| one_name(s)).filter(reachable));
-    (only, primary)
-}
-
 /// A name with the spaces taken off, or nothing when that leaves nothing.
 fn one_name(s: &str) -> Option<String> {
     let t = s.trim().to_string();
     (!t.is_empty()).then_some(t)
-}
-
-/// A list of names a desk drew around something, settled: blank entries
-/// dropped, and `None` kept as `None` -- an empty list is "nothing", which is a
-/// different answer from "whatever the app says"
-fn named(list: Option<&Vec<String>>) -> Option<Vec<String>> {
-    list.map(|l| l.iter().filter_map(|s| one_name(s)).collect())
 }
 
 /// A byte-order mark is not JSON.
@@ -3232,8 +3160,9 @@ impl Config {
             // Tabs written the old way, with no folder around them, are still
             // a screenful of work somebody arranged
             if !self.folders.is_empty() || !self.tabs.is_empty() {
+                let git = GitSpec::default();
                 let (folders, tabs, moved) =
-                    resolve_folders(&foldered_with(&self.folders, &self.tabs), &self.git.protected(), &self.hosts);
+                    resolve_folders(&foldered_with(&self.folders, &self.tabs), &git.protected(), &self.hosts);
                 errors.extend(moved_note("DEFAULT", &moved));
                 out.push(Desk {
                     name: "DEFAULT".into(),
@@ -3246,14 +3175,14 @@ impl Config {
                     secrets_allow_all: false,
                     stops: Vec::new(),
                     discuss: None,
-                    // Nothing has drawn a line, so the app's own answer is the
-                    // whole answer
-                    notify: None,
-                    primary_notify: self.primary_notify.clone(),
-                    providers: None,
-                    capabilities: self.capabilities.clone(),
-                    automation_permissions: self.automation_permissions.clone(),
-                    git: self.git.clone(),
+                    // A screenful written before desks existed has nothing of
+                    // its own registered, and there is no app answer to lend it
+                    notify: Default::default(),
+                    primary_notify: None,
+                    providers: Default::default(),
+                    capabilities: Default::default(),
+                    automation_permissions: Default::default(),
+                    git,
                 });
             }
             return (out, errors);
@@ -3292,10 +3221,10 @@ impl Config {
                     None,
                 ),
             };
-            // This desk's git settings, or the app's. Its protected branches
-            // go to the folders here, so a folder still has the one answer it
-            // has always had -- its own, or the one handed down to it
-            let git = desk.git.clone().unwrap_or_else(|| self.git.clone());
+            // This desk's git settings. Its protected branches go to the
+            // folders here, so a folder still has the one answer it has always
+            // had -- its own, or the one handed down to it by its desk
+            let git = desk.git.clone();
             let (folders, tabs, moved) = resolve_folders(&folder_defs, &git.protected(), &self.hosts);
             // Prefer the display name from config; fall back to the definition file's name if empty
             let name = if desk.name.is_empty() {
@@ -3304,11 +3233,6 @@ impl Config {
                 desk.name.clone()
             };
             errors.extend(moved_note(&name, &moved));
-            let (notify_only, notify_primary) = settle_notify(
-                desk.notify.as_ref(),
-                desk.primary_notify.as_ref(),
-                self.primary_notify.as_ref(),
-            );
             out.push(Desk {
                 name,
                 id: desk.id.clone().unwrap_or_default(),
@@ -3327,17 +3251,11 @@ impl Config {
                 // Prefer config's setting; fall back to the definition file's if absent
                 stops: if desk.stops.is_empty() { file_stops } else { desk.stops.clone() },
                 discuss: desk.discuss.clone().or(file_discuss),
-                notify: notify_only,
-                primary_notify: notify_primary,
-                providers: named(desk.providers.as_ref()),
-                capabilities: desk
-                    .capabilities
-                    .clone()
-                    .unwrap_or_else(|| self.capabilities.clone()),
-                automation_permissions: desk
-                    .automation_permissions
-                    .clone()
-                    .unwrap_or_else(|| self.automation_permissions.clone()),
+                notify: desk.notify.clone(),
+                primary_notify: desk.primary_notify.as_deref().and_then(one_name),
+                providers: desk.providers.clone(),
+                capabilities: desk.capabilities.clone(),
+                automation_permissions: desk.automation_permissions.clone(),
                 git,
             });
         }
@@ -3967,7 +3885,7 @@ mod tests {
     /// guard off everywhere, and a team that shares `develop` says so on the
     /// one folder that works that way.
     #[test]
-    fn a_folder_guards_what_it_says_or_what_the_app_says() {
+    fn a_folder_guards_what_it_says_or_what_its_desk_says() {
         let read = |json: &str| {
             let cfg: Config = serde_json::from_str(json).expect("設定として読める");
             let (desk, _) = cfg.resolve_desks();
@@ -3984,21 +3902,21 @@ mod tests {
         let plain = read(r#"{"desks":[{"name":"W","folders":[{"cwd":"D:/a","tabs":[]}]}]}"#);
         assert_eq!(plain[0], vec!["main".to_string(), "master".to_string()]);
 
-        // The app-wide answer reaches the folders that have not given one, and
+        // The desk's answer reaches the folders that have not given one, and
         // the folder that has keeps its own
         let mixed = read(
-            r#"{"git":{"protect":["develop"]},"desks":[{"name":"W","folders":[
+            r#"{"desks":[{"name":"W","git":{"protect":["develop"]},"folders":[
                 {"cwd":"D:/a","tabs":[]},
                 {"cwd":"D:/b","protect":["release/*"," "],"tabs":[]},
                 {"cwd":"D:/c","protect":[],"tabs":[]}]}]}"#,
         );
-        assert_eq!(mixed[0], vec!["develop".to_string()], "言わなければアプリの答え");
+        assert_eq!(mixed[0], vec!["develop".to_string()], "言わなければデスクの答え");
         assert_eq!(mixed[1], vec!["release/*".to_string()], "言えばそのとおり（空白は名前ではない）");
         assert!(mixed[2].is_empty(), "空の一覧は「何も守らない」という答え");
 
-        // Alone on your own repository: nothing is guarded anywhere
+        // Alone on your own repository: nothing is guarded anywhere in the desk
         let alone = read(
-            r#"{"git":{"protect":[]},"desks":[{"name":"W","folders":[{"cwd":"D:/a","tabs":[]}]}]}"#,
+            r#"{"desks":[{"name":"W","git":{"protect":[]},"folders":[{"cwd":"D:/a","tabs":[]}]}]}"#,
         );
         assert!(alone[0].is_empty());
     }
@@ -4015,16 +3933,12 @@ mod tests {
     #[test]
     fn the_wait_for_a_reply_is_settable_and_zero_means_forever() {
         let resolved = |secs: Option<u64>| {
-            let mut cfg = Config::default();
-            cfg.providers.insert(
-                "p".into(),
-                ProviderSpec {
-                    base_url: "http://localhost:11434/v1".into(),
-                    timeout_sec: secs,
-                    ..Default::default()
-                },
-            );
-            cfg.resolve_provider("p", None).expect("解決できる").timeout
+            let spec = ProviderSpec {
+                base_url: "http://localhost:11434/v1".into(),
+                timeout_sec: secs,
+                ..Default::default()
+            };
+            provider_conn(&spec, &|_| None).expect("解決できる").timeout
         };
         assert_eq!(
             resolved(None),
@@ -4405,142 +4319,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Where a desk's notifications go is settled at launch, once.
+    /// Each desk has its own notification destinations, model connections,
+    /// automation doors, permission table and git settings -- and nothing of
+    /// anybody else's underneath.
     ///
-    /// Two things are being checked, and the second is the one that matters: a
-    /// desk that has drawn its own line does not keep the app's default
-    /// destination underneath it. A company desk listing only the company
-    /// chat, with the app's default still pointing at a personal one, would
-    /// otherwise send every unnamed notification exactly where the line was
-    /// drawn to stop it going.
+    /// The same keys written at the top of the file, where the app's own
+    /// answer used to live, reach no desk at all: an answer a desk inherits
+    /// until somebody thinks to take it away is how work's code ends up in a
+    /// personal account.
     #[test]
-    fn a_desk_says_where_its_notifications_go() {
+    fn a_desk_has_its_own_and_nothing_of_the_apps() {
         let cfg: Config = serde_json::from_str(
             r#"{
                 "primary_notify": "mine",
-                "notify": {
-                  "mine": {"type":"slack","webhook":"https://example.com/a"},
-                  "work": {"type":"slack","webhook":"https://example.com/b"}
-                },
+                "notify": {"mine": {"type":"slack","webhook":"https://example.com/a"}},
                 "providers": {"mine": {"base_url":"http://localhost:11434/v1"}},
-                "desks": [
-                  {"name":"個人"},
-                  {"name":"会社", "notify":["work"]},
-                  {"name":"会社2", "notify":["work"], "primary_notify":"work"},
-                  {"name":"どちらも", "primary_notify":"work",
-                   "providers":["mine", "  ", "work-azure"]}
-                ]
-              }"#,
-        )
-        .unwrap();
-        let (spaces, errs) = cfg.resolve_desks();
-        assert!(errs.is_empty(), "{errs:?}");
-        let at = |i: usize| (spaces[i].notify.clone(), spaces[i].primary_notify.clone());
-
-        // Said nothing: the app's answer, whole
-        assert_eq!(at(0), (None, Some("mine".into())));
-        // Drew a line that excludes the app's default: no default, not a
-        // default it is not allowed to use
-        assert_eq!(at(1), (Some(vec!["work".into()]), None));
-        // Drew a line and named its own
-        assert_eq!(at(2), (Some(vec!["work".into()]), Some("work".into())));
-        // Named its own without drawing a line
-        assert_eq!(at(3), (None, Some("work".into())));
-
-        // Model connections are settled the same way, and a blank entry is not
-        // a connection
-        assert_eq!(spaces[0].providers, None, "誰も線を引いていないのに絞られている");
-        assert_eq!(
-            spaces[3].providers,
-            Some(vec!["mine".to_string(), "work-azure".to_string()])
-        );
-    }
-
-    /// The doors in front of a script are the desk's, or the app's.
-    ///
-    /// Not both: a gateway carries a token already attached, so a desk that
-    /// has written its own must not also keep the app's -- the door it was
-    /// trying not to have is exactly the one that would stay open.
-    #[test]
-    fn a_desk_says_what_its_automation_can_reach() {
-        let cfg: Config = serde_json::from_str(
-            r#"{
-                "capabilities": {
-                  "files": {"shared": {"dir": "C:/shared", "read": true}},
-                  "allow_hosts": ["example.com"]
-                },
-                "desks": [
-                  {"name":"ふつう"},
-                  {"name":"会社", "capabilities": {"files": {"books": {"dir": "C:/books", "write": true}}}}
-                ]
-              }"#,
-        )
-        .unwrap();
-        let (spaces, errs) = cfg.resolve_desks();
-        assert!(errs.is_empty(), "{errs:?}");
-
-        // Said nothing: the app's doors, whole
-        let heard = &spaces[0].capabilities;
-        assert_eq!(heard.files.keys().collect::<Vec<_>>(), vec!["shared"]);
-        assert_eq!(heard.allow_hosts, vec!["example.com".to_string()]);
-
-        // Said its own: only its own
-        let own = &spaces[1].capabilities;
-        assert_eq!(own.files.keys().collect::<Vec<_>>(), vec!["books"]);
-        assert!(own.allow_hosts.is_empty(), "アプリ側の生URL許可が残っている");
-        assert!(!own.files.contains_key("shared"), "アプリ側の窓口が残っている");
-    }
-
-    /// Who may run what is the desk's table, or the app's -- never halves
-    /// of both.
-    ///
-    /// A row read from two places is a row nobody can read: the one somebody did
-    /// not think to look in the other place for is the one that matters. Rows
-    /// neither table mentions still answer from the defaults in `grants.rs`,
-    /// which is what lets a command added next month arrive with the answer its
-    /// author chose.
-    #[test]
-    fn a_desk_says_who_may_run_what() {
-        let cfg: Config = serde_json::from_str(
-            r#"{
+                "capabilities": {"allow_hosts": ["example.com"]},
                 "automation_permissions": {"lua": {"ai": true}},
-                "desks": [
-                  {"name":"ふつう"},
-                  {"name":"会社", "automation_permissions": {"write_path": {"ai": false}}},
-                  {"name":"素のまま", "automation_permissions": {}}
-                ]
-              }"#,
-        )
-        .unwrap();
-        let (spaces, errs) = cfg.resolve_desks();
-        assert!(errs.is_empty(), "{errs:?}");
-        let allows = |at: usize, name: &str| {
-            crate::grants::Grants::new(spaces[at].automation_permissions.clone())
-                .allows(name, crate::grants::Subject::Ai)
-        };
-        // Said nothing: the app's table, whole
-        assert!(allows(0, "lua"), "アプリ側の表が効いていない");
-        // Said its own: its own alone, with the app's loosening gone
-        assert!(!allows(1, "lua"), "アプリ側で開けた行が残っている");
-        // An empty table of its own is a real answer: the standard answers
-        assert!(!allows(2, "lua"));
-        assert!(spaces[2].automation_permissions.is_empty());
-    }
-
-    /// What git does here is the desk's, and its folders hear about it.
-    ///
-    /// The protected branches are the part with a third level under it: a folder
-    /// may have its own, and the ones that do not take the desk's. Checked
-    /// through the folders rather than through the spec, because the folder is
-    /// where everything downstream asks
-    #[test]
-    fn a_desk_says_what_git_does_here() {
-        let cfg: Config = serde_json::from_str(
-            r#"{
                 "git": {"protect": ["main"], "message_hint": "アプリの言い分"},
                 "desks": [
-                  {"name":"ふつう", "folders":[{"cwd":"."}]},
-                  {"name":"会社", "git": {"protect": ["main", "release/*"]},
+                  {"name":"個人", "folders":[{"cwd":"."}]},
+                  {"name":"会社",
+                   "notify": {"work": {"type":"slack","webhook":"@notify/kaisha/work"}},
+                   "primary_notify": " work ",
+                   "providers": {"claude": {"base_url":"https://work.example/v1", "api_key":"@provider/kaisha/claude"}},
+                   "capabilities": {"files": {"books": {"dir": "C:/books", "write": true}}},
+                   "automation_permissions": {"write_path": {"ai": false}},
+                   "git": {"protect": ["main", "release/*"]},
                    "folders":[{"cwd":"."}, {"cwd":".", "protect":["nothing-else"]}]}
                 ]
               }"#,
@@ -4549,34 +4354,54 @@ mod tests {
         let (spaces, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
 
-        // Said nothing: the app's, and its folder was handed the same
-        assert_eq!(spaces[0].git.protected(), vec!["main".to_string()]);
-        assert_eq!(spaces[0].folders[0].protect, vec!["main".to_string()]);
-        assert_eq!(spaces[0].git.message_hint.as_deref(), Some("アプリの言い分"));
-
-        // Said its own: its folders take that, and the app's extra instruction
-        // does not come along with it
-        assert_eq!(
-            spaces[1].folders[0].protect,
-            vec!["main".to_string(), "release/*".to_string()],
-            "デスクの答えがフォルダに届いていない"
+        // Said nothing: has nothing
+        let bare = &spaces[0];
+        assert!(bare.notify.is_empty() && bare.primary_notify.is_none(), "アプリ側の通知先を引き継いだ");
+        assert!(bare.providers.is_empty(), "アプリ側の接続先を引き継いだ");
+        assert!(bare.capabilities.allow_hosts.is_empty(), "アプリ側の窓口を引き継いだ");
+        assert!(
+            !crate::grants::Grants::new(bare.automation_permissions.clone()).allows("lua", crate::grants::Subject::Ai),
+            "アプリ側の権限を引き継いだ"
         );
-        assert_eq!(spaces[1].git.message_hint, None, "アプリ側の指示が残っている");
-        // ...and a folder with its own answer still has the last word
-        assert_eq!(spaces[1].folders[1].protect, vec!["nothing-else".to_string()]);
+        assert!(bare.git.message_hint.is_none(), "アプリ側のgit設定を引き継いだ");
+
+        // Said its own: exactly that
+        let work = &spaces[1];
+        assert_eq!(work.primary_notify.as_deref(), Some("work"));
+        assert_eq!(work.capabilities.files.keys().collect::<Vec<_>>(), vec!["books"]);
+        assert!(
+            !crate::grants::Grants::new(work.automation_permissions.clone()).allows("write_path", crate::grants::Subject::Ai)
+        );
+        // Its protected branches reach its folders, and a folder with its own
+        // answer still has the last word
+        assert_eq!(work.folders[0].protect, vec!["main".to_string(), "release/*".to_string()]);
+        assert_eq!(work.folders[1].protect, vec!["nothing-else".to_string()]);
+
+        // Its secrets are read through the store's door, by the names it wrote
+        let store = |k: &str| match k {
+            "notify/kaisha/work" => Some("https://hooks.example/work".to_string()),
+            "provider/kaisha/claude" => Some("sk-work".to_string()),
+            _ => None,
+        };
+        let dests = desk_notify(work, &store);
+        assert!(
+            matches!(&dests["work"], crate::notify::Destination::Slack { webhook } if webhook == "https://hooks.example/work")
+        );
+        let conns = desk_providers(work, &store);
+        assert_eq!(conns["claude"].headers.get("Authorization").map(String::as_str), Some("Bearer sk-work"));
+        assert!(desk_providers(bare, &store).is_empty());
     }
 
-    /// A settings file written before any of this existed reads the same way.
+    /// A desk written with none of these keys reads as a desk with none of
+    /// these things.
     #[test]
-    fn a_desk_without_the_new_keys_still_reads() {
+    fn a_desk_without_the_keys_has_none_of_them() {
         let cfg: Config =
-            serde_json::from_str(r#"{"desks":[{"name":"古い","tabs":[]}]}"#).unwrap();
-        assert!(cfg.desks[0].notify.is_none());
-        assert!(cfg.desks[0].primary_notify.is_none());
-        assert!(cfg.desks[0].providers.is_none());
-        assert!(cfg.desks[0].capabilities.is_none());
-        assert!(cfg.desks[0].automation_permissions.is_none());
-        assert!(cfg.desks[0].git.is_none());
+            serde_json::from_str(r#"{"desks":[{"name":"素","tabs":[]}]}"#).unwrap();
+        let d = &cfg.desks[0];
+        assert!(d.notify.is_empty() && d.primary_notify.is_none() && d.providers.is_empty());
+        assert!(d.capabilities.files.is_empty() && d.automation_permissions.is_empty());
+        assert_eq!(d.git.protected(), GitSpec::default().protected(), "gitの既定が組み込みの答えでない");
     }
 
     /// A secrets file written before names meant anything is brought forward
@@ -4711,10 +4536,10 @@ mod tests {
             r#"{
               "desks": [
                 {"name":"Blog","id":"blog","tabs":[
-                   {"name":"prod","id":"prod","command":"ssh://me@example.com"}]}
-              ],
-              "providers": {"deepseek": {"base_url": "https://api.deepseek.com/v1"}},
-              "notify": {"team": {"type":"slack","webhook":"@notify/team"}}
+                   {"name":"prod","id":"prod","command":"ssh://me@example.com"}],
+                 "providers": {"deepseek": {"base_url": "https://api.deepseek.com/v1"}},
+                 "notify": {"team": {"type":"slack","webhook":"@notify/blog/team"}}}
+              ]
             }"#,
         )
         .unwrap();
@@ -4723,13 +4548,14 @@ mod tests {
             "blog.diary",
             "ssh/blog/prod/password",
             "ssh/blog/prod/passphrase",
-            "provider/deepseek",
-            "notify/team",
+            "provider/blog/deepseek",
+            "notify/blog/team",
             // nobody's
             "gone.diary",
             "ssh/gone/prod/password",
             "ssh/blog/gone/password",
-            "provider/openai",
+            "provider/blog/openai",
+            "provider/gone/deepseek",
             "notify/old",
             // not this program's shape: never judged, never offered
             "something_a_person_made",
@@ -4746,7 +4572,8 @@ mod tests {
             vec![
                 "gone.diary",
                 "notify/old",
-                "provider/openai",
+                "provider/blog/openai",
+                "provider/gone/deepseek",
                 "ssh/blog/gone/password",
                 "ssh/gone/prod/password",
             ]

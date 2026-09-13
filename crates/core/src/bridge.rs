@@ -239,74 +239,35 @@ pub fn extract_say(s: &str) -> Option<String> {
     })
 }
 
-/// Cache of resolved providers (name -> (base_url, headers)), and which of them
-/// the desk on screen is allowed to use.
+/// The model connections of the desk on screen, resolved (name -> address,
+/// headers, wait).
 ///
-/// Filled in at startup / config reload, when the main binary holds the
-/// password (secret decryption happens only there). The reach is swapped on a
-/// desk switch: the connections are registered once for the app, but the
-/// account one of them bills and hands text to belongs to whoever registered
-/// it, so which of them a desk may use is that desk's answer
+/// Swapped whole on a desk switch and when the settings are read again. Each
+/// desk registers its own, so a name here means this desk's connection by
+/// that name and nothing else: the same `claude` in another desk may be
+/// another account entirely
 static PROVIDERS: Mutex<Option<HashMap<String, crate::config::ProviderConn>>> =
     Mutex::new(None);
-static REACH: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
-/// Resolve config's providers and cache them.
-pub fn set_providers(cfg: &crate::config::Config, password: Option<&str>) {
-    let mut m = HashMap::new();
-    for name in cfg.providers.keys() {
-        if let Some(resolved) = cfg.resolve_provider(name, password) {
-            m.insert(name.clone(), resolved);
-        }
-    }
+/// Point it at a desk's connections (see [`crate::config::desk_providers`]).
+pub fn use_desk(conns: HashMap<String, crate::config::ProviderConn>) {
     if let Ok(mut g) = PROVIDERS.lock() {
-        *g = Some(m);
+        *g = Some(conns);
     }
 }
 
-/// The connections the desk now on screen may use, or `None` for all of
-/// them. Already the whole answer (see [`crate::config::Desk::providers`])
-pub fn scope_to(only: Option<Vec<String>>) {
-    if let Ok(mut g) = REACH.lock() {
-        *g = only;
-    }
-}
-
-/// Whether a desk that said this may use a connection by that name.
-///
-/// The decision itself, with nothing global in it, so that what it decides can
-/// be checked without a test having to reach into the cache every other test
-/// shares
-fn allowed(only: Option<&Vec<String>>, provider: &str) -> bool {
-    only.is_none_or(|list| list.iter().any(|n| n == provider))
-}
-
-/// Whether this desk may use a connection by that name.
-pub fn reachable(provider: &str) -> bool {
-    let g = REACH.lock().ok();
-    allowed(g.as_ref().and_then(|g| g.as_ref()), provider)
-}
-
-/// The connections usable from the desk on screen, in name order. What the
-/// screen offers and what a launch accepts are then the same list
+/// The connections of the desk on screen, in name order
 pub fn reaching() -> Vec<String> {
     let Ok(g) = PROVIDERS.lock() else {
         return Vec::new();
     };
-    let mut names: Vec<String> = g
-        .as_ref()
-        .map(|m| m.keys().filter(|n| reachable(n)).cloned().collect())
-        .unwrap_or_default();
+    let mut names: Vec<String> = g.as_ref().map(|m| m.keys().cloned().collect()).unwrap_or_default();
     names.sort();
     names
 }
 
 /// Why a `model <provider>/<model>` line has no connection, in the words the
 /// person reads. `None` when it is not such a line, or when it has one.
-///
-/// Two answers kept apart, the same way notifications keep them: a name that is
-/// registered but not for this desk is spelled right, and telling somebody it
-/// does not exist sends them looking for a typo that is not there
 pub fn why_not(argv: &[String]) -> Option<String> {
     if argv.first().map(String::as_str) != Some("model") {
         return None;
@@ -319,31 +280,28 @@ pub fn why_not(argv: &[String]) -> Option<String> {
         .lock()
         .ok()
         .is_some_and(|g| g.as_ref().is_some_and(|m| m.contains_key(provider)));
-    match (known, reachable(provider)) {
-        (false, _) => Some(crate::i18n::tp("err.model.unknown_provider", &[("name", provider)])),
-        (true, false) => Some(crate::i18n::tp("err.model.not_reachable", &[("name", provider)])),
-        (true, true) => None,
-    }
+    (!known).then(|| crate::i18n::tp("err.model.unknown_provider", &[("name", provider)]))
 }
 
-/// If this is `model <provider>/<model>`, return the resolved connection
-/// (None if not found). The model name may itself contain "/" (Ollama
-/// tags), so split on the first "/" only.
+/// If this is `model <provider>/<model>`, the connection it names on the desk
+/// on screen (None if that desk has none by that name). The model name may
+/// itself contain "/" (Ollama tags), so split on the first "/" only.
 pub fn launch_for(argv: &[String]) -> Option<ModelConn> {
+    let g = PROVIDERS.lock().ok()?;
+    conn_in(g.as_ref()?, argv)
+}
+
+/// The same, asked of a given desk's connections -- for tabs parked in a desk
+/// that is not on screen, which keep that desk's and nobody else's
+pub fn conn_in(
+    conns: &HashMap<String, crate::config::ProviderConn>,
+    argv: &[String],
+) -> Option<ModelConn> {
     if argv.first().map(String::as_str) != Some("model") {
         return None;
     }
     let (provider, model) = argv.get(1)?.trim().split_once('/')?;
-    // Registered for the app, but not for this desk. Nothing is launched:
-    // the account behind that connection is the other side's, and a tab that
-    // quietly used it would be a bill and a copy of this code in the wrong place
-    if !reachable(provider) {
-        return None;
-    }
-    let conn = {
-        let g = PROVIDERS.lock().ok()?;
-        g.as_ref()?.get(provider)?.clone()
-    };
+    let conn = conns.get(provider)?.clone();
     Some(ModelConn {
         provider: provider.to_string(),
         url: conn.url,
@@ -359,20 +317,23 @@ pub fn launch_for(argv: &[String]) -> Option<ModelConn> {
 mod tests {
     use super::*;
 
-    /// A connection registered for the app is not therefore usable everywhere.
-    ///
-    /// The account behind it is billed for the work and is handed the text, so
-    /// the desk decides. Before anybody says otherwise, every registered
-    /// connection is usable, which is what a settings file that has never been
-    /// asked the question says
+    /// A model line reaches only the connection its own desk registered by that
+    /// name. The account behind a connection is billed for the work and handed
+    /// the code, so another desk's is never within reach
     #[test]
-    fn a_desk_uses_only_the_connections_it_was_given() {
-        assert!(allowed(None, "work"), "誰も線を引いていないのに使えない");
-        let only = vec!["work".to_string()];
-        assert!(allowed(Some(&only), "work"));
-        assert!(!allowed(Some(&only), "mine"), "他の環境の接続先が使えてしまう");
-        // A line drawn around nothing is a real answer, not "everything"
-        assert!(!allowed(Some(&Vec::new()), "work"));
+    fn a_desk_uses_only_the_connections_it_registered() {
+        let line = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let conn = |url: &str| crate::config::ProviderConn {
+            url: url.to_string(),
+            headers: HashMap::new(),
+            timeout: None,
+        };
+        let work: HashMap<_, _> = [("claude".to_string(), conn("https://work.example/v1"))].into();
+        let mine: HashMap<_, _> = [("mine".to_string(), conn("http://localhost:11434/v1"))].into();
+        let argv = line(&["model", "claude/sonnet"]);
+        assert_eq!(conn_in(&work, &argv).map(|c| c.url), Some("https://work.example/v1".to_string()));
+        assert!(conn_in(&mine, &argv).is_none(), "別のデスクの接続先が使えてしまう");
+        assert!(conn_in(&HashMap::new(), &argv).is_none(), "何も登録していないデスクで接続できる");
     }
 
     /// A model line with no connection is refused in its own words, never by

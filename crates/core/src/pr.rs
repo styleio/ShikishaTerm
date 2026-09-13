@@ -203,82 +203,17 @@ fn read_one(v: &serde_json::Value) -> Option<Pr> {
     })
 }
 
-/// Whose token is being used.
-///
-/// Said on screen, because the three are different promises: one this desk
-/// was given, one sitting in the environment of whoever started the app, and
-/// whatever the person's own `gh` happens to be signed in as
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source {
-    /// The secret `<desk>.github`
-    Desk,
-    /// `GITHUB_TOKEN` or `GH_TOKEN`
-    Env,
-    /// `gh auth token`
-    Gh,
-}
-
-impl Source {
-    /// The word the screen looks its sentence up by.
-    pub fn id(self) -> &'static str {
-        match self {
-            Source::Desk => "desk",
-            Source::Env => "env",
-            Source::Gh => "gh",
-        }
-    }
-}
-
-/// The token to ask with, and where it came from.
+/// The token to ask with: the one this desk was given, and nothing else.
 ///
 /// Never written anywhere, never logged, and sent to nowhere but GitHub's own
-/// API. Read in the order of how particular each one is: the token this
-/// desk was given, then something the person put in their environment on
-/// purpose, then whatever their own GitHub tool is signed in as.
+/// API. The machine's `GITHUB_TOKEN` and the person's own `gh` sign-in are not
+/// read: either is one account for every desk, and a desk kept apart from
+/// another is not asking with that other's account because nobody gave it one.
 ///
 /// `own` is the desk's own token, already looked up by whoever knows which
 /// desk is being asked about -- this module never reaches into the secrets
-pub fn find(own: Option<String>) -> Option<(String, Source)> {
-    if let Some(t) = own.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
-        return Some((t, Source::Desk));
-    }
-    for name in ["GITHUB_TOKEN", "GH_TOKEN"] {
-        if let Ok(v) = std::env::var(name) {
-            let v = v.trim().to_string();
-            if !v.is_empty() {
-                return Some((v, Source::Env));
-            }
-        }
-    }
-    from_gh().map(|t| (t, Source::Gh))
-}
-
-/// What the person's own GitHub tool will hand over, asked rather than read.
-///
-/// `gh auth token --hostname github.com`. Reading gh's own file is what this
-/// used to do, and it was wrong twice over: a current `gh` on Windows keeps the
-/// token in the credential manager, so the file has no `oauth_token:` line to
-/// find at all, and a file that does have one can describe several accounts --
-/// the first one under `github.com` being somebody else's is an ordinary state,
-/// not a corrupt file. Only github.com is asked for: the rest of what gh knows
-/// may be an enterprise server this app knows nothing about, and sending a token
-/// to the wrong host is not a small mistake
-fn from_gh() -> Option<String> {
-    let mut cmd = std::process::Command::new("gh");
-    cmd.args(["auth", "token", "--hostname", "github.com"])
-        // It must answer or fail, never wait for somebody to read a question:
-        // there is no console in front of this process to read one in
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GH_NO_UPDATE_NOTIFIER", "1")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    let out = crate::detach_console(&mut cmd).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!token.is_empty()).then_some(token)
+pub fn find(own: Option<String>) -> Option<String> {
+    own.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
 }
 
 /// What GitHub says about a token: whether it still works, whose it is, and
@@ -310,11 +245,11 @@ pub struct Probe {
 /// settings screen has to be able to say "this one works and has eleven days
 /// left" before anybody is looking at a branch at all
 pub fn probe(own: Option<String>) -> Probe {
-    let Some((token, source)) = find(own) else {
+    let Some(token) = find(own) else {
         return Probe::default();
     };
     let mut said = Probe {
-        source: Some(source.id()),
+        source: Some("desk"),
         ..Default::default()
     };
     let agent = ureq::Agent::config_builder()
@@ -440,29 +375,18 @@ mod tests {
         assert!(read_one(&serde_json::json!({"state": "open"})).is_none());
     }
 
-    /// The desk's own token comes first, and nothing about the machine
-    /// changes that.
-    ///
-    /// This is the whole point of the change: one machine, two accounts, and
-    /// until now whichever one answered first was the one every row used. The
-    /// environment is still read for a desk that has been given nothing,
-    /// because that is what every setup so far relies on
+    /// Only the desk's own token is asked with. One machine, two accounts:
+    /// a token in the machine's environment belongs to every desk at once,
+    /// so a desk given none has none
     #[test]
-    fn the_desk_is_asked_before_the_machine() {
+    fn only_the_desk_own_token_is_used() {
         // SAFETY: this process's own environment, in a test that puts it back
         unsafe {
             std::env::set_var("GITHUB_TOKEN", "from_the_environment");
         }
-        let (token, source) = find(Some("  ours  ".into())).expect("自分のトークンがある");
-        assert_eq!(token, "ours", "前後の空白が値に入っている");
-        assert_eq!(source, Source::Desk);
-
-        let (token, source) = find(None).expect("環境変数が読まれていない");
-        assert_eq!(token, "from_the_environment");
-        assert_eq!(source, Source::Env);
-
-        // A desk that was given an empty one has been given nothing
-        assert_eq!(find(Some("   ".into())).unwrap().1, Source::Env);
+        assert_eq!(find(Some("  ours  ".into())).as_deref(), Some("ours"), "前後の空白が値に入っている");
+        assert_eq!(find(None), None, "マシンのトークンがデスクに使われた");
+        assert_eq!(find(Some("   ".into())), None, "空のトークンが使われた");
         unsafe {
             std::env::remove_var("GITHUB_TOKEN");
         }

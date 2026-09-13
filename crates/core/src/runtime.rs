@@ -392,10 +392,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         let (desk, errs) = c.resolve_desks();
         desks = desk;
         startup_errors.extend(errs);
-        // Resolve and cache the model bridge's connection info (at this point encrypted
-        // secrets aren't unlocked yet; it's resolved again below once the password is
-        // confirmed, so plaintext secrets/no-auth setups are already covered here).
-        bridge::set_providers(c, None);
     }
 
     // The external control API. Opened before the first tab, because a tab's
@@ -461,12 +457,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // If we're resuming where we left off, launch that same desk too.
         // Hard-coding this to the first desk would restore only the name while
         // showing a screen with different contents.
-        // Which model connections this desk may use is settled before its tabs
-        // start, the way a switch does it. The full hand-over comes further
-        // down, once there is a notifier to hand; left until then, the first
-        // desk's tabs launched with every registered connection open to them,
-        // and a desk that had drawn the line was obeyed only after a switch
-        bridge::scope_to(w.providers.clone());
+        // This desk's model connections, before its tabs start. The full
+        // hand-over comes further down, once there is a notifier to hand. At
+        // this point an encrypted store is not open yet, so a key kept there
+        // reads as empty; the tabs are handed the real one once the password
+        // is in (reload_providers, below)
+        if let Some(c) = cfg.as_ref() {
+            let tokens = c.resolve_tokens(None);
+            bridge::use_desk(config::desk_providers(w, &|k| tokens.get(k).cloned()));
+        }
         spawn_desk(w, rows, cols, &mut tabs, &mut startup_errors, Some(&last_session));
     }
     // No config yet = first run. Guide the user so the experience isn't just
@@ -555,21 +554,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // real ones here — otherwise they go on sending an empty bearer token (→ 401).
     if let Some(c) = &cfg
         && password.is_some() {
-            reload_providers(c, password.as_deref(), tabs.iter_mut());
+            let tokens = c.resolve_tokens(password.as_deref());
+            reload_providers(&desks, desk_index, &|k| tokens.get(k).cloned(), &mut tabs, &mut []);
         }
 
-    // Notification destinations (Slack / Telegram). Lua can only send to destinations
-    // registered here.
-    let mut notifier = match cfg.as_ref() {
-        Some(c) => {
-            let (dests, err) = c.resolve_notify(password.as_deref());
-            if let Some(e) = err {
-                startup_errors.push(e);
-            }
-            notify::Notifier::new(dests, c.primary_notify.clone())
-        }
-        None => notify::Notifier::new(Default::default(), None),
-    };
+    // Notification destinations. Empty until the desk on screen is handed over
+    // below: each desk registers its own, and there are none of the app's
+    if let Some(e) = cfg.as_ref().and_then(|c| c.secrets_problem(password.as_deref())) {
+        startup_errors.push(e);
+    }
+    let notifier = notify::Notifier::new(Default::default(), None);
     // Names inside the secrets file changed shape; a file written by an
     // earlier version is brought forward here rather than in the ordinary
     // migration steps, because those run before anyone has said the master
@@ -585,12 +579,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Capabilities granted to automation (empty by default). An advanced feature that
     // can only be enabled by writing it into the config file.
     let caps: hooks::Caps = std::rc::Rc::new(match cfg.as_ref() {
+        // The doors and the permission table start closed and standard; the
+        // desk on screen hands its own over below, before anything runs
         Some(c) => caps::Capabilities::new(
-            c.capabilities.clone(),
+            Default::default(),
             config_file_dir(),
             c.resolve_tokens(password.as_deref()),
             c.resolve_secret_terms(password.as_deref()),
-            c.automation_permissions.clone(),
+            Default::default(),
         ),
         None => caps::Capabilities::disabled(),
     });
@@ -1182,12 +1178,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 done_confirm_ms = newcfg
                     .done_confirm_ms
                     .unwrap_or(profile::DEFAULT_DONE_CONFIRM_MS);
-                // Rebuild notification destinations, capabilities, and automation scripts
-                let (dests, err) = newcfg.resolve_notify(password.as_deref());
-                if let Some(e) = err {
+                // Rebuild capabilities and automation scripts. The destinations
+                // are the desk's, handed over again below
+                if let Some(e) = newcfg.secrets_problem(password.as_deref()) {
                     startup_errors.push(e);
                 }
-                notifier = notify::Notifier::new(dests, newcfg.primary_notify.clone());
                 // Only swap out the parts that come from config. Rebuilding it
                 // entirely would leave nobody aware of pages already placed in the
                 // window, so they'd stay stuck on screen with no way to remove them
@@ -1275,11 +1270,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // the tabs — including the ones parked in desks that are
                 // not on screen, which are just as open as the ones that are
                 if let Some(c) = &cfg {
-                    reload_providers(
-                        c,
-                        password.as_deref(),
-                        tabs.iter_mut().chain(desk_tabs.iter_mut().flatten()),
-                    );
+                    let tokens = c.resolve_tokens(password.as_deref());
+                    reload_providers(&desks, desk_index, &|k| tokens.get(k).cloned(), &mut tabs, &mut desk_tabs);
                 }
                 watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
                 let mut note = remote_changed.unwrap_or(msg);
@@ -2597,9 +2589,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             thanks: thanks_show.then(|| thanks_kind.to_string()),
             update: update::ask(),
             first_run,
-            push_wanted: cfg.as_ref().is_some_and(|c| {
-                c.notify.values().any(|d| matches!(d, notify::Destination::Phone {}))
-            }),
+            // Any desk: a phone registers itself once, for whichever desk
+            // sends to it
+            push_wanted: desks
+                .iter()
+                .flat_map(|d| d.notify.values())
+                .any(|d| matches!(d, notify::Destination::Phone {})),
             active,
             board: board_open,
             settings: settings_open,
@@ -3181,11 +3176,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 eng.set_places(folders);
                 // This desk's, which is already either its own or the
                 // app's handed down (see Config::resolve_desks)
-                let spec = desks
-                    .get(desk_index)
-                    .map(|w| w.git.clone())
-                    .or_else(|| cfg.as_ref().map(|c| c.git.clone()))
-                    .unwrap_or_default();
+                let spec = desks.get(desk_index).map(|w| w.git.clone()).unwrap_or_default();
                 let code = spec
                     .message_lua
                     .filter(|l| !l.trim().is_empty())
@@ -5238,14 +5229,35 @@ pub fn urlish(text: &str) -> String {
 /// to conclude that the setting does not work. Reported as just that: the wait
 /// was set to "as long as it takes" and the tab still gave up at 180 seconds,
 /// because 180 was what it had been holding since it opened.
-pub fn reload_providers<'a>(
-    cfg: &config::Config,
-    password: Option<&str>,
-    tabs: impl Iterator<Item = &'a mut Tab>,
+///
+/// Each desk's tabs are handed their own desk's connections: a tab parked in a
+/// desk that is not on screen keeps that desk's `claude`, not the one of the
+/// same name on the desk in front. `parked` is indexed by desk, the slot of
+/// the desk on screen being the empty one its tabs were taken out of.
+pub fn reload_providers(
+    desks: &[config::Desk],
+    desk_index: usize,
+    look: &dyn Fn(&str) -> Option<String>,
+    tabs: &mut [Tab],
+    parked: &mut [Vec<Tab>],
 ) {
-    bridge::set_providers(cfg, password);
-    for t in tabs {
-        t.refresh_model_conn();
+    if let Some(d) = desks.get(desk_index) {
+        let conns = config::desk_providers(d, look);
+        for t in tabs.iter_mut() {
+            t.refresh_model_conn(&conns);
+        }
+        bridge::use_desk(conns);
+    }
+    for (i, ts) in parked.iter_mut().enumerate() {
+        if i == desk_index {
+            continue;
+        }
+        if let Some(d) = desks.get(i) {
+            let conns = config::desk_providers(d, look);
+            for t in ts.iter_mut() {
+                t.refresh_model_conn(&conns);
+            }
+        }
     }
 }
 /// Give this tab the rest of whatever is being pasted into it, now.
@@ -8797,21 +8809,16 @@ mod tests {
     #[test]
     fn a_provider_edited_now_reaches_the_tab_that_is_using_it() {
         let settings = |secs: u64| {
-            let mut cfg = config::Config::default();
-            cfg.providers.insert(
-                "t".into(),
-                config::ProviderSpec {
-                    base_url: "http://127.0.0.1:1/v1".into(),
-                    timeout_sec: Some(secs),
-                    ..Default::default()
-                },
-            );
-            cfg
+            let cfg: config::Config = serde_json::from_str(&format!(
+                r#"{{"desks":[{{"name":"d","providers":{{"t":{{"base_url":"http://127.0.0.1:1/v1","timeout_sec":{secs}}}}}}}]}}"#
+            ))
+            .unwrap();
+            cfg.resolve_desks().0
         };
         let argv = vec!["model".to_string(), "t/m".to_string()];
 
-        bridge::set_providers(&settings(180), None);
-        let conn = bridge::launch_for(&argv).expect("接続が引ける");
+        let conns = config::desk_providers(&settings(180)[0], &|_| None);
+        let conn = bridge::conn_in(&conns, &argv).expect("接続が引ける");
         assert_eq!(conn.timeout, Some(Duration::from_secs(180)));
         let mut tabs = [Tab::spawn(
             "model".into(),
@@ -8824,7 +8831,7 @@ mod tests {
         .expect("起動")];
 
         // The wait is changed to "as long as it takes" and saved
-        reload_providers(&settings(0), None, tabs.iter_mut());
+        reload_providers(&settings(0), 0, &|_| None, &mut tabs, &mut []);
         assert_eq!(
             tabs[0].model.as_ref().and_then(|c| c.timeout),
             None,

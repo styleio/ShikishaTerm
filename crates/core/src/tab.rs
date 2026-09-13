@@ -3351,11 +3351,13 @@ impl Tab {
     /// password is entered. With an encrypted secrets file the api_key can't be
     /// read yet, so the tab starts with an empty key (→ HTTP 401). Once the
     /// password unlocks the providers, call this to pick up the real key.
-    pub fn refresh_model_conn(&mut self) {
+    ///
+    /// `conns` is the connections of the desk this tab belongs to.
+    pub fn refresh_model_conn(&mut self, conns: &std::collections::HashMap<String, crate::config::ProviderConn>) {
         let Some(old) = self.model.as_ref() else {
             return;
         };
-        if let Some(mut fresh) = crate::bridge::launch_for(&self.argv) {
+        if let Some(mut fresh) = crate::bridge::conn_in(conns, &self.argv) {
             fresh.persona = old.persona.clone();
             fresh.drives = old.drives.clone();
             self.model = Some(fresh);

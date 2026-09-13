@@ -1700,6 +1700,43 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
+        // One secret filed again under another name, value and all, without the
+        // value ever passing through the page. What a new desk does when it
+        // starts from another desk's connections and destinations: each desk
+        // keeps its own keys, so deleting one desk later cannot take the
+        // other's with it. Only the names the program itself files keys under
+        // can be copied, and only into the same kind
+        ("POST", "/api/secrets/copy") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let s = |k| p.get(k).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let (from, to) = (s("from"), s("to"));
+            let kind = |k: &str| ["provider/", "notify/"].into_iter().find(|pre| k.starts_with(pre));
+            let path = secrets_file(config_path);
+            let pw = password.lock().unwrap().clone();
+            let resp = match (kind(&from), kind(&to)) {
+                (Some(a), Some(b)) if a == b && from != to => {
+                    let meta = crate::config::list_secrets(&path, pw.as_deref())
+                        .ok()
+                        .and_then(|l| l.into_iter().find(|(k, _)| *k == from).map(|(_, m)| m));
+                    match (crate::config::secret_value(&path, pw.as_deref(), &from), meta) {
+                        (Some(value), Some(meta)) => {
+                            match crate::config::upsert_secret(&path, pw.as_deref(), &to, &meta, &value) {
+                                Ok(()) => serde_json::json!({ "ok": true }),
+                                Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+                            }
+                        }
+                        _ => serde_json::json!({ "ok": false, "missing": true }),
+                    }
+                }
+                _ => serde_json::json!({ "ok": false, "error": "not a copyable key" }),
+            };
+            req.respond(json_resp(resp))?;
+        }
         ("POST", "/api/secrets/delete") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
@@ -2666,13 +2703,6 @@ const PAGE: &str = r##"<!doctype html>
  .navback { display:flex; align-items:center; gap:var(--s2); color:var(--dim); }
  .navback .go { flex:none; font-size:16px; line-height:1; }
  .navhead { margin:var(--s3) var(--s3) var(--s2); color:var(--text); font-size:14px; font-weight:600; }
- .navgroup .groupsub { display:block; margin-top:2px; text-transform:none; letter-spacing:0;
-   font-size:11.5px; color:var(--dim); }
- /* Above a desk default: a line saying so, and the way to the desk's own */
- .deskdefault { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2) var(--s3);
-   margin-bottom:var(--s3); padding:var(--s2) var(--s3); border:1px solid var(--line);
-   border-radius:var(--r-card); color:var(--muted); font-size:12.5px; }
- .deskdefault span { flex:1 1 16em; }
  .wsgap { flex:1 1 auto; }
  .wspick { font-size:12px; color:var(--dim); }
  .deskbanner:hover .wspick { color:var(--text); }
@@ -3267,16 +3297,14 @@ const GITHUB_SECRET = __GHSECRET__;
 // between them, because both are what people reach for
 const protectList = text => (text || "").split(/[\s,]+/).filter(Boolean);
 const protectText = list => (list || []).join(" ");
-// What the app guards where a folder has not said anything of its own
 // The list a folder inherits when it has said nothing of its own: its
-// desk's, or the app's for a desk that has said nothing either. The
+// desk's, or the built-in names for a desk that has said nothing either. The
 // same order the program settles at launch, so the greyed-out box on a folder's
 // page shows the names that will actually guard it
 const protectOf = desk => {
-  const g = (desk && desk.git) || current.git || {};
+  const g = (desk && desk.git) || {};
   return Array.isArray(g.protect) ? g.protect : PROTECT_DEFAULT;
 };
-const protectApp = () => protectOf(null);
 // {name} substitution (same rule as tp on the Rust side)
 const fill = (s, args) => Object.entries(args)
   .reduce((acc, [k, v]) => acc.replaceAll("{" + k + "}", v), s || "");
@@ -3285,6 +3313,9 @@ const api = (m, b) => fetch("/api/config", {
 const deskApi = (m, file, b) => fetch("/api/desk?file=" + encodeURIComponent(file), {
    method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
 
+// A plain object: what a desk's maps are written as. A list or null in their
+// place is somebody else's shape, read as nothing
+const isObj = v => !!v && typeof v === "object" && !Array.isArray(v);
 let current = {};        // Contents of config.json (holds the base settings)
 let desks = [];            // Desks and tabs
 let sel = {desk:0, tab:null, global:true, section:"basic"};
@@ -4070,17 +4101,7 @@ function renderNav() {
       el("span", {class:"go"}, "‹"),
       el("div", {class:"body"}, T["tui.nav.back"])));
     nav.append(el("div", {class:"navhead"}, T["settings.global"]));
-    // Two halves under their own headings: what only the app has, then what
-    // every desk starts from and may answer for itself
-    let half = null;
     globalSections().forEach(s => {
-      const now = s.desk ? "desk" : "app";
-      if (now !== half) {
-        half = now;
-        nav.append(el("div", {class:"navgroup"},
-          el("span", {}, T["settings.global." + now]),
-          s.desk ? el("span", {class:"groupsub"}, T["settings.global.desk.sub"]) : null));
-      }
       const b = el("button", {class:"navitem appitem" + (sel.section === s.id ? " sel" : ""),
         onclick:() => goSection(s.id)});
       b.append(el("div", {class:"body"}, el("span", {}, s.label),
@@ -4292,7 +4313,7 @@ function aiChoices() {
     {key:"codex",  label:"Codex CLI"},
     {key:"gemini", label:"Gemini CLI"},
   ];
-  const models = Object.keys(current.providers || {}).map(n =>
+  const models = Object.keys(deskProviders()).map(n =>
     ({key:"model:" + n, label: fill(T["wizard.discuss.model_suffix"], {name: n}), isModel:true, provider:n}));
   return cli.concat(models);
 }
@@ -4365,7 +4386,7 @@ function aiPick(st) {
   const modelIn = el("input", {type:"text", class:"mono", style:"width:180px"});
   modelIn.value = st.model || "";
   const cand = modelCandidates(
-    () => current.providers[(choiceOf(st.key) || {}).provider] || {},
+    () => deskProviders()[(choiceOf(st.key) || {}).provider] || {},
     id => { st.model = id; modelIn.value = id; });
   const sync = () => {
     const c = choiceOf(st.key), isM = !!(c && c.isModel);
@@ -4390,18 +4411,84 @@ function partsValid(parts) {
   }
   return null;
 }
-function landOnWs(desk) {
+// The desk a new one starts from, chosen on the first screen of adding one
+// (or null to start with none of it). Read once, by landOnWs
+let startFrom = null;
+
+// What a desk has that is its own alone -- where it notifies, which AI accounts
+// it uses, what its automation may do and reach, what git does -- copied for a
+// new desk. The keys behind a connection or a destination are filed again under
+// the new desk, so each keeps its own and deleting one cannot take the other's
+// `only`, when given, is the names of the connections to bring and nothing else
+async function copyDeskOwn(from, to, only) {
+  const clone = v => JSON.parse(JSON.stringify(v || {}));
+  if (only) {
+    for (const n of only) if ((from.providers || {})[n]) to.providers[n] = clone(from.providers[n]);
+  } else {
+    for (const k of ["notify", "providers", "capabilities", "automation_permissions", "git"]) to[k] = clone(from[k]);
+    if ((from.primary_notify || "").trim()) to.primary_notify = from.primary_notify;
+  }
+  const id = (to.id || "").trim(), was = (from.id || "").trim();
+  if (!id || !was) return;
+  const refile = async (ref, set) => {
+    if (!(ref || "").startsWith("@")) return;
+    const old = ref.slice(1);
+    const kind = ["provider/", "notify/"].find(p => old.startsWith(p + was + "/"));
+    if (!kind) return;
+    const fresh = kind + id + old.slice((kind + was).length);
+    const r = await settingsApi("/api/secrets/copy", {from: old, to: fresh}).catch(() => null);
+    if (r && r.ok) set("@" + fresh);
+  };
+  for (const [n, p] of Object.entries(to.providers)) {
+    if (!only || only.includes(n)) await refile(p.api_key, v => p.api_key = v);
+  }
+  if (only) return;
+  for (const d of Object.values(to.notify)) {
+    await refile(d.webhook, v => d.webhook = v);
+    await refile(d.token, v => d.token = v);
+  }
+}
+
+async function landOnWs(desk) {
   // Made by a wizard, a template or from nothing -- all of them arrive here, so
   // this is the one place that has to make sure a desk has its folder
   if (!(desk.folders || []).length) desk.folders = [{name:"", id:"", cwd:""}];
   (desk.tabs || []).forEach(t => { if (t.group === undefined) t.group = 0; });
+  if (!(desk.id || "").trim()) desk.id = uniqueWsId(slugId(desk.name) || "desk", desk);
+  for (const k of ["notify", "providers", "capabilities", "automation_permissions", "git"]) {
+    if (!isObj(desk[k])) desk[k] = {};
+  }
+  const from = startFrom;
+  startFrom = null;
+  if (from) await copyDeskOwn(from, desk);
+  else {
+    // A wizard offers the desk in view's connections to choose AIs from. One
+    // somebody chose there comes along -- chosen by name, on purpose, for this
+    // desk -- and nothing else of that desk does
+    const here = desks[sel.desk];
+    const used = (desk.tabs || []).map(t => parseModel(t.command)).filter(Boolean).map(m => m.provider)
+      .filter(p => here && (here.providers || {})[p] && !desk.providers[p]);
+    if (used.length) await copyDeskOwn(here, desk, [...new Set(used)]);
+  }
   desks.push(desk); sel = {desk:desks.length - 1, tab:null, global:false}; render(); refreshSave();
 }
 
 // "+ Add desk" → first, have the user pick a purpose
 function addWs() {
   const m = openModal();
-  const pick = fn => { m.remove(); fn(); };
+  // Whether the new desk starts with this one's destinations, connections,
+  // permissions and git settings. Asked first, because the wizards below offer
+  // this desk's connections to choose AIs from
+  const here = desks[sel.desk];
+  const hasOwn = here && ["notify", "providers", "capabilities", "automation_permissions", "git"]
+    .some(k => isObj(here[k]) && Object.keys(here[k]).length);
+  const copyBox = el("input", {type:"checkbox"});
+  copyBox.checked = !!hasOwn;
+  const copyLabel = el("label", {class:"check"});
+  copyLabel.append(copyBox, document.createTextNode(
+    fill(T["wizard.pick.copy"], {name: (here && here.name) || ""})));
+  // A desk read in from a file brings its own, so it starts from nothing here
+  const pick = fn => { startFrom = (hasOwn && copyBox.checked && fn !== importWs) ? here : null; m.remove(); fn(); };
   const opt = (emoji, title, desc, fn) => el("button",
     {class:"quiet", style:"display:flex;gap:var(--s3);align-items:flex-start;text-align:left;" +
       "width:100%;padding:14px;border:1px solid var(--line);border-radius:10px;margin:var(--s2) 0",
@@ -4412,6 +4499,8 @@ function addWs() {
   m.firstChild.append(
     el("h2", {}, T["wizard.pick.title"]),
     el("div", {class:"hint"}, T["wizard.pick.hint"]),
+    hasOwn ? el("div", {style:"margin-top:var(--s3)"}, copyLabel,
+      el("div", {class:"hint"}, T["wizard.pick.copy.hint"])) : null,
     el("div", {style:"margin-top:var(--s2)"},
       opt("🗣", T["wizard.pick.discuss.title"], T["wizard.pick.discuss.desc"], wizardDiscuss),
       opt("🌐", T["wizard.pick.browser.title"], T["wizard.pick.browser.desc"], wizardBrowser),
@@ -4421,7 +4510,7 @@ function addWs() {
       REMOTE ? null
              : opt("📂", T["wizard.pick.import.title"], T["wizard.pick.import.desc"], importWs)),
     el("div", {class:"row", style:"margin-top:var(--s2)"},
-      el("button", {class:"quiet", onclick:() => m.remove()}, T["common.cancel"])));
+      el("button", {class:"quiet", onclick:() => { startFrom = null; m.remove(); }}, T["common.cancel"])));
 }
 function createBlankWs() {
   landOnWs({name: T["settings.desk"], automation:"", tabs:[]});
@@ -4742,7 +4831,6 @@ function renderDetail() {
     const secs = globalSections();
     const sec = secs.find(s => s.id === sel.section) || secs[0];
     sel.section = sec.id;
-    if (sec.desk) d.append(deskDefaultNote());
     return d.append(sec.build());
   }
   const desk = desks[sel.desk];
@@ -5072,29 +5160,16 @@ function globalSections() {
     {id:"resume",    label:T["settings.sec.resume"],    sub:T["settings.sec.resume.sub"],    build:resumeCard},
     {id:"files",     label:T["settings.sec.files"],     sub:T["settings.sec.files.sub"],     build:filesCard},
     {id:"results",   label:T["settings.sec.results"],   sub:T["settings.sec.results.sub"],   build:rallyResultCard},
-    // The second half: what every desk starts from and each desk's own page
-    // can answer differently. Kept together and marked, so an answer changed
-    // here is not mistaken for one every desk is bound to -- the same five a
-    // desk's page has a card for
-    {id:"permissions", desk:true, label:T["settings.sec.permissions"], sub:T["settings.sec.permissions.sub"], build:permissionsCard},
-    {id:"git",       desk:true, label:T["settings.sec.git"],       sub:T["settings.sec.git.sub"],       build:gitCard},
-    {id:"protect",   desk:true, label:T["settings.sec.protect"],   sub:T["settings.sec.protect.sub"],   build:protectCard},
-    {id:"providers", desk:true, label:T["settings.sec.providers"], sub:T["settings.sec.providers.sub"], build:providersCard},
-    {id:"notify",    desk:true, label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],
-      build:() => { const box = el("div"); box.append(notifyCard(), pcNotifyCard(), phoneNotifyCard()); return box; }},
+    // The phones themselves are this machine's: a phone signs itself up once.
+    // Which desk's messages reach it is that desk's page's question
+    {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],    build:phoneNotifyCard},
   ];
 }
 
-// Above a desk default: that it is one, and the way to the desk's own answer
-function deskDefaultNote() {
-  const desk = desks[sel.desk];
-  return el("div", {class:"deskdefault"},
-    el("span", {}, T["settings.global.desk.note"]),
-    desk ? el("button", {class:"quiet",
-        onclick:() => { sel = {desk:sel.desk, grp:null, tab:null, global:false}; render(); }},
-      (T["settings.global.desk.go"] || "{desk}").replace("{desk}", desk.name || T["settings.tab.unnamed"]))
-      : null);
-}
+// Cards that belong to a desk's page. A link to one of these (the git panel's
+// gear asks for "git") lands on the desk in view, at that card, since there is
+// no app-wide copy of any of them to land on
+const DESK_CARDS = ["git", "protect", "github", "notify-desk", "providers", "permissions", "caps"];
 
 // ── Update ─────────────────────────────────────────────────────
 // The one place a newer version is fetched, checked and put in place. The
@@ -5334,21 +5409,24 @@ function urlFault(text) {
 // A boxed list you read down and one dialog to change one of them, the same
 // shape as every other list of records on this page. The key is write-only:
 // it is kept in the secrets file and never comes back to the screen.
-function providersCard() {
-  current.providers = current.providers || {};
+// A desk's model connections. Each desk registers its own: the account behind
+// a connection is billed for the work and handed the code, so a connection
+// registered in the work desk is simply not on the list in the personal one
+function providersCard(desk) {
+  desk.providers = desk.providers || {};
   const listBox = el("div", {id:"providerslist"});
   const draw = () => {
     listBox.textContent = "";
-    const names = Object.keys(current.providers);
+    const names = Object.keys(desk.providers);
     if (!names.length) {
       listBox.append(el("div", {class:"hint"}, T["settings.providers.empty"]));
       return;
     }
     const rows = el("div", {class:"rows"});
     for (const name of names) {
-      const p = current.providers[name] || {};
+      const p = desk.providers[name] || {};
       const held = (p.api_key || "").startsWith("@");
-      rows.append(el("div", {class:"listrow secretrow", onclick: () => providerDialog(name, draw)},
+      rows.append(el("div", {class:"listrow secretrow", onclick: () => providerDialog(desk, name, draw)},
         el("span", {class:"mono secretname"}, name),
         el("span", {class:"hint mono secretdesc"}, p.base_url || T["settings.providers.no_url"]),
         el("span", {class:"hint"}, held ? "••••" : T["settings.providers.key_none"]),
@@ -5361,20 +5439,23 @@ function providersCard() {
     el("div", {class:"hint"}, T["settings.providers.hint"]),
     listBox,
     el("div", {class:"row"},
-      el("button", {onclick: () => providerDialog(null, draw)}, T["settings.providers.add"])),
+      el("button", {onclick: () => providerDialog(desk, null, draw)}, T["settings.providers.add"])),
     el("div", {class:"hint"}, T["settings.providers.use_hint"]));
+  c.id = "desk-providers";
   setTimeout(draw, 0);
   return c;
 }
+// The connections of the desk being edited, for the pickers that offer them
+const deskProviders = () => ((desks[sel.desk] || {}).providers) || {};
 // How long a reply may take, in the words the field uses. Blank is the app's
 // own 180 seconds, and 0 is "as long as it takes"
 const waitText = v => (v === undefined || v === null) ? fill(T["settings.providers.wait_default"], {n: 180})
   : (Number(v) === 0 ? T["settings.providers.wait_forever"] : fill(T["settings.providers.wait_n"], {n: v}));
 
-// Adding a connection, or changing one. `name` is null for a new one.
-function providerDialog(name, redraw) {
+// Adding a connection to a desk, or changing one. `name` is null for a new one.
+function providerDialog(desk, name, redraw) {
   const editing = !!name;
-  const p = editing ? (current.providers[name] || {}) : {};
+  const p = editing ? (desk.providers[name] || {}) : {};
   const nameIn = el("input", {type:"text", class:"mono", placeholder:T["settings.providers.name_ph"]});
   nameIn.value = name || "";
   nameIn.disabled = editing;
@@ -5409,7 +5490,7 @@ function providerDialog(name, redraw) {
     let first = null;
     const nameWhy = !n ? T["settings.providers.name_required"]
       : (!/^[a-z0-9_.-]+$/i.test(n) ? T["settings.providers.name_bad"]
-      : (!editing && current.providers[n] ? T["settings.providers.name_dup"] : null));
+      : (!editing && desk.providers[n] ? T["settings.providers.name_dup"] : null));
     fieldFault(nameIn, nameWhy);
     if (nameWhy) first = {at: nameIn, why: nameWhy};
 
@@ -5463,7 +5544,7 @@ function providerDialog(name, redraw) {
             // Its key goes with it. Nothing else names that secret, and there
             // is no screen of leftovers to tidy it away from later
             if ((p.api_key || "").startsWith("@")) await deleteSecret(p.api_key.slice(1));
-            delete current.providers[name];
+            delete desk.providers[name];
             refreshSave(); shut(); redraw();
           }}, T["settings.providers.delete"])
         : null,
@@ -5483,14 +5564,17 @@ function providerDialog(name, redraw) {
   save.addEventListener("click", async () => {
     if (held) { sayWhy(); return; }
     const n = editing ? name : nameIn.value.trim();
-    const it = (current.providers[n] = current.providers[n] || {});
+    // The key is filed under this desk, so it needs the name the store files
+    // this desk under
+    if (keyIn.value.trim() && !(desk.id || "").trim()) { toast(T["settings.secrets.desk_needs_id"], true); return; }
+    const it = (desk.providers[n] = desk.providers[n] || {});
     it.base_url = urlIn.value.trim();
     const w = waitIn.value.trim();
     if (w === "") delete it.timeout_sec; else it.timeout_sec = Math.max(0, Math.floor(Number(w)));
-    // The key never sits in config.json: it goes to the secrets file and only
-    // the name of it is kept here
+    // The key never sits in config.json: it goes to the secrets file, under
+    // this desk, and only the name of it is kept here
     if (keyIn.value.trim()) {
-      const sk = "provider/" + n;
+      const sk = "provider/" + desk.id.trim() + "/" + n;
       const r = await saveSecret({key: sk, description: "model provider " + n,
         value: keyIn.value.trim(), human: true, ai: false, urls: []});
       if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return; }
@@ -5672,13 +5756,9 @@ const grantFolded = {};
 const manualHref = name => "/help?token=" + encodeURIComponent(TOKEN)
   + (name ? "#cmd-" + name : "");
 
-// The table, for whoever owns it: the app, or one desk.
-//
-// Both pages hold the same component, because the question is the same one and a
-// second copy of sixty rows would be a second place for the list to drift from
-// what the app enforces. `owner` is the object the rows are written into --
-// `current` for the app, a desk for a desk.
-// `edited` hears about every change, for a page that says how many rows differ
+// A desk's table of who may run what. `owner` is the desk the rows are
+// written into; `edited` hears about every change, for a card that says how
+// many rows differ
 function permissionsTable(owner, edited) {
   // Read without writing: merely opening this card must not make the settings
   // look edited. The key appears in the file the first time a box disagrees
@@ -5694,9 +5774,7 @@ function permissionsTable(owner, edited) {
     const rule = all[cmd.name] || {};
     if (on === cmd[col]) delete rule[col]; else rule[col] = on;
     if (Object.keys(rule).length) all[cmd.name] = rule; else delete all[cmd.name];
-    // An empty table still means "this is mine" for a desk, and means
-    // nothing at all for the app, which is the one difference between the two
-    if (Object.keys(all).length || owner !== current) owner.automation_permissions = all;
+    if (Object.keys(all).length) owner.automation_permissions = all;
     else delete owner.automation_permissions;
     refreshSave();
     if (edited) edited();
@@ -5710,7 +5788,11 @@ function permissionsTable(owner, edited) {
       el("span", {}, T["settings.permissions.col.human"]),
       el("span", {}, T["settings.permissions.col.ai"])));
     for (const sec of GRANTS) {
-      const open = !grantFolded[sec.group];
+      // Every group starts shut: the table sits on a desk's page among the
+      // other cards, and sixty rows open by default push everything below
+      // them out of reach. The group heading already says, in its two boxes,
+      // whether anything inside is switched off
+      const open = grantFolded[sec.group] === false;
       // The whole heading folds, not just the caret: a 10px triangle is a
       // target nobody hits on the first try
       const fold = () => { grantFolded[sec.group] = open; draw(); };
@@ -5755,10 +5837,8 @@ function permissionsTable(owner, edited) {
   };
   draw();
   const reset = el("button", {onclick:() => {
-    // Back to the answers the commands' authors chose. For a desk that is
-    // an empty table of its own, not the app's table: the line it drew stays
-    if (owner === current) delete owner.automation_permissions;
-    else owner.automation_permissions = {};
+    // Back to the answers the commands' authors chose
+    delete owner.automation_permissions;
     refreshSave();
     draw();
     if (edited) edited();
@@ -5766,21 +5846,30 @@ function permissionsTable(owner, edited) {
   return {body, reset};
 }
 
-function permissionsCard() {
-  const {body, reset} = permissionsTable(current);
+function permissionsCard(desk) {
+  const count = el("div", {class:"hint"});
+  const recount = () => {
+    const n = Object.keys(desk.automation_permissions || {}).length;
+    count.textContent = fill(T["settings.desk.grants.changed"], {n});
+  };
+  const {body, reset} = permissionsTable(desk, recount);
+  recount();
   // What counts as an AI is the first thing on the card, spelled out rather
   // than left to be assumed. The mistake this prevents is a person unticking
   // the AI column, walking away, and the AI they started by hand in a terminal
   // tab carrying on -- it holds that tab's key, and that tab is a terminal
-  return card(T["settings.sec.permissions"],
+  const c = card(T["settings.sec.permissions"],
     el("div", {class:"hint"}, T["settings.permissions.hint"]),
     el("div", {class:"grantwho"},
       el("div", {}, T["settings.permissions.who.ai"]),
       el("div", {}, T["settings.permissions.who.human"])),
     el("div", {class:"grantwarn"}, T["settings.permissions.caution"]),
+    count,
     el("div", {class:"row"}, reset,
       el("a", {href:manualHref(""), target:"_blank"}, T["settings.permissions.manual"])),
     body);
+  c.id = "desk-permissions";
+  return c;
 }
 
 // The branches the panel will not commit straight onto.
@@ -6002,9 +6091,8 @@ function hostDialog(at, redraw, kind) {
   setTimeout(recheck, 0);
 }
 
-// The branch names, for whoever owns them: the app, or one desk. Both
-// pages hold the same field, because it is the same question asked one level
-// further in
+// The branch names a desk guards. A folder page holds the same field for the
+// one project that wants something else
 function protectField(owner) {
   const box = el("input", {class:"mono grow", placeholder:T["settings.protect.ph"]});
   const g = owner.git || {};
@@ -6017,13 +6105,6 @@ function protectField(owner) {
     refreshSave();
   });
   return box;
-}
-
-function protectCard() {
-  return card(T["settings.sec.protect"],
-    el("div", {class:"hint"}, T["settings.protect.hint"]),
-    el("div", {class:"row"}, protectField(current)),
-    el("div", {class:"hint"}, T["settings.protect.wild"]));
 }
 
 // The commit-message button, in two levels. The instruction is ADDED to the
@@ -6079,8 +6160,17 @@ function gitFields(owner) {
   ];
 }
 
-function gitCard() {
-  return card(T["settings.sec.git"], ...gitFields(current));
+// What git does in this desk: the branches a commit will not land on, and how
+// the commit message is written
+function gitCard(desk) {
+  const c = card(T["settings.desk.git.title"],
+    el("div", {class:"hint", id:"desk-protect"}, T["settings.protect.hint"]),
+    el("div", {class:"row"}, protectField(desk)),
+    el("div", {class:"hint"}, T["settings.protect.wild"]),
+    el("h3", {}, T["settings.sec.git"]),
+    ...gitFields(desk));
+  c.id = "desk-git";
+  return c;
 }
 
 // Where the program says something when a tab has finished, or when a script
@@ -6099,25 +6189,46 @@ const chatWhere = d => d.type === "telegram"
   ? ((d.chat_id || "").trim() || T["settings.notify.no_chat"])
   : ((d.webhook || "").startsWith("@") ? T["settings.notify.hook_set"] : T["settings.notify.no_hook"]);
 
-function notifyCard() {
-  current.notify = current.notify || {};
+// Where this desk's messages go. The chat services it registered, this PC,
+// and the phones, in one card: each desk has its own, so nothing a person
+// sets up for work is on the list in a personal desk
+function notifyCard(desk) {
+  desk.notify = desk.notify || {};
   const listBox = el("div", {id:"notifylist"});
+  // Where a message goes when the automation names nowhere. Every kind of
+  // destination can be it, so it is chosen here rather than inside one dialog
+  const prim = el("select");
+  prim.addEventListener("change", () => {
+    if (prim.value) desk.primary_notify = prim.value; else delete desk.primary_notify;
+    refreshSave();
+    draw();
+  });
+  const drawPrim = () => {
+    const names = Object.keys(desk.notify);
+    prim.textContent = "";
+    prim.append(el("option", {value:""}, names.length === 1
+      ? fill(T["settings.desk.notify.prim_only"], {name: names[0]})
+      : T["settings.desk.notify.prim_none"]));
+    for (const n of names) prim.append(el("option", {value:n}, n));
+    prim.value = desk.notify[desk.primary_notify] ? desk.primary_notify : "";
+  };
   const draw = () => {
     listBox.textContent = "";
     // A destination that was deleted must not linger as the primary
-    if (current.primary_notify && !current.notify[current.primary_notify]) {
-      delete current.primary_notify;
+    if (desk.primary_notify && !desk.notify[desk.primary_notify]) {
+      delete desk.primary_notify;
     }
-    const names = Object.keys(current.notify).filter(n => isChat(current.notify[n]));
+    drawPrim();
+    const names = Object.keys(desk.notify).filter(n => isChat(desk.notify[n]));
     if (!names.length) {
       listBox.append(el("div", {class:"hint"}, T["settings.notify.empty"]));
       return;
     }
     const rows = el("div", {class:"rows"});
     for (const name of names) {
-      const d = current.notify[name];
-      const primary = current.primary_notify === name;
-      rows.append(el("div", {class:"listrow secretrow", onclick: () => chatDialog(name, draw)},
+      const d = desk.notify[name];
+      const primary = desk.primary_notify === name;
+      rows.append(el("div", {class:"listrow secretrow", onclick: () => chatDialog(desk, name, draw)},
         el("span", {class:"hint", style:"flex:0 0 72px"}, chatLabel(d.type)),
         el("span", {class:"secretname", style:"flex:0 0 120px"}, name),
         el("span", {class:"hint mono secretdesc"}, chatWhere(d)),
@@ -6126,22 +6237,58 @@ function notifyCard() {
     }
     listBox.append(rows);
   };
-  const c = card(T["settings.notify.chat_title"],
+  const c = card(T["settings.desk.notify.title"],
     el("div", {class:"hint"}, T["settings.notify.chat_hint"]),
     listBox,
     el("div", {class:"row"},
-      el("button", {onclick: () => chatDialog(null, draw)}, T["settings.notify.chat_add"])));
+      el("button", {onclick: () => {
+        if (!(desk.id || "").trim()) { toast(T["settings.secrets.desk_needs_id"], true); return; }
+        chatDialog(desk, null, draw);
+      }}, T["settings.notify.chat_add"])),
+    tickDestination(desk, "windows", T["settings.notify.pc.name"], T["settings.notify.pc.label"],
+      T["settings.notify.windows.hint"], draw),
+    tickDestination(desk, "phone", T["settings.notify.phone.name"], T["settings.desk.notify.phone.label"],
+      T["settings.desk.notify.phone.hint"], draw),
+    row(T["settings.desk.notify.primary"], prim));
+  c.id = "desk-notify-desk";
   setTimeout(draw, 0);
   return c;
+}
+
+// A destination with nothing to fill in -- this PC, or the phones -- so it is
+// a tick and a test rather than a record
+function tickDestination(desk, type, called, label, hint, redraw) {
+  const nameOf = () => Object.keys(desk.notify).find(n => (desk.notify[n] || {}).type === type);
+  const box = el("input", {type:"checkbox"});
+  box.checked = !!nameOf();
+  const tick = el("label", {class:"check"});
+  tick.append(box, document.createTextNode(label));
+  const test = el("button", {class:"quiet", onclick: async () => {
+    const r = await settingsApi("/api/notify/test", {type}).catch(() => null);
+    toast((r && r.ok) ? T["settings.notify.test_ok"]
+                      : ((r && r.error) || T["settings.notify.test_failed"]), !(r && r.ok));
+  }}, T["settings.notify.test"]);
+  test.hidden = !box.checked;
+  box.addEventListener("change", () => {
+    const had = nameOf();
+    if (box.checked && !had) desk.notify[called] = {type};
+    if (!box.checked && had) delete desk.notify[had];
+    test.hidden = !box.checked;
+    refreshSave();
+    redraw();
+  });
+  return el("div", {},
+    el("div", {class:"row"}, tick, test),
+    el("div", {class:"hint"}, hint));
 }
 
 // One chat destination. Type, name, the one secret it needs, and -- for
 // Telegram -- which chat. Test sits beside Save because the question anybody
 // has here is "did that arrive", and the answer is worth having before the
 // dialog closes.
-function chatDialog(name, redraw) {
+function chatDialog(desk, name, redraw) {
   const editing = !!name;
-  const d = editing ? current.notify[name] : {type:"slack"};
+  const d = editing ? desk.notify[name] : {type:"slack"};
   const typeSel = el("select");
   for (const t of CHAT_TYPES) typeSel.append(el("option", {value:t}, chatLabel(t)));
   typeSel.value = d.type;
@@ -6158,7 +6305,7 @@ function chatDialog(name, redraw) {
     el("label", {}, T["settings.notify.chat_label"]), el("div", {class:"fieldctl"}, chatIn),
     el("div", {class:"hint"}, T["settings.notify.chat_hint_line"]));
   const primIn = el("input", {type:"checkbox"});
-  primIn.checked = current.primary_notify === name;
+  primIn.checked = desk.primary_notify === name;
   const primLabel = el("label", {class:"check"});
   primLabel.append(primIn, document.createTextNode(T["settings.notify.primary_label"]));
 
@@ -6193,7 +6340,7 @@ function chatDialog(name, redraw) {
     const n = nameIn.value.trim();
     let first = null;
     const nameWhy = !n ? T["settings.notify.name_required"]
-      : ((!editing || n !== name) && current.notify[n] ? T["settings.notify.name_dup"] : null);
+      : ((!editing || n !== name) && desk.notify[n] ? T["settings.notify.name_dup"] : null);
     fieldFault(nameIn, nameWhy);
     if (nameWhy) first = {at: nameIn, why: nameWhy};
     // A destination with no address delivers nothing, and the one already
@@ -6259,8 +6406,8 @@ function chatDialog(name, redraw) {
             if (!await confirmAction(fill(T["settings.notify.delete_confirm"], {name}), T["settings.notify.delete"])) return;
             await dropSecretRef(d.token);
             await dropSecretRef(d.webhook);
-            delete current.notify[name];
-            if (current.primary_notify === name) delete current.primary_notify;
+            delete desk.notify[name];
+            if (desk.primary_notify === name) delete desk.primary_notify;
             refreshSave(); shut(); redraw();
           }}, T["settings.notify.delete"])
         : null,
@@ -6289,7 +6436,8 @@ function chatDialog(name, redraw) {
       if (typeSel.value !== d.type) { delete it.token; delete it.webhook; }
     }
     if (secretIn.value.trim()) {
-      const sk = "notify/" + slugId(n) + (forTelegram() ? "-token" : "");
+      // Filed under this desk, in a shape no script can ask for
+      const sk = "notify/" + desk.id.trim() + "/" + slugId(n) + (forTelegram() ? "-token" : "");
       const r = await saveSecret({key: sk, description: "notify " + n,
         value: secretIn.value.trim(), human: true, ai: false, urls: []});
       if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return; }
@@ -6297,11 +6445,11 @@ function chatDialog(name, redraw) {
       else { it.webhook = "@" + sk; delete it.token; }
     }
     if (forTelegram()) it.chat_id = chatIn.value.trim();
-    if (editing && n !== name) delete current.notify[name];
-    current.notify[n] = it;
-    if (primIn.checked) current.primary_notify = n;
-    else if (current.primary_notify === n || (editing && current.primary_notify === name)) {
-      delete current.primary_notify;
+    if (editing && n !== name) delete desk.notify[name];
+    desk.notify[n] = it;
+    if (primIn.checked) desk.primary_notify = n;
+    else if (desk.primary_notify === n || (editing && desk.primary_notify === name)) {
+      delete desk.primary_notify;
     }
     refreshSave(); shut(); redraw();
     toast(fill(T["settings.notify.saved_name"], {name: n}));
@@ -6310,68 +6458,15 @@ function chatDialog(name, redraw) {
   setTimeout(() => (editing ? secretIn : nameIn).focus(), 0);
 }
 
-// This PC's own notifications. Nothing to fill in -- no webhook, no account --
-// so it is a tick and a test, not a record
-function pcNotifyCard() {
-  current.notify = current.notify || {};
-  const nameOf = () => Object.keys(current.notify).find(n => (current.notify[n] || {}).type === "windows");
-  const box = el("input", {type:"checkbox"});
-  box.checked = !!nameOf();
-  const label = el("label", {class:"check"});
-  label.append(box, document.createTextNode(T["settings.notify.pc.label"]));
-  const test = el("button", {onclick: async () => {
-    const r = await settingsApi("/api/notify/test", {type:"windows"}).catch(() => null);
-    toast((r && r.ok) ? T["settings.notify.test_ok"]
-                      : ((r && r.error) || T["settings.notify.test_failed"]), !(r && r.ok));
-  }}, T["settings.notify.test"]);
-  const line = el("div", {class:"row"}, test);
-  line.hidden = !box.checked;
-  box.addEventListener("change", () => {
-    const had = nameOf();
-    if (box.checked && !had) current.notify[T["settings.notify.pc.name"]] = {type:"windows"};
-    if (!box.checked && had) {
-      delete current.notify[had];
-      if (current.primary_notify === had) delete current.primary_notify;
-    }
-    line.hidden = !box.checked;
-    refreshSave();
-  });
-  return card(T["settings.notify.pc.title"],
-    el("div", {class:"hint"}, T["settings.notify.pc.sub"]),
-    label,
-    el("div", {class:"hint"}, T["settings.notify.windows.hint"]),
-    line);
-}
-
-// A phone. Nothing here can be typed: the phone asks its own browser for
-// permission and hands back what it gets, so this is the way to get the phone
-// to the right page, and the list of the ones that answered
+// The phones that receive notifications. Nothing here can be typed: the phone
+// asks its own browser for permission and hands back what it gets, so this is
+// the way to get the phone to the right page, and the list of the ones that
+// answered. A phone is this machine's, signed up once; whether a desk's
+// messages go to it is ticked on that desk's page
 function phoneNotifyCard() {
-  // A phone that has said yes is a destination; one that has been forgotten is
-  // not. Nobody should have to keep a second list in step with the first, so
-  // this one follows it
-  const sync = async () => {
-    const j = await phones().catch(() => ({}));
-    const any = ((j.subs || []).length) > 0;
-    const had = Object.keys(current.notify || {})
-      .find(n => (current.notify[n] || {}).type === "phone");
-    if (any && !had) { current.notify[T["settings.notify.phone.name"]] = {type:"phone"}; refreshSave(); }
-    if (!any && had) {
-      delete current.notify[had];
-      if (current.primary_notify === had) delete current.primary_notify;
-      refreshSave();
-    }
-  };
-  const c = card(T["settings.notify.phone.title"],
+  return card(T["settings.notify.phone.title"],
     el("div", {class:"hint"}, T["settings.notify.phone.sub"]),
     phoneBox());
-  const onChange = () => {
-    if (!c.isConnected) { document.removeEventListener("phones-changed", onChange); return; }
-    sync();
-  };
-  document.addEventListener("phones-changed", onChange);
-  setTimeout(sync, 0);
-  return c;
 }
 const settingsApi = (path, body) => fetch(path, body === undefined
   ? {headers:{"X-Token":TOKEN}}
@@ -6514,7 +6609,7 @@ function openNotifyPopup() {
   return new Promise(resolve => {
     const m = openModal(
       el("h2", {}, T["settings.tab.notify.add_title"]),
-      notifyCard(),
+      notifyCard(desks[sel.desk]),
       el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:var(--s3);padding-top:var(--s3);justify-content:flex-end"},
         el("button", {class:"primary", onclick: () => { m.remove(); resolve(); }}, T["common.done"])));
     m.addEventListener("click", e => { if (e.target === m) resolve(); });
@@ -6943,15 +7038,18 @@ function deskPane(desk) {
   }
   box.append(deskDiscussCard(desk));
   box.append(deskStopsCard(desk));
-  box.append(deskGitCard(desk));
-  box.append(deskGithubCard(desk));
-  box.append(deskNotifyCard(desk));
-  box.append(deskProvidersCard(desk));
+  // Everything below is this desk's alone, with no answer of the app's
+  // underneath: what it notifies, which AI accounts it uses, what its
+  // automation may do and reach, what git does, and its secrets
+  box.append(notifyCard(desk));
+  box.append(providersCard(desk));
+  box.append(permissionsCard(desk));
   // Nothing to be sure about means no card at all, and append() would write
   // the word "null" onto the page if handed one
   const gates = deskCapsCard(desk);
   if (gates) box.append(gates);
-  box.append(deskPermissionsCard(desk));
+  box.append(gitCard(desk));
+  box.append(deskGithubCard(desk));
   box.append(deskSecretsCard(desk));
 
   // Writing it out is about this desk. Reading one in makes a different
@@ -6974,7 +7072,7 @@ function deskPane(desk) {
         const j = await fetchSecrets();
         const mine = ((j && j.secrets) || [])
           .map(s => s.key)
-          .filter(k => k.startsWith(id + ".") || k.startsWith("ssh/" + id + "/"));
+          .filter(k => k.startsWith(id + ".") || ["ssh/", "provider/", "notify/"].some(p => k.startsWith(p + id + "/")));
         if (mine.length &&
             !await confirmAction(fill(T["settings.desk.delete_secrets"], {n: mine.length}), T["settings.desk.delete"])) return;
         await dropSecrets(mine);
@@ -6984,139 +7082,12 @@ function deskPane(desk) {
   return box;
 }
 
-// Where a message from this desk goes.
-//
-// The destinations themselves are registered once for the app -- an address and
-// a token are worth writing down once. Which of them this desk may reach
-// is a different question, and it is the one worth asking here: work finishing
-// its task into a personal chat is not a preference anybody holds, and it is
-// not something care when writing the automation can prevent.
-//
-// Both answers show what is in force and where it came from, because a line
-// drawn in one of two places is only worth having if a person can see which
-// place drew it.
-// The line a desk draws around something the app registered once.
-//
-// The same question is asked of notification destinations and of model
-// connections, so it is asked with the same control: a tick for "only these",
-// and the list to tick. Unticked, this desk has the app's whole list --
-// and ticking starts from exactly that list, so drawing the line changes
-// nothing at all until a box is actually unticked. Nobody finds out they have
-// drawn a line by having something stop working.
-function reachControl(desk, key, names, label, after) {
-  const own = el("input", {type:"checkbox"});
-  own.checked = Array.isArray(desk[key]);
-  const ownLabel = el("label", {class:"check"});
-  ownLabel.append(own, document.createTextNode(label));
-  const list = el("div", {class:"row"});
-  const drawList = () => {
-    list.textContent = "";
-    list.hidden = !own.checked;
-    for (const n of names()) {
-      const cb = el("input", {type:"checkbox"});
-      cb.checked = (desk[key] || []).includes(n);
-      cb.addEventListener("change", () => {
-        const kept = new Set(desk[key] || []);
-        if (cb.checked) kept.add(n); else kept.delete(n);
-        desk[key] = names().filter(x => kept.has(x));
-        after();
-        refreshSave();
-      });
-      const lab = el("label", {class:"check"});
-      lab.append(cb, document.createTextNode(n));
-      list.append(lab);
-    }
-  };
-  own.addEventListener("change", () => {
-    if (own.checked) desk[key] = names().slice();
-    else delete desk[key];
-    drawList();
-    after();
-    refreshSave();
-  });
-  drawList();
-  return [el("div", {class:"row"}, ownLabel), list];
-}
-
-// Which model connections a tab here may launch.
-//
-// A connection carries the account the inference is billed to and the account
-// the text is handed to. Sharing one between work and private work is the
-// accident rather than the convenience, and it is not something care when
-// writing the tab prevents: the name is all a tab says, and the name resolves
-// to whatever the app has.
-function deskProvidersCard(desk) {
-  current.providers = current.providers || {};
-  const all = () => Object.keys(current.providers);
-  const reaching = () => Array.isArray(desk.providers) ? all().filter(n => desk.providers.includes(n)) : all();
-  const inForce = el("div", {class:"hint"});
-  const draw = () => {
-    const only = reaching();
-    if (!only.length) inForce.textContent = T["settings.desk.providers.now_none"];
-    else inForce.textContent = fill(
-      Array.isArray(desk.providers) ? T["settings.desk.providers.now_own"] : T["settings.desk.providers.now_app"],
-      {names: only.join(", ")});
-  };
-  draw();
-  if (!all().length) return card(T["settings.desk.providers.title"],
-    el("div", {class:"hint"}, T["settings.desk.providers.none"]));
-  return card(T["settings.desk.providers.title"],
-    el("div", {class:"hint"}, T["settings.desk.providers.hint"]),
-    ...reachControl(desk, "providers", all, T["settings.desk.providers.own"], draw),
-    inForce);
-}
-
-// What git does in this desk: which branches refuse a commit, and how the
-// message gets written.
-//
-// A desk is usually one person's work for one party, and both of these
-// belong to that: the company's repositories guard release branches the private
-// ones have never heard of, and the sentence a commit message has to obey is the
-// reviewer's, not the app's.
-function deskGitCard(desk) {
-  const own = el("input", {type:"checkbox"});
-  own.checked = !!desk.git;
-  const ownLabel = el("label", {class:"check"});
-  ownLabel.append(own, document.createTextNode(T["settings.desk.git.own"]));
-  const holder = el("div", {});
-  const inForce = el("div", {class:"hint"});
-  const draw = () => {
-    holder.textContent = "";
-    const g = desk.git || current.git || {};
-    const names = protectText(Array.isArray(g.protect) ? g.protect : PROTECT_DEFAULT);
-    inForce.textContent = fill(desk.git ? T["settings.desk.git.now_own"] : T["settings.desk.git.now_app"],
-      {names: names || T["settings.desk.git.none"],
-       how: g.message_lua !== undefined ? T["settings.desk.git.by_lua"]
-          : ((g.message_hint || "").trim() ? T["settings.desk.git.by_hint"] : T["settings.desk.git.by_builtin"])});
-    if (!desk.git) return;
-    holder.append(
-      el("div", {class:"hint"}, T["settings.protect.hint"]),
-      el("div", {class:"row"}, protectField(desk)),
-      el("div", {class:"hint"}, T["settings.protect.wild"]),
-      ...gitFields(desk));
-  };
-  own.addEventListener("change", () => {
-    // A copy of the app's, so drawing the line changes nothing by itself
-    if (own.checked) desk.git = JSON.parse(JSON.stringify(current.git || {}));
-    else delete desk.git;
-    draw();
-    refreshSave();
-  });
-  draw();
-  return card(T["settings.desk.git.title"],
-    el("div", {class:"hint"}, T["settings.desk.git.hint"]),
-    el("div", {class:"row"}, ownLabel),
-    inForce,
-    holder);
-}
-
 // Which GitHub account answers for this desk.
 //
-// The pull request number on a branch's row is read with a token, and for a long
-// time that was one token for the whole machine -- so a company repository and a
-// private one were both asked about with whichever account happened to answer
-// first. A desk can now be given its own, as the secret named "github"
-// beside its other secrets.
+// The pull request number on a branch's row is read with a token, and only the
+// token this desk was given -- the secret named "github" beside its other
+// secrets. The machine's own sign-in is not read: it is one account for every
+// desk, which is the mix-up desks exist to prevent.
 //
 // The state and the date, never the value. And a token that has run out is said
 // out loud: a row that quietly stops showing numbers looks exactly like a branch
@@ -7125,7 +7096,6 @@ function deskGitCard(desk) {
 function deskGithubCard(desk) {
   const dot = el("span", {class:"dot"});
   const state = el("span", {class:"hint"}, T["settings.desk.github.checking"]);
-  const where = el("div", {class:"hint"});
   const life = el("div", {class:"hint"});
   const set = el("button", {onclick: () => {
     if (!(desk.id || "").trim()) { toast(T["settings.secrets.desk_needs_id"], true); return; }
@@ -7137,7 +7107,6 @@ function deskGithubCard(desk) {
       j = await (await fetch("/api/github?desk=" + encodeURIComponent(desk.id || ""),
         {headers:{"X-Token":TOKEN}})).json();
     } catch (e) { state.textContent = T["settings.desk.github.unknown"]; return; }
-    const source = j.source ? T["settings.desk.github.from." + j.source] : null;
     dot.classList.add(j.signed_in ? "on" : "off");
     if (!j.source) {
       state.textContent = T["settings.desk.github.none"];
@@ -7155,7 +7124,6 @@ function deskGithubCard(desk) {
         : fill(T["settings.desk.github.unreachable"], {status: j.status || 0});
       state.classList.add("warn");
     }
-    if (source) where.textContent = fill(T["settings.desk.github.where"], {source});
     if (j.expires_days === null || j.expires_days === undefined) {
       if (j.signed_in) life.textContent = T["settings.desk.github.forever"];
     } else if (j.expires_days < 0) {
@@ -7166,84 +7134,31 @@ function deskGithubCard(desk) {
       life.classList.toggle("warn", j.expires_days <= 7);
     }
   })();
-  return card(T["settings.desk.github.title"],
+  const c = card(T["settings.desk.github.title"],
     el("div", {class:"hint"}, T["settings.desk.github.hint"]),
     el("div", {class:"row"}, dot, state),
-    where,
     life,
     el("div", {class:"row"}, set),
     el("div", {class:"hint"}, T["settings.desk.github.kind"]),
     el("div", {class:"hint"}, T["settings.desk.github.org"]));
-}
-
-// Who may run which command here.
-//
-// The table is the app's until this desk takes one of its own, and then it
-// is entirely its own -- rows it does not mention answer from the standard
-// answers, not from the app's table. Two places to read one row is the thing
-// this avoids: the row nobody thought to look in the other place for is the one
-// that matters.
-//
-// Taking a table copies the app's, so the act of drawing the line changes
-// nothing until a box does.
-function deskPermissionsCard(desk) {
-  const own = el("input", {type:"checkbox"});
-  own.checked = !!desk.automation_permissions;
-  const ownLabel = el("label", {class:"check"});
-  ownLabel.append(own, document.createTextNode(T["settings.desk.grants.own"]));
-  const holder = el("div", {});
-  const inForce = el("div", {class:"hint"});
-  // The count follows every box as it is ticked, not only the moment the table
-  // was taken: said once and left, it read "0 differ" over a table somebody
-  // had just changed
-  const count = () => {
-    const rows = Object.keys(desk.automation_permissions || current.automation_permissions || {}).length;
-    inForce.textContent = fill(
-      desk.automation_permissions ? T["settings.desk.grants.now_own"] : T["settings.desk.grants.now_app"],
-      {n: rows});
-  };
-  const draw = () => {
-    holder.textContent = "";
-    count();
-    if (!desk.automation_permissions) return;
-    const {body, reset} = permissionsTable(desk, count);
-    holder.append(el("div", {class:"row"}, reset,
-      el("a", {href:manualHref(""), target:"_blank"}, T["settings.permissions.manual"])), body);
-  };
-  own.addEventListener("change", () => {
-    // A copy of the app's, so nothing changes the moment the line is drawn
-    if (own.checked) desk.automation_permissions = JSON.parse(JSON.stringify(current.automation_permissions || {}));
-    else delete desk.automation_permissions;
-    draw();
-    refreshSave();
-  });
-  draw();
-  return card(T["settings.desk.grants.title"],
-    el("div", {class:"hint"}, T["settings.desk.grants.hint"]),
-    el("div", {class:"row"}, ownLabel),
-    inForce,
-    holder);
+  c.id = "desk-github";
+  return c;
 }
 
 // What automation running here may reach outside the terminal.
 //
 // This is the one advanced setting with no editor: the gateways, and the folders
-// and hosts raw paths are allowed in, are written by hand into the settings
-// file. So what this card does is say which of the two places is being obeyed
-// and what it says -- without that, a person reading their script's error had no
-// way to tell whether the doors in front of it were this desk's or the
-// app's. A gateway carries a token already attached, which is why it is worth
-// being sure.
+// and hosts raw paths are allowed in, are written by hand into this desk in the
+// settings file. So what this card does is say what they are -- a gateway
+// carries a token already attached, which is why it is worth being sure.
 function deskCapsCard(desk) {
-  const own = !!desk.capabilities;
-  const spec = desk.capabilities || current.capabilities || {};
-  const app = current.capabilities || {};
+  const spec = desk.capabilities || {};
   const some = o => Object.keys(o.files || {}).length || Object.keys(o.http || {}).length
     || (o.allow_dirs || []).length || (o.allow_hosts || []).length;
-  // Nothing anywhere is the ordinary state, and a card saying so on every page
-  // is noise. Said only where there is something to be sure about
-  if (!some(spec) && !some(app)) return null;
-  const body = [el("div", {class:"hint"}, own ? T["settings.desk.caps.own"] : T["settings.desk.caps.app"])];
+  // Nothing is the ordinary state, and a card saying so on every page is
+  // noise. Said only where there is something to be sure about
+  if (!some(spec)) return null;
+  const body = [el("div", {class:"hint"}, T["settings.desk.caps.own"])];
   const put = (label, list) => {
     if (list.length) body.push(el("div", {class:"hint mono"}, label + ": " + list.join(", ")));
   };
@@ -7251,64 +7166,10 @@ function deskCapsCard(desk) {
   put(T["settings.desk.caps.http"], Object.keys(spec.http || {}));
   put(T["settings.desk.caps.dirs"], spec.allow_dirs || []);
   put(T["settings.desk.caps.hosts"], spec.allow_hosts || []);
-  if (!some(spec)) body.push(el("div", {class:"hint"}, T["settings.desk.caps.nothing"]));
   body.push(el("div", {class:"hint"}, T["settings.desk.caps.where"]));
-  return card(T["settings.desk.caps.title"], ...body);
-}
-
-function deskNotifyCard(desk) {
-  current.notify = current.notify || {};
-  const all = () => Object.keys(current.notify);
-  const reaching = () => Array.isArray(desk.notify) ? all().filter(n => desk.notify.includes(n)) : all();
-  const prim = el("select");
-  const inForce = el("div", {class:"hint"});
-
-  const drawForce = () => {
-    const app = (current.primary_notify || "").trim();
-    // The app's own default is only inherited when it can be reached from
-    // here, which is the same rule the program settles on at launch
-    const inherited = (app && reaching().includes(app)) ? app : "";
-    const mine = (desk.primary_notify || "").trim();
-    const only = reaching();
-    if (mine) inForce.textContent = fill(T["settings.desk.notify.now_own"], {name: mine});
-    else if (inherited) inForce.textContent = fill(T["settings.desk.notify.now_app"], {name: inherited});
-    else if (only.length === 1) inForce.textContent = fill(T["settings.desk.notify.now_only"], {name: only[0]});
-    else inForce.textContent = T["settings.desk.notify.now_nobody"];
-    return inherited;
-  };
-
-  const drawPrim = () => {
-    const inherited = drawForce();
-    prim.textContent = "";
-    prim.append(el("option", {value:""}, inherited
-      ? fill(T["settings.desk.notify.prim_app"], {name: inherited})
-      : T["settings.desk.notify.prim_none"]));
-    for (const n of reaching()) prim.append(el("option", {value:n}, n));
-    prim.value = reaching().includes((desk.primary_notify || "").trim()) ? desk.primary_notify.trim() : "";
-  };
-  prim.addEventListener("change", () => {
-    if (prim.value) desk.primary_notify = prim.value;
-    else delete desk.primary_notify;
-    drawForce();
-    refreshSave();
-  });
-
-  // A default nothing can reach any more is not a default
-  const after = () => {
-    if (Array.isArray(desk.notify) && !desk.notify.includes((desk.primary_notify || "").trim())) {
-      delete desk.primary_notify;
-    }
-    drawPrim();
-  };
-
-  drawPrim();
-  if (!all().length) return card(T["settings.desk.notify.title"],
-    el("div", {class:"hint"}, T["settings.desk.notify.none"]));
-  return card(T["settings.desk.notify.title"],
-    el("div", {class:"hint"}, T["settings.desk.notify.hint"]),
-    row(T["settings.desk.notify.primary"], prim),
-    ...reachControl(desk, "notify", all, T["settings.desk.notify.own"], after),
-    inForce);
+  const c = card(T["settings.desk.caps.title"], ...body);
+  c.id = "desk-caps";
+  return c;
 }
 
 // Where the work happens. One folder per group, and a tab has none of its own:
@@ -8163,8 +8024,8 @@ function tabPane(desk, t) {
 
   // Notify on answer: a beginner-friendly way to get a ping when this tab's AI
   // finishes, without writing on_done Lua. Lists the destinations registered
-  // under General → Notifications, and ends with the way to add one, so a
-  // person who arrives here first does not have to know where that is.
+  // on this tab's desk, and ends with the way to add one, so a person who
+  // arrives here first does not have to know where that is.
   //
   // Not for a panel: it has no process, so nothing ever starts, answers or
   // exits, and every one of these questions would be about something that
@@ -8174,7 +8035,8 @@ function tabPane(desk, t) {
     const nbox = el("div");
     const drawNotify = () => {
       nbox.textContent = "";
-      const dests = Object.keys(current.notify || {});
+      const deskNotify = () => ((desks[sel.desk] || {}).notify) || {};
+      const dests = Object.keys(deskNotify());
       const opts = [["", T["settings.tab.notify.none"]]]
         .concat(dests.map(n => [n, n]), [["add-dest", T["settings.tab.notify.add"]]]);
       // The reply link and its warning live directly under the destination, so
@@ -8199,7 +8061,7 @@ function tabPane(desk, t) {
         // itself, so the link would be a longer way round to the same place --
         // and it never even appears, because a banner shows two lines and the
         // link is on the third. Say so rather than let it be ticked for nothing.
-        const kind = ((current.notify || {})[dest] || {}).type;
+        const kind = (deskNotify()[dest] || {}).type;
         const here = kind === "windows";
         const on = !!dest && !here;
         if (!on) delete t.notify_reply;
@@ -8237,9 +8099,9 @@ function tabPane(desk, t) {
           // Not a destination: put back what was chosen, open the editor, and
           // point the tab at whatever it added.
           if (before) t.notify_on_done = before; else delete t.notify_on_done;
-          const had = new Set(Object.keys(current.notify || {}));
+          const had = new Set(Object.keys(deskNotify()));
           await openNotifyPopup();
-          const added = Object.keys(current.notify || {}).find(n => !had.has(n));
+          const added = Object.keys(deskNotify()).find(n => !had.has(n));
           if (added) t.notify_on_done = added;
           drawNotify(); refreshSave();
           return;
@@ -8384,7 +8246,7 @@ function aiPanel(t, cmdInput, rebuild, real) {
     const ok = c.check ? aiEngines.some(e => e.id === c.check) : true;
     sel.append(el("option", {value:"cli:" + c.cmd}, c.label + (!ok ? T["settings.tab.common.missing"] : "")));
   }
-  const provs = Object.keys(current.providers || {});
+  const provs = Object.keys(deskProviders());
   for (const n of provs) sel.append(el("option", {value:"prov:" + n}, n));
   sel.append(el("option", {value:"add-ai"}, T["settings.tab.ai.add"]));
 
@@ -8435,7 +8297,7 @@ function aiPanel(t, cmdInput, rebuild, real) {
       setCommand(t, cmdInput, "model " + m.provider + (name ? "/" + name : ""));
     };
     modelIn.addEventListener("input", () => setModel(modelIn.value.trim()));
-    const cand = modelCandidates(() => current.providers[m.provider] || {},
+    const cand = modelCandidates(() => deskProviders()[m.provider] || {},
       id => { modelIn.value = id; setModel(id); });
     detail.append(
       el("div", {class:"row"}, el("label", {}, T["settings.model.name_label"]), modelIn, cand.btn),
@@ -8449,9 +8311,9 @@ function aiPanel(t, cmdInput, rebuild, real) {
   sel.addEventListener("change", async () => {
     const v = sel.value;
     if (v === "add-ai") {
-      const before = new Set(Object.keys(current.providers || {}));
+      const before = new Set(Object.keys(deskProviders()));
       await openProvidersPopup();
-      const added = Object.keys(current.providers || {}).find(n => !before.has(n));
+      const added = Object.keys(deskProviders()).find(n => !before.has(n));
       if (added) setCommand(t, cmdInput, "model " + added + "/");
       rebuild();                          // redraw: the new provider now appears (and its model field)
       return;
@@ -8522,7 +8384,7 @@ function openProvidersPopup() {
     const m = openModal(
       el("h2", {}, T["settings.tab.ai.add_title"]),
       el("div", {class:"hint"}, T["settings.tab.ai.api_hint"]),
-      providersCard(),
+      providersCard(desks[sel.desk]),
       el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:var(--s3);padding-top:var(--s3);justify-content:flex-end"},
         el("button", {class:"primary", onclick: () => { m.remove(); resolve(); }}, T["common.done"])));
     m.addEventListener("click", e => { if (e.target === m) resolve(); });
@@ -9236,18 +9098,16 @@ async function load() {
                  browsers:w.browsers || null,
                  secrets_allow: w.secrets_allow || [],
                  secrets_allow_all: !!w.secrets_allow_all,
-                 // Absent is its own answer (follow the app), so an unwritten
-                 // one must not become an empty list on the way in
-                 notify: Array.isArray(w.notify) ? w.notify : null,
+                 // This desk's own, whole. Nothing of the app's stands behind any
+                 // of them, so an unwritten one is simply empty
+                 notify: isObj(w.notify) ? w.notify : {},
                  primary_notify: w.primary_notify || "",
-                 providers: Array.isArray(w.providers) ? w.providers : null,
+                 providers: isObj(w.providers) ? w.providers : {},
                  // Written by hand in the file, shown but not edited here, and
                  // carried through a save rather than dropped by one
-                 capabilities: w.capabilities || null,
-                 // An empty table is its own answer, so the test is for the key
-                 // being there at all rather than for it holding anything
-                 automation_permissions: w.automation_permissions || null,
-                 git: w.git || null,
+                 capabilities: isObj(w.capabilities) ? w.capabilities : {},
+                 automation_permissions: isObj(w.automation_permissions) ? w.automation_permissions : {},
+                 git: isObj(w.git) ? w.git : {},
                  stops: Array.isArray(w.stops) ? w.stops : [],
                  discuss: w.discuss || null };
     if (desk.file) {
@@ -9356,12 +9216,9 @@ function payload() {
                          settle_ms:(o.settle_ms ?? 1800), confirm:(o.confirm || "off") };
   }
   if (out.remote && !out.remote.enabled && !out.remote.allow_public) delete out.remote;
-  // Don't save a provider with an empty base_url (avoids leaving leftover junk from a still-in-progress add)
-  if (out.providers) {
-    out.providers = Object.fromEntries(
-      Object.entries(out.providers).filter(([, p]) => p && (p.base_url || "").trim()));
-    if (!Object.keys(out.providers).length) delete out.providers;
-  }
+  // Where these used to be written for the whole app. They are each desk's
+  // now, and a copy left up here would read as an answer that still applies
+  for (const k of ["notify", "primary_notify", "providers", "capabilities", "automation_permissions", "git"]) delete out[k];
   delete out.lua; delete out.tabs;
 
   // A group is written with its own tabs nested back under it. Its name and id
@@ -9416,16 +9273,22 @@ function payload() {
     // secret was whose -- so it is kept rather than dropped on the first save
     if (w.secrets_allow && w.secrets_allow.length) o.secrets_allow = w.secrets_allow;
     if (w.secrets_allow_all) o.secrets_allow_all = true;
-    // Where this desk's notifications go. Written only when it has an
-    // answer of its own: nothing written is how it says "whatever the app says"
-    if (Array.isArray(w.notify)) o.notify = w.notify;
-    if ((w.primary_notify || "").trim()) o.primary_notify = w.primary_notify.trim();
-    // Which model connections this desk may use, written the same way:
-    // nothing written is "all of the app's"
-    if (Array.isArray(w.providers)) o.providers = w.providers;
-    if (w.capabilities) o.capabilities = w.capabilities;
-    if (w.automation_permissions) o.automation_permissions = w.automation_permissions;
-    if (w.git) o.git = w.git;
+    // This desk's own notification destinations, model connections, doors,
+    // permission table and git settings. Each written only when it holds
+    // something, so a desk with none of them stays a short entry
+    const some = v => isObj(v) && Object.keys(v).length > 0;
+    if (some(w.notify)) o.notify = w.notify;
+    if ((w.primary_notify || "").trim() && some(w.notify) && w.notify[w.primary_notify.trim()]) {
+      o.primary_notify = w.primary_notify.trim();
+    }
+    // Don't save a connection with an empty base_url (leftover junk from a
+    // still-in-progress add)
+    const provs = Object.fromEntries(Object.entries(w.providers || {})
+      .filter(([, p]) => p && (p.base_url || "").trim()));
+    if (some(provs)) o.providers = provs;
+    if (some(w.capabilities)) o.capabilities = w.capabilities;
+    if (some(w.automation_permissions)) o.automation_permissions = w.automation_permissions;
+    if (some(w.git)) o.git = w.git;
     // Stop conditions (judge). Already written into the file for a file-referenced desk, so don't duplicate it here
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
     // AI vs AI discussion
@@ -9519,6 +9382,15 @@ load().then(() => {
   const sec = q.get("section");
   if (sec && globalSections().some(s => s.id === sec)) {
     goSection(sec, "center");
+    return;
+  }
+  // A card that lives on a desk's page: that desk, at that card
+  if (sec && DESK_CARDS.includes(sec)) {
+    const at = idx("desk");
+    sel = {desk:(desks[at] ? at : sel.desk), grp:null, tab:null, global:false};
+    render();
+    const c = document.getElementById("desk-" + sec);
+    if (c) c.scrollIntoView({block:"start"});
     return;
   }
   const wi = idx("addtab");

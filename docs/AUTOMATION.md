@@ -563,11 +563,12 @@ Several brakes keep automation from running away.
 
 ## 6. Files and network access (advanced, off by default)
 
-When you really need it, register a "gateway" in `config.json` and it becomes available.
-It cannot be edited from the settings screen (the impact is large, so it is only for
-people who edit the file directly).
+When you really need it, register a "gateway" **inside a desk** in `config.json` and that
+desk's automation can use it. It cannot be edited from the settings screen (the impact is
+large, so it is only for people who edit the file directly).
 
 ```jsonc
+// "desks": [ { "name": "…", here ↓ } ]
 "capabilities": {
   "files": {
     "reports": { "dir": "reports", "read": true, "write": true }
@@ -619,11 +620,13 @@ Hosts are matched **exactly** and only `https` is allowed
 (tricks like `api.example.com.evil.com` are rejected).
 Every file and network operation is recorded in `logs/hooks.log`.
 
-### A desk can answer for itself
+### All of it belongs to a desk
 
-Everything in this section is the app's answer for every desk. A desk
-that works for somebody else -- a company's repositories beside your own -- can
-write its own instead, inside its entry in `desks`:
+Gateways, automation permissions, notification destinations, model connections and
+git settings are **each desk's own**. There is no app-wide version of any of them:
+what a desk does not have, it does not have (no gateways, the standard permissions,
+no destinations, no connections, the built-in git settings). Work's repositories
+beside your own on one machine never share an API key or a chat.
 
 ```jsonc
 "desks": [
@@ -632,23 +635,28 @@ write its own instead, inside its entry in `desks`:
     "id": "work",
     "capabilities": { "http": { "deploy": { "url": "https://example.com/deploy" } } },
     "automation_permissions": { "write_path": { "ai": false } },
-    "notify": ["work-slack"],          // of the registered destinations, only this one
+    "notify": {
+      "work-slack": { "type": "slack", "webhook": "@notify/work/work-slack" },
+      "This PC": { "type": "windows" }
+    },
     "primary_notify": "work-slack",    // where notify(text) with no name lands
-    "providers": ["work-azure"],       // the model connections its tabs may use
+    "providers": {
+      "work-azure": { "base_url": "https://….openai.azure.com/…", "api_key": "@provider/work/work-azure" }
+    },
     "git": { "protect": ["main", "release/*"] }
   }
 ]
 ```
 
-Each of these replaces the app's answer rather than adding to it, and each may
-be left out, which means "whatever the app says". The desk's settings page
-shows what is in force and which of the two places said it.
+A value starting with `@` is the name of a secret. Registered from the settings
+screen, keys and webhooks are stored encrypted and only their names are written
+here. A new desk can start as a copy of the one you are on, keys included.
 
-Its GitHub token is not written here: it is the secret named `github` beside
-that desk's other secrets, and the desk page offers to set it. Use a
-fine-grained token covering only the repositories that desk works on. A
-desk given none falls back to `GITHUB_TOKEN` in the environment, then to
-whatever your own `gh` is signed in as.
+Its GitHub token is not written here either: it is the secret named `github`
+beside that desk's other secrets, and the desk page offers to set it. Use a
+fine-grained token covering only the repositories that desk works on. **Only that
+desk's token is used**: `GITHUB_TOKEN` in the environment and your own `gh`
+sign-in are not read, since either would be one account for every desk.
 
 ---
 
@@ -741,7 +749,7 @@ that presented no valid key.
 Everything automation can call, in one place. The sections above teach the common
 ones; this is the complete list.
 
-### Whether it may run is decided in Settings > Automation permissions
+### Whether it may run is decided on each desk's Automation permissions card
 
 The same command can be allowed for **you** and refused for **an AI**. The settings
 card lists every command with two boxes: one for a person, one for an AI.
@@ -772,10 +780,12 @@ A command that is switched off answers with a sentence saying so, and the refusa
 is written to `logs/hooks.log`. Nothing ever fails in silence. `shikisha.list()`
 answers for whoever asked, too: it leaves out what that caller may not call.
 
-Only the rows you changed are written to the config file. Anything left standard is
-not written at all.
+The table is each desk's (in the settings screen it is on the desk's page). Only
+the rows you changed are written to the config file; anything left standard is not
+written at all.
 
 ```jsonc
+// "desks": [ { "name": "…", here ↓ } ]
 "automation_permissions": {
   "lua": { "ai": true },          // open it to an AI as well
   "send_to_tab": { "ai": false }  // close it to an AI
