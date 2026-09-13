@@ -747,6 +747,37 @@ pub struct BrowseState {
     /// Why nothing is listed, when nothing is
     #[serde(default)]
     pub error: Option<String>,
+    /// When each folder in `dirs` last changed, in the same order, as seconds
+    /// since 1970. Beside the names rather than inside them so that the settings
+    /// page, which reads `dirs` as plain paths, reads exactly what it always has.
+    /// `None` where the system would not say
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modified: Vec<Option<i64>>,
+    /// Where a walk can start: home, the desktop, the projects this app already
+    /// knows, the drives. The same places whichever folder is being looked at,
+    /// so the column they sit in does not change under somebody's pointer
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub places: Vec<BrowsePlace>,
+    /// What happened to the folder somebody last asked to make here: its path
+    /// when it was made, so the list can point at it, or why it was not. Kept
+    /// apart from `error`, which is about the listing -- a name that could not be
+    /// used is no reason to empty the list the person is looking at
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_error: Option<String>,
+}
+
+/// One place a walk can start from.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct BrowsePlace {
+    /// `home`, `desktop`, `project` or `drive` -- what it is, so the page can
+    /// draw it the way that kind of place is drawn and say it in its own words
+    pub kind: String,
+    /// What it is called. Empty for home and the desktop, whose names are words
+    /// the page already has; the project's name, or the drive's letter
+    pub name: String,
+    pub path: String,
 }
 
 impl BrowseState {
@@ -798,7 +829,7 @@ impl BrowseState {
     fn walk(path: &str, want_files: bool) -> Self {
         let at = path.trim().to_string();
         if at.is_empty() {
-            return Self { at, up: None, dirs: Self::top(), files: Vec::new(), error: None };
+            return Self { at, dirs: Self::top(), ..Default::default() };
         }
         let here = std::path::Path::new(&at);
         // A drive has no folder above it, but there is still somewhere to go
@@ -821,12 +852,20 @@ impl BrowseState {
                             n.starts_with('.') || n.starts_with('$')
                         })
                         .unwrap_or(false);
-                    if hidden {
+                    if hidden || kept_by_the_system(&e) {
                         continue;
                     }
                     if p.is_dir() {
                         if dirs.len() < 400 {
-                            dirs.push(p.display().to_string());
+                            // From the entry the listing already read, not a
+                            // second trip to the disk per folder
+                            let when = e
+                                .metadata()
+                                .ok()
+                                .and_then(|m| m.modified().ok())
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs() as i64);
+                            dirs.push((p.display().to_string(), when));
                         }
                     } else if want_files && files.len() < 400 {
                         files.push(p.display().to_string());
@@ -835,12 +874,239 @@ impl BrowseState {
                         break;
                     }
                 }
-                dirs.sort_by_key(|d| d.to_lowercase());
+                dirs.sort_by_key(|d| d.0.to_lowercase());
                 files.sort_by_key(|f| f.to_lowercase());
             }
             Err(e) => error = Some(e.to_string()),
         }
-        Self { at, up, dirs, files, error }
+        let (dirs, modified) = dirs.into_iter().unzip();
+        Self { at, up, dirs, files, error, modified, ..Default::default() }
+    }
+
+    /// The same walk, with the places to start from filled in.
+    ///
+    /// `projects` are the checkouts this app already knows, by name and path.
+    /// The folder picker asks for this; the settings page, which walks to find
+    /// a key file, does not need a column of shortcuts and never asks
+    pub fn with_places(mut self, projects: &[(String, String)]) -> Self {
+        let mut out = Vec::new();
+        for var in ["USERPROFILE", "HOME"] {
+            if let Ok(home) = std::env::var(var)
+                && !home.is_empty()
+                && std::path::Path::new(&home).is_dir()
+            {
+                out.push(BrowsePlace { kind: "home".into(), name: String::new(), path: home });
+                break;
+            }
+        }
+        if let Some(desk) = desktop_dir() {
+            out.push(BrowsePlace { kind: "desktop".into(), name: String::new(), path: desk });
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (name, path) in projects {
+            if std::path::Path::new(path).is_dir() && seen.insert(path.to_lowercase()) {
+                out.push(BrowsePlace { kind: "project".into(), name: name.clone(), path: path.clone() });
+            }
+        }
+        #[cfg(windows)]
+        for letter in 'A'..='Z' {
+            let root = format!("{letter}:\\");
+            if std::path::Path::new(&root).is_dir() {
+                out.push(BrowsePlace { kind: "drive".into(), name: format!("{letter}:"), path: root });
+            }
+        }
+        #[cfg(not(windows))]
+        out.push(BrowsePlace { kind: "drive".into(), name: "/".into(), path: "/".into() });
+        self.places = out;
+        self
+    }
+}
+
+/// Whether a folder is one Windows keeps for itself: hidden and system both.
+///
+/// A home folder holds a dozen of these -- `My Documents`, `NetHood`, `SendTo`,
+/// `Local Settings` -- left behind for programs from twenty years ago. Every one
+/// refuses to open, and Explorer does not show them. A list that does is a list
+/// where a third of the rows are doors that are locked. Both attributes, not
+/// either: a folder somebody hid on purpose is still theirs to walk into
+#[cfg(windows)]
+fn kept_by_the_system(e: &std::fs::DirEntry) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    const HIDDEN: u32 = 0x2;
+    const SYSTEM: u32 = 0x4;
+    e.metadata().is_ok_and(|m| m.file_attributes() & (HIDDEN | SYSTEM) == (HIDDEN | SYSTEM))
+}
+#[cfg(not(windows))]
+fn kept_by_the_system(_: &std::fs::DirEntry) -> bool {
+    false
+}
+
+/// The desktop, where the system keeps it.
+///
+/// Not `%USERPROFILE%\\Desktop`: with OneDrive backing it up, the desktop is
+/// somewhere under OneDrive and is named in the system's own language -- on the
+/// machine this was written on, `OneDrive\\デスクトップ`. A guessed path would
+/// open a folder that is not the one on the screen behind the window
+#[cfg(windows)]
+fn desktop_dir() -> Option<String> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{FOLDERID_Desktop, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+    // SAFETY: the returned buffer is ours to free, and is freed on every path
+    unsafe {
+        let p = SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, None).ok()?;
+        let s = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as *const core::ffi::c_void));
+        s.filter(|d| std::path::Path::new(d).is_dir())
+    }
+}
+#[cfg(not(windows))]
+fn desktop_dir() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let d = std::path::Path::new(&home).join("Desktop");
+    d.is_dir().then(|| d.display().to_string())
+}
+
+/// Makes a folder somebody named in the picker, inside the folder being looked
+/// at. The new folder's path, or why it could not be made.
+///
+/// One level, never a chain: a name with a separator in it is somebody trying
+/// to reach somewhere else from a box that is only for naming, so it is
+/// refused rather than followed. Reserved device names are refused for the
+/// same reason Windows refuses them -- a folder called `CON` cannot be opened
+/// afterwards
+pub fn make_folder(inside: &str, name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if inside.trim().is_empty() {
+        return Err(crate::i18n::t("tui.browse.make.nowhere"));
+    }
+    let bad = name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.ends_with('.')
+        || name.chars().any(|c| matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control());
+    let stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit());
+    if bad || reserved {
+        return Err(crate::i18n::t("tui.browse.make.badname"));
+    }
+    let at = std::path::Path::new(inside.trim()).join(name);
+    if at.exists() {
+        return Err(crate::i18n::t("tui.browse.make.exists"));
+    }
+    std::fs::create_dir(&at)
+        .map(|_| at.display().to_string())
+        .map_err(|e| crate::i18n::tp("tui.browse.make.failed", &[("e", &e.to_string())]))
+}
+
+#[cfg(test)]
+mod browse_tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir()
+            .join(format!("shikisha-browse-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Every folder listed has a time beside it, in the same place in the
+    /// list. They are two lists because the settings page reads `dirs` as bare
+    /// paths; two lists that fall out of step would put yesterday next to the
+    /// wrong folder, which is worse than no date at all
+    #[test]
+    fn each_folder_is_listed_with_when_it_changed() {
+        let d = scratch("dates");
+        for n in ["b", "a", "C"] {
+            std::fs::create_dir(d.join(n)).unwrap();
+        }
+        let st = BrowseState::of(&d.display().to_string());
+        assert_eq!(st.dirs.len(), 3);
+        assert_eq!(st.modified.len(), st.dirs.len(), "日付と名前の数が合わない");
+        assert!(st.modified.iter().all(Option::is_some), "日付が取れていない");
+        let leaves: Vec<String> = st
+            .dirs
+            .iter()
+            .map(|p| std::path::Path::new(p).file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(leaves, ["a", "b", "C"], "人が読む順に並んでいない");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The folders Windows keeps for itself are left out; one somebody only hid
+    /// is not. Explorer draws the same line
+    #[cfg(windows)]
+    #[test]
+    fn folders_the_system_keeps_for_itself_are_not_listed() {
+        let d = scratch("system");
+        for n in ["mine", "hidden", "kept"] {
+            std::fs::create_dir(d.join(n)).unwrap();
+        }
+        let attrib = |path: &std::path::Path, flags: &[&str]| {
+            let ok = std::process::Command::new("attrib")
+                .args(flags)
+                .arg(path)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            assert!(ok, "attrib が使えない");
+        };
+        attrib(&d.join("hidden"), &["+h"]);
+        attrib(&d.join("kept"), &["+h", "+s"]);
+        let st = BrowseState::of(&d.display().to_string());
+        let leaves: Vec<String> = st
+            .dirs
+            .iter()
+            .map(|p| std::path::Path::new(p).file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(leaves, ["hidden", "mine"], "システムの物が出ている、または隠しただけの物が消えた");
+        attrib(&d.join("kept"), &["-h", "-s"]);
+        attrib(&d.join("hidden"), &["-h"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_folder_is_made_one_level_down_and_nowhere_else() {
+        let d = scratch("make");
+        let inside = d.display().to_string();
+        let made = make_folder(&inside, "  shinkoku ").expect("作れるはず");
+        assert!(std::path::Path::new(&made).is_dir());
+        assert!(made.ends_with("shinkoku"), "前後の空白が名前に残った");
+        // The same name again is refused, not silently reused
+        assert!(make_folder(&inside, "shinkoku").is_err());
+        // A box for a name is not a way to reach somewhere else
+        for bad in ["..", "a/b", "a\\b", "c:x", "", "   ", "end.", "CON", "com1", "LPT9.txt"] {
+            assert!(make_folder(&inside, bad).is_err(), "{bad:?} が通った");
+        }
+        assert!(!d.join("a").exists(), "区切りを含む名前で途中の階層が作られた");
+        // And nothing is made at the top, where there is no folder to make it in
+        assert!(make_folder("", "x").is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn places_start_with_home_and_end_with_the_drives() {
+        let d = scratch("places");
+        let st = BrowseState::of("").with_places(&[
+            ("tools".into(), d.display().to_string()),
+            ("again".into(), d.display().to_string()),
+            ("gone".into(), d.join("not-here").display().to_string()),
+        ]);
+        let kinds: Vec<&str> = st.places.iter().map(|p| p.kind.as_str()).collect();
+        assert_eq!(kinds.first(), Some(&"home"), "ホームが先頭に無い");
+        assert_eq!(kinds.last(), Some(&"drive"), "ドライブが末尾に無い");
+        let projects: Vec<&str> = st
+            .places
+            .iter()
+            .filter(|p| p.kind == "project")
+            .map(|p| p.name.as_str())
+            .collect();
+        // One entry per checkout, and none for a checkout that is not here
+        assert_eq!(projects, ["tools"], "同じ場所が2回、または無い場所が出ている");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
 

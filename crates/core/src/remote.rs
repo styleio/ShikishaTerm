@@ -2397,11 +2397,11 @@ mod tests {
         // the window has the same list, so nothing is let through that the
         // person could not do by adding a tab
         assert!(
-            super::allowed_from_afar(&Ev::Browse { path: String::new(), open: false }),
+            super::allowed_from_afar(&Ev::Browse { path: String::new(), open: false, make: String::new() }),
             "スマホからフォルダ一覧を歩けない"
         );
         assert!(
-            super::allowed_from_afar(&Ev::Browse { path: r"C:\work".into(), open: true }),
+            super::allowed_from_afar(&Ev::Browse { path: r"C:\work".into(), open: true, make: String::new() }),
             "スマホから選んだフォルダを開けない"
         );
 

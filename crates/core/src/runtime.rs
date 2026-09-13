@@ -2190,8 +2190,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     // Walking the folders to open another one: the list the
                     // phone has instead of a dialog. Same queue as the window's
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Browse { path, open }) => {
-                        shell.mail().browses.push((path, open));
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Browse { path, open, make }) => {
+                        shell.mail().browses.push((path, open, make));
                     }
                     // The update card and the first-run pointer, answered on
                     // the phone: the same fields the window's presses fill
@@ -3643,9 +3643,42 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         // Somewhere new to work. Looking hands back what is inside; choosing
         // writes the folder into the settings, and the reload opens it
-        for (path, open) in shell.mail().take_browses() {
+        for (path, open, make) in shell.mail().take_browses() {
             if !open {
-                browse_view = Some(crate::uistate::BrowseState::of(&path));
+                // The projects this desk already works in, as places to start
+                // from. This desk's only: a desk is kept apart from the others,
+                // and a picker that offered another desk's checkouts would be
+                // the one place the wall between them had a door in it
+                let projects: Vec<(String, String)> = desks
+                    .get(desk_index)
+                    .map(|w| {
+                        w.folders
+                            .iter()
+                            .filter_map(|f| f.cwd.as_ref())
+                            .filter(|c| !crate::repo::is_linked(c) && crate::repo::family_of(c).is_some())
+                            .map(|c| {
+                                let name = c
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                (name, c.display().to_string())
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // Made first, then looked at again, so the new folder is in the
+                // list the answer points at
+                let (made, made_error) = match make.trim().is_empty() {
+                    true => (None, None),
+                    false => match crate::uistate::make_folder(&path, &make) {
+                        Ok(p) => (Some(p), None),
+                        Err(e) => (None, Some(e)),
+                    },
+                };
+                let mut view = crate::uistate::BrowseState::of(&path).with_places(&projects);
+                view.made = made;
+                view.made_error = made_error;
+                browse_view = Some(view);
                 continue;
             }
             let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
