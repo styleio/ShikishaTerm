@@ -518,23 +518,25 @@ pub fn spawn_desk(
 
 /// Everything that belongs to the desk now on screen, handed over at once.
 ///
-/// Five things are settled per desk -- where its notifications go, which
-/// model connections it may use, what doors its automation has, who may use
-/// them, and which GitHub account answers for it -- and every one of them has to
+/// Five things belong to a desk alone -- its notification destinations, its
+/// model connections, what doors its automation has, who may use them, and
+/// which GitHub account answers for it -- and every one of them has to
 /// change at the same moment as the screen does. In one place because the
 /// failure otherwise is silent and one-sided: the half nobody remembered to
 /// swap keeps answering for the desk that was on screen a moment ago.
 ///
-/// Each value is already the whole answer (see [`config::Config::resolve_desks`]);
-/// nothing here decides anything.
+/// Nothing here decides anything: each value is the desk's own, whole.
 pub fn hand_over(
     desk: &config::Desk,
     caps: &hooks::Caps,
     notifier: &crate::notify::Notifier,
     prs: &crate::pr::Watch,
 ) {
-    notifier.scope_to(desk.notify.clone(), desk.primary_notify.clone());
-    crate::bridge::scope_to(desk.providers.clone());
+    // A value written `@name` is read from the store here, through the
+    // program's own door, which already holds whatever the password unlocked
+    let look = |k: &str| caps.secret_value(k).ok();
+    notifier.use_desk(config::desk_notify(desk, &look), desk.primary_notify.clone());
+    crate::bridge::use_desk(config::desk_providers(desk, &look));
     caps.set_capabilities(desk.capabilities.clone());
     caps.set_grants(desk.automation_permissions.clone());
     // A script's `token` means this desk's, and no other's

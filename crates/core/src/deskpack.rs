@@ -9,7 +9,8 @@
 //! and the later one silently overwrites the earlier one's contents,
 //! there's no way to notice.
 //!
-//! Not included: notification destinations, secrets.json, capabilities.
+//! Not included: notification destinations, model connections, secrets.json,
+//! capabilities (see `strip_machine_own`).
 //! Those belong to the whole app's settings, not to any one desk, and
 //! shipping them around would mean handing out credentials. The desk's
 //! own allow-list of secrets is written out (it says what the desk
@@ -276,6 +277,21 @@ fn inline(base: &Path, entry: &Value) -> Result<Value> {
     Ok(desk)
 }
 
+/// What a desk has that points at this machine's accounts: where it sends
+/// notifications, the AI accounts it connects to, and the doors its automation
+/// has. Each carries a key filed in this machine's secret store, which the file
+/// does not carry -- so a copy of them elsewhere would be a list of names that
+/// reach nothing, or, read back in here, somebody else's doors. Taken out on the
+/// way out and again on the way in. How git behaves and who may run what are
+/// not accounts, and travel with the desk
+fn strip_machine_own(desk: &mut Value) {
+    if let Some(o) = desk.as_object_mut() {
+        for k in ["notify", "primary_notify", "providers", "capabilities"] {
+            o.shift_remove(k);
+        }
+    }
+}
+
 /// Bundles the desk picked by index into the contents of a single
 /// file. Returns (suggested file name, contents)
 pub fn pack(config_path: &Path, index: usize) -> Result<(String, String)> {
@@ -285,7 +301,8 @@ pub fn pack(config_path: &Path, index: usize) -> Result<(String, String)> {
     let entry = list
         .get(index)
         .ok_or_else(|| anyhow!(crate::i18n::t("err.deskpack.no_such_desk")))?;
-    let desk = inline(base, entry)?;
+    let mut desk = inline(base, entry)?;
+    strip_machine_own(&mut desk);
 
     let refs = referenced(&desk);
     let keep = roots(base, &refs);
@@ -443,6 +460,7 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
         o.shift_remove("secrets_allow");
         o.shift_remove("secrets_allow_all");
     }
+    strip_machine_own(&mut desk);
 
     let scripts = bundle
         .get("scripts")
@@ -538,6 +556,27 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A desk carried to another machine leaves behind what points at this
+    /// machine's accounts, and a desk read in brings none of somebody else's.
+    #[test]
+    fn a_carried_desk_leaves_its_accounts_behind() {
+        let mut desk = json!({
+            "name": "会社",
+            "notify": {"team": {"type": "slack", "webhook": "@notify/kaisha/team"}},
+            "primary_notify": "team",
+            "providers": {"work": {"base_url": "https://x/v1", "api_key": "@provider/kaisha/work"}},
+            "capabilities": {"allow_hosts": ["example.com"]},
+            "automation_permissions": {"lua": {"ai": false}},
+            "git": {"protect": ["main"]}
+        });
+        strip_machine_own(&mut desk);
+        for gone in ["notify", "primary_notify", "providers", "capabilities"] {
+            assert!(desk.get(gone).is_none(), "{gone} が書き出しに残っている");
+        }
+        assert!(desk.get("automation_permissions").is_some(), "権限の表まで消えた");
+        assert!(desk.get("git").is_some(), "git設定まで消えた");
+    }
 
     /// Builds a set of config files for testing, in the shape the settings
     /// screen writes: the tabs inside working folders, one of them nested
