@@ -10,13 +10,277 @@
 //! What happens with the answer depends on where the tool was opened from, and
 //! the page is told rather than guessing: from the left bar it is offered to
 //! the clipboard or to a file.
+//!
+//! Two of the tools read the framed part with the assistant AI. That is the
+//! one thing here that leaves the machine, so it is the one thing that asks
+//! first: a desk agrees to it once, for that AI, and until it has the picture
+//! does not leave the page. The questions the page asks are answered in one
+//! place, [`answer`], whichever end the page is open on.
 
 /// The tools this page can run, in the order they are offered.
 ///
 /// The board's menu is built from this list, so a tool that is not here is not
 /// offered anywhere -- a button for something this page cannot do would be a
 /// button that does nothing
-pub const TOOLS: &[&str] = &["color"];
+pub const TOOLS: &[&str] = &["text", "noun", "color"];
+
+/// The tools that hand the framed part to the assistant AI.
+pub const AI_TOOLS: &[&str] = &["text", "noun"];
+
+/// The most a framed picture may weigh on its way to an AI. A whole 4K screen
+/// as PNG is a few megabytes; this is room for that and no more
+const MAX_PICTURE: usize = 24 << 20;
+
+/// The most names the noun tool gives back
+const MAX_NOUNS: usize = 5;
+
+/// How many times an AI is asked before its answer is given up on. An AI told
+/// to answer in JSON and nothing else still, now and then, says something
+/// first; asking again is cheaper than showing the person that
+const ATTEMPTS: usize = 3;
+
+/// The shape an AI is asked to answer a tool in, as a JSON Schema.
+///
+/// The answer has a field of its own for anything the AI wants to add. Told
+/// only "no explanations", an AI that has something to say says it inside the
+/// answer -- measured 2026-09-14, a reading that began "the text in the image
+/// is as follows" -- and a place to put it is what keeps it out.
+///
+/// Every field is required, the remark included (empty when there is none):
+/// Codex CLI's service refuses a shape with any field left optional
+pub fn shape_of(tool: &str) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let note = json!({"type": "string", "description": "Anything to add, or empty. Never part of the answer"});
+    match tool {
+        "text" => Some(json!({
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The characters in the image, exactly, and nothing else"},
+                "note": note,
+            },
+            "required": ["text", "note"],
+            "additionalProperties": false,
+        })),
+        "noun" => Some(json!({
+            "type": "object",
+            "properties": {
+                "nouns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": MAX_NOUNS,
+                    "description": "Nouns for what the image shows, the best fit first",
+                },
+                "note": note,
+            },
+            "required": ["nouns", "note"],
+            "additionalProperties": false,
+        })),
+        _ => None,
+    }
+}
+
+/// Where a question about sending a picture stands, before anything is sent.
+#[derive(Debug, PartialEq)]
+enum Gate<'a> {
+    /// Agreed, for this AI: a picture may go to it
+    Ready { name: &'a str, label: &'a str },
+    /// Not agreed for this AI -- never agreed, or agreed for a different one
+    Consent { name: &'a str, label: &'a str },
+    /// An AI is chosen that is not known to read pictures
+    Unsupported { label: &'a str },
+    /// No assistant AI is installed, or the one chosen is not
+    NoAssistant,
+    /// The desk the question came from is not in the settings
+    NoDesk,
+}
+
+/// Decide, from the assistant AI that would answer and what the desk agreed
+/// to, whether a picture may go. The desk comes first: a question from a desk
+/// that is not there has nobody to agree
+fn gate<'a>(
+    assistant: Option<(&'a str, &'a str)>,
+    desk_agreed: Option<Option<&str>>,
+    reads: impl Fn(&str) -> bool,
+) -> Gate<'a> {
+    let Some(agreed) = desk_agreed else {
+        return Gate::NoDesk;
+    };
+    let Some((name, label)) = assistant else {
+        return Gate::NoAssistant;
+    };
+    if !reads(name) {
+        return Gate::Unsupported { label };
+    }
+    match agreed == Some(name) {
+        true => Gate::Ready { name, label },
+        false => Gate::Consent { name, label },
+    }
+}
+
+/// Answer one question from the tool page, for the desk `desk_id`.
+///
+/// `{"do":"check"}` -- may a picture go, and to which AI.
+/// `{"do":"agree"}` -- the person ticked the box: record it on the desk, for
+/// the AI that would answer now.
+/// `{"do":"ask","tool":..,"png":<base64>}` -- read the picture. Checked again
+/// here, not trusted from the check before it: the settings can change in
+/// between, and this is the call that sends.
+///
+/// Slow (the AI is started and waited for), so called from a thread of its
+/// own. The page's `id` comes back with the answer, so an answer meant for an
+/// earlier question is never taken for this one
+pub fn answer(msg: &serde_json::Value, desk_id: &str) -> serde_json::Value {
+    let mut out = answer_inner(msg, desk_id);
+    if let (Some(o), Some(id)) = (out.as_object_mut(), msg.get("id")) {
+        o.insert("id".into(), id.clone());
+    }
+    out
+}
+
+fn answer_inner(msg: &serde_json::Value, desk_id: &str) -> serde_json::Value {
+    use serde_json::json;
+    let cfg = crate::config::load();
+    let chosen = cfg
+        .as_ref()
+        .and_then(|c| c.ai_engine.clone())
+        .filter(|s| !s.trim().is_empty());
+    let assistant = crate::webui::assistant_ai(chosen.as_deref());
+    let desks = cfg.map(|c| c.resolve_desks().0).unwrap_or_default();
+    let desk = desks.iter().find(|d| !desk_id.is_empty() && d.id == desk_id);
+    let decided = gate(
+        assistant,
+        desk.map(|d| d.send_pictures_to.as_deref()),
+        crate::webui::reads_pictures,
+    );
+    let desk_name = desk.map(|d| d.name.clone()).unwrap_or_default();
+    let refused = |g: &Gate| match g {
+        Gate::Consent { label, .. } => json!({"state": "consent", "by": label, "desk": desk_name}),
+        Gate::Unsupported { label } => json!({"state": "unsupported", "by": label}),
+        Gate::NoAssistant => json!({"state": "no_assistant", "chosen": chosen.as_deref().and_then(crate::webui::assistant_label).unwrap_or_default()}),
+        Gate::NoDesk => json!({"state": "no_desk"}),
+        Gate::Ready { label, .. } => json!({"state": "ready", "by": label}),
+    };
+    match msg.get("do").and_then(|d| d.as_str()) {
+        Some("check") => refused(&decided),
+        Some("agree") => match decided {
+            Gate::Ready { label, .. } => json!({"state": "ready", "by": label}),
+            Gate::Consent { name, label } => {
+                if crate::config::save_desk_setting(desk_id, "send_pictures_to", Some(json!(name))) {
+                    json!({"state": "ready", "by": label})
+                } else {
+                    json!({"state": "failed", "by": label, "error": crate::i18n::t("snip.ai.not_saved")})
+                }
+            }
+            other => refused(&other),
+        },
+        Some("ask") => {
+            let Gate::Ready { name, label } = decided else {
+                return refused(&decided);
+            };
+            let tool = msg.get("tool").and_then(|t| t.as_str()).unwrap_or_default();
+            if !AI_TOOLS.contains(&tool) {
+                return json!({"state": "failed", "by": label, "error": crate::i18n::t("snip.ai.no_picture")});
+            }
+            let Some(png) = picture_of(msg.get("png").and_then(|p| p.as_str()).unwrap_or_default()) else {
+                return json!({"state": "failed", "by": label, "error": crate::i18n::t("snip.ai.no_picture")});
+            };
+            let Some(shape) = shape_of(tool) else {
+                return json!({"state": "failed", "by": label, "error": crate::i18n::t("snip.ai.no_picture")});
+            };
+            let shape = shape.to_string();
+            let asked = crate::i18n::t(&format!("snip.ai.{tool}.prompt"));
+            for attempt in 0..ATTEMPTS {
+                // Asked again, it is told why: the answer before was not the shape
+                let prompt = match attempt {
+                    0 => asked.clone(),
+                    _ => format!("{asked}\n\n{}", crate::i18n::t("snip.ai.retry")),
+                };
+                match crate::webui::ask_about_picture(name, &prompt, &png, &shape) {
+                    Ok(said) => {
+                        if let Some(mut read) = read_reply(tool, &said) {
+                            read["state"] = json!("answer");
+                            read["by"] = json!(label);
+                            return read;
+                        }
+                        crate::append_hook_log(&format!(
+                            "snip: {name} answered {tool} out of shape (attempt {})",
+                            attempt + 1
+                        ));
+                    }
+                    // The AI did not run or did not finish. Asking again would
+                    // be waiting the same way twice
+                    Err(e) => return json!({"state": "failed", "by": label, "error": format!("{e:#}")}),
+                }
+            }
+            json!({"state": "failed", "by": label,
+                   "error": crate::i18n::tp("snip.ai.unreadable", &[("n", &ATTEMPTS.to_string())])})
+        }
+        _ => json!({"state": "failed", "error": crate::i18n::t("snip.ai.no_picture")}),
+    }
+}
+
+/// The picture the page sent, if it is one: base64 of a PNG, within the size
+/// an AI is handed
+fn picture_of(b64: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    if b64.is_empty() || b64.len() > MAX_PICTURE / 3 * 4 + 4 {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64.as_bytes()).ok()?;
+    bytes.starts_with(b"\x89PNG\r\n\x1a\n").then_some(bytes)
+}
+
+/// An AI's answer read as the tool's shape: `{"text": ..}` or `{"lines": [..]}`
+/// for the page, or nothing when it is not that shape.
+///
+/// The JSON is looked for, not trusted to be all there is: the AI that has no
+/// way to hold its answer to a shape may still put a word before it or a code
+/// fence around it, and the object inside is the answer all the same
+fn read_reply(tool: &str, said: &str) -> Option<serde_json::Value> {
+    let v = json_in(said)?;
+    match tool {
+        "text" => {
+            let text = v.get("text")?.as_str()?;
+            Some(serde_json::json!({"text": text.trim_matches(['\n', '\r'])}))
+        }
+        "noun" => {
+            let mut lines: Vec<String> = Vec::new();
+            for item in v.get("nouns")?.as_array()? {
+                let w = bare_noun(item.as_str()?);
+                if !w.is_empty() && !lines.contains(&w) {
+                    lines.push(w);
+                }
+                if lines.len() == MAX_NOUNS {
+                    break;
+                }
+            }
+            Some(serde_json::json!({"lines": lines}))
+        }
+        _ => None,
+    }
+}
+
+/// The first JSON object in what an AI printed: all of it, the inside of a
+/// code fence, or the span from the first `{` to the last `}`
+fn json_in(said: &str) -> Option<serde_json::Value> {
+    let t = said.trim();
+    let object = |s: &str| serde_json::from_str::<serde_json::Value>(s.trim()).ok().filter(|v| v.is_object());
+    if let Some(v) = object(t) {
+        return Some(v);
+    }
+    let (from, to) = (t.find('{')?, t.rfind('}')?);
+    (from < to).then(|| object(&t[from..=to])).flatten()
+}
+
+/// One noun, without the list marks or the full stop an AI may still give it
+fn bare_noun(item: &str) -> String {
+    let mut w = item.trim().trim_start_matches(['-', '*', '•', '・', ' ', '\t']);
+    let digits = w.find(|c: char| !c.is_ascii_digit()).unwrap_or(0);
+    if digits > 0 && w[digits..].starts_with(['.', ')', '、']) {
+        w = w[digits + 1..].trim_start();
+    }
+    w.trim_end_matches(['。', '.', '、', ',']).trim().to_string()
+}
 
 /// The seconds a person can choose to wait before the picture is taken.
 ///
@@ -110,6 +374,27 @@ const PAGE: &str = r##"<!doctype html>
  .code:hover { background:var(--panel2); }
  .foot { display:flex; gap:var(--s2); padding:var(--s3) var(--s4); border-top:1px solid var(--line); }
  .foot button { flex:1; min-width:0; }
+ button:disabled { opacity:.5; cursor:default; }
+ button:disabled:hover { border-color:var(--line); }
+ .pane { display:flex; flex-direction:column; flex:1; min-height:0; }
+
+ /* Reading with the AI: where it goes, then what came back */
+ #aipane { padding:var(--s2) var(--s4) var(--s3); gap:var(--s3); overflow-y:auto; }
+ .state { color:var(--dim); font-size:13px; }
+ .state b { color:var(--text); font-weight:600; }
+ .problem { color:var(--text); font-size:13px; }
+ #text { flex:1; min-height:8em; width:100%; resize:none; padding:var(--s2) var(--s3);
+   border:1px solid var(--line); border-radius:var(--r-ctl); background:var(--bg); color:var(--text);
+   font:inherit; font-size:13.5px; line-height:1.6; -webkit-user-select:text; user-select:text; }
+ #nouns { display:flex; flex-direction:column; gap:var(--s1); }
+ #nouns button { text-align:left; height:auto; min-height:32px; padding:var(--s1) var(--s3); }
+ #nouns button:first-child { border-color:var(--accent); font-weight:600; }
+ #consent { display:flex; flex-direction:column; gap:var(--s3); padding:var(--s3); border:1px solid var(--line);
+   border-radius:var(--r-card); background:var(--panel2); }
+ #consent h3 { margin:0; font-size:14px; }
+ #consent p { margin:0; font-size:13px; }
+ #consent label { display:flex; gap:var(--s2); align-items:flex-start; font-size:13px; cursor:pointer; }
+ #consent input { margin:3px 0 0; flex:none; width:16px; height:16px; accent-color:var(--accent); }
  @media (max-width:700px), (max-aspect-ratio:1/1) {
    #zoom { flex-direction:column; }
    #panel { width:auto; height:52%; border-left:none; border-top:1px solid var(--line); }
@@ -149,11 +434,27 @@ const PAGE: &str = r##"<!doctype html>
   <div id="area"><canvas id="zc"></canvas></div>
   <aside id="panel">
     <div class="phead"><b class="t-tool"></b><button class="quiet" id="shut"></button></div>
-    <h2 class="t-now"></h2>
-    <div class="now"><div class="sw" id="nowsw"></div><div class="codes" id="nowcodes"></div></div>
-    <div class="say2 t-howto"></div>
-    <h2 class="t-picked"></h2>
-    <div id="list"></div>
+    <div class="pane" id="colorpane" hidden>
+      <h2 class="t-now"></h2>
+      <div class="now"><div class="sw" id="nowsw"></div><div class="codes" id="nowcodes"></div></div>
+      <div class="say2 t-howto"></div>
+      <h2 class="t-picked"></h2>
+      <div id="list"></div>
+    </div>
+    <div class="pane" id="aipane" hidden>
+      <div class="state" id="aistate"></div>
+      <div id="consent" hidden>
+        <h3 class="t-c-title"></h3>
+        <p id="c-where"></p>
+        <p id="c-keep"></p>
+        <label><input type="checkbox" id="c-ok"><span class="t-c-ok"></span></label>
+        <button class="primary" id="c-send" disabled></button>
+      </div>
+      <div class="problem" id="problem" hidden></div>
+      <button id="again" hidden></button>
+      <textarea id="text" hidden spellcheck="false"></textarea>
+      <div id="nouns" hidden></div>
+    </div>
     <div class="foot">
       <button class="primary" id="toclip"></button>
       <button id="tofile"></button>
@@ -347,6 +648,7 @@ const toPicture = (cx, cy) => ({
     $("stage").hidden = true;
     $("hint").hidden = true;
     if (TOOL === "color") openColor();
+    else if (TOOL === "text" || TOOL === "noun") openAi();
   });
 })();
 
@@ -383,6 +685,7 @@ function openColor() {
   pixels = octx.getImageData(0, 0, rect.w, rect.h).data;
   zoom.cur = {x: Math.floor(rect.w / 2), y: Math.floor(rect.h / 2)};
   document.querySelector(".t-tool").textContent = T["snip.tool.color"] || "";
+  $("colorpane").hidden = false;
   document.querySelector(".t-now").textContent = T["snip.color.now"] || "";
   // What a finger does and what a mouse and keyboard do are said differently
   const touch = window.matchMedia && matchMedia("(pointer: coarse)").matches;
@@ -506,20 +809,22 @@ const listText = () => picked.map(k => k.hex + "\t" + k.rgb + "\t" + k.hsl).join
 (function () {
   const a = $("area");
   a.addEventListener("pointermove", e => {
+    if (!pixels) return;
     zoom.hover = pixelUnder(e);
     if (zoom.hover) zoom.cur = zoom.hover;
     drawZoom();
     drawNow(zoom.cur);
   });
-  a.addEventListener("pointerleave", () => { zoom.hover = null; drawZoom(); });
+  a.addEventListener("pointerleave", () => { if (pixels) { zoom.hover = null; drawZoom(); } });
   a.addEventListener("pointerdown", e => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || !pixels) return;
     const p = pixelUnder(e);
     if (p) { zoom.cur = p; pick(p); drawZoom(); drawNow(p); }
   });
   // Closer or further, keeping the pixel under the pointer where it is
   a.addEventListener("wheel", e => {
     e.preventDefault();
+    if (!pixels) return;
     const r = a.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     const mx = (e.clientX - r.left) * dpr, my = (e.clientY - r.top) * dpr;
@@ -532,7 +837,7 @@ const listText = () => picked.map(k => k.hex + "\t" + k.rgb + "\t" + k.hsl).join
     drawZoom();
   }, {passive: false});
   document.addEventListener("keydown", e => {
-    if ($("zoom").hidden || !zoom.cur) return;
+    if ($("zoom").hidden || !pixels || !zoom.cur) return;
     const step = {ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]}[e.key];
     if (step) {
       e.preventDefault();
@@ -548,10 +853,193 @@ const listText = () => picked.map(k => k.hex + "\t" + k.rgb + "\t" + k.hsl).join
       pick(zoom.cur);
     }
   });
-  $("toclip").onclick = () => copyOut(listText());
-  $("tofile").onclick = () => saveOut(listText(), "colors.txt");
   $("shut").onclick = shut;
 })();
+// The two buttons at the foot hand over whatever the open tool has to give
+$("toclip").onclick = () => copyOut(outText());
+$("tofile").onclick = () => saveOut(outText(), outName());
+const outText = () => TOOL === "color" ? listText() : aiText();
+const outName = () => TOOL === "color" ? "colors.txt" : TOOL + ".txt";
+
+// ── Reading with the assistant AI ──────────────────
+// The picture stays on this page until the desk has agreed to send it: the
+// first question carries no picture, only "may one go, and where to"
+let asked = 0;
+const waiting = new Map();
+function toMachine(msg) {
+  return new Promise(done => {
+    const id = ++asked;
+    msg.id = id;
+    waiting.set(id, done);
+    if (HOST) {
+      tell({act: "ask", msg});
+    } else if (window.parent !== window) {
+      // A phone: the board this page is laid over holds the connection, and
+      // asks on the page's behalf
+      window.parent.postMessage({snip: "ask", msg}, location.origin);
+    } else {
+      waiting.delete(id);
+      done({state: "unreachable"});
+    }
+  });
+}
+window.__snipAnswer = function (o) {
+  const done = o && waiting.get(o.id);
+  if (!done) return;
+  waiting.delete(o.id);
+  done(o);
+};
+window.addEventListener("message", e => {
+  if (e.source === window.parent && e.origin === location.origin && e.data && e.data.snipAnswer) {
+    window.__snipAnswer(e.data.snipAnswer);
+  }
+});
+
+let framedPng = "";      // the framed part, as the AI will be handed it
+let answer = null;       // what came back: {text} or {lines}
+const fill = (s, v) => String(s || "").replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m));
+
+function framedPicture() {
+  // Past this many pixels on its long side the AI shrinks it anyway, and the
+  // page would be sending megabytes to have them thrown away
+  const LONG = 4096;
+  const k = Math.min(1, LONG / Math.max(rect.w, rect.h));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(rect.w * k));
+  c.height = Math.max(1, Math.round(rect.h * k));
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingEnabled = k < 1;
+  ctx.drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, c.width, c.height);
+  return c.toDataURL("image/png").split(",")[1] || "";
+}
+// The framed part, as large as the space allows, so it is plain what is about
+// to be read
+function drawFramed() {
+  const a = $("area"), c = $("zc");
+  const dpr = window.devicePixelRatio || 1;
+  c.width = Math.round(a.clientWidth * dpr);
+  c.height = Math.round(a.clientHeight * dpr);
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = getComputedStyle(document.body).backgroundColor;
+  ctx.fillRect(0, 0, c.width, c.height);
+  const pad = 16 * dpr;
+  const s = Math.min((c.width - pad * 2) / rect.w, (c.height - pad * 2) / rect.h, 4 * dpr);
+  const w = rect.w * s, h = rect.h * s;
+  // A preview to recognise, not pixels to pick: smooth reads better
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, rect.x, rect.y, rect.w, rect.h, (c.width - w) / 2, (c.height - h) / 2, w, h);
+}
+function aiText() {
+  if (!answer) return "";
+  if (answer.lines) return answer.lines.join("\n") + "\n";
+  return $("text").value;
+}
+// One thing at a time in the pane: the consent, a problem, or the answer
+function aiShow(what) {
+  $("consent").hidden = what !== "consent";
+  $("problem").hidden = what !== "problem";
+  $("again").hidden = what !== "problem";
+  $("text").hidden = !(what === "answer" && TOOL === "text");
+  $("nouns").hidden = !(what === "answer" && TOOL === "noun");
+  // Nothing to hand over until there is an answer, and two buttons for it
+  // beside a question about consent would read as a way past the question
+  document.querySelector(".foot").hidden = what !== "answer";
+}
+let clock = 0;
+function aiState(html) {
+  clearInterval(clock);
+  $("aistate").textContent = html;
+}
+function openAi() {
+  document.querySelector(".t-tool").textContent = T["snip.tool." + TOOL] || "";
+  $("toclip").textContent = T["snip.to.clipboard"] || "";
+  $("tofile").textContent = T["snip.to.file"] || "";
+  $("shut").textContent = T["snip.close"] || "";
+  document.querySelector(".t-c-title").textContent = T["snip.ai.consent.title"] || "";
+  document.querySelector(".t-c-ok").textContent = T["snip.ai.consent.ok"] || "";
+  $("c-send").textContent = T["snip.ai.consent.send"] || "";
+  $("again").textContent = T["snip.ai.again"] || "";
+  $("aipane").hidden = false;
+  $("area").style.cursor = "default";
+  $("zoom").hidden = false;
+  drawFramed();
+  window.addEventListener("resize", drawFramed);
+  framedPng = framedPicture();
+  aiShow("none");
+  aiState(T["snip.ai.checking"] || "");
+  toMachine({do: "check"}).then(settle);
+}
+// Where a question stands decides what the pane shows next
+function settle(r) {
+  if (r.state === "ready") return readIt(r.by);
+  if (r.state === "consent") return askConsent(r);
+  if (r.state === "answer") return showAnswer(r);
+  aiState("");
+  const key = {
+    unsupported: "snip.ai.unsupported", no_assistant: "snip.ai.no_assistant",
+    no_desk: "snip.ai.no_desk", unreachable: "snip.ai.unreachable",
+  }[r.state];
+  $("problem").textContent = key
+    ? fill(T[key], {by: r.by || r.chosen || ""})
+    : fill(T["snip.ai.failed"], {by: r.by || "", error: r.error || ""});
+  aiShow("problem");
+}
+function askConsent(r) {
+  aiState("");
+  $("c-where").textContent = fill(T["snip.ai.consent.where"], {by: r.by});
+  $("c-keep").textContent = fill(T["snip.ai.consent.keep"], {desk: r.desk});
+  $("c-ok").checked = false;
+  $("c-send").disabled = true;
+  aiShow("consent");
+}
+$("c-ok").onchange = () => { $("c-send").disabled = !$("c-ok").checked; };
+$("c-send").onclick = () => {
+  if (!$("c-ok").checked) return;
+  $("c-send").disabled = true;
+  aiShow("none");
+  aiState(T["snip.ai.checking"] || "");
+  toMachine({do: "agree"}).then(settle);
+};
+$("again").onclick = () => {
+  aiShow("none");
+  aiState(T["snip.ai.checking"] || "");
+  toMachine({do: "check"}).then(settle);
+};
+// Sent, and said so the whole time: to which AI, and for how long
+function readIt(by) {
+  aiShow("none");
+  const started = Date.now();
+  const say = () => {
+    $("aistate").textContent = fill(T["snip.ai.reading"], {by, n: Math.floor((Date.now() - started) / 1000)});
+  };
+  clearInterval(clock);
+  say();
+  clock = setInterval(say, 1000);
+  toMachine({do: "ask", tool: TOOL, png: framedPng}).then(settle);
+}
+function showAnswer(r) {
+  aiState(fill(T["snip.ai.answered"], {by: r.by || ""}));
+  answer = r.lines ? {lines: r.lines} : {text: r.text || ""};
+  if (r.lines) {
+    const box = $("nouns");
+    box.textContent = "";
+    if (!r.lines.length) box.append(Object.assign(document.createElement("div"),
+      {className: "state", textContent: T["snip.ai.nothing"] || ""}));
+    for (const w of r.lines) {
+      box.append(Object.assign(document.createElement("button"), {
+        textContent: w, title: T["snip.ai.copy_one"] || "", onclick: () => copyOut(w),
+      }));
+    }
+  } else {
+    $("text").value = answer.text;
+  }
+  aiShow("answer");
+  if (!r.lines && !answer.text) {
+    $("problem").textContent = T["snip.ai.nothing"] || "";
+    $("problem").hidden = false;
+  }
+}
 
 // A page on a phone has no Esc key, so it is given a button instead. The
 // window says "Esc to cancel" where the frame is drawn, and keeps its screen
@@ -596,7 +1084,7 @@ mod tests {
             .replace("__DICT__", "{}")
             .replace("__TOOLS__", &serde_json::to_string(TOOLS).unwrap());
         assert!(!built.contains("__DICT__") && !built.contains("__TOOLS__"));
-        assert!(built.contains("const TOOLS = [\"color\"];"), "道具の一覧が入っていない");
+        assert!(built.contains("const TOOLS = [\"text\",\"noun\",\"color\"];"), "道具の一覧が入っていない");
     }
 
     /// Every tool the board may offer is one the page can run, and the page
@@ -608,6 +1096,11 @@ mod tests {
                 PAGE.contains(&format!("TOOL === \"{t}\"")),
                 "{t} を提示しているのにページが動かせない"
             );
+        }
+        for t in AI_TOOLS {
+            assert!(TOOLS.contains(t), "{t} は道具の一覧に無い");
+            let key = format!("snip.ai.{t}.prompt");
+            assert_ne!(crate::i18n::t(&key), key, "{key} が言葉の表に無い");
         }
         assert!(PAGE.contains("const TOOL = TOOLS.includes(Q.get(\"tool\"))"), "一覧に無い名前で道具が始まる");
     }
@@ -623,7 +1116,8 @@ mod tests {
 
     /// Nothing the page does with an answer sends it anywhere but the
     /// person's own clipboard or file: the window is told to copy or to save,
-    /// and a phone does both itself
+    /// and a phone does both itself. The one other thing it tells the window is
+    /// a question for [`answer`], which is where sending is decided
     #[test]
     fn an_answer_goes_to_the_clipboard_or_a_file_and_nowhere_else() {
         let acts: Vec<&str> = PAGE.match_indices("tell({act: \"").map(|(i, _)| {
@@ -632,7 +1126,7 @@ mod tests {
         }).collect();
         assert!(!acts.is_empty());
         for a in acts {
-            assert!(["copy", "save", "close"].contains(&a), "知らない行き先 {a}");
+            assert!(["copy", "save", "close", "ask"].contains(&a), "知らない行き先 {a}");
         }
     }
 
@@ -645,6 +1139,73 @@ mod tests {
             let key = format!("snip.tool.{t}");
             assert_ne!(crate::i18n::t(&key), key, "{key} が言葉の表に無い");
         }
+    }
+
+    /// A picture goes only to the AI the desk agreed to. Agreeing to one AI is
+    /// not agreeing to another, and nothing is sent from a desk that is not
+    /// there to have agreed
+    #[test]
+    fn a_picture_goes_only_where_the_desk_agreed() {
+        let yes = |_: &str| true;
+        let claude = Some(("claude", "Claude Code"));
+        assert_eq!(gate(claude, Some(Some("claude")), yes), Gate::Ready { name: "claude", label: "Claude Code" });
+        assert_eq!(gate(claude, Some(None), yes), Gate::Consent { name: "claude", label: "Claude Code" });
+        assert_eq!(gate(claude, Some(Some("codex")), yes), Gate::Consent { name: "claude", label: "Claude Code" });
+        assert_eq!(gate(claude, None, yes), Gate::NoDesk);
+        assert_eq!(gate(None, Some(Some("claude")), yes), Gate::NoAssistant);
+        assert_eq!(gate(claude, Some(Some("claude")), |_| false), Gate::Unsupported { label: "Claude Code" });
+    }
+
+    /// The page's picture is taken only when it is a PNG, and a question with
+    /// no desk behind it is refused before anything is read
+    #[test]
+    fn only_a_png_is_taken_as_the_picture() {
+        use base64::Engine as _;
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        assert!(picture_of(&b64(b"\x89PNG\r\n\x1a\nrest")).is_some());
+        assert!(picture_of(&b64(b"GIF89a")).is_none());
+        assert!(picture_of("not base64 !!").is_none());
+        assert!(picture_of("").is_none());
+        let refused = answer(&serde_json::json!({"do": "ask", "tool": "text", "png": b64(b"\x89PNG\r\n\x1a\n"), "id": 7}), "");
+        assert_eq!(refused["state"], "no_desk");
+        assert_eq!(refused["id"], 7, "問いの番号が返っていない");
+    }
+
+    /// An answer is taken only in the tool's shape. The object is found
+    /// inside whatever the AI put around it; an answer that is not the shape
+    /// is no answer, so the AI is asked again rather than shown as said
+    #[test]
+    fn an_answer_is_taken_only_in_its_shape() {
+        let text = |s: &str| read_reply("text", s).map(|v| v["text"].as_str().unwrap_or("?").to_string());
+        assert_eq!(text(r#"{"text":"貸借対照表\n2026年"}"#).as_deref(), Some("貸借対照表\n2026年"));
+        assert_eq!(text("以下のとおりです。\n```json\n{\"text\": \"A-7731\", \"note\": \"丸は文字ではありません\"}\n```").as_deref(), Some("A-7731"));
+        assert_eq!(text("画像に書かれている文字は次のとおりです: 貸借対照表"), None, "形でない答えを受け取った");
+        assert_eq!(text(r#"{"nouns":["猫"]}"#), None, "別の道具の形を受け取った");
+        assert_eq!(text(r#"{"text": 5}"#), None);
+
+        let nouns = |s: &str| read_reply("noun", s).map(|v| v["lines"].clone());
+        assert_eq!(nouns(r#"{"nouns":["1. 猫。","動物","- ペット","・猫"]}"#), Some(serde_json::json!(["猫", "動物", "ペット"])));
+        assert_eq!(nouns(r#"{"nouns":["a","b","c","d","e","f"]}"#).unwrap().as_array().unwrap().len(), 5);
+        assert_eq!(nouns("猫\n動物"), None);
+        assert_eq!(nouns(r#"{"nouns":[1,2]}"#), None);
+    }
+
+    /// Every AI tool has a shape to be answered in, and each shape leaves the
+    /// AI a place for remarks outside the answer
+    #[test]
+    fn every_ai_tool_has_a_shape() {
+        for t in AI_TOOLS {
+            let shape = shape_of(t).unwrap_or_else(|| panic!("{t} に答えの形が無い"));
+            assert!(shape["properties"]["note"].is_object(), "{t} に一言の置き場が無い");
+            assert_eq!(shape["additionalProperties"], false);
+            // Codex CLI refuses a shape that leaves any field optional
+            let mut props: Vec<&String> = shape["properties"].as_object().unwrap().keys().collect();
+            let mut required: Vec<&str> = shape["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+            props.sort();
+            required.sort();
+            assert_eq!(props, required, "{t} の形に必須でない欄がある");
+        }
+        assert!(shape_of("color").is_none());
     }
 
     /// The waits offered are short and include none at all -- no wait is how

@@ -618,6 +618,17 @@ impl WinSurface {
                 Ev::Snip { tool, delay } => {
                     let _ = self.win.snip(&tool, delay);
                 }
+                // The tool page's question, for the desk on screen. Answered
+                // on a thread of its own: reading a picture is an AI started
+                // and waited for, and the loop draws the terminal meanwhile
+                Ev::SnipAsk { msg } => {
+                    let desk = self.last.as_ref().map(|u| u.desk_id.clone()).unwrap_or_default();
+                    let reply = self.win.snip_replier();
+                    std::thread::spawn(move || {
+                        let v = serde_json::from_str::<serde_json::Value>(&msg).unwrap_or_default();
+                        reply.answer(shikisha_core::snip::answer(&v, &desk).to_string());
+                    });
+                }
                 Ev::LimitAck { tab } => self.mail.limit_acks.push(tab),
                 Ev::Select { tab } => self.mail.selects.push(tab),
                 Ev::FolderView { folder } => self.mail.folder_views.push(folder),

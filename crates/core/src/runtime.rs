@@ -2606,6 +2606,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // starting until it is turned back on
             auto: Some(auto_enabled),
             desk_names: desks.iter().map(|w| w.name.clone()).collect(),
+            desk_ids: desks.iter().map(|w| w.id.clone()).collect(),
             desk_index,
             desk_open,
             help_open,

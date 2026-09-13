@@ -2566,9 +2566,29 @@ function runSnip(tool) {
 }
 window.addEventListener("message", e => {
   const f = document.getElementById("sniplayer");
-  // Only the layer this board opened may close it
-  if (f && e.source === f.contentWindow && e.data && e.data.snip === "close") f.remove();
+  // Only the layer this board opened is listened to
+  if (!f || e.source !== f.contentWindow || e.origin !== location.origin || !e.data) return;
+  if (e.data.snip === "close") f.remove();
+  // A question for this machine. The layer holds no token; the board asks
+  // with its own, and hands the answer back to the layer that asked
+  if (e.data.snip === "ask" && REMOTE) askForSnip(f, e.data.msg);
 });
+async function askForSnip(f, msg) {
+  let answer;
+  try {
+    const r = await fetch("api/snip?t=" + encodeURIComponent(TOKEN), {
+      method: "POST", body: JSON.stringify(msg || {})
+    });
+    answer = await r.json();
+  } catch (err) {
+    answer = {state: "failed", error: String(err && err.message || err)};
+  }
+  if (msg && answer && answer.id === undefined) answer.id = msg.id;
+  // The layer may have been closed, or opened again, while the AI was reading
+  if (document.getElementById("sniplayer") === f && f.contentWindow) {
+    f.contentWindow.postMessage({snipAnswer: answer}, location.origin);
+  }
+}
 
 // ── The first-run pointer ────────────────────
 // A bubble beside the one thing to press next: "add a folder" while there is

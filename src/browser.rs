@@ -269,6 +269,9 @@ pub enum Cmd {
     SnipTick { press: u64, left: u8 },
     /// The tool is done with: its window goes, and so does the picture
     SnipClose,
+    /// The answer to a question the tool page asked (see `Ev::SnipAsk`),
+    /// as JSON, handed to the page
+    SnipAnswer { json: String },
 }
 
 
@@ -663,6 +666,12 @@ impl Browser {
     /// Open a tool over a picture of the screen (see `Cmd::Snip`)
     pub fn snip(&self, tool: &str, delay: u8) -> Result<()> {
         self.send(Cmd::Snip { tool: tool.to_string(), delay })
+    }
+
+    /// A way to hand the tool page its answer from another thread: the AI it
+    /// asked is waited for away from the loop that draws everything
+    pub fn snip_replier(&self) -> SnipReplier {
+        SnipReplier(self.proxy.clone())
     }
 
     /// Bring the window back in front of the person
@@ -1551,6 +1560,7 @@ fn run_window(
     let snip_wake = ev_loop.create_proxy();
     let snip_own = std::rc::Rc::clone(&own);
     let snip_base = url.trim_end_matches('/').to_string();
+    let snip_tx = ev_tx.clone();
 
     // Reports are sent from inside the loop too, so grab a sender for "closed" ahead of time
     let closed_tx = ev_tx.clone();
@@ -2147,7 +2157,7 @@ fn run_window(
                     let press = snip_gen;
                     *snip_tool.borrow_mut() = tool.clone();
                     if snip.is_none() {
-                        match SnipWindow::build(elwt, &snip_wake, &snip_own) {
+                        match SnipWindow::build(elwt, &snip_wake, &snip_own, &snip_tx) {
                             Ok(w) => snip = Some(w),
                             Err(e) => {
                                 shikisha_core::append_hook_log(&format!("snip: no window for the tool: {e:#}"));
@@ -2192,11 +2202,22 @@ fn run_window(
                         w.put_away();
                     }
                 }
+                Cmd::SnipAnswer { json } => {
+                    // The page takes an answer only for a question it is still
+                    // waiting on, so one arriving after the tool was closed or
+                    // opened again falls on nothing
+                    if let Some(w) = snip.as_ref() {
+                        let _ = w.view.evaluate_script(&format!("window.__snipAnswer && window.__snipAnswer({json});"));
+                    }
+                }
             },
             // The tool's own window. Checked before anything else about windows:
             // the arms below are the board's, and read no window id -- a tool
             // closed with Alt+F4 would otherwise be the app asked to close,
-            // and the tool's size would be handed to the board
+            // and the tool's size would be handed to the board. Not folded into
+            // one pattern: every other event of the tool's window has to stop
+            // here as well
+            #[allow(clippy::collapsible_match)]
             Event::WindowEvent { window_id, event, .. }
                 if snip.as_ref().is_some_and(|w| w.window.id() == window_id) =>
             {
@@ -2275,6 +2296,15 @@ fn run_window(
     Ok(())
 }
 
+/// Hands the tool page an answer (see `Browser::snip_replier`).
+pub struct SnipReplier(tao::event_loop::EventLoopProxy<Cmd>);
+
+impl SnipReplier {
+    pub fn answer(&self, json: String) {
+        let _ = self.0.send_event(Cmd::SnipAnswer { json });
+    }
+}
+
 /// The window a tool from the left bar is drawn in.
 ///
 /// Its own top-level window, not a page inside the board: the picture is of the
@@ -2296,6 +2326,7 @@ impl SnipWindow {
         target: &tao::event_loop::EventLoopWindowTarget<Cmd>,
         wake: &tao::event_loop::EventLoopProxy<Cmd>,
         own: &std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+        ask: &Sender<Ev>,
     ) -> Result<Self> {
         use tao::platform::windows::WindowBuilderExtWindows;
         let window = tao::window::WindowBuilder::new()
@@ -2313,6 +2344,7 @@ impl SnipWindow {
         let mut ctx = wry::WebContext::new(Some(shell_data_dir().join("snip")));
         let wake = wake.clone();
         let own = std::rc::Rc::clone(own);
+        let ask = ask.clone();
         let view = wry::WebViewBuilder::new_with_web_context(&mut ctx)
             .with_url("about:blank")
             .with_background_color((0, 0, 0, 255))
@@ -2342,6 +2374,13 @@ impl SnipWindow {
                     Some("close") => {
                         let _ = wake.send_event(Cmd::SnipClose);
                     }
+                    // A question about the assistant AI. Which desk it is
+                    // asked for is the conductor's to know, not this window's
+                    Some("ask") => {
+                        if let Some(msg) = v.get("msg") {
+                            let _ = ask.send(Ev::SnipAsk { msg: msg.to_string() });
+                        }
+                    }
                     _ => {}
                 }
             })
@@ -2360,7 +2399,7 @@ impl SnipWindow {
         let margin = (16.0 * scale) as i32;
         self.window.set_outer_position(tao::dpi::PhysicalPosition::new(scr.x + scr.w - w - margin, scr.y + margin));
         self.window.set_inner_size(tao::dpi::PhysicalSize::new(w as u32, h as u32));
-        crate::snip::keep_out_of_pictures(self.window.hwnd() as isize, true);
+        crate::snip::keep_out_of_pictures(self.window.hwnd(), true);
         let _ = self.window.set_ignore_cursor_events(true);
         let _ = self.view.load_url(&format!("{base}/snip?tool={}&wait={delay}", pct(tool)));
         self.window.set_visible(true);
@@ -2379,7 +2418,7 @@ impl SnipWindow {
         self.window.set_visible(false);
         let _ = self.window.set_ignore_cursor_events(false);
         // Taken already: the tool itself may be pictured by the next press
-        crate::snip::keep_out_of_pictures(self.window.hwnd() as isize, false);
+        crate::snip::keep_out_of_pictures(self.window.hwnd(), false);
         self.window.set_outer_position(tao::dpi::PhysicalPosition::new(scr.x, scr.y));
         self.window.set_inner_size(tao::dpi::PhysicalSize::new(scr.w as u32, scr.h as u32));
         let _ = self.view.load_url(&format!("{base}/snip?tool={}&n={n}", pct(tool)));
@@ -2393,7 +2432,7 @@ impl SnipWindow {
         use tao::platform::windows::WindowExtWindows;
         self.window.set_visible(false);
         let _ = self.window.set_ignore_cursor_events(false);
-        crate::snip::keep_out_of_pictures(self.window.hwnd() as isize, false);
+        crate::snip::keep_out_of_pictures(self.window.hwnd(), false);
         crate::snip::drop_frame();
         let _ = self.view.load_url("about:blank");
     }
