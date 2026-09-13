@@ -2732,11 +2732,12 @@ const PAGE: &str = r##"<!doctype html>
    color:var(--text); font-size:12px; font-weight:500; line-height:1.4; }
  /* ...and what a field means goes under it, not out to one side */
  .row > .hint { flex-basis:100%; margin-top:-2px; }
- /* One thing in a list of things: everything about it stays on its line.
-    A `.row` cannot do this -- its hint takes the whole width by design, which
-    is right for a field and wrong for a list */
- .listrow { display:flex; align-items:center; gap:var(--s3); padding:var(--s2) 0; }
- .listrow .when { color:var(--muted); font-size:12px; flex:1; }
+ /* When a thing in a list was last heard from. Kept whole: squeezed beside a
+    name on a phone it broke a few letters to a line, five lines tall */
+ .listrow .when { color:var(--muted); font-size:12px; flex:1; white-space:nowrap; }
+ /* A device that holds this board's key: its name, when, and the way to take
+    the key away */
+ .devrow .devname { flex:0 1 180px; }
  /* A row of a table: the same question, asked many times over. The name keeps
     its own column so the eye can run down it, and nothing wraps */
  .row.pair { padding:var(--s1) 0; }
@@ -3132,6 +3133,10 @@ const PAGE: &str = r##"<!doctype html>
    .secretsite { flex:1 1 auto; text-align:left; min-width:0; }
    .secretdots { display:none; }
    .secretedit { margin-left:auto; }
+   /* A device on a phone: the name has the line to itself, and when it was
+      last here sits under it beside the way to take its key away */
+   .devrow { row-gap:var(--s1); }
+   .devrow .devname { flex:1 1 100%; }
  }
  /* Never let the page itself scroll sideways, whatever a stray wide child does. */
  @media (max-width: 760px) { body { overflow-x:hidden; } }
@@ -6655,7 +6660,7 @@ function remoteCard() {
       return;
     }
     for (const c of rows) {
-      const name = el("input", {type:"text", style:"width:180px",
+      const name = el("input", {type:"text", class:"devname",
         placeholder: T["settings.phone.device.unnamed"], value: c.name || ""});
       name.addEventListener("change", async () => {
         await fetch("/api/remote/clients/name", {method:"POST",
@@ -6678,7 +6683,7 @@ function remoteCard() {
         if (!ok) msg(T["settings.phone.device.gone"], true);
         refreshDevices();
       }}, T["settings.phone.device.revoke"]);
-      devices.append(el("div", {class:"listrow"}, name,
+      devices.append(el("div", {class:"listrow devrow"}, name,
         el("span", {class:"when"},
           fill(T["settings.phone.device.last"], {when: whenSeen(c.seen)})),
         drop));
