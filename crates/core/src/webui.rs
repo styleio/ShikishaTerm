@@ -2666,6 +2666,13 @@ const PAGE: &str = r##"<!doctype html>
  .navback { display:flex; align-items:center; gap:var(--s2); color:var(--dim); }
  .navback .go { flex:none; font-size:16px; line-height:1; }
  .navhead { margin:var(--s3) var(--s3) var(--s2); color:var(--text); font-size:14px; font-weight:600; }
+ .navgroup .groupsub { display:block; margin-top:2px; text-transform:none; letter-spacing:0;
+   font-size:11.5px; color:var(--dim); }
+ /* Above a desk default: a line saying so, and the way to the desk's own */
+ .deskdefault { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2) var(--s3);
+   margin-bottom:var(--s3); padding:var(--s2) var(--s3); border:1px solid var(--line);
+   border-radius:var(--r-card); color:var(--muted); font-size:12.5px; }
+ .deskdefault span { flex:1 1 16em; }
  .wsgap { flex:1 1 auto; }
  .wspick { font-size:12px; color:var(--dim); }
  .deskbanner:hover .wspick { color:var(--text); }
@@ -4063,7 +4070,17 @@ function renderNav() {
       el("span", {class:"go"}, "‹"),
       el("div", {class:"body"}, T["tui.nav.back"])));
     nav.append(el("div", {class:"navhead"}, T["settings.global"]));
+    // Two halves under their own headings: what only the app has, then what
+    // every desk starts from and may answer for itself
+    let half = null;
     globalSections().forEach(s => {
+      const now = s.desk ? "desk" : "app";
+      if (now !== half) {
+        half = now;
+        nav.append(el("div", {class:"navgroup"},
+          el("span", {}, T["settings.global." + now]),
+          s.desk ? el("span", {class:"groupsub"}, T["settings.global.desk.sub"]) : null));
+      }
       const b = el("button", {class:"navitem appitem" + (sel.section === s.id ? " sel" : ""),
         onclick:() => goSection(s.id)});
       b.append(el("div", {class:"body"}, el("span", {}, s.label),
@@ -4725,6 +4742,7 @@ function renderDetail() {
     const secs = globalSections();
     const sec = secs.find(s => s.id === sel.section) || secs[0];
     sel.section = sec.id;
+    if (sec.desk) d.append(deskDefaultNote());
     return d.append(sec.build());
   }
   const desk = desks[sel.desk];
@@ -5046,21 +5064,36 @@ function globalSections() {
     {id:"logins",    label:T["settings.sec.logins"],    sub:T["settings.sec.logins.sub"],    build:loginsCard},
     {id:"snapshots", label:T["settings.sec.snapshots"], sub:T["settings.sec.snapshots.sub"], build:snapshotsCard},
     {id:"actions",   label:T["settings.sec.actions"],   sub:T["settings.sec.actions.sub"],   build:actionsCard},
-    {id:"permissions", label:T["settings.sec.permissions"], sub:T["settings.sec.permissions.sub"], build:permissionsCard},
-    {id:"git",       label:T["settings.sec.git"],       sub:T["settings.sec.git.sub"],       build:gitCard},
-    {id:"protect",   label:T["settings.sec.protect"],   sub:T["settings.sec.protect.sub"],   build:protectCard},
     {id:"hosts",     label:T["settings.sec.hosts"],     sub:T["settings.sec.hosts.sub"],     build:hostsCard},
     {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
-    {id:"providers", label:T["settings.sec.providers"], sub:T["settings.sec.providers.sub"], build:providersCard},
     {id:"claudeusage", label:T["settings.sec.claudeusage"], sub:T["settings.sec.claudeusage.sub"], build:claudeUsageCard},
-    {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],
-      build:() => { const box = el("div"); box.append(notifyCard(), pcNotifyCard(), phoneNotifyCard()); return box; }},
     {id:"remote",    label:T["settings.sec.remote"],    sub:T["settings.sec.remote.sub"],    build:remoteCard},
     {id:"api",       label:T["settings.sec.api"],       sub:T["settings.sec.api.sub"],       build:apiCard},
     {id:"resume",    label:T["settings.sec.resume"],    sub:T["settings.sec.resume.sub"],    build:resumeCard},
     {id:"files",     label:T["settings.sec.files"],     sub:T["settings.sec.files.sub"],     build:filesCard},
     {id:"results",   label:T["settings.sec.results"],   sub:T["settings.sec.results.sub"],   build:rallyResultCard},
+    // The second half: what every desk starts from and each desk's own page
+    // can answer differently. Kept together and marked, so an answer changed
+    // here is not mistaken for one every desk is bound to -- the same five a
+    // desk's page has a card for
+    {id:"permissions", desk:true, label:T["settings.sec.permissions"], sub:T["settings.sec.permissions.sub"], build:permissionsCard},
+    {id:"git",       desk:true, label:T["settings.sec.git"],       sub:T["settings.sec.git.sub"],       build:gitCard},
+    {id:"protect",   desk:true, label:T["settings.sec.protect"],   sub:T["settings.sec.protect.sub"],   build:protectCard},
+    {id:"providers", desk:true, label:T["settings.sec.providers"], sub:T["settings.sec.providers.sub"], build:providersCard},
+    {id:"notify",    desk:true, label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],
+      build:() => { const box = el("div"); box.append(notifyCard(), pcNotifyCard(), phoneNotifyCard()); return box; }},
   ];
+}
+
+// Above a desk default: that it is one, and the way to the desk's own answer
+function deskDefaultNote() {
+  const desk = desks[sel.desk];
+  return el("div", {class:"deskdefault"},
+    el("span", {}, T["settings.global.desk.note"]),
+    desk ? el("button", {class:"quiet",
+        onclick:() => { sel = {desk:sel.desk, grp:null, tab:null, global:false}; render(); }},
+      (T["settings.global.desk.go"] || "{desk}").replace("{desk}", desk.name || T["settings.tab.unnamed"]))
+      : null);
 }
 
 // ── Update ─────────────────────────────────────────────────────
