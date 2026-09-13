@@ -268,7 +268,7 @@ fn inline(base: &Path, entry: &Value) -> Result<Value> {
         desk["name"] = Value::String("UNNAMED".into());
     }
     // One spelling on the way out. The old one is still read on the way in
-    if let Some(lua) = desk.as_object_mut().and_then(|o| o.remove("lua"))
+    if let Some(lua) = desk.as_object_mut().and_then(|o| o.shift_remove("lua"))
         && desk.get("automation").is_none_or(is_blank) {
             desk["automation"] = lua;
         }
@@ -440,8 +440,8 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
     // What this machine's secrets the desk may read is this machine's
     // answer, not the file's (see the module doc)
     if let Some(o) = desk.as_object_mut() {
-        o.remove("secrets_allow");
-        o.remove("secrets_allow_all");
+        o.shift_remove("secrets_allow");
+        o.shift_remove("secrets_allow_all");
     }
 
     let scripts = bundle
@@ -523,8 +523,8 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
     // directly would be dead weight: the program and the settings screen
     // both stop reading them the moment a desk list exists
     if let Some(o) = cfg.as_object_mut() {
-        o.remove("tabs");
-        o.remove("folders");
+        o.shift_remove("tabs");
+        o.shift_remove("folders");
     }
     crate::crypto::write_atomic(config_path, &serde_json::to_string_pretty(&cfg)?)?;
 

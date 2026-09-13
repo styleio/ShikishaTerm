@@ -25,7 +25,8 @@ written to the log beside the settings.
 ";
 
 fn main() -> anyhow::Result<()> {
-    for arg in std::env::args().skip(1) {
+    // Every option answers and stops, so only the first one is ever read
+    if let Some(arg) = std::env::args().nth(1) {
         match arg.as_str() {
             "-V" | "--version" => {
                 println!(

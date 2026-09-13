@@ -386,7 +386,7 @@ fn edit(t: &Target, want: bool) -> Result<()> {
         hooks.retain(|_, v| !v.as_array().map(|a| a.is_empty()).unwrap_or(false));
         let empty = hooks.is_empty();
         if let Some(o) = doc.as_object_mut().filter(|_| empty) {
-            o.remove("hooks");
+            o.shift_remove("hooks");
         }
     }
 
