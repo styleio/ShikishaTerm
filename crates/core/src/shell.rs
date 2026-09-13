@@ -320,7 +320,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The tabs scroll; the + does not. It is the only way to add one from here,
      and a control that leaves the window when the sixth tab arrives is a
      control that is not there */
-  #strip .stabs { flex:1 1 auto; min-width:0; display:flex; align-items:stretch;
+  /* Not growing: the row is as wide as its tabs, so the + lands right after
+     the last one, where every browser puts it. Only once the tabs outgrow the
+     bar does this shrink to what is left and scroll -- which is also what
+     keeps the + from being carried out of the window with them */
+  #strip .stabs { flex:0 1 auto; min-width:0; display:flex; align-items:stretch;
     overflow-x:auto; scrollbar-width:none; }
   #strip .stabs::-webkit-scrollbar { display:none; }
   /* They give up width before they give up being visible: each one shrinks,
@@ -1529,6 +1533,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.folder .more { margin-left:auto; padding:0 4px; color:var(--dim); cursor:pointer;
     font-size:13px; line-height:1; }
   .tab.folder .more:hover { color:var(--text); }
+  /* The line an empty folder uses to invite its first tab. Stands where
+     that tab's own row will stand once it exists */
+  .tab.fnew { padding-left:29px; color:var(--dim); font-size:12.5px; }
+  .tab.fnew:hover { color:var(--text); }
+  .tab.fnew.pulse { color:var(--brand); font-weight:700; }
+  .tab.folder .ail { cursor:pointer; }
   .tab.folder .caret { color:var(--dim); font-size:9px; }
   /* Folders that are not on this machine. One line whatever the number, because
      a warning per folder on a PC that has none of them is four warnings nobody
@@ -2313,7 +2323,7 @@ function drawTabs() {
   // says the program runs, and this says what to press next. The pointer
   // beside it says the same in words (drawCoach)
   const bare = (S.coach || 0) === 1;
-  nav.append(el("div", {class:"tab addtab" + (bare ? " pulse" : ""), onclick:e => addMenu(e)},
+  nav.append(el("div", {class:"tab addtab" + (bare ? " pulse" : ""), onclick:() => openBrowse("")},
     el("span", {class:"num"}, "+"),
     el("span", {class:"nm"}, T["tui.folder.add"] || "ADD A FOLDER")));
   // Once, after the first answer an AI has finished here: a star, if you
@@ -2374,7 +2384,7 @@ let coachShut = 0;
 // What each step points at. Asked for by name rather than held on to, because
 // the list it lives in is rebuilt several times a second
 const coachAt = step => step === 1 ? document.querySelector("#tabs .tab.addtab")
-  : step === 2 ? document.querySelector("#tabs .tab.folder .more") : null;
+  : step === 2 ? document.querySelector("#tabs .tab.fnew") : null;
 // Doing the thing is an answer to being asked, so pressing what it points at
 // takes it down -- and takes it down for good, the same as its ✕. It waited
 // for the ✕ before, which left it sitting over the screen it had just sent
@@ -2445,7 +2455,7 @@ function folderRow(g, kin, head, mine) {
     el("span", {class:"caret"}, shut ? "▸" : "▾"),
     // On the row itself as well as in the count above, so a folded list
     // still shows which folder is the one with the problem
-    ailing(g) ? el("span", {class:"ail", title:whyFolder(g)}, "⚠") : null,
+    ailMark(g),
     el("span", {class:"nm"}, g.name || ""));
   // Shut, the row has to speak for what it is hiding: the state of whichever
   // tab inside is waiting on somebody first, and the shape of the work going
@@ -2483,24 +2493,56 @@ function folderRow(g, kin, head, mine) {
   // A raw append writes a null out as the word "null"; el() filters it, so
   // the tail goes through el() too
   // The + blinks while the pointer says to press it
-  const next = (S.coach || 0) === 2 ? " pulse" : "";
-  row.append(...[drifted(g),
-    el("span", {class:"more" + next, title:T["tui.folder.add"] || "+",
-        onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "+")].filter(Boolean));
+  row.append(...[drifted(g), worktreePlus(g)].filter(Boolean));
+  // Everything else a folder can do is a shortcut, not a door: its settings
+  // are on the settings page, a repair is the ⚠ it is already wearing, and a
+  // tab goes in from the bar over the folder in front. Right-click keeps them
+  // one press away for somebody who knows to look
+  row.addEventListener("contextmenu", e => { e.preventDefault(); folderMenu(e, g); });
   return row;
+}
+
+// The + at the end of a folder's row. One meaning only: another worktree of
+// the project this folder belongs to. It used to open a menu holding a tab, a
+// worktree and the settings, while the + at the foot of the list offered a
+// worktree too -- two doors to one room, and neither said which room it was.
+// A folder that is in no repository has nothing to cut a worktree from, so it
+// gets no + at all rather than one that can only fail
+function worktreePlus(g) {
+  if (!g.color) return null;
+  return el("span", {class:"more", title:T["tui.folder.branch"] || "",
+      onclick:e => { e.stopPropagation(); openBranch(g); }}, "+");
+}
+
+// The ⚠ on a folder that is not on this machine. It is the thing saying what
+// is wrong, so it is also where the fixing starts
+function ailMark(g) {
+  if (!ailing(g)) return null;
+  return el("span", {class:"ail", title:whyFolder(g),
+      onclick:e => { e.stopPropagation(); openRepair(g); }}, "⚠");
 }
 // A folder with nothing in it yet. The tab walk never reaches one -- and a
 // folder just added is exactly that, which left "add a folder" ending in
 // nothing on screen. Its + blinks: that is the same + every folder has, and
 // the whole reason to show an empty one
+//
+// With a folder's + meaning a worktree, the first tab needed a door of its own:
+// a folder with no tab has no bar over it, and the bar is where tabs are added.
+// So an empty folder says so underneath, in the words an empty pane already
+// uses. Not opened automatically -- a folder can be on another machine, and
+// opening a tab there is a connection nobody asked for
 function emptyRow(g) {
-  return el("div", {class:"tab folder empty" + (g.linked ? " cut" : ""), title:g.folder || "",
-      onclick:e => folderMenu(e, g)},
+  const box = el("div", {class:"fempty"});
+  const row = el("div", {class:"tab folder empty" + (g.linked ? " cut" : ""), title:g.folder || ""},
     g.linked ? cutMark() : el("span", {class:"chip"}),
-    ailing(g) ? el("span", {class:"ail", title:whyFolder(g)}, "⚠") : null,
+    ailMark(g),
     el("span", {class:"nm"}, g.name || ""),
-    el("span", {class:"more pulse", title:T["tui.tab.add"] || "+",
-        onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "+"));
+    ...[worktreePlus(g)].filter(Boolean));
+  row.addEventListener("contextmenu", e => { e.preventDefault(); folderMenu(e, g); });
+  const next = (S.coach || 0) === 2 ? " pulse" : "";
+  box.append(row, el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)},
+    el("span", {class:"nm"}, T["tui.pane.add"] || "+ Add tab")));
+  return box;
 }
 // One tab's row. `g` is the folder it stands under, if any; `deep` when that
 // folder is a branch standing inside its project's household, so the tab
@@ -2680,9 +2722,6 @@ function folderMenu(e, g) {
     // be done in a folder that does not exist
     ailing(g) ? item(T["tui.repair.go"] || "", () => openRepair(g)) : null,
     item(T["tui.tab.add"] || "ADD TAB", () => addTabHere(g)),
-    // Only where there is a project to cut a branch from
-    g.color ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
-                   () => openBranch(g)) : null,
     // The name, the colour and getting rid of it are settings, and settings
     // live on that folder's own page rather than in a menu that grows a little
     // every time one is added. Folding is the caret on the row itself
@@ -2696,22 +2735,6 @@ function closeFolderMenu() {
     folderMenuAway = null;
   }
   for (const m of document.querySelectorAll(".fmenu")) m.remove();
-}
-// The three ways a desk grows, said as what happens rather than as what
-// they are. Parallel work only appears where there is a project to cut a
-// branch from, so someone with no repository never meets the idea
-function addMenu(e) {
-  const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
-  // The folder of the tab being looked at, so "another branch" means this one
-  const at = (S && S.tabs || []).find(t => t.index === S.active);
-  const gs = (S && S.groups) || [];
-  const here = (at && at.group != null && gs[at.group] && gs[at.group].color)
-    ? gs[at.group] : gs.find(g => g.color) || null;
-  openList(e.currentTarget, [
-    here ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
-                () => openBranch(here)) : null,
-    item(T["tui.folder.another"] || "Add a working folder", () => openBrowse("")),
-  ]);
 }
 
 // Somewhere else to work. The list comes from the app, so this is the same
@@ -10410,6 +10433,26 @@ mod tests {
         );
     }
 
+    /// Each + has one meaning. A folder's is another worktree; the foot of the
+    /// list is another working folder; the bar is another tab. They used to be
+    /// menus, and two of them offered a worktree -- two doors to one room with
+    /// neither saying which room it was.
+    #[test]
+    fn every_plus_means_one_thing() {
+        assert!(PAGE.contains("onclick:e => { e.stopPropagation(); openBranch(g); }}, \"+\")"),
+                "作業フォルダの + がワークツリー専用になっていない");
+        assert!(PAGE.contains(r#"class:"tab addtab" + (bare ? " pulse" : ""), onclick:() => openBrowse("")"#),
+                "一覧の下の + が作業フォルダの追加だけになっていない");
+        assert!(!PAGE.contains("function addMenu("), "ワークツリーと作業フォルダを並べる古いメニューが残っている");
+        // Nothing to cut a worktree from, so no + that can only fail
+        assert!(PAGE.contains("if (!g.color) return null;"), "リポジトリでない作業フォルダにワークツリーの + が出る");
+        // And the empty folder still has a way to its first tab
+        assert!(PAGE.contains("onclick:() => addTabHere(g)},\n    el(\"span\", {class:\"nm\"}, T[\"tui.pane.add\"]"),
+                "空の作業フォルダに最初のタブを入れる入口が無い");
+        assert!(PAGE.contains(r##"step === 2 ? document.querySelector("#tabs .tab.fnew")"##),
+                "初回案内の2歩目が、もう意味の変わった + を指している");
+    }
+
     /// The bar of tabs takes its height out of the panes, not out of nothing.
     ///
     /// A terminal is told how many rows it has by measuring its own pane's
@@ -10443,7 +10486,7 @@ mod tests {
         // The + stays put while the tabs scroll past it. Measured at 820px
         // wide before this: the sixth tab was cut off mid-word and the +,
         // the only way to add one from here, had left the window entirely
-        assert!(PAGE.contains("#strip .stabs { flex:1 1 auto;"), "帯の中でタブだけが流れる作りになっていない");
+        assert!(PAGE.contains("#strip .stabs { flex:0 1 auto;"), "+ が最後のタブの直後に来ない");
         assert!(
             PAGE.contains(r#"strip.append(tabs);"#)
                 && PAGE.split("strip.append(tabs);").nth(1).unwrap_or_default().contains("snew"),
@@ -10683,7 +10726,9 @@ mod tests {
     #[test]
     fn the_first_run_pointer_the_thanks_card_and_the_manual_link_are_drawn() {
         assert!(PAGE.contains(r##"const coachAt = step => step === 1 ? document.querySelector("#tabs .tab.addtab")"##), "1歩目の刺す先が無い");
-        assert!(PAGE.contains(r##": step === 2 ? document.querySelector("#tabs .tab.folder .more") : null;"##), "2歩目の刺す先が無い");
+        // The second step points at the line that starts an AI in an empty folder.
+        // The folder's own + means another worktree now, which is not "start one here"
+        assert!(PAGE.contains(r##": step === 2 ? document.querySelector("#tabs .tab.fnew") : null;"##), "2歩目の刺す先が無い");
         assert!(PAGE.contains(r#"send({kind:"coach", step:coachShut});"#), "閉じたことが伝わらない");
         // Doing the thing is an answer to being asked. Without this the bubble
         // sat over the screen it had just sent somebody to, until its ✕
@@ -10766,7 +10811,9 @@ mod tests {
     #[test]
     fn an_empty_folder_is_drawn_and_its_plus_blinks() {
         assert!(PAGE.contains("if (g.empty) { into.append(emptyRow(g)); continue; }"), "空のフォルダが描かれない");
-        assert!(PAGE.contains(r#"class:"more pulse""#), "空のフォルダの + が光らない");
+        // What blinks is the line that puts the first tab in, on the step that asks for it
+        assert!(PAGE.contains(r#"el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)}"#),
+                "空のフォルダで次に押すものが光らない");
         assert!(
             PAGE.contains("const bare = (S.coach || 0) === 1;"),
             "何も無い機で「作業フォルダを追加」が光らない"
