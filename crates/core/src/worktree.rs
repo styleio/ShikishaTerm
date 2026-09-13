@@ -49,6 +49,18 @@ impl Plan {
         }
     }
 
+    /// The folder on this machine the new one is written down beside.
+    ///
+    /// Here, the checkout it is cut from, whose tabs it takes. On another
+    /// machine `main` is a path over there, which means nothing to this one,
+    /// so it is the folder here the ask came from
+    pub fn like<'a>(&'a self, asked_from: &'a Path) -> &'a Path {
+        match self.host {
+            Some(_) => asked_from,
+            None => &self.main,
+        }
+    }
+
     /// Everything that will run, in order.
     ///
     /// One command nearly always: a branch is cut from a checkout that is
@@ -490,6 +502,12 @@ fn ask_ignored(main: &Path, names: &[String]) -> Option<std::collections::HashSe
 /// two would rather be told which one is missing than have the whole thing
 /// taken away again.
 pub fn carry_into(plan: &Plan, names: &[String]) -> Vec<String> {
+    // Files are copied between folders on this machine. A folder on another
+    // one is a path there, and copying to it here would make a stray folder on
+    // this machine and call it done, so every one of them is said as not brought
+    if plan.host.is_some() {
+        return names.to_vec();
+    }
     let mut trouble = Vec::new();
     for name in names {
         if name.contains('/') || name.contains('\\') || name == ".." {
@@ -1038,6 +1056,24 @@ pub fn fan(main: &Path, name: &str, base: Option<&str>, ais: &[String]) -> Vec<(
         .collect()
 }
 
+/// The same, on another machine: one folder there per AI.
+pub fn fan_on(
+    host: &crate::config::HostSpec,
+    name: &str,
+    base: Option<&str>,
+    ais: &[String],
+    origin: &str,
+    env: Option<crate::devcontainer::Env>,
+) -> Vec<(String, Result<Plan>)> {
+    ais.iter()
+        .map(|ai| {
+            let ai = ai.trim().to_string();
+            let branch = format!("{}-{ai}", name.trim());
+            (ai.clone(), plan_on(host, &branch, base, None, origin, env.clone()))
+        })
+        .collect()
+}
+
 /// Where a branch is already open, if it is.
 ///
 /// Read off the files git keeps that answer in, without starting git: the
@@ -1313,6 +1349,40 @@ mod tests {
         let q = plan_on(&there, "polite-marmot", Some("main"), None, "", None).expect("計画できる");
         assert_eq!(q.argvs().len(), 1);
         assert!(q.line().contains("worktree add"), "{}", q.line());
+    }
+
+    /// One per AI on another machine is made on that machine, and nothing of
+    /// this machine's is copied into a path that only exists there.
+    ///
+    /// The fan planned every folder here whichever machine was chosen, and the
+    /// files that come along were copied to a folder of that name on this one
+    #[test]
+    fn work_for_another_machine_stays_on_that_machine() {
+        let there = crate::config::HostSpec {
+            name: "bench".into(),
+            at: "ssh://me@host:22".into(),
+            project: Some("/srv/p".into()),
+            ..Default::default()
+        };
+        let fanned = fan_on(&there, "login", Some("main"), &["claude".into(), "codex".into()], "", None);
+        assert_eq!(fanned.len(), 2);
+        for (ai, plan) in &fanned {
+            let plan = plan.as_ref().expect("計画できる");
+            assert_eq!(plan.where_at(), "bench", "{ai} がこのマシンで計画された");
+            assert_eq!(plan.branch, format!("login-{ai}"));
+            assert!(plan.folder.to_string_lossy().starts_with("/srv/p"), "{}", plan.folder.display());
+        }
+
+        let local = repo("carry-there");
+        std::fs::write(local.join(".env"), "SECRET=1").unwrap();
+        let mut plan = fanned[0].1.as_ref().unwrap().clone();
+        let stray = local.join("stray");
+        plan.main = local.clone();
+        plan.folder = stray.clone();
+        let missed = carry_into(&plan, &[".env".into()]);
+        assert_eq!(missed, [".env"], "運べていないのに運んだことになっている");
+        assert!(!stray.exists(), "向こうのパスの名前で、このマシンにフォルダができた");
+        assert_eq!(plan.like(&local), local.as_path(), "並べる基準が向こうのパスになっている");
     }
 
     /// A project with a name of its own keeps its branches apart from another

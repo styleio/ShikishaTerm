@@ -2807,18 +2807,21 @@ pub fn set_folder_color(family: &Path, color: &str) -> Result<()> {
 /// values, not as our own types, so a key this version has never heard of
 /// still comes out the other side.
 pub fn append_folder(desk_name: &str, like: Option<&Path>, cwd: &Path, name: Option<&str>) -> Result<()> {
-    append_folder_at(&config_file_path(), desk_name, like, cwd, name, &Start::Same)
+    append_folder_at(&config_file_path(), desk_name, like, cwd, name, &Start::Same, None)
 }
 
-/// The same, saying what the new folder runs.
+/// The same, saying what the new folder runs, and which machine it is on
+/// (`None` is this one). For a folder on another machine `like` is the folder
+/// here it was cut from, which is only used to put it beside its family.
 pub fn append_folder_starting(
     desk_name: &str,
     like: Option<&Path>,
     cwd: &Path,
     name: Option<&str>,
     start: &Start,
+    host: Option<&str>,
 ) -> Result<()> {
-    append_folder_at(&config_file_path(), desk_name, like, cwd, name, start)
+    append_folder_at(&config_file_path(), desk_name, like, cwd, name, start, host)
 }
 
 /// What a folder just made should run.
@@ -2841,13 +2844,21 @@ pub fn append_folder_at(
     cwd: &Path,
     name: Option<&str>,
     start: &Start,
+    host: Option<&str>,
 ) -> Result<()> {
+    let host = host.map(str::trim).filter(|h| !h.is_empty());
     with_folders(path, desk_name, |folders| {
         // The tabs to bring along: whoever is already working in the folder
         // this was asked for from. Same faces, new branch -- unless the ask
         // said what should run instead
-        let tabs = match start {
-            Start::Same => like
+        let tabs = match (host, start) {
+            (_, Start::Nothing) => serde_json::json!([]),
+            // Every tab in a folder on another machine is a terminal on that
+            // machine, whatever its command says. Copying the faces from here
+            // would put an AI's name on a plain shell, so it gets one terminal
+            // named for the machine it is on
+            (Some(h), _) => serde_json::json!([{ "name": h, "command": "sh" }]),
+            (None, Start::Same) => like
                 .and_then(|want| {
                     folders.iter().find(|g| {
                         g.get("cwd")
@@ -2858,8 +2869,7 @@ pub fn append_folder_at(
                 })
                 .and_then(|g| g.get("tabs").cloned())
                 .unwrap_or_else(|| serde_json::json!([])),
-            Start::Nothing => serde_json::json!([]),
-            Start::One { name, command } => serde_json::json!([{ "name": name, "command": command }]),
+            (None, Start::One { name, command }) => serde_json::json!([{ "name": name, "command": command }]),
         };
         // What marks the copies apart. The branch when there is one, since two
         // branches can end in the same word (`feature/login`, `fix/login`) and
@@ -2875,11 +2885,17 @@ pub fn append_folder_at(
         if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
             folder["name"] = serde_json::json!(n);
         }
+        // The machine it is on. Without it the folder reads as one on this
+        // machine: its tabs would start here, in a path that only exists there
+        if let Some(h) = host {
+            folder["host"] = serde_json::json!(h);
+        }
         // What it would take to make this folder again, written now rather than
         // asked for later. Nobody remembers which branch a folder held six
         // weeks ago, and the label above cannot be turned back into one -- it
-        // flattens `work/2` and `work-2` to the same word
-        if let (Some(branch), Some(from)) = (name, like)
+        // flattens `work/2` and `work-2` to the same word. Only here: a folder
+        // on another machine is never made again from this one
+        if let (None, Some(branch), Some(from)) = (host, name, like)
             && let Some(url) = crate::repo::remote_url_of(from) {
                 folder["source"] = serde_json::to_value(SourceSpec::worktree(
                     &crate::folders::scrub(&url),
@@ -2890,8 +2906,12 @@ pub fn append_folder_at(
         // Beside the folders it belongs with. A branch of one project written
         // after an unrelated one reads as unrelated: the list is drawn in the
         // order this is written in, and a family that is not next to itself is
-        // a family nobody can see
-        let family = crate::repo::family_of(cwd);
+        // a family nobody can see. A path on another machine cannot be asked
+        // about here, so there the family is the one of the folder it was cut from
+        let family = match host {
+            Some(_) => like.and_then(crate::repo::family_of),
+            None => crate::repo::family_of(cwd),
+        };
         let last_of_family = family.as_ref().and_then(|f| {
             folders.iter().rposition(|g| {
                 g.get("cwd")
@@ -4126,7 +4146,7 @@ mod tests {
         .unwrap();
 
         let fresh = crate::local_path("D:/work/fresh");
-        append_folder_at(&file, "orion", None, Path::new(&fresh), None, &Start::Same).unwrap();
+        append_folder_at(&file, "orion", None, Path::new(&fresh), None, &Start::Same, None).unwrap();
 
         let text = std::fs::read_to_string(&file).unwrap();
         let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -4168,6 +4188,7 @@ mod tests {
             Path::new(&branch),
             Some("feature/login"),
             &Start::Same,
+            None,
         )
         .unwrap();
 
@@ -4228,6 +4249,7 @@ mod tests {
             Path::new("D:/work/proj.worktrees/a-codex"),
             Some("a-codex"),
             &Start::One { name: "codex".into(), command: "codex --flag".into() },
+            None,
         )
         .unwrap();
         append_folder_at(
@@ -4237,6 +4259,7 @@ mod tests {
             Path::new("D:/work/proj.worktrees/quiet"),
             Some("quiet"),
             &Start::Nothing,
+            None,
         )
         .unwrap();
         let cfg: Config = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
@@ -4248,6 +4271,60 @@ mod tests {
         assert_eq!(one[0].cfg.name.as_deref(), Some("codex"));
         assert_eq!(one[0].cfg.command.argv(), ["codex", "--flag"]);
         assert!(in_folder(2).is_empty(), "何も起動しない、のはずがタブがある");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A worktree made on another machine is written down as being on it.
+    ///
+    /// It was written as a folder here: its tabs started on this machine, in a
+    /// path that only exists over there, running the AIs copied from the
+    /// folder it was cut from.
+    #[test]
+    fn a_folder_made_on_another_machine_is_written_as_being_there() {
+        let dir = std::env::temp_dir().join(format!("shikisha-there-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        std::fs::write(
+            &file,
+            r#"{"hosts": [{"name": "bench", "at": "ssh://me@example.test:22", "project": "/srv/proj"}],
+                "desks": [{"name": "Demo", "folders": [
+                {"cwd": "D:/work/proj", "tabs": [{"name": "実装", "id": "coder", "command": "claude"}]}]}]}"#,
+        )
+        .unwrap();
+        append_folder_at(
+            &file,
+            "Demo",
+            Some(Path::new("D:/work/proj")),
+            Path::new("/srv/proj.branches/login"),
+            Some("login"),
+            &Start::Same,
+            Some("bench"),
+        )
+        .unwrap();
+        append_folder_at(
+            &file,
+            "Demo",
+            Some(Path::new("D:/work/proj")),
+            Path::new("/srv/proj.branches/quiet"),
+            Some("quiet"),
+            &Start::Nothing,
+            Some("bench"),
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        let cfg: Config = serde_json::from_str(&text).unwrap();
+        let desk = &cfg.resolve_desks().0[0];
+        assert_eq!(desk.folders.len(), 3, "{text}");
+        let there = &desk.folders[1];
+        assert_eq!(there.host.as_ref().map(|h| h.name.as_str()), Some("bench"), "マシンが書かれていない: {text}");
+        assert!(matches!(there.source, Source::Unknown), "向こうのフォルダに、ここで作り直す元が書かれた: {text}");
+        let in_folder = |g: usize| desk.tabs.iter().filter(|t| t.folder == g).collect::<Vec<_>>();
+        let one = in_folder(1);
+        assert_eq!(one.len(), 1, "端末1つのはず: {text}");
+        assert_eq!(one[0].cfg.name.as_deref(), Some("bench"), "AIの名前がただの端末に付いた: {text}");
+        assert!(in_folder(2).is_empty(), "何も起動しない、のはずがタブがある");
+        let opts = crate::desk::tab_options(&one[0].cfg, Some(there));
+        assert!(opts.remote.is_some(), "向こうのフォルダのタブが、このマシンで起動する");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
