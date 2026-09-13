@@ -886,6 +886,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if let (Some(r), Some(line)) = (remote_ui.as_ref(), shell.far_pages()) {
                     r.set_page_line(line);
                 }
+                if let Some(r) = remote_ui.as_ref() {
+                    shell.board_is_at(&r.url);
+                }
                 publish_remote(&remote_info, &remote_ui);
                 last_remote_ui = None;
                 if flash.is_none() {

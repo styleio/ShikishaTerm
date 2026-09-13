@@ -70,6 +70,13 @@ pub trait Shell {
         None
     }
 
+    /// The board is listening, at this address (the key to it included).
+    ///
+    /// A window shows the link as a code to scan, on its own settings screen,
+    /// and has nothing to add. A runtime with no window has no screen to show it
+    /// on, so it says it where the person who started it is looking
+    fn board_is_at(&self, _url: &str) {}
+
     /// Where the next page should be drawn. Meaningless to a shell that can
     /// only draw in one place, which is why it does nothing by default
     fn draw_pages(&self, where_: crate::placed::Draw) {
@@ -222,6 +229,17 @@ impl Shell for Headless {
     /// not do pages", and it does
     fn far_pages(&self) -> Option<crate::faraway::Line> {
         Some(self.pages.far())
+    }
+
+    /// Printed for whoever started it, and written to the log beside the
+    /// settings for whoever started it as a service -- what `--help` has always
+    /// said happens. Nothing did: a server came up with its board listening
+    /// and no way to learn the address short of reading the settings and the
+    /// token file and putting the two together
+    fn board_is_at(&self, url: &str) {
+        let line = crate::i18n::tp("msg.serve.board_at", &[("url", url)]);
+        println!("{line}");
+        crate::append_hook_log(&line);
     }
 
     /// Read from the config, and re-read whenever it changes

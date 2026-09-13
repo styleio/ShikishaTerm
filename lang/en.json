@@ -2076,6 +2076,7 @@
   "err.connect.no_url": "--connect needs the board's address, like --connect http://host:8787/?t=…",
   "err.connect.bad_url": "{url} is not an address this can open. It takes http:// and https:// only.",
   "msg.connected": ">> connected to {url}. Close the window to stop.",
+  "msg.serve.board_at": ">> The board is at {url} -- open it on the phone or computer you will use. The link is the key to the board: keep it to yourself.",
   "settings.phone.devices": "Devices that have this board's key",
   "settings.phone.devices.none": "None yet. A device is added the first time it opens the link.",
   "settings.phone.device.unnamed": "unnamed device",
