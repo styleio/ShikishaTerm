@@ -119,9 +119,10 @@ const shouldRenderSearch =
     }
   }
 
-  /* 狭い画面で X を畳む。starlight.core の外に置く必要がある —— アイコンが着て
-     いる .sl-flex は layer に入っていないので、layer の中からでは
-     (詳細度で勝っていても) display:flex を上書きできない */
+  /* Put X away on a narrow screen. This rule has to stay out of every cascade
+     layer: .sl-flex, which gives the icon display:flex, lives in
+     @layer starlight.utils, and a declaration in no layer beats any layered
+     one whatever their specificity -- inside a layer, this would lose */
   @media (max-width: 50rem) {
     .social-icons :global(a[href*="x.com"]) {
       display: none;
