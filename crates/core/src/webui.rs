@@ -3358,16 +3358,23 @@ function sfield(label, control, hint) {
 // copied does not quietly carry somebody's password with it. What the field
 // shows is whether one is stored, never what it is
 function secretField(t, which, label, hint, describe) {
-  const input = el("input", {type:"password", placeholder:hint});
-  const note = el("span", {class:"hint"});
   const nameOf = () => {
     const desk = desks[sel.desk];
     const w = (desk && (desk.id || "").trim()), tid = (t.id || "").trim();
     return w && tid ? "ssh/" + w + "/" + tid + "/" + which : "";
   };
+  return credentialField(nameOf, label, hint, describe, T["settings.secrets.desk_needs_id"]);
+}
+
+// A credential kept under a name worked out from something else on the page,
+// never written into the settings. `nameOf` answers "" while there is nothing
+// yet to work the name out from, and `needs` is what the person is told then
+function credentialField(nameOf, label, hint, describe, needs, saved) {
+  const input = el("input", {type:"password", placeholder:hint});
+  const note = el("span", {class:"hint"});
   const refresh = async () => {
     const k = nameOf();
-    if (!k) { note.textContent = T["settings.secrets.desk_needs_id"]; return; }
+    if (!k) { note.textContent = needs; return; }
     const j = await fetchSecrets();
     const has = j && (j.secrets || []).some(x => x.key === k);
     note.textContent = has ? T["settings.ssh.password.set"] : "";
@@ -3375,17 +3382,20 @@ function secretField(t, which, label, hint, describe) {
   setTimeout(refresh, 0);
   const go = el("button", {onclick: async () => {
     const k = nameOf();
-    if (!k) { toast(T["settings.secrets.desk_needs_id"], true); return; }
+    if (!k) { toast(needs, true); return; }
     if (!input.value) { toast(T["settings.secrets.value_required"], true); return; }
     const r = await saveSecret({key: k, value: input.value, description: describe(),
                                 human: true, ai: false, urls: []});
-    if (r.ok) { input.value = ""; toast(T["settings.ssh.password.saved"]); refresh(); }
+    if (r.ok) { input.value = ""; toast(saved || T["settings.ssh.password.saved"]); refresh(); }
     else toast(r.error || T["settings.secrets.save_failed"], true);
   }}, T["common.save"]);
-  return el("div", {class:"field"},
+  const box = el("div", {class:"field"},
     el("label", {}, label),
     el("div", {class:"fieldctl"}, el("div", {class:"row2"}, input, go)),
     el("div", {class:"hint"}, note));
+  // Asked again when what the name is worked out from changes
+  box.refresh = refresh;
+  return box;
 }
 // Stored internally in milliseconds, but shown to people in seconds.
 // Letting someone read "10" rather than write "10000" makes for a more natural setting
@@ -5843,6 +5853,21 @@ function hostDialog(at, redraw, kind) {
     el("label", {}, label), el("div", {class:"fieldctl"}, control),
     hint ? el("div", {class:"hint"}, hint) : null);
 
+  // The credential each kind signs in with. Kept in the secrets file under a
+  // name worked out from this machine's, as a tab's is, and never in the
+  // settings -- but typed here. The page used to say where it was kept and
+  // offer nowhere to type it: the secrets screen files everything under a
+  // desk, so a machine's password and the sandbox service's key could not be
+  // entered from anywhere at all
+  const hostName = () => nameIn.value.trim();
+  const credential = made
+    ? credentialField(() => "e2b_api_key", T["settings.hosts.e2b_key"], T["settings.ssh.password.hint"],
+        () => "E2B", "", T["settings.hosts.e2b_key.saved"])
+    : credentialField(() => hostName() ? "ssh/host/" + hostName() + "/password" : "",
+        T["settings.hosts.password"], T["settings.ssh.password.hint"],
+        () => "SSH " + hostName(), T["settings.hosts.name_required"]);
+  nameIn.addEventListener("change", () => credential.refresh());
+
   const shut = () => back.remove();
   const back = openModal(
     el("div", {class:"mhead"},
@@ -5852,9 +5877,11 @@ function hostDialog(at, redraw, kind) {
       field(T["settings.hosts.name"], nameIn, T["settings.hosts.name.hint"]),
       ...(made
         ? [field(T["settings.hosts.provider"], serviceIn, ""),
+           credential,
            field(T["settings.hosts.template"], templateIn, T["settings.hosts.template.hint"]),
            field(T["settings.hosts.minutes"], minutesIn, T["settings.hosts.minutes.hint"])]
-        : [field(T["settings.hosts.at"], atIn, T["settings.hosts.at.hint"]),
+        : [field(T["settings.hosts.at"], atIn, ""),
+           credential,
            field(T["settings.hosts.project"], projectIn, T["settings.hosts.project.hint"]),
            field(T["settings.hosts.branches"], branchesIn, "")])),
     el("div", {class:"mfoot"},
