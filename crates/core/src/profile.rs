@@ -375,7 +375,7 @@ where
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let Ok(pf) = serde_json::from_str::<ProfileFile>(&text) else {
+            let Some(pf) = parse_file(&text) else {
                 continue;
             };
             if pred(&path, &pf)
@@ -386,6 +386,15 @@ where
         }
     }
     None
+}
+
+/// One profile file's text, read the way a person may have saved it.
+///
+/// Notepad and PowerShell put a byte-order mark in front when told "UTF-8",
+/// which JSON does not allow; a profile written that way was skipped as if
+/// the file were not there
+fn parse_file(text: &str) -> Option<ProfileFile> {
+    serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()
 }
 
 /// Every profile there is, one per file, nearest folder first.
@@ -412,7 +421,7 @@ pub fn files() -> Vec<ProfileFile> {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let Ok(pf) = serde_json::from_str::<ProfileFile>(&text) else {
+            let Some(pf) = parse_file(&text) else {
                 continue;
             };
             if out.iter().any(|p| p.name == pf.name) {
@@ -438,7 +447,7 @@ pub fn all() -> Vec<Profile> {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let Ok(pf) = serde_json::from_str::<ProfileFile>(&text) else {
+            let Some(pf) = parse_file(&text) else {
                 continue;
             };
             if out.iter().any(|p| p.name == pf.name) {
@@ -485,6 +494,15 @@ pub fn load_by_name(name: &str) -> Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A profile saved by a Windows editor is still a profile.
+    #[test]
+    fn a_profile_saved_by_a_windows_editor_is_read() {
+        let text = std::fs::read_to_string(crate::repo_root().join("profiles/claude.json")).unwrap();
+        let plain = parse_file(&text).expect("同梱のプロファイルが読めない");
+        let marked = parse_file(&format!("\u{feff}{text}")).expect("BOM付きが読めない");
+        assert_eq!(marked.name, plain.name);
+    }
 
     fn names(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
