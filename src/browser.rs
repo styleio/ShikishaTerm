@@ -116,7 +116,14 @@ const PLACED_JS: &str = r##"
 /// tears the page down from under the pane and leaves a hole.
 const POPUP_JS: &str = r#"
 (function () {
-  const shut = () => { try { window.ipc.postMessage(JSON.stringify({kind:"popupclose"})); } catch (e) {} };
+  // Both roads out. The message reaches the app from a window a link opened;
+  // from one a script opened, only the browser's own close request does (the
+  // app listens for it), so the real close is asked for as well
+  const closeForReal = window.close.bind(window);
+  const shut = () => {
+    try { window.ipc.postMessage(JSON.stringify({kind:"popupclose"})); } catch (e) {}
+    try { closeForReal(); } catch (e) {}
+  };
   window.close = shut;
   const draw = () => {
     if (document.getElementById("__shikisha_popbar") || !document.documentElement) return;
@@ -988,6 +995,27 @@ impl Drop for Browser {
 /// Wrapped in an async function and awaited, so an async value like the
 /// result of `fetch` also gets resolved before returning. Awaiting a
 /// synchronous value just passes it through, so existing DOM calls still work as-is
+/// What `Runtime.evaluate` said, in the shape a page's own answer has: whether
+/// it worked, and the value (or the error) as JSON text.
+fn evaluated(json: &str) -> (bool, String) {
+    let v: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+    if let Some(ex) = v.get("exceptionDetails") {
+        let said = ex
+            .get("exception")
+            .and_then(|e| e.get("description"))
+            .and_then(|d| d.as_str())
+            .or_else(|| ex.get("text").and_then(|t| t.as_str()))
+            .unwrap_or("error");
+        return (false, serde_json::Value::String(said.to_string()).to_string());
+    }
+    let value = v
+        .get("result")
+        .and_then(|r| r.get("value"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    (true, value.to_string())
+}
+
 fn wrap_eval(id: u64, js: &str) -> String {
     format!(
         r#"(async function(){{
@@ -1189,6 +1217,17 @@ fn adopt_windows(
                 let raw = cdp::webview_of(&v);
                 if let Some(ua) = user_agent.as_deref() {
                     cdp::call(&raw, "Emulation.setUserAgentOverride", &ua_override(ua));
+                }
+                {
+                    let inbox = std::rc::Rc::clone(&inbox);
+                    let proxy = proxy.clone();
+                    let name = name.clone();
+                    cdp::on_close_requested(&raw, move || {
+                        if let Ok(mut ib) = inbox.try_borrow_mut() {
+                            ib.shut.push(name.clone());
+                            let _ = proxy.send_event(Cmd::Adopt);
+                        }
+                    });
                 }
                 shikisha_core::append_hook_log(&format!(
                     "[browser] '{opener}' opened a window -> '{name}' ({uri})"
@@ -1504,6 +1543,34 @@ fn run_window(
                     }
                 }
                 Cmd::Eval { id, to, js } => {
+                    // A window a page opened, standing in front of it. Its
+                    // answer cannot come back the ordinary way: a window a
+                    // script opened starts as about:blank, and once it goes
+                    // on to its real address WebView2 no longer delivers its
+                    // messages -- so everything asked while a sign-in window
+                    // was up went unanswered. The DevTools protocol answers
+                    // the call that asked, which needs no message at all
+                    let standing = to
+                        .as_ref()
+                        .and_then(|name| overlays.get(name))
+                        .and_then(|stack| stack.last())
+                        .map(|(_, v)| v);
+                    if let Some(v) = standing {
+                        let tx = ev_tx.clone();
+                        let params = serde_json::json!({
+                            "expression": format!("(async function(){{ {js} }})()"),
+                            "awaitPromise": true,
+                            "returnByValue": true,
+                        })
+                        .to_string();
+                        cdp::call_result(&cdp::webview_of(v), "Runtime.evaluate", &params, move |ok, json| {
+                            let (ok, value) = match ok {
+                                true => evaluated(&json),
+                                false => (false, serde_json::Value::String(json).to_string()),
+                            };
+                            let _ = tx.send(Ev::Result { id, ok, value });
+                        });
+                    } else
                     // When the destination can't be found, don't fall back
                     // to the main view. That would run site-facing JS against our own screen
                     if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
@@ -2154,6 +2221,22 @@ mod cdp {
         pub webview: ICoreWebView2,
     }
 
+    /// Hear the page asking to close its window (`window.close()`).
+    ///
+    /// The one way a window a script opened can say it is done: its messages
+    /// stop arriving once it leaves its first about:blank, and a sign-in
+    /// window that closes itself would otherwise stay in front of its page
+    pub fn on_close_requested<F: Fn() + 'static>(webview: &ICoreWebView2, f: F) {
+        let handler = webview2_com::WindowCloseRequestedEventHandler::create(Box::new(move |_sender, _args| {
+            f();
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = webview.add_WindowCloseRequested(&handler, &mut token);
+        }
+    }
+
     /// Call one CDP method (the result is discarded). `params_json` can just be "{}"
     pub fn call(webview: &ICoreWebView2, method: &str, params_json: &str) {
         let method = HSTRING::from(method);
@@ -2671,6 +2754,26 @@ mod nav_tests {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// An answer read off the DevTools protocol has the shape a page's own
+    /// answer has, so whoever asked cannot tell which road it came by.
+    #[test]
+    fn an_answer_by_the_devtools_road_reads_like_a_page_answer() {
+        assert_eq!(
+            evaluated(r#"{"result":{"type":"string","value":"PAGE-C"}}"#),
+            (true, "\"PAGE-C\"".to_string())
+        );
+        assert_eq!(evaluated(r#"{"result":{"type":"undefined"}}"#), (true, "null".to_string()));
+        assert_eq!(
+            evaluated(r#"{"result":{"type":"object","value":{"a":1}}}"#),
+            (true, r#"{"a":1}"#.to_string())
+        );
+        let (ok, said) = evaluated(
+            r#"{"result":{"type":"object"},"exceptionDetails":{"text":"Uncaught","exception":{"description":"ReferenceError: x is not defined"}}}"#,
+        );
+        assert!(!ok);
+        assert_eq!(said, "\"ReferenceError: x is not defined\"");
+    }
 
     /// A window put away from minimized gets its board back.
     ///
