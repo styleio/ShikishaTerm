@@ -458,6 +458,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // If we're resuming where we left off, launch that same desk too.
         // Hard-coding this to the first desk would restore only the name while
         // showing a screen with different contents.
+        // Which model connections this desk may use is settled before its tabs
+        // start, the way a switch does it. The full hand-over comes further
+        // down, once there is a notifier to hand; left until then, the first
+        // desk's tabs launched with every registered connection open to them,
+        // and a desk that had drawn the line was obeyed only after a switch
+        bridge::scope_to(w.providers.clone());
         spawn_desk(w, rows, cols, &mut tabs, &mut startup_errors, Some(&last_session));
     }
     // No config yet = first run. Guide the user so the experience isn't just

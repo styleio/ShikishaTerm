@@ -301,6 +301,31 @@ pub fn reaching() -> Vec<String> {
     names
 }
 
+/// Why a `model <provider>/<model>` line has no connection, in the words the
+/// person reads. `None` when it is not such a line, or when it has one.
+///
+/// Two answers kept apart, the same way notifications keep them: a name that is
+/// registered but not for this desk is spelled right, and telling somebody it
+/// does not exist sends them looking for a typo that is not there
+pub fn why_not(argv: &[String]) -> Option<String> {
+    if argv.first().map(String::as_str) != Some("model") {
+        return None;
+    }
+    let line = argv.get(1).map(|s| s.trim()).unwrap_or_default();
+    let Some((provider, _)) = line.split_once('/') else {
+        return Some(crate::i18n::tp("err.model.bad_line", &[("line", line)]));
+    };
+    let known = PROVIDERS
+        .lock()
+        .ok()
+        .is_some_and(|g| g.as_ref().is_some_and(|m| m.contains_key(provider)));
+    match (known, reachable(provider)) {
+        (false, _) => Some(crate::i18n::tp("err.model.unknown_provider", &[("name", provider)])),
+        (true, false) => Some(crate::i18n::tp("err.model.not_reachable", &[("name", provider)])),
+        (true, true) => None,
+    }
+}
+
 /// If this is `model <provider>/<model>`, return the resolved connection
 /// (None if not found). The model name may itself contain "/" (Ollama
 /// tags), so split on the first "/" only.
@@ -348,6 +373,16 @@ mod tests {
         assert!(!allowed(Some(&only), "mine"), "他の環境の接続先が使えてしまう");
         // A line drawn around nothing is a real answer, not "everything"
         assert!(!allowed(Some(&Vec::new()), "work"));
+    }
+
+    /// A model line with no connection is refused in its own words, never by
+    /// going on to look for a program called "model".
+    #[test]
+    fn a_model_line_without_a_connection_says_why() {
+        let line = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(why_not(&line(&["claude"])), None, "model 以外の行に口を出している");
+        assert!(why_not(&line(&["model", "no-slash"])).is_some(), "形の違う行が黙って通る");
+        assert!(why_not(&line(&["model"])).is_some(), "空の行が黙って通る");
     }
 
     #[test]
