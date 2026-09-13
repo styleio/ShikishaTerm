@@ -73,11 +73,14 @@ This program's whole premise is that **an AI is editing the same file**. The
 rules:
 
 1. **A file changed under an unsaved draft is not reloaded.** That would throw
-   the typing away. Say so, and let the person choose
+   the typing away. Say so, and let the person choose: reload, or save what is
+   here over it. Both are buttons on the notice -- a notice that names a way out
+   it does not offer sends the person to Save, which rule 3 refuses
 2. **A clean editor follows the file.** When the AI next door is the one
    writing, that is exactly what you want to see
 3. **A save that would land on newer bytes is refused, not won.** The read hands
-   out a mark of the contents; the write checks it first
+   out a mark of the contents; the write checks it first. The one write without
+   a mark is the notice's "save mine over it", pressed after being told
 4. **Nothing saves itself.** The person presses save, or Ctrl+S. A thing that
    writes on its own, beside an agent that also writes, fails in a shape nobody
    can unpick
