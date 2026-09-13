@@ -6178,9 +6178,8 @@ function zoom(by) {
 }
 
 // ── Remote history pager (phone only) ────────────────────────────────
-// A full-screen TUI can't be scrolled smoothly over the network, so the phone
-// turns history one screenful at a time. Two buttons (or a vertical swipe) each
-// move one page — the whole screen minus a couple of kept rows, so the edge you
+// Two buttons that turn history a step at a time, for when a finger drag (below)
+// is not what a person wants. Each tap moves one page — the whole screen minus a couple of kept rows, so the edge you
 // were just reading carries over instead of vanishing. Rapid taps add up (shown
 // as ×N) and fire as one move.
 //
@@ -6255,26 +6254,142 @@ function pgFire() {
 document.getElementById("pageUp").addEventListener("click", () => pageBy(1));
 document.getElementById("pageDown").addEventListener("click", () => pageBy(-1));
 
-// A vertical swipe on the terminal pages once in that direction (down-swipe =
-// older), same as a button tap. Continuous drag-scrolling is deliberately gone:
-// it can't be smooth across the network, and coalesced page turns can.
-let swY = null, swDist = 0;
+// A finger on the terminal scrolls it the way a finger scrolls anything on a
+// phone: row by row while it moves, then coasting to a stop after it lets go.
+//
+// A full-screen program keeps no history of its own on our side, so every row
+// is still a question to the program ("scroll one"), answered by it redrawing.
+// That round trip is unavoidable -- what made it feel broken was asking in big
+// batches: one swipe became a third of a screen, sent after a pause, landing
+// as one jump. Asked a row at a time as the finger travels, the redraws follow
+// the finger instead.
+//
+// This was tried once before (2026-08-18) and dropped, but back then the
+// screen came back on a 0.9 s poll; it now arrives within a frame or two, so
+// the same idea is judged again on the pipe it needs.
+//
+// Only one request is on the wire at a time. Rows the finger covers while one
+// is travelling are added up and go in the next, so a slow link gets fewer,
+// larger steps instead of a queue that keeps scrolling after the finger stops.
+const DRAG_FRICTION = 0.972;   // per 16 ms of coasting
+const DRAG_MIN_VEL = 0.012;    // px/ms below which the coast is over
+const DRAG_CLAIM_PX = 10;      // movement before a touch counts as a scroll, not a tap
+let dg = null;                 // the touch in progress: {x, y, t, vel, claimed}
+// dgAcc: finger travel not yet a whole row. dgOwed: rows not yet asked for
+let dgCoast = 0, dgAcc = 0, dgOwed = 0, dgBusy = false, dgAt = {row:0, col:0};
+function dgFlush() {
+  if (dgBusy || dgOwed === 0) return;
+  const by = Math.max(-250, Math.min(250, dgOwed));
+  dgOwed -= by;
+  dgBusy = true;
+  Promise.resolve(send({kind:"scroll", by, row: dgAt.row, col: dgAt.col}))
+    .finally(() => { dgBusy = false; dgFlush(); });
+}
+// Finger travel in px -> whole rows owed to the program. A downward finger
+// pulls older lines into view, the same direction as a wheel rolled up.
+function dgTravel(px) {
+  if (!cellH) measure();
+  const unit = cellH || 16;
+  dgAcc += px;
+  const rows = Math.trunc(dgAcc / unit);
+  if (rows === 0) return;
+  dgAcc -= rows * unit;
+  // A link slower than the finger must not bank a backlog that keeps the
+  // screen running on after the finger has stopped: two screens is the most
+  // that can be owed, and a turn of direction forgets what was owed the other way
+  if (dgOwed !== 0 && Math.sign(dgOwed) !== Math.sign(rows)) dgOwed = 0;
+  const cap = Math.max(8, gRows * 2);
+  dgOwed = Math.max(-cap, Math.min(cap, dgOwed + rows));
+  dgFlush();
+}
+function dgStopCoast() { if (dgCoast) { cancelAnimationFrame(dgCoast); dgCoast = 0; } }
+// While the frame itself is taller than the phone, the finger first moves
+// within it; only at its edge does the rest reach history. Done here rather
+// than left to the browser: once the browser starts a scroll of its own it
+// owns the gesture -- the page can no longer cancel it and its touchmoves
+// arrive thinned -- so even a frame a few pixels too tall used to swallow the
+// whole drag (measured: 16 px of room turned a 300 px drag into one row).
+// Returns the travel the frame did not use.
+function dgMoveFrame(px) {
+  const room = scr.scrollHeight - scr.clientHeight;
+  if (room <= 1) return px;
+  const before = scr.scrollTop;
+  scr.scrollTop = Math.max(0, Math.min(room, before - px));
+  return px + (scr.scrollTop - before);
+}
 scr.addEventListener("touchstart", e => {
-  if (!REMOTE || !S || S.active === 0 || scr.hidden || e.touches.length !== 1) { swY = null; return; }
-  swY = e.touches[0].clientY; swDist = 0;
+  dgStopCoast();
+  if (!REMOTE || !onTerminal() || scr.hidden || e.touches.length !== 1) { dg = null; return; }
+  const p = e.touches[0];
+  if (!cellW || !cellH) measure();
+  const box = scr.getBoundingClientRect();
+  dgAt = {
+    row: Math.max(0, Math.floor((p.clientY - box.top + scr.scrollTop) / (cellH || 16))),
+    col: Math.max(0, Math.floor((p.clientX - box.left) / (cellW || 8))),
+  };
+  dgAcc = 0;
+  dg = {x: p.clientX, y: p.clientY, t: performance.now(), vel: 0, claimed: false};
+  // The rest of the gesture is heard on the node the finger landed on, not on
+  // the screen. A touch keeps going to where it started even after that node
+  // is taken out of the page, but it stops bubbling -- and every frame the
+  // scroll brings back rewrites the rows under the finger, so listening on the
+  // screen went deaf after the first redraw (measured: 4 of 25 moves heard)
+  const on = e.target;
+  const off = () => {
+    on.removeEventListener("touchmove", dgMove);
+    on.removeEventListener("touchend", dgEndHere);
+    on.removeEventListener("touchcancel", dgCancelHere);
+  };
+  const dgEndHere = () => { off(); dgEnd(); };
+  const dgCancelHere = () => { off(); dg = null; };
+  on.addEventListener("touchmove", dgMove, {passive:false});
+  on.addEventListener("touchend", dgEndHere, {passive:true});
+  on.addEventListener("touchcancel", dgCancelHere, {passive:true});
 }, {passive:true});
-scr.addEventListener("touchmove", e => {
-  if (swY === null || e.touches.length !== 1) return;
-  swDist += e.touches[0].clientY - swY;
-  swY = e.touches[0].clientY;
-  if (Math.abs(swDist) > 10) e.preventDefault();   // claim the gesture from the page
-}, {passive:false});
-scr.addEventListener("touchend", () => {
-  if (swY === null) return;
-  const d = swDist; swY = null;
-  if (Math.abs(d) > 40) pageBy(d > 0 ? 1 : -1);
-}, {passive:true});
-scr.addEventListener("touchcancel", () => { swY = null; }, {passive:true});
+function dgMove(e) {
+  if (!dg || e.touches.length !== 1) { dg = null; return; }
+  const p = e.touches[0];
+  const dy = p.clientY - dg.y;
+  if (!dg.claimed) {
+    const tx = p.clientX - dg.x;
+    // Sideways is somebody else's gesture
+    if (Math.abs(tx) > Math.abs(dy) && Math.abs(tx) >= DRAG_CLAIM_PX) { dg = null; return; }
+    // Hold the browser off well inside its own slop, or its scroll takes the
+    // gesture before this one decides (see dgMoveFrame). Not from the very
+    // first pixel: a tap's jitter must stay a tap, which opens the input bar
+    if (Math.abs(dy) >= 4) e.preventDefault();
+    if (Math.abs(dy) < DRAG_CLAIM_PX) return;
+    dg.claimed = true;
+    dg.y = p.clientY; dg.t = performance.now();
+    return;
+  }
+  e.preventDefault();
+  const now = performance.now(), dt = now - dg.t;
+  // touchmove arrives unevenly; blend samples so one hiccup doesn't set the coast
+  if (dt > 0) {
+    const v = dy / dt;
+    if (isFinite(v)) dg.vel = dg.vel === 0 ? v : dg.vel * 0.55 + v * 0.45;
+  }
+  dg.y = p.clientY; dg.t = now;
+  const rest = dgMoveFrame(dy);
+  if (rest !== 0) dgTravel(rest);
+}
+function dgEnd() {
+  const g = dg; dg = null;
+  if (!g || !g.claimed) return;
+  // A finger that stopped before lifting does not coast
+  if (performance.now() - g.t > 80) return;
+  let vel = g.vel;
+  if (Math.abs(vel) < DRAG_MIN_VEL) return;
+  const step = () => {
+    vel *= DRAG_FRICTION;
+    if (Math.abs(vel) < DRAG_MIN_VEL) { dgCoast = 0; return; }
+    const rest = dgMoveFrame(vel * 16);
+    if (rest !== 0) dgTravel(rest);
+    dgCoast = requestAnimationFrame(step);
+  };
+  dgCoast = requestAnimationFrame(step);
+}
 
 // ── Reader (phone only) ──────────────────────────────────────────────
 // The words of this tab's conversation, as a document. Where they come from
@@ -10758,6 +10873,31 @@ mod tests {
             PAGE.contains(r#"if (armedPane === cls + p.id || (t && t.state === "EXIT"))"#),
             "動いているペインを一押しで落とせてしまう"
         );
+    }
+
+    /// A finger on the phone's terminal scrolls it row by row and coasts, and
+    /// keeps doing so after the first redraw.
+    ///
+    /// Two ways it was measured to go silent, both pinned here: listening for
+    /// the moves on the screen (the rows under the finger are rewritten by
+    /// every frame, and a touch whose node left the page stops bubbling), and
+    /// leaving a frame a few pixels too tall to the browser's own scroll (which
+    /// then owns the gesture). And one request on the wire at a time, so a slow
+    /// link does not bank scrolling that runs on after the finger stops.
+    #[test]
+    fn a_finger_drag_follows_the_finger_past_the_first_redraw() {
+        assert!(
+            PAGE.contains(r#"on.addEventListener("touchmove", dgMove, {passive:false});"#),
+            "指の動きを画面側で聞くと、最初の描き直しで耳が聞こえなくなる"
+        );
+        assert!(
+            !PAGE.contains(r#"scr.addEventListener("touchmove""#),
+            "指の動きが画面側で聞かれている"
+        );
+        assert!(PAGE.contains("function dgMoveFrame(px)"), "枠の中の移動をブラウザ任せにしている");
+        assert!(PAGE.contains("if (dgBusy || dgOwed === 0) return;"), "問い合わせが同時に何本も出る");
+        assert!(PAGE.contains("dgCoast = requestAnimationFrame(step);"), "離した後に滑らない");
+        assert!(!PAGE.contains("pageBy(d > 0 ? 1 : -1)"), "スワイプが1ページ送りに戻っている");
     }
 
     /// The folder picker is a framed dialog, drawn in this app's own marks.
