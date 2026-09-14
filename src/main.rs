@@ -44,6 +44,7 @@ use shikisha_core::{
 };
 mod browser;
 mod picker;
+mod hotkeys;
 mod snip;
 mod wintoast;
 mod tray;
@@ -395,6 +396,8 @@ struct WinSurface {
     /// The window is put away. Drawing goes on regardless (the phone reads the
     /// same state), but a notification's click has to bring it back first
     hidden: bool,
+    /// The keys that open the tools from any program, while they are registered
+    hotkeys: Option<crate::hotkeys::Hotkeys>,
 }
 
 impl WinSurface {
@@ -936,7 +939,14 @@ fn run_in_window() -> Result<()> {
         last_pane_screens: std::collections::HashMap::new(),
         pending: std::collections::VecDeque::new(),
         hidden: false,
+        hotkeys: None,
     };
+    // The keys that open the tools from any program. The scissors' own key
+    // frames first and chooses after; a tool's key opens that tool
+    let opener = surface.win.snip_opener();
+    surface.hotkeys = hotkeys::Hotkeys::start(move |action| {
+        opener.open(if action == "snip" { "" } else { action });
+    });
     run(&mut surface)
 }
 
@@ -1761,6 +1771,11 @@ impl shikisha_core::host::Shell for WinSurface {
     fn push_lua_done(&self, err_json: &str) { WinSurface::push_lua_done(self, err_json) }
     fn push_actions(&self, actions_json: &str) { WinSurface::push_actions(self, actions_json) }
     fn push_theme(&self) { WinSurface::push_theme(self) }
+    fn settings_reloaded(&self) {
+        if let Some(h) = &self.hotkeys {
+            h.reload();
+        }
+    }
     fn hide(&mut self) { WinSurface::hide(self) }
     fn show(&mut self) { WinSurface::show(self) }
     fn say_where_it_went(&self) { WinSurface::say_where_it_went(self) }

@@ -1177,6 +1177,7 @@ fn handle(
         ("GET", "/") => {
             let html = crate::i18n::render(&themed(PAGE.to_string()))
                 .replace("__TOKEN__", token)
+                .replace("__HOTKEY_DEFAULT__", crate::hotkeys::DEFAULT)
                 .replace("__REMOTE__", if remote_client { "true" } else { "false" })
                 .replace("__GRANTS__", &crate::grants::catalog_json())
                 .replace(
@@ -2494,6 +2495,16 @@ fn handle(
         // Every action the window has, with the key it answers to right now.
         // The names are the app's own, so the settings screen never has its
         // own idea of what this program can do
+        // The keys that open the tools from any program: what each is set to,
+        // whether it could be registered, and when it last arrived
+        ("GET", "/api/hotkeys") => {
+            req.respond(json_resp(serde_json::json!({
+                "rows": crate::hotkeys::rows(),
+                "active": crate::hotkeys::active(),
+                "default": crate::hotkeys::DEFAULT,
+                "actions": crate::hotkeys::ACTIONS,
+            })))?;
+        }
         ("GET", "/api/keys") => {
             let (map, errs) = crate::keys::Keys::load(crate::config::load().as_ref());
             let shown: std::collections::HashMap<&str, String> = crate::keys::ACTIONS
@@ -3106,6 +3117,15 @@ const PAGE: &str = r##"<!doctype html>
  /* A row of a table: the same question, asked many times over. The name keeps
     its own column so the eye can run down it, and nothing wraps */
  .row.pair { padding:var(--s1) 0; }
+ /* A key that works from any program: three held keys and the key */
+ .hkpick { display:flex; align-items:center; gap:var(--s1); flex:none; }
+ .hkpick .tog { height:32px; min-width:52px; padding:0 var(--s2); font-size:12.5px; border:1px solid var(--edge);
+   border-radius:var(--r-ctl); background:var(--panel2); color:var(--dim); cursor:pointer; }
+ /* Held: marked by its rim, not filled -- the page's one filled button is Save */
+ .hkpick .tog.on { border-color:var(--brand); color:var(--text); box-shadow:inset 0 0 0 1px var(--brand); font-weight:600; }
+ .hkpick select.hkkey { height:32px; min-width:92px; margin-left:var(--s1); }
+ .hkstate.warnline { color:var(--warn); }
+ @media (max-width:700px) { .row.pair.hkrow { flex-wrap:wrap; } .row.pair.hkrow > label { flex-basis:100% !important; } }
  .row.pair > label:not(.check):not(.beside) { flex:0 0 210px; align-self:center;
    color:var(--dim); font-weight:400; }
  .row.pair > .hint { flex:0 0 auto; margin-top:0; }
@@ -5474,15 +5494,123 @@ function themePicker() {
 // A key is typed the way people write keys to each other -- ctrl+shift+d -- and
 // a bare character means "after the prefix key", which is what the prefix is
 // for. Empty gives the key back.
+// The keys that open the tools from any program on this PC.
+//
+// Held keys are chosen from Ctrl, Alt and Shift and the key from a list, rather
+// than by pressing the combination: a key already registered would open the
+// tool instead of being recorded, and a phone has no such keys to press. What
+// each row says is what the program found when it registered the key, which is
+// the part a person cannot see for themselves
+const HOTKEY_KEYS = [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"].concat(Array.from({length: 12}, (_, i) => "F" + (i + 1)));
+function hotkeysCard() {
+  // Read without writing: drawing the card is not an edit, and a section put
+  // into the settings just by looking would mark them unsaved
+  const hk = isObj(current.hotkeys) ? Object.assign({}, current.hotkeys) : {};
+  let status = null;
+  const list = el("div", {});
+  const box = card(T["settings.hotkeys.title"],
+    el("div", {class:"hint", style:"margin-bottom:var(--s3)"}, T["settings.hotkeys.intro"]),
+    list);
+  const parse = text => {
+    const c = {ctrl:false, alt:false, shift:false, key:""};
+    for (const part of String(text || "").split("+").map(p => p.trim())) {
+      const low = part.toLowerCase();
+      if (low === "ctrl" || low === "control") c.ctrl = true;
+      else if (low === "alt") c.alt = true;
+      else if (low === "shift") c.shift = true;
+      else if (HOTKEY_KEYS.includes(part.toUpperCase())) c.key = part.toUpperCase();
+    }
+    return c;
+  };
+  const shown = c => [c.ctrl && "Ctrl", c.alt && "Alt", c.shift && "Shift", c.key].filter(Boolean).join("+");
+  const DEFAULT_KEY = "__HOTKEY_DEFAULT__";
+  // What the settings hold for an action, as it would be read (the scissors
+  // unwritten are the default)
+  const written = a => a in hk ? hk[a] : (a === "snip" ? DEFAULT_KEY : "");
+  // What each row shows, kept between redraws: a held key pressed before the
+  // key is chosen is half a combination, and has to still be there when the
+  // other half arrives
+  const drafts = {};
+  const draw = () => {
+    list.textContent = "";
+    for (const action of ["snip", "text", "noun", "color", "edit"]) {
+      const c = drafts[action] || (drafts[action] = parse(written(action)));
+      const toggles = ["ctrl", "alt", "shift"].map(m => {
+        const b = el("button", {class:"tog" + (c[m] ? " on" : ""), "aria-pressed": String(c[m])},
+          {ctrl:"Ctrl", alt:"Alt", shift:"Shift"}[m]);
+        b.onclick = () => { c[m] = !c[m]; keep(action, c); };
+        return b;
+      });
+      const pick = el("select", {class:"hkkey"});
+      pick.append(el("option", {value:""}, T["settings.hotkeys.none"]));
+      for (const k of HOTKEY_KEYS) pick.append(el("option", {value:k}, k));
+      pick.value = c.key;
+      pick.onchange = () => { c.key = pick.value; keep(action, c); };
+      const say = el("span", {class:"hint hkstate"});
+      tell(say, action, c);
+      list.append(el("div", {class:"row pair hkrow"},
+        el("label", {}, T["settings.hotkeys.action." + action]),
+        el("div", {class:"hkpick"}, ...toggles, pick),
+        say));
+    }
+  };
+  // Written back only where it differs from what an unwritten one means, so a
+  // settings file nobody touched here stays without the section
+  // Only a whole combination is written. Half of one is no key until it is
+  // finished -- the row says what is missing
+  const keep = (action, c) => {
+    const text = c.key && (c.ctrl || c.alt) ? shown(c) : "";
+    if (action === "snip" && text === DEFAULT_KEY) delete hk[action];
+    else if (action !== "snip" && !text) delete hk[action];
+    else hk[action] = text;
+    if (Object.keys(hk).length) current.hotkeys = Object.assign({}, hk);
+    else delete current.hotkeys;
+    refreshSave();
+    draw();
+  };
+  const clock = secs => new Date(secs * 1000).toLocaleString([], {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"});
+  function tell(say, action, c) {
+    const text = c.key ? shown(c) : "";
+    const warn = msg => { say.className = "hint hkstate warnline"; say.textContent = msg; };
+    say.className = "hint hkstate";
+    if (c.key && !c.ctrl && !c.alt) return warn(T["settings.hotkeys.need_mod"]);
+    const row = status && (status.rows || []).find(r => r.action === action);
+    if (!status || !status.active) { say.textContent = text ? "" : T["settings.hotkeys.off"]; return; }
+    if (!row || row.key !== text) { say.textContent = text ? T["settings.hotkeys.unsaved"] : T["settings.hotkeys.off"]; return; }
+    if (row.state === "off") say.textContent = T["settings.hotkeys.off"];
+    else if (row.state === "taken") warn(T["settings.hotkeys.taken"]);
+    else if (row.state === "twice") warn(T["settings.hotkeys.twice"]);
+    else if (row.state === "unreadable") warn(T["settings.hotkeys.unreadable"]);
+    else say.textContent = row.last ? fill(T["settings.hotkeys.last"], {when: clock(row.last)}) : T["settings.hotkeys.never"];
+  }
+  // What the program found. Asked again while the card is open: a save
+  // registers the keys a moment after, and a key pressed elsewhere should show
+  const load = async () => {
+    if (!box.isConnected && status) return;
+    try { status = await (await fetch("/api/hotkeys", {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { status = null; }
+    draw();
+    setTimeout(load, 3000);
+  };
+  draw();
+  load();
+  return box;
+}
+
 function keysCard() {
-  current.keys = current.keys || {};
-  const k = current.keys;
+  // Read without writing, like the card above: an empty section put in just by
+  // opening the page marked every visit unsaved
+  const k = isObj(current.keys) ? current.keys : {};
+  const attach = () => {
+    if (k.prefix === "") delete k.prefix;
+    if (Object.keys(k).length) current.keys = k; else delete current.keys;
+  };
   const list = el("div", {}, el("div", {class:"hint"}, "…"));
   const problems = el("div", {});
-  const box = card(T["settings.sec.keys"],
+  const box = card(T["settings.keys.in_title"],
     el("div", {class:"hint", style:"margin-bottom:var(--s3)"}, T["settings.keys.intro"]),
     problems,
-    row(T["settings.keys.prefix"], field(k, "prefix", "ctrl+b", {width:150, grow:false}),
+    row(T["settings.keys.prefix"], field(k, "prefix", "ctrl+b", {width:150, grow:false, onInput:attach}),
         el("span", {class:"hint"}, T["settings.keys.prefix.hint"])),
     list);
   load();
@@ -5505,6 +5633,7 @@ function keysCard() {
       inp.addEventListener("input", () => {
         const v = inp.value.trim();
         if (v) k[r.name] = v; else delete k[r.name];
+        attach();
       });
       list.append(el("div", {class:"row pair"},
         el("label", {}, r.desc),
@@ -5630,7 +5759,9 @@ function globalSections() {
   return [
     {id:"basic",     label:T["settings.sec.basic"],     sub:T["settings.sec.basic.sub"],     build:basicCard},
     {id:"update",    label:T["settings.sec.update"],    sub:T["settings.sec.update.sub"],    build:updateCard},
-    {id:"keys",      label:T["settings.sec.keys"],      sub:T["settings.sec.keys.sub"],      build:keysCard},
+    // Two cards: the keys that work from any program, then the keys inside
+    {id:"keys",      label:T["settings.sec.keys"],      sub:T["settings.sec.keys.sub"],
+     build:() => el("div", {}, hotkeysCard(), keysCard())},
     {id:"logins",    label:T["settings.sec.logins"],    sub:T["settings.sec.logins.sub"],    build:loginsCard},
     {id:"snapshots", label:T["settings.sec.snapshots"], sub:T["settings.sec.snapshots.sub"], build:snapshotsCard},
     {id:"actions",   label:T["settings.sec.actions"],   sub:T["settings.sec.actions.sub"],   build:actionsCard},
@@ -11448,6 +11579,7 @@ mod tests {
             let html = crate::i18n::render(&themed(page.to_string()))
                 .replace("__TOKEN__", "t")
                 .replace("__REMOTE__", "false")
+                .replace("__HOTKEY_DEFAULT__", crate::hotkeys::DEFAULT)
                 .replace("__DICT__", "{}")
                 .replace("__GRANTS__", "[]")
                 .replace("__GITLUA__", "\"\"")

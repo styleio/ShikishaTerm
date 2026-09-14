@@ -64,6 +64,7 @@ pub mod send;
 pub mod serve;
 pub mod sessionfind;
 pub mod shell;
+pub mod hotkeys;
 pub mod snip;
 pub mod devcontainer;
 pub mod e2b;

@@ -224,6 +224,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-radius:var(--r-chip); border:1px solid var(--line); background:transparent; color:var(--text);
     cursor:pointer; }
   .fmenu .chip.on { background:var(--brand); border-color:var(--brand); color:var(--bg); font-weight:600; }
+  /* The keys that open them from any program */
+  .fmenu div.sniphead { display:flex; align-items:center; justify-content:space-between; gap:var(--s3); cursor:default; }
+  .fmenu div.sniphead:hover { background:transparent; }
+  .fmenu div.sniphead .lbl { color:var(--dim); font-size:11.5px; }
+  .fmenu div.sniptool { display:flex; align-items:center; justify-content:space-between; gap:var(--s3); }
+  .fmenu kbd.snipkey { font-family:var(--mono); font-size:10.5px; line-height:1.5; padding:0 5px; color:var(--dim);
+    border:1px solid var(--line); border-radius:var(--r-chip); white-space:nowrap; }
   /* A tool opened on a phone: over the whole board, which stays connected underneath */
   #sniplayer { position:fixed; inset:0; z-index:90; width:100%; height:100%; border:0; background:var(--bg); }
   /* The first-run pointer: a bubble beside the one thing to press next,
@@ -2540,6 +2547,14 @@ function openSnipMenu(e) {
   const anchor = e.currentTarget;
   {
     const rows = [];
+    // The keys that open these from any program, beside what they open. Only
+    // keys that are registered and work; a phone has no keys to press
+    const keys = (!REMOTE && S && S.hotkeys) || {};
+    const badge = action => keys[action] ? el("kbd", {class:"snipkey"}, keys[action]) : null;
+    if (keys.snip) {
+      rows.push(el("div", {class:"sniphead", title:T["tui.snip.key_title"] || ""},
+        el("span", {class:"lbl"}, T["tui.snip.key"] || ""), badge("snip")));
+    }
     // First, how long to wait. The program is in front when this is pressed,
     // and waiting is how whatever is behind it gets into the picture. A phone
     // takes no picture of its own screen, so it has nothing to wait for
@@ -2561,8 +2576,8 @@ function openSnipMenu(e) {
       rows.push(wait);
     }
     for (const t of SNIP_TOOLS) {
-      rows.push(el("div", {onclick:() => { closeFolderMenu(); runSnip(t); }},
-        T["snip.tool." + t] || t));
+      rows.push(el("div", {class:"sniptool", onclick:() => { closeFolderMenu(); runSnip(t); }},
+        el("span", {}, T["snip.tool." + t] || t), badge(t)));
     }
     openList(anchor, rows);
   }

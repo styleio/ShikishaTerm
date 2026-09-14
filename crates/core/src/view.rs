@@ -292,6 +292,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             .cloned()
             .unwrap_or_default(),
         desk_id: ui.desk_ids.get(ui.desk_index).cloned().unwrap_or_default(),
+        hotkeys: crate::hotkeys::working(),
         desks: ui.desk_names.clone(),
         desk_index: ui.desk_index,
         active: ui.active,

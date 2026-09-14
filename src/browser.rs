@@ -672,6 +672,12 @@ impl Browser {
         self.send(Cmd::Snip { tool: tool.to_string(), delay })
     }
 
+    /// A way to open a tool from another thread: the keys that work from any
+    /// program are heard on a thread of their own
+    pub fn snip_opener(&self) -> SnipOpener {
+        SnipOpener(self.proxy.clone())
+    }
+
     /// A way to hand the tool page its answer from another thread: the AI it
     /// asked is waited for away from the loop that draws everything
     pub fn snip_replier(&self) -> SnipReplier {
@@ -2319,6 +2325,18 @@ fn run_window(
     tray.remove();
     let _ = closed_tx.send(Ev::Closed);
     Ok(())
+}
+
+/// Opens a tool from another thread (see `Browser::snip_opener`).
+pub struct SnipOpener(tao::event_loop::EventLoopProxy<Cmd>);
+
+impl SnipOpener {
+    /// Take the screen now and open `tool` over it, or with no tool, frame the
+    /// picture first and choose after. No wait: a key is pressed with the
+    /// program to be pictured already in front
+    pub fn open(&self, tool: &str) {
+        let _ = self.0.send_event(Cmd::Snip { tool: tool.to_string(), delay: 0 });
+    }
 }
 
 /// Hands the tool page an answer (see `Browser::snip_replier`).

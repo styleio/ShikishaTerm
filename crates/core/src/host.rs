@@ -55,6 +55,10 @@ pub trait Shell {
     fn push_lua_done(&self, err_json: &str);
     fn push_actions(&self, actions_json: &str);
     fn push_theme(&self);
+    /// The settings file was read again. For whatever the shell holds of it
+    /// outside the conductor's loop -- the window's keys that work from any
+    /// program
+    fn settings_reloaded(&self) {}
     fn hide(&mut self);
     fn show(&mut self);
     fn say_where_it_went(&self);

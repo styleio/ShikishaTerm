@@ -527,6 +527,12 @@ pub struct Config {
     /// Uses whichever is found if empty
     #[serde(default)]
     pub ai_engine: Option<String>,
+    /// Keys that open the tools from any program, by what they open (see
+    /// `hotkeys::ACTIONS`): "Alt+Shift+X". Only what was changed is written;
+    /// the scissors not written at all have `hotkeys::DEFAULT`, written empty
+    /// they have none
+    #[serde(default)]
+    pub hotkeys: std::collections::BTreeMap<String, String>,
     /// Remote UI viewable from a phone etc. Disabled by default.
     ///
     /// App-wide, and deliberately so. Every part of it describes one server on
