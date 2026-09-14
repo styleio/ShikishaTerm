@@ -477,8 +477,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      it sits in the dot's column so the row below still reads as one line down
      the sidebar, and never on the left edge, which belongs to the AI's own
      colour */
-  .tab.folder { padding-top:9px; padding-bottom:3px; gap:6px; }
-  .tab.folder .nm { font-size:11.5px; opacity:.85; letter-spacing:.02em; min-width:4em; }
+  /* A heading is one line whatever the width of the column. Its tail -- the
+     count, the drift, the + -- keeps its size and its place at the end; what
+     gives way is the words, the branch and project labels first and the name
+     last, each cut short with an ellipsis rather than pushed onto a line of
+     its own. A tab row wraps for what it last said; a heading says nothing */
+  .tab.folder { padding-top:9px; padding-bottom:3px; gap:6px; flex-wrap:nowrap; min-width:0; }
+  .tab.folder .nm { font-size:11.5px; opacity:.85; letter-spacing:.02em; flex:1 1 auto; min-width:min(6em, 45%);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tab.folder > .chip, .tab.folder > .cut, .tab.folder > .caret, .tab.folder > .dot,
+    .tab.folder > .spark, .tab.folder > .more, .tab.folder > .drift { flex-shrink:0; }
   /* A household: a project's own folder with the branches cut from it. One
      box, so the eye reads them as one project; the head of it a shade
      heavier than any other heading, since it is the row that names the
@@ -490,13 +498,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .family .tab.intab.deep { padding-left:40px; }
   /* Which branch the project itself is standing on, worn by the head of a
      household only: alone, a folder's own branch is already on its tabs */
-  .tab.folder .on { flex:0 50 auto; min-width:0; font-size:10px; color:var(--dim); font-family:var(--mono);
+  .tab.folder .on { flex:0 100 auto; min-width:0; font-size:10px; color:var(--dim); font-family:var(--mono);
     border:1px solid var(--line); border-radius:var(--r-chip); padding:0 4px; max-width:90px;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   /* How many branches hang under this project, and the one press that puts
      them all away or brings them all back */
-  .tab.folder .kin { margin-left:auto; flex:0 0 auto; font-size:10px; color:var(--dim);
-    cursor:pointer; padding:0 4px; white-space:nowrap; }
+  .tab.folder .kin { margin-left:auto; flex:0 10 auto; min-width:1.6em; font-size:10px; color:var(--dim);
+    cursor:pointer; padding:0 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .tab.folder .kin:hover { color:var(--text); }
   .tab.folder .kin ~ .drift { margin-left:6px; }
   .tab.folder .kin ~ .more { margin-left:6px; }
@@ -1882,7 +1890,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .fmenu .fname:focus { border-color:var(--brand);
     box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
   .tab.folder .more { margin-left:auto; padding:0 4px; color:var(--dim); cursor:pointer;
-    font-size:13px; line-height:1; }
+    font-size:13px; line-height:1; flex:0 0 auto; }
   .tab.folder .more:hover { color:var(--text); }
   /* The line an empty folder uses to invite its first tab. Stands where
      that tab's own row will stand once it exists */
