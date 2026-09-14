@@ -8,6 +8,82 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-14
+
+A desk keeps its accounts to itself, the screen can be framed, read and marked
+up without leaving the program, and the window opens on the work.
+
+### Added
+- **Tools for part of the screen.** A scissors at the foot of the left bar,
+  beside settings and help, offers how long to wait and then a tool. The part
+  of the screen framed with it can be:
+  - **read for colours.** It is grown to fill the window in whole pixels, and
+    every colour clicked joins a list as hex, `rgb()` and `hsl()`, to copy one
+    at a time or all at once, or to save to a file.
+  - **read for text, or named with nouns, by an AI.** The picture goes to the
+    assistant AI chosen in the settings (Claude Code, Codex CLI or Gemini CLI).
+    Nothing is sent until the desk on screen has agreed to it, and the
+    agreement is asked for again if the assistant AI changes. The picture is
+    deleted once it has been read.
+  - **edited.** Arrows, boxes, text, a pen, and parts hidden by mosaic, blur or
+    fill; crop and resize; undo and redo. The result is copied, saved or
+    printed.
+
+  The picture never leaves this machine except for the AI reading above. A
+  phone opens the same tools over a picture chosen on the phone.
+- **Git accounts, chosen and never guessed.** A desk registers the accounts it
+  signs in to git servers with --- an HTTPS token or an SSH key, with the name
+  and email its commits carry. Each project chooses the account its git column
+  uses, and each git tab chooses its own. Until one is chosen, fetch, pull and
+  push do not run; "This PC's git settings" is one of the choices. The settings
+  say whether a token still works and how many days it has left.
+- **Projects.** A project belongs to a desk, and the settings list a desk's
+  working folders under the project they belong to, with the checkout its
+  worktrees are cut from.
+- **What a new worktree brings with it.** On a project's page, each line of the
+  repository's `.gitignore` says whether the files it covers are copied, copied
+  with some text replaced (a port in `.env`, say), linked, or left behind, and a
+  file from anywhere can be put at a place inside the worktree. The project's
+  setup command runs after all of it.
+
+### Changed
+- **A desk's notification destinations, model connections, automation doors,
+  permissions and git settings are its own, with nothing of the app's
+  underneath.** Values written at the top of the settings file no longer reach
+  any desk. If you set these for the whole app in 0.11.0, set them again in
+  each desk's settings.
+- **The GitHub token a desk kept as the secret `github` is no longer read.**
+  Add it under Desk settings › Git accounts and choose that account for the
+  project.
+- **The settings are two places.** The program's settings sit on top, in two
+  halves: what only the app has, and the starting values each desk can change.
+  A desk's settings are a place of their own, opened from their button, with an
+  entry per card. Choosing a desk switches the tree and nothing else.
+- **The window opens on the terminal, with the tab bar put away.** Its switch
+  is in the title bar, and the width it was dragged to is kept. A folder
+  running two or more things starts as one line with a pill per state, opened
+  by pressing it.
+- **Every + means one thing.** The bar's + adds a tab and sits right after the
+  last tab, the way a browser's does. A folder's + adds a worktree, and a folder
+  in no repository has none. The foot of the list adds a working folder. An
+  empty folder says underneath how to open its first tab.
+- **The working-folder picker is a dialog** with quick access, dates and a
+  new-folder button.
+- **A folder's name goes to the tab last looked at there**, in the split it was
+  in.
+- **A finger on a phone's terminal scrolls it row by row and coasts**, instead
+  of one swipe turning a page.
+- **The example settings, secrets, desk and scripts handed out with the program
+  are in English**, and the example that hands dangerous questions to a person
+  now also matches an English CLI's "Delete".
+
+### Fixed
+- **The tray icon and the taskbar button were blank** in 0.11.0.
+- **Send on a phone committed the typed words** in any folder that was a
+  repository, instead of reaching Claude or the shell in front.
+- **Eight messages would have shown Japanese on an English screen** if their
+  translation had gone missing.
+
 ## [0.11.0] - 2026-09-13
 
 Parallel work got a home of its own, the runtime with no window grew a
@@ -1910,7 +1986,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/styleio/ShikishaTerm/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/styleio/ShikishaTerm/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/styleio/ShikishaTerm/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/styleio/ShikishaTerm/compare/v0.8.0...v0.9.0
