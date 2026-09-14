@@ -1,38 +1,34 @@
 ---
 title: SHIKISHA-TERM
-description: Claude Code・Codex・Gemini を Windows で同時に動かすターミナルです。どれが自分の返事を待っているかが一目で分かり、AI同士で仕事を渡し合えます。
+description: AIネイティブ時代に最適化された、無料の次世代のマルチタスク開発ターミナル。Claude Code、Codex、ローカルLLMなど多彩なAIに対応し、PC・スマホ・クラウドVMから複数のワークツリーやエージェントを並行して走らせられます。
 template: splash
 head:
   - tag: title
-    content: "SHIKISHA-TERM — 4体のコーディングAIを同時に動かす（Windows）"
+    content: "SHIKISHA-TERM — AIネイティブ時代のマルチタスク開発ターミナル"
 hero:
   image:
     file: ../../../assets/logo.png
-  tagline: コーディングAIを4体同時に。どれが自分を待っているかは、見れば分かります。
-  actions:
-    - text: 自動化の書き方
-      link: /ja/automation/
-      icon: right-arrow
-    - text: GitHub
-      link: https://github.com/styleio/ShikishaTerm
-      icon: external
-      variant: minimal
+  tagline: AIネイティブ時代に最適化された、無料の次世代のマルチタスク開発ターミナル
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkButton } from '@astrojs/starlight/components';
 
-<div style="display:flex;flex-direction:column;align-items:center;gap:.6em;margin:0 0 1.4em;text-align:center">
-  <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0" target="_blank" rel="noopener" style="display:inline-block;line-height:0">
-    <img alt="Microsoft Store から入手" src="https://get.microsoft.com/images/ja%20dark.svg"
-         style="height:64px;width:auto;max-width:100%" />
-  </a>
-  <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0" target="_blank" rel="noopener"><strong>インストールはこちら（Microsoft Store）</strong></a>
-  <span style="opacity:.66;font-size:.9em">
-    Windows 10/11・無料。
-    <a href="/ja/get/">ポータブル版の zip</a> もあります
-    <br />（zip は署名が無いので、初回に Windows の警告が出ます。
-    <a href="#zip-に出る警告とそれを消す方法">理由はこちら</a>）
-  </span>
+<div class="lead">
+  <p>Claude Code、Codex、ローカルLLMなど多彩なAIに対応。PCはもちろん、スマホやクラウドVMから複数のワークツリーやエージェントを走らせ、開発を並行して進められます。</p>
+  <p class="notes">※モバイル利用時は<a href="https://tailscale.com/" target="_blank" rel="noopener">Tailscale</a>（無料）のセットアップが必要です。<br />※クラウド実行環境として<a href="https://e2b.dev/" target="_blank" rel="noopener">E2B</a>をサポートしています。</p>
+</div>
+
+<div class="get-row">
+  <div class="store">
+    <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0" target="_blank" rel="noopener" style="display:inline-block;line-height:0">
+      <img alt="Microsoft Store から入手" src="https://get.microsoft.com/images/ja%20dark.svg"
+           style="height:64px;width:auto;max-width:100%" />
+    </a>
+    <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0" target="_blank" rel="noopener"><strong>インストールはこちら（Microsoft Store）</strong></a>
+    <span class="sub">Windows 10/11・無料・<a href="/ja/get/">ポータブル版の zip</a> もあります</span>
+  </div>
+  <div class="rule"></div>
+  <LinkButton href="https://github.com/styleio/ShikishaTerm" variant="secondary" icon="github" iconPlacement="start">GitHub で見る</LinkButton>
 </div>
 
 <video src="/demo.mp4" autoplay loop muted playsinline style="width:100%;border-radius:12px" />
