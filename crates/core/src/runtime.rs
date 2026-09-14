@@ -725,8 +725,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // settings, and the reload that follows would otherwise put "settings
     // reloaded" over what could not come along
     let mut said_before_reload: Option<(std::time::Instant, String)> = None;
-    // Whether the Issue tab is open. The desk's issues are asked about when it
-    // is, and it is put away with its ✕
+    // Whether the Issue tab has been opened. Once it has, it stays among the
+    // rows until the app is closed: like INDEX it is not closed, and it asks
+    // GitHub nothing while it is not in view
     let mut issues_open = false;
     let mut issues_front = false;
     // Words waiting for the input bar of a worktree just made for an issue or
@@ -3251,7 +3252,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         match ends {
                             crate::closed::Ends::Tab(serial) => ending.push(serial),
                             crate::closed::Ends::Editor(key) => editors.retain(|e| e.key != key),
-                            crate::closed::Ends::Issues => issues_open = false,
                             crate::closed::Ends::Nothing => {}
                         }
                         if settings {

@@ -4526,8 +4526,11 @@ function drawStrip() {
         ? (S.tabs || []).filter(t => !t.settings && t.group === active.group)
         : [active]);
   // Nothing to switch between and nothing to add to: a bar that says only
-  // what the pane below it already says is a row of pixels spent on nothing
-  strip.hidden = !active || S.board;
+  // what the pane below it already says is a row of pixels spent on nothing.
+  // The Issue tab is that, always: it stands in no folder, and like INDEX it is
+  // not closed -- its row in the list is always there, and another tab pressed
+  // is the way out of it
+  strip.hidden = !active || S.board || active.kind === "issues";
   strip.textContent = "";
   if (strip.hidden) {
     if (was !== strip.hidden) layout();
@@ -4560,13 +4563,9 @@ function drawStrip() {
   // and would do nothing at all. And it carries which folder it was asked
   // from, or the form adds the tab to the first one instead of this one
   const g = active.group != null ? (S.groups || [])[active.group] : null;
-  // The Issue tab stands in no folder: a + beside it would add a tab to
-  // whichever folder came first, and nothing closed there is its to bring back.
-  // Its own ✕ stays -- the Issue row in the list opens it again
-  const alone = active.kind === "issues";
-  if (!alone) strip.append(el("div", {class:"snew", title:T["tui.pane.add"] || "",
+  strip.append(el("div", {class:"snew", title:T["tui.pane.add"] || "",
       onclick:() => addTabHere(g)}, "+"));
-  if (!alone && (S.closed || []).length) {
+  if ((S.closed || []).length) {
     strip.append(el("div", {class:"sclosed", title:T["tui.closed.head"] || "",
         onclick:e => closedMenu(e, g)}, "\u25BE"));
   }
