@@ -167,10 +167,7 @@ impl Saved {
                 // launch and never put anything in it, so what it had BEFORE
                 // is the one still worth coming back to — otherwise opening
                 // the app and closing it again would quietly forget everything
-                let s = match t.spoke() {
-                    true => t.session.as_ref().or(t.previous.as_ref())?,
-                    false => t.previous.as_ref().or(t.session.as_ref())?,
-                };
+                let s = t.conversation_to_keep()?;
                 Some(SavedTab {
                     title: t.title.clone(),
                     id: t.id.clone(),

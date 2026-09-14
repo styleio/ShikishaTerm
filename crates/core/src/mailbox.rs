@@ -45,6 +45,12 @@ pub struct Mailbox {
     pub focus_panes: Vec<u32>,
     /// Panes whose ✕ was pressed. The loop closes the view, not the tab
     pub close_panes: Vec<u32>,
+    /// Tabs asked to close: (screen number, what the row was, already asked)
+    pub close_tabs: Vec<(usize, String, bool)>,
+    /// The question a tab's ✕ asked was answered "no"
+    pub close_tab_back: bool,
+    /// Closed tabs asked back: which one, or the one closed last
+    pub reopen_tabs: Vec<Option<u64>>,
     /// Dividers dragged in the window, as (pane, its split's new first share)
     pub pane_ratios: Vec<(usize, f32)>,
     /// Panes whose ⊞ / ⊟ caption button was pressed (pane, split downwards?)
@@ -222,6 +228,15 @@ impl Mailbox {
     }
     pub fn take_close_panes(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.close_panes)
+    }
+    pub fn take_close_tabs(&mut self) -> Vec<(usize, String, bool)> {
+        std::mem::take(&mut self.close_tabs)
+    }
+    pub fn take_close_tab_back(&mut self) -> bool {
+        std::mem::take(&mut self.close_tab_back)
+    }
+    pub fn take_reopen_tabs(&mut self) -> Vec<Option<u64>> {
+        std::mem::take(&mut self.reopen_tabs)
     }
     pub fn take_pane_ratios(&mut self) -> Vec<(usize, f32)> {
         std::mem::take(&mut self.pane_ratios)

@@ -137,6 +137,46 @@ pub struct TabState {
     /// install what it needs
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<FailedState>,
+    /// What this row is, whatever number it has (`view::surface_key`). Sent
+    /// back with a press on its ✕, so a press cannot land on the tab that slid
+    /// into its place in the meantime
+    #[serde(default)]
+    pub key: String,
+}
+
+/// A tab whose ✕ was pressed while its work would be cut off, waiting for the
+/// person to say whether to close it anyway.
+///
+/// Held by the app rather than by the page that pressed it, so that every way
+/// of closing a tab -- the ✕, the middle button, the key, the phone -- goes
+/// through the same question, and so that pages placed in the window step
+/// aside while it is asked
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct CloseAskState {
+    /// Which asking this is. The page opens the question once per number
+    pub seq: u64,
+    /// The row, and what it has to still be for the answer to apply
+    pub tab: usize,
+    pub key: String,
+    pub name: String,
+    /// BUSY or QUESTION, as `TabState::label` spells them
+    pub state: String,
+    /// Whether an AI is what runs there, which is what the question talks about
+    pub ai: bool,
+    /// Whether opening it again would bring its conversation back
+    pub comes_back: bool,
+}
+
+/// A closed tab the list offers to open again.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct ClosedState {
+    pub id: u64,
+    pub name: String,
+    /// The folder it goes back into, when it goes back into one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// When it was closed (seconds since 1970)
+    pub at: i64,
 }
 
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
@@ -1376,6 +1416,12 @@ pub struct UiState {
     /// so the AI screens are never covered. Only meaningful with `discuss_start`.
     #[serde(default)]
     pub discuss_idle: bool,
+    /// A tab's ✕ waiting for an answer, while there is one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_ask: Option<CloseAskState>,
+    /// This desk's closed tabs that can be opened again, newest first
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closed: Vec<ClosedState>,
 }
 
 /// Whether this tab's conversation can be read back as flowing text.
@@ -1428,6 +1474,8 @@ impl TabState {
             away: None,
             git_acct: None,
             failed: None,
+            // Filled in by `view::ui_state_of`, which knows the rows
+            key: String::new(),
         }
     }
 
@@ -1528,6 +1576,7 @@ impl TabState {
             away: None,
             git_acct: None,
             failed: None,
+            key: String::new(),
         }
     }
 }
@@ -1883,6 +1932,7 @@ mod tests {
             failed: None,
             file: None,
             file_stamp: None,
+            key: format!("tab:{index}"),
         }
     }
 

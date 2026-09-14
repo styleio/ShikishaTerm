@@ -380,6 +380,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #strip .snew { flex:0 0 auto; padding:0 var(--s3); display:flex; align-items:center;
     color:var(--dim); cursor:pointer; border-left:1px solid var(--line); }
   #strip .snew:hover { color:var(--text); background:var(--hover); }
+  /* A tab's ✕. The pane caption's mark and its quiet, a size up to be a
+     target a finger can hit. On the tab in view and on the one under the
+     pointer, the way a browser's narrow tabs show it: a cross on every tab is a
+     row of things to hit by mistake. It keeps its room while hidden, so a tab
+     does not change width under the pointer as the pointer arrives */
+  #strip .stab .x { flex:none; width:22px; height:22px; margin-right:calc(-1 * var(--s1));
+    display:flex; align-items:center; justify-content:center; font-size:11px; line-height:1;
+    color:var(--dim); visibility:hidden; }
+  #strip .stab:hover .x, #strip .stab.sel .x { visibility:visible; }
+  #strip .stab .x:hover { color:var(--stop); }
+  /* The tabs closed on this desk, to open again. At the far end of the row,
+     where a browser keeps its list of tabs, and only while there are some */
+  #strip .sclosed { flex:0 0 auto; margin-left:auto; padding:0 var(--s3); display:flex;
+    align-items:center; font-size:11px; color:var(--dim); cursor:pointer;
+    border-left:1px solid var(--line); }
+  #strip .sclosed:hover { color:var(--text); background:var(--hover); }
   /* Which repository a folder belongs to. A label, not a state, so it is worn
      the way the branch beside it is: quiet, and never in a state's colour */
   /* It gives up its width long before the folder's own name does: on a phone's
@@ -1681,6 +1697,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-top:1px solid var(--line); border-radius:0; margin-top:var(--s1);
     padding-top:var(--s2); }
   .fmenu div.note:hover { background:transparent; }
+  /* The same quiet line heading a list rather than closing one */
+  .fmenu div.note:first-child { border-top:0; margin-top:0; padding-top:var(--s1); }
+  /* A list too long for a phone's height scrolls inside itself */
+  .fmenu.tall { max-height:min(52vh, 420px); overflow:auto; }
+  /* A closed tab to open again: its name, and where and when on the right */
+  .fmenu div.closed { display:flex; gap:var(--s3); align-items:baseline; max-width:320px; }
+  .fmenu div.closed .cn { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; }
+  .fmenu div.closed .cw { flex:none; color:var(--dim); font-size:11px;
+    font-variant-numeric:tabular-nums; }
   .fmenu .fname { font:inherit; font-size:12.5px; width:100%; box-sizing:border-box;
     background:var(--bg); color:var(--text); border:1px solid var(--edge);
     border-radius:var(--r-ctl); padding:var(--s1) var(--s2); outline:none; }
@@ -2390,8 +2416,41 @@ addEventListener("blur", release);
   if (st) st.addEventListener("pointerdown", () => { if (typeof exitCast === "function") exitCast(); });
 }
 
+// ── Lists that hold still while pressed ──────
+// The tab bar and the row of tabs over the panes are rebuilt every time the
+// state arrives -- several times a second while an AI is at work -- and a row
+// rebuilt between the press and the release takes the click with it: the
+// release lands on a new element, and a click needs both halves on one. That
+// is a ✕ that does nothing on exactly the tab that is busiest. So a list holds
+// still while a finger or a button is down on it, and draws what it missed
+// the moment it is let go. A press held longer than a click is not a click,
+// and a release that never arrives must not freeze the list
+const listPressed = {}, listMissed = {};
+function holdWhilePressed(id, redraw) {
+  const box = document.getElementById(id);
+  if (!box) return;
+  box.addEventListener("pointerdown", () => { listPressed[id] = Date.now(); }, true);
+  const letGo = () => {
+    if (!listPressed[id]) return;
+    listPressed[id] = 0;
+    // After the click this release is about to make has been delivered
+    if (listMissed[id]) setTimeout(() => { listMissed[id] = false; if (S) redraw(); }, 0);
+  };
+  for (const ev of ["pointerup", "pointercancel"]) document.addEventListener(ev, letGo, true);
+  window.addEventListener("blur", letGo);
+}
+function heldDown(id) {
+  if (listPressed[id] && Date.now() - listPressed[id] < 1500) {
+    listMissed[id] = true;
+    return true;
+  }
+  listPressed[id] = 0;
+  return false;
+}
+
 // ── Left tab bar ────────────────────────────
 function drawTabs() {
+  if (heldDown("tabs")) return;
   const nav = document.getElementById("tabs");
   nav.textContent = "";
   // Above INDEX: the current desk and a switcher. Clicking opens the list popup
@@ -2938,15 +2997,16 @@ function fold(folder) {
 // arrival touches this document, which shuts a native popup the instant it
 // opens -- the same thing that once kept the browser dock's dropdown from
 // staying open. A list of our own is untouched by any of that.
-function openList(anchor, rows) {
+function openList(anchor, rows, tall) {
   closeFolderMenu();
-  const m = el("div", {class:"fmenu"}, ...rows);
+  // A long list scrolls inside itself, and is measured that way
+  const m = el("div", {class:"fmenu" + (tall ? " tall" : "")}, ...rows);
   document.body.append(m);
   // Below what was pressed, and never off the bottom of the window
   const r = anchor.getBoundingClientRect();
   const box = m.getBoundingClientRect();
   m.style.left = Math.min(r.left, window.innerWidth - box.width - 8) + "px";
-  m.style.top = Math.min(r.bottom + 4, window.innerHeight - box.height - 8) + "px";
+  m.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - box.height - 8)) + "px";
   // A press anywhere else puts it away -- but a press *on it* must not, or the
   // list would be gone before the release that makes the click, and every
   // entry would look dead
@@ -3765,7 +3825,7 @@ function drawCarry(b, items) {
 (function () {
   const b = document.getElementById("sask");
   if (!b) return;
-  b.querySelector(".vclose").onclick = closeAsk;
+  b.querySelector(".vclose").onclick = () => closeAsk();
   b.addEventListener("mousedown", e => { if (e.target === b) closeAsk(); });
   b.addEventListener("keydown", e => {
     if (e.key === "Escape") { e.preventDefault(); closeAsk(); }
@@ -3840,11 +3900,15 @@ function cutMark() {
 // sidebar again, laid sideways and without room for the names. A tab that is
 // in no folder (a browser) stands alone, which is what it is.
 //
-// There is no close control here. Closing is a thing the app has one way of
-// doing -- the pane's own -- and a second way that looks the same but goes
-// somewhere else is how a person ends up shutting the wrong thing
+// Each tab closes from its own ✕, or with the middle button, the way a
+// browser's tabs do. A pane's caption has a ✕ too, and the two are different
+// acts: that one closes a view and leaves the tab running, this one closes the
+// tab. They are told apart by where they stand -- on the tab, or on the pane --
+// and by what each says under the pointer. Whether closing has to ask first is
+// the app's to decide (closeTab)
 let stripSel = null;
 function drawStrip() {
+  if (heldDown("strip")) return;
   const strip = document.getElementById("strip");
   if (!strip) return;
   const was = strip.hidden;
@@ -3870,9 +3934,15 @@ function drawStrip() {
     const one = el("div", {class:"stab" + (t.index === S.active ? " sel" : "")
           + st + (t.ai ? " aitab ai-" + t.ai : ""),
         title:(t.name || "") + (t.state_label ? " — " + t.state_label : ""),
-        onclick:() => send({kind:"select", tab:t.index})},
+        onclick:() => send({kind:"select", tab:t.index}),
+        // The middle button closes, on the release as a click does. Its press
+        // is kept from starting the page's scroll-by-dragging
+        onmousedown:e => { if (e.button === 1) e.preventDefault(); },
+        onauxclick:e => { if (e.button === 1) { e.preventDefault(); closeTab(t); } }},
       markFor(t) || el("span", {class:"dot " + t.state}),
-      el("span", {class:"nm"}, t.name || ""));
+      el("span", {class:"nm"}, t.name || ""),
+      el("span", {class:"x", title:T["tui.tab.close"] || "",
+          onclick:e => { e.stopPropagation(); closeTab(t); }}, "\u2715"));
     if (t.index === S.active) sel = one;
     tabs.append(one);
   }
@@ -3884,6 +3954,10 @@ function drawStrip() {
   const g = active.group != null ? (S.groups || [])[active.group] : null;
   strip.append(el("div", {class:"snew", title:T["tui.pane.add"] || "",
       onclick:() => addTabHere(g)}, "+"));
+  if ((S.closed || []).length) {
+    strip.append(el("div", {class:"sclosed", title:T["tui.closed.head"] || "",
+        onclick:e => closedMenu(e, g)}, "\u25BE"));
+  }
   // Switching to a tab that is scrolled out of sight leaves the bar showing
   // somewhere else entirely. Only on the switch, never on every frame: doing
   // it on every frame would drag the row back while somebody is scrolling it
@@ -3894,6 +3968,63 @@ function drawStrip() {
   // Appearing and disappearing changes how tall every pane is, and a terminal
   // told the wrong height reflows somebody's whole interface
   if (was !== strip.hidden) layout();
+}
+
+(function () {
+  holdWhilePressed("tabs", drawTabs);
+  holdWhilePressed("strip", drawStrip);
+})();
+
+// Closing a tab. The app decides whether it has to ask first -- it knows
+// whether the AI is at work, and the keyboard and the phone close tabs too --
+// so this only says which row, and what that row was when it was pressed
+function closeTab(t) {
+  send({kind:"closetab", tab:t.index, key:t.key || "", sure:false});
+}
+
+// The tabs closed on this desk, newest first, to open one again. Where one
+// goes back into is said beside it when that is not the folder in view
+function closedMenu(e, here) {
+  const list = (S && S.closed) || [];
+  const trim = f => (f || "").replace(/[\\/]+$/, "").toLowerCase();
+  const nameOf = f => {
+    const g = ((S && S.groups) || []).find(o => trim(o.folder) === trim(f));
+    return (g && g.name) || f.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+  };
+  openList(e.currentTarget, [el("div", {class:"note"}, T["tui.closed.head"] || "")].concat(list.map(c =>
+    el("div", {class:"closed", title:c.folder || "",
+        onclick:() => { closeFolderMenu(); send({kind:"reopentab", id:c.id}); }},
+      el("span", {class:"cn"}, c.name),
+      el("span", {class:"cw"},
+        [c.folder && !(here && trim(here.folder) === trim(c.folder)) ? nameOf(c.folder) : "",
+         whenSay(c.at)].filter(Boolean).join(" · "))))), list.length > 6);
+}
+
+// The question the app asks before closing a tab whose work would be cut off.
+// Opened once per asking, and put away when the app stops asking -- whoever
+// answered it, here or on another screen
+let closeAskSeen = 0, closeAskOpen = false;
+function drawCloseAsk() {
+  const a = S && S.close_ask;
+  if (!a) {
+    if (closeAskOpen) { closeAskOpen = false; closeAsk(true); }
+    return;
+  }
+  if (a.seq === closeAskSeen) return;
+  closeAskSeen = a.seq;
+  closeAskOpen = true;
+  const say = a.state === "QUESTION" && a.ai ? T["tui.close.question"]
+    : a.ai ? T["tui.close.busy_ai"] : T["tui.close.busy"];
+  askQuestion({
+    title: T["tui.close.title"] || "",
+    // The dictionary carries its own space where its language wants one
+    say: (say || "") + (a.comes_back ? (T["tui.close.back"] || "") : ""),
+    what: a.name,
+    label: T["tui.close.go"] || "",
+    danger: true,
+    go: () => { closeAskOpen = false; send({kind:"closetab", tab:a.tab, key:a.key, sure:true}); },
+    back: () => { closeAskOpen = false; send({kind:"closetabback"}); },
+  });
 }
 
 // How the folder list is broken up. One of "none", "state", "project".
@@ -4684,6 +4815,7 @@ window.__state = function (json) {
   drawTitle();
   drawTabs();
   drawStrip();
+  drawCloseAsk();
   drawStatus();
   drawNav();
   drawAsks();
@@ -8742,9 +8874,11 @@ function sftpSend(which) {
   askOver(clash.map(r => r.name), () => sftpMove(act, build(true), false));
 }
 
-// ── The question, for the three things that cannot be undone ───────────────
-let sAskGo = null;
-function sftpQuestion({title, say, what, field, label, danger, go}) {
+// ── The question, for the things that cannot be undone ─────────────────────
+// `back` is told when the question is put away without its button: the close
+// mark, Esc, a press outside, Cancel
+let sAskGo = null, sAskBack = null;
+function askQuestion({title, say, what, field, label, danger, go, back}) {
   const box = document.getElementById("sask");
   box.hidden = false;
   box.querySelector(".vtitle").textContent = title;
@@ -8757,21 +8891,29 @@ function sftpQuestion({title, say, what, field, label, danger, go}) {
   input.value = field || "";
   const cancel = box.querySelector(".quiet");
   cancel.textContent = T["common.cancel"] || "";
-  cancel.onclick = closeAsk;
+  cancel.onclick = () => closeAsk();
   const btn = box.querySelector(".go");
   btn.textContent = label;
   btn.classList.toggle("stop", !!danger);
-  sAskGo = () => { closeAsk(); go(input.value.trim()); };
+  // A question asked over an open one replaces it, and the one replaced was
+  // not answered
+  if (sAskBack) { const was = sAskBack; sAskBack = null; was(); }
+  sAskBack = back || null;
+  sAskGo = () => { sAskBack = null; closeAsk(); go(input.value.trim()); };
   btn.onclick = sAskGo;
   setTimeout(() => (field ? input : btn).focus(), 0);
 }
-function closeAsk() {
+// `quiet` when the app took the question away itself: there is nobody to tell
+function closeAsk(quiet) {
   const box = document.getElementById("sask");
   if (box) box.hidden = true;
   sAskGo = null;
+  const back = sAskBack;
+  sAskBack = null;
+  if (back && !quiet) back();
 }
 function askOver(names, go) {
-  sftpQuestion({
+  askQuestion({
     title: T["sftp.over.title"] || "",
     say: (T["sftp.over.say"] || "").replace("{n}", names.length),
     what: names.join("\n"),
@@ -8798,7 +8940,7 @@ function sftpRowMenu(anchor, which, row) {
     }));
   }
   if (which === "remote") {
-    rows.push(item(T["sftp.rename"] || "", false, () => sftpQuestion({
+    rows.push(item(T["sftp.rename"] || "", false, () => askQuestion({
       title: T["sftp.rename.title"] || "",
       say: T["sftp.rename.say"] || "",
       what: rjoin(side.at, row.name),
@@ -8810,7 +8952,7 @@ function sftpRowMenu(anchor, which, row) {
           args:{from: rjoin(side.at, row.name), to: rjoin(side.at, name)}}]);
       },
     })));
-    rows.push(item(T["sftp.remove"] || "", true, () => sftpQuestion({
+    rows.push(item(T["sftp.remove"] || "", true, () => askQuestion({
       title: T["sftp.remove.title"] || "",
       say: row.dir ? (T["sftp.remove.dir"] || "") : (T["sftp.remove.say"] || ""),
       what: rjoin(side.at, row.name),
@@ -9004,7 +9146,7 @@ function drawSftp() {
       onclick: () => sftpGo(which, side.at)}, "↻"));
     ui.acts.append(heldButton(which, "+ " + (T["sftp.mkdir"] || ""),
       () => which === "local" ? "" : (F.server ? "" : (T["sftp.why.no_server"] || "")),
-      () => sftpQuestion({
+      () => askQuestion({
         title: T["sftp.mkdir.title"] || "",
         say: which === "local" ? (T["sftp.mkdir.here.say"] || "") : (T["sftp.mkdir.say"] || ""),
         what: side.at,

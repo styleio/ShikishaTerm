@@ -34,6 +34,14 @@ letters. `Ctrl+B 0` brings it back from anywhere.
 Once the window is divided, each pane's caption carries ▥ and ▤ to divide it again
 and ✕ to close that view.
 
+**Along the top of the middle** are the tabs of the folder in view. Press one to
+switch to it, and `+` to add one. A tab's ✕, or a middle click on it, closes that
+tab. The ✕ shows on the tab in view and on the one under the pointer. Only when
+its AI is working or waiting for an answer are you asked first. A closed tab can
+be opened again from the ▾ at the end of the row; with a CLI that can resume a
+conversation by name (Claude Code, Codex) the conversation comes back with it.
+What was on its screen does not.
+
 **The bar above the input box** is the convenience bar: one press sends a stock
 instruction to the AI in view (continue, explain, review, fix). The small picker at
 its left chooses what the bar holds: the stock replies, your own quick actions, the
@@ -59,6 +67,8 @@ since every one of them can be changed in the settings.
 | `Ctrl+B 0`–`9` | Switch tab (0 = INDEX) |
 | `Ctrl+B n` / `Ctrl+B p` | Next tab / previous tab |
 | `Ctrl+B t` | Add a tab |
+| `Ctrl+B &` | Close this tab (asks first while its AI is working) |
+| `Ctrl+B T` | Reopen the tab closed last |
 | `Ctrl+B r` / `Ctrl+B R` | Restart this tab carrying the conversation over / from nothing |
 | `Ctrl+B %` / `Ctrl+B "` | Split the screen beside / below this one |
 | `Ctrl+B o` | Move to the next pane |

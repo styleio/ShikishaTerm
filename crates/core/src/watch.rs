@@ -28,6 +28,15 @@ impl Watcher {
         self.stamps = paths.into_iter().map(|p| { let t = mtime(&p); (p, t) }).collect();
     }
 
+    /// Look on the very next call instead of waiting out the interval.
+    ///
+    /// For a change the app itself has just written and wants taken up at
+    /// once: a tab closed from the tab bar leaves the bar the moment the
+    /// settings say so, and a second's wait reads as a press that did nothing
+    pub fn poke(&mut self) {
+        self.last_check = Instant::now().checked_sub(INTERVAL).unwrap_or(self.last_check);
+    }
+
     /// True if something changed. Each call re-baselines against the current
     /// state.
     pub fn changed(&mut self) -> bool {

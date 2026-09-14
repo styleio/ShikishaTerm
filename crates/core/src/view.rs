@@ -317,7 +317,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             .surfaces
             .iter()
             .enumerate()
-            .filter_map(|(i, p)| match p {
+            .filter_map(|(i, p)| Some((p, match p {
                 Surface::Session(s) => tabs.get(*s).map(|t| {
                     let mut ts = crate::uistate::TabState::of(i + 1, t);
                     ts.group = t.cwd().and_then(|c| {
@@ -400,8 +400,14 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                         Some(crate::uistate::GitAcctState::of(&ui.git_accounts, git, repo, "tab", None));
                     Some(t)
                 }
+            }?)))
+            .map(|(p, mut t)| {
+                t.key = surface_key(p, tabs);
+                t
             })
             .collect(),
+        close_ask: ui.close_ask.clone(),
+        closed: ui.closed.clone(),
         // The ball moves by session number; what we display is the screen number
         ball: crate::uistate::BallState::of(&ui.ball, ui.max_chain, ui.now_ms),
         flash: flash.map(str::to_string),
@@ -612,11 +618,25 @@ pub fn surfaces_of(
     hosted: &[String],
     editors: &[EditorOpen],
 ) -> Vec<Surface> {
-    let mut out: Vec<Surface> = Vec::new();
+    surfaces_written(desk, titles, hosted, editors).into_iter().map(|(s, _)| s).collect()
+}
+
+/// The same list, each row with where it is written in the settings: its
+/// position in the desk's tabs, or nothing for a row the settings never
+/// mentioned. What taking one out of the settings needs to know, worked out by
+/// the one walk that decides the rows -- a second walk would one day pair a row
+/// with somebody else's line
+pub fn surfaces_written(
+    desk: Option<&config::Desk>,
+    titles: &[&str],
+    hosted: &[String],
+    editors: &[EditorOpen],
+) -> Vec<(Surface, Option<usize>)> {
+    let mut out: Vec<(Surface, Option<usize>)> = Vec::new();
     let mut used_tabs = vec![false; titles.len()];
     let mut used_web: Vec<&str> = Vec::new();
     if let Some(desk) = desk {
-        for ft in &desk.tabs {
+        for (written, ft) in desk.tabs.iter().enumerate() {
             let argv = ft.cfg.command.argv();
             if argv.is_empty() {
                 continue;
@@ -629,7 +649,7 @@ pub fn surfaces_of(
                     .or_else(|| ft.cfg.name.clone())
                     .unwrap_or_else(|| "editor".into());
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
-                out.push(Surface::Editor { key, name, dir: desk.cwd_of(ft) });
+                out.push((Surface::Editor { key, name, dir: desk.cwd_of(ft) }, Some(written)));
                 continue;
             }
             if config::is_sftp_panel(&argv) {
@@ -673,7 +693,7 @@ pub fn surfaces_of(
                     .as_ref()
                     .and_then(|sp| sp.remote_dir.clone())
                     .unwrap_or_default();
-                out.push(Surface::Sftp { key, name, dir: desk.cwd_of(ft), at, remote_dir });
+                out.push((Surface::Sftp { key, name, dir: desk.cwd_of(ft), at, remote_dir }, Some(written)));
                 continue;
             }
             if config::is_git_panel(&argv) {
@@ -684,13 +704,16 @@ pub fn surfaces_of(
                     .or_else(|| ft.cfg.name.clone())
                     .unwrap_or_else(|| "git".into());
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
-                out.push(Surface::Git {
-                    dir: desk.cwd_of(ft),
-                    protect: desk.folder_of(ft).map(|f| f.protect.clone()).unwrap_or_default(),
-                    git: desk.git_use(ft.cfg.git_account.as_deref()),
-                    key,
-                    name,
-                });
+                out.push((
+                    Surface::Git {
+                        dir: desk.cwd_of(ft),
+                        protect: desk.folder_of(ft).map(|f| f.protect.clone()).unwrap_or_default(),
+                        git: desk.git_use(ft.cfg.git_account.as_deref()),
+                        key,
+                        name,
+                    },
+                    Some(written),
+                ));
                 continue;
             }
             if config::browser_url_of(&argv).is_some() {
@@ -707,7 +730,7 @@ pub fn surfaces_of(
                     used_web.push(h);
                 }
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
-                out.push(Surface::Browser { key, name });
+                out.push((Surface::Browser { key, name }, Some(written)));
                 continue;
             }
             let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
@@ -719,41 +742,47 @@ pub fn surfaces_of(
                 .map(|(i, _)| i);
             if let Some(i) = found {
                 used_tabs[i] = true;
-                out.push(Surface::Session(i));
+                out.push((Surface::Session(i), Some(written)));
             } else if let Some(failed) = crate::desk::launch_failure(&desk.name, &title) {
                 // Written in the settings and not running because it could not
                 // start. It keeps its place, saying why, rather than not being
                 // there at all
-                out.push(Surface::Failed {
-                    key: ft.cfg.id.clone().unwrap_or_else(|| title.clone()),
-                    name: title,
-                    dir: desk.cwd_of(ft),
-                    why: failed.why,
-                    install_url: failed.install_url,
-                });
+                out.push((
+                    Surface::Failed {
+                        key: ft.cfg.id.clone().unwrap_or_else(|| title.clone()),
+                        name: title,
+                        dir: desk.cwd_of(ft),
+                        why: failed.why,
+                        install_url: failed.install_url,
+                    },
+                    Some(written),
+                ));
             }
         }
     }
     // Things not written in config
     for (i, used) in used_tabs.iter().enumerate() {
         if !used {
-            out.push(Surface::Session(i));
+            out.push((Surface::Session(i), None));
         }
     }
     // The throwaway editor, if one is open. Same standing as a page placed
     // while the program runs: not in the settings, here because somebody
     // opened it, gone when they close it
     for e in editors.iter().filter(|e| e.scratch) {
-        if !out.iter().any(|s| matches!(s, Surface::Editor { key, .. } if key == &e.key)) {
-            out.push(Surface::Editor {
-                key: e.key.clone(),
-                name: e
-                    .showing
-                    .as_deref()
-                    .map(leaf_of)
-                    .unwrap_or_else(|| i18n::t("tui.state.editor")),
-                dir: e.dir.clone(),
-            });
+        if !out.iter().any(|(s, _)| matches!(s, Surface::Editor { key, .. } if key == &e.key)) {
+            out.push((
+                Surface::Editor {
+                    key: e.key.clone(),
+                    name: e
+                        .showing
+                        .as_deref()
+                        .map(leaf_of)
+                        .unwrap_or_else(|| i18n::t("tui.state.editor")),
+                    dir: e.dir.clone(),
+                },
+                None,
+            ));
         }
     }
     // Things not in config (opened later by automation, the settings screen, etc.) — the name is all there is
@@ -766,16 +795,13 @@ pub fn surfaces_of(
             } else {
                 h.clone()
             };
-            out.push(Surface::Browser {
-                key: h.clone(),
-                name,
-            });
+            out.push((Surface::Browser { key: h.clone(), name }, None));
         }
     }
     // An editor's tab says which file it is showing rather than what it was
     // called -- that is the one thing about it worth reading from across the
     // window. Done here so a configured editor and a throwaway one read alike
-    for s in out.iter_mut() {
+    for (s, _) in out.iter_mut() {
         if let Surface::Editor { key, name, .. } = s
             && let Some(showing) =
                 editors.iter().find(|e| &e.key == key).and_then(|e| e.showing.as_deref())
@@ -898,6 +924,10 @@ pub struct Ui {
     /// Where each git tab's folder pushes to on GitHub (`owner/name`), looked
     /// up every couple of seconds with the tabs' places rather than per frame
     pub git_repos: Vec<(std::path::PathBuf, String)>,
+    /// A tab's ✕ waiting for an answer (see `closed::close`)
+    pub close_ask: Option<crate::uistate::CloseAskState>,
+    /// This desk's closed tabs that can be opened again
+    pub closed: Vec<crate::uistate::ClosedState>,
 }
 
 /// The name used when placing the result view (finished discussion / review /
@@ -979,6 +1009,45 @@ pub enum Surface {
         /// puts you
         remote_dir: String,
     },
+}
+
+/// What a row is, for as long as it is on screen, whatever number it has.
+///
+/// A row's number is only where it stands, and it changes whenever something
+/// before it goes. This is what stays the same, so a press aimed at one row
+/// can be checked against the row it lands on, and a pane can be kept on the
+/// thing it was showing when the rows move. A running tab is its serial rather
+/// than its name: copies of a folder's tabs share their names. Everything else
+/// is its own name, which is unique by the time it is a row
+pub fn surface_key(s: &Surface, tabs: &[Tab]) -> String {
+    match s {
+        Surface::Session(i) => format!("tab:{}", tabs.get(*i).map(Tab::serial).unwrap_or_default()),
+        Surface::Browser { key, .. } => format!("page:{key}"),
+        Surface::Git { key, .. } => format!("git:{key}"),
+        Surface::Sftp { key, .. } => format!("sftp:{key}"),
+        Surface::Editor { key, .. } => format!("editor:{key}"),
+        Surface::Failed { key, .. } => format!("failed:{key}"),
+    }
+}
+
+/// Where each row went, after the rows changed: `moves[n - 1]` is the new
+/// number of what was row `n`, or nothing when it is gone (see
+/// `Layout::follow`).
+///
+/// A row whose key is not there any more, in a list of the same length whose
+/// row at that number is new, is taken to be the same row under a new key --
+/// something replaced in place (a tab that could not start, started), not
+/// something closed while something else happened to open
+pub fn surface_moves(before: &[String], now: &[String]) -> Vec<Option<usize>> {
+    before
+        .iter()
+        .enumerate()
+        .map(|(i, k)| {
+            now.iter().position(|n| n == k).map(|p| p + 1).or_else(|| {
+                (before.len() == now.len() && !before.contains(&now[i])).then_some(i + 1)
+            })
+        })
+        .collect()
 }
 
 /// The last part of a path, which is what a row has room for.

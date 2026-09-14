@@ -264,6 +264,11 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         | Ev::SplitPane { .. }
         | Ev::PaneRatio { .. }
         | Ev::AddTab { .. } => true,
+        // Closing a tab, answering the question closing a working one asks,
+        // and opening a closed one again. The same reach as removing a tab in
+        // the settings, which the phone opens as /cfg -- and the tab bar is
+        // where somebody on a phone tidies up after an AI they started there
+        Ev::CloseTab { .. } | Ev::CloseTabBack | Ev::ReopenTab { .. } => true,
         // Naming, closing, discarding and colouring a working folder. The
         // phone already opens folders (`Ev::Browse`) and hands agents whole
         // tasks inside them; what was missing was tidying up afterwards
@@ -2487,6 +2492,9 @@ mod tests {
             Ev::SplitPane { id: 1, down: true },
             Ev::PaneRatio { divider: 0, ratio: 0.5 },
             Ev::AddTab { pane: Some(1), folder: None },
+            Ev::CloseTab { tab: 1, key: "tab:1".into(), sure: false },
+            Ev::CloseTabBack,
+            Ev::ReopenTab { id: None },
             Ev::FolderName { folder: "a".into(), name: "b".into() },
             Ev::FolderView { folder: "a".into() },
             Ev::FolderClose { folder: "a".into() },

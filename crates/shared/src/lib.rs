@@ -137,6 +137,18 @@ pub enum Ev {
     FocusPane { id: u32 },
     /// A pane's ✕ was pressed. Closes the view, never the tab behind it
     ClosePane { id: u32 },
+    /// A tab's ✕ was pressed, or the tab was middle-clicked. Closes the tab
+    /// itself.
+    ///
+    /// `tab` is its screen number and `key` what that row was when it was
+    /// pressed, so a press that arrives after the rows have moved closes
+    /// nothing rather than the neighbour. `sure` is the answer to the question
+    /// the app asks first when closing would cut an AI's work off
+    CloseTab { tab: usize, key: String, sure: bool },
+    /// That question was answered "no"
+    CloseTabBack,
+    /// A closed tab asked back: the one named, or the one closed last
+    ReopenTab { id: Option<u64> },
     /// A divider was dragged (or double-clicked, which asks for an even half).
     /// `divider` is its position in `Layout::dividers()` — the page is handed
     /// that list and hands the number back, so neither side has to work out
@@ -1069,6 +1081,15 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("closepane") => Ev::ClosePane {
             id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+        },
+        Some("closetab") => Ev::CloseTab {
+            tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+            key: v.get("key").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            sure: v.get("sure").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        Some("closetabback") => Ev::CloseTabBack,
+        Some("reopentab") => Ev::ReopenTab {
+            id: v.get("id").and_then(|x| x.as_u64()),
         },
         Some("paneratio") => Ev::PaneRatio {
             divider: v.get("divider").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
