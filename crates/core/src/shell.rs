@@ -941,83 +941,134 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      One file of this tab's folder. Stands where a terminal stands, like the
      panels beside it: a line saying which file and how it stands, then the
      text, which is a library's business and not ours */
-  /* The Issue tab: the desk's issues and pull requests, where a terminal would be */
-  #issuespanel[hidden] { display:none; }
+  /* The Issue tab: the desk's issues and pull requests, where a terminal would be.
+     Its sibling is the file panel, and its parts are the style guide's: a bar of
+     controls, an enclosed list of records (5.5), fields (5.1), one primary button */
+  #issuespanel[hidden], #issuespanel [hidden] { display:none !important; }
   #issuespanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px)); overflow:auto; z-index:4; font-size:13px;
-    display:flex; flex-direction:column; padding-bottom:72px; box-sizing:border-box; }
-  #issuespanel .bar { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); padding:6px 10px;
+    display:flex; flex-direction:column; padding-bottom:72px; box-sizing:border-box;
+    container-type:inline-size; background:var(--bg); }
+  /* Controls: 32px buttons and 36px fields, and nothing lower (4) */
+  #issuespanel button { font:inherit; font-size:12.5px; min-height:32px; padding:0 var(--s3);
+    border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--panel);
+    color:var(--text); cursor:pointer; display:inline-flex; align-items:center;
+    gap:var(--s2); white-space:nowrap; flex:0 0 auto; }
+  #issuespanel button:hover { border-color:var(--edge-hi); background:var(--panel2); }
+  #issuespanel button.go { border-color:var(--brand); background:var(--brand); color:var(--bg); }
+  #issuespanel button.go:hover { filter:brightness(1.1); }
+  #issuespanel button.quiet { border-color:transparent; background:transparent; color:var(--dim); }
+  #issuespanel button.quiet:hover { color:var(--text); background:var(--panel2); }
+  #issuespanel button.bad { border-color:transparent; background:transparent; color:var(--stop); }
+  #issuespanel button.bad:hover { background:var(--panel2); }
+  #issuespanel button.armed { border-color:var(--warn); color:var(--warn); }
+  #issuespanel select, #issuespanel input, #issuespanel textarea { font:inherit; font-size:13px;
+    min-height:36px; padding:0 var(--s3); border-radius:var(--r-ctl); border:1px solid var(--edge);
+    background:var(--bg); color:var(--text); box-sizing:border-box; min-width:0; }
+  #issuespanel textarea { padding:var(--s2) var(--s3); resize:vertical; width:100%; line-height:1.5; }
+  #issuespanel select:hover, #issuespanel input:hover, #issuespanel textarea:hover { border-color:var(--edge-hi); }
+  #issuespanel select:focus, #issuespanel input:focus, #issuespanel textarea:focus { outline:none;
+    border-color:var(--brand); box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #issuespanel input::placeholder, #issuespanel textarea::placeholder { color:var(--faint); }
+  #issuespanel .grow { flex:1 1 auto; min-width:0; }
+  #issuespanel .dim { color:var(--dim); }
+  /* The bar: what is listed on the first line, how it is narrowed on the second.
+     It stays on top while the rows under it scroll */
+  #issuespanel .bar { position:sticky; top:0; z-index:1; background:var(--bg);
+    display:flex; flex-direction:column; gap:var(--s2); padding:var(--s2) var(--s3);
     border-bottom:1px solid var(--line); flex:0 0 auto; }
-  #issuespanel button, #issuespanel select, #issuespanel input, #issuespanel textarea, #issuespanel a.btn {
-    font:inherit; font-size:12.5px; border-radius:var(--r-ctl); border:1px solid var(--edge);
-    background:var(--panel); color:var(--text); }
-  #issuespanel button { padding:4px 12px; cursor:pointer; }
-  #issuespanel button:hover { border-color:var(--edge-hi); }
-  #issuespanel button.on { color:var(--text); border-color:var(--brand);
-    background:color-mix(in srgb, var(--brand) 14%, transparent); }
-  #issuespanel button.go { border-color:var(--brand); color:var(--brand); }
-  #issuespanel select, #issuespanel input { padding:4px 8px; }
-  #issuespanel .bar input { flex:1 1 180px; min-width:0; }
-  #issuespanel .chips { display:flex; gap:var(--s1); flex-wrap:wrap; }
-  #issuespanel .said { padding:2px 10px; min-height:18px; color:var(--dim); font-size:12px; }
-  #issuespanel .said.bad { color:var(--stop); }
-  #issuespanel .warn button { white-space:nowrap; flex:0 0 auto; }
-  #issuespanel .warn { display:flex; gap:var(--s2); align-items:center; margin:2px 10px; padding:6px 10px;
-    border:1px solid var(--line); border-radius:var(--r-ctl); color:var(--warn); font-size:12px; }
-  #issuespanel .empty { color:var(--dim); padding:14px 10px; font-size:12px; }
-  #issuespanel .irow { display:flex; align-items:center; gap:var(--s3); padding:8px 10px;
-    border-bottom:1px solid var(--line); cursor:pointer; }
-  #issuespanel .irow:hover { background:var(--hover); }
-  #issuespanel .irow .num { flex:0 0 52px; color:var(--dim); font-variant-numeric:tabular-nums; }
-  #issuespanel .irow .main { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:2px; }
+  #issuespanel .bar .line { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); }
+  #issuespanel .bar .line input { flex:1 1 200px; }
+  #issuespanel .crumb { color:var(--dim); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #issuespanel a.away { color:var(--dim); font-size:12px; text-decoration:none; padding:0 var(--s2); }
+  #issuespanel a.away:hover { color:var(--text); }
+  /* Two or more that are one choice: joined, the chosen one marked */
+  #issuespanel .seg { display:inline-flex; }
+  #issuespanel .seg button { border-radius:0; margin-left:-1px; color:var(--dim); background:transparent; }
+  #issuespanel .seg button:first-child { border-radius:var(--r-ctl) 0 0 var(--r-ctl); margin-left:0; }
+  #issuespanel .seg button:last-child { border-radius:0 var(--r-ctl) var(--r-ctl) 0; }
+  #issuespanel .seg button.on { color:var(--text); background:var(--raise); position:relative; }
+  /* What is happening, and what went wrong: a warn box that stays (5.1) */
+  #issuespanel .said { margin:var(--s2) var(--s3) 0; color:var(--dim); font-size:12px; }
+  #issuespanel .said.bad, #issuespanel .warn { display:flex; gap:var(--s3); align-items:center;
+    padding:var(--s2) var(--s3); border-radius:var(--r-ctl); color:var(--warn); font-size:12px;
+    background:color-mix(in srgb, var(--warn) 9%, transparent);
+    border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+  #issuespanel .warn { margin:var(--s2) var(--s3) 0; }
+  #issuespanel .warn > span { flex:1 1 auto; min-width:0; }
+  #issuespanel .empty { color:var(--dim); padding:var(--s5) var(--s3); font-size:12px; }
+  /* The records (5.5): enclosed, a line between, the whole row opens it, › at the end */
+  #issuespanel > * { flex:0 0 auto; }
+  #issuespanel .irows { margin:var(--s3); border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; }
+  #issuespanel .irows .empty { padding:var(--s5) var(--s3); }
+  #issuespanel .irow { display:flex; align-items:center; gap:var(--s3); padding:10px var(--s3);
+    border-top:1px solid var(--line); cursor:pointer; }
+  #issuespanel .irow:first-child { border-top:0; }
+  #issuespanel .irow:hover { background:var(--panel2); }
+  #issuespanel .irow .num { flex:0 0 48px; color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; }
+  #issuespanel .irow .main { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:var(--s1); }
   #issuespanel .irow .title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #issuespanel .irow .meta { color:var(--dim); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #issuespanel .irow button { white-space:nowrap; flex:0 0 auto; }
-  #issuespanel .irow .when { flex:0 0 64px; color:var(--dim); font-size:11px; text-align:right; }
-  #issuespanel .state { font-size:11px; padding:0 7px; border-radius:var(--r-chip); border:1px solid var(--line); white-space:nowrap; }
-  #issuespanel .state.st-open { color:var(--live); border-color:var(--live); }
-  #issuespanel .state.st-closed { color:var(--stop); border-color:var(--stop); }
-  #issuespanel .state.st-merged { color:var(--brand); border-color:var(--brand); }
-  #issuespanel .state.st-draft { color:var(--dim); }
-  #issuespanel .crumb { color:var(--dim); font-size:12px; }
-  /* A narrow pane or a phone: the title keeps the whole first line, and its
-     state, age and button go on a line of their own under it */
-  #issuespanel { container-type:inline-size; }
+  #issuespanel .irow .when { flex:0 0 72px; color:var(--dim); font-size:11px; text-align:right;
+    font-variant-numeric:tabular-nums; white-space:nowrap; }
+  #issuespanel .irow .act { flex:0 0 76px; display:flex; justify-content:flex-end; }
+  #issuespanel .irow .go-in { flex:0 0 auto; color:var(--dim); }
+  /* Where a record stands. A label, not a state colour: an open issue is not
+     something working, and a closed one is not something that stopped (2) */
+  #issuespanel .state { font-size:11px; padding:1px var(--s2); border-radius:var(--r-chip);
+    border:1px solid var(--line); color:var(--dim); white-space:nowrap; flex:0 0 auto; }
+  #issuespanel .pager { display:flex; gap:var(--s2); align-items:center; justify-content:center;
+    padding:0 var(--s3) var(--s3); color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; }
+  /* One record in full */
+  #issuespanel .head { padding:var(--s4) var(--s3) var(--s3); display:flex; flex-direction:column; gap:var(--s2); }
+  #issuespanel .head h3 { margin:0; font-size:14px; font-weight:600; line-height:1.4; }
+  #issuespanel .head .meta { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); color:var(--dim); font-size:12px; }
+  #issuespanel .facts { display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr));
+    gap:var(--s3) var(--s5); padding:var(--s3); border-top:1px solid var(--line); margin:0; }
+  #issuespanel .facts > div { display:flex; flex-direction:column; gap:var(--s1); min-width:0; }
+  #issuespanel .facts dt { color:var(--dim); font-size:12px; }
+  #issuespanel .facts dd { margin:0; overflow-wrap:anywhere; }
+  #issuespanel .acts { display:flex; flex-wrap:wrap; gap:var(--s2); align-items:center;
+    padding:var(--s3); border-top:1px solid var(--line); }
+  #issuespanel .acts .lbl { color:var(--dim); font-size:12px; margin-right:var(--s1); }
+  #issuespanel .acts input { width:180px; }
+  #issuespanel button.link { min-height:0; border:none; background:none; padding:0; color:var(--dim); font-size:12px; }
+  #issuespanel button.link:hover { color:var(--text); background:none; }
+  #issuespanel .checks { padding:0 var(--s3) var(--s3); display:flex; flex-direction:column; gap:var(--s1); font-size:12px; }
+  #issuespanel .check { display:flex; gap:var(--s2); align-items:center; }
+  #issuespanel .check .dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; box-shadow:inset 0 0 0 2px var(--dim); }
+  #issuespanel .check.v-failed .dot { background:var(--stop); box-shadow:none; }
+  #issuespanel .check.v-pending .dot { background:var(--live); box-shadow:none; }
+  #issuespanel .check.v-passed .dot { background:var(--brand); box-shadow:none; }
+  /* What was written: read, not typed into -- a well (2) */
+  #issuespanel .body, #issuespanel .comment .text { white-space:pre-wrap; word-break:break-word; line-height:1.55; }
+  #issuespanel .body { margin:0 var(--s3); padding:var(--s3); background:var(--sunk);
+    border:1px solid var(--line); border-radius:var(--r-ctl); }
+  #issuespanel .body.none { color:var(--faint); }
+  #issuespanel h4 { margin:var(--s5) var(--s3) var(--s2); font-size:12px; color:var(--dim); font-weight:500; letter-spacing:.02em; }
+  #issuespanel .talk { display:flex; flex-direction:column; gap:var(--s2); padding:0 var(--s3); }
+  #issuespanel .talk .empty { padding:0; }
+  #issuespanel .event { color:var(--dim); font-size:11.5px; padding:0 var(--s3); }
+  #issuespanel .comment { border:1px solid var(--line); border-radius:var(--r-ctl); padding:var(--s2) var(--s3); }
+  #issuespanel .comment .who { color:var(--dim); font-size:11.5px; margin-bottom:var(--s1); }
+  /* Fields (5.1): name above, control, what happens below */
+  #issuespanel .form { display:flex; flex-direction:column; gap:var(--s5); padding:var(--s5) var(--s3); max-width:760px; }
+  #issuespanel .field { display:flex; flex-direction:column; gap:var(--s2); }
+  #issuespanel .field > .name { font-size:12px; font-weight:500; color:var(--text); }
+  #issuespanel .field > .hint { font-size:11.5px; color:var(--faint); }
+  #issuespanel .write { padding:0 var(--s3) var(--s3); max-width:760px; }
+  #issuespanel .foot { display:flex; align-items:center; gap:var(--s2); justify-content:flex-end; }
+  /* A narrow pane or a phone: the title keeps the whole first line, and the
+     rest of the row goes on a line of its own under it */
   @container (max-width: 560px) {
     #issuespanel .irow { flex-wrap:wrap; row-gap:var(--s1); }
-    #issuespanel .irow .num { flex:0 0 44px; align-self:flex-start; padding-top:1px; }
-    #issuespanel .irow .main { flex:1 1 calc(100% - 44px - var(--s3)); }
-    #issuespanel .irow .state { margin-left:calc(44px + var(--s3)); }
+    #issuespanel .irow .num { flex:0 0 40px; align-self:flex-start; padding-top:1px; }
+    #issuespanel .irow .main { flex:1 1 calc(100% - 40px - var(--s3) - 24px); }
+    #issuespanel .irow .state { margin-left:calc(40px + var(--s3)); }
     #issuespanel .irow .when { flex:1 1 auto; text-align:left; }
+    #issuespanel .bar .line input { flex:1 1 calc(100% - 32px - var(--s3)); }
+    #issuespanel .bar .line .wide-only { display:none; }
   }
-  #issuespanel .grow { flex:1 1 auto; }
-  #issuespanel .dim { color:var(--dim); }
-  #issuespanel .head { padding:10px 12px 4px; }
-  #issuespanel .head h3 { margin:0 0 6px; font-size:15px; font-weight:600; }
-  #issuespanel .facts { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:var(--s2) var(--s4);
-    padding:8px 12px; border-bottom:1px solid var(--line); }
-  #issuespanel .facts > div { display:flex; flex-direction:column; gap:2px; font-size:12px; }
-  #issuespanel .acts { display:flex; flex-wrap:wrap; gap:var(--s2); align-items:center; padding:8px 12px; }
-  #issuespanel button.link { border:none; background:none; padding:0; color:var(--brand); font-size:12px; }
-  #issuespanel .checks { padding:0 12px 8px; display:flex; flex-direction:column; gap:2px; font-size:12px; }
-  #issuespanel .check { display:flex; gap:var(--s2); align-items:center; }
-  #issuespanel .check .dot { width:8px; height:8px; border-radius:50%; background:var(--dim); }
-  #issuespanel .check.v-failed .dot { background:var(--stop); }
-  #issuespanel .check.v-pending .dot { background:var(--warn); }
-  #issuespanel .check.v-passed .dot { background:var(--live); }
-  #issuespanel .body, #issuespanel .comment .text { white-space:pre-wrap; word-break:break-word; line-height:1.55; }
-  #issuespanel .body { padding:10px 12px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
-  #issuespanel h4 { margin:10px 12px 4px; font-size:12px; color:var(--dim); font-weight:500; }
-  #issuespanel .talk { display:flex; flex-direction:column; gap:var(--s2); padding:0 12px; }
-  #issuespanel .event { color:var(--dim); font-size:11.5px; }
-  #issuespanel .comment { border:1px solid var(--line); border-radius:var(--r-ctl); padding:8px 10px; }
-  #issuespanel .comment .who { color:var(--dim); font-size:11.5px; margin-bottom:4px; }
-  #issuespanel .write { padding:10px 12px 16px; display:flex; flex-direction:column; gap:var(--s2); }
-  #issuespanel textarea { padding:8px; resize:vertical; width:100%; box-sizing:border-box; }
-  #issuespanel .row { display:flex; align-items:center; gap:var(--s2); }
-  #issuespanel .pager { display:flex; gap:var(--s2); align-items:center; justify-content:center; padding:8px; }
-  #issuespanel .form { display:flex; flex-direction:column; gap:var(--s3); padding:10px 12px; max-width:760px; }
-  #issuespanel .form label { display:flex; flex-direction:column; gap:var(--s1); font-size:12px; }
   /* A tab that could not start. Where its terminal would be: what went wrong,
      and the ways on from here, in that order */
   #failpanel[hidden] { display:none; }
@@ -2834,15 +2885,18 @@ function drawIssues() {
   drawIssueList(box);
 }
 
+// What is happening or what went wrong, or nothing -- an empty line would be
+// a gap for no reason
 function issueSaid() {
-  return el("div", {class:"said" + (I.bad ? " bad" : "")},
-    I.busy ? (T["issues.busy"] || "…") : (I.said || ""));
+  const words = I.busy ? (T["issues.busy"] || "…") : (I.said || "");
+  return words ? el("div", {class:"said" + (I.bad && !I.busy ? " bad" : "")}, words) : null;
 }
 
 function drawIssueList(box) {
-  const bar = el("div", {class:"bar"});
+  // First line: what is listed, and the one thing to make. Second: how it is narrowed
+  const kinds = el("span", {class:"seg"});
   for (const k of ["issue", "pr"]) {
-    bar.append(el("button", {class: I.kind === k ? "on" : "", onclick:() => {
+    kinds.append(el("button", {class: I.kind === k ? "on" : "", onclick:() => {
       if (I.kind === k) return;
       I.kind = k; I.preset = "open"; I.list = null; issuesList(1);
     }}, T["issues.kind." + k] || k));
@@ -2852,67 +2906,72 @@ function drawIssueList(box) {
   for (const p of I.projects) pick.append(el("option", {value:p.name}, p.name));
   pick.value = I.project;
   pick.onchange = () => { I.project = pick.value; issuesList(1); };
-  bar.append(pick);
-  const presets = el("span", {class:"chips"});
+  const make = I.kind === "issue"
+    ? el("button", {class:"go", onclick:() => {
+        I.view = "create";
+        if (!I.create.project) I.create.project = I.project || (I.projects[0] || {}).name || "";
+        if (I.create.project && !I.options[I.create.project]) issuesAsk("options", {project: I.create.project});
+        drawIssues();
+      }}, "+ " + (T["issues.new"] || ""))
+    : null;
+  const presets = el("span", {class:"seg"});
   for (const [id] of ISSUE_PRESETS[I.kind]) {
     presets.append(el("button", {class: I.preset === id ? "on" : "", onclick:() => { I.preset = id; issuesList(1); }},
       T["issues.preset." + id] || id));
   }
-  bar.append(presets);
-  const search = el("input", {type:"text", placeholder: T["issues.search"] || ""});
+  const search = el("input", {type:"search", placeholder: T["issues.search"] || ""});
   search.value = I.text;
   search.onkeydown = e => {
     if (typingIME(e)) return;
     if (e.key === "Enter") { I.text = search.value; issuesList(1); }
   };
-  bar.append(search);
-  bar.append(el("button", {title: T["issues.refresh"] || "", onclick:() => issuesList(I.page)}, "↻"));
-  if (I.kind === "issue") {
-    bar.append(el("button", {class:"go", onclick:() => {
-      I.view = "create";
-      if (!I.create.project) I.create.project = I.project || (I.projects[0] || {}).name || "";
-      if (I.create.project && !I.options[I.create.project]) issuesAsk("options", {project: I.create.project});
-      drawIssues();
-    }}, "+ " + (T["issues.new"] || "")));
-  }
-  box.append(bar, issueSaid());
+  box.append(el("div", {class:"bar"},
+    el("div", {class:"line"}, kinds, pick, el("span", {class:"grow"}), make),
+    el("div", {class:"line"}, presets, search,
+      el("button", {class:"quiet", title: T["issues.refresh"] || "", onclick:() => issuesList(I.page)},
+        "↻", el("span", {class:"wide-only"}, T["issues.refresh"] || "")))));
+  const said = issueSaid();
+  if (said) box.append(said);
   // A project that could not be read says why, beside the others
   for (const p of I.problems) {
     const proj = issueProject(p.project);
     box.append(el("div", {class:"warn"},
-      el("span", {}, "⚠ " + p.project + ": " + p.error),
+      el("span", {}, p.project + ": " + p.error),
       proj && p.settings ? el("button", {onclick:() => openSettings("project", true, proj.dir)}, T["issues.open_settings"] || "") : null));
   }
-  const rows = el("div", {class:"rows"});
-  if (I.list === null) rows.append(el("div", {class:"empty"}, "…"));
+  const rows = el("div", {class:"irows"});
+  if (I.list === null) rows.append(el("div", {class:"empty"}, T["issues.busy"] || "…"));
   else if (!I.list.length) rows.append(el("div", {class:"empty"}, T["issues.none"] || ""));
   for (const r of I.list || []) {
     const made = issueWorktree(r.kind, r.repo, r.number);
     const state = r.draft && r.state === "open" ? "draft" : r.state;
+    // The row opens the record; the button beside it is the one other thing to
+    // do with it, and stays quiet so the page keeps one primary button
     const row = el("div", {class:"irow", onclick:() => issuesAsk("detail", {project: r.project, number: r.number})},
-      el("span", {class:"num st-" + state}, "#" + r.number),
+      el("span", {class:"num"}, "#" + r.number),
       el("span", {class:"main"},
         el("span", {class:"title"}, r.title || ""),
         el("span", {class:"meta"},
           [r.project, r.author, ...(r.labels || []).slice(0, 3)].filter(Boolean).join(" · ")
           + (made ? "  ·  " + (T["issues.worktree"] || "") + " " + made.name : ""))),
-      el("span", {class:"state st-" + state}, T["issues.state." + state] || state),
+      el("span", {class:"state"}, T["issues.state." + state] || state),
       el("span", {class:"when"}, issueAgo(r.updated)),
-      made
-        ? el("button", {onclick:e => { e.stopPropagation(); send({kind:"folderview", folder: made.folder}); }},
-            (T["issues.open"] || "") + " ›")
-        : (r.state === "open"
-            ? el("button", {class:"go", onclick:e => { e.stopPropagation(); issueStart(r); }},
-                (T["issues.start"] || "") + " →")
-            : el("span")));
+      el("span", {class:"act"},
+        made
+          ? el("button", {class:"quiet", onclick:e => { e.stopPropagation(); send({kind:"folderview", folder: made.folder}); }},
+              T["issues.open"] || "")
+          : (r.state === "open"
+              ? el("button", {class:"quiet", onclick:e => { e.stopPropagation(); issueStart(r); }}, T["issues.start"] || "")
+              : null)),
+      el("span", {class:"go-in"}, "›"));
     rows.append(row);
   }
   box.append(rows);
   if (I.list && I.list.length && I.total > I.page * 36) {
     box.append(el("div", {class:"pager"},
-      I.page > 1 ? el("button", {onclick:() => issuesList(I.page - 1)}, "←") : null,
-      el("span", {}, String(I.page)),
-      el("button", {onclick:() => issuesList(I.page + 1)}, "→")));
+      I.page > 1 ? el("button", {class:"quiet", onclick:() => issuesList(I.page - 1)}, "‹ " + (T["issues.page.prev"] || "")) : null,
+      el("span", {}, (T["issues.page"] || "{n}").replace("{n}", I.page).replace("{total}", Math.ceil(I.total / 36))),
+      el("button", {class:"quiet", onclick:() => issuesList(I.page + 1)}, (T["issues.page.next"] || "") + " ›")));
   }
 }
 
@@ -2922,29 +2981,27 @@ function drawIssueDetail(box) {
   const state = d.draft && d.state === "open" ? "draft" : d.state;
   const proj = issueProject(d.project);
   const made = issueWorktree(d.kind, (proj || {}).repo, d.number);
-  box.append(el("div", {class:"bar"},
-    el("button", {onclick:() => { I.view = "list"; I.detail = null; I.want.detail = 0; I.busy = ""; drawIssues(); }}, "‹ " + (T["issues.back"] || "")),
-    el("span", {class:"crumb"}, d.project + " #" + d.number),
-    el("span", {class:"grow"}),
-    d.url ? (REMOTE
-      ? el("a", {href:d.url, target:"_blank", rel:"noopener"}, T["issues.on_github"] || "")
-      : null) : null,
+  box.append(el("div", {class:"bar"}, el("div", {class:"line"},
+    el("button", {class:"quiet", onclick:() => { I.view = "list"; I.detail = null; I.want.detail = 0; I.busy = ""; drawIssues(); }}, "‹ " + (T["issues.back"] || "")),
+    el("span", {class:"crumb grow"}, d.project + " #" + d.number),
+    // The window has no browser to hand an address to; the phone does
+    d.url && REMOTE ? el("a", {class:"away", href:d.url, target:"_blank", rel:"noopener"}, (T["issues.on_github"] || "") + " ↗") : null,
     made
-      ? el("button", {onclick:() => send({kind:"folderview", folder: made.folder})}, (T["issues.open"] || "") + " ›")
+      ? el("button", {class:"go", onclick:() => send({kind:"folderview", folder: made.folder})}, (T["issues.open"] || "") + " ›")
       : (d.state === "open"
           ? el("button", {class:"go", onclick:() => issueStart(Object.assign({}, d, {repo: (proj || {}).repo,
-              workspace: d.workspace}))}, (T[pr ? "issues.start.pr" : "issues.start.issue"] || "") + " →")
-          : null)));
-  box.append(issueSaid());
-  const head = el("div", {class:"head"},
+              workspace: d.workspace}))}, T[pr ? "issues.start.pr" : "issues.start.issue"] || "")
+          : null))));
+  const said = issueSaid();
+  if (said) box.append(said);
+  box.append(el("div", {class:"head"},
     el("h3", {}, (d.title || "") + " ", el("span", {class:"dim"}, "#" + d.number)),
     el("div", {class:"meta"},
-      el("span", {class:"state st-" + state}, T["issues.state." + state] || state),
-      " " + (d.author || "") + " · " + issueAgo(d.created)));
-  box.append(head);
+      el("span", {class:"state"}, T["issues.state." + state] || state),
+      el("span", {}, (T["issues.opened_by"] || "{who} · {when}").replace("{who}", d.author || "").replace("{when}", issueAgo(d.created))))));
 
-  const facts = el("div", {class:"facts"});
-  const fact = (label, value) => facts.append(el("div", {}, el("span", {class:"dim"}, label), el("span", {}, value)));
+  const facts = el("dl", {class:"facts"});
+  const fact = (label, value) => facts.append(el("div", {}, el("dt", {}, label), el("dd", {}, value)));
   fact(T["issues.assignees"] || "", (d.assignees || []).join(", ") || "—");
   fact(T["issues.labels"] || "", (d.labels || []).join(", ") || "—");
   if (pr) {
@@ -2982,21 +3039,23 @@ function drawIssueDetail(box) {
       issuesAsk("issue_state", {project: d.project, number: d.number, state: "duplicate", duplicate_of: n});
     }}, T["issues.set.duplicate.go"] || "");
     dupGo.hidden = I.armed !== "duplicate";
-    acts.append(el("span", {class:"dim"}, T["issues.state"] || ""), choose, dup, dupGo);
+    acts.append(el("span", {class:"lbl"}, T["issues.state"] || ""), choose, dup, dupGo);
   } else if (d.state !== "merged") {
     const method = el("select");
     for (const m of ["squash", "merge", "rebase"]) method.append(el("option", {value:m}, T["issues.merge." + m] || m));
     // Merging is the one press here that cannot be taken back: the first press
     // arms it, and says so on the button
-    const merge = el("button", {class:"go", onclick:() => {
+    const merge = el("button", {class: I.armed === "merge" ? "armed" : "", onclick:() => {
       if (I.armed === "merge") issuesAsk("merge", {project: d.project, number: d.number, method: method.value});
       else { I.armed = "merge"; issuesSig = ""; drawIssues(); }
     }}, I.armed === "merge" ? (T["issues.merge.sure"] || "") : (T["issues.merge"] || ""));
     if (d.state === "open") acts.append(method, merge);
-    acts.append(el("button", {onclick:() => issuesAsk("pr_state", {project: d.project, number: d.number,
+    // Closing without merging is the one that undoes work: said in the colour for that
+    acts.append(el("span", {class:"grow"}));
+    acts.append(el("button", {class: d.state === "open" ? "bad" : "", onclick:() => issuesAsk("pr_state", {project: d.project, number: d.number,
       state: d.state === "open" ? "closed" : "open"})}, T[d.state === "open" ? "issues.pr.close" : "issues.pr.reopen"] || ""));
   }
-  box.append(acts);
+  if (acts.childNodes.length) box.append(acts);
 
   if (pr && d.checks && d.checks.items && d.checks.items.length) {
     // The count is already among the facts; the names are wanted for the ones
@@ -3013,7 +3072,8 @@ function drawIssueDetail(box) {
     }
     box.append(list);
   }
-  box.append(el("div", {class:"body"}, d.body || (T["issues.no_body"] || "")));
+  box.append(el("h4", {}, T["issues.body"] || ""));
+  box.append(el("div", {class:"body" + (d.body ? "" : " none")}, d.body || (T["issues.no_body"] || "")));
   const talk = el("div", {class:"talk"});
   const lines = [];
   for (const e of d.events || []) lines.push({at: e.created, node: el("div", {class:"event"},
@@ -3024,14 +3084,15 @@ function drawIssueDetail(box) {
     el("div", {class:"text"}, c.body || ""))});
   lines.sort((a, b) => String(a.at).localeCompare(String(b.at)));
   lines.forEach(l => talk.append(l.node));
-  box.append(el("h4", {}, (T["issues.activity"] || "") + " " + lines.length), talk);
+  if (!lines.length) talk.append(el("div", {class:"empty"}, T["issues.activity.none"] || ""));
+  box.append(el("h4", {}, T["issues.activity"] || ""), talk);
   const write = el("textarea", {placeholder: T["issues.comment.ph"] || "", rows: "4"});
   const acct = proj && proj.account ? proj.account : "";
-  box.append(el("div", {class:"write"}, write,
-    el("div", {class:"row"},
-      el("span", {class:"dim"}, acct ? (T["issues.as"] || "").replace("{account}", acct === "@pc" ? (T["git.acct.pc"] || "") : acct) : ""),
-      el("span", {class:"grow"}),
-      el("button", {class:"go", onclick:() => {
+  box.append(el("h4", {}, T["issues.comment.label"] || ""));
+  box.append(el("div", {class:"write field"}, write,
+    acct ? el("span", {class:"hint"}, (T["issues.as"] || "").replace("{account}", acct === "@pc" ? (T["git.acct.pc"] || "") : acct)) : null,
+    el("div", {class:"foot"},
+      el("button", {onclick:() => {
         if (!write.value.trim()) return;
         issuesAsk("comment", {project: d.project, number: d.number, body: write.value});
       }}, T["issues.comment"] || ""))));
@@ -3045,10 +3106,11 @@ function drawIssueCreate(box) {
     // Asked without drawing: this is the middle of a draw
     if (!I.options[c.project]) send({kind:"issues", act:"options", args:{kind: I.kind, project: c.project}});
   }
-  box.append(el("div", {class:"bar"},
-    el("button", {onclick:() => { I.view = "list"; drawIssues(); }}, "‹ " + (T["issues.back"] || "")),
-    el("span", {class:"crumb"}, T["issues.new"] || "")));
-  box.append(issueSaid());
+  box.append(el("div", {class:"bar"}, el("div", {class:"line"},
+    el("button", {class:"quiet", onclick:() => { I.view = "list"; drawIssues(); }}, "‹ " + (T["issues.back"] || "")),
+    el("span", {class:"crumb"}, T["issues.new"] || ""))));
+  const said = issueSaid();
+  if (said) box.append(said);
   const form = el("div", {class:"form"});
   const pick = el("select");
   for (const p of I.projects) pick.append(el("option", {value:p.name}, p.name + (p.repo ? "  (" + p.repo + ")" : "")));
@@ -3059,7 +3121,8 @@ function drawIssueCreate(box) {
     issuesSig = ""; drawIssues();
   };
   const opts = I.options[c.project] || {};
-  const field = (label, control, hint) => form.append(el("label", {}, el("span", {}, label), control, hint ? el("span", {class:"dim"}, hint) : null));
+  const field = (label, control, hint) => form.append(el("label", {class:"field"},
+    el("span", {class:"name"}, label), control, hint ? el("span", {class:"hint"}, hint) : null));
   const title = el("input", {type:"text", placeholder: T["issues.new.title.ph"] || ""});
   title.value = c.title; title.oninput = () => { c.title = title.value; };
   const body = el("textarea", {rows:"8", placeholder: T["issues.new.body.ph"] || ""});
@@ -3074,7 +3137,8 @@ function drawIssueCreate(box) {
   field(T["issues.labels"] || "", labels, T["issues.new.comma"] || "");
   field(T["issues.assignees"] || "", people, T["issues.new.comma"] || "");
   const split = v => v.split(/[\s,]+/).map(x => x.trim()).filter(Boolean);
-  form.append(el("div", {class:"row"}, el("span", {class:"grow"}),
+  form.append(el("div", {class:"foot"},
+    el("button", {class:"quiet", onclick:() => { I.view = "list"; drawIssues(); }}, T["issues.cancel"] || ""),
     el("button", {class:"go", onclick:() => {
       if (!c.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; issuesSig = ""; drawIssues(); return; }
       issuesAsk("create", {project: c.project, title: c.title, body: c.body, labels: split(c.labels), assignees: split(c.assignees)});
@@ -4435,9 +4499,13 @@ function drawStrip() {
   // and would do nothing at all. And it carries which folder it was asked
   // from, or the form adds the tab to the first one instead of this one
   const g = active.group != null ? (S.groups || [])[active.group] : null;
-  strip.append(el("div", {class:"snew", title:T["tui.pane.add"] || "",
+  // The Issue tab stands in no folder: a + beside it would add a tab to
+  // whichever folder came first, and nothing closed there is its to bring back.
+  // Its own ✕ stays -- the Issue row in the list opens it again
+  const alone = active.kind === "issues";
+  if (!alone) strip.append(el("div", {class:"snew", title:T["tui.pane.add"] || "",
       onclick:() => addTabHere(g)}, "+"));
-  if ((S.closed || []).length) {
+  if (!alone && (S.closed || []).length) {
     strip.append(el("div", {class:"sclosed", title:T["tui.closed.head"] || "",
         onclick:e => closedMenu(e, g)}, "\u25BE"));
   }
@@ -5287,7 +5355,7 @@ window.__state = function (json) {
   // A browser tab is the window's own case, handled by syncBrowserDock.
   if (!covering() && !castClosed() && !castMode
       && !(castDock && castDock.style.display === "flex")
-      && (REMOTE ? onTermPty() : !onBrowserTab())) {
+      && (REMOTE ? onTermPty() : !onBrowserTab()) && !onIssuesTab()) {
     openTermBar();
     if (castInput) castInput.blur();
   }
@@ -5474,7 +5542,7 @@ window.__state = function (json) {
   // separately, by castStop → exitCast). Shut by us, not by the person, so the
   // ✕ preference is left alone and the bar returns on its own above.
   if (!castMode && castDock && castDock.style.display === "flex") {
-    if (covering() || (REMOTE && (screen.hidden || web || !onTermPty()))) closeBar();
+    if (covering() || onIssuesTab() || (REMOTE && (screen.hidden || web || !onTermPty()))) closeBar();
   }
   // 📼 recording is "record what I do on THIS page": leaving the tab ends it,
   // so the radio never claims a recording that moved out from under it. The
@@ -7943,6 +8011,9 @@ function buildActions() {
 }
 // True while the window is showing a browser tab.
 function onBrowserTab() { return S && S.tabs && S.tabs.some(t => t.index === S.active && t.kind === "browser"); }
+// True while the Issue tab is the one in view. It has no program to type to, so
+// the input bar has nowhere to send, and it is in no folder a tab could join
+function onIssuesTab() { return !!(S && S.tabs && S.tabs.some(t => t.index === S.active && t.kind === "issues")); }
 
 // The config changed (a settings save): swap in the new actions and re-render the
 // panel if it's the one showing, so an edit reflects without reloading the window.
@@ -10150,7 +10221,8 @@ function syncPen() {
   // nonsense. At the window the exception is the placed page — the window's pen
   // would be drawn underneath it and never seen, so that page draws one itself.
   const here = !covering()
-    && ((typeof REMOTE !== "undefined" && REMOTE) ? onTermPty() : !onBrowserTab());
+    && ((typeof REMOTE !== "undefined" && REMOTE) ? onTermPty() : !onBrowserTab())
+    && !onIssuesTab();
   fab.style.display = (!open && here) ? "" : "none";
 }
 // Show the sub-input bar (auxiliary key row + input field). Never focused
@@ -11199,7 +11271,7 @@ mod tests {
             "there is more than one place that answers 'is the pane covered'"
         );
         assert!(
-            p.contains("if (covering() || (REMOTE && (screen.hidden || web || !onTermPty()))) closeBar();"),
+            p.contains("if (covering() || onIssuesTab() || (REMOTE && (screen.hidden || web || !onTermPty()))) closeBar();"),
             "the input bar stays open on a screen with nothing to type into"
         );
         assert!(
