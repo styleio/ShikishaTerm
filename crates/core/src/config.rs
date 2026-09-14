@@ -42,6 +42,232 @@ pub struct ProjectSpec {
     /// and this is not asked for
     #[serde(default)]
     pub setup: Option<String>,
+    /// The git account the column beside a folder of this project fetches,
+    /// pulls and pushes with, and reads pull request numbers with: one of the
+    /// desk's `git_accounts` by name, or [`THIS_PC`]. Absent until somebody
+    /// chooses -- nothing is chosen for them, so "which account did that push
+    /// go out as" always has an answer somebody gave
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_account: Option<String>,
+}
+
+/// A git account a desk signs in to a git server with.
+///
+/// Nothing secret is here. The token is filed under [`git_token_key`], worked
+/// out from the desk and this name, so the settings can be read and copied
+/// without carrying a credential; an SSH key is named by its path, the way a
+/// server tab names its key.
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default, PartialEq, Eq)]
+pub struct GitAccountSpec {
+    /// What it is called in the pickers. One word, because it is also part of
+    /// the name its token is filed under
+    pub name: String,
+    /// The server it signs in to. Absent is `github.com`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// `ssh` for an account that signs in with a key file; anything else --
+    /// absent included -- is a token over HTTPS
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    /// The user name sent with the token. Absent sends a stand-in, which is
+    /// what GitHub expects of a token
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
+    /// The private key file, for an `ssh` account
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The name and email a commit made with this account carries. Absent is
+    /// whatever git itself is set to on this machine
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_email: Option<String>,
+    /// The owners (users and organisations) whose repositories this account is
+    /// for. Only an order: a repository owned by one of these lists this
+    /// account first. Nothing is picked because of it
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owners: Vec<String>,
+}
+
+/// What a git account is chosen as when the choice is "the way git on this
+/// PC already signs in": its credential helper, its SSH keys, its name. A
+/// real account name is one word of letters, digits, `-` and `_`, so this
+/// can never be one
+pub const THIS_PC: &str = "@pc";
+
+/// The GitHub server, which is what an account that names none signs in to
+pub const GITHUB_HOST: &str = "github.com";
+
+impl GitAccountSpec {
+    pub fn host(&self) -> String {
+        self.host
+            .as_deref()
+            .map(|h| h.trim().trim_end_matches('/').to_ascii_lowercase())
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| GITHUB_HOST.to_string())
+    }
+
+    pub fn is_ssh(&self) -> bool {
+        self.method.as_deref().is_some_and(|m| m.trim().eq_ignore_ascii_case("ssh"))
+    }
+
+    /// Whether this account says it is for repositories of `owner`
+    pub fn serves(&self, owner: &str) -> bool {
+        self.owners.iter().any(|o| o.trim().eq_ignore_ascii_case(owner.trim()))
+    }
+}
+
+/// Where a git account's token is filed: under the desk, like every other
+/// credential a desk has, and worked out rather than written down so there is
+/// one spelling for the screen that stores it and the program that reads it
+pub fn git_token_key(desk_id: &str, account: &str) -> String {
+    format!("git/{desk_id}/{account}")
+}
+
+/// Which git account something signs in with, as the settings say -- before
+/// any secret is read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum GitUse {
+    /// Nobody has chosen. Nothing that needs to sign in runs
+    #[default]
+    Unset,
+    /// The way git on this PC already signs in
+    Pc,
+    /// One of the desk's accounts
+    Account { desk: String, spec: GitAccountSpec },
+    /// A name that no account in the desk answers to any more
+    Missing(String),
+}
+
+impl GitUse {
+    /// What the choice is written as: an account name, [`THIS_PC`], or empty
+    pub fn written(&self) -> String {
+        match self {
+            GitUse::Unset => String::new(),
+            GitUse::Pc => THIS_PC.to_string(),
+            GitUse::Account { spec, .. } => spec.name.clone(),
+            GitUse::Missing(n) => n.clone(),
+        }
+    }
+
+    /// Commit identity and credentials, ready for git.
+    ///
+    /// `sign_in` is whether what is about to run talks to a server: then a
+    /// choice nobody made, or one that no longer exists, is refused in words
+    /// that say where to make it. A commit needs only the name on it, so it
+    /// goes ahead with git's own when nothing was chosen -- but not with an
+    /// account that has gone, whose name it was meant to carry. `look` reads
+    /// the secret store
+    pub fn to_git(
+        &self,
+        sign_in: bool,
+        look: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<crate::git::As, String> {
+        match self {
+            GitUse::Unset if sign_in => Err(crate::i18n::t("err.git.account.unset")),
+            GitUse::Unset => Ok(crate::git::As::sealed()),
+            GitUse::Pc => Ok(crate::git::As::default()),
+            GitUse::Missing(name) => {
+                Err(crate::i18n::tp("err.git.account.missing", &[("name", name)]))
+            }
+            GitUse::Account { desk, spec } => {
+                let some = |v: &Option<String>| {
+                    v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+                };
+                let auth = match (sign_in, spec.is_ssh()) {
+                    (false, _) => crate::git::Auth::Sealed,
+                    (true, true) => {
+                        let key = some(&spec.key).unwrap_or_default();
+                        if key.is_empty() || !std::path::Path::new(&key).is_file() {
+                            return Err(crate::i18n::tp(
+                                "err.git.account.no_key",
+                                &[("name", &spec.name), ("path", &key)],
+                            ));
+                        }
+                        crate::git::Auth::Ssh { key: key.into() }
+                    }
+                    (true, false) => {
+                        let token = look(&git_token_key(desk, &spec.name))
+                            .map(|t| t.trim().to_string())
+                            .filter(|t| !t.is_empty())
+                            .ok_or_else(|| {
+                                crate::i18n::tp("err.git.account.no_token", &[("name", &spec.name)])
+                            })?;
+                        crate::git::Auth::Token {
+                            host: spec.host(),
+                            login: some(&spec.login).unwrap_or_else(|| "x-access-token".into()),
+                            token,
+                        }
+                    }
+                };
+                Ok(crate::git::As {
+                    auth,
+                    account: Some(spec.name.clone()),
+                    name: some(&spec.user_name),
+                    email: some(&spec.user_email),
+                })
+            }
+        }
+    }
+
+    /// The name the pull request watch files a token under: an account, or
+    /// [`THIS_PC`]. None where there is nothing to ask with
+    pub fn pr_account(&self) -> Option<String> {
+        match self {
+            GitUse::Pc => Some(THIS_PC.to_string()),
+            GitUse::Account { spec, .. } if spec.host() == GITHUB_HOST => Some(spec.name.clone()),
+            _ => None,
+        }
+    }
+}
+
+impl Desk {
+    /// A written choice, looked up among this desk's accounts
+    pub fn git_use(&self, chosen: Option<&str>) -> GitUse {
+        match chosen.map(str::trim).filter(|c| !c.is_empty()) {
+            None => GitUse::Unset,
+            Some(THIS_PC) => GitUse::Pc,
+            Some(name) => match self.git_accounts.iter().find(|a| a.name == name) {
+                Some(spec) => GitUse::Account { desk: self.id.clone(), spec: spec.clone() },
+                None => GitUse::Missing(name.to_string()),
+            },
+        }
+    }
+
+    /// The account a folder's project chose, with the project's name
+    pub fn git_use_of_folder(&self, cwd: &std::path::Path) -> (GitUse, Option<String>) {
+        match self.project_of(cwd) {
+            Some(p) => (self.git_use(p.git_account.as_deref()), Some(p.name.clone())),
+            None => (GitUse::Unset, None),
+        }
+    }
+
+}
+
+/// A desk's accounts in the order to offer them for a repository of `owner`
+/// on `host`: the ones that say they are for it first, then the rest of that
+/// server's, then the others, each group as written. Each with whether it says
+/// it is for this repository
+pub fn git_accounts_for(
+    accounts: &[GitAccountSpec],
+    host: Option<&str>,
+    owner: Option<&str>,
+) -> Vec<(GitAccountSpec, bool)> {
+    let mut list: Vec<(usize, GitAccountSpec, bool)> = accounts
+        .iter()
+        .map(|a| {
+            let same_host = host.is_none_or(|h| a.host() == h.to_ascii_lowercase());
+            let fits = same_host && owner.is_some_and(|o| a.serves(o));
+            let rank = match (fits, same_host) {
+                (true, _) => 0,
+                (false, true) => 1,
+                (false, false) => 2,
+            };
+            (rank, a.clone(), fits)
+        })
+        .collect();
+    list.sort_by_key(|(rank, ..)| *rank);
+    list.into_iter().map(|(_, a, fits)| (a, fits)).collect()
 }
 
 impl Desk {
@@ -871,6 +1097,15 @@ pub fn orphan_secrets(cfg: &Config, keys: &[String]) -> Vec<String> {
             if k.starts_with("notify/") {
                 return !refs.contains(k);
             }
+            if let Some(rest) = k.strip_prefix("git/") {
+                // git/<desk>/<account>
+                let Some((desk, name)) = rest.split_once('/') else {
+                    return false;
+                };
+                return !spaces
+                    .iter()
+                    .any(|s| s.id == desk && s.git_accounts.iter().any(|a| a.name == name));
+            }
             if let Some(rest) = k.strip_prefix("ssh/") {
                 // ssh/<desk>/<tab>/<what>
                 let mut part = rest.split('/');
@@ -1492,14 +1727,14 @@ pub struct DeskSpec {
     pub automation_permissions: crate::grants::GrantSpec,
     /// What git does here: the branches a commit refuses to land on for the
     /// folders that have not said otherwise, and how the commit message is
-    /// written.
-    ///
-    /// The token is not here. Which account reaches GitHub from this desk
-    /// is the secret `<desk>.github` (see [`GITHUB_SECRET`]) -- a value
-    /// belongs in the secret store, and the store already files one per
-    /// desk
+    /// written
     #[serde(default)]
     pub git: GitSpec,
+    /// The git accounts this desk signs in with. Which one a git tab or a
+    /// project uses is chosen on that tab or project; their tokens are in the
+    /// secret store (see [`git_token_key`])
+    #[serde(default)]
+    pub git_accounts: Vec<GitAccountSpec>,
     /// The repositories worked on in this desk. This desk's own: the same
     /// repository in another desk is another project there, with its own
     /// setup, so a change made from one desk never reaches the other.
@@ -1517,16 +1752,6 @@ pub struct DeskSpec {
     #[serde(default)]
     pub send_pictures_to: Option<String>,
 }
-
-/// The name this desk's GitHub token is filed under, inside the desk's
-/// own secrets.
-///
-/// One name, decided here, because three places have to agree about it: the
-/// screen that offers to set it, the settings server that reports whether it
-/// works, and the pull request watch that asks with it. A fine-grained token
-/// belongs to the account and the repositories somebody chose, which is why it
-/// is worth having one per desk at all
-pub const GITHUB_SECRET: &str = "github";
 
 /// Contents of a desk definition file (desks/*.json)
 #[derive(Debug, Deserialize)]
@@ -1857,6 +2082,11 @@ pub struct TabConfig {
     /// that the address stays readable in the one place a person looks for it
     #[serde(default)]
     pub server: Option<ServerSpec>,
+    /// For a git tab: the git account it fetches, pulls and pushes with -- one
+    /// of the desk's `git_accounts` by name, or [`THIS_PC`]. Chosen on the
+    /// tab and never worked out for it
+    #[serde(default)]
+    pub git_account: Option<String>,
     /// Child tabs for display purposes (forwarding relationships are decided by Lua; this is display hierarchy only)
     #[serde(default)]
     pub children: Vec<TabConfig>,
@@ -2127,6 +2357,8 @@ pub struct Desk {
     /// What git does here. Its `protect` has already been handed to the
     /// folders, which is where anything asks about it
     pub git: GitSpec,
+    /// The git accounts this desk signs in with (see [`Desk::git_use`])
+    pub git_accounts: Vec<GitAccountSpec>,
     /// This desk's projects (see [`Desk::project_of`])
     pub projects: Vec<ProjectSpec>,
     /// The assistant AI this desk agreed to hand pictures to (see
@@ -3216,6 +3448,7 @@ impl Config {
                     automation_permissions: Default::default(),
                     projects: Vec::new(),
                     git,
+                    git_accounts: Vec::new(),
                     send_pictures_to: None,
                 });
             }
@@ -3291,6 +3524,7 @@ impl Config {
                 capabilities: desk.capabilities.clone(),
                 automation_permissions: desk.automation_permissions.clone(),
                 git,
+                git_accounts: desk.git_accounts.clone(),
                 projects: desk.projects.clone(),
                 send_pictures_to: desk.send_pictures_to.as_deref().and_then(one_name),
             });
@@ -3647,6 +3881,156 @@ fn write_aim(v: &mut serde_json::Value, tab_name: &str, target: Option<&str>, wr
     }
 }
 
+/// Where a git account was chosen from: a git tab, by the name the board knows
+/// it by, or the column beside a folder, which chooses for that folder's project
+pub enum GitChoiceAt<'a> {
+    Tab(&'a str),
+    Folder(&'a Path),
+}
+
+/// Write down which git account a git tab or a project uses. Empty clears it.
+///
+/// A folder whose repository has no project written down yet gets one now,
+/// named after its own checkout and pointed at it, which is what the settings
+/// screen does the first time anything about such a project is changed.
+/// Read-modify-write on the parsed JSON, like every other change here. Returns
+/// whether it was written
+pub fn save_git_account(desk_id: &str, at: GitChoiceAt, account: &str) -> bool {
+    let Some(cfg) = load() else { return false };
+    let (desks, _) = cfg.resolve_desks();
+    let Some(resolved) = desks.iter().position(|d| d.id == desk_id) else {
+        return false;
+    };
+    let path = config_file_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
+    else {
+        crate::append_hook_log("could not record the git account: settings are not readable");
+        return false;
+    };
+    if !write_git_choice(&mut doc, &desks[resolved], at, account) {
+        return false;
+    }
+    match serde_json::to_string_pretty(&doc) {
+        Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok(),
+        Err(_) => false,
+    }
+}
+
+fn set_or_clear(obj: &mut serde_json::Map<String, serde_json::Value>, key: &str, value: &str) {
+    match value.trim() {
+        "" => {
+            obj.shift_remove(key);
+        }
+        v => {
+            obj.insert(key.into(), serde_json::Value::String(v.to_string()));
+        }
+    }
+}
+
+/// The same, on a parsed settings file, for the desk `desk` as it was read
+fn write_git_choice(doc: &mut serde_json::Value, desk: &Desk, at: GitChoiceAt, account: &str) -> bool {
+    type Obj = serde_json::Map<String, serde_json::Value>;
+    // Where tabs are written: in the folders, in a tab's children, or -- the
+    // older way -- straight on the desk
+    const HOLDS_TABS: [&str; 3] = ["folders", "tabs", "children"];
+    fn names(obj: &Obj, key: &str, by: &str) -> bool {
+        obj.get(by).and_then(|n| n.as_str()).map(str::trim) == Some(key) && obj.get("command").is_some()
+    }
+    fn has(v: &serde_json::Value, key: &str, by: &str) -> bool {
+        match v {
+            serde_json::Value::Array(list) => list.iter().any(|i| has(i, key, by)),
+            serde_json::Value::Object(obj) => {
+                names(obj, key, by)
+                    || obj.iter().any(|(k, child)| HOLDS_TABS.contains(&k.as_str()) && has(child, key, by))
+            }
+            _ => false,
+        }
+    }
+    fn find<'a>(v: &'a mut serde_json::Value, key: &str, by: &str) -> Option<&'a mut Obj> {
+        if v.as_object().is_some_and(|obj| names(obj, key, by)) {
+            return v.as_object_mut();
+        }
+        match v {
+            serde_json::Value::Array(list) => list.iter_mut().find_map(|i| find(i, key, by)),
+            serde_json::Value::Object(obj) => obj
+                .iter_mut()
+                .filter(|(k, _)| HOLDS_TABS.contains(&k.as_str()))
+                .find_map(|(_, child)| find(child, key, by)),
+            _ => None,
+        }
+    }
+    let Some(entry) = desk_entry_mut(doc, &desk.id) else {
+        return false;
+    };
+    match at {
+        GitChoiceAt::Tab(key) => {
+            // By automation name first, then by the name on screen, which is
+            // what a git tab with no id is known by
+            let by = match entry.iter().any(|(k, v)| HOLDS_TABS.contains(&k.as_str()) && has(v, key, "id")) {
+                true => "id",
+                false => "name",
+            };
+            let tab = entry
+                .iter_mut()
+                .filter(|(k, _)| HOLDS_TABS.contains(&k.as_str()))
+                .find_map(|(_, v)| find(v, key, by));
+            match tab {
+                Some(tab) => {
+                    set_or_clear(tab, "git_account", account);
+                    true
+                }
+                None => false,
+            }
+        }
+        GitChoiceAt::Folder(cwd) => {
+            let projects = entry
+                .entry("projects")
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            let Some(projects) = projects.as_array_mut() else { return false };
+            match desk.project_of(cwd) {
+                Some(p) => match projects
+                    .iter_mut()
+                    .find(|x| x.get("name").and_then(|n| n.as_str()) == Some(&p.name))
+                    .and_then(|x| x.as_object_mut())
+                {
+                    Some(written) => {
+                        set_or_clear(written, "git_account", account);
+                        true
+                    }
+                    None => false,
+                },
+                // A repository with no project written down yet gets one, named
+                // after its own checkout, the way the settings screen makes one
+                None => {
+                    if account.trim().is_empty() {
+                        return true;
+                    }
+                    let Some(main) = crate::repo::main_checkout(cwd) else {
+                        return false;
+                    };
+                    let base = main
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| "project".into());
+                    let taken = |n: &str| desk.projects.iter().any(|p| p.name == n);
+                    let name = match taken(&base) {
+                        false => base,
+                        true => (2..).map(|i| format!("{base} {i}")).find(|n| !taken(n)).expect("endless"),
+                    };
+                    projects.push(serde_json::json!({
+                        "name": name,
+                        "at": main.display().to_string().replace('\\', "/"),
+                        "git_account": account.trim(),
+                    }));
+                    true
+                }
+            }
+        }
+    }
+}
+
 /// Read-modify-write on the parsed JSON, like every other change here, so the
 /// person's own file keeps its shape and its order. The tab is found by its
 /// automation name, wherever it is written: the flat `tabs` list, a
@@ -3746,12 +4130,30 @@ fn write_desk_value(
     key: &str,
     value: Option<serde_json::Value>,
 ) -> bool {
-    let want = desk_id.trim();
-    let Some(list) = doc.get_mut("desks").and_then(|d| d.as_array_mut()) else {
+    let Some(entry) = desk_entry_mut(doc, desk_id) else {
         return false;
     };
+    match value {
+        Some(v) => {
+            entry.insert(key.to_string(), v);
+        }
+        None => {
+            entry.remove(key);
+        }
+    }
+    true
+}
+
+/// The desk entry called `desk_id` in a parsed settings file, with that id
+/// written into it (see [`write_desk_value`])
+fn desk_entry_mut<'a>(
+    doc: &'a mut serde_json::Value,
+    desk_id: &str,
+) -> Option<&'a mut serde_json::Map<String, serde_json::Value>> {
+    let want = desk_id.trim();
+    let list = doc.get_mut("desks").and_then(|d| d.as_array_mut())?;
     if want.is_empty() {
-        return false;
+        return None;
     }
     let mut named: Vec<Desk> = list
         .iter()
@@ -3762,25 +4164,13 @@ fn write_desk_value(
         })
         .collect();
     settle_desk_ids(&mut named);
-    let Some(at) = named.iter().position(|d| d.id == want) else {
-        return false;
-    };
-    let Some(entry) = list[at].as_object_mut() else {
-        return false;
-    };
+    let at = named.iter().position(|d| d.id == want)?;
+    let entry = list[at].as_object_mut()?;
     let written = entry.get("id").and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
     if written.is_empty() {
         entry.insert("id".into(), serde_json::Value::String(want.to_string()));
     }
-    match value {
-        Some(v) => {
-            entry.insert(key.to_string(), v);
-        }
-        None => {
-            entry.remove(key);
-        }
-    }
-    true
+    Some(entry)
 }
 
 pub fn config_file_path() -> std::path::PathBuf {
@@ -3807,6 +4197,145 @@ pub fn load() -> Option<Config> {
 
 #[cfg(test)]
 mod tests {
+
+    fn accounts_desk() -> super::Desk {
+        let spec = |name: &str, host: Option<&str>, owners: &[&str]| super::GitAccountSpec {
+            name: name.into(),
+            host: host.map(str::to_string),
+            owners: owners.iter().map(|o| o.to_string()).collect(),
+            ..Default::default()
+        };
+        super::Desk {
+            id: "work".into(),
+            git_accounts: vec![
+                spec("home", None, &["me"]),
+                spec("lab", Some("gitlab.example.com"), &["acme"]),
+                spec("company", None, &["Acme"]),
+                spec("key", None, &[]),
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// A choice is read as written, and nothing is chosen for anybody: no
+    /// choice is "nobody chose", not the first account and not this PC's git
+    #[test]
+    fn a_git_choice_is_looked_up_and_never_made_up() {
+        use super::GitUse;
+        let mut desk = accounts_desk();
+        desk.git_accounts[3].method = Some("ssh".into());
+        desk.git_accounts[3].key = Some("Z:/no/such/key".into());
+        assert_eq!(desk.git_use(None), GitUse::Unset);
+        assert_eq!(desk.git_use(Some("  ")), GitUse::Unset);
+        assert_eq!(desk.git_use(Some(super::THIS_PC)), GitUse::Pc);
+        assert_eq!(desk.git_use(Some("gone")), GitUse::Missing("gone".into()));
+        let home = desk.git_use(Some("home"));
+        assert!(matches!(&home, GitUse::Account { desk, spec } if desk == "work" && spec.name == "home"));
+
+        let nothing = |_: &str| None;
+        // Nothing chosen: talking to a server is refused, a commit is not
+        assert!(GitUse::Unset.to_git(true, &nothing).is_err());
+        assert!(matches!(GitUse::Unset.to_git(false, &nothing).map(|a| a.auth), Ok(crate::git::Auth::Sealed)));
+        // A name that has gone is refused either way: its commits were meant
+        // to carry that account's name
+        assert!(GitUse::Missing("gone".into()).to_git(false, &nothing).is_err());
+        // An account with no token stored cannot sign in, and says which
+        let err = home.to_git(true, &nothing).err().unwrap_or_default();
+        assert!(err.contains("home"), "{err}");
+        // With one, the token goes to its own server only
+        let stored = |k: &str| (k == "git/work/home").then(|| " tok ".to_string());
+        match home.to_git(true, &stored).map(|a| a.auth) {
+            Ok(crate::git::Auth::Token { host, login, token }) => {
+                assert_eq!((host.as_str(), login.as_str(), token.as_str()), ("github.com", "x-access-token", "tok"));
+            }
+            _ => panic!("a token account did not sign in with its token"),
+        }
+        // A key file that is not there is said before git is started
+        assert!(desk.git_use(Some("key")).to_git(true, &nothing).is_err());
+        // The PC's own git is a choice like any other, and asks nothing of the store
+        assert!(matches!(GitUse::Pc.to_git(true, &nothing).map(|a| a.auth), Ok(crate::git::Auth::Own)));
+
+        // Pull request numbers are read as the same account, on GitHub only
+        assert_eq!(GitUse::Pc.pr_account().as_deref(), Some(super::THIS_PC));
+        assert_eq!(home.pr_account().as_deref(), Some("home"));
+        assert_eq!(desk.git_use(Some("lab")).pr_account(), None);
+        assert_eq!(GitUse::Unset.pr_account(), None);
+    }
+
+    /// The accounts that say they are for a repository's owner are offered
+    /// first -- in any case of the owner's name -- then that server's, then
+    /// the rest, each group as written
+    #[test]
+    fn accounts_meant_for_the_owner_come_first() {
+        let desk = accounts_desk();
+        let order = |host, owner| {
+            super::git_accounts_for(&desk.git_accounts, host, owner)
+                .into_iter()
+                .map(|(a, fits)| format!("{}{}", a.name, if fits { "*" } else { "" }))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(Some("github.com"), Some("acme")), ["company*", "home", "key", "lab"]);
+        assert_eq!(order(Some("github.com"), Some("me")), ["home*", "company", "key", "lab"]);
+        // An account of another server is not for this repository whatever
+        // owners it names
+        assert_eq!(order(None, None), ["home", "lab", "company", "key"]);
+    }
+
+    /// A choice made at the git column lands on the git tab it was made on, or
+    /// on the project of the folder it was made beside -- and nowhere else
+    #[test]
+    fn a_git_choice_is_written_where_it_belongs() {
+        let here = std::env::current_dir().unwrap();
+        let mut doc = serde_json::json!({
+            "desks": [
+                {"name": "Other", "id": "other", "folders": [{"cwd": "C:/elsewhere", "tabs": [{"name": "Git", "command": "git"}]}]},
+                {"name": "Work", "id": "work", "folders": [
+                    {"cwd": "C:/elsewhere", "tabs": [
+                        {"name": "Git", "command": "git"},
+                        {"name": "Second", "id": "g2", "command": "git"}
+                    ]}
+                ]}
+            ]
+        });
+        let desks = |doc: &serde_json::Value| {
+            serde_json::from_value::<super::Config>(doc.clone()).unwrap().resolve_desks().0
+        };
+        let work = desks(&doc).into_iter().find(|d| d.id == "work").unwrap();
+        assert!(super::write_git_choice(&mut doc, &work, super::GitChoiceAt::Tab("Git"), "home"));
+        assert_eq!(doc["desks"][1]["folders"][0]["tabs"][0]["git_account"], "home");
+        assert!(doc["desks"][0]["folders"][0]["tabs"][0].get("git_account").is_none(), "it reached another desk");
+        assert!(super::write_git_choice(&mut doc, &work, super::GitChoiceAt::Tab("g2"), "@pc"));
+        assert_eq!(doc["desks"][1]["folders"][0]["tabs"][1]["git_account"], "@pc");
+        assert!(super::write_git_choice(&mut doc, &work, super::GitChoiceAt::Tab("Git"), ""));
+        assert!(doc["desks"][1]["folders"][0]["tabs"][0].get("git_account").is_none(), "clearing left a key behind");
+        assert!(!super::write_git_choice(&mut doc, &work, super::GitChoiceAt::Tab("nobody"), "home"));
+
+        // Beside a folder: its repository has no project yet, so one is made
+        // for it, pointed at its own checkout
+        let Some(main) = crate::repo::main_checkout(&here) else { return }; // built outside a checkout
+        assert!(super::write_git_choice(&mut doc, &work, super::GitChoiceAt::Folder(&here), "home"));
+        let made = doc["desks"][1]["projects"][0].clone();
+        assert_eq!(made["git_account"], "home");
+        assert_eq!(made["at"], main.display().to_string().replace('\\', "/"));
+        // ...and from then on the choice is that project's, changed in place
+        let work = desks(&doc).into_iter().find(|d| d.id == "work").unwrap();
+        assert_eq!(work.git_use_of_folder(&here).1.as_deref(), made["name"].as_str());
+        assert!(super::write_git_choice(&mut doc, &work, super::GitChoiceAt::Folder(&here), "@pc"));
+        assert_eq!(doc["desks"][1]["projects"].as_array().unwrap().len(), 1, "a second project was made");
+        assert_eq!(doc["desks"][1]["projects"][0]["git_account"], "@pc");
+    }
+
+    /// A git account's token belongs to the account, and is left over when
+    /// the account is gone
+    #[test]
+    fn a_git_token_without_its_account_is_left_over() {
+        let cfg: super::Config = serde_json::from_value(serde_json::json!({
+            "desks": [{"name": "Work", "id": "work", "git_accounts": [{"name": "home"}]}]
+        }))
+        .unwrap();
+        let keys = ["git/work/home".to_string(), "git/work/gone".to_string(), "git/nobody/home".to_string()];
+        assert_eq!(super::orphan_secrets(&cfg, &keys), ["git/work/gone".to_string(), "git/nobody/home".to_string()]);
+    }
 
     /// An answer given from a tool lands on the desk it was given for, found
     /// by its id -- including a desk whose id was never written and comes from

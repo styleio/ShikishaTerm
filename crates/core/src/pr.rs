@@ -5,19 +5,12 @@
 //! merged yet" is a question about every row at once, and answering it means
 //! leaving the terminal entirely.
 //!
-//! **Nothing has to be set up for this.** Where a desk has been given a
-//! token of its own it uses that one; otherwise it uses what the person already
-//! has -- `GITHUB_TOKEN` in their environment, or whatever their own `gh` is
-//! signed in as. Asking someone to paste a token in so a terminal can show them
-//! a number they can already see on a website is not a trade worth offering.
-//!
-//! A desk's own token is worth offering, though, and it is the reason this
-//! is not one machine-wide answer any more: the repositories somebody works on
-//! for a company and the ones they work on for themselves are reached with
-//! different accounts, and whichever account answered first was the one every
-//! row used. Where there is no token there is no PR line, and the settings say
-//! so -- which token, whose it is, and how long it has left -- rather than
-//! leaving it a mystery.
+//! **It asks as the account somebody chose.** A folder's project chooses the git
+//! account its column signs in with, and the pull request number is read with
+//! that same account: a token it was given, or -- when the choice was "the way
+//! git on this PC signs in" -- what git's own credential store hands out for
+//! GitHub. Nothing is chosen for anybody, so a row with no number is a row
+//! whose project has no account chosen, and the settings say which.
 //!
 //! The asking happens on a thread of its own and the answers are left where
 //! the window can pick them up. A window that stops drawing because GitHub is
@@ -63,66 +56,66 @@ impl Pr {
     }
 }
 
-/// One branch of one repository.
-type Key = (String, String);
+/// One branch of one repository, as one account sees it: (account, repo,
+/// branch). The account is part of it because a repository one account can
+/// see is one another may not
+type Key = (String, String, String);
 
 struct Slot {
     asked: Instant,
     pr: Option<Pr>,
 }
 
+/// How long what this PC's git hands out for GitHub is trusted before it is
+/// asked again. Somebody signing in again should not wait for a restart
+const PC_FRESH: Duration = Duration::from_secs(600);
+
 /// Somewhere to ask, that never keeps the window waiting.
 pub struct Watch {
     ask: Sender<Key>,
     known: Arc<Mutex<HashMap<Key, Slot>>>,
-    /// The token in use, which changes when the desk does. Held here
-    /// rather than handed to the thread once, because the thread outlives any
-    /// one desk. Never handed back out
-    token: Arc<Mutex<Option<String>>>,
+    /// The tokens of the desk on screen, by account name. Held here rather
+    /// than handed to the thread once, because the thread outlives any one
+    /// desk. Never handed back out
+    tokens: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl Watch {
     pub fn start() -> Watch {
         let known: Arc<Mutex<HashMap<Key, Slot>>> = Arc::new(Mutex::new(HashMap::new()));
-        let token: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let tokens: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
         let (ask, inbox) = channel::<Key>();
         std::thread::spawn({
-            let (known, token) = (Arc::clone(&known), Arc::clone(&token));
-            move || serve(inbox, known, token)
+            let (known, tokens) = (Arc::clone(&known), Arc::clone(&tokens));
+            move || serve(inbox, known, tokens)
         });
-        Watch { ask, known, token }
+        Watch { ask, known, tokens }
     }
 
-    /// The token the desk now on screen asks with.
+    /// The tokens the desk now on screen asks with, by account.
     ///
-    /// What is already known is thrown away, because it was learned with
-    /// somebody else's account: a repository one token can see is a repository
-    /// the other may not, and "no pull request" and "not allowed to look" would
-    /// then be the same empty line
-    pub fn use_token(&self, token: Option<String>) {
-        if let Ok(mut held) = self.token.lock() {
-            if *held == token {
+    /// What is already known is thrown away when they change: the same account
+    /// name in another desk is another account, and "no pull request" and "not
+    /// allowed to look" would otherwise be the same empty line
+    pub fn use_tokens(&self, tokens: HashMap<String, String>) {
+        if let Ok(mut held) = self.tokens.lock() {
+            if *held == tokens {
                 return;
             }
-            *held = token;
+            *held = tokens;
         }
         if let Ok(mut known) = self.known.lock() {
             known.clear();
         }
     }
 
-    /// Whether there is a token at all. Not the token -- nothing here hands
-    /// that back out
-    pub fn can_ask(&self) -> bool {
-        self.token.lock().is_ok_and(|t| t.is_some())
-    }
-
-    /// What is known about this branch, and a nudge to find out if it is time.
+    /// What is known about this branch as `account` sees it, and a nudge to
+    /// find out if it is time.
     ///
     /// Returning what we have and asking in the background is the whole shape
     /// of this: the row draws now with whatever is known, including nothing
-    pub fn of(&self, repo: &str, branch: &str) -> Option<Pr> {
-        let key = (repo.to_string(), branch.to_string());
+    pub fn of(&self, account: &str, repo: &str, branch: &str) -> Option<Pr> {
+        let key = (account.to_string(), repo.to_string(), branch.to_string());
         let mut known = self.known.lock().ok()?;
         match known.get(&key) {
             Some(slot) if slot.asked.elapsed() < FRESH => slot.pr,
@@ -142,23 +135,50 @@ impl Watch {
 fn serve(
     inbox: Receiver<Key>,
     known: Arc<Mutex<HashMap<Key, Slot>>>,
-    token: Arc<Mutex<Option<String>>>,
+    tokens: Arc<Mutex<HashMap<String, String>>>,
 ) {
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(10)))
         .build()
         .new_agent();
-    while let Ok((repo, branch)) = inbox.recv() {
-        // Read for each question rather than once: the desk, and with it
-        // the account, can have changed since the last one
-        let Some(now) = token.lock().ok().and_then(|t| t.clone()) else {
-            continue;
+    let mut pc: Option<(Instant, Option<String>)> = None;
+    while let Ok((account, repo, branch)) = inbox.recv() {
+        // Read for each question rather than once: the desk, and with it the
+        // accounts, can have changed since the last one
+        let token = match account.as_str() {
+            crate::config::THIS_PC => {
+                if pc.as_ref().is_none_or(|(at, _)| at.elapsed() > PC_FRESH) {
+                    pc = Some((Instant::now(), pc_token()));
+                }
+                pc.as_ref().and_then(|(_, t)| t.clone())
+            }
+            name => tokens.lock().ok().and_then(|t| t.get(name).cloned()),
         };
-        let pr = look_up(&agent, &now, &repo, &branch);
+        let Some(token) = token else { continue };
+        let pr = look_up(&agent, &token, &repo, &branch);
         if let Ok(mut k) = known.lock() {
-            k.insert((repo, branch), Slot { asked: Instant::now(), pr });
+            k.insert((account, repo, branch), Slot { asked: Instant::now(), pr });
         }
     }
+}
+
+/// What git on this PC hands out for GitHub: the credential a push from a
+/// terminal here would sign in with. Asked of git's own credential store the
+/// way git asks it, with nobody to prompt -- a store that has nothing says so
+/// and this is None
+fn pc_token() -> Option<String> {
+    let said = crate::git::run_as(
+        &std::env::temp_dir(),
+        &["-c", "credential.interactive=never", "credential", "fill"],
+        &format!("protocol=https\nhost={}\n\n", crate::config::GITHUB_HOST),
+        Duration::from_secs(15),
+        &crate::git::As::default(),
+    )
+    .ok()?;
+    said.lines()
+        .find_map(|l| l.strip_prefix("password="))
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
 }
 
 fn look_up(agent: &ureq::Agent, token: &str, repo: &str, branch: &str) -> Option<Pr> {
@@ -203,14 +223,13 @@ fn read_one(v: &serde_json::Value) -> Option<Pr> {
     })
 }
 
-/// The token to ask with: the one this desk was given, and nothing else.
+/// The token to ask with: the one the account was given, and nothing else.
 ///
 /// Never written anywhere, never logged, and sent to nowhere but GitHub's own
-/// API. The machine's `GITHUB_TOKEN` and the person's own `gh` sign-in are not
-/// read: either is one account for every desk, and a desk kept apart from
-/// another is not asking with that other's account because nobody gave it one.
+/// API. The machine's `GITHUB_TOKEN` is not read: it is one account for every
+/// desk, and nobody chose it.
 ///
-/// `own` is the desk's own token, already looked up by whoever knows which
+/// `own` is the account's token, already looked up by whoever knows which
 /// desk is being asked about -- this module never reaches into the secrets
 pub fn find(own: Option<String>) -> Option<String> {
     own.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
@@ -452,12 +471,14 @@ mod tests {
     fn with_no_token_nothing_is_asked_and_nothing_pretends_to_know() {
         // No token: every answer is "nothing known" rather than a made-up one
         let w = Watch::start();
-        assert!(!w.can_ask());
-        assert_eq!(w.of("owner/name", "main"), None);
+        assert_eq!(w.of("work", "owner/name", "main"), None);
         // Asking twice must not queue twice; the slot is marked before the
         // answer arrives so a slow reply is not one request per frame
-        assert_eq!(w.of("owner/name", "main"), None);
+        assert_eq!(w.of("work", "owner/name", "main"), None);
         assert_eq!(w.known.lock().unwrap().len(), 1);
+        // Another account asking about the same branch is another question
+        assert_eq!(w.of("home", "owner/name", "main"), None);
+        assert_eq!(w.known.lock().unwrap().len(), 2);
     }
 
     /// The real thing, against the real GitHub, with a real token.
@@ -502,15 +523,15 @@ mod tests {
     #[test]
     fn changing_the_token_forgets_what_the_other_one_saw() {
         let w = Watch::start();
-        assert_eq!(w.of("owner/name", "main"), None);
+        assert_eq!(w.of("work", "owner/name", "main"), None);
         assert_eq!(w.known.lock().unwrap().len(), 1);
-        w.use_token(Some("ours".into()));
-        assert!(w.can_ask());
+        let ours = HashMap::from([("work".to_string(), "ours".to_string())]);
+        w.use_tokens(ours.clone());
         assert!(w.known.lock().unwrap().is_empty(), "the previous account's answer is still there");
         // Saying the same thing twice is not a change, and must not throw away
         // answers that are still this token's
-        assert_eq!(w.of("owner/name", "main"), None);
-        w.use_token(Some("ours".into()));
+        assert_eq!(w.of("work", "owner/name", "main"), None);
+        w.use_tokens(ours);
         assert_eq!(w.known.lock().unwrap().len(), 1);
     }
 }

@@ -965,6 +965,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .bar button:hover { background:var(--panel2); }
   #gitpanel .bar button.go { border-color:var(--brand); color:var(--brand); }
   #gitpanel .bar button[disabled] { opacity:.45; cursor:default; }
+  /* Which account the column signs in with. A question nobody has answered
+     wears --warn: fetch, pull and push wait on it */
+  #gitpanel .bar .acct { display:flex; align-items:center; gap:var(--s2); min-width:0; }
+  #gitpanel .bar .acct > span { color:var(--dim); font-size:12px; }
+  #gitpanel .bar select { padding:4px 8px; font-size:12.5px; border-radius:var(--r-ctl);
+    border:1px solid var(--edge); background:var(--panel); color:var(--text); max-width:240px;
+    font-family:inherit; }
+  #gitpanel .bar select:hover { border-color:var(--edge-hi); }
+  #gitpanel .bar select.unset { border-color:var(--warn); }
   #gitpanel .said { color:var(--muted); font-size:12px; min-width:0; overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
   #gitpanel .said.bad { color:var(--danger); }
@@ -8111,6 +8120,16 @@ function gitBuild(box) {
     bar.append(b);
     return b;
   };
+  // The account first: it is what pull, push and fetch sign in as, and a
+  // choice made for a whole project is worth seeing before pressing either
+  const acctPick = el("select", {title: T["git.acct.title"] || ""});
+  acctPick.addEventListener("change", () => {
+    const t = gitTab();
+    if (t) send({kind:"gitaccount", panel: t.id || t.name || "", account: acctPick.value});
+  });
+  const acctWhose = el("span");
+  const acct = el("span", {class:"acct"}, acctWhose, acctPick);
+  bar.append(acct);
   const commit = mk("\u25cf " + (T["git.commit"] || ""), "go", () => gitCommit());
   const pull = mk(T["git.pull"] || "", null, () => gitAsk("pull"));
   const push = mk(T["git.push"] || "", null, () => gitAsk("push"));
@@ -8208,7 +8227,7 @@ function gitBuild(box) {
     grip(true, "mid", "%", () => mid),
     diff, hist));
   gitUi = { bar, said, naming, name, branches, branchCol, staged, work, diff,
-            hist, mid, log, about, commitDiff, remotes, chips, which,
+            hist, mid, log, about, commitDiff, remotes, chips, which, acct, acctPick, acctWhose, acctSig: "",
             btn: {commit, pull, push, fetch, branch, merge, untangle},
             pick: {unstageAll, unstagePick, stageAll, stagePick} };
 }
@@ -9010,6 +9029,7 @@ function drawGit() {
   if (!box || box.hidden) return;
   if (!gitUi || !box.firstChild) gitBuild(box);
   const u = gitUi;
+  drawGitAccount(u);
   u.said.textContent = G.busy
     ? (T["git.busy." + G.busy] || T["git.busy"] || "")
     : (G.said || "");
@@ -9156,6 +9176,33 @@ function drawGit() {
     });
     u.diff.append(el("div", {class:"hunk"}, head, lines));
   });
+}
+
+// The account menu. Rebuilt only when what it offers has changed, and never
+// while it is open -- a list redrawn under the pointer loses the choice being made
+function drawGitAccount(u) {
+  const t = gitTab();
+  const ga = t && t.git_acct;
+  u.acct.style.display = ga ? "flex" : "none";
+  if (!ga) return;
+  const sig = JSON.stringify(ga);
+  if (sig === u.acctSig || document.activeElement === u.acctPick) return;
+  u.acctSig = sig;
+  const s = u.acctPick;
+  s.textContent = "";
+  s.append(el("option", {value:""}, T["git.acct.pick"] || ""));
+  for (const c of ga.choices || []) {
+    s.append(el("option", {value:c.name},
+      c.name + " \u2014 " + c.about + (c.fits ? "  " + (T["git.acct.fits"] || "") : "")));
+  }
+  s.append(el("option", {value:"@pc"}, T["git.acct.pc"] || ""));
+  if (ga.missing) s.append(el("option", {value:ga.now}, (T["git.acct.gone"] || "").replace("{name}", ga.now)));
+  s.value = ga.now || "";
+  s.classList.toggle("unset", !ga.now || !!ga.missing);
+  // Whose choice it is: this git tab's, or the project's every folder of it shares
+  u.acctWhose.textContent = ga.scope === "tab"
+    ? (T["git.acct.tab"] || "")
+    : (ga.project ? (T["git.acct.project"] || "").replace("{name}", ga.project) : (T["git.acct.repo"] || ""));
 }
 
 window.__luaDone = function (err) {

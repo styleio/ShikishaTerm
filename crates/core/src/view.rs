@@ -322,6 +322,17 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     ts.group = t.cwd().and_then(|c| {
                         groups.iter().position(|(k, _)| crate::uistate::same_folder(k, c))
                     });
+                    // Beside a folder in a repository, the git column signs in
+                    // as the project's account
+                    ts.git_acct = t.place.family.is_some().then(|| {
+                        crate::uistate::GitAcctState::of(
+                            &ui.git_accounts,
+                            &t.git_use,
+                            t.place.repo.as_deref(),
+                            "project",
+                            t.git_project.clone(),
+                        )
+                    });
                     ts
                 }),
                 Surface::Browser { key, name } => {
@@ -359,7 +370,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                         ui.editors.iter().find(|e| &e.key == key).and_then(|e| e.stamp.clone());
                     Some(t)
                 }
-                Surface::Git { key, name, dir, .. } => {
+                Surface::Git { key, name, dir, git, .. } => {
                     // The panel reports on a folder, so it stands under that
                     // folder's heading and is put away with it. Worked out from
                     // where it actually points, exactly as a tab's is -- carried
@@ -368,7 +379,17 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     let group = dir.as_deref().and_then(|d| {
                         groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
                     });
-                    Some(crate::uistate::TabState::git(i + 1, key, name, group))
+                    let mut t = crate::uistate::TabState::git(i + 1, key, name, group);
+                    // A git tab signs in as its own account
+                    let repo = dir.as_deref().and_then(|d| {
+                        ui.git_repos
+                            .iter()
+                            .find(|(k, _)| crate::uistate::same_folder(k, d))
+                            .map(|(_, r)| r.as_str())
+                    });
+                    t.git_acct =
+                        Some(crate::uistate::GitAcctState::of(&ui.git_accounts, git, repo, "tab", None));
+                    Some(t)
                 }
             })
             .collect(),
@@ -656,6 +677,7 @@ pub fn surfaces_of(
                 out.push(Surface::Git {
                     dir: desk.cwd_of(ft),
                     protect: desk.folder_of(ft).map(|f| f.protect.clone()).unwrap_or_default(),
+                    git: desk.git_use(ft.cfg.git_account.as_deref()),
                     key,
                     name,
                 });
@@ -850,6 +872,11 @@ pub struct Ui {
     pub thanks: Option<String>,
     /// The version the update card asks about, when it is up
     pub update: Option<String>,
+    /// The current desk's git accounts, for the account menu on the git column
+    pub git_accounts: Vec<config::GitAccountSpec>,
+    /// Where each git tab's folder pushes to on GitHub (`owner/name`), looked
+    /// up every couple of seconds with the tabs' places rather than per frame
+    pub git_repos: Vec<(std::path::PathBuf, String)>,
 }
 
 /// The name used when placing the result view (finished discussion / review /
@@ -886,6 +913,8 @@ pub enum Surface {
         /// panel has no tab of its own to borrow the answer from, so it carries
         /// the folder's own
         protect: Vec<String>,
+        /// The git account this tab was set to use
+        git: config::GitUse,
     },
     /// The editor: one text file of this tab's folder, drawn by the board.
     ///

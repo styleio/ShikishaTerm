@@ -128,6 +128,69 @@ pub struct TabState {
     /// that can never fill in
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub away: Option<String>,
+    /// Which git account the git column signs in with from here, and what can
+    /// be chosen. On a git tab it is the tab's own; beside a folder, its
+    /// project's. Absent where there is no repository to sign in to
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_acct: Option<GitAcctState>,
+}
+
+/// The git account menu at the top of the git column.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct GitAcctState {
+    /// What is chosen, as written: an account name, `@pc`, or empty for nothing
+    pub now: String,
+    /// Whether that name belongs to no account any more
+    pub missing: bool,
+    /// The desk's accounts, the ones meant for this repository's owner first
+    pub choices: Vec<GitAcctChoice>,
+    /// `tab` when the choice is this git tab's, `project` when it is the
+    /// folder's project's
+    pub scope: String,
+    /// That project's name, when there is one written down
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct GitAcctChoice {
+    pub name: String,
+    /// Who it signs in as, in a few words: `me@github.com`, or the host alone
+    pub about: String,
+    /// Whether it says it is for this repository's owner
+    pub fits: bool,
+}
+
+impl GitAcctState {
+    /// The menu for a choice among a desk's `accounts`, about a repository at
+    /// `repo` (`owner/name` on GitHub, when known)
+    pub fn of(
+        accounts: &[crate::config::GitAccountSpec],
+        git: &crate::config::GitUse,
+        repo: Option<&str>,
+        scope: &str,
+        project: Option<String>,
+    ) -> Self {
+        let owner = repo.and_then(|r| r.split_once('/')).map(|(o, _)| o);
+        let host = repo.map(|_| crate::config::GITHUB_HOST);
+        GitAcctState {
+            now: git.written(),
+            missing: matches!(git, crate::config::GitUse::Missing(_)),
+            choices: crate::config::git_accounts_for(accounts, host, owner)
+                .into_iter()
+                .map(|(a, fits)| GitAcctChoice {
+                    about: match a.login.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+                        Some(login) => format!("{login}@{}", a.host()),
+                        None => a.host(),
+                    },
+                    name: a.name,
+                    fits,
+                })
+                .collect(),
+            scope: scope.to_string(),
+            project,
+        }
+    }
 }
 
 /// What a script is asking the person about a page, for the bar the board
@@ -1348,6 +1411,7 @@ impl TabState {
             file_stamp: None,
             // ...and a session is drawn wherever its terminal is, which is here
             away: None,
+            git_acct: None,
         }
     }
 
@@ -1431,6 +1495,7 @@ impl TabState {
             // Where it is drawn is known to the runtime, not to this; filled
             // in by `view::ui_state_of` along with everything else
             away: None,
+            git_acct: None,
         }
     }
 }
@@ -1782,6 +1847,7 @@ mod tests {
             readable: false,
             ask: None,
             away: None,
+            git_acct: None,
             file: None,
             file_stamp: None,
         }

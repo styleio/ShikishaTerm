@@ -649,6 +649,7 @@ impl WinSurface {
                 Ev::Record { on } => self.mail.record_arms.push(on),
                 Ev::RunLua { code } => self.mail.run_luas.push(code),
                 Ev::Git { panel, act, args } => self.mail.gits.push((panel, act, args)),
+                Ev::GitAccount { panel, account } => self.mail.git_accounts.push((panel, account)),
                 Ev::Files { panel, act, args } => self.mail.files.push((panel, act, args)),
                 Ev::EditOpen { panel, path } => self.mail.edits.push((panel, path)),
                 Ev::Sftp { panel, act, args } => self.mail.sftps.push((panel, act, args)),
