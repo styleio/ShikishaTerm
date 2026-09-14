@@ -1593,6 +1593,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--line); background:var(--panel); color:var(--text); }
   #netveil .nvbtn[hidden] { display:none; }
 
+  /* Behind the add-a-tab dialog. The dialog itself is the settings page placed
+     over the board, so all the board draws is the dimming, and a press on it is
+     the press outside a dialog: not adding after all */
+  #dlgscrim { position:fixed; inset:0; background:#00000099; z-index:52; }
+  #dlgscrim[hidden] { display:none; }
   #vault, #palette, #branch, #browse, #repair, #sask { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
   #vault[hidden], #palette[hidden], #branch[hidden], #browse[hidden],
@@ -2326,6 +2331,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div class="brow"><button class="go"></button></div>
     </div>
   </div>
+  <div id="dlgscrim" hidden></div>
   <!-- Somewhere else to work. The same list on the window and on a phone -->
   <div id="browse" hidden>
     <div class="vbox picker">
@@ -4621,8 +4627,10 @@ function drawStrip() {
   // and would do nothing at all. And it carries which folder it was asked
   // from, or the form adds the tab to the first one instead of this one
   const g = active.group != null ? (S.groups || [])[active.group] : null;
+  // Into the pane it was pressed above, the way a browser's + opens the new
+  // tab where you are looking rather than somewhere off to the side
   strip.append(el("div", {class:"snew", title:T["tui.pane.add"] || "",
-      onclick:() => addTabHere(g)}, "+"));
+      onclick:() => addTabHere(g, PANES && PANES.focus)}, "+"));
   if ((S.closed || []).length) {
     strip.append(el("div", {class:"sclosed", title:T["tui.closed.head"] || "",
         onclick:e => closedMenu(e, g)}, "\u25BE"));
@@ -5510,7 +5518,12 @@ window.__state = function (json) {
   // Two screens cover the window: INDEX and the settings form. Neither is a
   // pane -- one is a view OF the running things and the other is about the app
   // itself -- so while either is up the layout waits underneath, whole
-  const cover = !!S.board || !!S.settings_open;
+  // The add-a-tab dialog is the one form that does not cover: it floats over
+  // the layout, which stays drawn -- dimmed -- behind it
+  const cover = !!S.board || (!!S.settings_open && !S.settings_float);
+  const scrim = document.getElementById("dlgscrim");
+  scrim.hidden = !(S.settings_open && S.settings_float);
+  scrim.onclick = () => send({kind:"closesettings"});
   board.hidden = !S.board;
   document.getElementById("panes").hidden = cover;
   // Nothing to draw for a pane with nothing in it -- it says so itself
@@ -8594,7 +8607,8 @@ function walkToSettings(params) {
 function addTabHere(g, pane) {
   const at = g && g.folder ? g.folder : "";
   if (typeof REMOTE !== "undefined" && REMOTE) {
-    const p = {addtab: (S && S.desk_index) || 0};
+    // The same one question the window asks in its dialog
+    const p = {addtab: (S && S.desk_index) || 0, float: 1};
     if (at) p.folder = at;
     walkToSettings(p);
   } else {
@@ -12578,9 +12592,24 @@ mod tests {
     #[test]
     fn the_tab_bar_plus_reaches_the_settings_from_a_phone() {
         assert!(
-            PAGE.contains("const p = {addtab: (S && S.desk_index) || 0};")
+            PAGE.contains("const p = {addtab: (S && S.desk_index) || 0, float: 1};")
                 && PAGE.contains("walkToSettings(p);"),
-            "the phone's + does not walk to the settings page"
+            "the phone's + does not walk to the settings page, or not to its one-question dialog"
+        );
+        // The tab bar's + puts the new tab where the person is looking
+        assert!(
+            PAGE.contains("onclick:() => addTabHere(g, PANES && PANES.focus)}, \"+\")"),
+            "the tab bar's + does not say which pane the new tab goes in"
+        );
+        // While the dialog is up the layout stays drawn behind a dimming that
+        // closes it when pressed, instead of being covered like the page proper
+        assert!(
+            PAGE.contains("const cover = !!S.board || (!!S.settings_open && !S.settings_float);"),
+            "the add-a-tab dialog covers the board like the whole settings page"
+        );
+        assert!(
+            PAGE.contains(r#"scrim.onclick = () => send({kind:"closesettings"});"#),
+            "pressing outside the add-a-tab dialog does not close it"
         );
         // The window still takes the keystroke path (the WebView is its to open),
         // and carries the pane as well -- an empty pane's invitation names both

@@ -1050,6 +1050,37 @@ fn secure<R: std::io::Read>(resp: Response<R>) -> Response<R> {
         .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
 }
 
+/// The words a new tab's automation name is drawn from, as the page reads them.
+///
+/// The short nouns of the list branch names are drawn from, and only the ones
+/// that are already a name automation accepts as they stand -- lower-case
+/// letters, three to six of them -- so a draw never has to be tidied into
+/// something else before it can be used
+fn pet_nouns() -> Vec<&'static str> {
+    petname::Petnames::small()
+        .nouns
+        .iter()
+        .copied()
+        .filter(|w| (3..=6).contains(&w.len()) && w.bytes().all(|b| b.is_ascii_lowercase()))
+        .filter(|w| !NOT_A_TAB_NAME.contains(w))
+        .collect()
+}
+
+/// Words in that list a tab should not be called. Some name a person rather
+/// than an animal, some are pests nobody wants to see their work filed under,
+/// and some are not animals at all
+const NOT_A_TAB_NAME: &[&str] = &[
+    "man", "kid", "stud", "lab", "dane", "boxer", "racer", "hermit", "tomcat", "chow",
+    "louse", "maggot", "leech", "bedbug", "tick", "flea", "worm", "grub", "slug", "mite",
+    "gnat", "weevil", "earwig", "amoeba", "insect", "mammal", "rodent", "cattle",
+    "ghost", "ghoul", "alien", "troll", "goblin", "satyr", "yeti", "elf", "imp",
+    "drum", "sole", "shiner", "roughy", "jennet", "glider", "guinea", "bengal", "sponge",
+];
+
+fn pet_nouns_json() -> String {
+    serde_json::to_string(&pet_nouns()).unwrap_or_else(|_| "[]".into())
+}
+
 fn json_resp(v: serde_json::Value) -> Response<Cursor<Vec<u8>>> {
     secure(Response::from_string(v.to_string()).with_header(
         Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap(),
@@ -1203,6 +1234,7 @@ fn handle(
                     "__THISPC__",
                     &serde_json::to_string(crate::config::THIS_PC).unwrap_or_default(),
                 )
+                .replace("__PETNOUNS__", &pet_nouns_json())
                 .replace("__DICT__", &crate::i18n::dict_json());
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
@@ -3562,7 +3594,42 @@ const PAGE: &str = r##"<!doctype html>
  }
  /* Never let the page itself scroll sideways, whatever a stray wide child does. */
  @media (max-width: 760px) { body { overflow-x:hidden; } }
+ /* The board's +: only what the new tab runs, in a dialog of its own (style
+    guide 5.2). In the window this page IS the dialog -- it is placed in a
+    rectangle over the board -- so the page wears the dialog's parts and the
+    rest of the settings stay out of sight until "More settings" lets them in */
+ #floatbox { display:none; }
+ body.float { background:var(--panel); overflow:hidden; }
+ body.float > header, body.float > .layout, body.float > #navscrim { display:none; }
+ body.float #floatbox { display:flex; flex-direction:column; height:100vh;
+   border:1px solid var(--line); box-sizing:border-box; }
+ #floatbox .fhead { display:flex; align-items:center; gap:var(--s3); padding:16px 20px;
+   border-bottom:1px solid var(--line); }
+ #floatbox .fhead h1 { font-size:13.5px; font-weight:600; margin:0; }
+ #floatbox .fhead .hint { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ #floatbox .fbody { flex:1; min-height:0; overflow:auto; padding:20px; }
+ /* The card is the dialog's body here, not a card on a page */
+ #floatbox .fbody > .card { border:0; background:none; padding:0; margin:0; }
+ #floatbox .fbody > .card > h2 { display:none; }
+ #floatbox .ffoot { display:flex; align-items:center; gap:var(--s3); padding:12px 20px;
+   border-top:1px solid var(--line); }
+ #floatbox .ffoot .spacer { flex:1; }
 </style></head><body>
+
+<div id="floatbox" role="dialog" aria-modal="true" aria-labelledby="floattitle">
+  <div class="fhead">
+    <h1 id="floattitle">{{tui.tab.add}}</h1>
+    <span class="hint" id="floatwhere"></span>
+    <button class="quiet" onclick="floatCancel()" title="{{common.close}}" aria-label="{{common.close}}">✕</button>
+  </div>
+  <div class="fbody" id="floatbody"></div>
+  <div class="ffoot">
+    <button class="quiet" onclick="floatMore()">{{settings.float.more}}</button>
+    <div class="spacer"></div>
+    <button class="quiet" onclick="floatCancel()">{{common.cancel}}</button>
+    <button class="primary" id="floatadd" onclick="floatAdd()">{{common.add}}</button>
+  </div>
+</div>
 
 <header>
   <button class="quiet navtoggle" id="navtoggle" onclick="toggleNav()"
@@ -3654,6 +3721,9 @@ const PROTECT_DEFAULT = __PROTECT__;
 // place that decides it, so the card that offers to set it and the program that
 // reaches for it cannot drift apart
 const THIS_PC = __THISPC__;
+// The short words a new tab's automation name is drawn from. Poured in from the
+// app's own word list, the one branch names come from, so there is one list
+const PET_NOUNS = __PETNOUNS__;
 // A list of branch names as it is typed and as it is stored. Space or comma
 // between them, because both are what people reach for
 const protectList = text => (text || "").split(/[\s,]+/).filter(Boolean);
@@ -3708,6 +3778,9 @@ function goSection(id, block) {
 // When opened via a deep-link shortcut (?ret=1), returning to the board after a
 // successful save is the natural finish, so the caller doesn't have to close it.
 let returnOnSave = false;
+// The tab being added from the board's +, while the page is only that dialog
+// (?float=1). Null on the settings page proper
+let floating = null;
 // Set when one of the user's files came back unusable (broken JSON, unreadable).
 // While it's held, the screen shows what's wrong and Save is off: the form has
 // nothing in it, and writing it out would put that emptiness where the real
@@ -4381,6 +4454,60 @@ const CAT_LIST = [
   ["sftp",    T["settings.template.sftp"]],
 ];
 
+// What a tab is called when nobody has named it: the thing it runs, in the
+// words the Kind and AI pickers use. For a kind with a choice inside it -- which
+// AI, which shell -- the choice, because two tabs both called "AI" say nothing
+// about which is which
+function kindName(command) {
+  const c = cmdToText(command).trim();
+  const cat = catOf(c);
+  const h = headOf(c);
+  if (cat === "ai") {
+    const m = parseModel(c);
+    if (m) return m.provider || T["settings.tab.cat.ai"];
+    const cli = AI_CLIS.find(x => x.cmd === h);
+    return cli ? cli.label : (h ? h.charAt(0).toUpperCase() + h.slice(1) : T["settings.tab.cat.ai"]);
+  }
+  if (cat === "cmd") {
+    if (!h) return T["settings.tab.name.cmd"];
+    if (h === "powershell" || h === "pwsh") return "PowerShell";
+    if (h === "cmd") return T["settings.tab.kind.cmdprompt"];
+    return h;
+  }
+  return ({remote:"SSH", ssh:"SSH", docker:"Docker", wsl:"WSL", sftp:"SFTP", git:"git",
+    browser:T["settings.tab.name.browser"], editor:T["settings.tab.kind.editor"]})[cat] || "";
+}
+
+// The display names a tab was given by what it runs, remembered so a change of
+// kind carries the name along with it -- until somebody types one of their own
+const autoNames = new WeakMap();
+// Called when a tab's command has just changed from `before`. A name that is
+// empty, or is still the one the old command gave, follows the new command; a
+// name somebody chose stays
+function followKind(t, before) {
+  const name = (t.name || "").trim();
+  if (name && name !== autoNames.get(t) && name !== kindName(before)) return false;
+  const now = kindName(t.command);
+  if (!now || now === name) return false;
+  t.name = now;
+  autoNames.set(t, now);
+  return true;
+}
+
+// What automation calls a new tab when nobody has said: a short word drawn at
+// random, not taken in this desk. Not the command -- a tab that started as
+// Claude and was turned into SSH went on being "claude-2" -- and not a counter,
+// which says nothing about which tab is which
+function petId(desk, self) {
+  const used = new Set((desk.tabs || []).filter(t => t !== self)
+    .map(t => (t.id || "").trim()).filter(Boolean));
+  for (let i = 0; i < 40 && PET_NOUNS.length; i++) {
+    const n = PET_NOUNS[Math.floor(Math.random() * PET_NOUNS.length)];
+    if (!used.has(n)) return n;
+  }
+  return freeId(PET_NOUNS[0] || "tab", used);
+}
+
 // ── Sidebar ───────────────────────────────────────
 // What a folder is called in a list: what someone typed, else the folder itself
 function folderLabel(g, i) {
@@ -4745,8 +4872,17 @@ const newTab = (o = {}) => Object.assign(
 // A tab nobody has filled in yet: no name, no id, and a command still at what
 // "Add tab" left there. The empty case is kept because tabs written before
 // tabs started arriving as AI have no command at all.
-const blankTab = t => !(t.name || "").trim() && !(t.id || "").trim()
-  && ["", defaultAiCommand()].includes(cmdToText(t.command).trim());
+// A tab added on this page is filled in the moment it is made -- a name from
+// what it runs, a word for automation -- so "nobody has filled it in" means
+// "still exactly what it was given", remembered here
+const freshTabs = new WeakMap();
+const blankTab = t => {
+  const was = freshTabs.get(t);
+  if (was) return was.name === (t.name || "") && was.id === (t.id || "")
+    && was.command === cmdToText(t.command).trim();
+  return !(t.name || "").trim() && !(t.id || "").trim()
+    && ["", defaultAiCommand()].includes(cmdToText(t.command).trim());
+};
 
 // Adds one tab. But if there's already an in-progress empty tab, just selects that instead.
 // Returns the index of the added (or found) tab
@@ -4769,7 +4905,13 @@ function addTabTo(desk, group) {
     // AI panel is where the switches that decide how one runs live -- a tab
     // that began as a plain shell hid them behind a dropdown nobody knew to
     // open. A shell is one pick away in the Kind row above.
-    desk.tabs.splice(j, 0, newTab({group, command: defaultAiCommand()}));
+    const command = defaultAiCommand();
+    const t = newTab({group, command});
+    t.name = kindName(command);
+    autoNames.set(t, t.name);
+    t.id = petId(desk, t);
+    freshTabs.set(t, {name: t.name, id: t.id, command});
+    desk.tabs.splice(j, 0, t);
     i = j;
   }
   return i;
@@ -9222,6 +9364,36 @@ function addTemplate(kind) {
   msg(T["settings.template.added"]);
 }
 
+// What a tab runs: the kind, the panel for that kind, the command, and the line
+// that will really be launched. Its own card because it is asked in two places
+// -- on the tab's page, and alone over the board when + adds a tab.
+// `renamed` is told when the command changed the tab's name along with it
+function launchCard(t, renamed) {
+  const cmdRow = el("div", {class:"row"});
+  const real = launchLine(t);
+  let before = cmdToText(t.command);
+  const cmdInput = field(t, "command", T["settings.tab.command.ph"],
+    {mono:true, onInput:() => {
+      followKind(t, before);
+      before = cmdToText(t.command);
+      if (renamed) renamed();
+      renderNav(); real.schedule();
+    }});
+  cmdInput.setAttribute("list", "cmdlist");
+  const detailBox = el("div");
+  const rebuild = () => { detailBox.textContent = ""; detailBox.append(kindPanel(t, cmdInput, rebuild, real)); };
+  cmdRow.append(el("label", {}, T["settings.tab.kind"]),
+    choose({k:catOf(t.command)}, "k", CAT_LIST, v => {
+      setCommand(t, cmdInput, catStart(v)); rebuild();
+    }));
+  rebuild();
+  // A tab that connects is not a tab that starts something, and the heading
+  // has to say which one this is
+  const conn = catOf(t.command) === "remote" || catOf(t.command) === "sftp";
+  return card(conn ? T["settings.server.basics"] : T["settings.tab.launch"],
+    cmdRow, detailBox, row(T["settings.tab.command"], cmdInput), real.box);
+}
+
 function tabPane(desk, t) {
   const box = el("div");
 
@@ -9241,6 +9413,8 @@ function tabPane(desk, t) {
   };
   const nameInput = field(t, "name", T["settings.tab.name.ph"], {grow:false, width:280,
     onInput:() => { renderNav(); refreshIdPh(); }});
+  // An empty name is shown as the one it will be given
+  const refreshNamePh = () => { nameInput.placeholder = kindName(t.command) || T["settings.tab.name.ph"]; };
   nameInput.addEventListener("blur", () => {
     if (!(t.id || "").trim()) {
       const sug = uniqueId(desk, inferredTabId(t), t);
@@ -9248,29 +9422,17 @@ function tabPane(desk, t) {
     }
   });
   refreshIdPh();
+  refreshNamePh();
   box.append(card(T["settings.tab.basic"],
     row(T["settings.tab.name"], nameInput),
     row(T["settings.tab.id"], idInput,
         el("span", {class:"hint"}, T["settings.tab.id.hint"]))));
 
-  // What gets launched
-  const cmdRow = el("div", {class:"row"});
-  const real = launchLine(t);
-  const cmdInput = field(t, "command", T["settings.tab.command.ph"],
-    {mono:true, onInput:() => { renderNav(); real.schedule(); }});
-  cmdInput.setAttribute("list", "cmdlist");
-  const detailBox = el("div");
-  const rebuild = () => { detailBox.textContent = ""; detailBox.append(kindPanel(t, cmdInput, rebuild, real)); };
-  cmdRow.append(el("label", {}, T["settings.tab.kind"]),
-    choose({k:catOf(t.command)}, "k", CAT_LIST, v => {
-      setCommand(t, cmdInput, catStart(v)); rebuild();
-    }));
-  rebuild();
-  // A tab that connects is not a tab that starts something, and the heading
-  // has to say which one this is
-  const conn = catOf(t.command) === "remote" || catOf(t.command) === "sftp";
-  box.append(card(conn ? T["settings.server.basics"] : T["settings.tab.launch"],
-    cmdRow, detailBox, row(T["settings.tab.command"], cmdInput), real.box));
+  box.append(launchCard(t, () => {
+    nameInput.value = t.name || "";
+    refreshNamePh();
+    refreshIdPh();
+  }));
 
   // Notify on answer: a beginner-friendly way to get a ping when this tab's AI
   // finishes, without writing on_done Lua. Lists the destinations registered
@@ -10434,8 +10596,10 @@ async function save() {
   btn.textContent = T["common.saving"];
   let ok = false;
   try {
-    await doSave();
-    ok = true;
+    // A save that said why it could not be done is not a finished save, and
+    // nothing below should act as if it were -- closing would take the reason
+    // away with the page
+    ok = await doSave();
   } catch (e) {
     // Previously, if the request itself failed, it would end with nothing shown at all
     result(fill(T["settings.save_failed"], {error: e.message || e}), true);
@@ -10449,6 +10613,7 @@ async function save() {
   // window and the phone, and its unsaved-changes guard is a no-op right after a
   // save (markClean already ran inside doSave).
   if (ok && returnOnSave) { returnOnSave = false; closeSettings(); }
+  return ok;
 }
 
 // Assembles what gets written. Used by both saving and unsaved-change detection.
@@ -10596,11 +10761,11 @@ async function doSave() {
   for (const f of files) {
     const rf = await deskApi("POST", f.file, JSON.stringify(f.body, null, 2));
     const jf = await rf.json().catch(() => ({ok:false}));
-    if (!jf.ok) { result(fill(T["settings.file_save_failed"], {file: f.file}), true); return; }
+    if (!jf.ok) { result(fill(T["settings.file_save_failed"], {file: f.file}), true); return false; }
   }
   const r = await api("POST", JSON.stringify(out, null, 2));
   const j = await r.json();
-  if (!j.ok) { result(fill(T["settings.save_failed"], {error: j.error}), true); return; }
+  if (!j.ok) { result(fill(T["settings.save_failed"], {error: j.error}), true); return false; }
   markClean();
   result(T["common.saved"]);
   // The language is only read at launch, so a change won't take effect until a restart.
@@ -10610,8 +10775,11 @@ async function doSave() {
     alert(T["settings.language.restart"]);
   }
   // Once saved, this screen's job is done. Leaving it open would mean the only way back
-  // to the board is "click another tab", making settings feel like it's overstaying
-  goIndex();
+  // to the board is "click another tab", making settings feel like it's overstaying.
+  // Not from the dialog over the board: that was opened from a tab, and the tab
+  // it adds is where the person is going, not the board
+  if (!floating) goIndex();
+  return true;
 }
 
 // Whether the saved language setting disagrees with the language currently running.
@@ -10644,6 +10812,64 @@ async function closeSettings() {
   if (window.ipc) { try { window.ipc.postMessage(JSON.stringify({kind:"closesettings"})); } catch (e) { goIndex(); } }
   else { location.href = "/"; }
 }
+
+// The board's +, as a dialog: what the new tab runs, and nothing else. The name
+// and the automation name were filled in when the tab was made, so answering
+// this one question is enough to add it
+function enterFloat(wi, i) {
+  const desk = desks[wi];
+  const t = desk.tabs[i];
+  floating = {wi, i, t};
+  document.body.classList.add("float");
+  const gi = t.group || 0;
+  const g = (desk.folders || [])[gi];
+  document.getElementById("floatwhere").textContent =
+    g ? fill(T["settings.float.where"], {folder: folderLabel(g, gi)}) : "";
+  const body = document.getElementById("floatbody");
+  body.textContent = "";
+  body.append(launchCard(t));
+  const first = body.querySelector("select, input");
+  if (first) first.focus();
+}
+// Add it. The dialog closes once the file is written; if it could not be, the
+// reason stays on screen with the dialog still there to fix it in
+async function floatAdd() {
+  if (!floating) return;
+  const btn = document.getElementById("floatadd");
+  btn.disabled = true;
+  try {
+    if (await save()) closeSettings();
+  } finally {
+    btn.disabled = false;
+  }
+}
+// Not adding after all. The tab only ever existed on this page, so there is
+// nothing to ask about losing
+function floatCancel() {
+  if (!floating) return;
+  savedSnapshot = snapshot();
+  closeSettings();
+}
+// The whole of the new tab's page, in the whole of the window: the same tab,
+// with what was chosen so far kept
+function floatMore() {
+  if (!floating) return;
+  const {wi, i, t} = floating;
+  floating = null;
+  document.body.classList.remove("float");
+  if (window.ipc) { try { window.ipc.postMessage(JSON.stringify({kind:"settingsfull"})); } catch (e) {} }
+  sel = {desk:wi, grp:t.group || 0, tab:i, global:false};
+  render();
+  const s = document.querySelector(".navitem.sel");
+  if (s) s.scrollIntoView({block:"center"});
+}
+// Esc is the dialog's way out (style guide 5.2), and only the dialog's: a
+// confirmation opened over it takes its own Esc first
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape" || !floating || document.querySelector("dialog[open]")) return;
+  e.preventDefault();
+  floatCancel();
+});
 
 // Opens a help/report page in the real browser. The server whitelists `dest`
 // and pre-fills the bug template with this build and the OS version.
@@ -10692,6 +10918,8 @@ load().then(() => {
       : -1;
     sel = {desk:wi, grp:null, tab:addTabTo(desks[wi], gi >= 0 ? gi : undefined), global:false};
     sel.grp = desks[wi].tabs[sel.tab].group || 0;
+    // The board's + asks for only the one question, over the board
+    if (q.get("float") === "1") { render(); enterFloat(wi, sel.tab); return; }
     render();
     const s = document.querySelector(".navitem.sel");
     if (s) s.scrollIntoView({block:"center"});
@@ -11671,6 +11899,54 @@ mod tests {
         }
     }
 
+    /// Every word a new tab's automation name can be drawn as is one automation
+    /// accepts as it stands, and there are enough of them that a desk of tabs
+    /// does not run out.
+    #[test]
+    fn a_new_tab_is_named_from_words_automation_accepts() {
+        let words = super::pet_nouns();
+        assert!(words.len() >= 100, "too few words to draw from: {}", words.len());
+        for w in &words {
+            assert!((3..=6).contains(&w.len()), "{w} is not a short word");
+            assert!(w.bytes().all(|b| b.is_ascii_lowercase()), "{w} is not a name automation takes as it is");
+            // The name the settings screen settles on for it is itself
+            assert_eq!(crate::config::slug_id(w), *w, "{w} would be tidied into something else");
+            assert!(!super::NOT_A_TAB_NAME.contains(w), "{w} is on the list of words a tab is not called");
+        }
+        let json: Vec<String> = serde_json::from_str(&super::pet_nouns_json()).expect("the list is not JSON");
+        assert_eq!(json.len(), words.len());
+    }
+
+    /// A tab added from the settings is named by what it runs and called by a
+    /// word of its own -- not by its command. Called by its command, a tab that
+    /// started as Claude and was turned into SSH went on being "claude-2".
+    #[test]
+    fn a_new_tab_is_named_by_what_it_runs_and_called_by_a_word() {
+        let add = PAGE.split("function addTabTo(desk, group) {").nth(1).expect("addTabTo is gone");
+        let add = &add[..add.find("\n}\n").expect("addTabTo does not end")];
+        assert!(add.contains("t.name = kindName(command);"), "a new tab is not named by what it runs");
+        assert!(add.contains("t.id = petId(desk, t);"), "a new tab is not called by a word of its own");
+        assert!(!add.contains("inferredTabId"), "a new tab is called by its command again");
+        // The name follows the kind while nobody has typed their own
+        assert!(PAGE.contains("followKind(t, before);"), "changing what a tab runs no longer carries its name along");
+        // One card for what a tab runs, on its page and in the dialog alike
+        assert_eq!(PAGE.matches("append(launchCard(t").count(), 2, "what a tab runs is asked in more or fewer places than two");
+    }
+
+    /// The board's + asks only what the new tab runs, in a dialog, and a save
+    /// that failed leaves the dialog there with the reason.
+    #[test]
+    fn the_board_plus_asks_one_question_in_a_dialog() {
+        assert!(PAGE.contains(r#"if (q.get("float") === "1") { render(); enterFloat(wi, sel.tab); return; }"#),
+            "the board's + opens the whole settings page again");
+        assert!(PAGE.contains("<div id=\"floatbox\""), "there is no dialog to show");
+        assert!(PAGE.contains("if (await save()) closeSettings();"), "adding closes the dialog whether or not it was saved");
+        assert!(PAGE.contains("ok = await doSave();"), "a save that said why it failed still counts as done");
+        assert!(PAGE.contains("if (!floating) goIndex();"), "adding a tab from its dialog sends the person to INDEX");
+        assert!(PAGE.contains(r#"postMessage(JSON.stringify({kind:"settingsfull"}))"#),
+            "More settings does not ask the window for the whole of it");
+    }
+
     /// The screen must not still contain a raw `{{key}}` or `__DICT__`.
     /// A forgotten substitution would only be caught at runtime, so it's stopped here instead
     #[test]
@@ -11689,6 +11965,7 @@ mod tests {
                 .replace("__GITLUA__", "\"\"")
                 .replace("__PROTECT__", "[]")
                 .replace("__THISPC__", "\"@pc\"")
+                .replace("__PETNOUNS__", "[]")
                 .replace("__MD__", "\"\"");
             // Checked on the finished page, not the template: the shared toast
             // is poured in on the way, and a page that kept a copy of one of

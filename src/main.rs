@@ -602,6 +602,7 @@ impl WinSurface {
                 // The settings page's "close settings" button. Where the tab actually
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
                 Ev::CloseSettings => self.mail.close_settings = true,
+                Ev::SettingsFull => self.mail.settings_full = true,
                 Ev::OpenSettings { section, ret, folder, tabpos } => {
                     self.mail.open_settings = Some((section, ret, folder, tabpos))
                 }

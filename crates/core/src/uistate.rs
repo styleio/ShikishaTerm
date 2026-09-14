@@ -1342,6 +1342,10 @@ pub struct UiState {
     /// than a pane: it asks about the whole app, not about one corner of it
     #[serde(default)]
     pub settings_open: bool,
+    /// Whether the settings form is the add-a-tab dialog: a rectangle over the
+    /// board, which stays drawn, dimmed, behind it
+    #[serde(default)]
+    pub settings_float: bool,
     pub auto_enabled: bool,
     pub remote_on: bool,
     /// Whether at least one phone/browser is currently connected over the remote
