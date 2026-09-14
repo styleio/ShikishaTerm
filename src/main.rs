@@ -468,6 +468,11 @@ impl WinSurface {
         let _ = self.win.eval(&format!("window.__files && window.__files({json});"));
     }
 
+    /// Hand one answer back to the Issue tab (already JSON-encoded)
+    fn push_issues(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__issues && window.__issues({json});"));
+    }
+
     /// Hand one answer back to the transfer panel (already JSON-encoded)
     fn push_sftp(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__sftp && window.__sftp({json});"));
@@ -658,6 +663,8 @@ impl WinSurface {
                 Ev::Git { panel, act, args } => self.mail.gits.push((panel, act, args)),
                 Ev::GitAccount { panel, account } => self.mail.git_accounts.push((panel, account)),
                 Ev::Files { panel, act, args } => self.mail.files.push((panel, act, args)),
+                Ev::Issues { act, args } => self.mail.issues.push((act, args)),
+                Ev::OpenIssues => self.mail.open_issues = true,
                 Ev::EditOpen { panel, path } => self.mail.edits.push((panel, path)),
                 Ev::Sftp { panel, act, args } => self.mail.sftps.push((panel, act, args)),
                 Ev::Recorded {
@@ -1767,6 +1774,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn open_palette(&self) { WinSurface::open_palette(self) }
     fn push_git(&self, json: &str) { WinSurface::push_git(self, json) }
     fn push_files(&self, json: &str) { WinSurface::push_files(self, json) }
+    fn push_issues(&self, json: &str) { WinSurface::push_issues(self, json) }
     fn push_sftp(&self, json: &str) { WinSurface::push_sftp(self, json) }
     fn push_recorded(&self, line_json: &str) { WinSurface::push_recorded(self, line_json) }
     fn queue_vault(&mut self, ev: shikisha_shared::Ev) { WinSurface::queue_vault(self, ev) }

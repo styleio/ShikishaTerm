@@ -465,6 +465,20 @@ fn git_as(
     Ok((dir, protect, who))
 }
 
+/// The GitHub repository a tab works in, and a connection signed in as the
+/// git account its project chose
+fn github_hub(
+    places: &RefCell<Vec<TabPlace>>,
+    origin: &Cell<usize>,
+    tab: &Value,
+    caps: &Caps,
+) -> mlua::Result<(crate::github::Repo, crate::github::Hub)> {
+    let (dir, _, git) = git_place(places, origin, tab)?;
+    let (repo, token) = crate::github::target(&dir, &git, &|k| caps.secret_value(k).ok())
+        .map_err(|e| mlua::Error::runtime(format!("{e:#}")))?;
+    Ok((repo, crate::github::Hub::new(token)))
+}
+
 /// Which machine a tab is on, for the file commands.
 ///
 /// Named the same way a repository is named -- by the tab that sits there --
@@ -3362,6 +3376,98 @@ impl HookEngine {
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
+        }
+        {
+            // GitHub: the issues and pull requests of the repository a tab
+            // works in, as the git account that repository's project chose.
+            // Each waits for GitHub like the git commands that talk to a
+            // server do; the Issue tab asks the same permission table and
+            // hands the work to a thread
+            macro_rules! github {
+                ($name:literal, |$lua:ident, $repo:ident, $hub:ident, $args:ident| $body:expr) => {{
+                    let c = Rc::clone(&places);
+                    let o = Rc::clone(&current_origin);
+                    let k = Caps::clone(&caps);
+                    shikisha
+                        .set(
+                            $name,
+                            lua.create_function(
+                                move |$lua, (tab, $args): (Value, mlua::Variadic<Value>)| {
+                                    let ($repo, $hub) = github_hub(&c, &o, &tab, &k)?;
+                                    let out: anyhow::Result<serde_json::Value> = $body;
+                                    out.map_err(|e| mlua::Error::runtime(format!("{e:#}")))
+                                        .and_then(|v| json_to_lua($lua, &v))
+                                },
+                            )
+                            .map_err(lerr)?,
+                        )
+                        .map_err(lerr)?;
+                }};
+            }
+            let arg = |args: &mlua::Variadic<Value>, i: usize| args.get(i).map(lua_to_json).unwrap_or(serde_json::Value::Null);
+            // A number as Lua writes one, or as a person does: 12, 12.0, "12", "#12"
+            let number = |v: &serde_json::Value| -> anyhow::Result<u64> {
+                v.as_u64()
+                    .or_else(|| v.as_f64().filter(|f| *f >= 1.0 && f.fract() == 0.0).map(|f| f as u64))
+                    .or_else(|| v.as_str().and_then(|s| s.trim().trim_start_matches('#').parse().ok()))
+                    .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.github.number")))
+            };
+            // One name or a list of them
+            let strings = |v: &serde_json::Value| -> Vec<String> {
+                match v {
+                    serde_json::Value::String(s) => vec![s.clone()],
+                    serde_json::Value::Array(a) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+                    _ => Vec::new(),
+                }
+            };
+            github!("github_issues", |lua, repo, hub, args| {
+                hub.issues(&repo, &crate::github::Query::from_json(&arg(&args, 0)))
+            });
+            github!("github_prs", |lua, repo, hub, args| {
+                hub.pulls(&repo, &crate::github::Query::from_json(&arg(&args, 0)))
+            });
+            github!("github_issue", |lua, repo, hub, args| {
+                number(&arg(&args, 0)).and_then(|n| hub.issue(&repo, n))
+            });
+            github!("github_pr", |lua, repo, hub, args| {
+                number(&arg(&args, 0)).and_then(|n| hub.pull(&repo, n))
+            });
+            github!("github_issue_create", |lua, repo, hub, args| {
+                let o = arg(&args, 0);
+                let s = |k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                let none = serde_json::Value::Null;
+                hub.create_issue(
+                    &repo,
+                    &s("title"),
+                    &s("body"),
+                    &strings(o.get("labels").unwrap_or(&none)),
+                    &strings(o.get("assignees").unwrap_or(&none)),
+                )
+            });
+            github!("github_comment", |lua, repo, hub, args| {
+                number(&arg(&args, 0)).and_then(|n| hub.comment(&repo, n, arg(&args, 1).as_str().unwrap_or_default()))
+            });
+            github!("github_issue_state", |lua, repo, hub, args| {
+                let state = arg(&args, 1).as_str().unwrap_or_default().to_string();
+                let of = arg(&args, 2).get("duplicate_of").and_then(|d| number(d).ok());
+                number(&arg(&args, 0))
+                    .and_then(|n| hub.set_issue_state(&repo, n, &state, of).map(|()| serde_json::Value::Bool(true)))
+            });
+            github!("github_pr_state", |lua, repo, hub, args| {
+                let open = arg(&args, 1).as_str() == Some("open");
+                number(&arg(&args, 0)).and_then(|n| hub.set_pull_state(&repo, n, open).map(|()| serde_json::Value::Bool(true)))
+            });
+            github!("github_pr_merge", |lua, repo, hub, args| {
+                number(&arg(&args, 0)).and_then(|n| hub.merge_pull(&repo, n, arg(&args, 1).as_str().unwrap_or_default()))
+            });
+            github!("github_labels", |lua, repo, hub, args| {
+                let _ = &args;
+                hub.labels(&repo).map(|l| serde_json::json!(l))
+            });
+            github!("github_assignees", |lua, repo, hub, args| {
+                let _ = &args;
+                hub.assignees(&repo).map(|l| serde_json::json!(l))
+            });
         }
         {
             // Every primitive there is, read off the table itself at the moment

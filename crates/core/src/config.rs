@@ -2232,6 +2232,11 @@ pub struct FolderConfig {
     /// repository with
     #[serde(default)]
     pub project: Option<String>,
+    /// The issue or pull request this folder was made to work on, written
+    /// `issue:owner/name#12` or `pr:owner/name#12`. Lets the Issue tab say a
+    /// worktree already exists for it, and open that one instead of a second
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item: Option<String>,
     /// The machine this folder is on, by the name in `hosts`. Absent is this
     /// one. A folder somewhere else is not missing from this machine -- it was
     /// never meant to be here -- so nothing about it is repaired or offered
@@ -2373,6 +2378,8 @@ pub struct Folder {
     pub protect: Vec<String>,
     /// The project it says it is a piece of, by name, when it says
     pub project: Option<String>,
+    /// The issue or pull request it was made for (see [`FolderConfig::work_item`])
+    pub work_item: Option<String>,
 }
 
 /// A desk resolved at launch time (tabs are flattened; depth preserves the hierarchy)
@@ -2912,6 +2919,7 @@ fn resolve_folders(
                 None => protect.to_vec(),
             },
             project: def.project.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_string),
+            work_item: def.work_item.as_deref().map(str::trim).filter(|w| !w.is_empty()).map(str::to_string),
         });
         flatten(&def.tabs, 0, at, &mut tabs);
     }
@@ -3716,6 +3724,22 @@ fn retag(tabs: serde_json::Value, mark: &str) -> serde_json::Value {
     }
     walk(&mut out, mark);
     out
+}
+
+/// Write down which issue or pull request a folder was made for
+pub fn set_folder_work_item(desk_name: &str, cwd: &Path, item: &str) -> Result<()> {
+    with_folders(&config_file_path(), desk_name, |folders| {
+        let found = folders.iter_mut().find(|g| {
+            g.get("cwd")
+                .and_then(|c| c.as_str())
+                .map(resolve_folder_cwd)
+                .is_some_and(|c| crate::uistate::same_folder(&c, cwd))
+        });
+        if let Some(obj) = found.and_then(|g| g.as_object_mut()) {
+            obj.insert("work_item".into(), serde_json::Value::String(item.to_string()));
+        }
+        Ok(())
+    })
 }
 
 /// A group's folder as an absolute path, the same way launching resolves it.

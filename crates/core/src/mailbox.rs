@@ -138,6 +138,10 @@ pub struct Mailbox {
     pub sftps: Vec<(String, String, serde_json::Value)>,
     /// The same, for the column's file list (one machine, one folder)
     pub files: Vec<(String, String, serde_json::Value)>,
+    /// What the Issue tab has asked for since the last drain: (act, args)
+    pub issues: Vec<(String, serde_json::Value)>,
+    /// The Issue row in the list was pressed
+    pub open_issues: bool,
     /// Files pressed in that list since the last drain: (panel, relative path).
     /// An empty path means "put this editor's file away"
     pub edits: Vec<(String, String)>,
@@ -339,6 +343,12 @@ impl Mailbox {
     /// Takes the git accounts chosen in the git column since the last drain
     pub fn take_git_accounts(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.git_accounts)
+    }
+    pub fn take_issues(&mut self) -> Vec<(String, serde_json::Value)> {
+        std::mem::take(&mut self.issues)
+    }
+    pub fn take_open_issues(&mut self) -> bool {
+        std::mem::take(&mut self.open_issues)
     }
     pub fn take_files(&mut self) -> Vec<(String, String, serde_json::Value)> {
         std::mem::take(&mut self.files)

@@ -223,6 +223,9 @@ pub enum Ev {
         /// unless somebody says otherwise: a folder that skipped it is a
         /// folder the first thing anybody does in is fail to build
         setup: bool,
+        /// The issue or pull request this folder is being made for, when it
+        /// is: `{kind, repo, number, url}`. Null otherwise
+        link: serde_json::Value,
     },
     /// Put the offered environment file in the project.
     ///
@@ -394,6 +397,15 @@ pub enum Ev {
         act: String,
         args: serde_json::Value,
     },
+    /// The Issue tab asking for something: the desk's projects, a list of
+    /// issues or pull requests, one in full, or a change to one. `act` is one
+    /// of a short list the loop answers, each the same as an automation command
+    Issues {
+        act: String,
+        args: serde_json::Value,
+    },
+    /// The Issue row in the list was pressed: open the Issue tab and look at it
+    OpenIssues,
     /// A git account was chosen in the menu at the top of the git column.
     /// `panel` is what the column stands on, the same name `Git` carries: a
     /// git tab chooses for itself, a tab in a folder chooses for that folder's
@@ -639,14 +651,15 @@ pub struct BranchAsk {
     pub at: String,
     pub host: String,
     pub setup: bool,
+    pub link: serde_json::Value,
 }
 
 impl BranchAsk {
     /// The ask carried by a branch event, or nothing for any other event.
     pub fn of(ev: Ev) -> Option<Self> {
         match ev {
-            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, setup } => {
-                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, setup })
+            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, setup, link } => {
+                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, setup, link })
             }
             _ => None,
         }
@@ -828,6 +841,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             // Absent means yes: an older shell that does not send it is not
             // asking for a folder nothing can be built in
             setup: v.get("setup").and_then(|x| x.as_bool()).unwrap_or(true),
+            link: v.get("link").cloned().unwrap_or(serde_json::Value::Null),
             ais: v
                 .get("ais")
                 .and_then(|x| x.as_array())
@@ -935,6 +949,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
         },
+        Some("issues") => Ev::Issues {
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
+        },
+        Some("openissues") => Ev::OpenIssues,
         Some("gitaccount") => Ev::GitAccount {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             account: v.get("account").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

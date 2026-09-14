@@ -175,6 +175,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // is working in, and searching them. The same folder the git panel
         // already shows the contents of, listed instead of diffed
         Ev::Files { .. } => true,
+        // The Issue tab. What it can ask for is what the same person can do on
+        // this PC by opening it, through the same permission table
+        Ev::Issues { .. } | Ev::OpenIssues => true,
         // Pressing a file in that list. It opens a reader on this machine's
         // own folder -- the same folder the list is already showing
         Ev::EditOpen { .. } => true,

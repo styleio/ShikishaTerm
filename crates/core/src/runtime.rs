@@ -653,6 +653,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let (suggest_tx, suggest_rx) = std::sync::mpsc::channel::<String>();
     // The git panel's slow half: fetch, pull and push answer from a thread
     let (git_tx, git_rx) = std::sync::mpsc::channel::<String>();
+    // Answers to the Issue tab, from the threads that waited for GitHub
+    let (issues_tx, issues_rx) = std::sync::mpsc::channel::<String>();
     // Everything the file panel asks of a server, which is all of it: a folder
     // on the far end is a network round trip and the window cannot wait for one
     let (sftp_tx, sftp_rx) = std::sync::mpsc::channel::<String>();
@@ -723,6 +725,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // settings, and the reload that follows would otherwise put "settings
     // reloaded" over what could not come along
     let mut said_before_reload: Option<(std::time::Instant, String)> = None;
+    // Whether the Issue tab is open. The desk's issues are asked about when it
+    // is, and it is put away with its ✕
+    let mut issues_open = false;
+    let mut issues_front = false;
+    // Words waiting for the input bar of a worktree just made for an issue or
+    // a pull request: (the folder, the words, since when)
+    let mut pending_drafts: Vec<(std::path::PathBuf, String, Instant)> = Vec::new();
     let mut drawn_names: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     // Whether automation may switch which tab is on screen (see ViewMove)
@@ -1024,7 +1033,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // The upper bound of pressable numbers needs more than just the session count.
         let hosted = caps.hosted_names();
         let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
-        let surfaces = surfaces_of(desks.get(desk_index), &titles, &hosted, &editors);
+        let surfaces = surfaces_of(desks.get(desk_index), &titles, &hosted, &editors, issues_open);
         let surface_count = surfaces.len();
         // The rows moved since the last pass: keep every pane on what it was
         // showing. Only on one desk -- switching is another set of rows
@@ -1046,6 +1055,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 };
             }
             rows_were = (desk_now, keys);
+        }
+        // The Issue tab, asked for on the last pass: to the front once its row
+        // is here -- after the rows that moved have been followed, which would
+        // otherwise take the view back to where it was
+        if std::mem::take(&mut issues_front)
+            && let Some(at) = surfaces.iter().position(|s| matches!(s, Surface::Issues { .. }))
+        {
+            active = at + 1;
+            board_open = false;
+            settings_open = false;
+            view_touched_ms = start.elapsed().as_millis() as u64;
         }
         // A tab just opened again, now that it is here
         if let Some((name, until)) = &reveal {
@@ -1348,6 +1368,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     &tabs.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
                     &caps.hosted_names(),
                     &editors,
+                    issues_open,
                 )
                 .len();
                 if active > on_screen {
@@ -2349,6 +2370,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::GitAccount { panel, account }) => {
                         shell.mail().git_accounts.push((panel, account));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Issues { act, args }) => {
+                        shell.mail().issues.push((act, args));
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::OpenIssues) => {
+                        shell.mail().open_issues = true;
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Files { panel, act, args }) => {
                         shell.mail().files.push((panel, act, args));
                     }
@@ -2823,6 +2850,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 })
                 .unwrap_or_default(),
             git_accounts: desks.get(desk_index).map(|w| w.git_accounts.clone()).unwrap_or_default(),
+            folder_items: desks
+                .get(desk_index)
+                .map(|w| w.folders.iter().filter_map(|f| f.cwd.clone().zip(f.work_item.clone())).collect())
+                .unwrap_or_default(),
+            drafts: {
+                // Only for a while: the words are for the first look at a tab
+                // made a moment ago, not for every time it is opened after
+                pending_drafts.retain(|(_, _, at)| at.elapsed() < Duration::from_secs(30 * 60));
+                pending_drafts.iter().map(|(f, d, _)| (f.clone(), d.clone())).collect()
+            },
             git_repos: git_repos.clone(),
             folders_elsewhere: desks
                 .get(desk_index)
@@ -3193,7 +3230,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         let closing = shell.mail().take_close_tabs();
         if !closing.is_empty() {
             let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
-            let rows = surfaces_written(desks.get(desk_index), &titles, &caps.hosted_names(), &editors);
+            let rows = surfaces_written(desks.get(desk_index), &titles, &caps.hosted_names(), &editors, issues_open);
             for (at, key, sure) in closing {
                 close_asked += 1;
                 match crate::closed::close(
@@ -3214,6 +3251,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         match ends {
                             crate::closed::Ends::Tab(serial) => ending.push(serial),
                             crate::closed::Ends::Editor(key) => editors.retain(|e| e.key != key),
+                            crate::closed::Ends::Issues => issues_open = false,
                             crate::closed::Ends::Nothing => {}
                         }
                         if settings {
@@ -3806,6 +3844,84 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             open_editor = Some(key);
         }
+        // The Issue row in the list: open the tab, and look at it
+        if shell.mail().take_open_issues() {
+            // Brought to the front at the top of the next pass, once the row
+            // is on the list the rest of the loop measures against
+            issues_open = true;
+            issues_front = true;
+        }
+        // What the Issue tab asked for. The projects are answered here; every
+        // other request is allowed or refused by the same permission-table row
+        // as its automation command, then waits for GitHub on a thread of its
+        // own -- a window cannot wait on somebody's network
+        for (act, args) in shell.mail().take_issues() {
+            let Some(desk) = desks.get(desk_index) else {
+                continue;
+            };
+            let sources = crate::github::desk_sources(desk);
+            if act == "projects" {
+                let projects: Vec<serde_json::Value> = sources
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "name": s.name,
+                            "dir": s.dir.display().to_string(),
+                            "repo": s.repo,
+                            "account": s.git.written(),
+                            "unset": matches!(s.git, config::GitUse::Unset),
+                        })
+                    })
+                    .collect();
+                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects}).to_string();
+                shell.push_issues(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"issues\":{js}}}"));
+                }
+                continue;
+            }
+            let pulls = args.get("kind").and_then(|k| k.as_str()) == Some("pr");
+            let refused = match crate::github::command_for(&act, pulls) {
+                None => Some(format!("unknown request {act}")),
+                Some(name) if !caps.allows(name, grants::Subject::Human) => Some(i18n::tp(
+                    "err.hooks.not_permitted",
+                    &[("name", name), ("who", &i18n::t("grant.who.human"))],
+                )),
+                Some(_) => None,
+            };
+            if let Some(why) = refused {
+                let js = serde_json::json!({"act": act, "ok": false, "error": why, "kind": if pulls { "pr" } else { "issue" },
+                    "seq": args.get("seq").cloned().unwrap_or(serde_json::Value::Null)}).to_string();
+                shell.push_issues(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"issues\":{js}}}"));
+                }
+                continue;
+            }
+            // The tokens this request may need, copied out for the thread: the
+            // store is this loop's, and what leaves it is only what is used
+            let tokens: std::collections::HashMap<String, String> = sources
+                .iter()
+                .filter_map(|s| match &s.git {
+                    config::GitUse::Account { desk, spec } => {
+                        let key = config::git_token_key(desk, &spec.name);
+                        caps.secret_value(&key).ok().map(|t| (key, t))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let tx = issues_tx.clone();
+            std::thread::spawn(move || {
+                let js = crate::github::answer(&act, &args, &sources, &|k| tokens.get(k).cloned());
+                let _ = tx.send(js.to_string());
+            });
+        }
+        while let Ok(js) = issues_rx.try_recv() {
+            shell.push_issues(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"issues\":{js}}}"));
+            }
+        }
         // The column's file list. Answered on the spot: it is one folder of
         // this machine, or a search that stops itself
         for (panel, act, args) in shell.mail().take_files() {
@@ -4363,6 +4479,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     // first build is what would otherwise fail
                                     let brought = crate::worktree::carry_into(&plan, &carryable);
                                     flash = Some(brought_note(&plan.branch, &brought));
+                                    remember_work_item(&desk, &plan.folder, &ask.link, &mut pending_drafts);
                                 }
                                 Err(e) => view.error = Some(format!("{e:#}")),
                             }
@@ -4414,6 +4531,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         match wrote {
                             Ok(()) => {
                                 crate::worktree::carry_into(plan, &carryable);
+                                remember_work_item(&desk, &plan.folder, &ask.link, &mut pending_drafts);
                                 made.push(plan.branch.clone());
                             }
                             Err(e) => {
@@ -5749,7 +5867,8 @@ pub fn focused_page(layout: &crate::layout::Layout, surfaces: &[Surface]) -> Opt
         | Surface::Git { .. }
         | Surface::Sftp { .. }
         | Surface::Editor { .. }
-        | Surface::Failed { .. } => None,
+        | Surface::Failed { .. }
+        | Surface::Issues { .. } => None,
     }
 }
 /// Write down what a tab is aimed at: in the settings file, and in the copy of
@@ -6361,7 +6480,8 @@ pub fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
         | Surface::Git { .. }
         | Surface::Sftp { .. }
         | Surface::Editor { .. }
-        | Surface::Failed { .. } => None,
+        | Surface::Failed { .. }
+        | Surface::Issues { .. } => None,
     }
 }
 /// What size each tab's terminal should be drawn at.
@@ -6536,6 +6656,30 @@ pub fn open_settings(
         shikisha_shared::BrowserProfile::shared_default(),
     )
 }
+/// A folder made for an issue or a pull request: write down which, and hold
+/// its address for the input bar of the AI that starts there -- put there, not
+/// sent, so the person reads it before anything happens
+fn remember_work_item(
+    desk: &str,
+    folder: &std::path::Path,
+    link: &serde_json::Value,
+    drafts: &mut Vec<(std::path::PathBuf, String, Instant)>,
+) {
+    let s = |k: &str| link.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let number = link.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+    let (kind, repo, url) = (s("kind"), s("repo"), s("url"));
+    if number == 0 || !matches!(kind.as_str(), "issue" | "pr") || repo.is_empty() {
+        return;
+    }
+    if let Err(e) = config::set_folder_work_item(desk, folder, &format!("{kind}:{repo}#{number}")) {
+        append_hook_log(&format!("could not note what {} was made for: {e:#}", folder.display()));
+    }
+    if url.starts_with("https://github.com/") {
+        drafts.retain(|(f, _, _)| !crate::uistate::same_folder(f, folder));
+        drafts.push((folder.to_path_buf(), url, Instant::now()));
+    }
+}
+
 /// What making a branch's folder said about what came along: that it is ready,
 /// and -- named, never dropped -- what could not come, what was copied where a
 /// link was asked for, and what could not be replaced
@@ -6939,7 +7083,7 @@ pub fn surface_folder<'a>(surfaces: &'a [Surface], tabs: &'a [Tab], surface: usi
         | Surface::Editor { dir, .. }
         | Surface::Sftp { dir, .. }
         | Surface::Failed { dir, .. } => dir.as_deref(),
-        Surface::Browser { .. } => None,
+        Surface::Browser { .. } | Surface::Issues { .. } => None,
     }
 }
 pub fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
@@ -6953,7 +7097,8 @@ pub fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
             | Surface::Git { key, .. }
             | Surface::Sftp { key, .. }
             | Surface::Editor { key, .. }
-            | Surface::Failed { key, .. } => hooks::TabKey { id: Some(key.clone()) },
+            | Surface::Failed { key, .. }
+            | Surface::Issues { key } => hooks::TabKey { id: Some(key.clone()) },
         })
         .collect()
 }
@@ -8802,7 +8947,7 @@ mod tests {
         let tabs = ["エンジニア"];
         let hosted = vec!["html".to_string()];
 
-        let surfaces = surfaces_of(Some(&desk), &tabs, &hosted, &[]);
+        let surfaces = surfaces_of(Some(&desk), &tabs, &hosted, &[], false);
         assert_eq!(
             surfaces,
             vec![Surface::Browser { key: "html".into(), name: "HTML解析".into() }, Surface::Session(0)],
@@ -8858,7 +9003,7 @@ mod tests {
             ("エンジニア", "ai", "claude"),
         ]);
         let tabs = ["エンジニア"];
-        let surfaces = surfaces_of(Some(&desk), &tabs, &[], &[]);
+        let surfaces = surfaces_of(Some(&desk), &tabs, &[], &[], false);
         assert_eq!(
             surfaces,
             vec![Surface::Browser { key: "html".into(), name: "HTML解析".into() }, Surface::Session(0)],
@@ -8874,7 +9019,7 @@ mod tests {
         let desk = desk_from_rows(&[("エンジニア", "ai", "claude")]);
         let tabs = ["エンジニア", "あとから"];
         let hosted = vec!["settings".to_string()];
-        let surfaces = surfaces_of(Some(&desk), &tabs, &hosted, &[]);
+        let surfaces = surfaces_of(Some(&desk), &tabs, &hosted, &[], false);
         assert_eq!(
             surfaces,
             vec![

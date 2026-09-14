@@ -205,6 +205,8 @@ pub enum Ends {
     Tab(u64),
     /// The throwaway editor, by its name
     Editor(String),
+    /// The Issue tab
+    Issues,
 }
 
 /// What came of a press on a tab's ✕.
@@ -299,6 +301,12 @@ pub fn close(
                 settings: false,
                 ends: Ends::Editor(editor.clone()),
             }),
+        // Written nowhere and holding nothing of its own: putting it away
+        Surface::Issues { .. } => Closing::Closed {
+            note: i18n::tp("msg.tab.closed_for_good", &[("name", &i18n::t("tui.issues.tab"))]),
+            settings: false,
+            ends: Ends::Issues,
+        },
         Surface::Browser { key: page, name } => {
             if page == crate::runtime::SETTINGS_TAB {
                 return Closing::Nothing;
@@ -431,7 +439,8 @@ pub fn row_named(rows: &[Surface], tabs: &[Tab], name: &str) -> Option<usize> {
             | Surface::Git { key, .. }
             | Surface::Sftp { key, .. }
             | Surface::Editor { key, .. }
-            | Surface::Failed { key, .. } => key == name,
+            | Surface::Failed { key, .. }
+            | Surface::Issues { key } => key == name,
         })
         .map(|i| i + 1)
 }
