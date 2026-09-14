@@ -2538,7 +2538,7 @@ function setSnipWait(v) {
 }
 function openSnipMenu(e) {
   const anchor = e.currentTarget;
-  const draw = () => {
+  {
     const rows = [];
     // First, how long to wait. The program is in front when this is pressed,
     // and waiting is how whatever is behind it gets into the picture. A phone
@@ -2547,8 +2547,15 @@ function openSnipMenu(e) {
       const wait = el("div", {class:"snipwait"},
         el("span", {class:"lbl"}, T["tui.snip.wait"] || ""));
       for (const w of SNIP_WAITS) {
+        // Marked where it stands. Opening the list again to show the choice
+        // placed it by the scissors -- which the board may have drawn anew
+        // since, and a button no longer on the page is at 0,0
         wait.append(el("button", {class:"chip" + (w === snipWait() ? " on" : ""),
-          onclick:ev => { ev.stopPropagation(); setSnipWait(w); draw(); }},
+          onclick:ev => {
+            ev.stopPropagation();
+            setSnipWait(w);
+            for (const c of wait.querySelectorAll(".chip")) c.classList.toggle("on", c === ev.currentTarget);
+          }},
           w === 0 ? (T["tui.snip.now"] || "Now") : (T["tui.snip.seconds"] || "{n}s").replace("{n}", w)));
       }
       rows.push(wait);
@@ -2558,8 +2565,7 @@ function openSnipMenu(e) {
         T["snip.tool." + t] || t));
     }
     openList(anchor, rows);
-  };
-  draw();
+  }
 }
 function runSnip(tool) {
   if (!REMOTE) {
