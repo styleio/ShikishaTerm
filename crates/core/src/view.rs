@@ -798,8 +798,8 @@ pub fn surfaces_written(
             ));
         }
     }
-    // The Issue tab, while it is open. Written nowhere: opened from its row in
-    // the list and put away with its ✕
+    // The Issue tab, once it has been opened. Written nowhere: opened from its
+    // row in the list, and not closed
     if issues {
         out.push((Surface::Issues { key: ISSUES_KEY.to_string() }, None));
     }

@@ -205,8 +205,6 @@ pub enum Ends {
     Tab(u64),
     /// The throwaway editor, by its name
     Editor(String),
-    /// The Issue tab
-    Issues,
 }
 
 /// What came of a press on a tab's ✕.
@@ -301,12 +299,9 @@ pub fn close(
                 settings: false,
                 ends: Ends::Editor(editor.clone()),
             }),
-        // Written nowhere and holding nothing of its own: putting it away
-        Surface::Issues { .. } => Closing::Closed {
-            note: i18n::tp("msg.tab.closed_for_good", &[("name", &i18n::t("tui.issues.tab"))]),
-            settings: false,
-            ends: Ends::Issues,
-        },
+        // Not one that closes, like INDEX: its row in the list is always there,
+        // and pressing another tab is the way out of it
+        Surface::Issues { .. } => Closing::Nothing,
         Surface::Browser { key: page, name } => {
             if page == crate::runtime::SETTINGS_TAB {
                 return Closing::Nothing;
@@ -475,6 +470,18 @@ mod tests {
         assert_eq!(c.take("A", None).map(|i| i.name), Some("two".into()), "the last closed should come first");
         assert_eq!(c.take("A", None).map(|i| i.name), Some("one".into()));
         assert!(c.take("A", None).is_none(), "a tab from another desk came back here");
+    }
+
+    /// Like INDEX, the Issue tab is not closed -- from its tab, the keyboard or
+    /// a phone -- and nothing of it is kept to bring back
+    #[test]
+    fn the_issue_tab_does_not_close() {
+        let rows = vec![(Surface::Issues { key: crate::view::ISSUES_KEY.to_string() }, None)];
+        let caps: crate::hooks::Caps = std::rc::Rc::new(crate::caps::Capabilities::disabled());
+        let mut c = store();
+        let got = close(1, "", true, &rows, &[], None, &caps, &mut c, 1);
+        assert!(matches!(got, Closing::Nothing), "{got:?}");
+        assert!(c.items.is_empty(), "it was kept as something closed");
     }
 
     #[test]
