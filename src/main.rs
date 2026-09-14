@@ -576,6 +576,9 @@ impl WinSurface {
                 }
                 Ev::FocusPane { id } => self.mail.focus_panes.push(id),
                 Ev::ClosePane { id } => self.mail.close_panes.push(id),
+                Ev::CloseTab { tab, key, sure } => self.mail.close_tabs.push((tab, key, sure)),
+                Ev::CloseTabBack => self.mail.close_tab_back = true,
+                Ev::ReopenTab { id } => self.mail.reopen_tabs.push(id),
                 Ev::PaneRatio { divider, ratio } => self.mail.pane_ratios.push((divider, ratio)),
                 Ev::SplitPane { id, down } => self.mail.pane_splits.push((id, down)),
                 Ev::RestartPane { id, keep } => self.mail.restart_panes.push((id, keep)),

@@ -50,6 +50,8 @@ pub const ACTIONS: &[Action] = &[
     Action { name: "tab_next", key: 'n', also: &[], desc: "keys.tab_next" },
     Action { name: "tab_prev", key: 'p', also: &[], desc: "keys.tab_prev" },
     Action { name: "add_tab", key: 't', also: &[], desc: "keys.add_tab" },
+    Action { name: "tab_close", key: '&', also: &[], desc: "keys.tab_close" },
+    Action { name: "tab_reopen", key: 'T', also: &[], desc: "keys.tab_reopen" },
     Action { name: "restart", key: 'r', also: &[], desc: "keys.restart" },
     Action { name: "restart_fresh", key: 'R', also: &[], desc: "keys.restart_fresh" },
     Action { name: "split_beside", key: '%', also: &['|'], desc: "keys.split_beside" },

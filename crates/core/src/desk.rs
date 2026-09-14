@@ -264,12 +264,18 @@ pub fn build_engine(
 /// Whatever can take effect immediately does; whatever needs the session
 /// rebuilt is deferred and flagged instead (so a running AI doesn't get cut
 /// off without asking). The return value is the message reported to the user.
+///
+/// `resume` holds conversations to hand the tabs this starts, by automation
+/// name: a tab opened again from the tab bar comes back into the conversation
+/// it was having. Taken out as they are used, and preferred over a `resume`
+/// written in the settings, which is older news
 pub fn apply_ws_config(
     tabs: &mut Vec<Tab>,
     desk: &config::Desk,
     rows: u16,
     cols: u16,
     errors: &mut Vec<String>,
+    resume: &mut std::collections::HashMap<String, tab::Session>,
 ) -> String {
     let mut added = 0usize;
     let mut removed = 0usize;
@@ -345,7 +351,10 @@ pub fn apply_ws_config(
                 rows,
                 cols,
                 opts,
-                resume_plan_of(ft.cfg.resume.as_deref()),
+                match ft.cfg.id.as_deref().and_then(|id| resume.remove(id)) {
+                    Some(s) if tab::resumable(&argv, &ft.cfg.profile, &s.id) => tab::Resume::Id(s),
+                    _ => resume_plan_of(ft.cfg.resume.as_deref()),
+                },
             ) {
                 Ok(mut t) => {
                     forget_failure(&desk.name, &title);

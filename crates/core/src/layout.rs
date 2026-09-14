@@ -515,6 +515,40 @@ impl Layout {
         }
     }
 
+    /// Keeps every pane on the thing it was showing, after the list of things
+    /// changed underneath it.
+    ///
+    /// A pane holds a row number, and a row number belongs to whatever is in
+    /// that row: close the second tab and the third one is now the second, so a
+    /// pane that was showing the third would be showing the fourth without
+    /// anything on screen saying so. `moves[n - 1]` is where row `n` went --
+    /// its new number, or nothing when it is gone.
+    ///
+    /// A pane whose thing is gone closes, as `restore` closes one: the split
+    /// was there for that tab. The last pane cannot close, so it moves on to
+    /// the neighbour instead -- the next one along, or the one before when it
+    /// was the last -- which is the tab a browser shows when the one in front
+    /// of you is closed.
+    pub fn follow(&mut self, moves: &[Option<usize>]) {
+        let mut gone = Vec::new();
+        for (id, s) in self.leaves() {
+            let Some(to) = s.checked_sub(1).and_then(|i| moves.get(i)) else {
+                continue;
+            };
+            match to {
+                Some(n) => self.set_surface(id, *n),
+                None => gone.push((id, s)),
+            }
+        }
+        for (id, s) in gone {
+            if !self.close(id) {
+                let after = moves[s..].iter().flatten().next();
+                let before = moves[..s - 1].iter().rev().flatten().next();
+                self.set_surface(id, after.or(before).copied().unwrap_or(0));
+            }
+        }
+    }
+
     /// Writes this arrangement down by what each pane shows, not by where that
     /// thing stands in the tab list.
     ///
@@ -798,6 +832,44 @@ mod tests {
         l.split(Dir::Row, 5);
         l.clamp(3);
         assert_eq!(surfaces(&l), vec![1, 0], "a tab that is gone goes back to the board");
+    }
+
+    /// Closing the second of three tabs moves the third into second place. A
+    /// pane that was showing it has to go on showing it, under its new number
+    #[test]
+    fn a_pane_stays_on_its_tab_when_one_before_it_closes() {
+        let mut l = Layout::single(1);
+        l.split(Dir::Row, 3);
+        l.follow(&[Some(1), None, Some(2)]);
+        assert_eq!(surfaces(&l), vec![1, 2], "the pane was handed the tab next door");
+    }
+
+    /// The pane showing the closed tab goes with it, and the other one takes
+    /// the room
+    #[test]
+    fn a_pane_whose_tab_closed_closes_too() {
+        let mut l = Layout::single(1);
+        l.split(Dir::Row, 2);
+        l.follow(&[Some(1), None, Some(2)]);
+        assert!(l.is_single(), "the pane of a closed tab is still there");
+        assert_eq!(surfaces(&l), vec![1]);
+    }
+
+    /// With nothing divided there is no pane to close, so the screen moves on
+    /// to the next tab along -- or the one before, when it was the last
+    #[test]
+    fn the_only_pane_moves_to_the_neighbour() {
+        let mut l = Layout::single(2);
+        l.follow(&[Some(1), None, Some(2)]);
+        assert_eq!(surfaces(&l), vec![2], "it did not move on to the next tab");
+
+        let mut l = Layout::single(3);
+        l.follow(&[Some(1), Some(2), None]);
+        assert_eq!(surfaces(&l), vec![2], "closing the last tab should show the one before");
+
+        let mut l = Layout::single(1);
+        l.follow(&[None]);
+        assert_eq!(surfaces(&l), vec![0], "with nothing left it should show nothing");
     }
 
     #[test]

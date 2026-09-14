@@ -3260,6 +3260,311 @@ fn find_folder<'a>(
     })
 }
 
+/// Which tab a line in the settings has to be, to be the one meant.
+///
+/// A tab is found by where it stands, and then checked: the file is a person's
+/// own and can have changed since it was read, and taking out whatever now
+/// stands in that place would be taking out somebody else
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabMark {
+    /// The name automation calls it, as settled on reading (see
+    /// `settle_tab_ids`) -- so it is known even when the file never wrote one
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub argv: Vec<String>,
+    /// The folder it works in. Copies of one folder's tabs carry the same name
+    /// and the same command, and only this tells them apart
+    pub folder: Option<std::path::PathBuf>,
+}
+
+impl TabMark {
+    pub fn of(desk: &Desk, t: &FlatTab) -> Self {
+        Self {
+            id: t.cfg.id.clone(),
+            name: t.cfg.name.clone(),
+            argv: t.cfg.command.argv(),
+            folder: desk.cwd_of(t),
+        }
+    }
+
+    /// Whether this folder is the one it works in
+    fn works_in(&self, group: &serde_json::Value) -> bool {
+        let here = group
+            .get("cwd")
+            .and_then(|c| c.as_str())
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(resolve_folder_cwd);
+        here == self.folder
+    }
+
+    /// Whether this line is that tab. A line that wrote its own id is that id
+    /// and nothing else; one that did not is its name and its command
+    fn fits(&self, line: &serde_json::Value) -> bool {
+        let written = line.get("id").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty());
+        match written {
+            Some(id) => self.id.as_deref() == Some(id),
+            None => {
+                let name = line.get("name").and_then(|v| v.as_str()).map(str::to_string);
+                let argv = line
+                    .get("command")
+                    .and_then(|c| serde_json::from_value::<CommandSpec>(c.clone()).ok())
+                    .map(|c| c.argv())
+                    .unwrap_or_default();
+                name == self.name && argv == self.argv
+            }
+        }
+    }
+}
+
+/// A tab taken out of the settings, with what it takes to put it back where it
+/// stood.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
+pub struct TakenTab {
+    /// The line itself, as the person wrote it, without its children -- they
+    /// stay behind (see `take_tab_at`)
+    pub line: serde_json::Value,
+    /// The folder it was working in, as the settings spell it. Absent for the
+    /// folder that names none
+    #[serde(default)]
+    pub folder: Option<String>,
+    /// Where in that folder: its place in the list, then in its parent's
+    /// children, outermost first
+    pub path: Vec<usize>,
+    /// What it answered to when it was taken, so the same name can be given
+    /// back to a line that never wrote one
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+/// Takes one tab out of a desk's settings.
+///
+/// `written` is its position among the desk's tabs as they are read
+/// (`Desk::tabs`), and `mark` says what should be standing there. The line
+/// goes; its children do not. They move up into its place, in their order,
+/// because closing one tab is not closing the tabs drawn under it -- that
+/// indent is only how they are shown.
+pub fn take_tab(desk_name: &str, written: usize, mark: &TabMark) -> Result<TakenTab> {
+    take_tab_at(&config_file_path(), desk_name, written, mark)
+}
+
+/// The same, told which settings file to edit.
+pub fn take_tab_at(path: &Path, desk_name: &str, written: usize, mark: &TabMark) -> Result<TakenTab> {
+    let mut taken = None;
+    with_folders(path, desk_name, |folders| {
+        // Every line, in the order the desk reads them: folder by folder, each
+        // tab followed by its children
+        fn walk(list: &[serde_json::Value], at: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+            for (i, line) in list.iter().enumerate() {
+                at.push(i);
+                out.push(at.clone());
+                if let Some(kids) = line.get("children").and_then(|c| c.as_array()) {
+                    walk(kids, at, out);
+                }
+                at.pop();
+            }
+        }
+        let mut spots: Vec<(usize, Vec<usize>)> = Vec::new();
+        for (fi, g) in folders.iter().enumerate() {
+            let mut paths = Vec::new();
+            if let Some(list) = g.get("tabs").and_then(|t| t.as_array()) {
+                walk(list, &mut Vec::new(), &mut paths);
+            }
+            spots.extend(paths.into_iter().map(|p| (fi, p)));
+        }
+        let line_at = |fi: usize, p: &[usize]| -> Option<&serde_json::Value> {
+            let mut list = folders.get(fi)?.get("tabs")?.as_array()?;
+            let (last, up) = p.split_last()?;
+            for i in up {
+                list = list.get(*i)?.get("children")?.as_array()?;
+            }
+            list.get(*last)
+        };
+        // Where it should be, and failing that, wherever it is now -- the file
+        // may have gained or lost a tab above it since it was read (two tabs
+        // closed in a row are exactly that)
+        let is_it = |(fi, p): &&(usize, Vec<usize>)| {
+            mark.works_in(&folders[*fi]) && line_at(*fi, p).is_some_and(|l| mark.fits(l))
+        };
+        let (fi, p) = spots
+            .get(written)
+            .filter(is_it)
+            .or_else(|| spots.iter().find(is_it))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.tab.not_in_settings")))?;
+        let folder = folders[fi].get("cwd").and_then(|c| c.as_str()).map(str::to_string);
+        let mut list = folders[fi]["tabs"].as_array_mut().expect("walked just above");
+        let (last, up) = p.split_last().expect("a spot always has a place");
+        for i in up {
+            list = list[*i]["children"].as_array_mut().expect("walked just above");
+        }
+        let mut line = list.remove(*last);
+        let kids = line
+            .as_object_mut()
+            .and_then(|o| o.shift_remove("children"))
+            .and_then(|c| match c {
+                serde_json::Value::Array(a) => Some(a),
+                _ => None,
+            })
+            .unwrap_or_default();
+        for (n, kid) in kids.into_iter().enumerate() {
+            list.insert(*last + n, kid);
+        }
+        taken = Some(TakenTab { line, folder, path: p, id: mark.id.clone() });
+        Ok(())
+    })?;
+    taken.ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.tab.not_in_settings")))
+}
+
+/// Puts a tab taken out of the settings back where it stood. Returns the name
+/// automation will call it.
+///
+/// Its folder is found by path; a folder that has been closed since is opened
+/// again, since that is where the tab works. Its place is kept as far as the
+/// list still reaches -- a parent that has gone leaves it at the level that is
+/// still there. And it is given a name nobody else is using: two tabs answering
+/// to one name would hand the other one's work to whichever came first, and
+/// reading the settings settles such a clash by renaming whichever stands later
+/// -- which could be the tab that never left.
+pub fn put_tab_back(desk_name: &str, taken: &TakenTab) -> Result<String> {
+    put_tab_back_at(&config_file_path(), desk_name, taken)
+}
+
+/// The same, told which settings file to edit.
+pub fn put_tab_back_at(path: &Path, desk_name: &str, taken: &TakenTab) -> Result<String> {
+    let mut given = String::new();
+    with_folders(path, desk_name, |folders| {
+        fn ids(list: &[serde_json::Value], out: &mut std::collections::HashSet<String>) {
+            for line in list {
+                if let Some(id) = line.get("id").and_then(|v| v.as_str()).map(str::trim)
+                    && !id.is_empty()
+                {
+                    out.insert(id.to_string());
+                }
+                if let Some(kids) = line.get("children").and_then(|c| c.as_array()) {
+                    ids(kids, out);
+                }
+            }
+        }
+        let mut used = std::collections::HashSet::new();
+        for g in folders.iter() {
+            if let Some(list) = g.get("tabs").and_then(|t| t.as_array()) {
+                ids(list, &mut used);
+            }
+        }
+        let mut line = taken.line.clone();
+        if !line.is_object() {
+            anyhow::bail!(crate::i18n::t("err.tab.not_in_settings"));
+        }
+        let written = line.get("id").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty());
+        let base = written.map(str::to_string).or_else(|| taken.id.clone()).unwrap_or_else(|| {
+            let name = line.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            match slug_id(&name).is_empty() {
+                false => slug_id(&name),
+                true => "tab".into(),
+            }
+        });
+        given = unique_id(&base, &used);
+        line["id"] = serde_json::json!(given);
+
+        let home = taken.folder.as_deref().map(resolve_folder_cwd);
+        let at = folders.iter().position(|g| {
+            g.get("cwd").and_then(|c| c.as_str()).map(resolve_folder_cwd) == home
+        });
+        let fi = match (at, &taken.folder) {
+            (Some(i), _) => i,
+            (None, Some(c)) => {
+                folders.push(serde_json::json!({ "cwd": c, "tabs": [] }));
+                folders.len() - 1
+            }
+            // The folder that names no path is the first one, and there is
+            // always one to put it in
+            (None, None) => {
+                if folders.is_empty() {
+                    folders.push(serde_json::json!({ "tabs": [] }));
+                }
+                0
+            }
+        };
+        if !folders[fi].get("tabs").is_some_and(|t| t.is_array()) {
+            folders[fi]["tabs"] = serde_json::json!([]);
+        }
+        let mut list = folders[fi]["tabs"].as_array_mut().expect("made just above");
+        let (last, up) = taken.path.split_last().map(|(l, u)| (*l, u)).unwrap_or((usize::MAX, &[]));
+        for i in up {
+            if list.get(*i).is_none_or(|l| !l.is_object()) {
+                break;
+            }
+            if !list[*i].get("children").is_some_and(|c| c.is_array()) {
+                list[*i]["children"] = serde_json::json!([]);
+            }
+            list = list[*i]["children"].as_array_mut().expect("made just above");
+        }
+        let at = last.min(list.len());
+        list.insert(at, line);
+        Ok(())
+    })?;
+    Ok(given)
+}
+
+/// Takes a page out of a desk's `browsers` list -- the older way of opening
+/// one beside the desk, still read. Returns where it stood and the line itself.
+pub fn take_browser(desk_name: &str, id: &str) -> Result<(usize, serde_json::Value)> {
+    take_browser_at(&config_file_path(), desk_name, id)
+}
+
+pub fn take_browser_at(path: &Path, desk_name: &str, id: &str) -> Result<(usize, serde_json::Value)> {
+    with_listed_desk(path, desk_name, |w| {
+        let list = w
+            .get_mut("browsers")
+            .and_then(|b| b.as_array_mut())
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.tab.not_in_settings")))?;
+        let at = list
+            .iter()
+            .position(|b| b.get("id").and_then(|v| v.as_str()) == Some(id))
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.tab.not_in_settings")))?;
+        Ok((at, list.remove(at)))
+    })
+}
+
+/// Puts such a page back where it stood.
+pub fn put_browser_back(desk_name: &str, at: usize, line: &serde_json::Value) -> Result<()> {
+    put_browser_back_at(&config_file_path(), desk_name, at, line)
+}
+
+pub fn put_browser_back_at(path: &Path, desk_name: &str, at: usize, line: &serde_json::Value) -> Result<()> {
+    with_listed_desk(path, desk_name, |w| {
+        if !w.get("browsers").is_some_and(|b| b.is_array()) {
+            w["browsers"] = serde_json::json!([]);
+        }
+        let list = w["browsers"].as_array_mut().expect("made just above");
+        list.insert(at.min(list.len()), line.clone());
+        Ok(())
+    })
+}
+
+/// One entry of the settings' `desks` list, handed over to be changed and
+/// written back. Only for what lives on that entry itself rather than in the
+/// file it may name -- the folders go through `with_folders`
+fn with_listed_desk<T>(
+    path: &Path,
+    desk_name: &str,
+    edit: impl FnOnce(&mut serde_json::Value) -> Result<T>,
+) -> Result<T> {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
+    let mut root: serde_json::Value = serde_json::from_str(without_bom(&text)).with_context(|| {
+        crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())])
+    })?;
+    let w = root
+        .get_mut("desks")
+        .and_then(|w| w.as_array_mut())
+        .and_then(|a| a.iter_mut().find(|w| w.get("name").and_then(|n| n.as_str()) == Some(desk_name)))
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.no_desk")))?;
+    let out = edit(w)?;
+    crate::crypto::write_atomic(path, &serde_json::to_string_pretty(&root)?)?;
+    Ok(out)
+}
+
 /// Opens a desk's groups, hands them over to be changed, and writes the
 /// result back where it came from.
 ///
@@ -3272,8 +3577,12 @@ fn with_folders(
     edit: impl FnOnce(&mut Vec<serde_json::Value>) -> Result<()>,
 ) -> Result<()> {
     let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
-    let mut root: serde_json::Value =
-        serde_json::from_str(without_bom(&text)).unwrap_or_else(|_| serde_json::json!({}));
+    // A file that is there and cannot be read is a person's settings halfway
+    // through an edit, not an empty file: writing an answer over it would
+    // throw away everything else in it
+    let mut root: serde_json::Value = serde_json::from_str(without_bom(&text)).with_context(|| {
+        crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())])
+    })?;
 
     // A desk kept in a file of its own is edited there; the entry in the
     // settings only names it
@@ -3302,8 +3611,14 @@ fn with_folders(
     #[allow(clippy::let_and_return)]
 
     // The object that holds the groups: the desk's own, the file it names,
-    // or the settings themselves when no desk was ever made
-    let holder: &mut serde_json::Value = match (&mut side, desk_name.is_empty()) {
+    // or the settings themselves when no desk was ever made. That last one is
+    // read as a desk called DEFAULT and asked for by that name, so a file with
+    // no list of desks answers to any name at all
+    let unlisted = root
+        .get("desks")
+        .and_then(|w| w.as_array())
+        .is_none_or(|a| a.is_empty());
+    let holder: &mut serde_json::Value = match (&mut side, desk_name.is_empty() || unlisted) {
         (Some(v), _) => v,
         (None, true) => &mut root,
         (None, false) => root
@@ -3404,7 +3719,7 @@ fn retag(tabs: serde_json::Value, mark: &str) -> serde_json::Value {
 }
 
 /// A group's folder as an absolute path, the same way launching resolves it.
-fn resolve_folder_cwd(c: &str) -> std::path::PathBuf {
+pub fn resolve_folder_cwd(c: &str) -> std::path::PathBuf {
     let p = std::path::PathBuf::from(c.trim());
     match p.is_absolute() {
         true => p,
@@ -4923,6 +5238,210 @@ mod tests {
         assert_eq!(one[0].cfg.name.as_deref(), Some("codex"));
         assert_eq!(one[0].cfg.command.argv(), ["codex", "--flag"]);
         assert!(in_folder(2).is_empty(), "it should start nothing, but there are tabs");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A settings file of its own, for the close-and-reopen tests
+    fn tabs_file(tag: &str, body: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("shikisha-{tag}-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        std::fs::write(&file, body).unwrap();
+        (dir, file)
+    }
+
+    fn read_desk(file: &Path) -> Desk {
+        let cfg: Config = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+        cfg.resolve_desks().0.remove(0)
+    }
+
+    /// A path as the settings file spells it, which is JSON
+    fn json_path(p: &str) -> String {
+        p.replace('\\', "\\\\")
+    }
+
+    /// Closing one tab takes its line out and leaves everything else as the
+    /// person wrote it; opening it again puts the same line back where it stood
+    #[test]
+    fn a_closed_tab_goes_back_where_it_stood() {
+        let proj = crate::local_path("D:/work/proj");
+        let (dir, file) = tabs_file(
+            "close",
+            &r#"{"max_chain": 7, "desks": [{"name": "Demo", "folders": [{"cwd": "<proj>", "tabs": [
+                {"name": "実装", "id": "coder", "command": "claude", "locked": true},
+                {"name": "レビュー", "id": "rev", "command": "codex"},
+                {"name": "git", "command": "git"}]}]}]}"#
+                .replace("<proj>", &json_path(&proj)),
+        );
+        let desk = read_desk(&file);
+        let taken = take_tab_at(&file, "Demo", 0, &TabMark::of(&desk, &desk.tabs[0])).unwrap();
+        assert_eq!(taken.path, vec![0]);
+        assert_eq!(taken.line["locked"], serde_json::json!(true), "what was written on the tab was not kept");
+        let after = read_desk(&file);
+        assert_eq!(
+            after.tabs.iter().map(|t| t.cfg.id.clone().unwrap_or_default()).collect::<Vec<_>>(),
+            ["rev", "git"],
+            "a different tab was taken out"
+        );
+        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(raw["max_chain"], serde_json::json!(7), "the rest of the settings were disturbed");
+
+        let id = put_tab_back_at(&file, "Demo", &taken).unwrap();
+        assert_eq!(id, "coder");
+        let back = read_desk(&file);
+        assert_eq!(back.tabs[0].cfg.id.as_deref(), Some("coder"), "it did not go back where it stood");
+        assert!(back.tabs[0].cfg.locked);
+        assert_eq!(back.tabs.len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Copies of a folder's tabs share their names and commands. Closing the
+    /// one in the second folder must not take the first folder's
+    #[test]
+    fn a_copy_in_another_folder_is_not_mistaken_for_the_one_closed() {
+        let a = crate::local_path("D:/work/proj");
+        let b = crate::local_path("D:/work/proj.worktrees/login");
+        let (dir, file) = tabs_file(
+            "close-copy",
+            &r#"{"desks": [{"name": "Demo", "folders": [
+                {"cwd": "<a>", "tabs": [{"name": "AI", "command": "claude"}]},
+                {"cwd": "<b>", "tabs": [{"name": "AI", "command": "claude"}]}]}]}"#
+                .replace("<a>", &json_path(&a))
+                .replace("<b>", &json_path(&b)),
+        );
+        let desk = read_desk(&file);
+        // Asked for by a position that has gone stale -- the file lost a line
+        // above it since it was read. The folder still tells the two apart
+        let taken = take_tab_at(&file, "Demo", 0, &TabMark::of(&desk, &desk.tabs[1])).unwrap();
+        assert_eq!(taken.folder.as_deref(), Some(b.as_str()));
+        let after = read_desk(&file);
+        assert_eq!(after.tabs.len(), 1);
+        assert_eq!(after.tabs[0].folder, 0, "the tab in the other folder was taken out");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tab's children stay when it closes. The indent is only how they are
+    /// drawn, and closing one tab is not closing three
+    #[test]
+    fn closing_a_tab_leaves_its_children_in_its_place() {
+        let (dir, file) = tabs_file(
+            "close-kids",
+            r#"{"desks": [{"name": "Demo", "folders": [{"tabs": [
+                {"name": "親", "id": "lead", "command": "claude", "children": [
+                    {"name": "子1", "id": "k1", "command": "codex"},
+                    {"name": "子2", "id": "k2", "command": "codex"}]},
+                {"name": "隣", "id": "next", "command": "claude"}]}]}]}"#,
+        );
+        let desk = read_desk(&file);
+        let taken = take_tab_at(&file, "Demo", 0, &TabMark::of(&desk, &desk.tabs[0])).unwrap();
+        assert!(taken.line.get("children").is_none(), "the children went with it");
+        let after = read_desk(&file);
+        assert_eq!(
+            after.tabs.iter().map(|t| (t.cfg.id.clone().unwrap_or_default(), t.depth)).collect::<Vec<_>>(),
+            [("k1".to_string(), 0), ("k2".to_string(), 0), ("next".to_string(), 0)],
+            "the children did not move up into its place"
+        );
+        // A child closes from inside its parent, and goes back there
+        let (dir2, file2) = tabs_file(
+            "close-kid",
+            r#"{"desks": [{"name": "Demo", "folders": [{"tabs": [
+                {"name": "親", "id": "lead", "command": "claude", "children": [
+                    {"name": "子1", "id": "k1", "command": "codex"},
+                    {"name": "子2", "id": "k2", "command": "codex"}]}]}]}]}"#,
+        );
+        let desk = read_desk(&file2);
+        let taken = take_tab_at(&file2, "Demo", 2, &TabMark::of(&desk, &desk.tabs[2])).unwrap();
+        assert_eq!(taken.path, vec![0, 1]);
+        put_tab_back_at(&file2, "Demo", &taken).unwrap();
+        let back = read_desk(&file2);
+        assert_eq!(back.tabs[2].cfg.id.as_deref(), Some("k2"));
+        assert_eq!(back.tabs[2].depth, 1, "it did not go back under its parent");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    /// Opened again after another tab took its name: it comes back under a
+    /// name of its own, and the tab that never left keeps the one it has
+    #[test]
+    fn a_reopened_tab_does_not_take_a_name_from_the_tab_that_stayed() {
+        let (dir, file) = tabs_file(
+            "reopen-name",
+            r#"{"desks": [{"name": "Demo", "folders": [{"tabs": [
+                {"name": "AI", "id": "coder", "command": "claude"}]}]}]}"#,
+        );
+        let desk = read_desk(&file);
+        let taken = take_tab_at(&file, "Demo", 0, &TabMark::of(&desk, &desk.tabs[0])).unwrap();
+        // Somebody adds a tab of the same name in the meantime
+        let mut raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        raw["desks"][0]["folders"][0]["tabs"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"name": "AI", "id": "coder", "command": "claude"}));
+        std::fs::write(&file, raw.to_string()).unwrap();
+
+        let id = put_tab_back_at(&file, "Demo", &taken).unwrap();
+        assert_eq!(id, "coder-2");
+        let back = read_desk(&file);
+        assert_eq!(back.tabs[0].cfg.id.as_deref(), Some("coder-2"));
+        assert_eq!(back.tabs[1].cfg.id.as_deref(), Some("coder"), "the tab that stayed was renamed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tab whose folder was closed in the meantime brings the folder back
+    #[test]
+    fn a_reopened_tab_brings_its_folder_back() {
+        let a = crate::local_path("D:/work/a");
+        let b = crate::local_path("D:/work/b");
+        let (dir, file) = tabs_file(
+            "reopen-folder",
+            &r#"{"desks": [{"name": "Demo", "folders": [
+                {"cwd": "<a>", "tabs": [{"name": "A", "id": "a", "command": "claude"}]},
+                {"cwd": "<b>", "tabs": [{"name": "B", "id": "b", "command": "claude"}]}]}]}"#
+                .replace("<a>", &json_path(&a))
+                .replace("<b>", &json_path(&b)),
+        );
+        let desk = read_desk(&file);
+        let taken = take_tab_at(&file, "Demo", 1, &TabMark::of(&desk, &desk.tabs[1])).unwrap();
+        with_folders(&file, "Demo", |folders| {
+            folders.remove(1);
+            Ok(())
+        })
+        .unwrap();
+        put_tab_back_at(&file, "Demo", &taken).unwrap();
+        let back = read_desk(&file);
+        assert_eq!(back.folders.len(), 2, "the folder did not come back");
+        assert_eq!(back.folders[1].cwd.as_deref(), Some(Path::new(&b)));
+        assert_eq!(back.tabs[1].cfg.id.as_deref(), Some("b"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Settings that never made a desk are read as one called DEFAULT, and a
+    /// tab in them closes like any other
+    #[test]
+    fn a_tab_closes_in_settings_with_no_list_of_desks() {
+        let (dir, file) = tabs_file(
+            "close-flat",
+            r#"{"tabs": [{"name": "one", "command": "claude"}, {"name": "two", "command": "codex"}]}"#,
+        );
+        let desk = read_desk(&file);
+        assert_eq!(desk.name, "DEFAULT");
+        take_tab_at(&file, &desk.name, 1, &TabMark::of(&desk, &desk.tabs[1])).unwrap();
+        let after = read_desk(&file);
+        assert_eq!(after.tabs.len(), 1);
+        assert_eq!(after.tabs[0].cfg.name.as_deref(), Some("one"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A settings file halfway through an edit is not an empty one, and a
+    /// change written over it would throw the rest of it away
+    #[test]
+    fn a_settings_file_that_cannot_be_read_is_not_written_over() {
+        let broken = r#"{"desks": [{"name": "Demo","#;
+        let (dir, file) = tabs_file("close-broken", broken);
+        let mark = TabMark { id: Some("x".into()), name: None, argv: vec![], folder: None };
+        assert!(take_tab_at(&file, "Demo", 0, &mark).is_err());
+        assert!(append_folder_at(&file, "Demo", None, Path::new("x"), None, &Start::Nothing, None).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), broken, "the file was written over");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

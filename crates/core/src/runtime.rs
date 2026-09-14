@@ -13,8 +13,8 @@ use crate::keymap::{key_to_bytes_with, named_key};
 use crate::send::{PendingSend, Step, paste_chunks};
 use crate::tab::{CopyState, RecordedStep, Tab, extract_text};
 use crate::view::{
-    RESULT_TAB, ScreenPush, Size, Surface, Ui, pty_dims, remote_floor, screen_push, surfaces_of,
-    terminal_size, title_of,
+    RESULT_TAB, ScreenPush, Size, Surface, Ui, pty_dims, remote_floor, screen_push, surface_key,
+    surface_moves, surfaces_of, surfaces_written, terminal_size, title_of,
 };
 use crate::desk::{
     apply_ws_config, build_engine, extract_env_block, open_declared_browsers, panel_places,
@@ -269,7 +269,7 @@ pub fn retry_failed(
     };
     let desk = desk?;
     let mut errors = Vec::new();
-    crate::desk::apply_ws_config(tabs, desk, rows, cols, &mut errors);
+    crate::desk::apply_ws_config(tabs, desk, rows, cols, &mut errors, &mut Default::default());
     Some(match crate::desk::launch_failure(&desk.name, name) {
         Some(still) => still.why,
         None => i18n::tp("msg.failed.started", &[("name", name)]),
@@ -933,6 +933,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // local config server yet. Done once per remote instance (reset when remote
     // is (re)started), so a phone's `/cfg` can reach the config UI.
     let mut settings_linked = false;
+    // Tabs closed from the tab bar, kept so they can be opened again
+    let mut closed_tabs = crate::closed::Closed::load();
+    // A tab's ✕ waiting for its answer, and how many have been asked, so the
+    // page opens each question once
+    let mut close_ask: Option<crate::uistate::CloseAskState> = None;
+    let mut close_asked: u64 = 0;
+    // Tabs to end at the top of the next pass, by serial. Not there and then:
+    // the rows for that pass are already worked out by tab position, and
+    // taking a tab out from under them would point the rest of the pass at its
+    // neighbours
+    let mut ending: Vec<u64> = Vec::new();
+    // Conversations to hand tabs as they are started again, by automation name
+    let mut resume_for: std::collections::HashMap<String, tab::Session> =
+        std::collections::HashMap::new();
+    // A reopened tab to bring into view once it is on screen, and until when
+    // to keep looking for it
+    let mut reveal: Option<(String, Instant)> = None;
+    // What each row was on the last pass, and on which desk, so a pane can
+    // follow its tab when the rows move
+    let mut rows_were: (String, Vec<String>) = (String::new(), Vec::new());
 
     loop {
         // Install the remote server the moment its background bind lands.
@@ -982,12 +1002,73 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         settings_linked = true;
                     }
 
+        // Tabs closed on the last pass end here, before the rows are worked out
+        if !ending.is_empty() {
+            let mut at = 0;
+            tabs.retain_mut(|t| {
+                let goes = ending.contains(&t.serial());
+                if goes {
+                    t.kill();
+                    if at < started_fired.len() {
+                        started_fired.remove(at);
+                    }
+                } else {
+                    at += 1;
+                }
+                !goes
+            });
+            ending.clear();
+        }
+
         // What's laid out on screen, in the order written in config.
         // The upper bound of pressable numbers needs more than just the session count.
         let hosted = caps.hosted_names();
         let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
         let surfaces = surfaces_of(desks.get(desk_index), &titles, &hosted, &editors);
         let surface_count = surfaces.len();
+        // The rows moved since the last pass: keep every pane on what it was
+        // showing. Only on one desk -- switching is another set of rows
+        // altogether, with an arrangement of its own
+        {
+            let desk_now = desks.get(desk_index).map(|d| d.name.clone()).unwrap_or_default();
+            let keys: Vec<String> = surfaces.iter().map(|s| surface_key(s, &tabs)).collect();
+            if rows_were.0 == desk_now && !rows_were.1.is_empty() && rows_were.1 != keys {
+                let moves = surface_moves(&rows_were.1, &keys);
+                let was_focused = pane_layout.focused_surface();
+                pane_layout.follow(&moves);
+                // `active` is the focused pane's row, and follows it. When
+                // something asked for another row on the last pass it is that
+                // row, which has moved like any other
+                active = match active {
+                    0 => 0,
+                    n if n == was_focused => pane_layout.focused_surface(),
+                    n => moves.get(n - 1).copied().flatten().unwrap_or(pane_layout.focused_surface()),
+                };
+            }
+            rows_were = (desk_now, keys);
+        }
+        // A tab just opened again, now that it is here
+        if let Some((name, until)) = &reveal {
+            if let Some(n) = crate::closed::row_named(&surfaces, &tabs, name) {
+                active = n;
+                board_open = false;
+                view_touched_ms = start.elapsed().as_millis() as u64;
+                reveal = None;
+            } else if Instant::now() > *until {
+                reveal = None;
+            }
+        }
+        // A question about a row that is no longer there has nothing to ask
+        if close_ask.as_ref().is_some_and(|a| {
+            a.tab
+                .checked_sub(1)
+                .and_then(|i| surfaces.get(i))
+                .map(|s| surface_key(s, &tabs))
+                .as_deref()
+                != Some(a.key.as_str())
+        }) {
+            close_ask = None;
+        }
         // Keep the tree and `active` in step. Anything in the loop may set
         // `active` (a digit, an automation, the settings screen closing); the
         // focused pane follows it, and moving focus between panes sets `active`
@@ -1148,7 +1229,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let mut msg = i18n::t("msg.config_reloaded");
                 if let Some(w) = new_ws.get(target) {
                     let before = startup_errors.len();
-                    msg = apply_ws_config(&mut tabs, w, rows, cols, &mut startup_errors);
+                    msg = apply_ws_config(&mut tabs, w, rows, cols, &mut startup_errors, &mut resume_for);
                     // A tab that the save asked for and could not start is what
                     // there is to say, not that the settings were read. The tab
                     // itself stays on screen saying the same (Surface::Failed)
@@ -2366,6 +2447,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::ClosePane { id }) => {
                         shell.mail().close_panes.push(id);
                     }
+                    // A tab's ✕, the answer to its question, and opening a
+                    // closed one again: the window's queues, so the phone is
+                    // asked the same question the window is
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::CloseTab { tab, key, sure }) => {
+                        shell.mail().close_tabs.push((tab, key, sure));
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::CloseTabBack) => {
+                        shell.mail().close_tab_back = true;
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::ReopenTab { id }) => {
+                        shell.mail().reopen_tabs.push(id);
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::SplitPane { id, down }) => {
                         shell.mail().pane_splits.push((id, down));
                     }
@@ -2667,6 +2760,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             usage,
             thanks: thanks_show.then(|| thanks_kind.to_string()),
             update: update::ask(),
+            close_ask: close_ask.clone(),
+            closed: desks.get(desk_index).map(|d| closed_tabs.shown(&d.name)).unwrap_or_default(),
             first_run,
             // Any desk: a phone registers itself once, for whichever desk
             // sends to it
@@ -3090,6 +3185,76 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 flash = Some(i18n::t("msg.pane_last"));
             }
         }
+        // A tab's ✕, its middle click, the key, the phone: one door for all of
+        // them, so none of them can close a working AI without the question.
+        // The rows are worked out again here because a reload earlier in this
+        // pass may have changed them; the key a press carries is checked
+        // against these
+        let closing = shell.mail().take_close_tabs();
+        if !closing.is_empty() {
+            let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
+            let rows = surfaces_written(desks.get(desk_index), &titles, &caps.hosted_names(), &editors);
+            for (at, key, sure) in closing {
+                close_asked += 1;
+                match crate::closed::close(
+                    at,
+                    &key,
+                    sure,
+                    &rows,
+                    &tabs,
+                    desks.get(desk_index),
+                    &caps,
+                    &mut closed_tabs,
+                    close_asked,
+                ) {
+                    crate::closed::Closing::Nothing => {}
+                    crate::closed::Closing::Ask(ask) => close_ask = Some(ask),
+                    crate::closed::Closing::Closed { note, settings, ends } => {
+                        close_ask = None;
+                        match ends {
+                            crate::closed::Ends::Tab(serial) => ending.push(serial),
+                            crate::closed::Ends::Editor(key) => editors.retain(|e| e.key != key),
+                            crate::closed::Ends::Nothing => {}
+                        }
+                        if settings {
+                            // The reload that takes the line out says this
+                            // instead of "settings reloaded"
+                            said_before_reload = Some((Instant::now(), note));
+                            watcher.poke();
+                        } else {
+                            flash = Some(note);
+                        }
+                    }
+                    crate::closed::Closing::Failed(why) => {
+                        close_ask = None;
+                        flash = Some(why);
+                    }
+                }
+            }
+        }
+        if shell.mail().take_close_tab_back() {
+            close_ask = None;
+        }
+        for which in shell.mail().take_reopen_tabs() {
+            let Some(d) = desks.get(desk_index) else { continue };
+            match crate::closed::reopen(which, d, &caps, &mut closed_tabs) {
+                crate::closed::Reopening::Reopened { note, settings, reveal: name, resume } => {
+                    if let Some((id, s)) = resume {
+                        resume_for.insert(id, s);
+                    }
+                    reveal = Some((name, Instant::now() + Duration::from_secs(10)));
+                    if settings {
+                        said_before_reload = Some((Instant::now(), note));
+                        watcher.poke();
+                    } else {
+                        flash = Some(note);
+                    }
+                }
+                crate::closed::Reopening::Nothing(why) | crate::closed::Reopening::Failed(why) => {
+                    flash = Some(why);
+                }
+            }
+        }
         // Place every browser that has a pane, at that pane's rectangle.
         // Collapsed to nothing when it has no pane — the page stays alive, so
         // coming back to it doesn't reload it.
@@ -3100,7 +3265,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // puts a drawn thing over it. So while something is being shown
             // over the screen, the browsers step aside. They keep their pages;
             // being given no rectangle is all that happens to them
-            let covered = help_open || desk_open || qr_open;
+            // The question a tab's ✕ asks is one of those things
+            let covered = help_open || desk_open || qr_open || close_ask.is_some();
             // The settings form is a screen, not a pane: it covers the content
             // area and the layout waits underneath. It asks about the whole
             // app, so seating it in one corner of the app made as little sense
@@ -5150,6 +5316,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 flash = Some(i18n::t("msg.pane_last"));
                             }
                         }
+                        // Ctrl+B & closes the tab in view -- the tab, not the
+                        // pane, and so not a slip of the finger away from X.
+                        // Through the same queue as its ✕, so it asks the same
+                        // question when its AI is at work
+                        KeyCode::Char('&') => {
+                            if let Some(s) = (!board_open && !settings_open)
+                                .then(|| active.checked_sub(1).and_then(|i| surfaces.get(i)))
+                                .flatten()
+                            {
+                                let key = surface_key(s, &tabs);
+                                shell.mail().close_tabs.push((active, key, false));
+                            }
+                        }
+                        // Ctrl+B T opens the tab closed last, the way a browser's
+                        // Ctrl+Shift+T does
+                        KeyCode::Char('T') => shell.mail().reopen_tabs.push(None),
                         // Ctrl+B [ enters copy mode (tmux copy-mode style)
                         KeyCode::Char('[') => {
                             let rows = pty_dims(shell.size()?).0;
@@ -9290,7 +9472,7 @@ mod tests {
                 {"name":"three","command":"<sh>"}
             ]}]}]}"#,
         );
-        let msg = apply_ws_config(&mut tabs, &desk1, 24, 80, &mut errs);
+        let msg = apply_ws_config(&mut tabs, &desk1, 24, 80, &mut errs, &mut Default::default());
 
         assert_eq!(
             tabs.iter().map(|t| t.title.clone()).collect::<Vec<_>>(),
@@ -9309,7 +9491,7 @@ mod tests {
                 {"name":"three","command":"<sh>"}
             ]}]}]}"#,
         );
-        let msg2 = apply_ws_config(&mut tabs, &desk2, 24, 80, &mut errs);
+        let msg2 = apply_ws_config(&mut tabs, &desk2, 24, 80, &mut errs, &mut Default::default());
         assert!(tabs[0].needs_restart, "it is marked as needing a restart");
         assert!(msg2.contains("1 need a restart"), "{msg2}");
 

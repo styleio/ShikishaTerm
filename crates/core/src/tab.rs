@@ -2514,10 +2514,20 @@ impl Session {
     }
 }
 
+/// The next number a tab is handed. See [`Tab::serial`]
+static NEXT_SERIAL: AtomicU64 = AtomicU64::new(1);
+
 pub struct Tab {
     pub title: String,
     /// ID referenced by automation (optional). If unset, the tab name is used to reference it
     pub id: Option<String>,
+    /// This tab, as opposed to any other, for as long as the app runs.
+    ///
+    /// Neither the name nor the id will do: copies of a folder's tabs share
+    /// their names, a hand-written tab may have no id, and the position in the
+    /// list moves whenever one before it goes. Kept across a restart, because a
+    /// restarted tab is still the same tab to the person looking at it
+    serial: u64,
     /// The conversation this tab's CLI is running, and how that came to be
     /// known. Kept across a restart on purpose: it is the whole point of
     /// knowing it — a restart that starts the conversation over is the damage
@@ -3124,6 +3134,7 @@ impl Tab {
             resume: resume_spec,
             title,
             id: opts.id.clone(),
+            serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
             model: opts.model.clone(),
             parser,
             writer,
@@ -3387,6 +3398,7 @@ impl Tab {
         fresh.depth = self.depth;
         fresh.auto_restart = self.auto_restart;
         fresh.id = self.id.clone();
+        fresh.serial = self.serial;
         fresh.notify_on_done = self.notify_on_done.clone();
         fresh.notify_reply = self.notify_reply;
         fresh.previous = self.previous.clone();
@@ -3547,6 +3559,22 @@ impl Tab {
     /// Whether anything has been said in this tab since it started
     pub fn spoke(&self) -> bool {
         self.spoke.load(Ordering::Relaxed)
+    }
+
+    /// Which tab this is, for as long as the app runs (see the field)
+    pub fn serial(&self) -> u64 {
+        self.serial
+    }
+
+    /// The conversation worth coming back to if this tab were opened again
+    /// now: the one it has been using, or -- when nobody has said anything in
+    /// it this run -- the one it had before. The same choice the last session
+    /// makes when the app closes, for the same reason
+    pub fn conversation_to_keep(&self) -> Option<&Session> {
+        match self.spoke() {
+            true => self.session.as_ref().or(self.previous.as_ref()),
+            false => self.previous.as_ref().or(self.session.as_ref()),
+        }
     }
 
     /// When this tab's process started, on the wall clock
