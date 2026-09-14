@@ -133,6 +133,10 @@ pub struct TabState {
     /// project's. Absent where there is no repository to sign in to
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_acct: Option<GitAcctState>,
+    /// Words to put in the input bar the first time this tab is looked at --
+    /// the address of the issue a worktree was just made for -- and not send
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<String>,
     /// For a tab that could not be started: why, and where to read how to
     /// install what it needs
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -340,6 +344,10 @@ pub struct GroupState {
     /// just added is exactly that folder. It is shown so its + can be pressed
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub empty: bool,
+    /// The issue or pull request this folder was made for, as the settings
+    /// wrote it (`issue:owner/name#12`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item: Option<String>,
 }
 
 impl GroupState {
@@ -399,6 +407,7 @@ impl GroupState {
                     health: Default::default(),
                     drift: Default::default(),
                     empty: false,
+                    work_item: None,
                 },
             ));
         }
@@ -431,6 +440,7 @@ impl GroupState {
                     health: Default::default(),
                     drift: Default::default(),
                     empty: true,
+                    work_item: None,
                 },
             ));
         }
@@ -446,6 +456,13 @@ impl GroupState {
     /// `named` is (a folder, the project it says it is in). A name written on
     /// one folder of a household names the whole household: the worktrees cut
     /// from a checkout do not each repeat what project they are
+    /// Mark each folder with the issue or pull request it was made for
+    pub fn name_work_items(groups: &mut [(std::path::PathBuf, GroupState)], items: &[(std::path::PathBuf, String)]) {
+        for (at, g) in groups.iter_mut() {
+            g.work_item = items.iter().find(|(k, _)| same_folder(k, at)).map(|(_, w)| w.clone());
+        }
+    }
+
     pub fn name_projects(groups: &mut [(std::path::PathBuf, GroupState)], named: &[(std::path::PathBuf, String)]) {
         let mut by_family: Vec<(String, String)> = Vec::new();
         for (at, name) in named {
@@ -1474,6 +1491,7 @@ impl TabState {
             away: None,
             git_acct: None,
             failed: None,
+            draft: None,
             // Filled in by `view::ui_state_of`, which knows the rows
             key: String::new(),
         }
@@ -1507,6 +1525,17 @@ impl TabState {
             group,
             restartable: false,
             ..Self::browser(index, key, name)
+        }
+    }
+
+    /// The Issue tab: the desk's issues and pull requests, drawn by the board
+    pub fn issues(index: usize, key: &str) -> Self {
+        Self {
+            kind: "issues".into(),
+            state: "ISSUES".into(),
+            state_label: crate::i18n::t("tui.state.issues"),
+            restartable: false,
+            ..Self::browser(index, key, &crate::i18n::t("tui.issues.tab"))
         }
     }
 
@@ -1576,6 +1605,7 @@ impl TabState {
             away: None,
             git_acct: None,
             failed: None,
+            draft: None,
             key: String::new(),
         }
     }
@@ -1930,6 +1960,7 @@ mod tests {
             away: None,
             git_acct: None,
             failed: None,
+            draft: None,
             file: None,
             file_stamp: None,
             key: format!("tab:{index}"),

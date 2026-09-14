@@ -1047,6 +1047,23 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 `git_status` / `git_diff` / `git_log` から。`git_run` を開けることは「git の全権を渡す」と
 同じ意味です。
 
+### GitHub
+
+タブが作業しているリポジトリの Issue とプルリクエストを扱います。サインインには、そのタブのプロジェクトが選んだ git アカウント（git タブならタブ自身の選択）を使います。どれも、サーバと話す git の命令と同じく GitHub の返事を待ちます。返るのはテーブルで、一覧の「Issue」タブが表示しているのと同じ答えです。
+
+| 命令 | すること |
+|---|---|
+| `shikisha.github_issues(タブ, {state=…, mine=…, text=…, page=…})` | Issue の一覧を1ページ分: `{repo, total, page, per_page, items}`。各項目は `{kind, number, title, state, reason, author, labels, assignees, comments, updated, url, workspace}`。`state` は `open`（既定）・`closed`・`all`、`mine` はそのアカウントが担当の Issue、`text` は GitHub の検索語（`label:bug` など） |
+| `shikisha.github_prs(タブ, {state=…, mine=…, review=…, text=…, page=…})` | プルリクエストの一覧。`state` は `merged` も使え、`mine` はそのアカウントが作ったもの、`review` はそのアカウントのレビュー待ち。項目に `draft` も付く |
+| `shikisha.github_issue(タブ, 番号)` | Issue を1件、全部: 上の項目に加えて `body`・`created`・`comments`（`{author, bot, body, created, url}`）・`events`（`{kind, actor, subject, reason, created}`） |
+| `shikisha.github_pr(タブ, 番号)` | プルリクエストを1件、全部: 上に加えて `head`・`base`・`fork`・`merged`・`mergeable`・`merge_state`・`additions`・`deletions`・`changed_files`・`reviewers`・`review`（`approved` / `changes_requested` / 空）・`checks`（`{failed, pending, passed, total, items}`） |
+| `shikisha.github_labels(タブ)` / `shikisha.github_assignees(タブ)` | Issue に付けられるラベルと、担当にできる人のログイン名 |
+| `shikisha.github_issue_create(タブ, {title=…, body=…, labels=…, assignees=…})` | Issue を作る。`{number, url}` を返す |
+| `shikisha.github_comment(タブ, 番号, "本文")` | Issue やプルリクエストにコメントする。`{id, url}` を返す |
+| `shikisha.github_issue_state(タブ, 番号, 状態, {duplicate_of=…})` | `open`・`completed`・`not_planned`・`duplicate`（`duplicate_of` と一緒に。「Duplicate of #番号」のコメントも付く） |
+| `shikisha.github_pr_state(タブ, 番号, "open" か "closed")` | プルリクエストをマージせずに閉じる、または開き直す |
+| `shikisha.github_pr_merge(タブ, 番号, 方法)` | マージする: `squash`（既定）・`merge`・`rebase`。ブランチはそのまま残す |
+
 ### ファイル・通信
 
 「窓口」を登録しない限り使えません。6章を参照してください。

@@ -1032,6 +1032,23 @@ that path never launches git, which is why it still answers during a rebase.
 is to be let in, `git_status` / `git_diff` / `git_log` are the place to start. Opening
 `git_run` is the same as handing it all of git.
 
+### GitHub
+
+The issues and pull requests of the repository a tab works in, signed in as the git account that tab's project chose (a git tab's own). Each waits for GitHub, like the git commands that talk to a server. A table comes back; the Issues tab in the list shows the same answers.
+
+| Command | What it does |
+|---|---|
+| `shikisha.github_issues(tab, {state=…, mine=…, text=…, page=…})` | One page of issues: `{repo, total, page, per_page, items}`, each item `{kind, number, title, state, reason, author, labels, assignees, comments, updated, url, workspace}`. `state` is `open` (default), `closed` or `all`; `mine` is issues assigned to the account; `text` is GitHub's own search words (`label:bug`) |
+| `shikisha.github_prs(tab, {state=…, mine=…, review=…, text=…, page=…})` | The same for pull requests. `state` can also be `merged`; `mine` is ones the account opened; `review` is ones waiting for its review. An item carries `draft` too |
+| `shikisha.github_issue(tab, number)` | One issue in full: the row above plus `body`, `created`, `comments` (`{author, bot, body, created, url}`) and `events` (`{kind, actor, subject, reason, created}`) |
+| `shikisha.github_pr(tab, number)` | One pull request in full, as above plus `head`, `base`, `fork`, `merged`, `mergeable`, `merge_state`, `additions`, `deletions`, `changed_files`, `reviewers`, `review` (`approved` / `changes_requested` / empty) and `checks` (`{failed, pending, passed, total, items}`) |
+| `shikisha.github_labels(tab)` / `shikisha.github_assignees(tab)` | The labels an issue can have, and the logins it can be assigned to |
+| `shikisha.github_issue_create(tab, {title=…, body=…, labels=…, assignees=…})` | Open an issue. Answers `{number, url}` |
+| `shikisha.github_comment(tab, number, "text")` | Comment on an issue or a pull request. Answers `{id, url}` |
+| `shikisha.github_issue_state(tab, number, state, {duplicate_of=…})` | `open`, `completed`, `not_planned`, or `duplicate` (with `duplicate_of`, which also posts "Duplicate of #n") |
+| `shikisha.github_pr_state(tab, number, "open" or "closed")` | Close a pull request without merging it, or open it again |
+| `shikisha.github_pr_merge(tab, number, method)` | Merge: `squash` (default), `merge` or `rebase`. The branch is left where it is |
+
 ### Files and the network
 
 Off unless you register a gateway — see section 6.

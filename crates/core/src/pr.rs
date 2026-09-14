@@ -166,7 +166,7 @@ fn serve(
 /// terminal here would sign in with. Asked of git's own credential store the
 /// way git asks it, with nobody to prompt -- a store that has nothing says so
 /// and this is None
-fn pc_token() -> Option<String> {
+pub fn pc_token() -> Option<String> {
     let said = crate::git::run_as(
         &std::env::temp_dir(),
         &["-c", "credential.interactive=never", "credential", "fill"],

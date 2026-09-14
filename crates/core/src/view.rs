@@ -235,6 +235,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     // window and the phone are looking at the same list
     let mut groups = crate::uistate::GroupState::all(tabs, &ui.folder_colors, &ui.folders);
     crate::uistate::GroupState::name_projects(&mut groups, &ui.folder_projects);
+    crate::uistate::GroupState::name_work_items(&mut groups, &ui.folder_items);
     // And whether each of them is on this machine. Asked here because this is
     // the one place the list is built, and answered from a table kept up to
     // date on its own threads -- a drive that has stopped answering must not
@@ -320,6 +321,11 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             .filter_map(|(i, p)| Some((p, match p {
                 Surface::Session(s) => tabs.get(*s).map(|t| {
                     let mut ts = crate::uistate::TabState::of(i + 1, t);
+                    ts.draft = t
+                        .cwd()
+                        .filter(|_| t.is_ai())
+                        .and_then(|c| ui.drafts.iter().find(|(k, _)| crate::uistate::same_folder(k, c)))
+                        .map(|(_, d)| d.clone());
                     ts.group = t.cwd().and_then(|c| {
                         groups.iter().position(|(k, _)| crate::uistate::same_folder(k, c))
                     });
@@ -371,6 +377,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                         ui.editors.iter().find(|e| &e.key == key).and_then(|e| e.stamp.clone());
                     Some(t)
                 }
+                Surface::Issues { key } => Some(crate::uistate::TabState::issues(i + 1, key)),
                 Surface::Failed { key, name, dir, why, install_url } => {
                     let group = dir.as_deref().and_then(|d| {
                         groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
@@ -453,7 +460,8 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                 | Surface::Git { .. }
                 | Surface::Sftp { .. }
                 | Surface::Editor { .. }
-                | Surface::Failed { .. } => false,
+                | Surface::Failed { .. }
+                | Surface::Issues { .. } => false,
             });
             let ring_idle = matches!(ui.ball.phase(ui.now_ms), crate::ball::Phase::Idle);
             !anyone_active && ring_idle
@@ -471,7 +479,7 @@ mod file_panel_tests {
         let (desks, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
         let desk = desks.first().expect("there is no desk");
-        surfaces_of(Some(desk), &[], &[], &[]).into_iter().find_map(|s| match s {
+        surfaces_of(Some(desk), &[], &[], &[], false).into_iter().find_map(|s| match s {
             Surface::Sftp { at, .. } => Some(at),
             _ => None,
         })?
@@ -617,9 +625,13 @@ pub fn surfaces_of(
     titles: &[&str],
     hosted: &[String],
     editors: &[EditorOpen],
+    issues: bool,
 ) -> Vec<Surface> {
-    surfaces_written(desk, titles, hosted, editors).into_iter().map(|(s, _)| s).collect()
+    surfaces_written(desk, titles, hosted, editors, issues).into_iter().map(|(s, _)| s).collect()
 }
+
+/// What the Issue tab is called by automation and by the board
+pub const ISSUES_KEY: &str = "issues";
 
 /// The same list, each row with where it is written in the settings: its
 /// position in the desk's tabs, or nothing for a row the settings never
@@ -631,6 +643,7 @@ pub fn surfaces_written(
     titles: &[&str],
     hosted: &[String],
     editors: &[EditorOpen],
+    issues: bool,
 ) -> Vec<(Surface, Option<usize>)> {
     let mut out: Vec<(Surface, Option<usize>)> = Vec::new();
     let mut used_tabs = vec![false; titles.len()];
@@ -785,6 +798,11 @@ pub fn surfaces_written(
             ));
         }
     }
+    // The Issue tab, while it is open. Written nowhere: opened from its row in
+    // the list and put away with its ✕
+    if issues {
+        out.push((Surface::Issues { key: ISSUES_KEY.to_string() }, None));
+    }
     // Things not in config (opened later by automation, the settings screen, etc.) — the name is all there is
     for h in hosted {
         if !used_web.iter().any(|u| u == h) {
@@ -893,6 +911,11 @@ pub struct Ui {
     /// Of those, the ones the settings say which project they are in: (the
     /// folder, the project's name)
     pub folder_projects: Vec<(std::path::PathBuf, String)>,
+    /// Of those, the ones made for an issue or a pull request: (the folder, what for)
+    pub folder_items: Vec<(std::path::PathBuf, String)>,
+    /// Words waiting for the input bar of the AI tabs in a folder: (the folder,
+    /// the words). The address of the issue a worktree was just made for
+    pub drafts: Vec<(std::path::PathBuf, String)>,
     /// Of those, the ones that live on another machine. This machine has no
     /// opinion worth having about them: it is asked whether every folder is
     /// here, and for these the answer is "no" and is not a fault
@@ -977,6 +1000,9 @@ pub enum Surface {
         why: String,
         install_url: Option<String>,
     },
+    /// The issues and pull requests of the desk's projects, drawn by the board.
+    /// One per desk, opened from the list's own row and put away like a tab
+    Issues { key: String },
     /// The editor: one text file of this tab's folder, drawn by the board.
     ///
     /// Like the git panel it has no process and no page, and it carries the
@@ -1027,6 +1053,7 @@ pub fn surface_key(s: &Surface, tabs: &[Tab]) -> String {
         Surface::Sftp { key, .. } => format!("sftp:{key}"),
         Surface::Editor { key, .. } => format!("editor:{key}"),
         Surface::Failed { key, .. } => format!("failed:{key}"),
+        Surface::Issues { key } => format!("issues:{key}"),
     }
 }
 

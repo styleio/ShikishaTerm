@@ -59,6 +59,7 @@ pub enum Group {
     Layout,
     Basics,
     Git,
+    GitHub,
     Advanced,
 }
 
@@ -73,13 +74,14 @@ impl Group {
             Group::Layout => "layout",
             Group::Basics => "basics",
             Group::Git => "git",
+            Group::GitHub => "github",
             Group::Advanced => "advanced",
         }
     }
 
     /// The order they appear on screen: what automation touches most first,
     /// what can hurt last
-    pub const ORDER: [Group; 9] = [
+    pub const ORDER: [Group; 10] = [
         Group::Tabs,
         Group::Report,
         Group::Browser,
@@ -87,6 +89,7 @@ impl Group {
         Group::Layout,
         Group::Basics,
         Group::Git,
+        Group::GitHub,
         Group::Files,
         Group::Advanced,
     ];
@@ -239,6 +242,21 @@ pub const CATALOG: &[Entry] = &[
     e("git_push", Group::Git, true, false, false),
     // Whatever git can do. Opening this is opening all of it at once
     e("git_run", Group::Git, true, false, false),
+    // -- GitHub ----------------------------------------------------------------
+    // The same as git: a person's to begin with. Reading an issue is harmless,
+    // but it is read as the account somebody chose, and writing -- a comment,
+    // a closed issue, a merge -- is said in that account's name to everybody
+    e("github_issues", Group::GitHub, true, false, false),
+    e("github_issue", Group::GitHub, true, false, false),
+    e("github_prs", Group::GitHub, true, false, false),
+    e("github_pr", Group::GitHub, true, false, false),
+    e("github_labels", Group::GitHub, true, false, false),
+    e("github_assignees", Group::GitHub, true, false, false),
+    e("github_issue_create", Group::GitHub, true, false, false),
+    e("github_comment", Group::GitHub, true, false, false),
+    e("github_issue_state", Group::GitHub, true, false, false),
+    e("github_pr_state", Group::GitHub, true, false, false),
+    e("github_pr_merge", Group::GitHub, true, false, false),
     // -- Files and the network ------------------------------------------------
     // Through a registered gateway: the destination was chosen by a person
     e("read_file", Group::Files, true, true, false),
@@ -430,6 +448,17 @@ mod tests {
                 "git_pull",
                 "git_push",
                 "git_run",
+                "github_issues",
+                "github_issue",
+                "github_prs",
+                "github_pr",
+                "github_labels",
+                "github_assignees",
+                "github_issue_create",
+                "github_comment",
+                "github_issue_state",
+                "github_pr_state",
+                "github_pr_merge",
                 "read_path",
                 "write_path",
                 "http_raw",

@@ -941,6 +941,83 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      One file of this tab's folder. Stands where a terminal stands, like the
      panels beside it: a line saying which file and how it stands, then the
      text, which is a library's business and not ours */
+  /* The Issue tab: the desk's issues and pull requests, where a terminal would be */
+  #issuespanel[hidden] { display:none; }
+  #issuespanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+    bottom:calc(var(--fb) + var(--dock, 0px)); overflow:auto; z-index:4; font-size:13px;
+    display:flex; flex-direction:column; padding-bottom:72px; box-sizing:border-box; }
+  #issuespanel .bar { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); padding:6px 10px;
+    border-bottom:1px solid var(--line); flex:0 0 auto; }
+  #issuespanel button, #issuespanel select, #issuespanel input, #issuespanel textarea, #issuespanel a.btn {
+    font:inherit; font-size:12.5px; border-radius:var(--r-ctl); border:1px solid var(--edge);
+    background:var(--panel); color:var(--text); }
+  #issuespanel button { padding:4px 12px; cursor:pointer; }
+  #issuespanel button:hover { border-color:var(--edge-hi); }
+  #issuespanel button.on { color:var(--text); border-color:var(--brand);
+    background:color-mix(in srgb, var(--brand) 14%, transparent); }
+  #issuespanel button.go { border-color:var(--brand); color:var(--brand); }
+  #issuespanel select, #issuespanel input { padding:4px 8px; }
+  #issuespanel .bar input { flex:1 1 180px; min-width:0; }
+  #issuespanel .chips { display:flex; gap:var(--s1); flex-wrap:wrap; }
+  #issuespanel .said { padding:2px 10px; min-height:18px; color:var(--dim); font-size:12px; }
+  #issuespanel .said.bad { color:var(--stop); }
+  #issuespanel .warn button { white-space:nowrap; flex:0 0 auto; }
+  #issuespanel .warn { display:flex; gap:var(--s2); align-items:center; margin:2px 10px; padding:6px 10px;
+    border:1px solid var(--line); border-radius:var(--r-ctl); color:var(--warn); font-size:12px; }
+  #issuespanel .empty { color:var(--dim); padding:14px 10px; font-size:12px; }
+  #issuespanel .irow { display:flex; align-items:center; gap:var(--s3); padding:8px 10px;
+    border-bottom:1px solid var(--line); cursor:pointer; }
+  #issuespanel .irow:hover { background:var(--hover); }
+  #issuespanel .irow .num { flex:0 0 52px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  #issuespanel .irow .main { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:2px; }
+  #issuespanel .irow .title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #issuespanel .irow .meta { color:var(--dim); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #issuespanel .irow button { white-space:nowrap; flex:0 0 auto; }
+  #issuespanel .irow .when { flex:0 0 64px; color:var(--dim); font-size:11px; text-align:right; }
+  #issuespanel .state { font-size:11px; padding:0 7px; border-radius:var(--r-chip); border:1px solid var(--line); white-space:nowrap; }
+  #issuespanel .state.st-open { color:var(--live); border-color:var(--live); }
+  #issuespanel .state.st-closed { color:var(--stop); border-color:var(--stop); }
+  #issuespanel .state.st-merged { color:var(--brand); border-color:var(--brand); }
+  #issuespanel .state.st-draft { color:var(--dim); }
+  #issuespanel .crumb { color:var(--dim); font-size:12px; }
+  /* A narrow pane or a phone: the title keeps the whole first line, and its
+     state, age and button go on a line of their own under it */
+  #issuespanel { container-type:inline-size; }
+  @container (max-width: 560px) {
+    #issuespanel .irow { flex-wrap:wrap; row-gap:var(--s1); }
+    #issuespanel .irow .num { flex:0 0 44px; align-self:flex-start; padding-top:1px; }
+    #issuespanel .irow .main { flex:1 1 calc(100% - 44px - var(--s3)); }
+    #issuespanel .irow .state { margin-left:calc(44px + var(--s3)); }
+    #issuespanel .irow .when { flex:1 1 auto; text-align:left; }
+  }
+  #issuespanel .grow { flex:1 1 auto; }
+  #issuespanel .dim { color:var(--dim); }
+  #issuespanel .head { padding:10px 12px 4px; }
+  #issuespanel .head h3 { margin:0 0 6px; font-size:15px; font-weight:600; }
+  #issuespanel .facts { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:var(--s2) var(--s4);
+    padding:8px 12px; border-bottom:1px solid var(--line); }
+  #issuespanel .facts > div { display:flex; flex-direction:column; gap:2px; font-size:12px; }
+  #issuespanel .acts { display:flex; flex-wrap:wrap; gap:var(--s2); align-items:center; padding:8px 12px; }
+  #issuespanel button.link { border:none; background:none; padding:0; color:var(--brand); font-size:12px; }
+  #issuespanel .checks { padding:0 12px 8px; display:flex; flex-direction:column; gap:2px; font-size:12px; }
+  #issuespanel .check { display:flex; gap:var(--s2); align-items:center; }
+  #issuespanel .check .dot { width:8px; height:8px; border-radius:50%; background:var(--dim); }
+  #issuespanel .check.v-failed .dot { background:var(--stop); }
+  #issuespanel .check.v-pending .dot { background:var(--warn); }
+  #issuespanel .check.v-passed .dot { background:var(--live); }
+  #issuespanel .body, #issuespanel .comment .text { white-space:pre-wrap; word-break:break-word; line-height:1.55; }
+  #issuespanel .body { padding:10px 12px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+  #issuespanel h4 { margin:10px 12px 4px; font-size:12px; color:var(--dim); font-weight:500; }
+  #issuespanel .talk { display:flex; flex-direction:column; gap:var(--s2); padding:0 12px; }
+  #issuespanel .event { color:var(--dim); font-size:11.5px; }
+  #issuespanel .comment { border:1px solid var(--line); border-radius:var(--r-ctl); padding:8px 10px; }
+  #issuespanel .comment .who { color:var(--dim); font-size:11.5px; margin-bottom:4px; }
+  #issuespanel .write { padding:10px 12px 16px; display:flex; flex-direction:column; gap:var(--s2); }
+  #issuespanel textarea { padding:8px; resize:vertical; width:100%; box-sizing:border-box; }
+  #issuespanel .row { display:flex; align-items:center; gap:var(--s2); }
+  #issuespanel .pager { display:flex; gap:var(--s2); align-items:center; justify-content:center; padding:8px; }
+  #issuespanel .form { display:flex; flex-direction:column; gap:var(--s3); padding:10px 12px; max-width:760px; }
+  #issuespanel .form label { display:flex; flex-direction:column; gap:var(--s1); font-size:12px; }
   /* A tab that could not start. Where its terminal would be: what went wrong,
      and the ways on from here, in that order */
   #failpanel[hidden] { display:none; }
@@ -2025,6 +2102,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div id="gitpanel" hidden></div>
     <div id="sftppanel" hidden></div>
     <div id="failpanel" hidden></div>
+    <div id="issuespanel" hidden></div>
     <!-- One question about one file: replace what is there, throw it away,
          call it something else. Named rather than "are you sure", because the
          far end is somebody else's machine and there is no way back from it -->
@@ -2463,6 +2541,12 @@ function drawTabs() {
       onclick:() => send({kind:"select", tab:0})},
     el("span", {class:"num"}, "0"),
     el("span", {class:"nm"}, T["tui.index"] || "INDEX")));
+  // The desk's issues and pull requests: always here, opened in a pane
+  const issuesTab = S.tabs.find(t => t.kind === "issues");
+  nav.append(el("div", {class:"tab" + (!S.board && issuesTab && issuesTab.index === S.active ? " sel" : ""),
+      onclick:() => send({kind:"openissues"})},
+    el("span", {class:"num"}, "◎"),
+    el("span", {class:"nm"}, T["tui.issues.tab"] || "Issues")));
   // The folder each run of tabs works in. A heading appears when the folder
   // changes, and only when there is more than one to change to -- with a single
   // folder the sidebar looks exactly as it always has. A tab that is in no
@@ -2477,6 +2561,8 @@ function drawTabs() {
   for (const t of S.tabs) {
     // Settings isn't a tab — it's reached via the gear pinned at the bottom.
     if (t.settings) continue;
+    // The Issue tab has its own row, above
+    if (t.kind === "issues") continue;
     if (t.group != null && inside[t.group]) inside[t.group].push(t);
     else loose.push(t);
   }
@@ -2604,6 +2690,397 @@ function drawTabs() {
     el("span", {class:"sidebtn snipbtn", title:T["tui.snip.title"] || "Tools",
         onclick:e => { e.stopPropagation(); openSnipMenu(e); }}, "✂️")));
   drawCoach();
+}
+
+// ── The Issue tab ─────────────────────────────────────────
+// The desk's issues and pull requests. Every button is one request the app
+// answers with the same function its automation command runs, and allows or
+// refuses by the same row of the permission table; the tab keeps no truth of
+// its own and asks again after anything that changes something.
+let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:1,
+          list:null, problems:[], total:0, busy:"", said:"", bad:false,
+          view:"list", detail:null, options:{}, armed:"", dupOf:"", want:{list:0, detail:0},
+          create:{project:"", title:"", body:"", labels:"", assignees:""} };
+let issuesSig = "";
+let issuesSeq = 0;
+
+const ISSUE_PRESETS = {
+  issue: [["open", {}], ["mine", {mine:true}], ["closed", {state:"closed"}], ["all", {state:"all"}]],
+  pr: [["open", {}], ["mine", {mine:true}], ["review", {review:true}], ["merged", {state:"merged"}], ["closed", {state:"closed"}], ["all", {state:"all"}]],
+};
+function issuesAsk(act, args) {
+  if (act !== "projects" && act !== "options") { I.busy = act; I.said = ""; I.bad = false; }
+  // Only the newest list and the newest detail count: a slow answer to a
+  // question since replaced (another project, another filter, back) is dropped
+  const seq = ++issuesSeq;
+  if (act === "list" || act === "detail") I.want[act] = seq;
+  send({kind:"issues", act, args: Object.assign({kind: I.kind, seq}, args || {})});
+  drawIssues();
+}
+function issuesList(page) {
+  I.page = page || 1;
+  const preset = (ISSUE_PRESETS[I.kind].find(p => p[0] === I.preset) || ISSUE_PRESETS[I.kind][0])[1];
+  issuesAsk("list", Object.assign({project: I.project, text: I.text, page: I.page}, preset));
+}
+function issueProject(name) { return (I.projects || []).find(p => p.name === name) || null; }
+// How long ago, in the words of the language on screen: "3 days ago", not "3d"
+function issueAgo(iso) {
+  const t = Date.parse(iso || "");
+  if (!isFinite(t)) return "";
+  const m = Math.max(0, Math.floor((Date.now() - t) / 60000));
+  const [key, n] = m < 1 ? ["now", 0] : m < 60 ? ["min", m] : m < 1440 ? ["hour", Math.floor(m / 60)]
+    : m < 43200 ? ["day", Math.floor(m / 1440)] : m < 525600 ? ["month", Math.floor(m / 43200)]
+    : ["year", Math.floor(m / 525600)];
+  return (T["issues.ago." + key] || "{n}").replace("{n}", n);
+}
+// The folder already made for this one, when there is one
+function issueWorktree(kind, repo, number) {
+  const key = kind + ":" + repo + "#" + number;
+  return ((S && S.groups) || []).find(g => g.work_item === key) || null;
+}
+// Start work on an issue or a pull request: the worktree dialog, named and
+// linked. A pull request's branch is fetched first, so the worktree is made on it
+function issueStart(row) {
+  const proj = issueProject(row.project);
+  if (!proj) return;
+  const link = {kind: row.kind, repo: row.repo, number: row.number, url: row.url};
+  if (row.kind === "pr") {
+    I.pending = {row, link};
+    issuesAsk("prepare", {project: row.project, number: row.number});
+    return;
+  }
+  openBranch({folder: proj.dir}, {name: row.workspace, link, about: "#" + row.number + " " + (row.title || "")});
+}
+
+window.__issues = function (d) {
+  if (!d || !d.act) return;
+  if (d.act === "projects") {
+    I.projects = d.projects || [];
+    if (I.project && !issueProject(I.project)) I.project = "";
+    if (!I.list) issuesList(1);
+    drawIssues();
+    return;
+  }
+  if (d.act === "options") {
+    if (d.ok) I.options[d.project] = d.data || {};
+    drawIssues();
+    return;
+  }
+  if ((d.act === "list" || d.act === "detail") && d.seq !== I.want[d.act]) return;
+  I.busy = "";
+  if (!d.ok) {
+    I.said = d.error || ""; I.bad = true;
+    I.pending = null;
+    drawIssues();
+    return;
+  }
+  I.bad = false;
+  switch (d.act) {
+    case "list":
+      if ((d.kind || "issue") !== I.kind) return;
+      I.list = d.items || [];
+      I.problems = d.problems || [];
+      I.total = d.total || 0;
+      break;
+    case "detail":
+      I.detail = Object.assign({project: d.project, kind: d.kind}, d.data || {});
+      I.view = "detail";
+      I.armed = ""; I.dupOf = "";
+      break;
+    case "create":
+      I.create = {project: I.create.project, title:"", body:"", labels:"", assignees:""};
+      I.said = (T["issues.created"] || "").replace("{n}", (d.data || {}).number || "");
+      issuesAsk("detail", {project: d.project, number: (d.data || {}).number});
+      issuesList(1);
+      return;
+    case "comment":
+    case "issue_state":
+    case "pr_state":
+    case "merge":
+      I.armed = ""; I.dupOf = "";
+      if (d.act === "merge") I.said = T["issues.merged"] || "";
+      issuesAsk("detail", {project: d.project, number: d.number});
+      issuesList(I.page);
+      return;
+    case "prepare": {
+      const p = I.pending; I.pending = null;
+      const proj = p && issueProject(p.row.project);
+      if (p && proj) openBranch({folder: proj.dir}, {name: (d.data || {}).branch, base: (d.data || {}).base,
+        link: p.link, about: "#" + p.row.number + " " + (p.row.title || "")});
+      break;
+    }
+  }
+  drawIssues();
+};
+
+function drawIssues() {
+  const box = document.getElementById("issuespanel");
+  if (!box || box.hidden) return;
+  // Rebuilt only when what it shows has changed, and never under a field that
+  // is being typed in: a list redrawn under the cursor takes the words away
+  const typing = document.activeElement && box.contains(document.activeElement)
+    && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
+  const sig = JSON.stringify([I, (S && S.groups || []).map(g => g.work_item)]);
+  if (sig === issuesSig || typing) return;
+  issuesSig = sig;
+  box.textContent = "";
+  if (I.projects === null) { box.append(el("div", {class:"empty"}, "…")); return; }
+  if (!I.projects.length) {
+    box.append(el("div", {class:"empty"}, T["issues.no_projects"] || ""));
+    return;
+  }
+  if (I.view === "detail" && I.detail) return drawIssueDetail(box);
+  if (I.view === "create") return drawIssueCreate(box);
+  drawIssueList(box);
+}
+
+function issueSaid() {
+  return el("div", {class:"said" + (I.bad ? " bad" : "")},
+    I.busy ? (T["issues.busy"] || "…") : (I.said || ""));
+}
+
+function drawIssueList(box) {
+  const bar = el("div", {class:"bar"});
+  for (const k of ["issue", "pr"]) {
+    bar.append(el("button", {class: I.kind === k ? "on" : "", onclick:() => {
+      if (I.kind === k) return;
+      I.kind = k; I.preset = "open"; I.list = null; issuesList(1);
+    }}, T["issues.kind." + k] || k));
+  }
+  const pick = el("select", {title: T["issues.project"] || ""});
+  pick.append(el("option", {value:""}, T["issues.project.all"] || ""));
+  for (const p of I.projects) pick.append(el("option", {value:p.name}, p.name));
+  pick.value = I.project;
+  pick.onchange = () => { I.project = pick.value; issuesList(1); };
+  bar.append(pick);
+  const presets = el("span", {class:"chips"});
+  for (const [id] of ISSUE_PRESETS[I.kind]) {
+    presets.append(el("button", {class: I.preset === id ? "on" : "", onclick:() => { I.preset = id; issuesList(1); }},
+      T["issues.preset." + id] || id));
+  }
+  bar.append(presets);
+  const search = el("input", {type:"text", placeholder: T["issues.search"] || ""});
+  search.value = I.text;
+  search.onkeydown = e => {
+    if (typingIME(e)) return;
+    if (e.key === "Enter") { I.text = search.value; issuesList(1); }
+  };
+  bar.append(search);
+  bar.append(el("button", {title: T["issues.refresh"] || "", onclick:() => issuesList(I.page)}, "↻"));
+  if (I.kind === "issue") {
+    bar.append(el("button", {class:"go", onclick:() => {
+      I.view = "create";
+      if (!I.create.project) I.create.project = I.project || (I.projects[0] || {}).name || "";
+      if (I.create.project && !I.options[I.create.project]) issuesAsk("options", {project: I.create.project});
+      drawIssues();
+    }}, "+ " + (T["issues.new"] || "")));
+  }
+  box.append(bar, issueSaid());
+  // A project that could not be read says why, beside the others
+  for (const p of I.problems) {
+    const proj = issueProject(p.project);
+    box.append(el("div", {class:"warn"},
+      el("span", {}, "⚠ " + p.project + ": " + p.error),
+      proj && p.settings ? el("button", {onclick:() => openSettings(null, true, proj.dir)}, T["issues.open_settings"] || "") : null));
+  }
+  const rows = el("div", {class:"rows"});
+  if (I.list === null) rows.append(el("div", {class:"empty"}, "…"));
+  else if (!I.list.length) rows.append(el("div", {class:"empty"}, T["issues.none"] || ""));
+  for (const r of I.list || []) {
+    const made = issueWorktree(r.kind, r.repo, r.number);
+    const state = r.draft && r.state === "open" ? "draft" : r.state;
+    const row = el("div", {class:"irow", onclick:() => issuesAsk("detail", {project: r.project, number: r.number})},
+      el("span", {class:"num st-" + state}, "#" + r.number),
+      el("span", {class:"main"},
+        el("span", {class:"title"}, r.title || ""),
+        el("span", {class:"meta"},
+          [r.project, r.author, ...(r.labels || []).slice(0, 3)].filter(Boolean).join(" · ")
+          + (made ? "  ·  " + (T["issues.worktree"] || "") + " " + made.name : ""))),
+      el("span", {class:"state st-" + state}, T["issues.state." + state] || state),
+      el("span", {class:"when"}, issueAgo(r.updated)),
+      made
+        ? el("button", {onclick:e => { e.stopPropagation(); send({kind:"folderview", folder: made.folder}); }},
+            (T["issues.open"] || "") + " ›")
+        : (r.state === "open"
+            ? el("button", {class:"go", onclick:e => { e.stopPropagation(); issueStart(r); }},
+                (T["issues.start"] || "") + " →")
+            : el("span")));
+    rows.append(row);
+  }
+  box.append(rows);
+  if (I.list && I.list.length && I.total > I.page * 36) {
+    box.append(el("div", {class:"pager"},
+      I.page > 1 ? el("button", {onclick:() => issuesList(I.page - 1)}, "←") : null,
+      el("span", {}, String(I.page)),
+      el("button", {onclick:() => issuesList(I.page + 1)}, "→")));
+  }
+}
+
+function drawIssueDetail(box) {
+  const d = I.detail;
+  const pr = d.kind === "pr";
+  const state = d.draft && d.state === "open" ? "draft" : d.state;
+  const proj = issueProject(d.project);
+  const made = issueWorktree(d.kind, (proj || {}).repo, d.number);
+  box.append(el("div", {class:"bar"},
+    el("button", {onclick:() => { I.view = "list"; I.detail = null; I.want.detail = 0; I.busy = ""; drawIssues(); }}, "‹ " + (T["issues.back"] || "")),
+    el("span", {class:"crumb"}, d.project + " #" + d.number),
+    el("span", {class:"grow"}),
+    d.url ? (REMOTE
+      ? el("a", {href:d.url, target:"_blank", rel:"noopener"}, T["issues.on_github"] || "")
+      : null) : null,
+    made
+      ? el("button", {onclick:() => send({kind:"folderview", folder: made.folder})}, (T["issues.open"] || "") + " ›")
+      : (d.state === "open"
+          ? el("button", {class:"go", onclick:() => issueStart(Object.assign({}, d, {repo: (proj || {}).repo,
+              workspace: d.workspace}))}, (T[pr ? "issues.start.pr" : "issues.start.issue"] || "") + " →")
+          : null)));
+  box.append(issueSaid());
+  const head = el("div", {class:"head"},
+    el("h3", {}, (d.title || "") + " ", el("span", {class:"dim"}, "#" + d.number)),
+    el("div", {class:"meta"},
+      el("span", {class:"state st-" + state}, T["issues.state." + state] || state),
+      " " + (d.author || "") + " · " + issueAgo(d.created)));
+  box.append(head);
+
+  const facts = el("div", {class:"facts"});
+  const fact = (label, value) => facts.append(el("div", {}, el("span", {class:"dim"}, label), el("span", {}, value)));
+  fact(T["issues.assignees"] || "", (d.assignees || []).join(", ") || "—");
+  fact(T["issues.labels"] || "", (d.labels || []).join(", ") || "—");
+  if (pr) {
+    fact(T["issues.branches"] || "", (d.head || "") + " → " + (d.base || "") + (d.fork ? " (" + (T["issues.fork"] || "") + ")" : ""));
+    fact(T["issues.review"] || "", T["issues.review." + (d.review || "none")] || "");
+    const c = d.checks;
+    fact(T["issues.checks"] || "", !c || !c.total ? (T["issues.checks.none"] || "")
+      : c.failed ? (T["issues.checks.failed"] || "").replace("{n}", c.failed)
+      : c.pending ? (T["issues.checks.pending"] || "").replace("{n}", c.pending)
+      : (T["issues.checks.passed"] || "").replace("{n}", c.passed).replace("{total}", c.total));
+    fact(T["issues.mergeable"] || "", T["issues.merge_state." + (d.merge_state || "unknown")] || (d.merge_state || ""));
+    if (d.additions != null) fact(T["issues.changes"] || "", "+" + d.additions + " −" + d.deletions + " · "
+      + (T["issues.files"] || "").replace("{n}", d.changed_files));
+  }
+  box.append(facts);
+
+  // What can be done to it, in the words GitHub uses
+  const acts = el("div", {class:"acts"});
+  if (!pr) {
+    const choose = el("select");
+    for (const s of ["open", "completed", "not_planned", "duplicate"]) {
+      choose.append(el("option", {value:s}, T["issues.set." + s] || s));
+    }
+    choose.value = d.state === "open" ? "open" : (d.reason === "not_planned" ? "not_planned" : d.reason === "duplicate" ? "duplicate" : "completed");
+    const dup = el("input", {type:"text", placeholder: T["issues.duplicate_of"] || "", style:"width:120px"});
+    dup.value = I.dupOf;
+    dup.hidden = I.armed !== "duplicate";
+    choose.onchange = () => {
+      if (choose.value === "duplicate") { I.armed = "duplicate"; dup.hidden = false; dup.focus(); return; }
+      issuesAsk("issue_state", {project: d.project, number: d.number, state: choose.value});
+    };
+    const dupGo = el("button", {onclick:() => {
+      const n = parseInt((dup.value || "").replace("#", ""), 10);
+      if (!(n > 0)) return;
+      issuesAsk("issue_state", {project: d.project, number: d.number, state: "duplicate", duplicate_of: n});
+    }}, T["issues.set.duplicate.go"] || "");
+    dupGo.hidden = I.armed !== "duplicate";
+    acts.append(el("span", {class:"dim"}, T["issues.state"] || ""), choose, dup, dupGo);
+  } else if (d.state !== "merged") {
+    const method = el("select");
+    for (const m of ["squash", "merge", "rebase"]) method.append(el("option", {value:m}, T["issues.merge." + m] || m));
+    // Merging is the one press here that cannot be taken back: the first press
+    // arms it, and says so on the button
+    const merge = el("button", {class:"go", onclick:() => {
+      if (I.armed === "merge") issuesAsk("merge", {project: d.project, number: d.number, method: method.value});
+      else { I.armed = "merge"; issuesSig = ""; drawIssues(); }
+    }}, I.armed === "merge" ? (T["issues.merge.sure"] || "") : (T["issues.merge"] || ""));
+    if (d.state === "open") acts.append(method, merge);
+    acts.append(el("button", {onclick:() => issuesAsk("pr_state", {project: d.project, number: d.number,
+      state: d.state === "open" ? "closed" : "open"})}, T[d.state === "open" ? "issues.pr.close" : "issues.pr.reopen"] || ""));
+  }
+  box.append(acts);
+
+  if (pr && d.checks && d.checks.items && d.checks.items.length) {
+    // The count is already among the facts; the names are wanted for the ones
+    // that did not pass, and every one only when asked for
+    const list = el("div", {class:"checks"});
+    const off = d.checks.items.filter(c => c.verdict !== "passed");
+    const shown = I.allChecks ? d.checks.items : off;
+    if (off.length < d.checks.items.length) list.append(el("div", {},
+      el("button", {class:"link", onclick:() => { I.allChecks = !I.allChecks; drawIssues(); }},
+        T[I.allChecks ? "issues.checks.fewer" : "issues.checks.all"] || "")));
+    for (const c of shown) {
+      list.append(el("div", {class:"check v-" + c.verdict},
+        el("span", {class:"dot"}), el("span", {}, c.name || ""), el("span", {class:"dim"}, T["issues.verdict." + c.verdict] || c.verdict)));
+    }
+    box.append(list);
+  }
+  box.append(el("div", {class:"body"}, d.body || (T["issues.no_body"] || "")));
+  const talk = el("div", {class:"talk"});
+  const lines = [];
+  for (const e of d.events || []) lines.push({at: e.created, node: el("div", {class:"event"},
+    (T["issues.event." + e.kind] || e.kind).replace("{actor}", e.actor || "").replace("{subject}", e.subject == null ? "" : String(e.subject))
+    + " · " + issueAgo(e.created))});
+  for (const c of d.comments || []) lines.push({at: c.created, node: el("div", {class:"comment"},
+    el("div", {class:"who"}, (c.author || "") + " · " + issueAgo(c.created)),
+    el("div", {class:"text"}, c.body || ""))});
+  lines.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  lines.forEach(l => talk.append(l.node));
+  box.append(el("h4", {}, (T["issues.activity"] || "") + " " + lines.length), talk);
+  const write = el("textarea", {placeholder: T["issues.comment.ph"] || "", rows: "4"});
+  const acct = proj && proj.account ? proj.account : "";
+  box.append(el("div", {class:"write"}, write,
+    el("div", {class:"row"},
+      el("span", {class:"dim"}, acct ? (T["issues.as"] || "").replace("{account}", acct === "@pc" ? (T["git.acct.pc"] || "") : acct) : ""),
+      el("span", {class:"grow"}),
+      el("button", {class:"go", onclick:() => {
+        if (!write.value.trim()) return;
+        issuesAsk("comment", {project: d.project, number: d.number, body: write.value});
+      }}, T["issues.comment"] || ""))));
+}
+
+function drawIssueCreate(box) {
+  const c = I.create;
+  // However the form was reached, it names a project that is there
+  if (!issueProject(c.project) && I.projects && I.projects.length) {
+    c.project = issueProject(I.project) ? I.project : I.projects[0].name;
+    // Asked without drawing: this is the middle of a draw
+    if (!I.options[c.project]) send({kind:"issues", act:"options", args:{kind: I.kind, project: c.project}});
+  }
+  box.append(el("div", {class:"bar"},
+    el("button", {onclick:() => { I.view = "list"; drawIssues(); }}, "‹ " + (T["issues.back"] || "")),
+    el("span", {class:"crumb"}, T["issues.new"] || "")));
+  box.append(issueSaid());
+  const form = el("div", {class:"form"});
+  const pick = el("select");
+  for (const p of I.projects) pick.append(el("option", {value:p.name}, p.name + (p.repo ? "  (" + p.repo + ")" : "")));
+  pick.value = c.project;
+  pick.onchange = () => {
+    c.project = pick.value; c.labels = ""; c.assignees = "";
+    if (!I.options[c.project]) issuesAsk("options", {project: c.project});
+    issuesSig = ""; drawIssues();
+  };
+  const opts = I.options[c.project] || {};
+  const field = (label, control, hint) => form.append(el("label", {}, el("span", {}, label), control, hint ? el("span", {class:"dim"}, hint) : null));
+  const title = el("input", {type:"text", placeholder: T["issues.new.title.ph"] || ""});
+  title.value = c.title; title.oninput = () => { c.title = title.value; };
+  const body = el("textarea", {rows:"8", placeholder: T["issues.new.body.ph"] || ""});
+  body.value = c.body; body.oninput = () => { c.body = body.value; };
+  const labels = el("input", {type:"text", placeholder: (opts.labels || []).slice(0, 4).join(", ")});
+  labels.value = c.labels; labels.oninput = () => { c.labels = labels.value; };
+  const people = el("input", {type:"text", placeholder: (opts.assignees || []).slice(0, 4).join(", ")});
+  people.value = c.assignees; people.oninput = () => { c.assignees = people.value; };
+  field(T["issues.project"] || "", pick);
+  field(T["issues.new.title"] || "", title);
+  field(T["issues.new.body"] || "", body);
+  field(T["issues.labels"] || "", labels, T["issues.new.comma"] || "");
+  field(T["issues.assignees"] || "", people, T["issues.new.comma"] || "");
+  const split = v => v.split(/[\s,]+/).map(x => x.trim()).filter(Boolean);
+  form.append(el("div", {class:"row"}, el("span", {class:"grow"}),
+    el("button", {class:"go", onclick:() => {
+      if (!c.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; issuesSig = ""; drawIssues(); return; }
+      issuesAsk("create", {project: c.project, title: c.title, body: c.body, labels: split(c.labels), assignees: split(c.assignees)});
+    }}, T["issues.new.create"] || "")));
+  box.append(form);
+  setTimeout(() => { if (!c.title) title.focus(); }, 30);
 }
 
 // A tab that could not start: why, and what to do about it. Drawn only when
@@ -3474,14 +3951,20 @@ function drawAsk(ask, p) {
   }
   ask.querySelector(".rblabel").textContent = T["tui.repair.branch"] || "";
 }
-function openBranch(g) {
+// The issue or pull request a worktree is being made for, when it is
+let branchLink = null;
+function openBranch(g, preset) {
   const b = document.getElementById("branch");
   if (!b) return;
+  preset = preset || {};
+  branchLink = preset.link || null;
   branchFrom = g.folder || "";
   b.hidden = false;
   b.querySelector(".vtitle").textContent = T["tui.branch.title"] || "WORKTREE";
   showMore(b, false);
-  b.querySelector(".bsay").textContent = T["tui.branch.hint"] || "";
+  b.querySelector(".bsay").textContent = preset.about
+    ? (T["tui.branch.for_item"] || "{item}").replace("{item}", preset.about)
+    : (T["tui.branch.hint"] || "");
   b.querySelector(".go").textContent = T["tui.branch.make"] || "Make it";
   // Every control says what it is, in the order they stand
   const names = [T["tui.branch.project"] || "Project",
@@ -3495,14 +3978,14 @@ function openBranch(g) {
   if (dest) { dest.dataset.said = ""; dest.textContent = ""; }
   const q = document.getElementById("bq");
   q.placeholder = T["tui.branch.placeholder"] || "branch name";
-  q.value = "";
+  q.value = preset.name || "";
   const at = document.getElementById("bat");
   at.value = "";
   at.placeholder = "";
   const box = b.querySelector(".bcarry");
   box.dataset.key = "";
   box.textContent = "";
-  branchBase = "";
+  branchBase = preset.base || "";
   branchBases = [];
   const sel = document.getElementById("bbase");
   sel.dataset.said = "";
@@ -3521,7 +4004,7 @@ function openBranch(g) {
   // Asked before a single letter is typed: what this project can be grown
   // from does not depend on the name, and a picker that is empty until you
   // type is a picker nobody finds anything in
-  send({kind:"branch", from:branchFrom, branch:"", base:"", make:false, carry:[]});
+  send({kind:"branch", from:branchFrom, branch:q.value, base:branchBase, make:false, carry:[], link:branchLink});
   setTimeout(() => q.focus(), 30);
 }
 // Folded or not, and what the row says while it is folded.
@@ -3554,7 +4037,7 @@ function askBranch() {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:false, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing()});
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink});
   }, 180);
 }
 
@@ -3844,7 +4327,7 @@ function drawCarry(b, items) {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:true, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing()});
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink});
   };
   const more = b.querySelector(".bmore");
   if (more) more.addEventListener("click", () =>
@@ -4833,6 +5316,8 @@ window.__state = function (json) {
   const files = S.tabs.some(t => t.index === S.active && t.kind === "sftp");
   // And a tab that could not start, which has only why to show
   const failedTab = S.tabs.find(t => t.index === S.active && t.kind === "failed");
+  // And the Issue tab
+  const issuesUp = S.tabs.some(t => t.index === S.active && t.kind === "issues");
   // INDEX covers the window; the panes are still there underneath and come
   // back the moment a running thing is picked. Nothing of the layout is drawn
   // while it is up, or the caption of a pane would show through the board
@@ -4843,8 +5328,16 @@ window.__state = function (json) {
   board.hidden = !S.board;
   document.getElementById("panes").hidden = cover;
   // Nothing to draw for a pane with nothing in it -- it says so itself
-  screen.hidden = cover || S.active === 0 || web || git || files || edit || !!failedTab;
+  screen.hidden = cover || S.active === 0 || web || git || files || edit || !!failedTab || issuesUp;
   drawFailed(cover ? null : failedTab);
+  const ipanel = document.getElementById("issuespanel");
+  if (ipanel) {
+    const was = !ipanel.hidden;
+    ipanel.hidden = cover || !issuesUp;
+    // Asked the moment it comes into view: which projects there are, then the list
+    if (!ipanel.hidden && !was) { issuesSig = ""; send({kind:"issues", act:"projects", args:{}}); }
+    drawIssues();
+  }
   // The editor, whenever that is what the pane is showing. Which file it is
   // on comes from the state, so a page that has just been opened -- a phone
   // picking up the board -- finds it already open rather than empty
@@ -7121,6 +7614,7 @@ if (REMOTE) {
     // waits for ever -- which is what both of them did
     if (d.git) window.__git(d.git);
     if (d.files) window.__files(d.files);
+    if (d.issues) window.__issues(d.issues);
     if (d.sftp) window.__sftp(d.sftp);
     if ("luadone" in d) window.__luaDone(d.luadone);
     if ("suggested" in d) window.__suggested(d.suggested);
@@ -9437,8 +9931,20 @@ function syncAttach() { if (castAttEl) castAttEl.style.display = drivingBrowser(
 // Load the composer with the document the active panel owns (see the luaSheet
 // comment): 📼 shows the Lua sheet, every other panel the ordinary draft.
 // Edits made while a slot is loaded are stashed when switching away.
+// The words a tab was started with, put in the box once each and never sent:
+// the address of the issue a worktree was just made for. Remembered by tab and
+// words, so a box somebody has since emptied is not filled again
+const draftsPut = new Set();
 function syncComposerSlot() {
   if (!castInput) return;
+  const withDraft = activeTab();
+  if (withDraft && withDraft.draft && castSlot === "draft") {
+    const key = (withDraft.id || withDraft.name) + "\u0000" + withDraft.draft;
+    if (!draftsPut.has(key)) {
+      draftsPut.add(key);
+      if (!castInput.value.trim()) { castInput.value = withDraft.draft; castDraft = withDraft.draft; growCastInput(); }
+    }
+  }
   const want = (castPanel === "lua" && luaMode === "run") ? "lua" : "draft";
   // The prompt is re-asked every render, not only when the document changes:
   // walking from a terminal to a model pane swaps where a Send goes without
@@ -11695,7 +12201,7 @@ mod tests {
         // The place travels on both roads too. On one only, the line somebody
         // read would be about a folder the button then did not use
         assert_eq!(
-            PAGE.matches(r#"at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing()});"#).count(),
+            PAGE.matches(r#"at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink});"#).count(),
             2,
             "place, machine and preparation are not carried on both paths"
         );

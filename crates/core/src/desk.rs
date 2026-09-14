@@ -984,6 +984,7 @@ mod remote_folder_tests {
             source: Default::default(),
             protect: Vec::new(),
             project: None,
+            work_item: None,
         };
         let cfg = config::TabConfig::default();
         let opts = tab_options(&cfg, Some(&there));
