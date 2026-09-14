@@ -1227,6 +1227,10 @@ pub struct UiState {
     /// screen can be shared by two
     #[serde(default)]
     pub desk_id: String,
+    /// The keys that open the tools from anywhere, by what they open, for the
+    /// ones that are registered and work. Shown beside what they open
+    #[serde(default)]
+    pub hotkeys: std::collections::BTreeMap<String, String>,
     /// The folders this desk's tabs are working in. One means nothing is
     /// drawn: the heading only exists to tell folders apart
     #[serde(default)]

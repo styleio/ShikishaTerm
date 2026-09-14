@@ -372,6 +372,15 @@ const PAGE: &str = r##"<!doctype html>
    box-shadow:0 0 0 1px #0009, 0 0 0 100000px #0007; }
  #size { position:absolute; padding:2px var(--s2); border-radius:var(--r-chip); background:var(--brand);
    color:var(--bg); font-size:12px; pointer-events:none; white-space:nowrap; }
+ /* Choosing the tool for a frame, beside it */
+ #choose { position:fixed; z-index:30; display:flex; flex-direction:column; gap:2px; min-width:200px; padding:var(--s2);
+   background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card); box-shadow:0 8px 24px #0007; }
+ #choose .say { font-size:12px; color:var(--dim); padding:var(--s1) var(--s2) var(--s2); }
+ #choose button { display:flex; align-items:center; justify-content:space-between; gap:var(--s4);
+   background:none; border-color:transparent; text-align:left; }
+ #choose button:hover, #choose button:focus-visible { background:var(--panel2); border-color:var(--edge); outline:none; }
+ kbd { font-family:ui-monospace,Consolas,"Courier New",monospace; font-size:11px; line-height:1.4; padding:0 6px;
+   border:1px solid var(--line); border-radius:var(--r-chip); color:var(--dim); background:var(--bg); }
  #hint { position:fixed; left:50%; top:var(--s4); transform:translateX(-50%); padding:var(--s2) var(--s4);
    border-radius:var(--r-card); background:var(--panel); border:1px solid var(--line); font-size:13px;
    pointer-events:none; white-space:nowrap; box-shadow:0 8px 24px #0007; }
@@ -457,6 +466,7 @@ const PAGE: &str = r##"<!doctype html>
   <div id="size" hidden></div>
 </div>
 <div id="hint" hidden></div>
+<div id="choose" hidden></div>
 <div id="zoom" hidden>
   <div id="area"><canvas id="zc"></canvas></div>
   <aside id="panel">
@@ -496,7 +506,12 @@ const T = __DICT__;
 const TOOLS = __TOOLS__;
 const $ = id => document.getElementById(id);
 const Q = new URLSearchParams(location.search);
-const TOOL = TOOLS.includes(Q.get("tool")) ? Q.get("tool") : TOOLS[0];
+// The tool asked for, or none: the scissors' own key frames first and the tool
+// is chosen after, from the frame
+const ASKED = TOOLS.includes(Q.get("tool"));
+let TOOL = ASKED ? Q.get("tool") : null;
+// The letter that chooses each tool while framing
+const TOOL_KEYS = {text: "t", noun: "n", color: "k", edit: "e"};
 // The window hands messages to the program that opened it; a page in a phone's
 // browser has nobody to hand them to and does the same things itself
 const HOST = !!(window.ipc && window.ipc.postMessage);
@@ -606,10 +621,17 @@ function begin(picture) {
   img = picture;
   $("stage").hidden = false;
   const hint = $("hint");
-  hint.textContent = T[TOOL === "edit" ? "snip.frame.hint_edit" : "snip.frame.hint"] || "";
+  hint.textContent = framingHint();
   hint.hidden = false;
   drawShot();
   window.addEventListener("resize", drawShot);
+}
+// What to do now, said above the picture
+function framingHint() {
+  if (!TOOL) return T["snip.frame.hint_choose"] || "";
+  const how = T[TOOL === "edit" ? "snip.frame.hint_edit" : "snip.frame.hint"] || "";
+  // A tool chosen by its letter says which, since nothing else on screen does
+  return ASKED ? how : (T["snip.tool." + TOOL] || TOOL) + " ・ " + how;
 }
 // The whole picture, as large as the screen allows and never stretched. On
 // the window the picture is the screen itself, so this comes out at exactly one
@@ -657,6 +679,9 @@ const toPicture = (cx, cy) => ({
     stage.setPointerCapture(e.pointerId);
     from = {x: e.clientX, y: e.clientY};
     $("hint").hidden = true;
+    // Framing again: the choice offered for the last frame is gone with it
+    $("choose").hidden = true;
+    pending = null;
   });
   stage.addEventListener("pointermove", e => {
     if (from) show(from, {x: e.clientX, y: e.clientY});
@@ -665,26 +690,87 @@ const toPicture = (cx, cy) => ({
     if (!from) return;
     const a = toPicture(from.x, from.y), b = toPicture(e.clientX, e.clientY);
     from = null;
-    let x = Math.floor(Math.min(a.x, b.x)), y = Math.floor(Math.min(a.y, b.y));
-    let w = Math.ceil(Math.max(a.x, b.x)) - x, h = Math.ceil(Math.max(a.y, b.y)) - y;
-    // A press that did not move frames nothing. Somebody who pressed once
-    // meant the place they pressed, so a small square around it stands in
-    if ((w < 3 || h < 3) && TOOL === "edit") {
-      // A picture to edit is most often the whole of it
-      x = 0; y = 0; w = img.naturalWidth; h = img.naturalHeight;
-    } else if (w < 3 || h < 3) {
-      const R = 12;
-      x = Math.max(0, Math.round(a.x) - R); y = Math.max(0, Math.round(a.y) - R);
-      w = Math.min(img.naturalWidth - x, R * 2 + 1); h = Math.min(img.naturalHeight - y, R * 2 + 1);
+    if (!TOOL) {
+      pending = {a, b, at: {x: e.clientX, y: e.clientY}};
+      offerTools();
+      return;
     }
-    rect = {x, y, w, h};
-    $("stage").hidden = true;
-    $("hint").hidden = true;
-    if (TOOL === "color") openColor();
-    else if (TOOL === "text" || TOOL === "noun") openAi();
-    else if (TOOL === "edit") openEdit();
+    openTool(a, b);
   });
 })();
+
+// A frame waiting for its tool
+let pending = null;
+function offerTools() {
+  const box = $("choose");
+  box.textContent = "";
+  box.append(Object.assign(document.createElement("div"), {className: "say", textContent: T["snip.choose.say"] || ""}));
+  for (const t of TOOLS) {
+    const b = document.createElement("button");
+    b.append(Object.assign(document.createElement("span"), {textContent: T["snip.tool." + t] || t}),
+      Object.assign(document.createElement("kbd"), {textContent: TOOL_KEYS[t].toUpperCase()}));
+    b.onclick = () => chooseTool(t);
+    box.append(b);
+  }
+  box.hidden = false;
+  // Beside the frame, not over what was framed: to its right, else its left,
+  // else below, else above, and on the screen whichever it is
+  const f = $("frame");
+  const r = f.hidden ? {left: pending.at.x, right: pending.at.x, top: pending.at.y, bottom: pending.at.y}
+    : f.getBoundingClientRect();
+  const w = box.offsetWidth, h = box.offsetHeight, gap = 8;
+  let x, y;
+  if (r.right + gap + w <= innerWidth) { x = r.right + gap; y = r.top; }
+  else if (r.left - gap - w >= 0) { x = r.left - gap - w; y = r.top; }
+  else if (r.bottom + gap + h <= innerHeight) { x = r.left; y = r.bottom + gap; }
+  else { x = r.left; y = r.top - gap - h; }
+  box.style.left = Math.max(gap, Math.min(innerWidth - w - gap, x)) + "px";
+  box.style.top = Math.max(gap, Math.min(innerHeight - h - gap, y)) + "px";
+  const first = box.querySelector("button");
+  if (first) first.focus();
+}
+function chooseTool(t) {
+  if (!pending) return;
+  TOOL = t;
+  $("choose").hidden = true;
+  const {a, b} = pending;
+  pending = null;
+  openTool(a, b);
+}
+// A letter chooses the tool: before framing, for the frame to come; with a
+// frame waiting, for that frame
+document.addEventListener("keydown", e => {
+  if (ASKED || $("stage").hidden || e.ctrlKey || e.altKey || e.metaKey) return;
+  const t = TOOLS.find(t => TOOL_KEYS[t] === e.key.toLowerCase());
+  if (!t) return;
+  e.preventDefault();
+  if (pending) return chooseTool(t);
+  TOOL = t;
+  $("hint").textContent = framingHint();
+  $("hint").hidden = false;
+});
+
+// The framed part, in the picture's own pixels, and the tool opened over it
+function openTool(a, b) {
+  let x = Math.floor(Math.min(a.x, b.x)), y = Math.floor(Math.min(a.y, b.y));
+  let w = Math.ceil(Math.max(a.x, b.x)) - x, h = Math.ceil(Math.max(a.y, b.y)) - y;
+  // A press that did not move frames nothing. Somebody who pressed once
+  // meant the place they pressed, so a small square around it stands in
+  if ((w < 3 || h < 3) && TOOL === "edit") {
+    // A picture to edit is most often the whole of it
+    x = 0; y = 0; w = img.naturalWidth; h = img.naturalHeight;
+  } else if (w < 3 || h < 3) {
+    const R = 12;
+    x = Math.max(0, Math.round(a.x) - R); y = Math.max(0, Math.round(a.y) - R);
+    w = Math.min(img.naturalWidth - x, R * 2 + 1); h = Math.min(img.naturalHeight - y, R * 2 + 1);
+  }
+  rect = {x, y, w, h};
+  $("stage").hidden = true;
+  $("hint").hidden = true;
+  if (TOOL === "color") openColor();
+  else if (TOOL === "text" || TOOL === "noun") openAi();
+  else if (TOOL === "edit") openEdit();
+}
 
 // ── Reading a colour ───────────────────────────────
 const hex2 = n => n.toString(16).padStart(2, "0");
@@ -1141,7 +1227,18 @@ mod tests {
             let key = format!("snip.ai.{t}.prompt");
             assert_ne!(crate::i18n::t(&key), key, "{key} is not in the word table");
         }
-        assert!(PAGE.contains("const TOOL = TOOLS.includes(Q.get(\"tool\"))"), "a tool starts under a name that is not in the list");
+        assert!(PAGE.contains("let TOOL = ASKED ? Q.get(\"tool\") : null;"), "a tool starts under a name that is not in the list");
+        // Every tool can be chosen by a letter, and no two by the same one
+        let line = PAGE.lines().find(|l| l.starts_with("const TOOL_KEYS = {")).unwrap();
+        let mut letters = Vec::new();
+        for t in TOOLS {
+            let at = line.find(&format!("{t}: \"")).unwrap_or_else(|| panic!("{t} has no letter to choose it by"));
+            letters.push(&line[at + t.len() + 3..at + t.len() + 4]);
+        }
+        let mut unique = letters.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), letters.len(), "two tools share a letter");
     }
 
     /// A colour is read in whole pixels. A pixel drawn a fraction wide makes

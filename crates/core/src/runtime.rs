@@ -1310,6 +1310,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // into the shell so the composer updates without a reload.
                 shell.push_actions(&crate::shell::actions_json());
                 shell.push_theme();
+                shell.settings_reloaded();
                 let (next, errs) = crate::keys::Keys::load(cfg.as_ref());
                 keymap = next;
                 startup_errors.extend(errs);
