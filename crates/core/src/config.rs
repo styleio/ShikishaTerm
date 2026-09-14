@@ -49,6 +49,57 @@ pub struct ProjectSpec {
     /// go out as" always has an answer somebody gave
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_account: Option<String>,
+    /// What a new worktree of this project is given of what git does not carry:
+    /// the files a line of `.gitignore` matches, and files from anywhere else.
+    /// A line with no rule here gets the answer [`crate::worktree::default_how`]
+    /// gives, which the settings screen shows beside it
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bring: Vec<BringRule>,
+}
+
+/// How one thing reaches a new worktree.
+///
+/// Either a line of an ignore file -- `pattern`, as written, with the file it
+/// is written in as `source` (absent is the project's own `.gitignore`) -- and
+/// then it covers everything that line makes git ignore; or `from` a path
+/// anywhere on this machine, put at `to` inside the worktree.
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default, PartialEq, Eq)]
+pub struct BringRule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// `copy`, `replace` (copy, then the replacements below), `link`, or `skip`
+    #[serde(default)]
+    pub how: String,
+    /// For `replace`: what is written differently in the copy, in order
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replace: Vec<Replace>,
+}
+
+/// Every occurrence of `find` in a copied file becomes `with`.
+///
+/// With `regex`, `find` is a regular expression in which `^` and `$` are the
+/// start and end of each line, and `with` may name its groups as `$1`
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default, PartialEq, Eq)]
+pub struct Replace {
+    pub find: String,
+    #[serde(default)]
+    pub with: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub regex: bool,
+}
+
+impl BringRule {
+    /// Whether this is the rule for that line of that ignore file
+    pub fn is_for(&self, source: &str, pattern: &str) -> bool {
+        let own = self.source.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(".gitignore");
+        self.pattern.as_deref() == Some(pattern) && own == source
+    }
 }
 
 /// A git account a desk signs in to a git server with.

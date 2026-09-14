@@ -680,7 +680,14 @@ shikisha.http_raw("https://api.example.com/hook", '{"x":1}')
       { "name": "work", "login": "me-at-work", "user_name": "山田 太郎", "user_email": "taro@example.com", "owners": ["my-company"] },
       { "name": "home", "method": "ssh", "key": "C:/Users/me/.ssh/id_home" }
     ],
-    "projects": [ { "name": "api", "at": "D:/src/api", "git_account": "work" } ]
+    "projects": [ {
+      "name": "api", "at": "D:/src/api", "git_account": "work",
+      "bring": [
+        { "pattern": "node_modules/", "how": "link" },
+        { "pattern": ".env", "how": "replace", "replace": [ { "find": "^PORT=\\d+$", "with": "PORT=3001", "regex": true } ] },
+        { "from": "D:/templates/local.json", "to": "config/local.json", "how": "copy" }
+      ]
+    } ]
   }
 ]
 ```
@@ -695,6 +702,14 @@ git アカウントのトークンもここには書きません。デスクの�
 プロジェクトが `git_account` で選び、git タブは自分で選びます。`"@pc"` は、この PC の
 git に設定済みのサインインを使うという選択です。プルリクエスト番号も同じアカウントで
 読みます。環境変数 `GITHUB_TOKEN` は読みません。
+
+`bring` は、プロジェクトの新しいワークツリーに、git が運ばないものをどう持っていくかです
+（設定のプロジェクトのページで編集します）。`pattern` はプロジェクトの `.gitignore` の1行で、
+その行が無視させているものすべてに効きます。`from` と `to` は、どこかにあるファイルを
+ワークツリー内の決まった場所に置きます。`how` は `copy`（コピー）、`replace`（コピーして、
+各 `find` を `with` に置換。`regex` を付けると正規表現で、`^` と `$` は各行の先頭と末尾）、
+`link`（リンク）、`skip`（持っていかない）です。規則のない行は、設定ページの横に表示された
+動きになります。プロジェクトのセットアップのコマンドは、これらのあとに実行されます。
 
 ---
 

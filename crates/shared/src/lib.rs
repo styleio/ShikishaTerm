@@ -192,8 +192,9 @@ pub enum Ev {
         /// What to grow it from. Empty asks for the sensible one
         base: String,
         make: bool,
-        /// What to bring along, of what was offered
-        carry: Vec<String>,
+        /// How each thing offered is to come along: (where it goes, `copy`,
+        /// `replace`, `link` or `skip`). Only what was offered is read
+        carry: Vec<(String, String)>,
         /// What runs in the new folder: empty for the same tabs as the folder
         /// it is cut from, `none` for nothing, or the command of one AI
         start: String,
@@ -615,7 +616,7 @@ pub struct BranchAsk {
     pub branch: String,
     pub base: String,
     pub make: bool,
-    pub carry: Vec<String>,
+    pub carry: Vec<(String, String)>,
     pub start: String,
     pub ais: Vec<String>,
     pub at: String,
@@ -796,7 +797,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .and_then(|x| x.as_array())
                 .map(|a| {
                     a.iter()
-                        .filter_map(|s| s.as_str().map(str::to_string))
+                        .filter_map(|c| {
+                            let name = c.get("name")?.as_str()?.to_string();
+                            let how = c.get("how")?.as_str()?.to_string();
+                            Some((name, how))
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),

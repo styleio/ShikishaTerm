@@ -1497,14 +1497,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bmore[aria-expanded="true"] .caret { transform:rotate(90deg); }
   #branch .bextra { display:flex; flex-direction:column; gap:var(--s2); }
   #branch .bextra[hidden] { display:none; }
-  /* What the new folder cannot get from git. Ticked as it will happen, so
-     nobody has to read it unless they disagree */
+  /* What the new folder cannot get from git. Set as it will happen -- the
+     project's own answer -- so nobody has to read it unless they disagree */
   #branch .bcarry { display:flex; flex-wrap:wrap; gap:var(--s2) var(--s4); align-items:center; }
   #branch .bcarry .say { color:var(--dim); font-size:11.5px; }
   #branch .bcarry label { display:flex; align-items:center; gap:var(--s2); font-size:12px;
-    color:var(--text); cursor:pointer; }
-  #branch .bcarry .link { font-size:10.5px; color:var(--dim); border:1px solid var(--line);
-    border-radius:var(--r-chip); padding:0 4px; }
+    color:var(--text); }
+  #branch .bcarry select { font:inherit; font-size:12px; padding:2px 6px; border-radius:var(--r-ctl);
+    border:1px solid var(--edge); background:var(--panel); color:var(--text); }
+  #branch .bcarry select:hover { border-color:var(--edge-hi); }
   #branch .berr, #browse .berr { color:var(--stop); font-size:12px; white-space:pre-wrap; }
   /* Putting a folder back. The same frame as the branch dialog, because it is
      the same kind of question -- what will happen, said before it happens */
@@ -3404,7 +3405,7 @@ function showMore(b, open) {
   if (!more || !extra) return;
   extra.hidden = !open;
   more.setAttribute("aria-expanded", open ? "true" : "false");
-  const n = extra.querySelectorAll(".bcarry input").length;
+  const n = Array.from(extra.querySelectorAll(".bcarry select")).filter(s => s.value !== "skip").length;
   more.querySelector(".nm").textContent = (!open && n)
     ? (T["tui.branch.more.n"] || "More ({n} come along)").replace("{n}", n)
     : (T["tui.branch.more"] || "More");
@@ -3503,11 +3504,11 @@ function preparing() {
   return t ? t.checked : true;
 }
 
-// The names still ticked, in the order they were offered
+// How each thing offered comes along, as the pickers stand
 function carrying() {
   const b = document.getElementById("branch");
   if (!b) return [];
-  return Array.from(b.querySelectorAll(".bcarry input:checked")).map(i => i.value);
+  return Array.from(b.querySelectorAll(".bcarry select")).map(s => ({name: s.dataset.name, how: s.value}));
 }
 function drawBranch() {
   const b = document.getElementById("branch");
@@ -3642,8 +3643,10 @@ function drawBases(b, p) {
 }
 let branchBases = [];
 
-// Drawn once per set of names: rebuilding it on every answer would untick
-// whatever was just unticked, which is the one thing this list must not do
+// Drawn once per set of names: rebuilding it on every answer would put back
+// whatever was just changed, which is the one thing this list must not do.
+// Each starts where the project's settings put it, and a change here is for
+// this one folder
 function drawCarry(b, items) {
   const box = b.querySelector(".bcarry");
   if (!items.length && box.children.length) return;
@@ -3654,13 +3657,15 @@ function drawCarry(b, items) {
   if (!items.length) return;
   box.append(el("span", {class:"say"}, T["tui.branch.carry"] || "Bring along:"));
   for (const it of items) {
-    const cb = el("input", {type:"checkbox", value:it.name});
-    cb.checked = !!it.on;
-    box.append(el("label", {},
-      cb, el("span", {}, it.name),
-      // A folder is not copied: the branch and the project are looking at the
-      // same one, and a write in either is a write in both
-      it.folder ? el("span", {class:"link"}, T["tui.branch.carry.link"] || "shared") : null));
+    const pick = el("select", {"data-name": it.name});
+    for (const how of ["copy", "replace", "link", "skip"]) {
+      // A folder has no text to replace in
+      if (how === "replace" && it.folder && it.how !== "replace") continue;
+      pick.append(el("option", {value: how}, T["tui.branch.carry." + how] || how));
+    }
+    pick.value = it.how || "skip";
+    pick.onchange = () => { showMore(b, !b.querySelector(".bextra").hidden); askBranch(); };
+    box.append(el("label", {}, el("span", {class:"mono"}, it.name), pick));
   }
 }
 

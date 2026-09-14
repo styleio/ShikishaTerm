@@ -385,51 +385,138 @@ pub fn create(plan: &Plan) -> Result<()> {
 /// A branch's folder arrives with everything git tracks and nothing it does
 /// not: no `.env`, no `node_modules`, no build cache. The first thing anyone
 /// does in it is fail to build, which makes "start another branch" a promise
-/// the app does not keep. So the things git was told to ignore, that are
-/// actually there, are offered to come along.
+/// the app does not keep. So the things git ignores, that are actually there,
+/// are offered to come along -- each the way the project said for the line
+/// that ignores it -- together with anything the project brings from elsewhere.
 ///
 /// Asked of git rather than guessed from a list of names, because what counts
 /// as ignored is the repository's own answer and it is written down already.
-pub fn carryables(main: &Path) -> Vec<Carry> {
-    let mut names: Vec<String> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(main) else {
-        return Vec::new();
-    };
-    for e in entries.flatten() {
-        let name = e.file_name().to_string_lossy().to_string();
-        // Never git's own folder: the new checkout has one of those already,
-        // and it is the whole reason the two are separate
-        if name == ".git" || name.is_empty() {
+pub fn carryables(main: &Path, rules: &[crate::config::BringRule]) -> Vec<Carry> {
+    let found = ignored(main);
+    let mut out: Vec<Carry> = found
+        .iter()
+        .map(|i| {
+            let rule = rules.iter().find(|r| r.is_for(&i.source, &i.pattern));
+            Carry {
+                name: i.path.trim_end_matches('/').to_string(),
+                folder: i.folder,
+                how: rule
+                    .map(|r| r.how.clone())
+                    .filter(|h| HOWS.contains(&h.as_str()))
+                    .unwrap_or_else(|| default_how(&found, &i.source, &i.pattern).to_string()),
+                from: None,
+                replace: rule.map(|r| r.replace.clone()).unwrap_or_default(),
+            }
+        })
+        .collect();
+    // From anywhere else, where the project named a place to put it
+    for r in rules.iter().filter(|r| r.pattern.is_none()) {
+        let (Some(from), Some(to)) = (r.from.as_deref(), r.to.as_deref()) else { continue };
+        let (from, to) = (from.trim(), clean_inside(to));
+        if from.is_empty() || to.is_empty() || out.iter().any(|c| c.name == to) {
             continue;
         }
-        names.push(name);
+        out.push(Carry {
+            folder: Path::new(from).is_dir(),
+            name: to,
+            how: match HOWS.contains(&r.how.as_str()) {
+                true => r.how.clone(),
+                false => "copy".into(),
+            },
+            from: Some(from.to_string()),
+            replace: r.replace.clone(),
+        });
     }
-    names.sort_by_key(|n| n.to_lowercase());
-    let ignored = ignored_of(main, &names);
-    names
-        .into_iter()
-        .filter(|n| ignored.contains(n))
-        .map(|name| {
-            let at = main.join(&name);
-            Carry {
-                folder: at.is_dir(),
-                // A secret is not carried unless somebody says so. Copying one
-                // is how a token ends up in three places nobody is watching
-                on: !looks_secret(&name),
-                name,
+    out
+}
+
+/// The ways something can reach a new folder, in the order they are offered
+pub const HOWS: [&str; 4] = ["copy", "replace", "link", "skip"];
+
+/// One thing a new folder can be given.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Carry {
+    /// Where it goes inside the new folder, `/` between the parts
+    pub name: String,
+    /// Whether it is a folder
+    pub folder: bool,
+    /// `copy`, `replace`, `link` or `skip`
+    pub how: String,
+    /// Where it comes from, when that is not the same place in the checkout
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// For `replace`: what is written differently in the copy
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub replace: Vec<crate::config::Replace>,
+}
+
+/// One thing git ignores in a checkout, and the line that makes it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Ignored {
+    /// Relative to the checkout, `/` between parts; a folder ends in `/`
+    pub path: String,
+    pub folder: bool,
+    /// The file the deciding line is in, as git names it: `.gitignore`,
+    /// `web/.gitignore`, `.git/info/exclude`, or a path outside the repository
+    pub source: String,
+    /// Its line number there, from 1
+    pub line: usize,
+    /// The line as written
+    pub pattern: String,
+    /// Whether the name is the sort that holds a live secret
+    pub secret: bool,
+}
+
+/// How much of this is listed. A repository that ignores more than this many
+/// separate things has a line matching thousands of generated files, and the
+/// first thousands say what that line is
+const IGNORED_MOST: usize = 2000;
+
+/// Everything git ignores that is actually in the checkout, each with the line
+/// that decides it. A folder git ignores whole is one entry, not its contents.
+pub fn ignored(main: &Path) -> Vec<Ignored> {
+    let listed = git_z(main, &["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], "");
+    let Some(listed) = listed else { return Vec::new() };
+    let paths: Vec<&str> = listed.split('\0').filter(|p| !p.is_empty()).take(IGNORED_MOST).collect();
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    // Which line decides each: <source> NUL <line> NUL <pattern> NUL <path> NUL
+    let Some(why) = git_z(main, &["check-ignore", "-z", "-v", "--stdin"], &paths.join("\0")) else {
+        return Vec::new();
+    };
+    let parts: Vec<&str> = why.split('\0').collect();
+    parts
+        .chunks(4)
+        .filter(|c| c.len() == 4 && !c[3].is_empty() && !c[2].starts_with('!'))
+        .map(|c| {
+            let path = c[3].to_string();
+            let leaf = path.trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_string();
+            Ignored {
+                folder: path.ends_with('/') || main.join(&path).is_dir(),
+                secret: looks_secret(&leaf),
+                source: c[0].replace('\\', "/"),
+                line: c[1].parse().unwrap_or(0),
+                pattern: c[2].to_string(),
+                path,
             }
         })
         .collect()
 }
 
-/// One thing a new folder can be given a copy of.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct Carry {
-    pub name: String,
-    /// Whether it is a folder: those are linked rather than copied
-    pub folder: bool,
-    /// Whether it starts ticked
-    pub on: bool,
+/// What a line of an ignore file does when the project has not said: nothing
+/// if it matches anything that holds a secret or matches nothing at all, a
+/// link if everything it matches is a folder, and a copy otherwise.
+///
+/// The same answer for the settings screen, which shows it beside the line,
+/// and for the dialog that makes a folder, so the two never disagree
+pub fn default_how(found: &[Ignored], source: &str, pattern: &str) -> &'static str {
+    let matched: Vec<&Ignored> = found.iter().filter(|i| i.source == source && i.pattern == pattern).collect();
+    match () {
+        _ if matched.is_empty() || matched.iter().any(|i| i.secret) => "skip",
+        _ if matched.iter().all(|i| i.folder) => "link",
+        _ => "copy",
+    }
 }
 
 /// Whether a name is the sort of thing that holds a live secret.
@@ -444,89 +531,280 @@ fn looks_secret(name: &str) -> bool {
         || n.starts_with("id_ed25519")
 }
 
-/// Which of these names the repository ignores, according to the repository.
-fn ignored_of(main: &Path, names: &[String]) -> std::collections::HashSet<String> {
-    // Asked twice at most. Git answers 0 when some of these are ignored and 1
-    // when none are; anything else is git not having answered at all -- it can
-    // refuse for a moment while the index is still locked by the commit before
-    // it, and coming back with "nothing is ignored" would quietly offer an
-    // empty list instead of the truth
+/// A git whose output is split by NULs, fed `input`. None when git did not
+/// answer: exit 1 from `check-ignore` means "none of these", which is an answer
+fn git_z(main: &Path, args: &[&str], input: &str) -> Option<String> {
+    // Asked twice at most: git can refuse for a moment while the index is still
+    // locked by the commit before it, and "nothing is ignored" would then
+    // quietly offer an empty list instead of the truth
     for attempt in 0..2 {
-        match ask_ignored(main, names) {
-            Some(found) => return found,
-            None => std::thread::sleep(std::time::Duration::from_millis(60 * (attempt + 1))),
+        let mut asking = std::process::Command::new("git");
+        asking
+            .arg("-C")
+            .arg(main)
+            .args(args)
+            .stdin(if input.is_empty() { std::process::Stdio::null() } else { std::process::Stdio::piped() })
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        let Ok(mut child) = crate::detach_console(&mut asking).spawn() else { return None };
+        // Written from a thread of its own: git answers while it reads, and a
+        // long list written here while its answer fills the other pipe would
+        // leave both sides waiting on each other
+        let feeding = child.stdin.take().map(|mut w| {
+            let input = input.to_string();
+            std::thread::spawn(move || {
+                use std::io::Write as _;
+                let _ = w.write_all(input.as_bytes());
+            })
+        });
+        let Ok(out) = child.wait_with_output() else { return None };
+        if let Some(f) = feeding {
+            let _ = f.join();
         }
+        if matches!(out.status.code(), Some(0) | Some(1)) {
+            return Some(String::from_utf8_lossy(&out.stdout).to_string());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(60 * (attempt + 1)));
     }
-    Default::default()
+    None
 }
 
-/// One asking. `None` means git did not answer, which is not the same as
-/// answering that nothing is ignored
-fn ask_ignored(main: &Path, names: &[String]) -> Option<std::collections::HashSet<String>> {
-    use std::io::Write as _;
-    let mut asking = std::process::Command::new("git");
-    asking
-        .arg("-C")
-        .arg(main)
-        .args(["check-ignore", "--stdin"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    let mut child = crate::detach_console(&mut asking).spawn().ok()?;
-    let mut wrote = true;
-    if let Some(mut w) = child.stdin.take() {
-        wrote = w.write_all(names.join("\n").as_bytes()).is_ok();
+/// A place inside the new folder, as written: `/` between parts, no leading
+/// slash, and nothing that climbs out. Empty when there is nothing left
+fn clean_inside(to: &str) -> String {
+    let parts: Vec<&str> = to
+        .split(['/', '\\'])
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect();
+    if parts.iter().any(|p| *p == ".." || p.contains(':')) {
+        return String::new();
     }
-    let out = child.wait_with_output().ok()?;
-    // 0 = some are ignored, 1 = none are. Anything else is a refusal
-    if !wrote || !matches!(out.status.code(), Some(0) | Some(1)) {
-        return None;
-    }
-    Some(
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|l| l.trim().trim_matches('"').to_string())
-            .filter(|l| !l.is_empty())
-            .collect(),
-    )
+    parts.join("/")
 }
 
-/// Gives a new folder the things that were ticked.
-///
-/// A folder is linked rather than copied: `node_modules` is a gigabyte and
-/// copying it per branch is a way to fill a disk. A file is copied, because
-/// linking one means editing it in the branch edits it everywhere.
+/// What happened to what was asked to come along.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Brought {
+    /// What could not be put there at all
+    pub missed: Vec<String>,
+    /// Files asked to be linked that were copied instead, because this machine
+    /// does not let a file be linked without rights nobody gave
+    pub copied: Vec<String>,
+    /// Replacements that could not be made, each with why: the file is there,
+    /// copied as it was
+    pub unreplaced: Vec<String>,
+}
+
+/// Gives a new folder what the dialog left on: copied, linked, or left out.
 ///
 /// Every failure is left as a warning rather than undoing the branch: the
 /// checkout is made and usable, and someone who wanted three of these and got
 /// two would rather be told which one is missing than have the whole thing
 /// taken away again.
-pub fn carry_into(plan: &Plan, names: &[String]) -> Vec<String> {
-    // Files are copied between folders on this machine. A folder on another
-    // one is a path there, and copying to it here would make a stray folder on
+pub fn carry_into(plan: &Plan, items: &[Carry]) -> Brought {
+    let mut said = Brought::default();
+    let wanted: Vec<&Carry> = items.iter().filter(|c| c.how != "skip").collect();
+    // Files are put between folders on this machine. A folder on another one
+    // is a path there, and writing to it here would make a stray folder on
     // this machine and call it done, so every one of them is said as not brought
     if plan.host.is_some() {
-        return names.to_vec();
+        said.missed = wanted.iter().map(|c| c.name.clone()).collect();
+        return said;
     }
-    let mut trouble = Vec::new();
-    for name in names {
-        if name.contains('/') || name.contains('\\') || name == ".." {
+    for c in wanted {
+        let inside = clean_inside(&c.name);
+        if inside.is_empty() {
             continue;
         }
-        let from = plan.main.join(name);
-        let to = plan.folder.join(name);
+        let from = match &c.from {
+            Some(f) => PathBuf::from(f),
+            None => plan.main.join(&inside),
+        };
+        let to = plan.folder.join(&inside);
         if !from.exists() || to.exists() {
+            if !from.exists() {
+                said.missed.push(c.name.clone());
+            }
             continue;
         }
-        let done = match from.is_dir() {
-            true => link_folder(&from, &to),
-            false => std::fs::copy(&from, &to).is_ok(),
+        if let Some(parent) = to.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let done = match (c.how.as_str(), from.is_dir()) {
+            ("link", true) => link_folder(&from, &to),
+            ("link", false) => match link_file(&from, &to) {
+                true => true,
+                false => {
+                    said.copied.push(c.name.clone());
+                    std::fs::copy(&from, &to).is_ok()
+                }
+            },
+            (_, true) => copy_folder(&from, &to).is_ok(),
+            (how, false) => {
+                let copied = std::fs::copy(&from, &to).is_ok();
+                if copied && how == "replace" && !c.replace.is_empty() {
+                    let written = std::fs::read_to_string(&to)
+                        .map_err(|e| e.to_string())
+                        .and_then(|text| apply_replaces(&text, &c.replace))
+                        .and_then(|(text, unmatched)| {
+                            std::fs::write(&to, text).map_err(|e| e.to_string()).map(|()| unmatched)
+                        });
+                    match written {
+                        Err(why) => said.unreplaced.push(format!("{} ({why})", c.name)),
+                        Ok(unmatched) => said.unreplaced.extend(unmatched.iter().map(|find| {
+                            format!("{} ({})", c.name, crate::i18n::tp("err.replace.nomatch", &[("find", find)]))
+                        })),
+                    }
+                }
+                copied
+            }
         };
         if !done {
-            trouble.push(name.clone());
+            said.missed.push(c.name.clone());
         }
     }
-    trouble
+    said
+}
+
+/// A copy of a whole folder. What is linked inside it is copied as the thing it
+/// points at would be skipped: following a link out of the folder could copy
+/// something nobody meant to bring
+fn copy_folder(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let kind = std::fs::symlink_metadata(e.path())?.file_type();
+        let there = to.join(e.file_name());
+        if kind.is_symlink() {
+            continue;
+        } else if kind.is_dir() {
+            copy_folder(&e.path(), &there)?;
+        } else {
+            std::fs::copy(e.path(), &there)?;
+        }
+    }
+    Ok(())
+}
+
+/// A second name for one file. Windows asks for rights to make one that most
+/// people running this do not have, so this is allowed to fail
+fn link_file(from: &Path, to: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(from, to).is_ok()
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(from, to).is_ok()
+    }
+}
+
+/// A copied file's text with every replacement made, in order.
+///
+/// A plain `find` is replaced wherever it appears. A regular expression is
+/// read with `^` and `$` at each line's start and end, so `^PORT=.*$` is one
+/// line, and `with` may use its groups as `$1`. One that does not compile is
+/// said, naming the one that did not
+///
+/// Also answers which of them found nothing to replace: a template that no
+/// longer has the line a replacement was written for is copied unchanged, and
+/// that is worth saying rather than finding out when the app will not start.
+/// A file written with Windows line endings is read the same way -- `$` is
+/// the end of the line, before the `\r`
+pub fn apply_replaces(
+    text: &str,
+    replaces: &[crate::config::Replace],
+) -> std::result::Result<(String, Vec<String>), String> {
+    let mut out = text.to_string();
+    let mut unmatched = Vec::new();
+    for r in replaces.iter().filter(|r| !r.find.is_empty()) {
+        let (found, next) = match r.regex {
+            false => (out.contains(&r.find), out.replace(&r.find, &r.with)),
+            true => {
+                let re = regex::RegexBuilder::new(&r.find)
+                    .multi_line(true)
+                    .crlf(true)
+                    .build()
+                    .map_err(|_| crate::i18n::tp("err.replace.regex", &[("find", &r.find)]))?;
+                (re.is_match(&out), re.replace_all(&out, r.with.as_str()).into_owned())
+            }
+        };
+        if !found {
+            unmatched.push(r.find.clone());
+        }
+        out = next;
+    }
+    Ok((out, unmatched))
+}
+
+/// The lines of the project's own `.gitignore`, as written. Empty when there is none
+pub fn gitignore_lines(main: &Path) -> Vec<String> {
+    std::fs::read_to_string(main.join(".gitignore"))
+        .map(|t| t.lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Add a line to the project's own `.gitignore`. A line already there is not
+/// added twice, and the file keeps the line endings it had
+pub fn gitignore_add(main: &Path, line: &str) -> Result<()> {
+    let line = line.trim();
+    if line.is_empty() || line.contains('\n') {
+        bail!(crate::i18n::t("err.gitignore.empty"));
+    }
+    let at = main.join(".gitignore");
+    let text = std::fs::read_to_string(&at).unwrap_or_default();
+    if text.lines().any(|l| l.trim() == line) {
+        bail!(crate::i18n::tp("err.gitignore.already", &[("line", line)]));
+    }
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut out = text.clone();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push_str(nl);
+    }
+    out.push_str(line);
+    out.push_str(nl);
+    std::fs::write(&at, out)?;
+    Ok(())
+}
+
+/// Take line `n` (from 1) out of the project's own `.gitignore`, if it still
+/// reads `line` -- a file changed since it was read is not edited blind
+pub fn gitignore_remove(main: &Path, n: usize, line: &str) -> Result<()> {
+    let at = main.join(".gitignore");
+    let text = std::fs::read_to_string(&at)?;
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<&str> = text.lines().collect();
+    if n == 0 || lines.get(n - 1).map(|l| l.trim()) != Some(line.trim()) {
+        bail!(crate::i18n::t("err.gitignore.changed"));
+    }
+    lines.remove(n - 1);
+    let mut out = lines.join(nl);
+    if !out.is_empty() {
+        out.push_str(nl);
+    }
+    std::fs::write(&at, out)?;
+    Ok(())
+}
+
+/// Files git still tracks although an ignore line now matches them. Adding a
+/// line does not stop git following a file it already follows, which is the
+/// first thing anybody adding one runs into
+pub fn tracked_but_ignored(main: &Path) -> Vec<String> {
+    git_z(main, &["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"], "")
+        .map(|s| s.split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Stop git following these files. The files themselves stay where they are;
+/// the change shows in the git column like any other, to be committed
+pub fn untrack(main: &Path, paths: &[String]) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut args: Vec<&str> = vec!["rm", "-r", "-q", "--cached", "--"];
+    args.extend(paths.iter().map(String::as_str));
+    crate::git::run(main, &args).map(|_| ())
 }
 
 /// A second name for one folder, made the way this system lets anyone make one.
@@ -1379,7 +1657,8 @@ mod tests {
         let stray = local.join("stray");
         plan.main = local.clone();
         plan.folder = stray.clone();
-        let missed = carry_into(&plan, &[".env".into()]);
+        let one = Carry { name: ".env".into(), folder: false, how: "copy".into(), from: None, replace: Vec::new() };
+        let missed = carry_into(&plan, &[one]).missed;
         assert_eq!(missed, [".env"], "it could not carry it, but counts as carried");
         assert!(!stray.exists(), "a folder was made on this machine under the far path's name");
         assert_eq!(plan.like(&local), local.as_path(), "the basis for placing it is the far path");
@@ -1755,6 +2034,7 @@ tools/conpty.ps1"));
     /// What a fresh folder is missing, and getting it there.
     #[test]
     fn what_git_does_not_carry_can_be_brought_along() {
+        use crate::config::{BringRule, Replace};
         let main = scratch("carry").join("proj-carry");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
         std::fs::create_dir_all(&main).unwrap();
@@ -1767,48 +2047,130 @@ tools/conpty.ps1"));
         git(&["init", "-q", "-b", "main"]);
         git(&["config", "user.email", "t@example.com"]);
         git(&["config", "user.name", "t"]);
-        std::fs::write(main.join(".gitignore"), "node_modules/\n.env\nbuild/\n").unwrap();
+        std::fs::write(main.join(".gitignore"), "node_modules/\n.env\nbuild/\n*.local\n").unwrap();
         std::fs::create_dir_all(main.join("node_modules").join("left-pad")).unwrap();
         std::fs::write(main.join("node_modules").join("left-pad").join("index.js"), "x").unwrap();
-        std::fs::write(main.join(".env"), "TOKEN=live\n").unwrap();
+        std::fs::write(main.join(".env"), "TOKEN=live\nPORT=3000\n").unwrap();
+        std::fs::create_dir_all(main.join("web")).unwrap();
+        std::fs::write(main.join("web").join("config.local"), "name=main\n").unwrap();
         std::fs::write(main.join("readme.md"), "hi\n").unwrap();
         git(&["add", "-A"]);
         git(&["commit", "-qm", "first"]);
 
-        let offered = carryables(&main);
-        let named = |n: &str| offered.iter().find(|c| c.name == n);
-        // Only what git was told to ignore, and only what is really there
-        assert!(named("readme.md").is_none(), "tracked files are not offered");
-        assert!(named(".gitignore").is_none());
-        assert!(named("build").is_none(), "missing things are not offered");
-        let modules = named("node_modules").expect("node_modules is not offered");
-        assert!(modules.folder && modules.on, "heavy things are taken along by default");
-        let env = named(".env").expect(".env is not offered");
-        assert!(!env.folder && !env.on, "live keys are not taken along by default");
+        // Nothing chosen: each line shows what it would do by itself
+        let offered = carryables(&main, &[]);
+        let named = |list: &[Carry], n: &str| list.iter().find(|c| c.name == n).cloned();
+        // Only what git was told to ignore, and only what is really there --
+        // including deeper in the tree, where a pattern with a star reaches
+        assert!(named(&offered, "readme.md").is_none(), "tracked files are not offered");
+        assert!(named(&offered, "build").is_none(), "missing things are not offered");
+        assert_eq!(named(&offered, "node_modules").map(|c| (c.folder, c.how)), Some((true, "link".into())));
+        assert_eq!(named(&offered, ".env").map(|c| c.how), Some("skip".into()), "live keys are left out unless chosen");
+        assert_eq!(named(&offered, "web/config.local").map(|c| c.how), Some("copy".into()));
 
-        // Bringing them: a folder is linked, a file is copied
+        // The project's choices, per line, and a file from somewhere else
+        let outside = main.parent().unwrap().join("templates");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("app.env"), "MADE=from-template\n").unwrap();
+        let rules = vec![
+            BringRule {
+                pattern: Some(".env".into()),
+                how: "replace".into(),
+                replace: vec![
+                    Replace { find: "live".into(), with: "branch".into(), regex: false },
+                    Replace { find: r"^PORT=\d+$".into(), with: "PORT=3001".into(), regex: true },
+                ],
+                ..Default::default()
+            },
+            BringRule { pattern: Some("*.local".into()), how: "skip".into(), ..Default::default() },
+            BringRule {
+                from: Some(outside.join("app.env").display().to_string()),
+                to: Some("config/app.env".into()),
+                how: "copy".into(),
+                ..Default::default()
+            },
+            // Nothing climbs out of the new folder, whatever is written
+            BringRule { from: Some(outside.join("app.env").display().to_string()), to: Some("../escape".into()), how: "copy".into(), ..Default::default() },
+        ];
+        let chosen = carryables(&main, &rules);
+        assert_eq!(named(&chosen, ".env").map(|c| c.how), Some("replace".into()));
+        assert_eq!(named(&chosen, "web/config.local").map(|c| c.how), Some("skip".into()));
+        assert!(named(&chosen, "config/app.env").is_some_and(|c| c.from.is_some()));
+        assert!(!chosen.iter().any(|c| c.name.contains("..") || c.name.contains("escape")), "{chosen:?}");
+
         let cut = plan(&main, "feature/login", None).unwrap();
         create(&cut).unwrap();
-        let missed = carry_into(&cut, &["node_modules".to_string(), ".env".to_string()]);
-        assert!(missed.is_empty(), "what could not be taken along: {missed:?}");
+        let brought = carry_into(&cut, &chosen);
+        assert!(brought.missed.is_empty() && brought.unreplaced.is_empty(), "{brought:?}");
         assert!(
             cut.folder.join("node_modules").join("left-pad").join("index.js").exists(),
             "what the link points to cannot be seen"
         );
-        assert_eq!(std::fs::read_to_string(cut.folder.join(".env")).unwrap(), "TOKEN=live\n");
-        // The copy is a copy: editing it in the branch leaves the original be
-        std::fs::write(cut.folder.join(".env"), "TOKEN=other\n").unwrap();
-        assert_eq!(std::fs::read_to_string(main.join(".env")).unwrap(), "TOKEN=live\n");
-
-        // Nothing is reached outside the folder it came from
-        assert!(carry_into(&cut, &["../secrets".to_string()]).is_empty());
-        assert!(!cut.folder.join("..").join("secrets").exists());
+        assert_eq!(std::fs::read_to_string(cut.folder.join(".env")).unwrap(), "TOKEN=branch\nPORT=3001\n");
+        assert_eq!(std::fs::read_to_string(main.join(".env")).unwrap(), "TOKEN=live\nPORT=3000\n", "the original was touched");
+        assert!(!cut.folder.join("web").join("config.local").exists(), "a line left out came along");
+        assert_eq!(std::fs::read_to_string(cut.folder.join("config").join("app.env")).unwrap(), "MADE=from-template\n");
 
         // The junction has to go before the folder does, or removing the tree
         // would walk into it and take the original's contents with it
         let mut unhook = std::process::Command::new("cmd");
         unhook.args(["/c", "rmdir"]).arg(cut.folder.join("node_modules"));
         let _ = crate::detach_console(&mut unhook).status();
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// Replacements are made in order, plainly or as regular expressions with
+    /// lines as their unit, and a broken expression is said rather than skipped
+    #[test]
+    fn a_copy_is_replaced_in_as_asked() {
+        use crate::config::Replace;
+        let r = |find: &str, with: &str, regex: bool| Replace { find: find.into(), with: with.into(), regex };
+        let done = |text: &str, rs: &[Replace]| apply_replaces(text, rs).unwrap().0;
+        let text = "A=1\r\nURL=http://a.b/c\r\nA=1\r\n";
+        assert_eq!(done(text, &[r("A=1", "A=2", false)]), "A=2\r\nURL=http://a.b/c\r\nA=2\r\n");
+        // Plain text is not a pattern: the dots are dots
+        assert_eq!(done("a.b axb", &[r("a.b", "Z", false)]), "Z axb");
+        assert_eq!(done("a.b axb", &[r("a.b", "Z", true)]), "Z Z");
+        assert_eq!(done("PORT=3000\nX=1\n", &[r("^PORT=(\\d+)$", "PORT=4$1", true)]), "PORT=43000\nX=1\n");
+        // Windows line endings: $ is still the end of the line
+        assert_eq!(done("PORT=3000\r\nX=1\r\n", &[r("^PORT=\\d+$", "PORT=3001", true)]), "PORT=3001\r\nX=1\r\n");
+        assert_eq!(done("ab", &[r("a", "b", false), r("bb", "c", false)]), "c", "not in order");
+        assert!(apply_replaces("x", &[r("(", "y", true)]).is_err());
+        // What found nothing is said
+        assert_eq!(apply_replaces("A=1\n", &[r("A=1", "A=2", false), r("^B=", "B=", true)]).unwrap().1, ["^B="]);
+    }
+
+    /// The project's .gitignore, changed a line at a time, and the files git
+    /// keeps following although a line now matches them
+    #[test]
+    fn gitignore_lines_are_added_and_taken_out() {
+        let main = scratch("ignorelines").join("proj-ignorelines");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+        std::fs::create_dir_all(&main).unwrap();
+        for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@example.com"], &["config", "user.name", "t"]] {
+            crate::git::run(&main, args).unwrap();
+        }
+        std::fs::write(main.join("secret.txt"), "x").unwrap();
+        crate::git::run(&main, &["add", "secret.txt"]).unwrap();
+        crate::git::run(&main, &["commit", "-qm", "with a secret"]).unwrap();
+
+        gitignore_add(&main, "secret.txt").unwrap();
+        gitignore_add(&main, "*.log").unwrap();
+        assert!(gitignore_add(&main, " *.log ").is_err(), "a line was added twice");
+        assert!(gitignore_add(&main, "  ").is_err());
+        let lines = gitignore_lines(&main);
+        let at = |l: &str| lines.iter().position(|x| x == l).map(|i| i + 1).unwrap();
+        // Committed before it was ignored: git still follows it
+        assert_eq!(tracked_but_ignored(&main), ["secret.txt"]);
+        untrack(&main, &["secret.txt".to_string()]).unwrap();
+        assert!(tracked_but_ignored(&main).is_empty());
+        assert!(main.join("secret.txt").exists(), "the file itself went");
+
+        // Taken out by number, only while that line still says the same thing
+        assert!(gitignore_remove(&main, at("*.log"), "secret.txt").is_err());
+        gitignore_remove(&main, at("*.log"), "*.log").unwrap();
+        assert!(!gitignore_lines(&main).iter().any(|l| l == "*.log"));
+        assert!(gitignore_lines(&main).iter().any(|l| l == "secret.txt"));
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
