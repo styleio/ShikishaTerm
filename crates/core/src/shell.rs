@@ -2864,6 +2864,35 @@ window.__issues = function (d) {
   drawIssues();
 };
 
+// The body of the pane showing the Issue tab, when one is and it is not the
+// focused pane (that one is placed by --fx and friends, like every panel)
+function issuesPaneBody() {
+  if (!PANES || !PANES.panes) return null;
+  const p = PANES.panes.find(x => { const t = paneTab(x); return t && t.kind === "issues"; });
+  if (!p) return null;
+  const body = document.querySelector('#panes .pane[data-pid="' + p.id + '"] .pbody');
+  return body && body.getClientRects().length ? {body, id: p.id} : null;
+}
+// Put the panel over a pane that is not the focused one, or back where the
+// focused pane is. A press on it there moves the focus to its pane first
+function placeIssues(box, own) {
+  if (!own) {
+    if (box.dataset.pane) { box.style.left = box.style.top = box.style.right = box.style.bottom = ""; delete box.dataset.pane; }
+    return;
+  }
+  const m = document.getElementById("main").getBoundingClientRect();
+  const b = own.body.getBoundingClientRect();
+  box.style.left = (b.left - m.left) + "px";
+  box.style.top = (b.top - m.top) + "px";
+  box.style.right = (m.right - b.right) + "px";
+  box.style.bottom = (m.bottom - b.bottom) + "px";
+  box.dataset.pane = own.id;
+}
+document.getElementById("issuespanel").addEventListener("mousedown", () => {
+  const box = document.getElementById("issuespanel");
+  if (box.dataset.pane) send({kind:"focuspane", id: Number(box.dataset.pane)});
+}, true);
+
 function drawIssues() {
   const box = document.getElementById("issuespanel");
   if (!box || box.hidden) return;
@@ -5401,7 +5430,11 @@ window.__state = function (json) {
   const ipanel = document.getElementById("issuespanel");
   if (ipanel) {
     const was = !ipanel.hidden;
-    ipanel.hidden = cover || !issuesUp;
+    // Drawn over the pane that holds it, whichever pane has focus: beside
+    // another pane it went blank the moment that other one was pressed
+    const own = cover ? null : issuesPaneBody();
+    placeIssues(ipanel, issuesUp ? null : own);
+    ipanel.hidden = cover || !(issuesUp || own);
     // Asked the moment it comes into view: which projects there are, then the list
     if (!ipanel.hidden && !was) { issuesSig = ""; send({kind:"issues", act:"projects", args:{}}); }
     drawIssues();
@@ -5738,6 +5771,9 @@ function paintPaneHeads() {
       b.hidden = !(t && t.restartable);
       b.classList.toggle("armed", armedPane === cls + p.id);
     }
+    // The Issue tab is a page that takes its pane whole: dividing it from its
+    // own caption is not something it is for
+    for (const cls of [".sr", ".sd"]) el.querySelector(cls).hidden = !!(t && t.kind === "issues");
     // Empty means there is nothing to show here, which is the same question
     // this line already answers. Asking the pane tree instead -- "is the
     // surface number zero?" -- was asking a copy that can be a frame behind,
