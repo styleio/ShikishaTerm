@@ -172,32 +172,97 @@ pub fn copy_text(text: &str) -> bool {
     arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_string())).is_ok()
 }
 
+/// A picture to this machine's clipboard, from the PNG the tool page made.
+pub fn copy_image(png: &[u8]) -> bool {
+    let Some((width, height, bytes)) = rgba_of(png) else {
+        return false;
+    };
+    arboard::Clipboard::new()
+        .and_then(|mut c| c.set_image(arboard::ImageData { width, height, bytes: bytes.into() }))
+        .is_ok()
+}
+
+/// A PNG as rows of RGBA pixels, which is what the clipboard is handed.
+fn rgba_of(png: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(png));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let data = &buf[..info.buffer_size()];
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => data.to_vec(),
+        png::ColorType::Rgb => data.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        png::ColorType::GrayscaleAlpha => data.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::Grayscale => data.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::Indexed => return None,
+    };
+    Some((info.width as usize, info.height as usize, rgba))
+}
+
+/// How a save the person was asked about ended.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SaveEnd {
+    Written,
+    Cancelled,
+    Failed,
+}
+
+impl SaveEnd {
+    /// The word the tool page is told
+    pub fn word(self) -> &'static str {
+        match self {
+            SaveEnd::Written => "saved",
+            SaveEnd::Cancelled => "cancelled",
+            SaveEnd::Failed => "failed",
+        }
+    }
+}
+
 /// Text to a file the person chooses. Asked on a thread of its own: the dialog
 /// waits for the person, and the window's message loop must not wait with it
 pub fn save_text(text: String, name: String) {
+    save_file(text.into_bytes(), name, "snip.save.title", ("Text", "txt"), |_| {});
+}
+
+/// Bytes to a file the person chooses, and then `done` with how it ended.
+///
+/// The same dialog every other "save" in the app opens, brought in front the
+/// same way -- a dialog left behind the tool's own window, which stays in front
+/// of everything, is a save that looks like it did nothing
+pub fn save_file(
+    bytes: Vec<u8>,
+    name: String,
+    title_key: &'static str,
+    kind: (&'static str, &'static str),
+    done: impl FnOnce(SaveEnd) + Send + 'static,
+) {
     use shikisha_shared::FilePicker as _;
     std::thread::spawn(move || {
-        let name = sanitize(&name);
-        // The same dialog every other "save" in the app opens, brought in front
-        // the same way -- the tool's own window has just gone, and a dialog
-        // left behind the board is a save that looks like it did nothing
-        let title = shikisha_core::i18n::t("snip.save.title");
-        if let Some(path) = crate::picker::DesktopPicker.save(&title, None, &name, ("Text", "txt"))
-            && let Err(e) = std::fs::write(&path, text)
-        {
-            shikisha_core::append_hook_log(&format!("snip: could not write {}: {e}", path.display()));
-        }
+        let name = sanitize(&name, &format!("snip.{}", kind.1));
+        let title = shikisha_core::i18n::t(title_key);
+        let how = match crate::picker::DesktopPicker.save(&title, None, &name, kind) {
+            None => SaveEnd::Cancelled,
+            Some(path) => match std::fs::write(&path, bytes) {
+                Ok(()) => SaveEnd::Written,
+                Err(e) => {
+                    shikisha_core::append_hook_log(&format!("snip: could not write {}: {e}", path.display()));
+                    SaveEnd::Failed
+                }
+            },
+        };
+        done(how);
     });
 }
 
 /// A file name a page suggested, with nothing in it that could name a folder.
-fn sanitize(name: &str) -> String {
+fn sanitize(name: &str, otherwise: &str) -> String {
     let leaf: String = name
         .chars()
         .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') && !c.is_control())
         .collect();
     let leaf = leaf.trim().trim_matches('.').to_string();
-    if leaf.is_empty() { "snip.txt".into() } else { leaf }
+    if leaf.is_empty() { otherwise.into() } else { leaf }
 }
 
 #[cfg(test)]
@@ -230,12 +295,35 @@ mod tests {
         assert!(frame(n).is_none(), "it is still there after closing");
     }
 
+    /// The picture the page hands over comes out as the pixels it was, in
+    /// every colour layout a PNG can be written in
+    #[test]
+    fn a_png_comes_out_as_its_pixels() {
+        let write = |color: png::ColorType, data: &[u8]| {
+            let mut out = Vec::new();
+            {
+                let mut enc = png::Encoder::new(&mut out, 2, 1);
+                enc.set_color(color);
+                enc.set_depth(png::BitDepth::Eight);
+                enc.write_header().unwrap().write_image_data(data).unwrap();
+            }
+            out
+        };
+        let rgba = write(png::ColorType::Rgba, &[255, 0, 0, 128, 0, 0, 255, 255]);
+        assert_eq!(rgba_of(&rgba), Some((2, 1, vec![255, 0, 0, 128, 0, 0, 255, 255])));
+        let rgb = write(png::ColorType::Rgb, &[1, 2, 3, 4, 5, 6]);
+        assert_eq!(rgba_of(&rgb), Some((2, 1, vec![1, 2, 3, 255, 4, 5, 6, 255])), "the alpha was not filled in");
+        let gray = write(png::ColorType::Grayscale, &[10, 20]);
+        assert_eq!(rgba_of(&gray), Some((2, 1, vec![10, 10, 10, 255, 20, 20, 20, 255])));
+        assert_eq!(rgba_of(b"not a png"), None);
+    }
+
     /// A name a page suggests cannot walk out of the folder it is saved in
     #[test]
     fn a_suggested_name_is_only_a_name() {
-        assert_eq!(sanitize("colors.txt"), "colors.txt");
-        assert_eq!(sanitize("..\\..\\evil.txt"), "evil.txt");
-        assert_eq!(sanitize("a/b:c.txt"), "abc.txt");
-        assert_eq!(sanitize("..."), "snip.txt");
+        assert_eq!(sanitize("colors.txt", "snip.txt"), "colors.txt");
+        assert_eq!(sanitize("..\\..\\evil.txt", "snip.txt"), "evil.txt");
+        assert_eq!(sanitize("a/b:c.txt", "snip.txt"), "abc.txt");
+        assert_eq!(sanitize("...", "snip.png"), "snip.png");
     }
 }

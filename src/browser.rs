@@ -272,6 +272,10 @@ pub enum Cmd {
     /// The answer to a question the tool page asked (see `Ev::SnipAsk`),
     /// as JSON, handed to the page
     SnipAnswer { json: String },
+    /// The tool's window out of the way of a save dialog, keeping what is on it
+    SnipAside,
+    /// The save dialog is done: the tool's window back, told how it ended
+    SnipBack { how: &'static str },
 }
 
 
@@ -1561,6 +1565,8 @@ fn run_window(
     let snip_own = std::rc::Rc::clone(&own);
     let snip_base = url.trim_end_matches('/').to_string();
     let snip_tx = ev_tx.clone();
+    // The tool's window stepped aside for a save dialog, to come back after it
+    let mut snip_aside = false;
 
     // Reports are sent from inside the loop too, so grab a sender for "closed" ahead of time
     let closed_tx = ev_tx.clone();
@@ -2198,8 +2204,27 @@ fn run_window(
                 Cmd::SnipClose => {
                     // A count still running belongs to a tool that is gone
                     snip_gen += 1;
+                    snip_aside = false;
                     if let Some(w) = snip.as_ref() {
                         w.put_away();
+                    }
+                }
+                Cmd::SnipAside => {
+                    if let Some(w) = snip.as_ref() {
+                        snip_aside = true;
+                        w.window.set_visible(false);
+                    }
+                }
+                Cmd::SnipBack { how } => {
+                    // Closed while the dialog was up: there is nothing to come back to
+                    if !std::mem::take(&mut snip_aside) {
+                        return;
+                    }
+                    if let Some(w) = snip.as_ref() {
+                        w.window.set_visible(true);
+                        w.window.set_focus();
+                        let _ = w.view.focus();
+                        let _ = w.view.evaluate_script(&format!("window.__snipSaved && window.__snipSaved({how:?});"));
                     }
                 }
                 Cmd::SnipAnswer { json } => {
@@ -2358,6 +2383,11 @@ impl SnipWindow {
                     return;
                 };
                 let text = || v.get("text").and_then(|t| t.as_str()).unwrap_or_default().to_string();
+                let picture = || {
+                    use base64::Engine as _;
+                    let b64 = v.get("png").and_then(|p| p.as_str())?;
+                    base64::engine::general_purpose::STANDARD.decode(b64.as_bytes()).ok()
+                };
                 match v.get("act").and_then(|a| a.as_str()) {
                     Some("copy") => {
                         if !crate::snip::copy_text(&text()) {
@@ -2373,6 +2403,25 @@ impl SnipWindow {
                     }
                     Some("close") => {
                         let _ = wake.send_event(Cmd::SnipClose);
+                    }
+                    // The edited picture. The clipboard takes it as pixels, so
+                    // it pastes into anything that takes a picture
+                    Some("copy_image") => {
+                        if !picture().is_some_and(|png| crate::snip::copy_image(&png)) {
+                            shikisha_core::append_hook_log("snip: the clipboard would not take the picture");
+                        }
+                    }
+                    // Saved without closing: the window steps aside for the
+                    // dialog, which would otherwise open behind it, and comes
+                    // back with the picture still being edited
+                    Some("save_image") => {
+                        let Some(png) = picture() else { return };
+                        let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("snip.png").to_string();
+                        let _ = wake.send_event(Cmd::SnipAside);
+                        let back = wake.clone();
+                        crate::snip::save_file(png, name, "snip.save.title_image", ("PNG", "png"), move |how| {
+                            let _ = back.send_event(Cmd::SnipBack { how: how.word() });
+                        });
                     }
                     // A question about the assistant AI. Which desk it is
                     // asked for is the conductor's to know, not this window's

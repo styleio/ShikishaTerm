@@ -3725,6 +3725,7 @@ dependencies = [
  "hkdf",
  "mlua",
  "p256",
+ "png",
  "portable-pty",
  "qrcode",
  "rand",
