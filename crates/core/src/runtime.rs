@@ -730,6 +730,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // GitHub nothing while it is not in view
     let mut issues_open = false;
     let mut issues_front = false;
+    // What the Issue tab's answers were read against: the desk, and how many
+    // times the settings have changed. When either moves, what it shows -- a
+    // project's account, "no account chosen" -- may no longer be so, and it is
+    // told to ask again rather than left saying it until somebody presses reload
+    let mut settings_gen: u64 = 0;
+    let mut issues_basis: (usize, u64) = (0, 0);
     // Words waiting for the input bar of a worktree just made for an issue or
     // a pull request: (the folder, the words, since when)
     let mut pending_drafts: Vec<(std::path::PathBuf, String, Instant)> = Vec::new();
@@ -1311,6 +1317,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // A project's git account is part of each tab's place, so the
                 // places are looked at again against the settings just read
                 place_at = std::time::Instant::now();
+                settings_gen += 1;
                 ai_choices = startable_ais();
                 max_chain = newcfg.max_chain.unwrap_or(10);
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
@@ -3472,6 +3479,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // Looked at again now rather than at the next beat, so the menu
                 // does not spend two seconds showing the choice it just replaced
                 place_at = std::time::Instant::now();
+                settings_gen += 1;
             } else {
                 let js = serde_json::json!({
                     "act": "account", "ok": false, "error": i18n::t("err.git.account.not_saved"),
@@ -3848,8 +3856,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if shell.mail().take_open_issues() {
             // Brought to the front at the top of the next pass, once the row
             // is on the list the rest of the loop measures against
+            if !issues_open {
+                issues_basis = (desk_index, settings_gen);
+            }
             issues_open = true;
             issues_front = true;
+        }
+        // The settings changed, or another desk is in front, since the Issue tab
+        // last read its projects: it asks again, whether or not it is in view --
+        // the settings screen covers it while the account is being chosen
+        if issues_open && issues_basis != (desk_index, settings_gen) {
+            issues_basis = (desk_index, settings_gen);
+            let js = serde_json::json!({"act": "reload", "ok": true}).to_string();
+            shell.push_issues(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"issues\":{js}}}"));
+            }
         }
         // What the Issue tab asked for. The projects are answered here; every
         // other request is allowed or refused by the same permission-table row

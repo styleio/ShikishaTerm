@@ -2836,6 +2836,16 @@ function issueStart(row) {
 
 window.__issues = function (d) {
   if (!d || !d.act) return;
+  // The settings changed or another desk came to the front: the projects, their
+  // accounts and so what could be read are asked for again, and what is on
+  // screen stays until the answers replace it
+  if (d.act === "reload") {
+    if (I.projects === null) return;
+    issuesAsk("projects", {});
+    if (I.view === "detail" && I.detail) issuesAsk("detail", {project: I.detail.project, number: I.detail.number});
+    issuesList(I.page);
+    return;
+  }
   if (d.act === "projects") {
     I.projects = d.projects || [];
     if (I.project && !issueProject(I.project)) I.project = "";
