@@ -8,6 +8,53 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-15
+
+A desk's issues and pull requests have a tab of their own, a tab closes and
+comes back with its conversation, and a new tab asks only what it runs.
+
+### Added
+- **An Issue tab.** The Issue row under INDEX opens a tab listing every
+  project's issues or pull requests (open, mine, waiting for review, merged,
+  closed, or a search), each read and changed as the git account its project
+  chose. One opens in full with its activity and checks, drawn as Markdown the
+  way GitHub draws it; its links open in this PC's browser. From there a new
+  issue can be written, comments added, an issue closed with a reason, and a
+  pull request merged. "Start" makes a worktree named after the issue and puts
+  only its address in the AI's input bar, unsent.
+- **A ✕ on each tab along the top.** Closing keeps the tab's place and the
+  conversation it was having. The ▾ at the end of the row, or Ctrl+B T, brings
+  a closed tab back and resumes that conversation, and Ctrl+B & closes the tab
+  in view. A question is asked only while an AI is working or waiting for an
+  answer.
+- **Keys that open the screen tools from any program**, even with another
+  program in front. They are set under Settings › Keys, which says when a key
+  is already taken and when it was last pressed, and each is shown beside the
+  tool it opens.
+
+### Changed
+- **The + on the tab bar, a folder's + and an empty pane ask only what the new
+  tab runs**, in a dialog over the board, instead of opening the whole settings
+  page. A new tab is named after what it runs until you name it yourself.
+- **A branch already open in another folder is a yes-or-no question** when a
+  worktree is made: yes takes that folder into the desk, no makes a new one
+  beside it under a free name.
+- **A tab that cannot start stays on screen saying why**, with a link to
+  install what is missing, and a git tab on a PC without git says so.
+- **Settings, the manual and the tools are three separate buttons** at the foot
+  of the left bar.
+- **A folder heading in the list stays on one line** however narrow the column,
+  its + at the end; the labels give way first, the name last.
+
+### Fixed
+- **The Store build said it was the newest version while an update was
+  waiting**, and "could not look" when none was.
+- **A desk's git accounts disappeared from the settings page after a reload**,
+  and the next save erased them.
+- **A pane showed the wrong tab after a tab before it was closed.**
+- **A settings file that could not be read was written over** when a folder or
+  a tab was changed.
+
 ## [0.12.0] - 2026-09-14
 
 A desk keeps its accounts to itself, the screen can be framed, read and marked
@@ -1986,7 +2033,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/styleio/ShikishaTerm/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/styleio/ShikishaTerm/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/styleio/ShikishaTerm/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/styleio/ShikishaTerm/compare/v0.9.0...v0.10.0
