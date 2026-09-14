@@ -4618,9 +4618,9 @@ function modelCandidates(getProv, onPick) {
 
 function aiPick(st) {
   const row = el("span", {style:"display:inline-flex;gap:var(--s2);align-items:center;flex-wrap:wrap"});
-  const sel = el("select");
-  for (const c of aiChoices()) sel.append(el("option", {value:c.key}, c.label));
-  sel.value = st.key || "claude"; st.key = sel.value;
+  const picker = el("select");
+  for (const c of aiChoices()) picker.append(el("option", {value:c.key}, c.label));
+  picker.value = st.key || "claude"; st.key = picker.value;
   const modelIn = el("input", {type:"text", class:"mono", style:"width:180px"});
   modelIn.value = st.model || "";
   const cand = modelCandidates(
@@ -4634,10 +4634,10 @@ function aiPick(st) {
     if (!isM) cand.chips.textContent = "";
     if (isM) modelIn.placeholder = DEFAULT_MODEL[c.provider] || T["wizard.discuss.model_ph"];
   };
-  sel.addEventListener("change", () => { st.key = sel.value; sync(); });
+  picker.addEventListener("change", () => { st.key = picker.value; sync(); });
   modelIn.addEventListener("input", () => { st.model = modelIn.value.trim(); });
   sync();
-  row.append(sel, modelIn, cand.btn);
+  row.append(picker, modelIn, cand.btn);
   return el("span", {style:"display:inline-block"}, row, cand.chips);
 }
 // A model-API participant needs a model name (except for a provider that has a default value)
@@ -5194,26 +5194,26 @@ function themePicker() {
   current.appearance = current.appearance || {};
   const a = current.appearance;
   const wrap = el("div", {style:"display:flex;gap:var(--s3);align-items:center;min-width:0;flex:1;flex-wrap:wrap"});
-  const sel = el("select", {style:"min-width:190px"});
+  const picker = el("select", {style:"min-width:190px"});
   const strip = el("div", {style:"display:flex;gap:var(--s1)"});
-  wrap.append(sel, strip);
+  wrap.append(picker, strip);
   // A scheme written out in the settings by hand is not in any list, and
   // picking from the list is how someone would replace it -- so it is offered
   // as the current choice rather than silently dropped
   const inline = a.theme && typeof a.theme === "object";
   let known = [], mine = null;
   const paint = () => {
-    const found = sel.value ? known.find(t => t.name === sel.value) : mine;
+    const found = picker.value ? known.find(t => t.name === picker.value) : mine;
     strip.textContent = "";
     for (const c of (found ? found.colors : [])) {
       strip.append(el("span", {style:"width:14px;height:14px;border-radius:var(--r-chip);" +
         "border:1px solid var(--line);background:" + c}));
     }
   };
-  sel.addEventListener("change", () => {
+  picker.addEventListener("change", () => {
     // Picking a name replaces whatever was there. Landing back on "written
     // here" leaves the colours the person wrote exactly as they wrote them
-    if (sel.value) a.theme = sel.value;
+    if (picker.value) a.theme = picker.value;
     else if (!inline) delete a.theme;
     paint();
   });
@@ -5223,10 +5223,10 @@ function themePicker() {
     catch (e) { return; }
     known = j.list || [];
     mine = j.current || null;
-    if (inline) sel.append(el("option", {value:""}, T["settings.theme.custom"]));
-    for (const t of known) sel.append(el("option", {value:t.name}, t.name));
+    if (inline) picker.append(el("option", {value:""}, T["settings.theme.custom"]));
+    for (const t of known) picker.append(el("option", {value:t.name}, t.name));
     // An unset theme is the app's own, not whatever happens to sort first
-    sel.value = inline ? "" : (a.theme || j.default || "");
+    picker.value = inline ? "" : (a.theme || j.default || "");
     paint();
   })();
   return wrap;
@@ -7915,7 +7915,7 @@ function deskStopsCard(desk) {
 
 function stopRow(desk, s, i, redraw) {
   const set = (k, v) => { s[k] = v; refreshSave(); };
-  const sel = (val, opts, on) => {
+  const choice = (val, opts, on) => {
     const e = el("select", {});
     for (const [v, label] of opts) { const o = el("option", {value:v}, label); if (val === v) o.selected = true; e.append(o); }
     e.addEventListener("change", () => on(e.value));
@@ -7927,7 +7927,7 @@ function stopRow(desk, s, i, redraw) {
     e.addEventListener("input", () => on(type === "number" ? (parseInt(e.value, 10) || 0) : e.value));
     return e;
   };
-  const when = sel(s.when || "screen", [
+  const when = choice(s.when || "screen", [
     ["screen",T["settings.stops.when.screen"]],["css",T["settings.stops.when.css"]],["xpath",T["settings.stops.when.xpath"]],
     ["console",T["settings.stops.when.console"]],["rounds",T["settings.stops.when.rounds"]],["time",T["settings.stops.when.time"]],["tokens",T["settings.stops.when.tokens"]],
   ], v => { s.when = v; redraw(); refreshSave(); });
@@ -7947,7 +7947,7 @@ function stopRow(desk, s, i, redraw) {
     dyn.push(inp(s.sec, T["settings.stops.seconds_ph"], "number", v => set("sec", v)));
   }
 
-  const outcome = sel(s.outcome || "success", [["success",T["settings.stops.outcome.success"]],["fail",T["settings.stops.outcome.fail"]]], v => set("outcome", v));
+  const outcome = choice(s.outcome || "success", [["success",T["settings.stops.outcome.success"]],["fail",T["settings.stops.outcome.fail"]]], v => set("outcome", v));
   const code = inp(s.code || 0, "code", "number", v => set("code", v));
   const reason = inp(s.reason, T["settings.stops.reason_ph"], "text", v => set("reason", v || null));
   const rm = el("button", {class:"quiet", title:T["common.delete"], onclick:() => { desk.stops.splice(i, 1); redraw(); refreshSave(); }}, "×");
@@ -8327,7 +8327,8 @@ function tabPane(desk, t) {
     const nbox = el("div");
     const drawNotify = () => {
       nbox.textContent = "";
-      const deskNotify = () => ((desks[sel.desk] || {}).notify) || {};
+      // The desk this pane was drawn for, handed in
+      const deskNotify = () => desk.notify || {};
       const dests = Object.keys(deskNotify());
       const opts = [["", T["settings.tab.notify.none"]]]
         .concat(dests.map(n => [n, n]), [["add-dest", T["settings.tab.notify.add"]]]);
@@ -8386,7 +8387,7 @@ function tabPane(desk, t) {
         }
       };
       const before = t.notify_on_done;
-      const sel = choose(t, "notify_on_done", opts, async v => {
+      const picker = choose(t, "notify_on_done", opts, async v => {
         if (v === "add-dest") {
           // Not a destination: put back what was chosen, open the editor, and
           // point the tab at whatever it added.
@@ -8405,7 +8406,7 @@ function tabPane(desk, t) {
       drawReply();
       const hint = dests.length ? T["settings.tab.notify.hint"] : T["settings.tab.notify.none_hint"];
       nbox.append(card(T["settings.tab.notify.title"],
-        row(T["settings.tab.notify.label"], sel, el("span", {class:"hint"}, hint)),
+        row(T["settings.tab.notify.label"], picker, el("span", {class:"hint"}, hint)),
         unreached, replyBox, warn));
     };
     drawNotify();
@@ -8533,19 +8534,19 @@ async function showCliHelp(head) {
 
 function aiPanel(t, cmdInput, rebuild, real) {
   const box = el("div");
-  const sel = el("select");
+  const picker = el("select");
   for (const c of AI_CLIS) {
     const ok = c.check ? aiEngines.some(e => e.id === c.check) : true;
-    sel.append(el("option", {value:"cli:" + c.cmd}, c.label + (!ok ? T["settings.tab.common.missing"] : "")));
+    picker.append(el("option", {value:"cli:" + c.cmd}, c.label + (!ok ? T["settings.tab.common.missing"] : "")));
   }
   const provs = Object.keys(deskProviders());
-  for (const n of provs) sel.append(el("option", {value:"prov:" + n}, n));
-  sel.append(el("option", {value:"add-ai"}, T["settings.tab.ai.add"]));
+  for (const n of provs) picker.append(el("option", {value:"prov:" + n}, n));
+  picker.append(el("option", {value:"add-ai"}, T["settings.tab.ai.add"]));
 
   // Reflect the current command in the dropdown.
   const cur = parseModel(t.command);
-  if (cur && cur.provider) sel.value = "prov:" + cur.provider;
-  else { const h = headOf(t.command); sel.value = AI_CLIS.some(c => c.cmd === h) ? "cli:" + h : ""; }
+  if (cur && cur.provider) picker.value = "prov:" + cur.provider;
+  else { const h = headOf(t.command); picker.value = AI_CLIS.some(c => c.cmd === h) ? "cli:" + h : ""; }
 
   const detail = el("div");
   // "Show flags" runs the selected CLI's --help. Hidden for API model tabs
@@ -8600,8 +8601,8 @@ function aiPanel(t, cmdInput, rebuild, real) {
     });
   };
 
-  sel.addEventListener("change", async () => {
-    const v = sel.value;
+  picker.addEventListener("change", async () => {
+    const v = picker.value;
     if (v === "add-ai") {
       const before = new Set(Object.keys(deskProviders()));
       await openProvidersPopup();
@@ -8659,7 +8660,7 @@ function aiPanel(t, cmdInput, rebuild, real) {
     });
   }
 
-  box.append(el("div", {class:"row"}, el("label", {}, T["settings.tab.ai.pick"]), sel, helpBtn));
+  box.append(el("div", {class:"row"}, el("label", {}, T["settings.tab.ai.pick"]), picker, helpBtn));
   if (!provs.length)
     box.append(el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["settings.tab.ai.api_hint"])));
@@ -10366,6 +10367,22 @@ mod tests {
     /// silently never runs, which is worse than not offering it at all; an
     /// ending the engine can reach with no entry here can only be handled by
     /// editing a file by hand.
+    /// `sel` is the page's one record of what is chosen, and every pane reads
+    /// it. A local of the same name anywhere in a function hides it for the
+    /// whole of that block, and a read of `sel.desk` before the local's line
+    /// throws -- the pane is left blank with nothing on screen to say why.
+    /// Adding a tab did exactly that once: the notification card named its
+    /// dropdown `sel`, and every AI tab's pane came up empty.
+    #[test]
+    fn nothing_on_the_settings_page_hides_the_selection() {
+        let shadows: Vec<&str> = ["const sel ", "let sel ", "var sel ", "const sel=", "let sel=", "(sel)", "(sel,", " sel =>", ", sel)"]
+            .into_iter()
+            .filter(|p| PAGE.matches(p).count() > usize::from(*p == "let sel "))
+            .collect();
+        assert!(PAGE.contains("let sel = {"), "the selection is no longer where this looks for it");
+        assert!(shadows.is_empty(), "something on the page is also called sel: {shadows:?}");
+    }
+
     #[test]
     fn every_trigger_the_screen_offers_is_one_the_engine_fires() {
         let block = PAGE
