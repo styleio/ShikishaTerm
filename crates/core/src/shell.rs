@@ -201,19 +201,21 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     right:max(0px, calc(var(--sidew) - 4px)); cursor:col-resize; }
   #sidegrip[hidden] { display:none; }
   #sidegrip:hover, #sidegrip.dragging { background:var(--brand); opacity:.35; }
-  /* Settings lives here as a fixed gear pinned to the very bottom, not a tab */
-  .tab.gearrow { margin-top:auto; color:var(--dim); border-top:1px solid var(--line);
-    justify-content:center; padding:10px; }
-  .tab.gearrow:hover { color:inherit; }
-  .tab.gearrow.sel { color:var(--text); }
-  .tab.gearrow .gear { font-size:17px; line-height:1; }
-  .tab.gearrow { gap:var(--s5); }
-  .tab.gearrow .help { font-size:15px; line-height:1; color:var(--dim); text-decoration:none;
-    width:22px; height:22px; border:1px solid var(--line); border-radius:50%;
-    display:inline-flex; align-items:center; justify-content:center; }
-  .tab.gearrow .help:hover { color:var(--text); border-color:var(--text); }
-  .tab.gearrow .snipbtn { font-size:16px; line-height:1; opacity:.8; }
-  .tab.gearrow .snipbtn:hover { opacity:1; }
+  /* Settings, the manual and the tools, pinned to the very bottom. The row is
+     only where they stand: each is its own button with a box of its own to
+     press, so a press that misses the scissors does not open settings */
+  .gearrow { margin-top:auto; display:flex; align-items:center; justify-content:center;
+    gap:var(--s4); padding:6px 10px; border-top:1px solid var(--line); user-select:none; }
+  .gearrow .sidebtn { width:34px; height:34px; display:inline-flex; align-items:center;
+    justify-content:center; border-radius:var(--r-ctl); cursor:pointer; color:var(--dim);
+    text-decoration:none; line-height:1; }
+  .gearrow .sidebtn:hover { background:var(--hover); color:var(--text); }
+  .gearrow .sidebtn.sel { background:var(--raise); color:var(--text); }
+  .gearrow .gear { font-size:17px; }
+  .gearrow .snipbtn { font-size:16px; }
+  .gearrow .help > span { font-size:13px; width:20px; height:20px; border:1px solid var(--line);
+    border-radius:50%; display:inline-flex; align-items:center; justify-content:center; }
+  .gearrow .help:hover > span { border-color:var(--text); }
   /* The tools menu: how long to wait, then which tool */
   .fmenu div.snipwait { display:flex; align-items:center; gap:var(--s1); cursor:default; flex-wrap:wrap; }
   .fmenu div.snipwait:hover { background:transparent; }
@@ -240,7 +242,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Once: a star, if you like it. Sits above the gear, and goes for good */
   .thanks { margin:auto var(--s2) var(--s2); padding:10px 12px; border:1px solid var(--line); border-radius:var(--r-card);
     background:var(--raise); font-size:12px; }
-  .thanks + .tab.gearrow { margin-top:0; }
+  .thanks + .gearrow { margin-top:0; }
   .thanks .tt { font-weight:600; margin-bottom:4px; }
   .thanks .tb { color:var(--dim); margin-bottom:8px; line-height:1.4; white-space:normal; }
   .thanks .tr { display:flex; gap:var(--s2); }
@@ -2498,23 +2500,22 @@ function drawTabs() {
   // PC's browser, the phone follows a plain link
   const settingsOpen = !!S.settings_open;
   const manual = T["tui.help.url"] || "https://shikisha-term.com/manual/";
-  nav.append(el("div", {class:"tab gearrow" + (settingsOpen ? " sel" : ""),
-      title:T["tui.menu.settings"] || "SETTINGS",
-      // On the phone, settings is served by reverse-proxy at /cfg and rendered
-      // natively (responsive) — navigate there, handing over the token once in
-      // the URL (it's traded for a cookie and stripped on arrival). In the window
-      // it opens as the child WebView, as before.
-      onclick:() => openSettings()},
-    el("span", {class:"gear"}, "⚙️"),
+  nav.append(el("div", {class:"gearrow"},
+    // On the phone, settings is served by reverse-proxy at /cfg and rendered
+    // natively (responsive) — navigate there, handing over the token once in
+    // the URL (it's traded for a cookie and stripped on arrival). In the window
+    // it opens as the child WebView, as before.
+    el("span", {class:"sidebtn gear" + (settingsOpen ? " sel" : ""),
+        title:T["tui.menu.settings"] || "SETTINGS", onclick:() => openSettings()}, "⚙️"),
     REMOTE
-      ? el("a", {class:"help", href:manual, target:"_blank", rel:"noopener",
-          title:T["tui.help.site"] || "Manual", onclick:e => e.stopPropagation()}, "?")
-      : el("span", {class:"help", title:T["tui.help.site"] || "Manual",
-          onclick:e => { e.stopPropagation(); send({kind:"help"}); }}, "?"),
+      ? el("a", {class:"sidebtn help", href:manual, target:"_blank", rel:"noopener",
+          title:T["tui.help.site"] || "Manual"}, el("span", {}, "?"))
+      : el("span", {class:"sidebtn help", title:T["tui.help.site"] || "Manual",
+          onclick:() => send({kind:"help"})}, el("span", {}, "?")),
     // The tools that start from a picture (snip.rs). Here, beside settings
     // and help, because they are the app's own tools rather than something
     // said to an AI: what they give back goes to the clipboard or a file
-    el("span", {class:"snipbtn", title:T["tui.snip.title"] || "Tools",
+    el("span", {class:"sidebtn snipbtn", title:T["tui.snip.title"] || "Tools",
         onclick:e => { e.stopPropagation(); openSnipMenu(e); }}, "✂️")));
   drawCoach();
 }
@@ -11465,7 +11466,7 @@ mod tests {
         assert!(PAGE.contains("if (S.update) {"), "there is no update pill");
         assert!(PAGE.contains(r#"send({kind:"update", open:true})"#) && PAGE.contains(r#"send({kind:"update", open:false})"#));
         assert!(!PAGE.contains("/api/update/install"), "it installs straight from the pill");
-        assert!(PAGE.contains(r#"el("a", {class:"help", href:manual, target:"_blank", rel:"noopener","#), "the phone's ? is not a link");
+        assert!(PAGE.contains(r#"el("a", {class:"sidebtn help", href:manual, target:"_blank", rel:"noopener","#), "the phone's ? is not a link");
         assert!(PAGE.contains(r#"send({kind:"help"})"#), "the window's ? does not ask the app");
     }
 
