@@ -22,7 +22,9 @@
 /// The board's menu is built from this list, so a tool that is not here is not
 /// offered anywhere -- a button for something this page cannot do would be a
 /// button that does nothing
-pub const TOOLS: &[&str] = &["text", "noun", "color"];
+pub const TOOLS: &[&str] = &["text", "noun", "color", "edit"];
+
+mod edit;
 
 /// The tools that hand the framed part to the assistant AI.
 pub const AI_TOOLS: &[&str] = &["text", "noun"];
@@ -308,12 +310,19 @@ pub const WAITS: &[u8] = &[0, 3, 5, 10];
 
 /// The page, in the colours and the language the app is in.
 pub fn page() -> String {
-    crate::i18n::render(&crate::webui::themed(PAGE.to_string()))
+    crate::i18n::render(&crate::webui::themed(assembled()))
         .replace("__DICT__", &crate::i18n::dict_json())
         .replace(
             "__TOOLS__",
             &serde_json::to_string(TOOLS).unwrap_or_else(|_| "[]".into()),
         )
+}
+
+/// The page with the editor laid into it (see `edit.rs`)
+fn assembled() -> String {
+    PAGE.replace("/*__EDIT_CSS__*/", edit::CSS)
+        .replace("<!--__EDIT_HTML__-->", edit::HTML)
+        .replace("<!--__EDIT_JS__-->", edit::JS)
 }
 
 const PAGE: &str = r##"<!doctype html>
@@ -433,6 +442,7 @@ const PAGE: &str = r##"<!doctype html>
  #toast { position:fixed; left:50%; bottom:var(--s5); transform:translateX(-50%); padding:var(--s2) var(--s4);
    border-radius:var(--r-card); background:var(--panel); border:1px solid var(--line); box-shadow:0 8px 24px #0007;
    font-size:13px; pointer-events:none; }
+/*__EDIT_CSS__*/
 </style></head>
 <body>
 <div id="wait" hidden><span class="n"></span><span class="say"></span></div>
@@ -478,6 +488,7 @@ const PAGE: &str = r##"<!doctype html>
     </div>
   </aside>
 </div>
+<!--__EDIT_HTML__-->
 <button id="x" class="quiet" hidden></button>
 <div id="toast" hidden></div>
 <script>
@@ -549,7 +560,9 @@ function shut() {
   history.back();
 }
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape") { e.preventDefault(); shut(); }
+  // The editor answers Esc itself: a cut being chosen, words being typed or
+  // drawing nobody has taken anywhere come before closing
+  if (e.key === "Escape" && $("edit").hidden) { e.preventDefault(); shut(); }
 });
 
 // ── Waiting, before the picture is taken ───────────
@@ -593,7 +606,7 @@ function begin(picture) {
   img = picture;
   $("stage").hidden = false;
   const hint = $("hint");
-  hint.textContent = T["snip.frame.hint"] || "";
+  hint.textContent = T[TOOL === "edit" ? "snip.frame.hint_edit" : "snip.frame.hint"] || "";
   hint.hidden = false;
   drawShot();
   window.addEventListener("resize", drawShot);
@@ -656,7 +669,10 @@ const toPicture = (cx, cy) => ({
     let w = Math.ceil(Math.max(a.x, b.x)) - x, h = Math.ceil(Math.max(a.y, b.y)) - y;
     // A press that did not move frames nothing. Somebody who pressed once
     // meant the place they pressed, so a small square around it stands in
-    if (w < 3 || h < 3) {
+    if ((w < 3 || h < 3) && TOOL === "edit") {
+      // A picture to edit is most often the whole of it
+      x = 0; y = 0; w = img.naturalWidth; h = img.naturalHeight;
+    } else if (w < 3 || h < 3) {
       const R = 12;
       x = Math.max(0, Math.round(a.x) - R); y = Math.max(0, Math.round(a.y) - R);
       w = Math.min(img.naturalWidth - x, R * 2 + 1); h = Math.min(img.naturalHeight - y, R * 2 + 1);
@@ -666,6 +682,7 @@ const toPicture = (cx, cy) => ({
     $("hint").hidden = true;
     if (TOOL === "color") openColor();
     else if (TOOL === "text" || TOOL === "noun") openAi();
+    else if (TOOL === "edit") openEdit();
   });
 })();
 
@@ -1067,8 +1084,10 @@ if (!HOST) {
   x.hidden = false;
   x.onclick = shut;
 }
-new MutationObserver(() => { if (!HOST) $("x").hidden = !$("zoom").hidden; })
-  .observe($("zoom"), {attributes: true, attributeFilter: ["hidden"]});
+// Each tool has its own way out once it is open
+const xObserver = new MutationObserver(() => { if (!HOST) $("x").hidden = !$("zoom").hidden || !$("edit").hidden; });
+xObserver.observe($("zoom"), {attributes: true, attributeFilter: ["hidden"]});
+xObserver.observe($("edit"), {attributes: true, attributeFilter: ["hidden"]});
 
 // ── Where the picture comes from ───────────────────
 // The window says, by number, once it has one; a page with nobody to take a
@@ -1081,6 +1100,7 @@ if (Q.get("src") === "pick" || !HOST) {
   window.__snipFrame(Q.get("n"));
 }
 </script>
+<!--__EDIT_JS__-->
 </body></html>
 "##;
 
@@ -1093,7 +1113,7 @@ mod tests {
     /// and leave a blank screen over the person's own
     #[test]
     fn the_page_is_filled_in() {
-        let page = PAGE
+        let page = assembled()
             .replace("{{THEME}}", "")
             .replace("{{SCHEME}}", "dark")
             .replace("{{__lang__}}", "en");
@@ -1101,7 +1121,9 @@ mod tests {
             .replace("__DICT__", "{}")
             .replace("__TOOLS__", &serde_json::to_string(TOOLS).unwrap());
         assert!(!built.contains("__DICT__") && !built.contains("__TOOLS__"));
-        assert!(built.contains("const TOOLS = [\"text\",\"noun\",\"color\"];"), "the list of tools is not in it");
+        assert!(built.contains("const TOOLS = [\"text\",\"noun\",\"color\",\"edit\"];"), "the list of tools is not in it");
+        assert!(!built.contains("__EDIT_"), "the editor was not laid into the page");
+        assert!(built.contains("function openEdit()"), "the editor's script is not in the page");
     }
 
     /// Every tool the board may offer is one the page can run, and the page
@@ -1137,13 +1159,14 @@ mod tests {
     /// a question for [`answer`], which is where sending is decided
     #[test]
     fn an_answer_goes_to_the_clipboard_or_a_file_and_nowhere_else() {
-        let acts: Vec<&str> = PAGE.match_indices("tell({act: \"").map(|(i, _)| {
-            let rest = &PAGE[i + "tell({act: \"".len()..];
+        let page = assembled();
+        let acts: Vec<&str> = page.match_indices("tell({act: \"").map(|(i, _)| {
+            let rest = &page[i + "tell({act: \"".len()..];
             &rest[..rest.find('"').unwrap()]
         }).collect();
         assert!(!acts.is_empty());
         for a in acts {
-            assert!(["copy", "save", "close", "ask"].contains(&a), "an unknown destination {a}");
+            assert!(["copy", "save", "close", "ask", "copy_image", "save_image"].contains(&a), "an unknown destination {a}");
         }
     }
 
@@ -1240,12 +1263,12 @@ mod tests {
             }
             let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             let Some(prompt) = v["snip.ai.noun.prompt"].as_str() else { continue };
-            assert!(prompt.contains("{lang}"), "{} の名詞の頼み方に {{lang}} が無い", path.display());
+            assert!(prompt.contains("{lang}"), "the noun prompt in {} has no {{lang}} blank", path.display());
             seen += 1;
         }
         assert!(seen >= 2);
         let filled = prompt_in("noun", "es");
-        assert!(filled.contains("es") && !filled.contains("{lang}"), "言語コードが入っていない");
+        assert!(filled.contains("es") && !filled.contains("{lang}"), "the language code was not filled in");
     }
 
     /// Each installed assistant AI, asked about a picture of Japanese text,
@@ -1269,15 +1292,53 @@ mod tests {
                     continue;
                 }
                 let said = crate::webui::ask_about_picture(name, &asked, &png, &shape)
-                    .unwrap_or_else(|e| panic!("{name} ({words}/{code}) が読めなかった: {e:#}"));
-                let read = read_reply("noun", &said).unwrap_or_else(|| panic!("{name} ({words}/{code}) の答えが形でない: {said}"));
+                    .unwrap_or_else(|e| panic!("{name} ({words}/{code}) could not read it: {e:#}"));
+                let read = read_reply("noun", &said).unwrap_or_else(|| panic!("{name} ({words}/{code}) answered out of shape: {said}"));
                 let list: Vec<String> = read["lines"].as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
                 eprintln!("{words}/{code} {name} -> {list:?}");
                 match code {
-                    "ja" => assert!(list.iter().any(|w| japanese(w)), "{name} が ja で聞かれて日本語で答えなかった: {list:?}"),
-                    _ => assert!(list.iter().all(|w| !japanese(w)), "{name} が {code} で聞かれて日本語で答えた: {list:?}"),
+                    "ja" => assert!(list.iter().any(|w| japanese(w)), "{name}, asked for ja, did not answer in Japanese: {list:?}"),
+                    _ => assert!(list.iter().all(|w| !japanese(w)), "{name}, asked for {code}, answered in Japanese: {list:?}"),
                 }
             }
+        }
+    }
+
+    /// A part hidden in the editor is hidden for good: blocks or a blur far
+    /// larger than a letter, never a thin smear that can be read through
+    #[test]
+    fn a_hidden_part_is_hidden_for_good() {
+        assert!(edit::JS.contains("Math.max(10 * o.unit,"), "the mosaic blocks are too small");
+        assert!(edit::JS.contains("Math.max(8 * o.unit,"), "the blur is too weak");
+    }
+
+    /// Every word the editor looks up is in the word list. Its keys are built
+    /// from tool names at run time, which the check for missing words cannot
+    /// follow
+    #[test]
+    fn the_editor_has_all_its_words() {
+        let mut keys: Vec<String> = Vec::new();
+        for t in ["arrow", "rect", "text", "hide", "pen"] {
+            keys.push(format!("snip.edit.tool.{t}"));
+            keys.push(format!("snip.edit.hint.{t}"));
+        }
+        for k in ["mosaic", "blur", "fill"] { keys.push(format!("snip.edit.how.{k}")); }
+        for k in ["thin", "mid", "thick"] { keys.push(format!("snip.edit.width.{k}")); }
+        for k in ["small", "mid", "large"] { keys.push(format!("snip.edit.size.{k}")); }
+        for k in ["white", "black", "clear"] { keys.push(format!("snip.edit.canvas.bg.{k}")); }
+        keys.push("snip.edit.hint.crop".into());
+        let src = edit::JS;
+        let mut at = 0;
+        while let Some(i) = src[at..].find("T[\"") {
+            let from = at + i + 3;
+            let end = from + src[from..].find('"').unwrap();
+            if !src[end + 1..].trim_start().starts_with('+') {
+                keys.push(src[from..end].to_string());
+            }
+            at = end;
+        }
+        for key in keys {
+            assert_ne!(crate::i18n::t(&key), key, "{key} is not in the word list");
         }
     }
 
