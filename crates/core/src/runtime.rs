@@ -937,6 +937,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // tab you get pushed out of. Only an explicit human tab/desk pick, or
     // "close settings", leaves it.
     let mut settings_open = false;
+    // Whether the settings page is the add-a-tab dialog the board's + opens: a
+    // rectangle over the board rather than the whole window. Only meaningful
+    // while `settings_open`; every other way in opens the page proper
+    let mut settings_float = false;
     // Flag for dragging the tab-bar border (lets the mouse adjust its width)
     // The settings web GUI (launched via INDEX's [e], stopped when the app exits)
     let mut web: Option<webui::WebUi> = None;
@@ -2807,6 +2811,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             active,
             board: board_open,
             settings: settings_open,
+            settings_float,
             // The flag itself, engine or no engine. It used to be sent only
             // while a Lua engine existed, which left the bar saying AUTO ON
             // after an emergency stop in a desk with no automation of
@@ -3322,7 +3327,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // given nothing is a page nobody can find again
             let room = shell.geom_full().2 > 0 && shell.geom_full().3 > 0;
             if settings_open && !covered && room {
-                caps.show_at(&[(SETTINGS_TAB.to_string(), shell.geom_full())]);
+                let full = shell.geom_full();
+                let at = if settings_float { dialog_rect(full) } else { full };
+                caps.show_at(&[(SETTINGS_TAB.to_string(), at)]);
             } else {
             let shown: Vec<(String, (i32, i32, i32, i32))> = pane_layout
                 .leaves()
@@ -4921,6 +4928,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let _ = caps.browser_close(SETTINGS_TAB);
             settings_open = false;
         }
+        // The add-a-tab dialog's "More settings": the same page, the whole window
+        if shell.mail().take_settings_full() {
+            settings_float = false;
+        }
 
         // The sidebar gear. Opens settings from any tab (the menu "e" key only
         // fires while INDEX is in view, so the gear needs its own path).
@@ -4946,6 +4957,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, &query) {
                     Ok(()) => {
                         settings_open = true;
+                        settings_float = false;
                         i18n::t("msg.settings_here")
                     }
                     Err(e) => i18n::tp("msg.settings_failed", &[("error", &e.to_string())]),
@@ -5372,8 +5384,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 .add_tab_folder
                                 .take()
                                 .map(|f| format!("&folder={}", percent_encode(&f)));
+                            // Asked as a dialog over the board: what the new
+                            // tab runs is the one question, and the board the
+                            // + was pressed on stays in sight around it
                             let query = format!(
-                                "&addtab={desk_index}{}&nonce={}",
+                                "&addtab={desk_index}{}&float=1&nonce={}",
                                 at.unwrap_or_default(),
                                 start.elapsed().as_millis()
                             );
@@ -5388,6 +5403,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 ) {
                                     Ok(()) => {
                                         settings_open = true;
+                                        settings_float = true;
                                         i18n::t("msg.settings_here")
                                     }
                                     Err(e) => i18n::tp(
@@ -5640,6 +5656,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         // Don't leave it opened but invisible.
                                         // If already open, switch to its existing location.
                                         settings_open = true;
+                                        settings_float = false;
                                         i18n::t("msg.settings_here")
                                     }
                                     Err(e) => i18n::tp(
@@ -5817,6 +5834,26 @@ pub fn finish_paste(pending: &mut [PendingSend], t: &Tab, tab: usize, now_ms: u6
 /// The name used when placing the settings page inside the window.
 /// If the spelling drifts, it gets treated as a different browser and a second copy opens.
 pub const SETTINGS_TAB: &str = "settings";
+/// Where a dialog-sized page goes over the board, given the whole content area.
+///
+/// The style guide's dialog: at most 560 wide, 56 down from the top, centred
+/// across. A page placed in the window cannot grow to fit what is in it, so its
+/// height is chosen here and the dialog scrolls inside itself. An area too
+/// small to leave any board around it gets the whole area -- a dialog squeezed
+/// into a corner of a window that small would only be harder to use
+pub fn dialog_rect(full: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    const WIDE: i32 = 560;
+    const TALL: i32 = 640;
+    const TOP: i32 = 56;
+    const EDGE: i32 = 16;
+    let (x, y, w, h) = full;
+    if w < WIDE / 2 + EDGE * 2 || h < TALL / 2 + TOP + EDGE {
+        return full;
+    }
+    let dw = WIDE.min(w - EDGE * 2);
+    let dh = TALL.min(h - TOP - EDGE);
+    (x + (w - dw) / 2, y + TOP, dw, dh)
+}
 /// The page in view, when putting it back the way it started is a thing that
 /// makes sense — otherwise None.
 ///
@@ -8692,6 +8729,30 @@ mod tests {
         assert_eq!(super::coach_step(3, 0, false), (None, 0));
         // Folders all removed later: not a first run any more
         assert_eq!(super::coach_step(0, 2, false), (None, 2));
+    }
+
+    /// The add-a-tab dialog sits where the style guide puts a dialog: at most
+    /// 560 wide, centred, 56 down -- and a window too small to leave any board
+    /// around it gives the dialog all of itself rather than a corner.
+    #[test]
+    fn the_add_a_tab_dialog_sits_where_a_dialog_does() {
+        use super::dialog_rect;
+        // A roomy window, content area starting under a 30px bar
+        let (x, y, w, h) = dialog_rect((0, 30, 1400, 900));
+        assert_eq!((w, h), (560, 640));
+        assert_eq!(x, (1400 - 560) / 2, "not centred across");
+        assert_eq!(y, 30 + 56, "not 56 down from the top of the content area");
+        // Narrower than a dialog: as wide as it can be with an edge each side
+        let (_, _, w, _) = dialog_rect((0, 0, 500, 900));
+        assert_eq!(w, 500 - 32);
+        // Shorter than a dialog: it stops above the bottom edge
+        let (_, y, _, h) = dialog_rect((0, 0, 1400, 600));
+        assert_eq!(y + h, 600 - 16, "it runs off the bottom");
+        // Too small to float over anything: the whole area
+        assert_eq!(dialog_rect((0, 0, 200, 900)), (0, 0, 200, 900));
+        assert_eq!(dialog_rect((0, 0, 1400, 300)), (0, 0, 1400, 300));
+        // Nothing measured yet stays nothing
+        assert_eq!(dialog_rect((0, 0, 0, 0)), (0, 0, 0, 0));
     }
 
     /// A tab past the ninth can be picked. Sent as Ctrl+B and a digit, tab 10

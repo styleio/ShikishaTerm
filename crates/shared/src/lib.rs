@@ -260,6 +260,10 @@ pub enum Ev {
     /// and returns to the operating board. This is a window-internal
     /// action, so it's not accepted from a phone (allowed_from_afar)
     CloseSettings,
+    /// The dialog the board's + opened asks for the whole settings page:
+    /// "More settings". The same page carries on, over the whole window instead
+    /// of a rectangle over the board. Window-internal, like closing
+    SettingsFull,
     /// Open the settings page. A dedicated intent for the sidebar gear so it
     /// works from any tab (the menu "e" key only fires while INDEX is in view).
     /// Window-internal, so not accepted from a phone (allowed_from_afar).
@@ -858,6 +862,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .unwrap_or_default(),
         },
         Some("closesettings") => Ev::CloseSettings,
+        Some("settingsfull") => Ev::SettingsFull,
         Some("opensettings") => Ev::OpenSettings {
             folder: v
                 .get("folder")

@@ -91,6 +91,9 @@ pub struct Mailbox {
     pub frames: Vec<Vec<u8>>,
     /// The settings page's "close settings" button was pressed. The loop closes the settings tab.
     pub close_settings: bool,
+    /// The add-a-tab dialog asked for the whole settings page. The loop gives
+    /// the same page the whole window
+    pub settings_full: bool,
     /// The status bar's "remote connected" control was pressed. The loop cuts every
     /// remote session (rotates the token, drops the connections).
     pub remote_cut: bool,
@@ -271,6 +274,9 @@ impl Mailbox {
     }
     pub fn take_close_settings(&mut self) -> bool {
         std::mem::take(&mut self.close_settings)
+    }
+    pub fn take_settings_full(&mut self) -> bool {
+        std::mem::take(&mut self.settings_full)
     }
     /// True if the "remote connected" control was pressed (and clears the flag if so)
     pub fn take_remote_cut(&mut self) -> bool {

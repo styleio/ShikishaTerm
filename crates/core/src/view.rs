@@ -299,6 +299,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         active: ui.active,
         board: ui.board,
         settings_open: ui.settings,
+        settings_float: ui.settings && ui.settings_float,
         auto_enabled: ui.auto.unwrap_or(true),
         remote_on: ui.remote_on,
         remote_conn: ui.remote_conn,
@@ -851,6 +852,9 @@ pub struct Ui {
     pub board: bool,
     /// Whether the settings form is covering the window. A screen the same way
     pub settings: bool,
+    /// Whether that form is the add-a-tab dialog rather than the page proper:
+    /// it covers a rectangle, and the board stays drawn and dimmed around it
+    pub settings_float: bool,
     pub auto: Option<bool>,
     pub desk_names: Vec<String>,
     /// What each of those desks is called by everything that is not a

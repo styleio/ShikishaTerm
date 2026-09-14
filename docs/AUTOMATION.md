@@ -86,8 +86,10 @@ write anything there, including the same thing on two tabs. Two tabs called
 address is the automation name only. It is unique within the desk and does
 not change when you rename the tab.
 
-Every tab has one even if you never chose it (it is made from the tab's name).
-The tab's settings page shows it and lets you change it.
+Every tab has one even if you never chose it. A tab added from the screen is given a
+short word (`panda`, `finch`); one written into `config.json` without an `id` gets
+one made from its name, or from its command when it has no name. The tab's settings
+page shows it and lets you change it.
 
 | Command | Description |
 |---|---|
