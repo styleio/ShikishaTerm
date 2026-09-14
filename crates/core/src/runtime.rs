@@ -3906,7 +3906,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // Which project this folder is a piece of, and what it says about
             // itself. One lookup, used for the place the folder goes, for what
             // is run in it, and for whether anything is offered
-            let project = cfg.as_ref().and_then(|c| c.project_of(&from));
+            // Asked of the desk on screen: the same repository may be a project
+            // with another setup in another desk
+            let project = desks.get(desk_index).and_then(|d| d.project_of(&from));
             let told = repo.as_deref().and_then(|r| {
                 crate::devcontainer::told(r, project.and_then(|p| p.setup.as_deref()))
             });
