@@ -1628,6 +1628,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bproject .at { font-family:var(--mono); font-size:11px; color:var(--faint);
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #branch .berr:empty, #branch .bsay:empty { display:none; }
+  /* The branch is open in another folder already: one question, two answers,
+     in the place the button to make it would be */
+  #branch .binuse { display:flex; flex-direction:column; gap:var(--s2); padding:var(--s3);
+    border-radius:var(--r-ctl); font-size:12px; color:var(--text);
+    background:color-mix(in srgb, var(--warn) 9%, transparent);
+    border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+  #branch .binuse[hidden], #branch .bgo[hidden] { display:none; }
+  #branch .binuse .path { font-family:var(--mono); font-size:11.5px; color:var(--dim); overflow-wrap:anywhere; }
+  #branch .binuse .ask { font-weight:500; }
+  #branch .binuse .brow { border-top:0; padding-top:0; }
   #branch .blabel { font-size:12px; font-weight:500; color:var(--text); }
   #sask .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
     margin-bottom:var(--s1); }
@@ -2291,7 +2301,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         </div>
       </div>
       <div class="berr"></div>
-      <div class="brow"><button class="go"></button></div>
+      <div class="binuse" hidden>
+        <div class="say"></div>
+        <div class="path"></div>
+        <div class="ask"></div>
+        <div class="brow"><button class="no" type="button"></button><button class="yes go" type="button"></button></div>
+      </div>
+      <div class="brow bgo"><button class="go"></button></div>
     </div>
   </div>
   <!-- A working folder that is not on this machine. What will run is shown
@@ -4100,7 +4116,7 @@ function openBranch(g, preset) {
   b.querySelector(".bsay").textContent = preset.about
     ? (T["tui.branch.for_item"] || "{item}").replace("{item}", preset.about)
     : (T["tui.branch.hint"] || "");
-  b.querySelector(".go").textContent = T["tui.branch.make"] || "Make it";
+  b.querySelector(".bgo .go").textContent = T["tui.branch.make"] || "Make it";
   // Every control says what it is, in the order they stand
   const names = [T["tui.branch.project"] || "Project",
                  T["tui.branch.dest"] || "Where it runs",
@@ -4300,7 +4316,26 @@ function drawBranch() {
   showMore(b, !b.querySelector(".bextra").hidden);
   drawBases(b, here ? p : null);
   b.querySelector(".berr").textContent = mine && p.error ? p.error : "";
-  b.querySelector(".go").disabled = !(mine && !p.error);
+  // Open in another folder already: asked, with the two answers in place of
+  // the button that would only have failed
+  const taken = mine && !p.error ? p.in_use : null;
+  const ask = b.querySelector(".binuse");
+  ask.hidden = !taken;
+  b.querySelector(".bgo").hidden = !!taken;
+  if (taken) {
+    const key = JSON.stringify(taken);
+    if (ask.dataset.key !== key) {
+      ask.dataset.key = key;
+      ask.querySelector(".say").textContent = (T["tui.branch.in_use.say"] || "{branch}").replace("{branch}", taken.branch);
+      ask.querySelector(".path").textContent = taken.folder;
+      ask.querySelector(".ask").textContent = T[taken.listed ? "tui.branch.in_use.ask_listed" : "tui.branch.in_use.ask"] || "";
+      ask.querySelector(".yes").textContent = T["tui.branch.in_use.yes"] || "";
+      ask.querySelector(".no").textContent = (T["tui.branch.in_use.no"] || "{name}").replace("{name}", taken.instead);
+    }
+  } else {
+    ask.dataset.key = "";
+  }
+  b.querySelector(".bgo .go").disabled = !(mine && !p.error && !taken);
 }
 // The branches this one can grow from. Filled once, then left alone: rebuilt
 // on every answer it would jump back to the first one each time somebody
@@ -4457,12 +4492,25 @@ function drawCarry(b, items) {
   if (!b) return;
   b.querySelector(".vclose").onclick = closeBranch;
   b.addEventListener("mousedown", e => { if (e.target === b) closeBranch(); });
-  b.querySelector(".go").onclick = () => {
+  const makeIt = adopt => {
     const q = document.getElementById("bq");
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:true, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink});
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, adopt});
+  };
+  b.querySelector(".bgo .go").onclick = () => makeIt(false);
+  // The branch is open in another folder: yes is that folder, no is this one
+  // under the free name offered beside it
+  b.querySelector(".binuse .yes").onclick = () => makeIt(true);
+  b.querySelector(".binuse .no").onclick = () => {
+    const p = (S && S.branch) || {};
+    const q = document.getElementById("bq");
+    if (!p.in_use || !q) return;
+    q.value = p.in_use.instead;
+    drawBranch();
+    askBranch();
+    q.focus();
   };
   const more = b.querySelector(".bmore");
   if (more) more.addEventListener("click", () =>
@@ -4477,9 +4525,9 @@ function drawCarry(b, items) {
     bat.addEventListener("keydown", e => {
       if (e.key === "Escape") { e.preventDefault(); closeBranch(); }
       if (typingIME(e)) return;
-      if (e.key === "Enter" && !b.querySelector(".go").disabled) {
+      if (e.key === "Enter" && !b.querySelector(".bgo .go").disabled) {
         e.preventDefault();
-        b.querySelector(".go").click();
+        b.querySelector(".bgo .go").click();
       }
     });
   }
@@ -4489,9 +4537,9 @@ function drawCarry(b, items) {
     if (e.key === "Escape") { e.preventDefault(); closeBranch(); }
     if (typingIME(e)) return;
     // Enter makes it, but only once the app has said it can be made
-    if (e.key === "Enter" && !b.querySelector(".go").disabled) {
+    if (e.key === "Enter" && !b.querySelector(".bgo .go").disabled) {
       e.preventDefault();
-      b.querySelector(".go").click();
+      b.querySelector(".bgo .go").click();
     }
   });
 })();
@@ -12460,7 +12508,7 @@ mod tests {
         // The place travels on both roads too. On one only, the line somebody
         // read would be about a folder the button then did not use
         assert_eq!(
-            PAGE.matches(r#"at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink});"#).count(),
+            PAGE.matches(r#"at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink"#).count(),
             2,
             "place, machine and preparation are not carried on both paths"
         );

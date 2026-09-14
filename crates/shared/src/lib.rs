@@ -226,6 +226,9 @@ pub enum Ev {
         /// The issue or pull request this folder is being made for, when it
         /// is: `{kind, repo, number, url}`. Null otherwise
         link: serde_json::Value,
+        /// The branch is already open in another folder, and the answer was
+        /// "use that folder": it is taken into the desk instead of a new one made
+        adopt: bool,
     },
     /// Put the offered environment file in the project.
     ///
@@ -652,14 +655,15 @@ pub struct BranchAsk {
     pub host: String,
     pub setup: bool,
     pub link: serde_json::Value,
+    pub adopt: bool,
 }
 
 impl BranchAsk {
     /// The ask carried by a branch event, or nothing for any other event.
     pub fn of(ev: Ev) -> Option<Self> {
         match ev {
-            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, setup, link } => {
-                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, setup, link })
+            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, setup, link, adopt } => {
+                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, setup, link, adopt })
             }
             _ => None,
         }
@@ -842,6 +846,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             // asking for a folder nothing can be built in
             setup: v.get("setup").and_then(|x| x.as_bool()).unwrap_or(true),
             link: v.get("link").cloned().unwrap_or(serde_json::Value::Null),
+            adopt: v.get("adopt").and_then(|x| x.as_bool()).unwrap_or(false),
             ais: v
                 .get("ais")
                 .and_then(|x| x.as_array())
