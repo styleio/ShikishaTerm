@@ -58,6 +58,18 @@ impl std::fmt::Display for AccountTrouble {
 
 impl std::error::Error for AccountTrouble {}
 
+/// Whether an address from an issue may be handed to this PC's browser: an
+/// address on the web and nothing else. The call that opens it would as
+/// happily start a program or open a file, so a path, another scheme, or
+/// anything a shell could read as more than one word is refused
+pub fn openable_link(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    (lower.starts_with("https://") || lower.starts_with("http://"))
+        && url.len() > "https://".len()
+        && url.len() <= 2048
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '"' | '<' | '>' | '`' | '\\' | '^' | '|'))
+}
+
 /// Whether the project's settings are where this error is put right
 pub fn settings_fix(e: &anyhow::Error) -> bool {
     e.downcast_ref::<AccountTrouble>().is_some()
@@ -1096,6 +1108,24 @@ mod tests {
             "issue-288-empty-content-in-base-binary-produces-broken",
             "a long title is cut between words"
         );
+    }
+
+    #[test]
+    fn only_an_address_on_the_web_is_opened() {
+        assert!(openable_link("https://github.com/owner/repo/issues/12"));
+        assert!(openable_link("http://example.com/a?b=c&d=%20"));
+        for bad in [
+            "file:///C:/Windows/System32/calc.exe",
+            "C:\\Windows\\System32\\calc.exe",
+            "javascript:alert(1)",
+            "ms-settings:",
+            "https://",
+            "https://example.com/a b",
+            "https://example.com/\"&calc",
+            "https://example.com/\n",
+        ] {
+            assert!(!openable_link(bad), "{bad}");
+        }
     }
 
     #[test]

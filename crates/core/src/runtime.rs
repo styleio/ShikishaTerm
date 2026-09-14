@@ -3859,6 +3859,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let Some(desk) = desks.get(desk_index) else {
                 continue;
             };
+            // A link in an issue, pressed in the window: handed to this PC's browser,
+            // and only when it is an address on the web -- the same call opens a
+            // program when given a path
+            if act == "link" {
+                let url = args.get("url").and_then(|u| u.as_str()).unwrap_or_default();
+                if crate::github::openable_link(url) {
+                    crate::webui::open_external(url);
+                }
+                continue;
+            }
             let sources = crate::github::desk_sources(desk);
             if act == "projects" {
                 let projects: Vec<serde_json::Value> = sources

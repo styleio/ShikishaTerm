@@ -2198,6 +2198,8 @@
   "issues.page": "Page {n} of {total}",
   "issues.page.prev": "Previous",
   "issues.page.next": "Next",
+  "issues.md.image": "[picture: {alt}]",
+  "tui.pane.idle": "{name} — press to show it here",
   "issues.back": "List",
   "issues.on_github": "Open on GitHub",
   "issues.assignees": "Assignees",

@@ -2186,6 +2186,8 @@
   "issues.page": "{n} / {total} ページ",
   "issues.page.prev": "前へ",
   "issues.page.next": "次へ",
+  "issues.md.image": "[画像: {alt}]",
+  "tui.pane.idle": "{name} — 押すとここに表示します",
   "issues.back": "一覧",
   "issues.on_github": "GitHub で開く",
   "issues.assignees": "担当者",
