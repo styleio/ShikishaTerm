@@ -1737,8 +1737,8 @@ impl shikisha_core::host::Shell for WinSurface {
         quit_confirmed(busy)
     }
 
-    fn install_store_update(&mut self, version: &str) -> Result<()> {
-        shikisha_core::update::store::install(browser::main_hwnd(), version.to_string());
+    fn install_store_update(&mut self) -> Result<()> {
+        shikisha_core::update::store::install(browser::main_hwnd());
         Ok(())
     }
 

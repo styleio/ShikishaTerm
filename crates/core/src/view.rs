@@ -871,8 +871,8 @@ pub struct Ui {
     pub usage: Option<crate::uistate::UsageState>,
     /// The thanks card, when it is up: which page it would open
     pub thanks: Option<String>,
-    /// The version the update card asks about, when it is up
-    pub update: Option<String>,
+    /// The newer version the update card asks about, when it is up
+    pub update: Option<crate::update::Offer>,
     /// The current desk's git accounts, for the account menu on the git column
     pub git_accounts: Vec<config::GitAccountSpec>,
     /// Where each git tab's folder pushes to on GitHub (`owner/name`), looked

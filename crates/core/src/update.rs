@@ -25,7 +25,9 @@
 //! program is closed, and a program that lives in the notification area is
 //! rarely closed. So the Store copy asks the Store whether an update waits,
 //! shows the same card and the same button, and that button lets the Store
-//! install it and starts the program again afterwards.
+//! install it and starts the program again afterwards. The Store says only
+//! *that* one waits, never its number, so the Store's offer is drawn without
+//! one and remembered by the version it would replace.
 //!
 //! All state lives behind one mutex that the drawing, the settings server
 //! and the fetching thread each glance at. Nothing here may stop the program:
@@ -82,14 +84,50 @@ pub enum Phase {
     Idle,
     Checking,
     UpToDate,
-    Available { version: String },
+    /// A newer version is out. `None` is the Store's, whose number the Store
+    /// does not say
+    Available { version: Option<String> },
     Downloading { version: String, got: u64, total: Option<u64> },
     Verifying { version: String },
     /// Fetched, checked and unpacked; waiting to be put in place
     Staged { version: String },
-    /// The swap is under way; the program is about to end
-    Applying { version: String },
+    /// The swap is under way; the program is about to end. `None` is the Store's
+    Applying { version: Option<String> },
+    /// The look itself did not get an answer
+    CheckFailed { message: String },
+    /// A newer version is known and could not be put in place. `None` is the Store's
     Failed { version: Option<String>, message: String },
+}
+
+/// The newer version on offer, as the card asks about it
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+pub struct Offer {
+    /// `None` for the Store's, whose number the Store does not say
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+impl Offer {
+    /// What an answer to this offer is remembered by. A number where there
+    /// is one; the Store's offer is "whatever the Store holds for this
+    /// version", so it is asked about again once the Store has replaced it
+    fn key(&self) -> String {
+        match &self.version {
+            Some(v) => v.clone(),
+            None => format!("store-after-{}", current_version()),
+        }
+    }
+}
+
+/// The offer a phase stands on, while it still stands (a failed one is the
+/// settings card's to say, not the sidebar's)
+fn offer_in(phase: &Phase) -> Option<Offer> {
+    let version = match phase {
+        Phase::Available { version } => version.clone(),
+        Phase::Staged { version } | Phase::Downloading { version, .. } | Phase::Verifying { version } => Some(version.clone()),
+        _ => return None,
+    };
+    Some(Offer { version })
 }
 
 /// What the main loop has been asked to do, once it has asked its question
@@ -100,7 +138,7 @@ pub enum Apply {
     /// Put the previous version back
     Rollback { version: String },
     /// Let the Store install what it holds
-    Store { version: String },
+    Store,
 }
 
 /// A request from the settings server for the fetching thread
@@ -137,20 +175,32 @@ fn state() -> &'static Mutex<State> {
     static S: OnceLock<Mutex<State>> = OnceLock::new();
     S.get_or_init(|| {
         Mutex::new(State {
-            phase: Phase::Idle,
-            release: None,
             checked_at: read_stamp("update-checked"),
             notified: read_text("update-notified"),
             skipped: read_text("update-skipped"),
+            ..State::new(crate::config::packaged())
+        })
+    })
+}
+
+impl State {
+    /// Nothing looked at, nothing remembered
+    fn new(packaged: bool) -> State {
+        State {
+            phase: Phase::Idle,
+            release: None,
+            checked_at: None,
+            notified: None,
+            skipped: None,
             prev: None,
             auto: true,
             want: None,
             apply: None,
-            packaged: crate::config::packaged(),
+            packaged,
             outcome: None,
             carry_said: false,
-        })
-    })
+        }
+    }
 }
 
 fn lock() -> std::sync::MutexGuard<'static, State> {
@@ -304,26 +354,22 @@ pub fn set_auto(on: bool) {
     lock().auto = on;
 }
 
-/// The version the card should ask about, if any: one that is newer, not
+/// The offer the card should ask about, if any: one that is newer, not
 /// declined, and not yet answered
-pub fn ask() -> Option<String> {
+pub fn ask() -> Option<Offer> {
     let s = lock();
-    let v = match &s.phase {
-        Phase::Available { version } | Phase::Staged { version } | Phase::Downloading { version, .. } | Phase::Verifying { version } => version,
-        _ => return None,
-    };
-    (s.notified.as_deref() != Some(v.as_str()) && s.skipped.as_deref() != Some(v.as_str())).then(|| v.clone())
+    let offer = offer_in(&s.phase)?;
+    let key = offer.key();
+    (s.notified.as_deref() != Some(key.as_str()) && s.skipped.as_deref() != Some(key.as_str())).then_some(offer)
 }
 
-/// The card was answered, either way. It is not shown again for this version
+/// The card was answered, either way. It is not shown again for this offer
 pub fn card_answered() {
     let mut s = lock();
-    let v = match &s.phase {
-        Phase::Available { version } | Phase::Staged { version } | Phase::Downloading { version, .. } | Phase::Verifying { version } => version.clone(),
-        _ => return,
-    };
-    write_text("update-notified", &v);
-    s.notified = Some(v);
+    let Some(offer) = offer_in(&s.phase) else { return };
+    let key = offer.key();
+    write_text("update-notified", &key);
+    s.notified = Some(key);
 }
 
 /// Look now, whatever the setting says
@@ -343,10 +389,10 @@ pub fn request_check() {
 pub fn request_install() -> Result<()> {
     let mut s = lock();
     match s.phase.clone() {
-        Phase::Available { version } if s.packaged => {
-            s.apply = Some(Apply::Store { version });
+        Phase::Available { .. } | Phase::Failed { .. } if s.packaged => {
+            s.apply = Some(Apply::Store);
         }
-        Phase::Available { version } | Phase::Failed { version: Some(version), .. } => {
+        Phase::Available { version: Some(version) } | Phase::Failed { version: Some(version), .. } => {
             if s.release.as_ref().is_none_or(|r| r.zip.is_none()) {
                 bail!("no download in this release");
             }
@@ -364,13 +410,18 @@ pub fn request_install() -> Result<()> {
 /// This version is not wanted. It is not offered again; the next one is
 pub fn skip() {
     let mut s = lock();
-    let v = match &s.phase {
-        Phase::Available { version } | Phase::Staged { version } | Phase::Failed { version: Some(version), .. } => version.clone(),
-        _ => return,
+    let offer = match &s.phase {
+        Phase::Available { .. } | Phase::Staged { .. } => offer_in(&s.phase),
+        Phase::Failed { version, .. } => Some(Offer { version: version.clone() }),
+        _ => None,
     };
-    write_text("update-skipped", &v);
-    s.skipped = Some(v.clone());
-    let _ = std::fs::remove_dir_all(version_dir(&v));
+    let Some(offer) = offer else { return };
+    let key = offer.key();
+    write_text("update-skipped", &key);
+    s.skipped = Some(key);
+    if let Some(v) = offer.version.as_deref() {
+        remove_version_dir(v);
+    }
     s.phase = Phase::UpToDate;
 }
 
@@ -378,8 +429,17 @@ pub fn skip() {
 pub fn discard() {
     let mut s = lock();
     if let Phase::Staged { version } | Phase::Failed { version: Some(version), .. } = s.phase.clone() {
-        let _ = std::fs::remove_dir_all(version_dir(&version));
-        s.phase = Phase::Available { version };
+        remove_version_dir(&version);
+        s.phase = Phase::Available { version: Some(version) };
+    }
+}
+
+/// Deletes what was fetched for one version. Only a plain version names a
+/// folder: anything else -- an empty one above all -- would be the whole of
+/// `data/update`, the previous version kept for going back included
+fn remove_version_dir(version: &str) {
+    if let Some(v) = safe_version(version) {
+        let _ = std::fs::remove_dir_all(version_dir(&v));
     }
 }
 
@@ -400,7 +460,10 @@ pub fn take_apply() -> Option<Apply> {
 pub fn apply_declined() {
     let mut s = lock();
     if let Phase::Applying { version } = s.phase.clone() {
-        s.phase = if s.packaged { Phase::Available { version } } else { Phase::Staged { version } };
+        s.phase = match version {
+            Some(version) if !s.packaged => Phase::Staged { version },
+            version => Phase::Available { version },
+        };
     }
 }
 
@@ -414,7 +477,7 @@ pub fn snapshot() -> serde_json::Value {
     v["packaged"] = serde_json::json!(s.packaged);
     v["prev"] = serde_json::json!(s.prev);
     v["skipped"] = serde_json::json!(s.skipped);
-    v["notes"] = serde_json::json!(s.release.as_ref().map(|r| r.notes.clone()));
+    v["notes"] = serde_json::json!(notes(&s));
     let o = s.outcome.as_ref();
     v["migrated_from"] = serde_json::json!(o.and_then(|o| o.from.clone()));
     v["migration_failed"] = serde_json::json!(o.and_then(|o| o.failed.clone()));
@@ -426,7 +489,15 @@ pub fn snapshot() -> serde_json::Value {
 
 /// The page that says what changed in the version on offer
 pub fn notes_url() -> Option<String> {
-    lock().release.as_ref().map(|r| r.notes.clone()).filter(|u| u.starts_with("https://"))
+    notes(&lock()).filter(|u| u.starts_with("https://"))
+}
+
+/// The Store copy's changes are on its Store page; the download's, on its release
+fn notes(s: &State) -> Option<String> {
+    if s.packaged {
+        return Some(STORE_URL.to_string());
+    }
+    s.release.as_ref().map(|r| r.notes.clone())
 }
 
 /// Where the newest copy of the settings was put, when one was
@@ -515,32 +586,52 @@ pub fn parse_release(v: &serde_json::Value) -> Option<Release> {
     Some(r)
 }
 
+/// What a look found
+#[derive(Debug)]
+enum Found {
+    /// The newest published release, whatever its version
+    Release(Release),
+    /// The Store holds a newer package for this one, or does not
+    Store { waiting: bool },
+}
+
 /// One look. Sets the phase to what it found
 fn check() {
     set_phase(Phase::Checking);
     let packaged = lock().packaged;
-    let found = if packaged { store::available().map(|v| Release { version: v, notes: STORE_URL.to_string(), ..Default::default() }) } else { fetch_latest().ok() };
+    let found = if packaged { store::waiting().map(|waiting| Found::Store { waiting }) } else { fetch_latest().map(Found::Release) };
+    let now = now_secs();
+    write_text("update-checked", &now.to_string());
     let mut s = lock();
-    s.checked_at = Some(now_secs());
-    write_text("update-checked", &now_secs().to_string());
+    s.checked_at = Some(now);
+    settle(&mut s, found);
+    crate::append_hook_log(&format!("Update check: {:?}", s.phase));
+}
+
+/// Sets the phase to what a look found. Not getting an answer is never
+/// taken for "nothing newer": it is said as what it is
+fn settle(s: &mut State, found: Result<Found>) {
     match found {
-        Some(r) if is_newer(&r.version, current_version()) && safe_version(&r.version).is_some() => {
+        Ok(Found::Release(r)) if is_newer(&r.version, current_version()) && safe_version(&r.version).is_some() => {
             let v = r.version.clone();
-            s.phase = if !packaged && staged_ok(&v) { Phase::Staged { version: v } } else { Phase::Available { version: v } };
+            s.phase = if staged_ok(&v) { Phase::Staged { version: v } } else { Phase::Available { version: Some(v) } };
             s.release = Some(r);
         }
-        Some(_) => {
+        Ok(Found::Store { waiting: true }) => {
+            s.phase = Phase::Available { version: None };
+            s.release = None;
+        }
+        Ok(Found::Release(_) | Found::Store { waiting: false }) => {
             s.phase = Phase::UpToDate;
             s.release = None;
         }
-        None => {
-            // Could not be read. Say so only if nothing better is known
+        Err(e) => {
+            // Say so only if nothing better is known
             if matches!(s.phase, Phase::Checking) {
-                s.phase = Phase::Failed { version: None, message: "unreachable".into() };
+                s.phase = Phase::CheckFailed { message: format!("{e:#}") };
             }
         }
     }
-    crate::append_hook_log(&format!("Update check: {:?}", s.phase));
 }
 
 // ── Fetching ───────────────────────────────────────────────────────
@@ -822,12 +913,12 @@ pub fn apply(what: &Apply) -> Result<()> {
     let (version, source, rollback) = match what {
         Apply::Fresh { version } => (version.clone(), find_exe_root(&stage_dir(version)).ok_or_else(|| anyhow!("nothing staged for {version}"))?, false),
         Apply::Rollback { version } => (version.clone(), prev_root().join(version), true),
-        Apply::Store { .. } => bail!("the Store's update is not applied here"),
+        Apply::Store => bail!("the Store's update is not applied here"),
     };
     if !source.join(EXE).is_file() {
         bail!("{} holds no {EXE}", source.display());
     }
-    set_phase(Phase::Applying { version: version.clone() });
+    set_phase(Phase::Applying { version: Some(version.clone()) });
     let from = current_version().to_string();
     let mut j = Journal { version: version.clone(), from: from.clone(), step: "swap".into(), rollback };
     write_journal(&j)?;
@@ -950,11 +1041,13 @@ pub fn finish_last() {
 /// There is no Store here to ask.
 #[cfg(not(windows))]
 pub mod store {
-    pub fn install(_hwnd: isize, _version: String) {}
+    use anyhow::{Result, bail};
 
-    /// Nothing to ask, so nothing waiting
-    pub fn available() -> Option<String> {
-        None
+    pub fn install(_hwnd: isize) {}
+
+    /// There is no Store to ask, which is not the same as nothing waiting
+    pub fn waiting() -> Result<bool> {
+        bail!("there is no Store here to ask")
     }
 }
 
@@ -962,32 +1055,29 @@ pub mod store {
 pub mod store {
     use super::*;
 
-    /// The version the Store holds for this package, when it is newer
-    pub fn available() -> Option<String> {
+    /// Whether the Store holds a newer package for this one.
+    ///
+    /// Only whether: each update the Store lists names the package it would
+    /// update -- the one installed here -- so the number it carries is this
+    /// version's own, and the newer one's number is not said anywhere. An
+    /// empty list is the Store's "nothing newer"; a question that could not
+    /// be put is an error, never an empty list
+    pub fn waiting() -> Result<bool> {
         use windows::Services::Store::StoreContext;
-        let ctx = StoreContext::GetDefault().ok()?;
-        let updates = ctx.GetAppAndOptionalStorePackageUpdatesAsync().ok()?.get().ok()?;
-        let mut best: Option<String> = None;
-        for i in 0..updates.Size().ok()? {
-            let u = updates.GetAt(i).ok()?;
-            let v = u.Package().ok()?.Id().ok()?.Version().ok()?;
-            let s = format!("{}.{}.{}", v.Major, v.Minor, v.Build);
-            if best.as_deref().is_none_or(|b| is_newer(&s, b)) {
-                best = Some(s);
-            }
-        }
-        best
+        let ctx = StoreContext::GetDefault().context("reach the Store")?;
+        let updates = ctx.GetAppAndOptionalStorePackageUpdatesAsync().and_then(|op| op.get()).context("ask the Store for updates")?;
+        Ok(updates.Size()? > 0)
     }
 
     /// Lets the Store download and install. The Store closes the program to
     /// do it; the helper started here starts it again once it is gone. Runs
     /// on a thread of its own: the Store shows its own dialog and takes as
     /// long as the download takes
-    pub fn install(hwnd: isize, version: String) {
+    pub fn install(hwnd: isize) {
         std::thread::Builder::new()
             .name("store-update".into())
             .spawn(move || {
-                set_phase(Phase::Applying { version: version.clone() });
+                set_phase(Phase::Applying { version: None });
                 let helper = relaunch_after_exit();
                 let ok = std::panic::catch_unwind(|| run(hwnd)).unwrap_or_else(|_| Err(anyhow!("the Store's update stopped")));
                 match ok {
@@ -995,25 +1085,20 @@ pub mod store {
                         // The Store ends the program from here. If it has
                         // not within a while, it did not install
                         std::thread::sleep(Duration::from_secs(60));
-                        finish(helper, Some("the Store did not install".into()), &version);
+                        finish(helper, "the Store did not install".into());
                     }
-                    Err(e) => finish(helper, Some(format!("{e:#}")), &version),
+                    Err(e) => finish(helper, format!("{e:#}")),
                 }
             })
             .ok();
     }
 
-    fn finish(helper: Option<std::process::Child>, err: Option<String>, version: &str) {
+    fn finish(helper: Option<std::process::Child>, message: String) {
         if let Some(mut h) = helper {
             let _ = h.kill();
         }
-        match err {
-            Some(m) => {
-                crate::append_hook_log(&format!("Store update: {m}"));
-                set_phase(Phase::Failed { version: Some(version.to_string()), message: m });
-            }
-            None => set_phase(Phase::Available { version: version.to_string() }),
-        }
+        crate::append_hook_log(&format!("Store update: {message}"));
+        set_phase(Phase::Failed { version: None, message });
     }
 
     fn run(hwnd: isize) -> Result<()> {
@@ -1120,7 +1205,64 @@ mod tests {
         assert_eq!(safe_version("0.9.0").as_deref(), Some("0.9.0"));
         assert!(safe_version("../x").is_none());
         assert!(safe_version("0.9.0-beta").is_none());
-        assert!(safe_version("").is_none());
+        assert!(safe_version("").is_none(), "an empty version names data/update itself");
+        assert!(safe_version(&Offer { version: None }.key()).is_none(), "the Store offer's key named a folder");
+    }
+
+    /// The Store says whether a newer package waits, and each of the three
+    /// answers is drawn as itself: waiting is on offer (with no number, since
+    /// the Store gives none), an empty list is up to date, and a question
+    /// that could not be put is said as that -- never as either of the others
+    #[test]
+    fn the_stores_three_answers_are_not_confused() {
+        let mut s = State::new(true);
+        s.phase = Phase::Checking;
+        settle(&mut s, Ok(Found::Store { waiting: true }));
+        assert_eq!(s.phase, Phase::Available { version: None }, "an update is waiting and is not offered");
+        assert_eq!(notes(&s).as_deref(), Some(STORE_URL));
+
+        s.phase = Phase::Checking;
+        settle(&mut s, Ok(Found::Store { waiting: false }));
+        assert_eq!(s.phase, Phase::UpToDate, "an empty list is not read as up to date");
+
+        s.phase = Phase::Checking;
+        settle(&mut s, Err(anyhow!("the Store did not answer")));
+        assert_eq!(s.phase, Phase::CheckFailed { message: "the Store did not answer".into() }, "a failed look is not said with its reason");
+
+        // A failed look does not hide what an earlier one found
+        s.phase = Phase::Available { version: None };
+        settle(&mut s, Err(anyhow!("offline")));
+        assert_eq!(s.phase, Phase::Available { version: None });
+    }
+
+    /// A release is on offer only when it is newer than this version
+    #[test]
+    fn a_release_is_on_offer_only_when_newer() {
+        let mut s = State::new(false);
+        let rel = |v: &str| Found::Release(Release { version: v.into(), ..Default::default() });
+        s.phase = Phase::Checking;
+        settle(&mut s, Ok(rel(current_version())));
+        assert_eq!(s.phase, Phase::UpToDate);
+        s.phase = Phase::Checking;
+        settle(&mut s, Ok(rel("9999.0.0")));
+        assert_eq!(s.phase, Phase::Available { version: Some("9999.0.0".into()) });
+        assert_eq!(s.release.as_ref().map(|r| r.version.as_str()), Some("9999.0.0"));
+    }
+
+    /// An offer is remembered by its number, or -- the Store's, which has
+    /// none -- by the version it would replace, so that once the Store has
+    /// replaced this copy the next offer is asked about afresh
+    #[test]
+    fn an_offer_is_remembered_by_what_it_is() {
+        assert_eq!(Offer { version: Some("0.12.0".into()) }.key(), "0.12.0");
+        assert_eq!(Offer { version: None }.key(), format!("store-after-{}", current_version()));
+        assert_eq!(offer_in(&Phase::Available { version: None }), Some(Offer { version: None }));
+        assert_eq!(offer_in(&Phase::Staged { version: "0.12.0".into() }), Some(Offer { version: Some("0.12.0".into()) }));
+        assert_eq!(offer_in(&Phase::UpToDate), None);
+        assert_eq!(offer_in(&Phase::CheckFailed { message: String::new() }), None);
+        // The sidebar card is told there is one even with no number to say
+        assert_eq!(serde_json::to_string(&Offer { version: None }).unwrap(), "{}");
+        assert_eq!(serde_json::to_string(&Offer { version: Some("0.12.0".into()) }).unwrap(), r#"{"version":"0.12.0"}"#);
     }
 
     /// The SHA256 line's first word is the hash; a wrong one is refused

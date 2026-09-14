@@ -2494,7 +2494,9 @@ function drawTabs() {
   // nothing. Drawn on the phone too: the settings it opens are /cfg there
   if (S.update) {
     nav.append(el("div", {class:"thanks update"},
-      el("div", {class:"tt"}, (T["tui.update.title"] || "{version}").replace("{version}", S.update)),
+      el("div", {class:"tt"}, S.update.version
+        ? (T["tui.update.title"] || "{version}").replace("{version}", S.update.version)
+        : T["tui.update.title.store"] || ""),
       el("div", {class:"tb"}, T["tui.update.body"] || ""),
       el("div", {class:"tr"},
         el("button", {class:"go", onclick:() => send({kind:"update", open:true})},
@@ -11485,6 +11487,7 @@ mod tests {
         assert!(PAGE.contains(r#"send({kind:"thanks", open:true})"#) && PAGE.contains(r#"send({kind:"thanks", open:false})"#));
         // The update card: the same part, both buttons answer, neither installs
         assert!(PAGE.contains("if (S.update) {"), "there is no update pill");
+        assert!(PAGE.contains(r#"T["tui.update.title.store"]"#), "the pill cannot say a Store update that has no number");
         assert!(PAGE.contains(r#"send({kind:"update", open:true})"#) && PAGE.contains(r#"send({kind:"update", open:false})"#));
         assert!(!PAGE.contains("/api/update/install"), "it installs straight from the pill");
         assert!(PAGE.contains(r#"el("a", {class:"sidebtn help", href:manual, target:"_blank", rel:"noopener","#), "the phone's ? is not a link");

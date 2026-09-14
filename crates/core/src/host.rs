@@ -26,7 +26,7 @@ pub trait Shell {
 
     /// Hand a Store update to the platform. It wants a window to put its own
     /// progress on, which is why it is asked of the shell and not done here
-    fn install_store_update(&mut self, version: &str) -> anyhow::Result<()>;
+    fn install_store_update(&mut self) -> anyhow::Result<()>;
 
     fn take_keyboard_back(&self);
     fn geom_area(&self) -> (i32, i32, i32, i32);
@@ -162,7 +162,7 @@ impl Shell for Headless {
     }
 
     /// A Store update needs a desktop to show itself on. There is none
-    fn install_store_update(&mut self, _version: &str) -> anyhow::Result<()> {
+    fn install_store_update(&mut self) -> anyhow::Result<()> {
         anyhow::bail!("no desktop here to install a Store update on")
     }
 
