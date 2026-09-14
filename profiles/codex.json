@@ -1,5 +1,6 @@
 {
   "name": "Codex CLI",
+  "install_url": "https://github.com/openai/codex",
   "command_match": [
     "codex"
   ],

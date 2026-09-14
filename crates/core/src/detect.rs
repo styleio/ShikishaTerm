@@ -445,6 +445,7 @@ mod tests {
         Profile::compile(ProfileFile {
             resume: None,
             interrupt: vec![],
+            install_url: None,
             name: "test".into(),
             command_match: vec![],
             busy_patterns: vec!["esc to interrupt".into()],

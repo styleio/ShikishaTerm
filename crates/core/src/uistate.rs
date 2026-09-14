@@ -133,6 +133,17 @@ pub struct TabState {
     /// project's. Absent where there is no repository to sign in to
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_acct: Option<GitAcctState>,
+    /// For a tab that could not be started: why, and where to read how to
+    /// install what it needs
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<FailedState>,
+}
+
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct FailedState {
+    pub why: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_url: Option<String>,
 }
 
 /// The git account menu at the top of the git column.
@@ -1416,6 +1427,7 @@ impl TabState {
             // ...and a session is drawn wherever its terminal is, which is here
             away: None,
             git_acct: None,
+            failed: None,
         }
     }
 
@@ -1446,6 +1458,21 @@ impl TabState {
             state_label: crate::i18n::t("tui.state.editor"),
             group,
             restartable: false,
+            ..Self::browser(index, key, name)
+        }
+    }
+
+    /// A tab that could not be started. No process and nothing to show but
+    /// why, so the rest of what a tab carries is absent
+    pub fn failed(index: usize, key: &str, name: &str, group: Option<usize>) -> Self {
+        Self {
+            kind: "failed".into(),
+            state: "FAILED".into(),
+            state_label: crate::i18n::t("tui.state.failed"),
+            group,
+            // Starting it again is exactly what the person will want once the
+            // program is installed
+            restartable: true,
             ..Self::browser(index, key, name)
         }
     }
@@ -1500,6 +1527,7 @@ impl TabState {
             // in by `view::ui_state_of` along with everything else
             away: None,
             git_acct: None,
+            failed: None,
         }
     }
 }
@@ -1852,6 +1880,7 @@ mod tests {
             ask: None,
             away: None,
             git_acct: None,
+            failed: None,
             file: None,
             file_stamp: None,
         }

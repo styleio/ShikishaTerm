@@ -64,6 +64,10 @@ libc = "0.2"
 # What only exists on Windows. Everything above this line builds anywhere,
 # which is the whole point of the runtime being its own crate.
 [target.'cfg(windows)'.dependencies]
+# Read the PATH a new terminal is started with -- the one in the registry, which
+# the terminal library uses -- so "is this program installed" is asked of the
+# same list the launch will search. Already in the tree through portable-pty
+winreg = "0.10.1"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
 windows = { version = "0.61.3", features = [
   "Win32_Foundation",

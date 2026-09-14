@@ -925,6 +925,23 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      One file of this tab's folder. Stands where a terminal stands, like the
      panels beside it: a line saying which file and how it stands, then the
      text, which is a library's business and not ours */
+  /* A tab that could not start. Where its terminal would be: what went wrong,
+     and the ways on from here, in that order */
+  #failpanel[hidden] { display:none; }
+  #failpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+    bottom:calc(var(--fb) + var(--dock, 0px)); overflow:auto; z-index:4;
+    display:flex; align-items:flex-start; justify-content:center; padding:var(--s6) var(--s5); }
+  #failpanel .box { max-width:620px; width:100%; display:flex; flex-direction:column; gap:var(--s3); }
+  #failpanel h3 { margin:0; font-size:14px; font-weight:600; color:var(--text); display:flex; gap:var(--s2); align-items:center; }
+  #failpanel h3 .dot { width:8px; height:8px; border-radius:50%; background:var(--stop); }
+  #failpanel .why { color:var(--text); font-size:13px; line-height:1.6; white-space:pre-wrap; }
+  #failpanel .next { color:var(--dim); font-size:12px; line-height:1.6; }
+  #failpanel .acts { display:flex; flex-wrap:wrap; gap:var(--s2); margin-top:var(--s2); }
+  #failpanel .acts button, #failpanel .acts a { font:inherit; font-size:12.5px; height:32px; padding:0 var(--s3);
+    border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--panel); color:var(--text);
+    cursor:pointer; display:inline-flex; align-items:center; text-decoration:none; }
+  #failpanel .acts button:hover, #failpanel .acts a:hover { border-color:var(--edge-hi); }
+  #failpanel .acts .go { border-color:var(--brand); color:var(--brand); }
   #editpanel[hidden] { display:none; }
   #editpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px)); display:flex; flex-direction:column; overflow:hidden;
@@ -1981,6 +1998,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div id="editpanel" hidden></div>
     <div id="gitpanel" hidden></div>
     <div id="sftppanel" hidden></div>
+    <div id="failpanel" hidden></div>
     <!-- One question about one file: replace what is there, throw it away,
          call it something else. Named rather than "are you sure", because the
          far end is somebody else's machine and there is no way back from it -->
@@ -2527,6 +2545,34 @@ function drawTabs() {
     el("span", {class:"sidebtn snipbtn", title:T["tui.snip.title"] || "Tools",
         onclick:e => { e.stopPropagation(); openSnipMenu(e); }}, "✂️")));
   drawCoach();
+}
+
+// A tab that could not start: why, and what to do about it. Drawn only when
+// what it says has changed, so a press is not lost to a redraw under it
+function drawFailed(t) {
+  const box = document.getElementById("failpanel");
+  if (!box) return;
+  box.hidden = !t;
+  if (!t) { box.dataset.sig = ""; return; }
+  const f = t.failed || {};
+  const sig = JSON.stringify([t.index, t.name, f]);
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.textContent = "";
+  const acts = el("div", {class:"acts"},
+    // The ordinary restart: for this kind of tab it tries to start it again
+    el("button", {class:"go", onclick:() => send({kind:"restart"})}, T["tui.failed.retry"] || ""),
+    f.install_url
+      ? (REMOTE
+          ? el("a", {href:f.install_url, target:"_blank", rel:"noopener"}, T["tui.failed.install"] || "")
+          : el("button", {onclick:() => send({kind:"installhelp"})}, T["tui.failed.install"] || ""))
+      : null,
+    el("button", {onclick:() => openSettings()}, T["tui.failed.settings"] || ""));
+  box.append(el("div", {class:"box"},
+    el("h3", {}, el("span", {class:"dot"}), (T["tui.failed.title"] || "{name}").replace("{name}", t.name)),
+    el("div", {class:"why"}, f.why || ""),
+    el("div", {class:"next"}, f.install_url ? (T["tui.failed.next.install"] || "") : (T["tui.failed.next"] || "")),
+    acts));
 }
 
 // ── The tools that start from a picture ──────────────────
@@ -4653,6 +4699,8 @@ window.__state = function (json) {
   const edit = S.tabs.some(t => t.index === S.active && t.kind === "editor");
   // And so does the file panel
   const files = S.tabs.some(t => t.index === S.active && t.kind === "sftp");
+  // And a tab that could not start, which has only why to show
+  const failedTab = S.tabs.find(t => t.index === S.active && t.kind === "failed");
   // INDEX covers the window; the panes are still there underneath and come
   // back the moment a running thing is picked. Nothing of the layout is drawn
   // while it is up, or the caption of a pane would show through the board
@@ -4663,7 +4711,8 @@ window.__state = function (json) {
   board.hidden = !S.board;
   document.getElementById("panes").hidden = cover;
   // Nothing to draw for a pane with nothing in it -- it says so itself
-  screen.hidden = cover || S.active === 0 || web || git || files || edit;
+  screen.hidden = cover || S.active === 0 || web || git || files || edit || !!failedTab;
+  drawFailed(cover ? null : failedTab);
   // The editor, whenever that is what the pane is showing. Which file it is
   // on comes from the state, so a page that has just been opened -- a phone
   // picking up the board -- finds it already open rather than empty

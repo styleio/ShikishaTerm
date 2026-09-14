@@ -97,6 +97,8 @@ pub struct Mailbox {
     pub update_card: Option<bool>,
     /// The `?` beside the gear was pressed
     pub help_site: bool,
+    /// "How to install it" was pressed on a tab that could not start
+    pub install_help: bool,
     /// Tabs whose usage-limit notice was read, by screen number
     pub limit_acks: Vec<usize>,
     /// Tabs somebody asked to look at, by screen number (0 is the board): a
@@ -263,6 +265,9 @@ impl Mailbox {
     }
     pub fn take_update_card(&mut self) -> Option<bool> {
         self.update_card.take()
+    }
+    pub fn take_install_help(&mut self) -> bool {
+        std::mem::take(&mut self.install_help)
     }
     pub fn take_help_site(&mut self) -> bool {
         std::mem::take(&mut self.help_site)

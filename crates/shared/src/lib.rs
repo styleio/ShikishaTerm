@@ -322,6 +322,11 @@ pub enum Ev {
     /// The `?` beside the gear: the manual on the site, in the PC's browser.
     /// Window-only -- a phone reaches the same page through a plain link
     Help,
+    /// "How to install it" on a tab that could not start: the maker's page for
+    /// the program it needs, in the PC's browser. The address is the app's
+    /// own, from the profile -- the page only says which button was pressed.
+    /// Window-only, like `Help`: a phone follows the same address as a link
+    InstallHelp,
     /// A tool from the left bar's scissors: wait `delay` seconds, take the
     /// screen the pointer is on, and open `tool` over the picture.
     ///
@@ -871,6 +876,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("thanks") => Ev::Thanks { open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false) },
         Some("update") => Ev::Update { open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false) },
         Some("help") => Ev::Help,
+        Some("installhelp") => Ev::InstallHelp,
         Some("snip") => Ev::Snip {
             tool: v.get("tool").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             // A wait longer than this is not a wait anybody chose

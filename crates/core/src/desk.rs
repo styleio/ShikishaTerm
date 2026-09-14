@@ -286,6 +286,8 @@ pub fn apply_ws_config(
                 .unwrap_or_else(|| title_of(&f.cfg.command.argv()))
         })
         .collect();
+    // A tab taken out of the settings takes its failure with it
+    failures().retain(|f| f.desk != desk.name || wanted.contains(&f.title));
     tabs.retain_mut(|t| {
         if wanted.contains(&t.title) {
             true
@@ -319,6 +321,7 @@ pub fn apply_ws_config(
         let said = opts.clone();
         match tabs.iter().position(|t| t.title == title) {
             Some(i) => {
+                forget_failure(&desk.name, &title);
                 let mut t = tabs.remove(i);
                 t.apply_live_config(
                     ft.cfg.profile.clone(),
@@ -345,6 +348,7 @@ pub fn apply_ws_config(
                 resume_plan_of(ft.cfg.resume.as_deref()),
             ) {
                 Ok(mut t) => {
+                    forget_failure(&desk.name, &title);
                     t.locked = ft.cfg.locked;
                     t.auto_restart = ft.cfg.auto_restart;
                     t.depth = ft.depth;
@@ -354,12 +358,12 @@ pub fn apply_ws_config(
                     ordered.push(t);
                     added += 1;
                 }
-                Err(e) => errors.push(tab::launch_problem_for(
-                    &title,
-                    argv.first().map(String::as_str).unwrap_or(""),
-                    &said,
-                    &e.to_string(),
-                )),
+                Err(e) => {
+                    let prog = argv.first().map(String::as_str).unwrap_or("");
+                    let why = tab::launch_problem_for(&title, prog, &said, &e.to_string());
+                    remember_failure(&desk.name, &title, prog, &why);
+                    errors.push(why);
+                }
             },
         }
     }
@@ -502,6 +506,7 @@ pub fn spawn_desk(
             plan,
         ) {
             Ok(mut tab) => {
+                forget_failure(&desk.name, &title);
                 tab.locked = ft.cfg.locked;
                 tab.auto_restart = ft.cfg.auto_restart;
                 tab.depth = ft.depth;
@@ -509,14 +514,60 @@ pub fn spawn_desk(
                 tab.notify_reply = ft.cfg.notify_reply;
                 tabs.push(tab);
             }
-            Err(e) => errors.push(tab::launch_problem_for(
-                &title,
-                argv.first().map(String::as_str).unwrap_or(""),
-                &said,
-                &e.to_string(),
-            )),
+            Err(e) => {
+                let prog = argv.first().map(String::as_str).unwrap_or("");
+                let why = tab::launch_problem_for(&title, prog, &said, &e.to_string());
+                remember_failure(&desk.name, &title, prog, &why);
+                errors.push(why);
+            }
         }
     }
+}
+
+/// A tab the settings name that could not be started, and why.
+///
+/// Kept so the tab stays on the screen. It used to be a line in a log and a
+/// toast that faded in seconds -- or, after a settings save, not even that --
+/// while the tab itself was simply not there: somebody who had just added one
+/// saw nothing happen, with nothing to say why
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchFailure {
+    pub desk: String,
+    /// The tab's title, which is how a running tab is matched to its settings
+    pub title: String,
+    /// The program that was not started
+    pub prog: String,
+    /// What went wrong and what to do, in words
+    pub why: String,
+    /// Where the maker says how to install it, when a profile knows
+    pub install_url: Option<String>,
+}
+
+fn failures() -> std::sync::MutexGuard<'static, Vec<LaunchFailure>> {
+    static FAILED: std::sync::Mutex<Vec<LaunchFailure>> = std::sync::Mutex::new(Vec::new());
+    FAILED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn remember_failure(desk: &str, title: &str, prog: &str, why: &str) {
+    append_hook_log(&format!("could not start \"{title}\" in \"{desk}\": {why}"));
+    let mut list = failures();
+    list.retain(|f| !(f.desk == desk && f.title == title));
+    list.push(LaunchFailure {
+        desk: desk.to_string(),
+        title: title.to_string(),
+        prog: prog.to_string(),
+        why: why.to_string(),
+        install_url: crate::profile::install_url_for(prog),
+    });
+}
+
+fn forget_failure(desk: &str, title: &str) {
+    failures().retain(|f| !(f.desk == desk && f.title == title));
+}
+
+/// Why this tab of this desk could not be started, if it could not
+pub fn launch_failure(desk: &str, title: &str) -> Option<LaunchFailure> {
+    failures().iter().find(|f| f.desk == desk && f.title == title).cloned()
 }
 
 /// Everything that belongs to the desk now on screen, handed over at once.
