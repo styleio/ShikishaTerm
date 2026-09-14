@@ -4483,6 +4483,56 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     ),
                 };
                 match planned {
+                    // Open in another folder already: not a dead end but a
+                    // question -- that folder, or this one under another name
+                    Err(e) if e.downcast_ref::<crate::worktree::InUse>().is_some() => {
+                        let taken = e.downcast_ref::<crate::worktree::InUse>().cloned().unwrap_or_else(|| {
+                            crate::worktree::InUse { branch: wanted.clone(), folder: Default::default() }
+                        });
+                        let listed = desks.get(desk_index).is_some_and(|d| {
+                            d.folders
+                                .iter()
+                                .any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &taken.folder)))
+                        });
+                        if ask.adopt && ask.make {
+                            // The answer was "that folder": taken in as it is,
+                            // running what a new one would, and tied to the issue
+                            let taken_in = match listed {
+                                true => Ok(()),
+                                false => config::append_folder_starting(
+                                    &desk,
+                                    Some(&from),
+                                    &taken.folder,
+                                    Some(&taken.branch),
+                                    &start,
+                                    None,
+                                ),
+                            };
+                            match taken_in {
+                                Ok(()) => {
+                                    view.done = true;
+                                    remember_work_item(&desk, &taken.folder, &ask.link, &mut pending_drafts);
+                                    shell.mail().folder_views.push(taken.folder.display().to_string());
+                                    flash = Some(i18n::tp(
+                                        "msg.branch.adopted",
+                                        &[("path", &taken.folder.display().to_string())],
+                                    ));
+                                }
+                                Err(e) => view.error = Some(format!("{e:#}")),
+                            }
+                        } else {
+                            let instead = repo
+                                .as_deref()
+                                .map(|main| crate::worktree::next_free(main, &taken.branch))
+                                .unwrap_or_default();
+                            view.in_use = Some(crate::uistate::BranchInUse {
+                                branch: taken.branch.clone(),
+                                folder: taken.folder.display().to_string(),
+                                listed,
+                                instead,
+                            });
+                        }
+                    }
                     Err(e) => view.error = Some(format!("{e:#}")),
                     Ok(plan) => {
                         view.branch = plan.branch.clone();

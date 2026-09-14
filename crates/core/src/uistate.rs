@@ -576,6 +576,23 @@ pub struct BranchPlan {
     /// means nobody has written it down and it is still being worked out
     #[serde(default)]
     pub project_name: String,
+    /// The branch asked for is already open in a folder: which one, whether
+    /// this desk already lists it, and a name that is free instead. The dialog
+    /// asks one question with it -- open that folder, or make this one under
+    /// the other name
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_use: Option<BranchInUse>,
+}
+
+/// A branch already open elsewhere, as the branch dialog asks about it.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct BranchInUse {
+    pub branch: String,
+    pub folder: String,
+    /// The folder is already one of this desk's
+    pub listed: bool,
+    /// The name to use instead, free now
+    pub instead: String,
 }
 
 /// What Claude's subscription has left, as the status line draws it.

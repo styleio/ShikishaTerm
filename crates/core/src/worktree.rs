@@ -168,6 +168,36 @@ fn said(argv: &[String]) -> String {
         .join(" ")
 }
 
+/// A branch already open in a folder, which git will not open in a second one.
+///
+/// Told apart from the other reasons a plan fails, because this one has two
+/// answers a person can give in a word: use that folder, or take another name
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InUse {
+    pub branch: String,
+    pub folder: PathBuf,
+}
+
+impl std::fmt::Display for InUse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::i18n::tp(
+            "err.worktree.in_use",
+            &[("branch", &self.branch), ("path", &self.folder.display().to_string())],
+        ))
+    }
+}
+
+impl std::error::Error for InUse {}
+
+/// The first name after `name` -- `name-2`, `name-3` -- that is a new branch
+/// with a free folder, for when `name` is taken
+pub fn next_free(main: &Path, name: &str) -> String {
+    (2..100)
+        .map(|n| format!("{name}-{n}"))
+        .find(|candidate| is_free(main, candidate))
+        .unwrap_or_else(|| format!("{name}-{}", crate::random_hex(3)))
+}
+
 /// Works out where a branch's folder goes and what will make it.
 ///
 /// `base` is what a new branch grows from; leave it out for the sensible one.
@@ -215,10 +245,7 @@ pub fn plan_for(
     // its own language -- the name is on screen while it is typed, so the
     // answer is as well
     if !fresh && let Some(open) = checked_out_at(&main, &branch) {
-        bail!(crate::i18n::tp(
-            "err.worktree.in_use",
-            &[("branch", &branch), ("path", &open.display().to_string())]
-        ));
+        bail!(InUse { branch: branch.clone(), folder: open });
     }
     let base = match base.map(str::trim).filter(|b| !b.is_empty()) {
         Some(b) => b.to_string(),
