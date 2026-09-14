@@ -1208,6 +1208,52 @@ mod tests {
         assert!(shape_of("color").is_none());
     }
 
+    /// The noun tool names things in the language the person reads the app
+    /// in, not the language written in the picture. The prompt is the only
+    /// thing that says which that is, so every translation of it says so
+    #[test]
+    fn nouns_are_asked_for_in_the_language_on_screen() {
+        let en = include_str!("../../../lang/en.json");
+        let ja = include_str!("../../../lang/ja.json");
+        let prompt = |file: &str| {
+            let v: serde_json::Value = serde_json::from_str(file).unwrap();
+            v["snip.ai.noun.prompt"].as_str().unwrap().to_string()
+        };
+        assert!(prompt(en).contains("in English, whatever language"), "英語の頼み方に言語の指定が無い");
+        assert!(prompt(ja).contains("何語であっても、名詞は日本語で"), "日本語の頼み方に言語の指定が無い");
+    }
+
+    /// Each installed assistant AI, asked in English and in Japanese about a
+    /// picture of Japanese text, names it in the language it was asked in.
+    /// Costs two calls to each; run by hand with
+    /// `SHIKISHA_PICTURE=<png> cargo test -- --ignored nouns_come_back_in`
+    #[test]
+    #[ignore]
+    fn nouns_come_back_in_the_language_asked() {
+        let Ok(path) = std::env::var("SHIKISHA_PICTURE") else { return };
+        let png = std::fs::read(path).unwrap();
+        let shape = shape_of("noun").unwrap().to_string();
+        for lang in ["en", "ja"] {
+            crate::i18n::init(Some(lang), &[crate::repo_root()]);
+            let asked = crate::i18n::t("snip.ai.noun.prompt");
+            for name in ["claude", "codex", "gemini"] {
+                if crate::webui::assistant_ai(Some(name)).is_none() {
+                    continue;
+                }
+                let said = crate::webui::ask_about_picture(name, &asked, &png, &shape)
+                    .unwrap_or_else(|e| panic!("{name} ({lang}) が読めなかった: {e:#}"));
+                let read = read_reply("noun", &said).unwrap_or_else(|| panic!("{name} ({lang}) の答えが形でない: {said}"));
+                let words: Vec<String> = read["lines"].as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+                eprintln!("{lang} {name} -> {words:?}");
+                let japanese = |w: &str| w.chars().any(|c| ('\u{3040}'..='\u{30ff}').contains(&c) || ('\u{4e00}'..='\u{9fff}').contains(&c));
+                match lang {
+                    "en" => assert!(words.iter().all(|w| !japanese(w)), "{name} が英語で聞かれて日本語で答えた: {words:?}"),
+                    _ => assert!(words.iter().any(|w| japanese(w)), "{name} が日本語で聞かれて日本語で答えなかった: {words:?}"),
+                }
+            }
+        }
+    }
+
     /// The waits offered are short and include none at all -- no wait is how
     /// a picture of this program itself is taken
     #[test]
