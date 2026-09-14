@@ -643,7 +643,12 @@ beside your own on one machine never share an API key or a chat.
     "providers": {
       "work-azure": { "base_url": "https://….openai.azure.com/…", "api_key": "@provider/work/work-azure" }
     },
-    "git": { "protect": ["main", "release/*"] }
+    "git": { "protect": ["main", "release/*"] },
+    "git_accounts": [
+      { "name": "work", "login": "me-at-work", "user_name": "Me", "user_email": "me@example.com", "owners": ["my-company"] },
+      { "name": "home", "method": "ssh", "key": "C:/Users/me/.ssh/id_home" }
+    ],
+    "projects": [ { "name": "api", "at": "D:/src/api", "git_account": "work" } ]
   }
 ]
 ```
@@ -652,11 +657,12 @@ A value starting with `@` is the name of a secret. Registered from the settings
 screen, keys and webhooks are stored encrypted and only their names are written
 here. A new desk can start as a copy of the one you are on, keys included.
 
-Its GitHub token is not written here either: it is the secret named `github`
-beside that desk's other secrets, and the desk page offers to set it. Use a
-fine-grained token covering only the repositories that desk works on. **Only that
-desk's token is used**: `GITHUB_TOKEN` in the environment and your own `gh`
-sign-in are not read, since either would be one account for every desk.
+A git account's token is not written here either: it is filed under
+`git/<desk id>/<account name>` when it is entered on the desk's Git accounts page.
+**Nothing picks an account on its own.** A project names the one the git column
+beside its folders signs in with (`git_account`), a git tab names its own, and
+`"@pc"` means the way git on this PC already signs in. Pull request numbers are
+read with the same account. `GITHUB_TOKEN` in the environment is not read.
 
 ---
 
@@ -996,14 +1002,16 @@ that path never launches git, which is why it still answers during a rebase.
 | `shikisha.git_branches(tab)` | Every branch: `{name, current, protected}` |
 | `shikisha.git_checkout(tab, "name")` | Move onto that branch |
 | `shikisha.git_merge(tab, "name")` | Bring that branch in. A conflict stops it, and shows up in `git_conflicts` |
-| `shikisha.git_fetch(tab)` / `shikisha.git_pull(tab)` / `shikisha.git_push(tab)` | Talk to the server. **Everything else waits** until it answers (up to three minutes). `git_push` sets the upstream and retries when the branch has never been sent, and says so in its answer |
+| `shikisha.git_fetch(tab)` / `shikisha.git_pull(tab)` / `shikisha.git_push(tab)` | Talk to the server. **Everything else waits** until it answers (up to three minutes). `git_push` sets the upstream and retries when the branch has never been sent, and says so in its answer. They sign in as the git account chosen for the tab (see below), and refuse to run where none is chosen |
 | `shikisha.git_hunks(tab, {path=…, staged=…})` | The diff cut into hunks: `{file, header, start, end, patch}`. Each `patch` is a whole patch on its own |
 | `shikisha.git_apply(tab, patch, {cached=…, reverse=…})` | Apply a patch. `cached` puts it in the next commit, `reverse` takes it back out. **Staging one hunk is these two together** |
 | `shikisha.git_stage(tab, paths)` | Add to the next commit. One path as a string, or several in a table |
 | `shikisha.git_unstage(tab, paths)` | Take back out of the next commit |
 | `shikisha.git_branch_create(tab, "name")` | Make a branch and move onto it. Staged work moves with you, which is what makes this **the way out of a refusal on a shared branch** |
 | `shikisha.git_commit(tab, "message", opts)` | Commit what was added and answer with the short hash. **It stops on a protected branch** -- make a branch, or pass `{allow_protected=true}` to say you meant it. Which branches those are comes from Settings > Protected branches (`main` and `master` until somebody says otherwise), and each working folder may name its own |
-| `shikisha.git_run(tab, "args…")` | Run any git and answer with its output. **No shell is involved**: `;` and `&&` arrive as arguments and git refuses them |
+| `shikisha.git_run(tab, "args…")` | Run any git and answer with its output. **No shell is involved**: `;` and `&&` arrive as arguments and git refuses them. It signs in as the chosen git account, and where none is chosen it has no credentials at all |
+
+**Which account signs in.** A git tab uses the account chosen on its own page. Any other tab uses the one its folder's project chose (the project's page, or the menu at the top of the git column). The accounts themselves are the desk's own (desk settings > Git accounts): a token over HTTPS or an SSH key file, and the name and email its commits carry, which `git_commit` and `git_merge` use too. "This PC's git settings" is a choice like any other -- git's own credential helper and keys. A git typed in a terminal is not affected by any of this.
 
 **All of these are open to a person only, to begin with** (automation permissions). If an AI
 is to be let in, `git_status` / `git_diff` / `git_log` are the place to start. Opening

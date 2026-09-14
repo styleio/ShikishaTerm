@@ -206,6 +206,7 @@ pub fn tab_places(tabs: &[Tab]) -> Vec<hooks::TabPlace> {
                     (None, None) => None,
                 },
                 protect: t.protect().to_vec(),
+                git: t.git_use.clone(),
             }
         })
         .collect()
@@ -784,6 +785,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // When to look again at where the tabs are. Starts now so the first frame
     // already knows, rather than showing a sidebar that fills in a beat later
     let mut place_at = std::time::Instant::now();
+    // Where each git tab's folder pushes to, on the same beat: read off the
+    // disk, so not every frame
+    let mut git_repos: Vec<(std::path::PathBuf, String)> = Vec::new();
     // What each tab costs the machine, measured on the same 2-second beat as
     // where it is. The meter keeps last time's totals so processor use comes
     // out as a rate rather than a running sum
@@ -1167,6 +1171,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .map(|_| crate::layout::Layout::single(0))
                     .collect();
                 desks = new_ws;
+                // A project's git account is part of each tab's place, so the
+                // places are looked at again against the settings just read
+                place_at = std::time::Instant::now();
                 ai_choices = startable_ais();
                 max_chain = newcfg.max_chain.unwrap_or(10);
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
@@ -1201,7 +1208,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // come after set_config, not before: that call puts the app's
                 // own doors and permission table in, and the desk on screen
                 // has the last word on both. It also needs the secrets set_config
-                // just loaded, because this is where the GitHub token is read
+                // just loaded, because this is where the git accounts' tokens are read
                 if let Some(w) = desks.get(desk_index) {
                     crate::desk::hand_over(w, &caps, &notifier, &prs);
                 }
@@ -1216,8 +1223,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 );
                 started_fired.clear();
                 started_fired.resize(tabs.len(), false);
-                if active > tabs.len() {
-                    active = if tabs.is_empty() { 0 } else { 1 };
+                // `active` counts what is on screen -- git tabs, pages and
+                // editors as well as terminals -- so it is held against that.
+                // Held against the terminals alone, a save made while looking
+                // at a git tab threw the view back to the first tab
+                let on_screen = surfaces_of(
+                    desks.get(desk_index),
+                    &tabs.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
+                    &caps.hosted_names(),
+                    &editors,
+                )
+                .len();
+                if active > on_screen {
+                    active = if on_screen == 0 { 0 } else { 1 };
                 }
                 // Apply remote UI config changes (enable/disable takes effect here too)
                 let mut remote_changed: Option<String> = None;
@@ -1505,6 +1523,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let ports = crate::repo::ports_below(&roots);
                 let cost = meter.sample(&roots);
                 self_cost = cost.get(&usize::MAX).and_then(|u| u.line());
+                git_repos = surfaces
+                    .iter()
+                    .filter_map(|s| match s {
+                        Surface::Git { dir: Some(d), .. } => {
+                            crate::repo::origin_of(d).map(|r| (d.clone(), r))
+                        }
+                        _ => None,
+                    })
+                    .collect();
                 for (i, t) in tabs.iter_mut().enumerate() {
                     t.usage = cost.get(&i).copied().unwrap_or_default();
                     let branch = t.cwd().and_then(crate::repo::branch_of);
@@ -1518,8 +1545,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // What is known right now, and a nudge to find out. The
                     // asking happens elsewhere; a row that waited on GitHub
                     // would be a window that stops drawing
-                    let pr = match (&repo, &branch) {
-                        (Some(r), Some(b)) => prs.of(r, b).map(|p| p.short()),
+                    // Which git account the column beside this folder signs in
+                    // with: its project's choice, looked up again with the rest
+                    // of the place so a choice made a moment ago is in force
+                    (t.git_use, t.git_project) = match (desks.get(desk_index), t.cwd()) {
+                        (Some(d), Some(c)) => d.git_use_of_folder(c),
+                        _ => (Default::default(), None),
+                    };
+                    // ...and the pull request number is read as that account
+                    let pr = match (&repo, &branch, t.git_use.pr_account()) {
+                        (Some(r), Some(b), Some(who)) => prs.of(&who, r, b).map(|p| p.short()),
                         _ => None,
                     };
                     // Which project this folder belongs to, and whether it is
@@ -2189,6 +2224,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Git { panel, act, args }) => {
                         shell.mail().gits.push((panel, act, args));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::GitAccount { panel, account }) => {
+                        shell.mail().git_accounts.push((panel, account));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Files { panel, act, args }) => {
                         shell.mail().files.push((panel, act, args));
                     }
@@ -2648,6 +2686,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default(),
+            git_accounts: desks.get(desk_index).map(|w| w.git_accounts.clone()).unwrap_or_default(),
+            git_repos: git_repos.clone(),
             folders_elsewhere: desks
                 .get(desk_index)
                 .map(|w| {
@@ -3155,6 +3195,56 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // exception and say so out loud -- they ask the same permission table
         // and then run on a thread, because the engine lives on the main loop
         // and a window cannot wait three minutes on somebody's network.
+        // A git account chosen at the top of the git column. Written into the
+        // settings -- on the git tab, or on the project of the folder the column
+        // stands beside -- and read back from there like any other change, so
+        // the menu, the settings screen and the next push all agree
+        for (panel, account) in shell.mail().take_git_accounts() {
+            let Some(desk) = desks.get(desk_index) else { continue };
+            let account = account.trim().to_string();
+            // Only a name this desk has, or the PC's own, or nothing
+            if !(account.is_empty()
+                || account == config::THIS_PC
+                || desk.git_accounts.iter().any(|a| a.name == account))
+            {
+                continue;
+            }
+            let git_tab = surfaces.iter().find_map(|s| match s {
+                Surface::Git { key, .. } if *key == panel => Some(key.clone()),
+                _ => None,
+            });
+            let saved = match git_tab {
+                Some(key) => config::save_git_account(&desk.id, config::GitChoiceAt::Tab(&key), &account),
+                None => match tab_places(&tabs)
+                    .into_iter()
+                    .find(|p| p.key.matches(&panel) && !p.dir.as_os_str().is_empty())
+                {
+                    Some(p) => {
+                        config::save_git_account(&desk.id, config::GitChoiceAt::Folder(&p.dir), &account)
+                    }
+                    None => false,
+                },
+            };
+            append_hook_log(&format!(
+                "git account for {panel}: {} ({})",
+                if account.is_empty() { "(none)" } else { &account },
+                if saved { "saved" } else { "not saved" }
+            ));
+            if saved {
+                // Looked at again now rather than at the next beat, so the menu
+                // does not spend two seconds showing the choice it just replaced
+                place_at = std::time::Instant::now();
+            } else {
+                let js = serde_json::json!({
+                    "act": "account", "ok": false, "error": i18n::t("err.git.account.not_saved"),
+                })
+                .to_string();
+                shell.push_git(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"git\":{js}}}"));
+                }
+            }
+        }
         for (panel, act, args) in shell.mail().take_gits() {
             let paths: Vec<String> = args
                 .get("paths")
@@ -3215,23 +3305,34 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // column on the right reports on whatever folder the person is
                 // working in, and names that tab rather than a surface. A tab
                 // with no folder is not an answer, so it is not offered as one
-                let dir = panel_places(&surfaces)
+                let place = panel_places(&surfaces)
                     .into_iter()
                     .chain(tab_places(&tabs).into_iter().filter(|p| !p.dir.as_os_str().is_empty()))
-                    .find(|p| p.key.matches(&panel))
-                    .map(|p| p.dir);
-                let answer = match (caps.allows(&name, grants::Subject::Human), dir) {
-                    (false, _) => Some(i18n::tp(
+                    .find(|p| p.key.matches(&panel));
+                // Who it signs in as: the account chosen for that tab or
+                // project, read out of the store here, on this thread, and
+                // never handed to anything but the git it is for. Untangling
+                // talks to no server, so it needs no account
+                let who = place.as_ref().map(|p| {
+                    p.git.to_git(act != "resolve", &|k| caps.secret_value(k).ok())
+                });
+                let answer = match (caps.allows(&name, grants::Subject::Human), place, who) {
+                    (false, ..) => Some(i18n::tp(
                         "err.hooks.not_permitted",
                         &[("name", &name), ("who", &i18n::t("grant.who.human"))],
                     )),
-                    (true, None) => Some(i18n::t("err.git.no_tab")),
-                    (true, Some(dir)) => {
+                    (true, None, _) | (true, _, None) => Some(i18n::t("err.git.no_tab")),
+                    (true, Some(_), Some(Err(why))) => Some(why),
+                    (true, Some(place), Some(Ok(who))) => {
+                        let dir = place.dir;
                         // Say it started, so a button that will be a while
-                        // does not look like a button that did nothing
-                        shell.push_git(
-                            &serde_json::json!({"act": act, "busy": true}).to_string(),
-                        );
+                        // does not look like a button that did nothing --
+                        // wherever it was pressed
+                        let js = serde_json::json!({"act": act, "busy": true}).to_string();
+                        shell.push_git(&js);
+                        if let Some(r) = remote_ui.as_ref() {
+                            r.push_state(format!("{{\"git\":{js}}}"));
+                        }
                         let tx = git_tx.clone();
                         let act2 = act.clone();
                         let ai = cfg
@@ -3240,9 +3341,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .filter(|s| !s.is_empty());
                         std::thread::spawn(move || {
                             let done = match act2.as_str() {
-                                "fetch" => crate::git::fetch(&dir),
-                                "pull" => crate::git::pull(&dir),
-                                "push" => crate::git::push(&dir),
+                                "fetch" => crate::git::fetch(&dir, &who),
+                                "pull" => crate::git::pull(&dir, &who),
+                                "push" => crate::git::push(&dir, &who),
                                 #[allow(unreachable_patterns)]
                                 // Every file git left marked, one at a time.
                                 // Nothing is staged and nothing is committed:
@@ -3290,10 +3391,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         None
                     }
                 };
+                // A refusal is an answer the phone needs as much as the window:
+                // a button pressed there that says nothing looks broken
                 if let Some(said) = answer {
-                    shell.push_git(
-                        &serde_json::json!({"act": act, "ok": false, "error": said}).to_string(),
-                    );
+                    let js = serde_json::json!({"act": act, "ok": false, "error": said}).to_string();
+                    shell.push_git(&js);
+                    if let Some(r) = remote_ui.as_ref() {
+                        r.push_state(format!("{{\"git\":{js}}}"));
+                    }
                 }
                 continue;
             }

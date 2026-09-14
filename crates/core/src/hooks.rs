@@ -446,7 +446,23 @@ fn git_folder(
     origin: &Cell<usize>,
     tab: &Value,
 ) -> mlua::Result<std::path::PathBuf> {
-    git_place(places, origin, tab).map(|(dir, _)| dir)
+    git_place(places, origin, tab).map(|(dir, ..)| dir)
+}
+
+/// The same folder, with who git runs as there. `sign_in` is whether it is
+/// about to talk to a server (see [`crate::config::GitUse::to_git`])
+fn git_as(
+    places: &RefCell<Vec<TabPlace>>,
+    origin: &Cell<usize>,
+    tab: &Value,
+    caps: &Caps,
+    sign_in: bool,
+) -> mlua::Result<(std::path::PathBuf, Vec<String>, crate::git::As)> {
+    let (dir, protect, git) = git_place(places, origin, tab)?;
+    let who = git
+        .to_git(sign_in, &|k| caps.secret_value(k).ok())
+        .map_err(mlua::Error::runtime)?;
+    Ok((dir, protect, who))
 }
 
 /// Which machine a tab is on, for the file commands.
@@ -482,7 +498,7 @@ fn git_place(
     places: &RefCell<Vec<TabPlace>>,
     origin: &Cell<usize>,
     tab: &Value,
-) -> mlua::Result<(std::path::PathBuf, Vec<String>)> {
+) -> mlua::Result<(std::path::PathBuf, Vec<String>, crate::config::GitUse)> {
     let list = places.borrow();
     let index = match tab {
         Value::Nil => origin.get(),
@@ -501,7 +517,7 @@ fn git_place(
         return Err(mlua::Error::runtime(crate::i18n::t("err.git.no_tab")));
     }
     let root = crate::git::root(&place.dir).map_err(|e| mlua::Error::runtime(e.to_string()))?;
-    Ok((root, place.protect.clone()))
+    Ok((root, place.protect.clone(), place.git.clone()))
 }
 
 /// One path, or several. Writing `git_stage(tab, "src/main.rs")` for a single
@@ -975,6 +991,9 @@ pub struct TabPlace {
     pub remote: Option<crate::elsewhere::Elsewhere>,
     /// The branches this folder guards, already settled by the settings
     pub protect: Vec<String>,
+    /// The git account chosen for it: on a git tab, the tab's own; beside a
+    /// folder, its project's
+    pub git: crate::config::GitUse,
 }
 
 impl TabRef {
@@ -3062,7 +3081,7 @@ impl HookEngine {
                 .set(
                     "git_branch",
                     lua.create_function(move |lua, tab: Value| {
-                        let (dir, protect) = git_place(&c, &o, &tab)?;
+                        let (dir, protect, _) = git_place(&c, &o, &tab)?;
                         let name = crate::git::branch(&dir)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
                         match name {
@@ -3114,12 +3133,13 @@ impl HookEngine {
             // commit nobody meant to make
             let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
+            let k = Caps::clone(&caps);
             shikisha
                 .set(
                     "git_commit",
                     lua.create_function(
                         move |_, (tab, message, opts): (Value, String, Option<Table>)| {
-                            let (dir, protect) = git_place(&c, &o, &tab)?;
+                            let (dir, protect, who) = git_as(&c, &o, &tab, &k, false)?;
                             let allow = match &opts {
                                 Some(t) => {
                                     t.get::<Option<bool>>("allow_protected")?.unwrap_or(false)
@@ -3130,7 +3150,7 @@ impl HookEngine {
                                 Some(t) => t.get::<Option<bool>>("amend")?.unwrap_or(false),
                                 None => false,
                             };
-                            crate::git::commit(&dir, &message, &protect, allow, amend)
+                            crate::git::commit(&dir, &message, &protect, allow, amend, &who)
                                 .map_err(|e| mlua::Error::runtime(e.to_string()))
                         },
                     )
@@ -3218,7 +3238,7 @@ impl HookEngine {
                 .set(
                     "git_branches",
                     lua.create_function(move |lua, tab: Value| {
-                        let (dir, protect) = git_place(&c, &o, &tab)?;
+                        let (dir, protect, _) = git_place(&c, &o, &tab)?;
                         let list = crate::git::branches(&dir)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
                         let out = lua.create_table()?;
@@ -3249,12 +3269,13 @@ impl HookEngine {
                 .map_err(lerr)?;
             let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
+            let k = Caps::clone(&caps);
             shikisha
                 .set(
                     "git_merge",
                     lua.create_function(move |_, (tab, name): (Value, String)| {
-                        let dir = git_folder(&c, &o, &tab)?;
-                        crate::git::merge(&dir, &name)
+                        let (dir, _, who) = git_as(&c, &o, &tab, &k, false)?;
+                        crate::git::merge(&dir, &name, &who)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,
@@ -3267,16 +3288,19 @@ impl HookEngine {
             // engine runs on the main loop. The panel does not call these: it
             // asks the same permission table and then hands the work to a
             // thread, because a window cannot wait on somebody's network
+            // Each signs in as the account chosen for that folder, and does not
+            // run at all where nobody has chosen one
             macro_rules! network {
                 ($name:literal, $f:path) => {{
                     let c = Rc::clone(&places);
                     let o = Rc::clone(&current_origin);
+                    let k = Caps::clone(&caps);
                     shikisha
                         .set(
                             $name,
                             lua.create_function(move |_, tab: Value| {
-                                let dir = git_folder(&c, &o, &tab)?;
-                                $f(&dir).map_err(|e| mlua::Error::runtime(e.to_string()))
+                                let (dir, _, who) = git_as(&c, &o, &tab, &k, true)?;
+                                $f(&dir, &who).map_err(|e| mlua::Error::runtime(e.to_string()))
                             })
                             .map_err(lerr)?,
                         )
@@ -3310,19 +3334,29 @@ impl HookEngine {
             // never appears on a screen. The words are split here rather than
             // handed to a shell, so `;` and `&&` reach git as arguments and
             // git refuses them
+            // Anything here may talk to a server, so it runs as the account
+            // chosen for the folder -- and, where none was chosen, with no
+            // credentials at all rather than this machine's
             let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
+            let k = Caps::clone(&caps);
             shikisha
                 .set(
                     "git_run",
                     lua.create_function(move |_, (tab, line): (Value, String)| {
-                        let dir = git_folder(&c, &o, &tab)?;
+                        let (dir, _, git) = git_place(&c, &o, &tab)?;
+                        let who = match git {
+                            crate::config::GitUse::Unset => crate::git::As::sealed(),
+                            chosen => chosen
+                                .to_git(true, &|key| k.secret_value(key).ok())
+                                .map_err(mlua::Error::runtime)?,
+                        };
                         let args = crate::git::split_args(&line);
                         if args.is_empty() {
                             return Err(mlua::Error::runtime(crate::i18n::t("err.git.empty_run")));
                         }
                         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-                        crate::git::run(&dir, &borrowed)
+                        crate::git::run_as(&dir, &borrowed, "", crate::git::LIMIT, &who)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,
@@ -6376,7 +6410,7 @@ mod tests {
         std::fs::write(dir.join("f.txt"), format!("{start}
 ")).unwrap();
         crate::git::stage(&dir, &["f.txt".to_string()]).unwrap();
-        crate::git::commit(&dir, "start", &[], true, false).unwrap();
+        crate::git::commit(&dir, "start", &[], true, false, &crate::git::As::default()).unwrap();
         std::fs::write(
             dir.join("f.txt"),
             format!("{}

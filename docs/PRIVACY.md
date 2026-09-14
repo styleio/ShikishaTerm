@@ -36,7 +36,7 @@ and each one goes straight to the party you chose — never through us.
 | An **assistant model** (the AI that writes automation for you, or judges a discussion) | The provider you picked, with the API key you entered — for example Anthropic, OpenAI, Google, or a model running locally on your own machine. |
 | The **phone remote** | Your own phone, over your own network. It is a small web server on your machine that you reach directly. Over [Tailscale](https://tailscale.com/) it is your own private network, end-to-end encrypted; no traffic passes through us. |
 | **Notifications** | The Slack, Discord or Telegram webhook you supplied. |
-| The **GitHub** pull-request panel | `api.github.com`, with the token you supplied. |
+| The **GitHub** pull-request panel | `api.github.com`, with the token of the git account you chose for that project -- or, when you chose "This PC's git settings", the GitHub credential git on this PC already stores. |
 | **Automation you wrote** that calls `http.*` | Wherever your own script points it. |
 | The **update check** | `api.github.com`, once at start-up and once a day while the program runs, to read the latest published version number. It sends nothing but a request for that public page. The Microsoft Store copy asks the Store instead. It can be turned off in Settings › Update. |
 | **Installing an update**, when you press for it | `github.com` (portable download), to fetch the published zip, its SHA256 and its signature. The Store copy lets the Store install it. Nothing is fetched until you press the button. |

@@ -21,13 +21,14 @@ pub fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
     surfaces
         .iter()
         .filter_map(|s| match s {
-            Surface::Git { key, dir: Some(d), protect, .. } => Some(hooks::TabPlace {
+            Surface::Git { key, dir: Some(d), protect, git, .. } => Some(hooks::TabPlace {
                 key: hooks::TabKey { id: Some(key.clone()) },
                 dir: d.clone(),
                 // A git panel reports on a folder on this machine, and is not a
                 // place files can be sent to
                 remote: None,
                 protect: protect.clone(),
+                git: git.clone(),
             }),
             // The editor works in a folder too, and is named the same way, so
             // reading and writing the file it is showing goes through the same
@@ -37,6 +38,7 @@ pub fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
                 dir: d.clone(),
                 remote: None,
                 protect: Vec::new(),
+                git: Default::default(),
             }),
             // A file panel is. `sftp_put("that name", …)` reaches the same
             // server the screen is showing, which is the whole point of the
@@ -46,6 +48,7 @@ pub fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
                 dir: dir.clone().unwrap_or_default(),
                 remote: at.clone(),
                 protect: Vec::new(),
+                git: Default::default(),
             }),
             _ => None,
         })
@@ -520,7 +523,7 @@ pub fn spawn_desk(
 ///
 /// Five things belong to a desk alone -- its notification destinations, its
 /// model connections, what doors its automation has, who may use them, and
-/// which GitHub account answers for it -- and every one of them has to
+/// the tokens of its git accounts -- and every one of them has to
 /// change at the same moment as the screen does. In one place because the
 /// failure otherwise is silent and one-sided: the half nobody remembered to
 /// swap keeps answering for the desk that was on screen a moment ago.
@@ -541,12 +544,19 @@ pub fn hand_over(
     caps.set_grants(desk.automation_permissions.clone());
     // A script's `token` means this desk's, and no other's
     caps.set_desk_id(&desk.id);
-    // Which account the pull request numbers are read with: the token this
-    // desk was given, or the machine's when it was given none. The program
-    // reaches for the value itself here -- a script never sees it
-    prs.use_token(
-        caps.secret_value(&config::desk_secret_key(&desk.id, config::GITHUB_SECRET))
-            .ok(),
+    // The tokens pull request numbers are read with, one per git account of
+    // this desk that has one. Which of them a row asks with is its project's
+    // choice. The program reaches for the values itself here -- a script never
+    // sees them
+    prs.use_tokens(
+        desk.git_accounts
+            .iter()
+            .filter_map(|a| {
+                let token = caps.secret_value(&config::git_token_key(&desk.id, &a.name)).ok()?;
+                let token = token.trim().to_string();
+                (!token.is_empty()).then(|| (a.name.clone(), token))
+            })
+            .collect(),
     );
 }
 

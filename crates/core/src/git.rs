@@ -27,7 +27,7 @@ use anyhow::{Result, bail};
 /// Everything the sugar runs is local and finishes in tens of milliseconds.
 /// The ceiling is for `git_run`, where someone can reach a command that talks
 /// to a network -- and for the day a repository is on a disconnected share
-const LIMIT: Duration = Duration::from_secs(20);
+pub const LIMIT: Duration = Duration::from_secs(20);
 
 /// The ceiling for the ones that talk to a server. A fetch of a large
 /// repository over a slow line is not a hang, and killing it at twenty seconds
@@ -89,6 +89,95 @@ fn drain(mut s: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> 
     })
 }
 
+/// How a git signs in to a server, when it has to.
+///
+/// Deliberately not `Debug`: a token is in here, and a value that can be
+/// printed is a value that ends up in a log
+#[derive(Clone, Default, PartialEq, Eq)]
+pub enum Auth {
+    /// Whatever git on this machine is set up to do: its credential helper,
+    /// its SSH keys. What a person typing git in a terminal gets
+    #[default]
+    Own,
+    /// No credential at all. Every helper git has been given is set aside and
+    /// SSH is not allowed to start, so nothing reaches a server as anybody
+    Sealed,
+    /// A token over HTTPS, handed only to `host`
+    Token { host: String, login: String, token: String },
+    /// This key file over SSH, and no other key
+    Ssh { key: PathBuf },
+}
+
+/// Who a git runs as: the credentials it signs in with and the name its
+/// commits carry. `Default` is git's own answer to both
+#[derive(Clone, Default)]
+pub struct As {
+    pub auth: Auth,
+    /// The account's name in the settings, for messages
+    pub account: Option<String>,
+    /// The commit identity. Absent is whatever git itself is set to
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+/// A credential helper that answers with the token from the environment, and
+/// only for the one server. Written for the shell git runs helpers with, and
+/// handed the token through the environment rather than the command line, where
+/// anything listing processes could read it
+const TOKEN_HELPER: &str = "!f() { test \"$1\" = get || return 0; h=; \
+while IFS= read -r l && test -n \"$l\"; do case \"$l\" in host=*) h=\"${l#host=}\";; esac; done; \
+test \"$h\" = \"$SHIKISHA_GIT_HOST\" || return 0; \
+printf 'username=%s\\npassword=%s\\n' \"$SHIKISHA_GIT_LOGIN\" \"$SHIKISHA_GIT_TOKEN\"; }; f";
+
+impl As {
+    /// Nothing to sign in with, and git's own name on commits
+    pub fn sealed() -> As {
+        As { auth: Auth::Sealed, ..Default::default() }
+    }
+
+    /// Put this on a git about to start: `-c` settings go before the
+    /// subcommand, which is why this is given the command before its args
+    fn apply(&self, cmd: &mut std::process::Command) {
+        if let Some(n) = &self.name {
+            cmd.arg("-c").arg(format!("user.name={n}"));
+        }
+        if let Some(e) = &self.email {
+            cmd.arg("-c").arg(format!("user.email={e}"));
+        }
+        let quote = |p: &Path| format!("'{}'", p.display().to_string().replace('\\', "/").replace('\'', "'\\''"));
+        match &self.auth {
+            Auth::Own => {}
+            // An empty helper throws away every helper configured before it --
+            // the machine's, the user's, a per-server one -- so what follows is
+            // the whole list
+            Auth::Sealed => {
+                cmd.arg("-c").arg("credential.helper=");
+                cmd.env("GIT_SSH_COMMAND", "false");
+            }
+            Auth::Token { host, login, token } => {
+                cmd.arg("-c").arg("credential.helper=");
+                cmd.arg("-c").arg(format!("credential.helper={TOKEN_HELPER}"));
+                cmd.env("SHIKISHA_GIT_HOST", host)
+                    .env("SHIKISHA_GIT_LOGIN", login)
+                    .env("SHIKISHA_GIT_TOKEN", token)
+                    // An HTTPS account does not quietly go out over SSH as
+                    // whoever this machine's keys belong to
+                    .env("GIT_SSH_COMMAND", "false");
+            }
+            Auth::Ssh { key } => {
+                cmd.arg("-c").arg("credential.helper=");
+                cmd.env(
+                    "GIT_SSH_COMMAND",
+                    format!(
+                        "ssh -i {} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+                        quote(key)
+                    ),
+                );
+            }
+        }
+    }
+}
+
 /// Run one git in `dir` and hand back what it printed.
 ///
 /// Failure carries git's own words: `stderr` says what was wrong far better
@@ -105,6 +194,11 @@ pub fn run_within(dir: &Path, args: &[&str], limit: Duration) -> Result<String> 
 /// ...and with something to hand it on the way in. `git apply` reads the patch
 /// from here rather than from a file nobody asked us to write
 pub fn run_stdin(dir: &Path, args: &[&str], input: &str, limit: Duration) -> Result<String> {
+    run_as(dir, args, input, limit, &As::default())
+}
+
+/// ...as somebody in particular
+pub fn run_as(dir: &Path, args: &[&str], input: &str, limit: Duration, who: &As) -> Result<String> {
     if !dir.is_dir() {
         bail!(crate::i18n::tp(
             "err.git.no_folder",
@@ -112,13 +206,14 @@ pub fn run_stdin(dir: &Path, args: &[&str], input: &str, limit: Duration) -> Res
         ));
     }
     let mut cmd = std::process::Command::new("git");
-    cmd.arg("-C")
-        .arg(dir)
-        .args(args)
+    cmd.arg("-C").arg(dir);
+    who.apply(&mut cmd);
+    cmd.args(args)
         // Never sit waiting for a person who cannot see the prompt
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "")
         .env("SSH_ASKPASS", "")
+        .env("GCM_INTERACTIVE", "never")
         .stdin(if input.is_empty() { Stdio::null() } else { Stdio::piped() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -592,38 +687,83 @@ pub fn checkout(dir: &Path, name: &str) -> Result<()> {
 
 /// Bring the merge in. A conflict is not an error to hide: git stops, the files
 /// are marked, and the panel is about to list them
-pub fn merge(dir: &Path, name: &str) -> Result<String> {
+pub fn merge(dir: &Path, name: &str, who: &As) -> Result<String> {
     let name = name.trim();
     if name.is_empty() {
         bail!(crate::i18n::t("err.git.empty_branch"));
     }
-    run(dir, &["merge", "--no-edit", name])
+    // A merge can make a commit, and that commit carries a name
+    run_as(dir, &["merge", "--no-edit", name], "", LIMIT, who)
 }
 
-pub fn fetch(dir: &Path) -> Result<String> {
-    run_within(dir, &["fetch", "--prune"], NETWORK_LIMIT)
+/// Whether this account can reach this repository's remotes at all.
+///
+/// A token cannot sign in over SSH and a key cannot sign in over HTTPS. Asked
+/// before running rather than left to git, whose answer to either is a
+/// sentence about the network that sends somebody looking in the wrong place.
+/// Only when every remote is the other kind: a repository with both can still
+/// be reached
+fn fits(dir: &Path, who: &As) -> Result<()> {
+    let wants_ssh = match &who.auth {
+        Auth::Token { .. } => false,
+        Auth::Ssh { .. } => true,
+        Auth::Own | Auth::Sealed => return Ok(()),
+    };
+    let listed = run(dir, &["remote", "-v"]).unwrap_or_default();
+    let urls: Vec<&str> = listed.lines().filter_map(|l| l.split_whitespace().nth(1)).collect();
+    if urls.is_empty() || urls.iter().any(|u| is_ssh_url(u) == wants_ssh) {
+        return Ok(());
+    }
+    let name = who.account.clone().unwrap_or_default();
+    bail!(crate::i18n::tp(
+        if wants_ssh { "err.git.account.wants_token" } else { "err.git.account.wants_ssh" },
+        &[("name", &name)]
+    ))
 }
 
-pub fn pull(dir: &Path) -> Result<String> {
-    run_within(dir, &["pull"], NETWORK_LIMIT)
+/// Whether git would reach this remote over SSH: `ssh://…`, or the short
+/// `user@host:path` form, which has no scheme and a colon before any slash.
+/// A drive letter (`C:/…`) is a folder, not a server
+pub fn is_ssh_url(url: &str) -> bool {
+    let u = url.trim();
+    if let Some((scheme, _)) = u.split_once("://") {
+        return scheme.eq_ignore_ascii_case("ssh") || scheme.eq_ignore_ascii_case("git+ssh");
+    }
+    match (u.find(':'), u.find('/')) {
+        (Some(c), slash) => c > 1 && slash.is_none_or(|s| c < s),
+        _ => false,
+    }
+}
+
+pub fn fetch(dir: &Path, who: &As) -> Result<String> {
+    fits(dir, who)?;
+    run_as(dir, &["fetch", "--prune"], "", NETWORK_LIMIT, who)
+}
+
+pub fn pull(dir: &Path, who: &As) -> Result<String> {
+    fits(dir, who)?;
+    run_as(dir, &["pull"], "", NETWORK_LIMIT, who)
 }
 
 /// Send it. A branch made here has never been pushed, so the first push is the
 /// common one rather than the exception -- and answering "set an upstream and
 /// try again" to somebody who just pressed a button called Push is asking them
 /// to type the thing the button was for. The retry says out loud what it did
-pub fn push(dir: &Path) -> Result<String> {
-    match run_within(dir, &["push"], NETWORK_LIMIT) {
+pub fn push(dir: &Path, who: &As) -> Result<String> {
+    fits(dir, who)?;
+    match run_as(dir, &["push"], "", NETWORK_LIMIT, who) {
         Ok(out) => Ok(out),
         Err(first) => {
             let Some(here) = branch(dir)? else { return Err(first) };
             if !first.to_string().contains("--set-upstream") {
                 return Err(first);
             }
-            let said = run_within(
+            let said = run_as(
                 dir,
                 &["push", "--set-upstream", "origin", &here],
+                "",
                 NETWORK_LIMIT,
+                who,
             )?;
             Ok(format!(
                 "{}\n{said}",
@@ -663,6 +803,7 @@ pub fn commit(
     protect: &[String],
     allow_protected: bool,
     amend: bool,
+    who: &As,
 ) -> Result<String> {
     if message.trim().is_empty() {
         bail!(crate::i18n::t("err.git.empty_message"));
@@ -679,7 +820,7 @@ pub fn commit(
     if amend {
         args.push("--amend");
     }
-    run(dir, &args)?;
+    run_as(dir, &args, "", LIMIT, who)?;
     Ok(run(dir, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
 }
 
@@ -846,6 +987,99 @@ mod tests {
         Some(dir)
     }
 
+    /// What git's credential machinery hands out for a server, asked the way
+    /// git asks it before a fetch
+    fn credential_for(dir: &Path, host: &str, who: &As) -> Option<String> {
+        run_as(
+            dir,
+            &["credential", "fill"],
+            &format!("protocol=https\nhost={host}\n\n"),
+            LIMIT,
+            who,
+        )
+        .ok()
+    }
+
+    #[test]
+    fn a_token_account_answers_its_own_server_and_no_other() {
+        let Some(dir) = scratch_repo("token") else { return };
+        let who = As {
+            auth: Auth::Token {
+                host: "github.com".into(),
+                login: "someone".into(),
+                token: "tok$en 'with' \"quotes\"".into(),
+            },
+            ..Default::default()
+        };
+        let said = credential_for(&dir, "github.com", &who).expect("the token is handed to its server");
+        assert!(said.contains("username=someone"), "{said}");
+        assert!(said.contains("password=tok$en 'with' \"quotes\""), "the token arrives whole: {said}");
+        // Another server gets nothing, and with nobody to ask, git gives up
+        // rather than answering with the token or anything else
+        assert!(
+            credential_for(&dir, "gitlab.example", &who).is_none_or(|s| !s.contains("tok$en")),
+            "the token went to a server it is not for"
+        );
+    }
+
+    #[test]
+    fn a_sealed_git_has_no_credentials_at_all() {
+        let Some(dir) = scratch_repo("sealed") else { return };
+        // Whatever this machine has set up -- a credential manager, a store --
+        // is set aside, so nothing is handed out
+        let said = credential_for(&dir, "github.com", &As::sealed());
+        assert!(said.is_none_or(|s| !s.contains("password=")), "a credential came out of a sealed git");
+    }
+
+    #[test]
+    fn an_account_signs_its_commits() {
+        let Some(dir) = scratch_repo("identity") else { return };
+        std::fs::write(dir.join("a.txt"), "hello").unwrap();
+        stage(&dir, &["a.txt".to_string()]).unwrap();
+        let who = As {
+            name: Some("Work Name".into()),
+            email: Some("work@example.invalid".into()),
+            ..As::sealed()
+        };
+        commit(&dir, "first", &[], false, false, &who).unwrap();
+        let by = run(&dir, &["log", "-1", "--format=%an <%ae>"]).unwrap();
+        assert_eq!(by.trim(), "Work Name <work@example.invalid>");
+    }
+
+    #[test]
+    fn a_key_account_uses_that_key() {
+        let Some(dir) = scratch_repo("sshkey") else { return };
+        let key = dir.join("no such key");
+        let who = As { auth: Auth::Ssh { key: key.clone() }, ..Default::default() };
+        // Nothing listens on port 9 here, so it fails either way; what ssh
+        // says on the way is which key it was told to use
+        let err = run_as(&dir, &["ls-remote", "ssh://git@127.0.0.1:9/x.git"], "", LIMIT, &who)
+            .unwrap_err()
+            .to_string();
+        if err.contains("not found") && !err.contains("no such key") && err.contains("ssh") {
+            return; // no ssh on this machine
+        }
+        assert!(err.contains("no such key"), "ssh was not handed the key: {err}");
+    }
+
+    #[test]
+    fn the_wrong_kind_of_account_is_refused_before_it_runs() {
+        let Some(dir) = scratch_repo("fits") else { return };
+        run(&dir, &["remote", "add", "origin", "git@github.com:someone/thing.git"]).unwrap();
+        let token = As {
+            auth: Auth::Token { host: "github.com".into(), login: "x".into(), token: "t".into() },
+            account: Some("work".into()),
+            ..Default::default()
+        };
+        let err = fetch(&dir, &token).unwrap_err().to_string();
+        assert!(err.contains("work"), "the account is named: {err}");
+        assert!(is_ssh_url("git@github.com:someone/thing.git"));
+        assert!(is_ssh_url("ssh://git@host:22/x"));
+        assert!(!is_ssh_url("https://github.com/someone/thing.git"));
+        assert!(!is_ssh_url("C:/repos/thing"));
+        assert!(!is_ssh_url("/srv/repos/thing"));
+    }
+
     #[test]
     fn a_shared_branch_says_no_before_it_commits() {
         let Some(dir) = scratch_repo("protected") else { return };
@@ -854,13 +1088,13 @@ mod tests {
 
         // On main it refuses, and says which branch it is refusing about --
         // whoever catches this offers to make a branch instead
-        let refused = commit(&dir, "first", &guarded(), false, false).unwrap_err().to_string();
+        let refused = commit(&dir, "first", &guarded(), false, false, &As::default()).unwrap_err().to_string();
         assert!(refused.contains("main"), "the reason for refusing includes the branch name: {refused}");
         // Nothing was committed by the refusal
         assert!(log(&dir, 1).map(|l| l.is_empty()).unwrap_or(true));
 
         // ...and it goes through for someone who says they meant it
-        let hash = commit(&dir, "first", &guarded(), true, false).expect("it gets through when done knowingly");
+        let hash = commit(&dir, "first", &guarded(), true, false, &As::default()).expect("it gets through when done knowingly");
         assert!(!hash.is_empty());
         assert_eq!(log(&dir, 1).unwrap()[0].subject, "first");
 
@@ -868,7 +1102,7 @@ mod tests {
         run(&dir, &["checkout", "-q", "-b", "feature"]).unwrap();
         std::fs::write(dir.join("a.txt"), "hello again").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        commit(&dir, "second", &guarded(), false, false).expect("it does not stop on your own branch");
+        commit(&dir, "second", &guarded(), false, false, &As::default()).expect("it does not stop on your own branch");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -877,12 +1111,12 @@ mod tests {
         let Some(dir) = scratch_repo("branchnew") else { return };
         std::fs::write(dir.join("a.txt"), "one").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        commit(&dir, "start", &guarded(), true, false).unwrap();
+        commit(&dir, "start", &guarded(), true, false, &As::default()).unwrap();
 
         // Something staged, on a branch that will not take it
         std::fs::write(dir.join("a.txt"), "two").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        assert!(commit(&dir, "next", &guarded(), false, false).is_err());
+        assert!(commit(&dir, "next", &guarded(), false, false, &As::default()).is_err());
 
         // The offer: a branch, and the staged work still staged on it
         branch_create(&dir, "work/next").expect("a branch can be made");
@@ -890,7 +1124,7 @@ mod tests {
         let rows = status(&dir).unwrap();
         assert_eq!(rows.iter().find(|c| c.path == "a.txt").unwrap().index, 'M',
             "what is staged comes along when moving");
-        commit(&dir, "next", &guarded(), false, false).expect("it gets through on the branch moved to");
+        commit(&dir, "next", &guarded(), false, false, &As::default()).expect("it gets through on the branch moved to");
 
         assert!(branch_create(&dir, "  ").is_err(), "an empty name is refused");
         let _ = std::fs::remove_dir_all(&dir);
@@ -901,7 +1135,7 @@ mod tests {
         let Some(dir) = scratch_repo("status") else { return };
         std::fs::write(dir.join("kept.txt"), "one").unwrap();
         stage(&dir, &["kept.txt".to_string()]).unwrap();
-        commit(&dir, "start", &guarded(), true, false).unwrap();
+        commit(&dir, "start", &guarded(), true, false, &As::default()).unwrap();
 
         std::fs::write(dir.join("kept.txt"), "two").unwrap();
         std::fs::write(dir.join("fresh.txt"), "new").unwrap();
@@ -931,11 +1165,11 @@ mod tests {
         let Some(dir) = scratch_repo("history") else { return };
         std::fs::write(dir.join("a.txt"), "one").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        commit(&dir, "first", &guarded(), true, false).unwrap();
+        commit(&dir, "first", &guarded(), true, false, &As::default()).unwrap();
         std::fs::write(dir.join("a.txt"), "two").unwrap();
         std::fs::write(dir.join("b.txt"), "new").unwrap();
         stage(&dir, &["a.txt".to_string(), "b.txt".to_string()]).unwrap();
-        commit(&dir, "second\n\nwith a reason", &guarded(), true, false).unwrap();
+        commit(&dir, "second\n\nwith a reason", &guarded(), true, false, &As::default()).unwrap();
 
         let rows = graph(&dir, false, false, 10, None).unwrap();
         let commits: Vec<&Line> = rows.iter().filter(|r| !r.hash.is_empty()).collect();
@@ -967,7 +1201,7 @@ mod tests {
         let Some(dir) = scratch_repo("branches") else { return };
         std::fs::write(dir.join("a.txt"), "one").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        commit(&dir, "start", &guarded(), true, false).unwrap();
+        commit(&dir, "start", &guarded(), true, false, &As::default()).unwrap();
         branch_create(&dir, "side").unwrap();
 
         let list = branches(&dir).unwrap();
@@ -990,9 +1224,9 @@ mod tests {
         let Some(dir) = scratch_repo("amend") else { return };
         std::fs::write(dir.join("a.txt"), "one").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        commit(&dir, "frist", &guarded(), true, false).unwrap();
+        commit(&dir, "frist", &guarded(), true, false, &As::default()).unwrap();
 
-        commit(&dir, "first", &guarded(), true, true).expect("it can be rewritten");
+        commit(&dir, "first", &guarded(), true, true, &As::default()).expect("it can be rewritten");
         let log = log(&dir, 5).unwrap();
         assert_eq!(log.len(), 1, "the commit count does not grow");
         assert_eq!(log[0].subject, "first", "the reworded one is kept");
@@ -1037,7 +1271,7 @@ mod tests {
         let start = (1..=24).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
         std::fs::write(dir.join("f.txt"), format!("{start}\n")).unwrap();
         stage(&dir, &["f.txt".to_string()]).unwrap();
-        commit(&dir, "start", &guarded(), true, false).unwrap();
+        commit(&dir, "start", &guarded(), true, false, &As::default()).unwrap();
 
         // Two changes, far enough apart to be two hunks
         let edited = format!(
@@ -1069,17 +1303,17 @@ mod tests {
         let Some(dir) = scratch_repo("conflict") else { return };
         std::fs::write(dir.join("c.txt"), "base").unwrap();
         stage(&dir, &["c.txt".to_string()]).unwrap();
-        commit(&dir, "base", &guarded(), true, false).unwrap();
+        commit(&dir, "base", &guarded(), true, false, &As::default()).unwrap();
 
         run(&dir, &["checkout", "-q", "-b", "other"]).unwrap();
         std::fs::write(dir.join("c.txt"), "theirs").unwrap();
         stage(&dir, &["c.txt".to_string()]).unwrap();
-        commit(&dir, "theirs", &guarded(), false, false).unwrap();
+        commit(&dir, "theirs", &guarded(), false, false, &As::default()).unwrap();
 
         run(&dir, &["checkout", "-q", "main"]).unwrap();
         std::fs::write(dir.join("c.txt"), "ours").unwrap();
         stage(&dir, &["c.txt".to_string()]).unwrap();
-        commit(&dir, "ours", &guarded(), true, false).unwrap();
+        commit(&dir, "ours", &guarded(), true, false, &As::default()).unwrap();
 
         // The merge fails, which is the point: what matters is that the file
         // can then be found by name rather than by reading git's message

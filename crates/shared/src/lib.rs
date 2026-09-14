@@ -376,6 +376,11 @@ pub enum Ev {
         act: String,
         args: serde_json::Value,
     },
+    /// A git account was chosen in the menu at the top of the git column.
+    /// `panel` is what the column stands on, the same name `Git` carries: a
+    /// git tab chooses for itself, a tab in a folder chooses for that folder's
+    /// project. `account` is an account's name, `@pc`, or empty for none
+    GitAccount { panel: String, account: String },
     /// The git panel asking for something. `panel` is the surface's own name,
     /// which is how the folder it reports on is found; `act` is one of a short
     /// list the loop turns into a primitive call. The panel does not name
@@ -906,6 +911,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
+        },
+        Some("gitaccount") => Ev::GitAccount {
+            panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            account: v.get("account").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         // The git panel asking for a list, a diff, or a change (see `Ev::Git`).
         Some("git") => Ev::Git {

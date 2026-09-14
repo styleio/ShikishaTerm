@@ -2531,6 +2531,13 @@ pub struct Tab {
     /// one look at the whole machine and paying for that per tab would be
     /// paying several times for the same reply
     pub place: crate::repo::Place,
+    /// The git account the column beside this tab's folder signs in with: the
+    /// one its project chose. Filled in by the loop with the place, since both
+    /// are a look at the folder's repository
+    pub git_use: crate::config::GitUse,
+    /// The project that choice belongs to, by name. Absent for a folder whose
+    /// repository has no project written down yet
+    pub git_project: Option<String>,
     /// What this tab is costing the machine -- processor and memory across the
     /// agent and everything it started. Also filled in by the loop, from the
     /// same process-tree walk the ports come from
@@ -3061,6 +3068,8 @@ impl Tab {
             progress: None,
             pid,
             place: crate::repo::Place::default(),
+            git_use: Default::default(),
+            git_project: None,
             usage: crate::usage::Usage::default(),
             born: std::time::SystemTime::now(),
             // Look for it shortly: a CLI writes its record as the conversation

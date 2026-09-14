@@ -675,7 +675,12 @@ shikisha.http_raw("https://api.example.com/hook", '{"x":1}')
     "providers": {
       "work-azure": { "base_url": "https://….openai.azure.com/…", "api_key": "@provider/kaisha/work-azure" }
     },
-    "git": { "protect": ["main", "release/*"] }
+    "git": { "protect": ["main", "release/*"] },
+    "git_accounts": [
+      { "name": "work", "login": "me-at-work", "user_name": "山田 太郎", "user_email": "taro@example.com", "owners": ["my-company"] },
+      { "name": "home", "method": "ssh", "key": "C:/Users/me/.ssh/id_home" }
+    ],
+    "projects": [ { "name": "api", "at": "D:/src/api", "git_account": "work" } ]
   }
 ]
 ```
@@ -684,12 +689,12 @@ shikisha.http_raw("https://api.example.com/hook", '{"x":1}')
 暗号化して保存され、ファイルには名前だけが書かれます。新しいデスクを作るときは、
 今のデスクの設定をコピーして始めることもできます（キーも新しいデスク用にコピーされます）。
 
-GitHub のトークンもここには書きません。そのデスクの秘密情報に
-`github` という名前で入れます（設定ページにボタンがあります）。細かい権限を
-選べる方（fine-grained personal access token）で、そのデスクが扱う
-リポジトリだけを選んでください。**使うのはそのデスクのトークンだけです。**
-環境変数 `GITHUB_TOKEN` や `gh` のサインインは読みません（どのデスクにも同じ
-アカウントが使われてしまうため）。
+git アカウントのトークンもここには書きません。デスクの設定の「git アカウント」で
+入れると、`git/<デスクのid>/<アカウント名>` という名前で保存されます。
+**アカウントが自動で選ばれることはありません。** git 欄でサインインするアカウントは、
+プロジェクトが `git_account` で選び、git タブは自分で選びます。`"@pc"` は、この PC の
+git に設定済みのサインインを使うという選択です。プルリクエスト番号も同じアカウントで
+読みます。環境変数 `GITHUB_TOKEN` は読みません。
 
 ---
 
@@ -1012,14 +1017,16 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | `shikisha.git_branches(タブ)` | ブランチの一覧。`{name, current, protected}` |
 | `shikisha.git_checkout(タブ, "名前")` | そのブランチへ移る |
 | `shikisha.git_merge(タブ, "名前")` | そのブランチを取り込む。衝突したら止まり、`git_conflicts` に出る |
-| `shikisha.git_fetch(タブ)` / `shikisha.git_pull(タブ)` / `shikisha.git_push(タブ)` | サーバと話す。**返るまで他のことは止まります**（最大3分）。押しっぱなしにできる画面が要るなら、待ちは呼ぶ側で組むこと。`git_push` は一度も送っていないブランチなら upstream を付けて送り直し、その旨を返す |
+| `shikisha.git_fetch(タブ)` / `shikisha.git_pull(タブ)` / `shikisha.git_push(タブ)` | サーバと話す。**返るまで他のことは止まります**（最大3分）。押しっぱなしにできる画面が要るなら、待ちは呼ぶ側で組むこと。`git_push` は一度も送っていないブランチなら upstream を付けて送り直し、その旨を返す。そのタブに選ばれた git アカウント（下記）でサインインし、選ばれていなければ動かない |
 | `shikisha.git_hunks(タブ, {path=…, staged=…})` | 差分をまとまり（hunk）に切って返す。`{file, header, start, end, patch}`。`patch` はそれ自体が完結したパッチ |
 | `shikisha.git_apply(タブ, パッチ, {cached=…, reverse=…})` | パッチを当てる。`cached` で次のコミット側へ、`reverse` で逆向き（取り消し）。**hunk 単位のステージはこの2つの組み合わせ** |
 | `shikisha.git_stage(タブ, パス)` | 次のコミットに入れる。パスは文字列1つでも、テーブルで複数でも |
 | `shikisha.git_unstage(タブ, パス)` | 次のコミットから外す |
 | `shikisha.git_branch_create(タブ, "名前")` | ブランチを作って、そこへ移る。ステージしたものは持ったまま移るので、**共有ブランチで断られたときの行き先**になる |
 | `shikisha.git_commit(タブ, "メッセージ", opts)` | 入れたものをコミットし、短いハッシュを返す。**保護ブランチでは止まる**（新しいブランチを作るか、承知のうえなら `{allow_protected=true}`）。どのブランチを守るかは 設定 → 保護ブランチ（既定は `main` / `master`）で決まり、作業フォルダごとに変えられる |
-| `shikisha.git_run(タブ, "引数…")` | 任意の git を実行して、その出力を返す。**シェルは通りません**（`;` や `&&` は git の引数になって断られる） |
+| `shikisha.git_run(タブ, "引数…")` | 任意の git を実行して、その出力を返す。**シェルは通りません**（`;` や `&&` は git の引数になって断られる）。選ばれた git アカウントでサインインし、選ばれていなければ資格情報なしで動く |
+
+**サインインするアカウント。** git タブは、そのタブのページで選んだアカウントを使います。ほかのタブは、作業フォルダのプロジェクトが選んだアカウント（プロジェクトのページ、または git 欄の上のメニュー）を使います。アカウント自体はデスクごとに登録します（デスクの設定 → git アカウント）。HTTPS のトークンか SSH の鍵ファイルと、コミットに付く名前とメールを持ち、名前とメールは `git_commit` と `git_merge` でも使います。「この PC の git の設定を使う」もほかと同じ選択肢の一つで、git 自身の資格情報ヘルパーと鍵を使います。ターミナルで打った git には関係しません。
 
 **既定では、どれも人間だけが実行できます**（自動化の権限）。AI に開けるなら
 `git_status` / `git_diff` / `git_log` から。`git_run` を開けることは「git の全権を渡す」と

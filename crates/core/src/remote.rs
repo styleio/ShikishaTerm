@@ -167,6 +167,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // do on this PC by opening the same panel, and a phone that can hand an
         // AI a whole task can certainly stage a file
         Ev::Git { .. } => true,
+        // Choosing which of this desk's git accounts the column signs in with.
+        // The same person choosing on this PC's own git column; no credential
+        // travels, only the name of one already stored here
+        Ev::GitAccount { .. } => true,
         // The column's file list: reading the names in the folder the person
         // is working in, and searching them. The same folder the git panel
         // already shows the contents of, listed instead of diffed

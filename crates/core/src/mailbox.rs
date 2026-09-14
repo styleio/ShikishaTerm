@@ -123,6 +123,9 @@ pub struct Mailbox {
     pub run_luas: Vec<String>,
     /// What the git panel has asked for since the last drain: (panel, act, args)
     pub gits: Vec<(String, String, serde_json::Value)>,
+    /// Git accounts chosen in the menu at the top of the git column: (panel,
+    /// account)
+    pub git_accounts: Vec<(String, String)>,
     /// The same, for the transfer panel (this machine and a server)
     pub sftps: Vec<(String, String, serde_json::Value)>,
     /// The same, for the column's file list (one machine, one folder)
@@ -312,6 +315,10 @@ impl Mailbox {
     /// Takes what the git panel has asked for since the last drain
     pub fn take_gits(&mut self) -> Vec<(String, String, serde_json::Value)> {
         std::mem::take(&mut self.gits)
+    }
+    /// Takes the git accounts chosen in the git column since the last drain
+    pub fn take_git_accounts(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.git_accounts)
     }
     pub fn take_files(&mut self) -> Vec<(String, String, serde_json::Value)> {
         std::mem::take(&mut self.files)
