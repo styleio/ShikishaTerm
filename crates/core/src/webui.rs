@@ -1246,6 +1246,32 @@ fn handle(
         }
         // Runs `<cmd> --help` so the settings page can show a CLI's real flags.
         // The program is the first token of the tab's command.
+        // Which repository each of several folders is in, in one question. The
+        // settings tree groups a desk's folders into its projects before it can
+        // draw anything, and a round trip per folder drew the tree ungrouped
+        // first and then again. Read off git's own files, never by running git
+        ("POST", "/api/families") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let mut out = serde_json::Map::new();
+            for path in p.get("paths").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|v| v.as_str()) {
+                let at = std::path::Path::new(path.trim());
+                if at.as_os_str().is_empty() || out.contains_key(path) {
+                    continue;
+                }
+                let family = crate::repo::family_of(at);
+                out.insert(path.to_string(), serde_json::json!({
+                    "family": family.as_ref().map(|f| f.display().to_string()),
+                    "main": crate::repo::main_checkout(at).map(|m| m.display().to_string()),
+                    "cut": crate::repo::is_linked(at),
+                }));
+            }
+            req.respond(json_resp(serde_json::json!({ "families": out })))?;
+        }
         // Which project a folder belongs to, and whether its folder is one the
         // app made. The settings screen cannot work either out: both mean
         // looking at what git keeps behind the folder
@@ -1254,13 +1280,15 @@ fn handle(
                 .map(|c| percent_decode(&c))
                 .unwrap_or_default();
             let at = std::path::Path::new(at.trim());
+            // The desk the page is editing, since a project belongs to a desk
+            let desk = query_param(req.url(), "desk").map(|d| percent_decode(&d));
             // The project too, because the screen has to be able to say whose
             // setting it is looking at. A devcontainer belongs to a repository,
             // so a branch folder's page must point at the project rather than
             // offer to write one -- and the project's own page must offer it,
             // which is the half that was missing
             let named = crate::config::load()
-                .and_then(|c| c.project_of(at).map(|p| (p.name.clone(), p.at.clone())));
+                .and_then(|c| c.project_of(desk.as_deref(), at).map(|p| (p.name.clone(), p.at.clone())));
             let resp = match at.as_os_str().is_empty() {
                 true => serde_json::json!({
                     "family": null, "cut": false, "branch": null,
@@ -1348,9 +1376,10 @@ fn handle(
             // What this project has been told to run where it cannot have the
             // file. Read from the settings on disk rather than from the page,
             // which is editing a copy it has not saved yet
+            let desk = query_param(req.url(), "desk").map(|d| percent_decode(&d));
             let plain = crate::config::load()
                 .as_ref()
-                .and_then(|c| c.project_of(at).and_then(|p| p.setup.clone()))
+                .and_then(|c| c.project_of(desk.as_deref(), at).and_then(|p| p.setup.clone()))
                 .unwrap_or_default();
             req.respond(json_resp(
                 serde_json::json!({ "has": has, "offer": offer, "plain": plain }),
@@ -2971,10 +3000,19 @@ const PAGE: &str = r##"<!doctype html>
    justify-content:center; color:var(--muted); font-size:10px; cursor:pointer;
    border-radius:var(--r-chip); }
  .twist:hover { background:var(--panel2); color:var(--text); }
+ /* Its press reaches a little past the glyph on every side, so a press meant to
+    fold never lands on the row and opens its page instead */
+ .twist { position:relative; }
+ .twist::before { content:""; position:absolute; inset:-6px -4px; }
  /* A folder is the level people are looking for, so it keeps its own weight
     while the tabs under it stay quiet */
  .navfolder { color:var(--text); font-size:12.5px; }
  .navfolder .sub { font-size:11px; }
+ /* A project names the repository its folders are in: the one row in the tree
+    that names a thing, so it carries the weight (styleguide §3) */
+ .navproject { color:var(--text); font-size:12.5px; font-weight:600; }
+ .navproject .sub { font-size:11px; font-weight:400; }
+ .projmark { width:8px; height:8px; border-radius:2px; background:var(--dim); }
  .navtab.child .nm { opacity:.9; }
  .navadd { color:var(--muted); font-size:12.5px; }
 
@@ -3531,7 +3569,8 @@ let desks = [];            // Desks and tabs
 let sel = {desk:0, tab:null, global:true, section:"basic"};
 // Whether a desk's own settings are what is open. They are what a desk
 // with neither a folder nor a tab picked shows
-const inDeskPlace = () => !sel.global && sel.tab == null && (sel.grp ?? null) === null;
+const inDeskPlace = () => !sel.global && sel.tab == null && (sel.grp ?? null) === null
+  && (sel.proj ?? null) === null;
 // Leave a settings place for the tree of a desk: its first folder, the thing
 // the tree is for. A desk with no folder has nothing else to show but its
 // settings, and stays there
@@ -4386,21 +4425,57 @@ function renderNav() {
     // Laid out as a list first and drawn second, because an elbow can only be
     // drawn once it is known what comes after it
     const rows = [];
-    (desk.folders || []).forEach((g, gi) => {
-      rows.push({depth:1, kind:"folder", g, gi});
+    // A folder and its tabs, a step in when the folder stands inside a project
+    const folderRows = (gi, base) => {
+      const g = desk.folders[gi];
+      rows.push({depth:base, kind:"folder", g, gi});
       // A folder that is folded keeps its tabs to itself. What it is holding
       // is still said by its mark, which is why the mark is the way to fold it
       if (folderShut.has(wi + ":" + gi)) return;
       (desk.tabs || []).forEach((t, ti) => {
         if ((t.group || 0) !== gi) return;
-        rows.push({depth: t.depth ? 3 : 2, kind:"tab", t, ti, gi});
+        rows.push({depth: base + (t.depth ? 2 : 1), kind:"tab", t, ti, gi});
       });
-      rows.push({depth:2, kind:"addtab", gi});
-    });
-    rows.push({depth:1, kind:"addfolder"});
+      rows.push({depth:base + 1, kind:"addtab", gi});
+    };
+    // The desk's projects first, each with the folders of its repository --
+    // its own checkout and its worktrees side by side -- then the folders that
+    // are in no repository, then the way to add a project
+    const {projects, loose} = deskProjects(desk);
+    for (const p of projects) {
+      rows.push({depth:1, kind:"project", p});
+      if (projShut.has(wi + ":" + p.key)) continue;
+      p.folders.forEach(gi => folderRows(gi, 2));
+      rows.push({depth:2, kind:"addfolder", p});
+    }
+    loose.forEach(gi => folderRows(gi, 1));
+    rows.push({depth:1, kind:"addfolder", p:null});
+    rows.push({depth:1, kind:"addproject"});
     const rails = railsFor(rows);
     rows.forEach((r, i) => {
-      if (r.kind === "folder") {
+      if (r.kind === "project") {
+        const key = wi + ":" + r.p.key;
+        const shut = projShut.has(key);
+        const twist = foldCaret(!shut, () => {
+          if (shut) projShut.delete(key); else projShut.add(key);
+          render();
+        });
+        twist.title = shut ? T["settings.project.unfold"] : T["settings.project.fold"];
+        nav.append(treeRow(rails[i], [twist, projectMark()],
+          {class:"navitem navproject" + (!sel.global && sel.proj === r.p.key && sel.grp == null ? " sel" : ""),
+           onclick:() => { sel = {desk:wi, proj:r.p.key, grp:null, tab:null, global:false}; render(); }},
+          el("span", {}, r.p.name),
+          el("span", {class:"sub"}, r.p.at || T["settings.project.no_at"])));
+      } else if (r.kind === "addproject") {
+        nav.append(treeRow(rails[i], [null, null], {class:"navitem navadd",
+          onclick:() => {
+            desk.projects = desk.projects || [];
+            const name = uniqueProjectName(desk, T["settings.project.new_name"]);
+            desk.projects.push({name});
+            sel = {desk:wi, proj:"p:" + name, grp:null, tab:null, global:false};
+            render(); refreshSave();
+          }}, T["settings.project.add"]));
+      } else if (r.kind === "folder") {
         const key = wi + ":" + r.gi;
         const shut = folderShut.has(key);
         const twist = foldCaret(!shut, () => {
@@ -4427,15 +4502,108 @@ function renderNav() {
             render();
           }}, T["settings.tab.add"]));
       } else {
+        // Inside a project the new folder is that project's from the start
         nav.append(treeRow(rails[i], [null, null], {class:"navitem navadd",
           onclick:() => {
-            (desk.folders = desk.folders || []).push({name:"", id:"", cwd:""});
+            const g = {name:"", id:"", cwd:""};
+            if (r.p) g.project = ensureProject(desk, r.p).name;
+            (desk.folders = desk.folders || []).push(g);
             sel = {desk:wi, grp:desk.folders.length - 1, tab:null, global:false};
             render(); refreshSave();
           }}, T["settings.group.add"]));
       }
     });
   });
+}
+
+// Projects put away in the tree, the same way folders are
+const projShut = new Set();
+
+// A project, drawn: a filled square, the mark the board gives a repository
+function projectMark() {
+  return el("span", {class:"mark"}, el("span", {class:"projmark"}));
+}
+
+// Which repository each folder is in, as the app last said: path -> {family,
+// main, cut}. Asked in one go (see /api/families) and kept for as long as the
+// page is open; a path not in here yet is asked for, and the tree drawn again
+let FAMILIES = {};
+const familiesAsked = new Set();
+let familiesWant = new Set(), familiesTimer = 0;
+function askFamilies(paths) {
+  for (const p of paths.map(x => (x || "").trim())) {
+    if (p && !familiesAsked.has(p)) familiesWant.add(p);
+  }
+  if (!familiesWant.size) return;
+  // Gathered for a moment, so a path being typed into a field is asked about
+  // once it has settled rather than once per key
+  clearTimeout(familiesTimer);
+  familiesTimer = setTimeout(() => {
+    const want = [...familiesWant];
+    familiesWant = new Set();
+    want.forEach(p => familiesAsked.add(p));
+    settingsApi("/api/families", {paths: want}).then(j => {
+      Object.assign(FAMILIES, (j && j.families) || {});
+      // Only the tree is redrawn while somebody is typing on a page; a page
+      // redrawn under the cursor would take the field away mid-word. A project's
+      // own page is drawn from these answers, so that one is redrawn whole
+      const typing = document.activeElement && ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
+      if ((sel.proj ?? null) !== null && !typing) render(); else renderNav();
+    }).catch(() => {});
+  }, 250);
+}
+const familyAt = path => (FAMILIES[(path || "").trim()] || {}).family || null;
+
+// A desk's folders sorted into its projects.
+//
+// A folder belongs to the project it names, and failing that to the project
+// whose own checkout is in the same repository. A repository with folders here
+// and no project written down yet still shows as one -- named after its own
+// checkout -- and is written into the settings the first time anything about
+// it is changed. A folder in no repository stands on its own.
+// Returns {projects: [{key, name, at, entry, family, folders:[gi]}], loose:[gi]}
+function deskProjects(desk) {
+  const folders = desk.folders || [];
+  const entries = desk.projects || [];
+  askFamilies(folders.map(g => g.cwd).concat(entries.map(p => p.at)));
+  const projects = entries.map(p => ({key:"p:" + p.name, name:p.name, at:p.at || "",
+    entry:p, family:familyAt(p.at), folders:[]}));
+  const loose = [];
+  folders.forEach((g, gi) => {
+    const said = (g.project || "").trim();
+    let home = said ? projects.find(p => p.name === said) : null;
+    const fam = familyAt(g.cwd);
+    if (!home && fam) home = projects.find(p => p.family === fam);
+    if (!home && fam) {
+      const main = (FAMILIES[(g.cwd || "").trim()] || {}).main || g.cwd;
+      home = {key:"f:" + fam, name:leafName(main), at:main, entry:null, family:fam, folders:[]};
+      projects.push(home);
+    }
+    if (home) home.folders.push(gi); else loose.push(gi);
+  });
+  return {projects, loose};
+}
+const leafName = p => ((p || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop()) || "project";
+function uniqueProjectName(desk, base) {
+  const taken = new Set((desk.projects || []).map(p => p.name));
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) if (!taken.has(base + " " + n)) return base + " " + n;
+}
+// The written entry for a project in the tree, writing it now if it was only
+// worked out from git -- and naming it on its folders, so the tie survives a
+// folder being renamed or moved
+function ensureProject(desk, p) {
+  desk.projects = desk.projects || [];
+  if (!p.entry) {
+    p.entry = {name: uniqueProjectName(desk, p.name)};
+    if ((p.at || "").trim()) p.entry.at = p.at.trim();
+    desk.projects.push(p.entry);
+  }
+  for (const gi of p.folders) {
+    const g = desk.folders[gi];
+    if (g && !(g.project || "").trim()) g.project = p.entry.name;
+  }
+  return p.entry;
 }
 
 const newTab = (o = {}) => Object.assign(
@@ -4954,6 +5122,10 @@ function crumbParts() {
   const name = desk.name || T["settings.tab.unnamed"];
   const g = (desk.folders || [])[sel.grp];
   if (sel.tab === null) {
+    if (!g && (sel.proj ?? null) !== null) {
+      const p = deskProjects(desk).projects.find(x => x.key === sel.proj);
+      return [name, p ? p.name : ""];
+    }
     if (!g) {
       const s = deskSections(desk).find(x => x.id === sel.dsection);
       return [name, s ? s.label : T["settings.dsec.enter"]];
@@ -5077,6 +5249,11 @@ function renderDetail() {
   const desk = desks[sel.desk];
   if (!desk) return;
   if (sel.tab === null) {
+    if ((sel.grp ?? null) === null && (sel.proj ?? null) !== null) {
+      const p = deskProjects(desk).projects.find(x => x.key === sel.proj);
+      if (!p) { sel.proj = null; toTree(sel.desk); return renderDetail(); }
+      return d.append(projectPane(desk, p));
+    }
     if (sel.grp === null || sel.grp === undefined) {
       const secs = deskSections(desk);
       const sec = secs.find(s => s.id === sel.dsection) || secs[0];
@@ -7564,20 +7741,19 @@ function folderPane(desk, g, gi) {
     el("span", {class:"hint"}, T["settings.group.delete.hint"]));
   box.append(buttons);
 
-  familyOf(g.cwd).then(where => {
+  familyOf(g.cwd, desk).then(where => {
     paint(where && where.family);
     if (!where) return;
-    // A devcontainer is written into the repository, so it is offered in one
-    // place: the project's own checkout. It used to be offered on every
-    // branch's page instead -- three folders of one project meant three places
-    // to change one fact about that project, and the project's own page, where
-    // somebody would look first, did not mention it at all
-    if (where.family && !where.cut) box.insertBefore(envCard(g), buttons);
+    // A devcontainer and a setup belong to the repository, so they are offered
+    // in one place: the project's own page. Every folder of the project -- its
+    // own checkout and each worktree -- points there rather than carrying a
+    // copy, which would be several places to change one fact
+    const home = deskProjects(desk).projects.find(p => p.folders.includes(gi));
+    if (home) box.insertBefore(elsewhereCard(desk, home), buttons);
     // Throwing a folder away is only for a branch: the project's own is never
     // on the table
     if (!where.cut) return;
     if (where.branch) box.insertBefore(renameCard(g, where.branch), buttons);
-    box.insertBefore(elsewhereCard(where), buttons);
     buttons.append(el("button", {class:"danger", onclick: async () => {
       if (!guard()) return;
       if (!await confirmAction(fill(T["settings.group.discard.sure"], {name: folderLabel(g, gi)}), T["settings.group.discard"])) return;
@@ -7605,19 +7781,22 @@ function folderPane(desk, g, gi) {
 // Not silence: a person who came here to set up the environment would search
 // the page, find nothing, and conclude the app cannot do it. One line naming
 // the folder that can is the difference between "not here" and "not possible"
-function elsewhereCard(where) {
-  const at = where.project_at || "";
+function elsewhereCard(desk, p) {
   return card(T["settings.group.env"],
-    el("div", {class:"hint"}, where.project
-      ? fill(T["settings.group.env.owned"], {name: where.project})
-      : T["settings.group.env.owned_unnamed"]),
-    at ? el("div", {class:"realcmd"}, el("code", {class:"mono"}, at)) : null);
+    el("div", {class:"hint"}, fill(T["settings.group.env.owned"], {name: p.name})),
+    el("div", {class:"row"},
+      el("button", {onclick:() => { sel = {desk:sel.desk, proj:p.key, grp:null, tab:null, global:false}; render(); }},
+        fill(T["settings.project.open"], {name: p.name}))));
 }
 
-function envCard(g) {
+function envCard(desk, p) {
   const box = el("div");
   box.hidden = true;
-  fetch("/api/devcontainer?path=" + encodeURIComponent(g.cwd || ""), {headers:{"X-Token":TOKEN}})
+  // Read from the project's own checkout; the folder the page stands for here
+  // is that checkout, named the way the rest of this card expects
+  const g = {cwd: p.at || ""};
+  fetch("/api/devcontainer?path=" + encodeURIComponent(g.cwd) + "&desk=" + encodeURIComponent(desk.id || ""),
+        {headers:{"X-Token":TOKEN}})
     .then(r => r.json())
     .then(said => {
       box.hidden = false;
@@ -7639,7 +7818,7 @@ function envCard(g) {
         box.append(card(T["settings.group.env"],
           el("div", {class:"hint"}, T["settings.group.env.none"]),
           el("div", {class:"hint"}, T["settings.group.env.nothing"])));
-        box.append(plainSetupCard(g, (said && said.plain) || ""));
+        box.append(plainSetupCard(desk, p, (said && said.plain) || ""));
         return;
       }
       const keep = el("button", {}, T["settings.group.env.keep"]);
@@ -7653,7 +7832,7 @@ function envCard(g) {
         // there rather than what was offered a moment ago
         box.textContent = "";
         box.hidden = true;
-        box.append(envCard(g));
+        box.append(envCard(desk, p));
       });
       box.append(card(T["settings.group.env"],
         el("div", {class:"hint"}, T["settings.group.env.none"]),
@@ -7661,7 +7840,7 @@ function envCard(g) {
         el("div", {class:"realcmd"}, el("code", {class:"mono"}, said.offer.json)),
         el("div", {class:"hint"}, fill(T["settings.group.env.why"], {why: (said.offer.why || []).join(", ")})),
         el("div", {class:"row"}, keep)));
-      box.append(plainSetupCard(g, said.plain || ""));
+      box.append(plainSetupCard(desk, p, said.plain || ""));
     })
     .catch(() => {});
   return box;
@@ -7678,15 +7857,15 @@ function envCard(g) {
 //
 // Several lines, because a setup is usually several commands and a single
 // field would have people joining them with && to fit.
-function plainSetupCard(g, current_setup) {
-  const name = projectNameOf(g);
+function plainSetupCard(desk, p, current_setup) {
   const box = el("textarea", {rows:"3", class:"mono",
     placeholder:T["settings.project.setup.ph"], style:"width:100%"});
-  box.value = current_setup || "";
+  // What is on the page wins over what the settings file said, once edited
+  box.value = (p.entry && typeof p.entry.setup === "string") ? p.entry.setup : (current_setup || "");
   box.addEventListener("input", () => {
-    const p = projectEntry(name, g);
-    const v = box.value.trim();
-    if (v) p.setup = box.value; else delete p.setup;
+    const e = ensureProject(desk, p);
+    if (box.value.trim()) e.setup = box.value; else delete e.setup;
+    sel.proj = "p:" + e.name;
     refreshSave();
   });
   return card(T["settings.project.setup"],
@@ -7694,30 +7873,75 @@ function plainSetupCard(g, current_setup) {
     box);
 }
 
-// What this project is called in the settings, making the entry if this is the
-// first thing anybody has said about it. A project is named after the folder
-// its own checkout sits in, which is the name a person would use anyway
-function projectNameOf(g) {
-  const said = (g.project || "").trim();
-  if (said) return said;
-  const at = (g.cwd || "").replace(/[\\/]+$/, "");
-  return at.split(/[\\/]/).pop() || "project";
-}
-function projectEntry(name, g) {
-  current.projects = current.projects || [];
-  let p = current.projects.find(x => (x.name || "").trim() === name);
-  if (!p) {
-    p = {name};
-    current.projects.push(p);
+// A project's own page: what it is called, where its own checkout is, the
+// folders that are part of it, and the settings that belong to the repository
+// rather than to any one folder of it. The one place those are offered, so a
+// project's worktrees never each carry a copy
+function projectPane(desk, p) {
+  const box = el("div");
+  const nameIn = el("input", {type:"text", value:p.name, style:"width:280px"});
+  nameIn.addEventListener("change", () => {
+    const to = nameIn.value.trim();
+    if (!to || to === p.name) { nameIn.value = p.name; return; }
+    if ((desk.projects || []).some(x => x.name === to)) {
+      toast(T["settings.project.name_dup"], true); nameIn.value = p.name; return;
+    }
+    const e = ensureProject(desk, p);
+    const was = e.name;
+    e.name = to;
+    // The folders that named it follow the new name
+    for (const g of desk.folders || []) if ((g.project || "").trim() === was) g.project = to;
+    sel.proj = "p:" + to;
+    refreshSave(); render();
+  });
+  const atIn = el("input", {type:"text", class:"mono grow", value:p.at || "",
+    placeholder:T["settings.project.at.ph"]});
+  atIn.addEventListener("change", () => {
+    const e = ensureProject(desk, p);
+    if (atIn.value.trim()) e.at = atIn.value.trim(); else delete e.at;
+    askFamilies([e.at]);
+    sel.proj = "p:" + e.name;
+    refreshSave(); render();
+  });
+  box.append(card(T["settings.project.title"],
+    row(T["settings.project.name"], nameIn),
+    row(T["settings.project.at"], atIn,
+      el("span", {class:"hint"}, T["settings.project.at.hint"])),
+    row(T["settings.project.repo"],
+      el("span", {class:"hint mono"}, p.family || T["settings.project.repo.none"])),
+    p.entry ? null : el("div", {class:"hint"}, T["settings.project.inferred"])));
+
+  // Its folders, as rows that open them
+  const rows = el("div", {class:"rows"});
+  for (const gi of p.folders) {
+    const g = desk.folders[gi];
+    const fam = FAMILIES[(g.cwd || "").trim()] || {};
+    rows.append(el("div", {class:"listrow secretrow", onclick:() => { sel = {desk:sel.desk, grp:gi, tab:null, global:false}; render(); }},
+      el("span", {class:"secretname"}, folderLabel(g, gi)),
+      el("span", {class:"hint mono secretdesc"}, g.cwd || T["settings.group.folder.ph"]),
+      el("span", {class:"hint"}, fam.cut ? T["settings.project.worktree"] : T["settings.project.checkout"]),
+      el("span", {class:"go"}, "›")));
   }
-  // Where its own checkout is, so the project's worktrees -- folders that do
-  // not say which project they are in -- are still found to be part of it.
-  // Only asked of the checkout's own page, and a written answer is kept
-  if (!(p.at || "").trim() && (g.cwd || "").trim()) p.at = g.cwd.trim();
-  // The folder says which project it is, so the tie survives a rename of the
-  // folder and a second clone somewhere else
-  if (!(g.project || "").trim()) g.project = name;
-  return p;
+  box.append(card(T["settings.project.folders"],
+    p.folders.length ? rows : el("div", {class:"hint"}, T["settings.project.folders.none"])));
+
+  // The environment and setup of the repository, read from its own checkout
+  if ((p.at || "").trim()) box.append(envCard(desk, p));
+
+  if (p.entry) {
+    box.append(el("div", {class:"row"},
+      el("button", {class:"danger", onclick: async () => {
+        if (!await confirmAction(fill(T["settings.project.delete_confirm"], {name: p.name}), T["settings.project.delete"])) return;
+        desk.projects = (desk.projects || []).filter(x => x !== p.entry);
+        // The folders stay; they are only no longer tied to this name
+        for (const g of desk.folders || []) if ((g.project || "").trim() === p.name) delete g.project;
+        sel = {desk:sel.desk, grp:null, tab:null, global:false};
+        toTree(sel.desk);
+        refreshSave(); render();
+      }}, T["settings.project.delete"]),
+      el("span", {class:"hint"}, T["settings.project.delete.hint"])));
+  }
+  return box;
 }
 
 // Calling this folder's branch something else.
@@ -7780,10 +8004,11 @@ function renameCard(g, branch) {
 
 // Which project a folder belongs to, as the app sees it. Answered by the app
 // because it means looking at what git shares behind the folder
-async function familyOf(cwd) {
+async function familyOf(cwd, desk) {
   if (!(cwd || "").trim()) return null;
   try {
-    return await fetch("/api/family?path=" + encodeURIComponent(cwd),
+    return await fetch("/api/family?path=" + encodeURIComponent(cwd)
+                       + "&desk=" + encodeURIComponent((desk && desk.id) || ""),
                        {headers:{"X-Token":TOKEN}}).then(r => r.json());
   } catch (e) { return null; }
 }
@@ -9401,6 +9626,9 @@ async function load() {
                  capabilities: isObj(w.capabilities) ? w.capabilities : {},
                  automation_permissions: isObj(w.automation_permissions) ? w.automation_permissions : {},
                  git: isObj(w.git) ? w.git : {},
+                 // This desk's own projects (the same repository in another
+                 // desk is another project there)
+                 projects: Array.isArray(w.projects) ? w.projects : [],
                  // The assistant AI this desk agreed to send pictures to, by name
                  send_pictures_to: (w.send_pictures_to || "").trim(),
                  stops: Array.isArray(w.stops) ? w.stops : [],
@@ -9513,7 +9741,7 @@ function payload() {
   if (out.remote && !out.remote.enabled && !out.remote.allow_public) delete out.remote;
   // Where these used to be written for the whole app. They are each desk's
   // now, and a copy left up here would read as an answer that still applies
-  for (const k of ["notify", "primary_notify", "providers", "capabilities", "automation_permissions", "git"]) delete out[k];
+  for (const k of ["notify", "primary_notify", "providers", "capabilities", "automation_permissions", "git", "projects"]) delete out[k];
   delete out.lua; delete out.tabs;
 
   // A group is written with its own tabs nested back under it. Its name and id
@@ -9584,6 +9812,10 @@ function payload() {
     if (some(w.capabilities)) o.capabilities = w.capabilities;
     if (some(w.automation_permissions)) o.automation_permissions = w.automation_permissions;
     if (some(w.git)) o.git = w.git;
+    // Its projects, each with a name; an entry left without one is not one
+    const projs = (w.projects || []).filter(p => p && (p.name || "").trim())
+      .map(p => { const c = Object.assign({}, p); for (const k of ["at", "setup"]) if (!(c[k] || "").trim()) delete c[k]; return c; });
+    if (projs.length) o.projects = projs;
     if ((w.send_pictures_to || "").trim()) o.send_pictures_to = w.send_pictures_to.trim();
     // Stop conditions (judge). Already written into the file for a file-referenced desk, so don't duplicate it here
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
@@ -10328,34 +10560,30 @@ mod tests {
     }
     use super::*;
 
-    /// A repository's own settings are offered in exactly one place.
+    /// A repository's own settings are offered in exactly one place: the
+    /// project's page.
     ///
-    /// The devcontainer is written into the repository, so three folders of
-    /// one project must not each offer to write it -- that is three places to
-    /// change one fact, and the last one pressed wins. It used to be offered
-    /// only on a branch's page, which had both halves of the mistake: the
-    /// project's own page, where a person looks first, said nothing at all.
+    /// The devcontainer and the setup belong to the repository, so the folders
+    /// of one project -- its own checkout and each worktree -- must not each
+    /// offer them; that is several places to change one fact, and the last one
+    /// pressed wins. Every folder page points at the project instead.
     #[test]
     fn the_repositorys_own_settings_are_offered_where_the_repository_is() {
-        // Offered on the project's own checkout: in a repository, not cut
         assert!(
-            PAGE.contains("if (where.family && !where.cut) box.insertBefore(envCard(g), buttons);"),
-            "the devcontainer card does not show on the original checkout's page"
-        );
-        // A branch's page points at it instead of offering a second copy
-        assert!(
-            PAGE.contains("box.insertBefore(elsewhereCard(where), buttons);"),
-            "a branch's page does not say where this is set"
+            PAGE.contains("if ((p.at || \"\").trim()) box.append(envCard(desk, p));"),
+            "the devcontainer card is not on the project's page"
         );
         assert!(
-            !PAGE.contains("if (!where || !where.cut) return;"),
-            "a branch-only gate is still there, and the original checkout is turned away"
+            PAGE.contains("if (home) box.insertBefore(elsewhereCard(desk, home), buttons);"),
+            "a folder's page does not point at its project"
         );
-        // And the screen is told whose it is, which it cannot work out itself
         assert!(
-            PAGE.contains("where.project"),
-            "the screen does not receive the project's name"
+            !PAGE.contains("box.insertBefore(envCard("),
+            "a folder page still offers the repository's settings itself"
         );
+        // Projects are a desk's own, and the page asks about them by desk
+        assert!(PAGE.contains("projects: Array.isArray(w.projects) ? w.projects : [],"));
+        assert!(PAGE.contains("\"&desk=\" + encodeURIComponent(desk.id || \"\")"));
     }
 
     /// Every trigger this screen offers is a trigger that actually fires.

@@ -44,20 +44,19 @@ pub struct ProjectSpec {
     pub setup: Option<String>,
 }
 
-impl Config {
-    /// The project a folder belongs to, when the settings say.
+impl Desk {
+    /// The project one of this desk's folders belongs to.
     ///
-    /// By what the folder wrote down, and failing that by which project's own
-    /// checkout this folder shares a repository with -- the inference that was
-    /// the only answer before, kept so that a settings file which has never
-    /// heard of projects behaves exactly as it did.
+    /// Asked of a desk, never of the whole file: the same repository can be a
+    /// project in the work desk and another in the personal one, each with its
+    /// own setup, and a setting changed from one must not reach the other. By
+    /// what the folder wrote down, and failing that by which of this desk's
+    /// projects has its own checkout in the same repository.
     pub fn project_of(&self, cwd: &std::path::Path) -> Option<&ProjectSpec> {
         let named = self
-            .desks
+            .folders
             .iter()
-            .flat_map(|w| w.folders.iter())
-            .chain(self.folders.iter())
-            .find(|f| f.cwd.as_deref().map(std::path::Path::new) == Some(cwd))
+            .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, cwd)))
             .and_then(|f| f.project.as_deref())
             .map(str::trim)
             .filter(|p| !p.is_empty());
@@ -72,6 +71,21 @@ impl Config {
                 .and_then(crate::repo::family_of)
                 .is_some_and(|f| f == family)
         })
+    }
+}
+
+impl Config {
+    /// The project a folder belongs to, on the desk named by `desk_id`. With no
+    /// desk named, the first desk that holds a folder at that place -- which is
+    /// only right for a caller that has no desk to name, so the ones that do
+    /// name it
+    pub fn project_of(&self, desk_id: Option<&str>, cwd: &std::path::Path) -> Option<ProjectSpec> {
+        let (desks, _) = self.resolve_desks();
+        let here = desks.iter().find(|d| match desk_id {
+            Some(id) => d.id == id,
+            None => d.folders.iter().any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, cwd))),
+        })?;
+        here.project_of(cwd).cloned()
     }
 }
 
@@ -122,10 +136,7 @@ impl HostSpec {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Config {
-    /// The repositories worked on here. Empty until something is written down,
-    /// and everything keeps working on inference while it is
-    #[serde(default)]
-    pub projects: Vec<ProjectSpec>,
+    // The projects are not here: each desk keeps its own (`DeskConfig::projects`)
     /// Machines that are not this one. Empty on every install until somebody
     /// adds one, and the picker says "this PC" and nothing else until then
     #[serde(default)]
@@ -1489,6 +1500,13 @@ pub struct DeskSpec {
     /// desk
     #[serde(default)]
     pub git: GitSpec,
+    /// The repositories worked on in this desk. This desk's own: the same
+    /// repository in another desk is another project there, with its own
+    /// setup, so a change made from one desk never reaches the other.
+    /// Empty until something is written down, and folders are still matched to
+    /// a repository by asking git while it is
+    #[serde(default)]
+    pub projects: Vec<ProjectSpec>,
     /// The assistant AI this desk agreed to hand pictures to, by name
     /// ("claude", "codex", "gemini"): the part of the screen framed for the
     /// AI tools. Unset is no.
@@ -2109,6 +2127,8 @@ pub struct Desk {
     /// What git does here. Its `protect` has already been handed to the
     /// folders, which is where anything asks about it
     pub git: GitSpec,
+    /// This desk's projects (see [`Desk::project_of`])
+    pub projects: Vec<ProjectSpec>,
     /// The assistant AI this desk agreed to hand pictures to (see
     /// [`DeskSpec::send_pictures_to`])
     pub send_pictures_to: Option<String>,
@@ -3194,6 +3214,7 @@ impl Config {
                     providers: Default::default(),
                     capabilities: Default::default(),
                     automation_permissions: Default::default(),
+                    projects: Vec::new(),
                     git,
                     send_pictures_to: None,
                 });
@@ -3270,6 +3291,7 @@ impl Config {
                 capabilities: desk.capabilities.clone(),
                 automation_permissions: desk.automation_permissions.clone(),
                 git,
+                projects: desk.projects.clone(),
                 send_pictures_to: desk.send_pictures_to.as_deref().and_then(one_name),
             });
         }
