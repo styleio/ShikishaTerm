@@ -93,6 +93,29 @@ pub struct ProfileFile {
     /// answer for a shell, where a Ctrl+C nobody asked for can end a build
     #[serde(default)]
     pub interrupt: Vec<String>,
+    /// Where the person reads how to install this CLI, for a tab that could
+    /// not start because it is not on this PC. The maker's own page: this app
+    /// does not install anybody's program for them
+    #[serde(default)]
+    pub install_url: Option<String>,
+}
+
+/// Where to read how to install the program a command starts, when a profile
+/// knows it
+pub fn install_url_for(prog: &str) -> Option<String> {
+    let leaf = std::path::Path::new(prog.trim())
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if leaf.is_empty() {
+        return None;
+    }
+    files()
+        .into_iter()
+        .find(|pf| pf.command_match.iter().any(|m| m.trim().eq_ignore_ascii_case(&leaf)))
+        .and_then(|pf| pf.install_url)
+        .map(|u| u.trim().to_string())
+        .filter(|u| u.starts_with("https://"))
 }
 
 /// The bytes a list of key names stands for, in order.

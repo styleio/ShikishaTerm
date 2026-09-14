@@ -1,5 +1,6 @@
 {
   "name": "Claude Code",
+  "install_url": "https://github.com/anthropics/claude-code",
   "command_match": [
     "claude"
   ],

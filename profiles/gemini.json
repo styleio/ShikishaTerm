@@ -1,5 +1,6 @@
 {
   "name": "Gemini CLI",
+  "install_url": "https://github.com/google-gemini/gemini-cli",
   "command_match": [
     "gemini"
   ],

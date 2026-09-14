@@ -178,6 +178,23 @@ impl As {
     }
 }
 
+/// git itself is not on this PC: the one failure no folder or setting can fix.
+#[derive(Debug)]
+pub struct NotInstalled;
+
+impl std::fmt::Display for NotInstalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::i18n::t("err.git.not_installed"))
+    }
+}
+
+impl std::error::Error for NotInstalled {}
+
+/// Whether a failure is git not being on this PC
+pub fn is_not_installed(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<NotInstalled>().is_some()
+}
+
 /// Run one git in `dir` and hand back what it printed.
 ///
 /// Failure carries git's own words: `stderr` says what was wrong far better
@@ -217,7 +234,13 @@ pub fn run_as(dir: &Path, args: &[&str], input: &str, limit: Duration, who: &As)
         .stdin(if input.is_empty() { Stdio::null() } else { Stdio::piped() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = crate::detach_console(&mut cmd).spawn()?;
+    let mut child = crate::detach_console(&mut cmd).spawn().map_err(|e| match e.kind() {
+        // Said as what it is. Left as the OS's "file not found", every caller
+        // that turns a failure into words -- "not a repository" first of all --
+        // was describing a folder when the program itself is missing
+        std::io::ErrorKind::NotFound => anyhow::Error::new(NotInstalled),
+        _ => e.into(),
+    })?;
     if !input.is_empty() {
         use std::io::Write as _;
         if let Some(mut w) = child.stdin.take() {
@@ -257,11 +280,12 @@ pub fn run_as(dir: &Path, args: &[&str], input: &str, limit: Duration, who: &As)
 /// belongs to none. Everything else in this module starts here, so "not a
 /// repository" is said once, in one wording
 pub fn root(dir: &Path) -> Result<PathBuf> {
-    let out = run(dir, &["rev-parse", "--show-toplevel"]).map_err(|_| {
-        anyhow::anyhow!(crate::i18n::tp(
+    let out = run(dir, &["rev-parse", "--show-toplevel"]).map_err(|e| match is_not_installed(&e) {
+        true => e,
+        false => anyhow::anyhow!(crate::i18n::tp(
             "err.git.no_repo",
             &[("p", &dir.display().to_string())]
-        ))
+        )),
     })?;
     let line = out.trim();
     if line.is_empty() {
@@ -998,6 +1022,16 @@ mod tests {
             who,
         )
         .ok()
+    }
+
+    /// Asking a folder about a repository when git is not on the PC says that
+    /// git is not on the PC, not that the folder is not a repository
+    #[test]
+    fn a_missing_git_is_said_as_a_missing_git() {
+        let err = anyhow::Error::new(NotInstalled);
+        assert!(is_not_installed(&err));
+        assert!(!is_not_installed(&anyhow::anyhow!("anything else")));
+        assert!(!err.to_string().is_empty());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 {
   "name": "Aider",
+  "install_url": "https://aider.chat/docs/install.html",
   "command_match": ["aider"],
   "busy_patterns": [],
   "question_patterns": [

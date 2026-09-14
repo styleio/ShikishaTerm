@@ -872,8 +872,51 @@ fn resolve_windows_command(prog: &str) -> Option<std::path::PathBuf> {
     if p.components().count() > 1 {
         return try_base(p.to_path_buf());
     }
-    let path_var = std::env::var_os("PATH")?;
-    std::env::split_paths(&path_var).find_map(|dir| try_base(dir.join(prog)))
+    // This process's PATH, then the one a terminal is really started with.
+    // The terminal library builds a new tab's environment from the registry,
+    // so a program installed after this app started is found by the launch and
+    // was not found here -- which said "not installed" about something that runs
+    let here = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&here)
+        .chain(std::env::split_paths(&registry_path()))
+        .find_map(|dir| try_base(dir.join(prog)))
+}
+
+/// Elsewhere there is no registry, and this process's PATH is the whole answer
+#[cfg(not(windows))]
+fn registry_path() -> std::ffi::OsString {
+    std::ffi::OsString::new()
+}
+
+/// The PATH a new terminal gets on Windows: the machine's and then the user's, as the
+/// registry holds them now, with `%NAME%` filled in
+#[cfg(windows)]
+fn registry_path() -> std::ffi::OsString {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    let read = |root, key: &str| -> Option<String> {
+        RegKey::predef(root).open_subkey(key).ok()?.get_value::<String, _>("Path").ok()
+    };
+    let expand = |s: String| -> String {
+        let mut out = String::new();
+        let mut rest = s.as_str();
+        while let Some(start) = rest.find('%') {
+            let Some(len) = rest[start + 1..].find('%') else { break };
+            let name = &rest[start + 1..start + 1 + len];
+            out.push_str(&rest[..start]);
+            match std::env::var(name) {
+                Ok(v) if !name.is_empty() => out.push_str(&v),
+                _ => out.push_str(&rest[start..start + len + 2]),
+            }
+            rest = &rest[start + len + 2..];
+        }
+        out.push_str(rest);
+        out
+    };
+    let machine = read(HKEY_LOCAL_MACHINE, "System\\CurrentControlSet\\Control\\Session Manager\\Environment");
+    let user = read(HKEY_CURRENT_USER, "Environment");
+    let joined = [machine, user].into_iter().flatten().map(expand).collect::<Vec<_>>().join(";");
+    std::ffi::OsString::from(joined)
 }
 
 /// Turns a raw process-spawn failure into a gentle, plain-language explanation.

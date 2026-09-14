@@ -371,6 +371,14 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                         ui.editors.iter().find(|e| &e.key == key).and_then(|e| e.stamp.clone());
                     Some(t)
                 }
+                Surface::Failed { key, name, dir, why, install_url } => {
+                    let group = dir.as_deref().and_then(|d| {
+                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
+                    });
+                    let mut t = crate::uistate::TabState::failed(i + 1, key, name, group);
+                    t.failed = Some(crate::uistate::FailedState { why: why.clone(), install_url: install_url.clone() });
+                    Some(t)
+                }
                 Surface::Git { key, name, dir, git, .. } => {
                     // The panel reports on a folder, so it stands under that
                     // folder's heading and is put away with it. Worked out from
@@ -438,7 +446,8 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                 Surface::Browser { .. }
                 | Surface::Git { .. }
                 | Surface::Sftp { .. }
-                | Surface::Editor { .. } => false,
+                | Surface::Editor { .. }
+                | Surface::Failed { .. } => false,
             });
             let ring_idle = matches!(ui.ball.phase(ui.now_ms), crate::ball::Phase::Idle);
             !anyone_active && ring_idle
@@ -711,6 +720,17 @@ pub fn surfaces_of(
             if let Some(i) = found {
                 used_tabs[i] = true;
                 out.push(Surface::Session(i));
+            } else if let Some(failed) = crate::desk::launch_failure(&desk.name, &title) {
+                // Written in the settings and not running because it could not
+                // start. It keeps its place, saying why, rather than not being
+                // there at all
+                out.push(Surface::Failed {
+                    key: ft.cfg.id.clone().unwrap_or_else(|| title.clone()),
+                    name: title,
+                    dir: desk.cwd_of(ft),
+                    why: failed.why,
+                    install_url: failed.install_url,
+                });
             }
         }
     }
@@ -916,6 +936,16 @@ pub enum Surface {
         protect: Vec<String>,
         /// The git account this tab was set to use
         git: config::GitUse,
+    },
+    /// A tab the settings name that could not be started: the program is not
+    /// on this PC, or its folder is not. Drawn by the board as what went wrong
+    /// and what to do, in the place the tab would have been
+    Failed {
+        key: String,
+        name: String,
+        dir: Option<std::path::PathBuf>,
+        why: String,
+        install_url: Option<String>,
     },
     /// The editor: one text file of this tab's folder, drawn by the board.
     ///

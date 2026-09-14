@@ -252,6 +252,30 @@ pub fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'s
     }
     (tab::Resume::Fresh, Some("msg.resume.unknown"))
 }
+/// Try again to start a tab that could not start, when that is what the
+/// surface is. The same road the settings take to launch what they name, so an
+/// install made a minute ago is found the way the first attempt looked for it.
+/// None for any other surface, which the ordinary restart handles
+pub fn retry_failed(
+    at: usize,
+    surfaces: &[Surface],
+    tabs: &mut Vec<Tab>,
+    desk: Option<&config::Desk>,
+    rows: u16,
+    cols: u16,
+) -> Option<String> {
+    let Some(Surface::Failed { name, .. }) = surfaces.get(at.checked_sub(1)?) else {
+        return None;
+    };
+    let desk = desk?;
+    let mut errors = Vec::new();
+    crate::desk::apply_ws_config(tabs, desk, rows, cols, &mut errors);
+    Some(match crate::desk::launch_failure(&desk.name, name) {
+        Some(still) => still.why,
+        None => i18n::tp("msg.failed.started", &[("name", name)]),
+    })
+}
+
 /// Relaunch whatever one surface holds, and answer with what to say about it.
 ///
 /// The one restart in the app. Three doors reach it — Ctrl+B r / Ctrl+B R, the
@@ -1123,7 +1147,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .unwrap_or(0);
                 let mut msg = i18n::t("msg.config_reloaded");
                 if let Some(w) = new_ws.get(target) {
+                    let before = startup_errors.len();
                     msg = apply_ws_config(&mut tabs, w, rows, cols, &mut startup_errors);
+                    // A tab that the save asked for and could not start is what
+                    // there is to say, not that the settings were read. The tab
+                    // itself stays on screen saying the same (Surface::Failed)
+                    if let Some(why) = startup_errors.get(before) {
+                        msg = why.clone();
+                    }
                     desk_index = target;
                     // Bring browsers in line with config too: open added ones, close
                     // removed ones, redraw the bar and band. If reopening were required
@@ -3045,16 +3076,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             active = pane_layout.focused_surface();
             view_touched_ms = start.elapsed().as_millis() as u64;
-            if let Some(msg) = restart_surface(
-                active,
-                keep,
-                &mut tabs,
-                &surfaces,
-                &mut engine,
-                &caps,
-                rows,
-                cols,
-            ) {
+            if let Some(msg) = retry_failed(active, &surfaces, &mut tabs, desks.get(desk_index), rows, cols)
+                .or_else(|| restart_surface(active, keep, &mut tabs, &surfaces, &mut engine, &caps, rows, cols))
+            {
                 flash = Some(msg);
             }
         }
@@ -4592,6 +4616,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if shell.mail().take_help_site() {
             crate::webui::open_external(&i18n::t("tui.help.url"));
         }
+        // The maker's install page for the tab in front, when it is one that
+        // could not start. The address comes from the profile, never the page
+        if shell.mail().take_install_help()
+            && let Some(Surface::Failed { install_url: Some(url), .. }) = surfaces.get(active.wrapping_sub(1))
+        {
+            crate::webui::open_external(url);
+        }
         // The update card was answered. Either answer puts it away for this
         // version; "open" leads to the settings' Update card, where the one
         // button that fetches and installs is -- the card itself installs
@@ -4901,16 +4932,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // conversation back, while wanting a clean slate has an
                         // answer inside the CLI already (/clear)
                         KeyCode::Char('r') | KeyCode::Char('R') => {
-                            flash = restart_surface(
-                                active,
-                                key.code == KeyCode::Char('r'),
-                                &mut tabs,
-                                &surfaces,
-                                &mut engine,
-                                &caps,
-                                rows,
-                                cols,
-                            );
+                            flash = retry_failed(active, &surfaces, &mut tabs, desks.get(desk_index), rows, cols)
+                                .or_else(|| {
+                                    restart_surface(
+                                        active,
+                                        key.code == KeyCode::Char('r'),
+                                        &mut tabs,
+                                        &surfaces,
+                                        &mut engine,
+                                        &caps,
+                                        rows,
+                                        cols,
+                                    )
+                                });
                         }
                         // Ctrl+B l toggles the input lock / w desk list / ? help
                         KeyCode::Char('l') => {
@@ -5532,7 +5566,8 @@ pub fn focused_page(layout: &crate::layout::Layout, surfaces: &[Surface]) -> Opt
         Surface::Session(_)
         | Surface::Git { .. }
         | Surface::Sftp { .. }
-        | Surface::Editor { .. } => None,
+        | Surface::Editor { .. }
+        | Surface::Failed { .. } => None,
     }
 }
 /// Write down what a tab is aimed at: in the settings file, and in the copy of
@@ -6143,7 +6178,8 @@ pub fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
         Surface::Browser { .. }
         | Surface::Git { .. }
         | Surface::Sftp { .. }
-        | Surface::Editor { .. } => None,
+        | Surface::Editor { .. }
+        | Surface::Failed { .. } => None,
     }
 }
 /// What size each tab's terminal should be drawn at.
@@ -6717,7 +6753,10 @@ pub fn save_replay_to_downloads() -> std::io::Result<Option<std::path::PathBuf>>
 pub fn surface_folder<'a>(surfaces: &'a [Surface], tabs: &'a [Tab], surface: usize) -> Option<&'a std::path::Path> {
     match surfaces.get(surface.checked_sub(1)?)? {
         Surface::Session(i) => tabs.get(*i)?.cwd(),
-        Surface::Git { dir, .. } | Surface::Editor { dir, .. } | Surface::Sftp { dir, .. } => dir.as_deref(),
+        Surface::Git { dir, .. }
+        | Surface::Editor { dir, .. }
+        | Surface::Sftp { dir, .. }
+        | Surface::Failed { dir, .. } => dir.as_deref(),
         Surface::Browser { .. } => None,
     }
 }
@@ -6731,7 +6770,8 @@ pub fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
             Surface::Browser { key, .. }
             | Surface::Git { key, .. }
             | Surface::Sftp { key, .. }
-            | Surface::Editor { key, .. } => hooks::TabKey { id: Some(key.clone()) },
+            | Surface::Editor { key, .. }
+            | Surface::Failed { key, .. } => hooks::TabKey { id: Some(key.clone()) },
         })
         .collect()
 }

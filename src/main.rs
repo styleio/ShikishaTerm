@@ -616,6 +616,7 @@ impl WinSurface {
                 Ev::Thanks { open } => self.mail.thanks = Some(open),
                 Ev::Update { open } => self.mail.update_card = Some(open),
                 Ev::Help => self.mail.help_site = true,
+                Ev::InstallHelp => self.mail.install_help = true,
                 // A tool from the left bar. The window thread owns the screen
                 // and the tool's window; nothing about it is the runtime's
                 Ev::Snip { tool, delay } => {

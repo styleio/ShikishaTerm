@@ -173,6 +173,15 @@ fn pct(s: &str) -> String {
     out
 }
 
+/// Where to read how to install a program a tab needs: git's own download page,
+/// or the page the program's profile names
+pub fn install_page(prog: &str) -> Option<String> {
+    match prog.trim() {
+        p if p.eq_ignore_ascii_case("git") => Some("https://git-scm.com/downloads".to_string()),
+        p => crate::profile::install_url_for(p),
+    }
+}
+
 /// Opens a URL in the user's default browser instead of the in-app WebView.
 /// Uses ShellExecuteW so the whole URL — query string, '&' and percent-escapes
 /// included — is handed to the shell verbatim (explorer.exe mis-parses those
@@ -1233,6 +1242,12 @@ fn handle(
                     Some("https://github.com/styleio/ShikishaTerm/discussions".to_string())
                 }
                 Some("update-notes") => crate::update::notes_url(),
+                // How to install the program a tab needs. The address is the
+                // app's own, looked up by program name -- the page names a
+                // program, never a place to go
+                Some("install") => query_param(req.url(), "prog")
+                    .map(|p| percent_decode(&p))
+                    .and_then(|p| install_page(&p)),
                 _ => None,
             };
             match url {
@@ -1690,8 +1705,27 @@ fn handle(
                 true => None,
                 false => crate::tab::carry_unused(&argv, &str_of("profile")),
             };
+            // The program this tab would start, when it is not on this PC:
+            // said while the tab is being made, not found out when it does not
+            // appear. Only for a command that starts a program here -- an
+            // address, a page or the app's own panels start nothing to look
+            // for, except the git panel, which needs git
+            let head = argv.first().cloned().unwrap_or_default();
+            let starts_nothing = crate::config::is_editor_panel(&argv)
+                || crate::config::is_sftp_panel(&argv)
+                || crate::config::browser_url_of(&argv).is_some()
+                || crate::config::ssh_endpoint(&argv).is_some()
+                || head.eq_ignore_ascii_case("model");
+            let wanted = match () {
+                _ if crate::config::is_git_panel(&argv) => Some("git".to_string()),
+                _ if starts_nothing || head.trim().is_empty() => None,
+                _ => Some(head.clone()),
+            };
+            let missing = wanted.filter(|p| crate::tab::resolve_command(p).is_none());
+            let install_url = missing.as_deref().and_then(install_page);
             req.respond(json_resp(serde_json::json!({
-                "argv": line.argv, "added": line.added, "carry": carry
+                "argv": line.argv, "added": line.added, "carry": carry,
+                "missing": missing, "install_url": install_url,
             })))?;
         }
         // Recent rally history (newest first). Returns the id plus an excerpt to help a human tell them apart
@@ -3911,8 +3945,12 @@ function setCommand(t, input, value) {
 function launchLine(t) {
   const line = el("code", {class:"mono"});
   const note = el("div", {class:"hint"});
+  // The program this tab would start is not on this PC: said here, while the
+  // tab is being made, rather than found out when it does not start
+  const missing = el("div", {class:"site-warn"});
+  missing.hidden = true;
   const box = el("div", {class:"realcmd"},
-    el("div", {class:"hint"}, T["settings.tab.command.real"]), line, note);
+    el("div", {class:"hint"}, T["settings.tab.command.real"]), line, note, missing);
   let seq = 0, timer = null;
   // The same answer says whether the conversation switch above decides
   // anything, and the AI panel is redrawn on its own -- so the last answer is
@@ -3932,7 +3970,21 @@ function launchLine(t) {
     // A later keystroke has already asked; its answer is the current one
     if (mine !== seq) return;
     line.textContent = ""; note.textContent = "";
-    if (!r || !r.argv || !r.argv.length) { box.hidden = true; tell(undefined); return; }
+    missing.textContent = "";
+    missing.hidden = !(r && r.missing);
+    if (r && r.missing) {
+      const prog = r.missing;
+      // Native append writes an absent link as the word "null"
+      missing.append(...[el("span", {}, "⚠"),
+        el("span", {}, fill(T[prog === "git" ? "settings.tab.missing.git" : "settings.tab.missing"], {cmd: prog}) + " "),
+        r.install_url
+          ? el("a", {href: REMOTE ? r.install_url : "#", target: REMOTE ? "_blank" : null, rel: "noopener",
+              onclick: REMOTE ? null : e => { e.preventDefault();
+                fetch("/api/open?dest=install&prog=" + encodeURIComponent(prog), {headers:{"X-Token":TOKEN}}); }},
+              T["settings.tab.missing.install"])
+          : null].filter(Boolean));
+    }
+    if (!r || !r.argv || !r.argv.length) { box.hidden = !(r && r.missing); tell(undefined); return; }
     box.hidden = false;
     tell(r.carry || null);
     r.argv.forEach((a, i) => {
