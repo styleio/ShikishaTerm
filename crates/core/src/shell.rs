@@ -616,6 +616,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      double-click -- so the one gesture that puts the width back never arrived */
   body.dragdiv .pdiv, body.dragdiv #tabgrip, body.dragdiv #sidegrip { pointer-events:auto; }
   .pane .pbody { position:absolute; left:0; right:0; top:0; bottom:0; overflow:hidden; }
+  .pane .pidle { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    padding:var(--s5); text-align:center; color:var(--dim); font-size:12px; cursor:pointer; }
+  .pane .pidle[hidden] { display:none; }
   .pane.headed .phead { display:flex; }
   .pane.headed .pbody { top:22px; }
   /* A pane that isn't focused shows its terminal read-only. Same cell grid as
@@ -1041,7 +1044,35 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #issuespanel .check.v-pending .dot { background:var(--live); box-shadow:none; }
   #issuespanel .check.v-passed .dot { background:var(--brand); box-shadow:none; }
   /* What was written: read, not typed into -- a well (2) */
-  #issuespanel .body, #issuespanel .comment .text { white-space:pre-wrap; word-break:break-word; line-height:1.55; }
+  #issuespanel .body.none { white-space:pre-wrap; }
+  #issuespanel .comment .text { word-break:break-word; line-height:1.55; }
+  /* Text written on GitHub, drawn the way GitHub draws it -- in this page's
+     sizes and colours. A link is the one thing in it that is pressed, so it is
+     marked by its underline rather than by a colour kept for states */
+  #issuespanel .md { line-height:1.6; overflow-wrap:anywhere; }
+  #issuespanel .md > :first-child { margin-top:0; }
+  #issuespanel .md > :last-child { margin-bottom:0; }
+  #issuespanel .md p { margin:0 0 var(--s3); white-space:pre-wrap; }
+  #issuespanel .md h3 { font-size:14px; font-weight:600; margin:var(--s5) 0 var(--s2); }
+  #issuespanel .md h4 { font-size:13px; font-weight:600; margin:var(--s4) 0 var(--s2); color:var(--text); }
+  #issuespanel .md ul, #issuespanel .md ol { margin:0 0 var(--s3); padding-left:1.4em; }
+  #issuespanel .md li { margin:0 0 var(--s1); }
+  #issuespanel .md li > ul, #issuespanel .md li > ol { margin:var(--s1) 0 0; }
+  #issuespanel .md li.task { list-style:none; margin-left:-1.2em; }
+  #issuespanel .md li.task .box { color:var(--dim); margin-right:var(--s2); }
+  #issuespanel .md code { font-family:var(--mono); font-size:12px; background:var(--raise);
+    padding:1px var(--s1); border-radius:var(--r-chip); }
+  #issuespanel .md pre { margin:0 0 var(--s3); padding:var(--s2) var(--s3); background:var(--bg);
+    border:1px solid var(--line); border-radius:var(--r-ctl); overflow-x:auto; }
+  #issuespanel .md pre code { background:none; padding:0; white-space:pre; }
+  #issuespanel .md blockquote { margin:0 0 var(--s3); padding:0 var(--s3); border-left:3px solid var(--line); color:var(--dim); }
+  #issuespanel .md hr { border:0; border-top:1px solid var(--line); margin:var(--s4) 0; }
+  #issuespanel .md .rtable { overflow-x:auto; margin:0 0 var(--s3); }
+  #issuespanel .md table { border-collapse:collapse; font-size:12px; }
+  #issuespanel .md th, #issuespanel .md td { border:1px solid var(--line); padding:var(--s1) var(--s2); text-align:left; vertical-align:top; }
+  #issuespanel .md th { background:var(--panel); font-weight:600; }
+  #issuespanel a.mdlink { color:var(--text); text-decoration:underline; text-decoration-color:var(--edge-hi); text-underline-offset:2px; }
+  #issuespanel a.mdlink:hover { text-decoration-color:var(--text); }
   #issuespanel .body { margin:0 var(--s3); padding:var(--s3); background:var(--sunk);
     border:1px solid var(--line); border-radius:var(--r-ctl); }
   #issuespanel .body.none { color:var(--faint); }
@@ -3013,8 +3044,7 @@ function drawIssueDetail(box) {
   box.append(el("div", {class:"bar"}, el("div", {class:"line"},
     el("button", {class:"quiet", onclick:() => { I.view = "list"; I.detail = null; I.want.detail = 0; I.busy = ""; drawIssues(); }}, "‹ " + (T["issues.back"] || "")),
     el("span", {class:"crumb grow"}, d.project + " #" + d.number),
-    // The window has no browser to hand an address to; the phone does
-    d.url && REMOTE ? el("a", {class:"away", href:d.url, target:"_blank", rel:"noopener"}, (T["issues.on_github"] || "") + " ↗") : null,
+    d.url ? (() => { const a = mdLink(d.url, (T["issues.on_github"] || "") + " \u2197"); a.classList.add("away"); return a; })() : null,
     made
       ? el("button", {class:"go", onclick:() => send({kind:"folderview", folder: made.folder})}, (T["issues.open"] || "") + " ›")
       : (d.state === "open"
@@ -3102,7 +3132,9 @@ function drawIssueDetail(box) {
     box.append(list);
   }
   box.append(el("h4", {}, T["issues.body"] || ""));
-  box.append(el("div", {class:"body" + (d.body ? "" : " none")}, d.body || (T["issues.no_body"] || "")));
+  box.append(d.body
+    ? el("div", {class:"body md"}, rdMarkup(d.body, {repo: (proj || {}).repo}))
+    : el("div", {class:"body none"}, T["issues.no_body"] || ""));
   const talk = el("div", {class:"talk"});
   const lines = [];
   for (const e of d.events || []) lines.push({at: e.created, node: el("div", {class:"event"},
@@ -3110,7 +3142,7 @@ function drawIssueDetail(box) {
     + " · " + issueAgo(e.created))});
   for (const c of d.comments || []) lines.push({at: c.created, node: el("div", {class:"comment"},
     el("div", {class:"who"}, (c.author || "") + " · " + issueAgo(c.created)),
-    el("div", {class:"text"}, c.body || ""))});
+    el("div", {class:"text md"}, rdMarkup(c.body || "", {repo: (proj || {}).repo})))});
   lines.sort((a, b) => String(a.at).localeCompare(String(b.at)));
   lines.forEach(l => talk.append(l.node));
   if (!lines.length) talk.append(el("div", {class:"empty"}, T["issues.activity.none"] || ""));
@@ -5774,6 +5806,18 @@ function paintPaneHeads() {
     // The Issue tab is a page that takes its pane whole: dividing it from its
     // own caption is not something it is for
     for (const cls of [".sr", ".sd"]) el.querySelector(cls).hidden = !!(t && t.kind === "issues");
+    // A panel -- git, files, the editor, a tab that could not start -- is drawn
+    // for the tab in front only, from what was fetched for that tab. In a pane
+    // without the focus it left the pane blank, which reads as broken; it says
+    // which tab is there and that a press shows it
+    const idle = !p.focused && t && ["git", "sftp", "editor", "failed"].includes(t.kind);
+    let hold = el.querySelector(".pidle");
+    if (idle && !hold) { hold = document.createElement("div"); hold.className = "pidle"; el.querySelector(".pbody").append(hold); }
+    if (hold) {
+      hold.hidden = !idle;
+      const words = idle ? (T["tui.pane.idle"] || "{name}").replace("{name}", t.name || "") : "";
+      if (hold.textContent !== words) hold.textContent = words;
+    }
     // Empty means there is nothing to show here, which is the same question
     // this line already answers. Asking the pane tree instead -- "is the
     // surface number zero?" -- was asking a copy that can be a frame behind,
@@ -7354,35 +7398,117 @@ const rdIsOpen = () => rdPanel().classList.contains("on");
 // Inline spans, built as nodes rather than assembled into innerHTML. What a
 // conversation contains is not ours to trust, and a node can never be read
 // back as markup
-function rdInline(node, text) {
-  const re = /`([^`]+)`|\*\*([^*]+)\*\*/g;
+function rdInline(node, text, gh) {
+  // The reader keeps to what a conversation carries. Text from GitHub (`gh`)
+  // also has links, pictures, emphasis and strikes, and bare addresses
+  const re = gh
+    ? /`([^`]+)`|\*\*([^*\n]+)\*\*|__([^_\n]+)__|!\[([^\]\n]*)\]\(([^)\s]+)[^)]*\)|\[([^\]\n]+)\]\(([^)\s]+)[^)]*\)|<(https?:\/\/[^>\s]+)>|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])|~~([^~\n]+)~~|(?<![\w*])\*([^*\n]+)\*(?![\w*])|(?<![\w])_([^_\n]+)_(?![\w])/g
+    : /`([^`]+)`|\*\*([^*]+)\*\*/g;
+  const ref = gh && gh.repo ? /(?<![\w&\/#])#(\d+)\b/g : null;
   let at = 0, m;
   while ((m = re.exec(text))) {
     if (m.index > at) node.append(document.createTextNode(text.slice(at, m.index)));
-    node.append(m[1] != null ? el("code", {}, m[1]) : el("b", {}, m[2]));
+    if (m[1] != null) node.append(el("code", {}, m[1]));
+    else if (m[2] != null || m[3] != null) node.append(rdInline(el("b", {}), m[2] != null ? m[2] : m[3], gh));
+    else if (m[5] != null) node.append(mdLink(m[5], (T["issues.md.image"] || "{alt}").replace("{alt}", m[4] || "")));
+    else if (m[7] != null) node.append(mdLink(m[7], m[6]));
+    else if (m[8] != null) node.append(mdLink(m[8], m[8]));
+    else if (m[9] != null) node.append(mdLink(m[9], m[9]));
+    else if (m[10] != null) node.append(rdInline(el("s", {}), m[10], gh));
+    else node.append(rdInline(el("i", {}), m[11] != null ? m[11] : m[12], gh));
     at = m.index + m[0].length;
   }
   if (at < text.length) node.append(document.createTextNode(text.slice(at)));
+  // "#12" is issue or pull request 12 of the same repository, as GitHub reads it
+  if (ref) {
+    for (const t of [...node.childNodes].filter(n => n.nodeType === 3)) {
+      const words = t.textContent;
+      let from = 0, r, parts = [];
+      ref.lastIndex = 0;
+      while ((r = ref.exec(words))) {
+        if (r.index > from) parts.push(document.createTextNode(words.slice(from, r.index)));
+        parts.push(mdLink("https://github.com/" + gh.repo + "/issues/" + r[1], r[0]));
+        from = r.index + r[0].length;
+      }
+      if (!parts.length) continue;
+      if (from < words.length) parts.push(document.createTextNode(words.slice(from)));
+      t.replaceWith(...parts);
+    }
+  }
   return node;
+}
+// A link in text from GitHub. Only an address on the web is a link at all:
+// anything else stays words. The phone follows it itself; the window has no
+// browser of its own, so it asks the app to hand the address to the one on
+// this PC -- which checks it again
+function mdLink(url, words) {
+  if (!/^https?:\/\//i.test(url)) return document.createTextNode(words);
+  return el("a", {class:"mdlink", href:url, target:"_blank", rel:"noopener noreferrer", title:url,
+    onclick:e => {
+      if (typeof REMOTE !== "undefined" && REMOTE) return;
+      e.preventDefault();
+      e.stopPropagation();
+      send({kind:"issues", act:"link", args:{url}});
+    }}, words);
 }
 
 // Enough Markdown for an answer to read as one: fenced code, headings, bullets,
 // and the inline spans. Not a Markdown engine and not trying to become one —
 // whatever it does not recognise it shows verbatim, which for a reader is the
 // correct way to fail: the words still arrive
-function rdMarkup(text) {
+function rdMarkup(text, gh) {
   const out = document.createDocumentFragment();
-  const lines = String(text).split(/\r?\n/);
+  let source = String(text);
+  // What GitHub itself does not show: the comments a template leaves in, and
+  // the line breaks written as tags
+  if (gh) source = source.replace(/<!--[\s\S]*?-->/g, "").replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/?details[^>]*>/gi, "").replace(/<summary[^>]*>([\s\S]*?)<\/summary>/gi, "**$1**");
+  const lines = source.split(/\r?\n/);
   const row = l => /^\s*\|.*\|\s*$/.test(l);
   const cells = l => l.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
   let i = 0, para = [], list = null;
-  const endPara = () => { if (para.length) { out.append(rdInline(el("p", {}), para.join("\n"))); para = []; } };
-  const endList = () => { if (list) { out.append(list); list = null; } };
-  const intoList = (tag, body) => {
+  // Text from GitHub nests its lists: an item written further in belongs to the
+  // item above it, and the list it was in carries on after it -- "3." stays 3.
+  // Each open list, outermost first, with how far in its items are written
+  let open = [];
+  const endPara = () => { if (para.length) { out.append(rdInline(el("p", {}), para.join("\n"), gh)); para = []; } };
+  const endList = () => {
+    if (list) { out.append(list); list = null; }
+    if (open.length) { out.append(open[0].el); open = []; }
+  };
+  const intoList = (tag, body, indent, start) => {
     endPara();
-    if (list && list.tagName.toLowerCase() !== tag) endList();
-    if (!list) list = el(tag, {});
-    list.append(rdInline(el("li", {}), body));
+    const li = el("li", {});
+    // A task: its box, checked or not, said as the box GitHub draws
+    const task = gh && /^\[([ xX])\]\s+(.*)$/.exec(body);
+    if (task) { li.classList.add("task"); li.append(el("span", {class:"box"}, task[1] === " " ? "\u2610" : "\u2611")); body = task[2]; }
+    rdInline(li, body, gh);
+    if (!gh) {
+      if (list && list.tagName.toLowerCase() !== tag) endList();
+      if (!list) list = el(tag, {});
+      list.append(li);
+      return;
+    }
+    while (open.length && indent < open[open.length - 1].indent) open.pop();
+    let top = open[open.length - 1];
+    if (top && indent === top.indent && top.el.tagName.toLowerCase() !== tag) {
+      // The same step in, another kind of list: a new list beside it
+      open.pop();
+      const parent = open[open.length - 1];
+      if (!parent) { out.append(top.el); top = null; }
+      else top = null;
+    }
+    if (!top || indent > top.indent) {
+      const fresh = el(tag, {});
+      if (tag === "ol" && start > 1) fresh.start = start;
+      const holder = open[open.length - 1];
+      const lastItem = holder && holder.el.lastElementChild;
+      if (holder && lastItem && indent > holder.indent) lastItem.append(fresh);
+      else if (holder) holder.el.after(fresh);
+      open.push({el: fresh, indent});
+      top = open[open.length - 1];
+    }
+    top.el.append(li);
   };
   while (i < lines.length) {
     const line = lines[i];
@@ -7401,22 +7527,35 @@ function rdMarkup(text) {
       endPara(); endList();
       const table = el("table", {});
       const head = el("tr", {});
-      for (const c of cells(line)) head.append(rdInline(el("th", {}), c));
+      for (const c of cells(line)) head.append(rdInline(el("th", {}), c, gh));
       table.append(head);
       for (i += 2; i < lines.length && row(lines[i]); i++) {
         const tr = el("tr", {});
-        for (const c of cells(lines[i])) tr.append(rdInline(el("td", {}), c));
+        for (const c of cells(lines[i])) tr.append(rdInline(el("td", {}), c, gh));
         table.append(tr);
       }
       out.append(el("div", {class:"rtable"}, table));
       continue;
     }
+    if (gh && /^\s*>/.test(line)) {
+      // A quote: its lines without the marks, read as text of their own
+      endPara(); endList();
+      const quoted = [];
+      for (; i < lines.length && /^\s*>/.test(lines[i]); i++) quoted.push(lines[i].replace(/^\s*>\s?/, ""));
+      out.append(el("blockquote", {}, rdMarkup(quoted.join("\n"), gh)));
+      continue;
+    }
+    if (gh && /^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { endPara(); endList(); out.append(el("hr")); i++; continue; }
     const head = /^(#{1,6})\s+(.*)$/.exec(line);
-    if (head) { endPara(); endList(); out.append(rdInline(el("h3", {}), head[2])); i++; continue; }
-    const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
-    if (bullet) { intoList("ul", bullet[1]); i++; continue; }
-    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
-    if (numbered) { intoList("ol", numbered[1]); i++; continue; }
+    if (head) {
+      endPara(); endList();
+      out.append(rdInline(el(gh && head[1].length > 2 ? "h4" : "h3", {}), head[2].replace(/\s+#+\s*$/, ""), gh));
+      i++; continue;
+    }
+    const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(line);
+    if (bullet && (gh || !bullet[0].trim().startsWith("+"))) { intoList("ul", bullet[2], bullet[1].length, 1); i++; continue; }
+    const numbered = /^(\s*)(\d+)[.)]\s+(.*)$/.exec(line);
+    if (numbered) { intoList("ol", numbered[3], numbered[1].length, Number(numbered[2])); i++; continue; }
     if (line.trim() === "") { endPara(); endList(); i++; continue; }
     endList(); para.push(line); i++;
   }
