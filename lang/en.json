@@ -267,7 +267,7 @@
   "snip.copied": "Copied",
   "snip.save.title": "Save",
   "snip.ai.text.prompt": "Write out the text in this image exactly as it appears, keeping its line breaks. Answer with JSON only, in the form {\"text\": \"the text you wrote out\", \"note\": \"\"}. Put only the characters in the image in text, with no explanation or preamble. If there is anything else you want to say, put it in note; otherwise leave note empty.",
-  "snip.ai.noun.prompt": "Say with nouns what this image shows. Write the nouns in English, whatever language the words in the image are in. Answer with JSON only, in the form {\"nouns\": [\"noun\", ...], \"note\": \"\"}. Put the noun that fits best first, and any other nouns that fit after it, five at most. Put only nouns in nouns, with no explanation. If there is anything else you want to say, put it in note; otherwise leave note empty.",
+  "snip.ai.noun.prompt": "Say with nouns what this image shows. Write the nouns in the language whose BCP 47 code is {lang}, whatever language the words in the image are in. Answer with JSON only, in the form {\"nouns\": [\"noun\", ...], \"note\": \"\"}. Put the noun that fits best first, and any other nouns that fit after it, five at most. Put only nouns in nouns, with no explanation. If there is anything else you want to say, put it in note; otherwise leave note empty.",
   "snip.ai.retry": "Your previous answer could not be read as JSON in that form. Reply with the JSON alone, with nothing before or after it.",
   "snip.ai.unreadable": "Asked {n} times, but no answer came back in the form it was asked for.",
   "snip.ai.checking": "Getting ready…",
