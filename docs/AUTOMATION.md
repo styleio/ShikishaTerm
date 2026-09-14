@@ -648,7 +648,14 @@ beside your own on one machine never share an API key or a chat.
       { "name": "work", "login": "me-at-work", "user_name": "Me", "user_email": "me@example.com", "owners": ["my-company"] },
       { "name": "home", "method": "ssh", "key": "C:/Users/me/.ssh/id_home" }
     ],
-    "projects": [ { "name": "api", "at": "D:/src/api", "git_account": "work" } ]
+    "projects": [ {
+      "name": "api", "at": "D:/src/api", "git_account": "work",
+      "bring": [
+        { "pattern": "node_modules/", "how": "link" },
+        { "pattern": ".env", "how": "replace", "replace": [ { "find": "^PORT=\\d+$", "with": "PORT=3001", "regex": true } ] },
+        { "from": "D:/templates/local.json", "to": "config/local.json", "how": "copy" }
+      ]
+    } ]
   }
 ]
 ```
@@ -663,6 +670,14 @@ A git account's token is not written here either: it is filed under
 beside its folders signs in with (`git_account`), a git tab names its own, and
 `"@pc"` means the way git on this PC already signs in. Pull request numbers are
 read with the same account. `GITHUB_TOKEN` in the environment is not read.
+
+`bring` is what a new worktree of the project gets beyond what git carries (the
+project's page in the settings edits it). A `pattern` is a line of the project's
+`.gitignore` and covers everything that line makes git ignore; `from`/`to` puts a
+file from anywhere at a place inside the worktree. `how` is `copy`, `replace` (copy,
+then each `find` becomes `with` -- a regular expression when `regex` is set, with `^`
+and `$` at each line), `link`, or `skip`. A line with no rule does what the settings
+page shows beside it. The project's setup command runs after all of this.
 
 ---
 

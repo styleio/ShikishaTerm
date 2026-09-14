@@ -1305,6 +1305,62 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
+        // A project's ignore file and what it makes git ignore, for the page
+        // that decides how each line's files reach a new worktree. With `add`,
+        // `remove` or `untrack` it changes something first; the answer is always
+        // the state after, so the page draws what is really there
+        ("POST", "/api/project/ignore") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let at = std::path::PathBuf::from(p.get("path").and_then(|v| v.as_str()).unwrap_or_default().trim());
+            // Always the checkout the project's worktrees are cut from
+            let main = crate::repo::main_checkout(&at);
+            let resp = match main {
+                None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.worktree.not_a_repo") }),
+                Some(main) => {
+                    let did = if let Some(line) = p.get("add").and_then(|v| v.as_str()) {
+                        crate::worktree::gitignore_add(&main, line)
+                    } else if let Some(r) = p.get("remove") {
+                        crate::worktree::gitignore_remove(
+                            &main,
+                            r.get("n").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                            r.get("text").and_then(|v| v.as_str()).unwrap_or_default(),
+                        )
+                    } else if let Some(list) = p.get("untrack").and_then(|v| v.as_array()) {
+                        let paths: Vec<String> =
+                            list.iter().filter_map(|v| v.as_str().map(str::to_string)).collect();
+                        crate::worktree::untrack(&main, &paths)
+                    } else {
+                        Ok(())
+                    };
+                    let found = crate::worktree::ignored(&main);
+                    let mut defaults: Vec<serde_json::Value> = Vec::new();
+                    for i in &found {
+                        if !defaults.iter().any(|d| d["source"] == i.source.as_str() && d["pattern"] == i.pattern.as_str()) {
+                            defaults.push(serde_json::json!({
+                                "source": i.source, "pattern": i.pattern,
+                                "how": crate::worktree::default_how(&found, &i.source, &i.pattern),
+                            }));
+                        }
+                    }
+                    serde_json::json!({
+                        "ok": did.is_ok(),
+                        "error": did.err().map(|e| format!("{e:#}")),
+                        "root": main.display().to_string(),
+                        "branch": crate::repo::branch_of(&main),
+                        "lines": crate::worktree::gitignore_lines(&main),
+                        "ignored": found,
+                        "defaults": defaults,
+                        "tracked": crate::worktree::tracked_but_ignored(&main),
+                    })
+                }
+            };
+            req.respond(json_resp(resp))?;
+        }
         // Throw a branch's folder away for good. Refused while anything in it
         // is uncommitted -- said before the settings let go of it, so a no
         // costs nothing. The removal itself waits for the tabs to leave
@@ -3115,6 +3171,9 @@ const PAGE: &str = r##"<!doctype html>
  .rows { border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; }
  .rows > * { border-bottom:1px solid var(--line); }
  .rows > *:last-child { border-bottom:0; }
+ /* The lines of a list that is not pressed as a whole -- an ignore file's lines,
+    each with its own controls -- keep off the box's edge the same distance */
+ #project-bring .rows > *, #project-extra .rows > * { padding-left:var(--s3); padding-right:var(--s3); }
  /* One secret. Reads across on a window, and stacks into a card on a phone. */
  .secretrow { cursor:pointer; padding:10px var(--s3); gap:var(--s3); }
  .secretrow:hover { background:var(--panel2); }
@@ -8060,6 +8119,287 @@ function plainSetupCard(desk, p, current_setup) {
     box);
 }
 
+// ── What a new worktree is given ─────────────────────────────────────────
+// Git gives a new worktree everything it tracks and nothing it ignores. These
+// two cards say what else it gets: for each line of the project's .gitignore,
+// what happens to the files that line matches, and files brought from
+// anywhere else. The choices are written into the project; the .gitignore
+// itself is the repository's file, changed on the spot.
+
+// The answer about each checkout's ignore file, kept while the page is open
+const IGNORES = {};
+const BRING_HOWS = ["copy", "replace", "link", "skip"];
+const bringLabel = how => T["settings.bring." + how];
+
+// Ask about one checkout, optionally changing something first. Draws the page
+// again with what came back, which is what is really on disk now
+async function askIgnore(root, change) {
+  let j;
+  try { j = await settingsApi("/api/project/ignore", Object.assign({path: root}, change || {})); }
+  catch (e) { j = {ok:false, error: T["settings.bring.unreachable"]}; }
+  if (j && j.lines) IGNORES[root] = j;
+  return j || {ok:false};
+}
+
+// The project's rule for one ignore line, and writing one
+function bringRule(p, source, pattern) {
+  return ((p.entry || {}).bring || []).find(r => r.pattern === pattern && (r.source || ".gitignore") === source) || null;
+}
+function setBringRule(desk, p, source, pattern, change) {
+  const e = ensureProject(desk, p);
+  e.bring = e.bring || [];
+  let r = e.bring.find(x => x.pattern === pattern && (x.source || ".gitignore") === source);
+  if (!r) {
+    r = {pattern, how: "skip"};
+    if (source !== ".gitignore") r.source = source;
+    e.bring.push(r);
+  }
+  change(r);
+  if (r.how !== "replace") delete r.replace;
+  sel.proj = "p:" + e.name;
+  refreshSave();
+  return r;
+}
+
+// The four ways, as a picker. A folder cannot be replaced inside, so that
+// choice is offered only where there is a file
+function howSelect(now, files, pick) {
+  const s = el("select", {class:"howpick"});
+  for (const how of BRING_HOWS) {
+    if (how === "replace" && !files && now !== "replace") continue;
+    s.append(el("option", {value: how}, bringLabel(how)));
+  }
+  s.value = now;
+  s.addEventListener("change", () => pick(s.value));
+  return s;
+}
+
+// What a copy has written differently: every "find" becomes "with", as plain
+// text unless the regular-expression box is ticked
+function replaceDialog(rule, done) {
+  const list = (rule.replace || []).map(r => Object.assign({}, r));
+  const rows = el("div");
+  const draw = () => {
+    rows.textContent = "";
+    if (!list.length) rows.append(el("div", {class:"hint"}, T["settings.bring.replace.empty"]));
+    list.forEach((r, i) => {
+      const find = el("input", {type:"text", class:"mono grow", placeholder: T["settings.bring.replace.find"]});
+      find.value = r.find || "";
+      find.addEventListener("input", () => { r.find = find.value; check(); });
+      const withIn = el("input", {type:"text", class:"mono grow", placeholder: T["settings.bring.replace.with"]});
+      withIn.value = r.with || "";
+      withIn.addEventListener("input", () => { r.with = withIn.value; });
+      const box = el("input", {type:"checkbox"});
+      box.checked = !!r.regex;
+      box.addEventListener("change", () => { r.regex = box.checked; check(); });
+      const bad = el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, T["settings.bring.replace.bad"]));
+      bad.hidden = true;
+      r._bad = bad;
+      rows.append(el("div", {class:"listrow"},
+        find, el("span", {class:"hint"}, "→"), withIn,
+        el("label", {class:"check"}, box, document.createTextNode(T["settings.bring.replace.regex"])),
+        el("button", {class:"quiet icon", title: T["common.delete"], onclick: () => { list.splice(i, 1); draw(); }}, "✕")),
+        bad);
+    });
+    check();
+  };
+  // A regular expression the browser cannot read is one the app cannot either:
+  // said on its row before saving, rather than found out when a folder is made
+  const check = () => {
+    for (const r of list) {
+      let ok = true;
+      if (r.regex && r.find) { try { new RegExp(r.find, "m"); } catch (e) { ok = false; } }
+      if (r._bad) r._bad.hidden = ok;
+    }
+  };
+  const shut = () => back.remove();
+  const back = openModal(
+    el("div", {class:"mhead"},
+      el("h2", {}, T["settings.bring.replace.title"]),
+      el("button", {class:"quiet icon", title: T["common.close"], onclick: shut}, "✕")),
+    el("div", {class:"mbody"},
+      el("div", {class:"hint"}, T["settings.bring.replace.hint"]),
+      rows,
+      el("div", {class:"row"},
+        el("button", {onclick: () => { list.push({find:"", with:"", regex:false}); draw(); }}, T["settings.bring.replace.add"])),
+      el("div", {class:"hint"}, T["settings.bring.replace.regex_hint"])),
+    el("div", {class:"mfoot"},
+      el("span", {class:"grow"}),
+      el("button", {class:"quiet", onclick: shut}, T["common.cancel"]),
+      el("button", {class:"primary", onclick: () => {
+        const kept = list.filter(r => (r.find || "") !== "").map(r => {
+          const o = {find: r.find, with: r.with || ""};
+          if (r.regex) o.regex = true;
+          return o;
+        });
+        done(kept); shut();
+      }}, T["common.save"])));
+  back.firstChild.classList.add("framed");
+  back.addEventListener("keydown", e => { if (e.key === "Escape") { e.preventDefault(); shut(); } });
+  draw();
+}
+
+// The project's .gitignore, line by line, each with how its files come along
+function ignoreCard(desk, p) {
+  const root = (p.at || "").trim();
+  const box = el("div");
+  const known = IGNORES[root];
+  if (!known) {
+    box.append(el("div", {class:"hint"}, T["settings.bring.reading"]));
+    askIgnore(root).then(() => { if (sel.proj === p.key || sel.proj === "p:" + p.name) render(); });
+  }
+  const j = known || {lines: [], ignored: [], defaults: [], tracked: []};
+  const redraw = r => { if (r && r.ok === false && r.error) toast(r.error, true); render(); };
+  const matchesOf = (source, pattern) => j.ignored.filter(i => i.source === source && i.pattern === pattern);
+  const defaultOf = (source, pattern) => (j.defaults.find(d => d.source === source && d.pattern === pattern) || {}).how || "skip";
+  const opened = (ignoreCard.open = ignoreCard.open || new Set());
+
+  // One line that decides something, with its picker, what it matches, and
+  // (for the project's own file) a way to take it out
+  const ruleRow = (source, pattern, n) => {
+    const matched = matchesOf(source, pattern);
+    const rule = bringRule(p, source, pattern);
+    const how = rule && BRING_HOWS.includes(rule.how) ? rule.how : defaultOf(source, pattern);
+    const files = matched.length === 0 || matched.some(m => !m.folder);
+    const key = source + "\n" + pattern;
+    const count = matched.length === 0
+      ? el("span", {class:"hint"}, T["settings.bring.none"])
+      : el("button", {class:"quiet", onclick: () => { opened.has(key) ? opened.delete(key) : opened.add(key); render(); }},
+          matched.length === 1 ? "→ " + matched[0].path : "→ " + fill(T["settings.bring.n"], {n: matched.length}) + " ›");
+    const replaceBtn = how === "replace"
+      ? el("button", {class:"quiet", onclick: () => replaceDialog(rule || {}, kept => {
+          setBringRule(desk, p, source, pattern, r => { r.how = "replace"; r.replace = kept; });
+          render();
+        })}, fill(T["settings.bring.replace.n"], {n: ((rule || {}).replace || []).length}))
+      : null;
+    const row = el("div", {class:"listrow"},
+      el("span", {class:"mono secretname", title: pattern}, pattern),
+      source === ".gitignore" ? null : el("span", {class:"hint"}, fill(T["settings.bring.from_file"], {file: source})),
+      el("span", {class:"grow"}),
+      count,
+      howSelect(how, files, v => { setBringRule(desk, p, source, pattern, r => { r.how = v; }); render(); }),
+      replaceBtn,
+      n ? el("button", {class:"quiet icon", title: T["settings.bring.remove"], onclick: async () => {
+        if (!await confirmAction(fill(T["settings.bring.remove_confirm"], {line: pattern}), T["settings.bring.remove"])) return;
+        const r = await askIgnore(root, {remove: {n, text: pattern}});
+        if (r.ok && p.entry && p.entry.bring) {
+          p.entry.bring = p.entry.bring.filter(x => !(x.pattern === pattern && (x.source || ".gitignore") === ".gitignore"));
+          refreshSave();
+        }
+        redraw(r);
+      }}, "✕") : null);
+    const under = [];
+    if (how === "link") under.push(el("div", {class:"hint warn"}, T["settings.bring.link_warn"]));
+    if (how === "replace" && !((rule || {}).replace || []).length) under.push(el("div", {class:"hint warn"}, T["settings.bring.replace.none"]));
+    if (opened.has(key) && matched.length > 1) {
+      under.push(el("div", {class:"hint mono"}, matched.map(m => m.path).join("\n")));
+      under[under.length - 1].style.whiteSpace = "pre-wrap";
+    }
+    return [row, ...under];
+  };
+
+  const rows = el("div");
+  j.lines.forEach((text, i) => {
+    const line = text.trim();
+    if (!line) return;
+    if (line.startsWith("#")) { rows.append(el("div", {class:"listrow hint mono"}, text)); return; }
+    if (line.startsWith("!")) {
+      rows.append(el("div", {class:"listrow"},
+        el("span", {class:"mono secretname"}, line),
+        el("span", {class:"hint grow"}, T["settings.bring.negate"]),
+        el("button", {class:"quiet icon", title: T["settings.bring.remove"], onclick: async () => {
+          if (!await confirmAction(fill(T["settings.bring.remove_confirm"], {line}), T["settings.bring.remove"])) return;
+          redraw(await askIgnore(root, {remove: {n: i + 1, text: line}}));
+        }}, "✕")));
+      return;
+    }
+    rows.append(...ruleRow(".gitignore", line, i + 1));
+  });
+  if (known && !j.lines.some(l => l.trim())) rows.append(el("div", {class:"hint"}, T["settings.bring.no_lines"]));
+
+  // Adding a line
+  const addIn = el("input", {type:"text", class:"mono grow", placeholder: T["settings.bring.add_ph"]});
+  const add = async () => {
+    const line = addIn.value.trim();
+    if (!line) return;
+    const r = await askIgnore(root, {add: line});
+    if (r.ok) { addIn.value = ""; toast(fill(T["settings.bring.added"], {line})); }
+    redraw(r);
+  };
+  addIn.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); add(); } });
+
+  // Files git still follows although a line now matches them
+  const tracked = j.tracked || [];
+  const trackedBox = tracked.length ? el("div", {class:"site-warn"},
+    el("span", {}, "⚠"),
+    el("span", {class:"grow"}, fill(T["settings.bring.tracked"], {n: tracked.length, names: tracked.slice(0, 5).join(", ")})),
+    el("button", {onclick: async () => {
+      if (!await confirmAction(fill(T["settings.bring.untrack_confirm"], {n: tracked.length}), T["settings.bring.untrack"])) return;
+      redraw(await askIgnore(root, {untrack: tracked}));
+    }}, T["settings.bring.untrack"])) : null;
+
+  // Lines from somewhere other than the project's own file: chosen here,
+  // changed where they are written
+  const others = [];
+  for (const d of j.defaults.filter(d => d.source !== ".gitignore")) others.push(...ruleRow(d.source, d.pattern, 0));
+
+  // Native append writes an absent part as the word "null", so the parts that
+  // may be absent are left out first
+  box.append(...[
+    el("div", {class:"hint"}, fill(T["settings.bring.hint"], {root: j.root || root, branch: j.branch || "-"})),
+    el("div", {class:"rows"}, rows),
+    el("div", {class:"row"}, addIn, el("button", {onclick: add}, T["settings.bring.add"])),
+    trackedBox,
+    others.length ? el("div", {class:"hint"}, T["settings.bring.others"]) : null,
+    others.length ? el("div", {class:"rows"}, ...others) : null,
+    el("div", {class:"hint"}, T["settings.bring.defaults"])].filter(Boolean));
+  const c = card(T["settings.bring.title"], box);
+  c.id = "project-bring";
+  return c;
+}
+
+// Files brought from anywhere else, each put at a place inside the worktree.
+// A file somebody wants made new is a template kept somewhere and copied
+function extraFilesCard(desk, p) {
+  const e = p.entry || {};
+  const extras = (e.bring || []).filter(r => r.pattern === undefined || r.pattern === null);
+  const rows = el("div");
+  extras.forEach(r => {
+    const change = fn => { const en = ensureProject(desk, p); fn(r); if (r.how !== "replace") delete r.replace; sel.proj = "p:" + en.name; refreshSave(); render(); };
+    const fromIn = el("input", {type:"text", class:"mono grow", placeholder: T["settings.bring.extra.from_ph"]});
+    fromIn.value = r.from || "";
+    fromIn.addEventListener("change", () => change(x => { x.from = fromIn.value.trim(); }));
+    const toIn = el("input", {type:"text", class:"mono", style:"width:180px", placeholder: T["settings.bring.extra.to_ph"]});
+    toIn.value = r.to || "";
+    toIn.addEventListener("change", () => change(x => { x.to = toIn.value.trim(); }));
+    const how = BRING_HOWS.includes(r.how) ? r.how : "copy";
+    rows.append(el("div", {class:"listrow"},
+      fromIn, el("span", {class:"hint"}, "→"), toIn,
+      howSelect(how, true, v => change(x => { x.how = v; })),
+      how === "replace" ? el("button", {class:"quiet", onclick: () => replaceDialog(r, kept => change(x => { x.replace = kept; }))},
+        fill(T["settings.bring.replace.n"], {n: (r.replace || []).length})) : null,
+      el("button", {class:"quiet icon", title: T["common.delete"], onclick: () => {
+        const en = ensureProject(desk, p);
+        en.bring = (en.bring || []).filter(x => x !== r);
+        sel.proj = "p:" + en.name; refreshSave(); render();
+      }}, "✕")));
+    if (how === "link") rows.append(el("div", {class:"hint warn"}, T["settings.bring.link_warn"]));
+  });
+  if (!extras.length) rows.append(el("div", {class:"hint"}, T["settings.bring.extra.empty"]));
+  const c = card(T["settings.bring.extra.title"],
+    el("div", {class:"hint"}, T["settings.bring.extra.hint"]),
+    el("div", {class:"rows"}, rows),
+    el("div", {class:"row"}, el("button", {onclick: () => {
+      const en = ensureProject(desk, p);
+      en.bring = en.bring || [];
+      en.bring.push({from: "", to: "", how: "copy"});
+      sel.proj = "p:" + en.name; refreshSave(); render();
+    }}, T["settings.bring.extra.add"])),
+    el("div", {class:"hint"}, T["settings.bring.extra.setup"]));
+  c.id = "project-extra";
+  return c;
+}
+
 // A project's own page: what it is called, where its own checkout is, the
 // folders that are part of it, and the settings that belong to the repository
 // rather than to any one folder of it. The one place those are offered, so a
@@ -8129,8 +8469,10 @@ function projectPane(desk, p) {
       (desk.git_accounts || []).length ? null : el("div", {class:"hint"}, T["settings.gitacct.tab_none"])));
   }
 
-  // The environment and setup of the repository, read from its own checkout
-  if ((p.at || "").trim()) box.append(envCard(desk, p));
+  // What a new worktree of it is given beyond what git carries, then the
+  // environment and setup of the repository, read from its own checkout --
+  // in the order they happen when a worktree is made
+  if ((p.at || "").trim()) box.append(ignoreCard(desk, p), extraFilesCard(desk, p), envCard(desk, p));
 
   if (p.entry) {
     box.append(el("div", {class:"row"},
@@ -10031,7 +10373,16 @@ function payload() {
     if (some(w.git)) o.git = w.git;
     // Its projects, each with a name; an entry left without one is not one
     const projs = (w.projects || []).filter(p => p && (p.name || "").trim())
-      .map(p => { const c = Object.assign({}, p); for (const k of ["at", "setup"]) if (!(c[k] || "").trim()) delete c[k]; return c; });
+      .map(p => {
+        const c = Object.assign({}, p);
+        for (const k of ["at", "setup"]) if (!(c[k] || "").trim()) delete c[k];
+        // A file from elsewhere with nowhere to come from or go is not one yet
+        if (Array.isArray(c.bring)) {
+          c.bring = c.bring.filter(r => r && (r.pattern || ((r.from || "").trim() && (r.to || "").trim())));
+          if (!c.bring.length) delete c.bring;
+        }
+        return c;
+      });
     if (projs.length) o.projects = projs;
     // Its git accounts, each with a name. The tokens are in the secrets file
     const accts = (w.git_accounts || []).filter(a => a && (a.name || "").trim());
@@ -10790,8 +11141,8 @@ mod tests {
     #[test]
     fn the_repositorys_own_settings_are_offered_where_the_repository_is() {
         assert!(
-            PAGE.contains("if ((p.at || \"\").trim()) box.append(envCard(desk, p));"),
-            "the devcontainer card is not on the project's page"
+            PAGE.contains("if ((p.at || \"\").trim()) box.append(ignoreCard(desk, p), extraFilesCard(desk, p), envCard(desk, p));"),
+            "the cards that belong to the repository are not on the project's page"
         );
         assert!(
             PAGE.contains("if (home) box.insertBefore(elsewhereCard(desk, home), buttons);"),

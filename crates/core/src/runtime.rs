@@ -695,6 +695,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The name drawn for a worktree nobody named, by the folder the dialog was
     // opened on. Kept for as long as that dialog keeps asking, so the name on
     // screen is the name that gets made
+    // What making a folder had to say, kept for a moment: making one writes the
+    // settings, and the reload that follows would otherwise put "settings
+    // reloaded" over what could not come along
+    let mut said_before_reload: Option<(std::time::Instant, String)> = None;
     let mut drawn_names: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     // Whether automation may switch which tab is on screen (see ViewMove)
@@ -1293,6 +1297,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
                 let mut note = remote_changed.unwrap_or(msg);
+                if let Some((at, said)) = said_before_reload.take()
+                    && at.elapsed() < std::time::Duration::from_secs(10)
+                {
+                    note = said;
+                }
                 if lang_restart {
                     note.push_str(&i18n::t("msg.lang_restart"));
                 }
@@ -4017,8 +4026,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let told = repo.as_deref().and_then(|r| {
                 crate::devcontainer::told(r, project.and_then(|p| p.setup.as_deref()))
             });
+            // What comes along is the project's answer for each ignore line and
+            // for each file it brings from elsewhere, with whatever the dialog
+            // changed for this one folder laid over it
+            let rules = project.map(|p| p.bring.clone()).unwrap_or_default();
             let offers = repo.as_deref().map(|main| {
-                (crate::worktree::bases(main), crate::worktree::carryables(main))
+                let mut carry = crate::worktree::carryables(main, &rules);
+                for c in carry.iter_mut() {
+                    if let Some((_, how)) = ask.carry.iter().find(|(n, _)| *n == c.name)
+                        && crate::worktree::HOWS.contains(&how.as_str())
+                    {
+                        c.how = how.clone();
+                    }
+                }
+                (crate::worktree::bases(main), carry)
             });
             let (bases, carryable) = offers.unwrap_or_default();
             // What it would grow from, even when there is no name yet to grow.
@@ -4066,7 +4087,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 asked: name.clone(),
                 base: chosen.clone(),
                 bases,
-                carry: carryable,
+                carry: carryable.clone(),
                 project: checkout
                     .as_deref()
                     .and_then(|p| p.file_name())
@@ -4149,17 +4170,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     // What could not be brought along is said out
                                     // loud: the folder is made either way, and the
                                     // first build is what would otherwise fail
-                                    let missed = crate::worktree::carry_into(&plan, &ask.carry);
-                                    flash = Some(match missed.is_empty() {
-                                        true => i18n::tp(
-                                            "msg.branch.made",
-                                            &[("name", &plan.branch)],
-                                        ),
-                                        false => i18n::tp(
-                                            "msg.branch.made_partly",
-                                            &[("name", &plan.branch), ("missed", &missed.join(", "))],
-                                        ),
-                                    });
+                                    let brought = crate::worktree::carry_into(&plan, &carryable);
+                                    flash = Some(brought_note(&plan.branch, &brought));
                                 }
                                 Err(e) => view.error = Some(format!("{e:#}")),
                             }
@@ -4210,7 +4222,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         });
                         match wrote {
                             Ok(()) => {
-                                crate::worktree::carry_into(plan, &ask.carry);
+                                crate::worktree::carry_into(plan, &carryable);
                                 made.push(plan.branch.clone());
                             }
                             Err(e) => {
@@ -4237,6 +4249,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // name of its own
             if view.done {
                 drawn_names.remove(&ask.from);
+                if let Some(f) = flash.clone() {
+                    said_before_reload = Some((std::time::Instant::now(), f));
+                }
             }
             branch_view = Some(view);
         }
@@ -6302,6 +6317,25 @@ pub fn open_settings(
         shikisha_shared::BrowserProfile::shared_default(),
     )
 }
+/// What making a branch's folder said about what came along: that it is ready,
+/// and -- named, never dropped -- what could not come, what was copied where a
+/// link was asked for, and what could not be replaced
+fn brought_note(branch: &str, b: &crate::worktree::Brought) -> String {
+    let mut said = match b.missed.is_empty() {
+        true => i18n::tp("msg.branch.made", &[("name", branch)]),
+        false => i18n::tp("msg.branch.made_partly", &[("name", branch), ("missed", &b.missed.join(", "))]),
+    };
+    if !b.copied.is_empty() {
+        said.push(' ');
+        said.push_str(&i18n::tp("msg.branch.link_copied", &[("names", &b.copied.join(", "))]));
+    }
+    if !b.unreplaced.is_empty() {
+        said.push(' ');
+        said.push_str(&i18n::tp("msg.branch.unreplaced", &[("names", &b.unreplaced.join(", "))]));
+    }
+    said
+}
+
 /// A folder path, safe to carry in a query string.
 ///
 /// Only what a Windows path can hold has to survive: separators, spaces, and
