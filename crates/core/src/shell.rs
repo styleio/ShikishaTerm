@@ -6962,7 +6962,8 @@ const focus = () => {
   // Never steal focus while a text field is being used (the cast input bar, the
   // discussion-topic box, etc.). Otherwise every keystroke would be swallowed by
   // #kbd and fired as a board shortcut (e.g. typing "w" opens the desk list).
-  if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA")) return;
+  // A dropdown too: taking its focus shuts the list it has just opened
+  if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT")) return;
   // A model pane has no command line to type at: its only input is the
   // composer, so the caret belongs there (like Claude, whose cursor always sits
   // in the prompt). If the person has collapsed the bar, the \u270f\ufe0f pen is the way
@@ -7494,7 +7495,9 @@ document.getElementById("rmore").addEventListener("click", () => rdShow());
 // #kbd — on a phone that would pop the soft keyboard up over the screen.
 // The ✏️ pen counts as "the bar": otherwise the phone's tap-on-terminal rule
 // below opened the bar on mouseup and the pen's own click toggled it shut again
-const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #ask, .pask, #pageui, #castdock, #composerfab, #reader");
+// The Issue tab is a page of its own controls: a press there is for them, and
+// a list that has just dropped open closed again the moment the button came up
+const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #ask, .pask, #pageui, #castdock, #composerfab, #reader, #issuespanel");
 document.addEventListener("mouseup", e => {
   if (inBar(e)) return;
   const s = window.getSelection();
