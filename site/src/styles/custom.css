@@ -16,6 +16,53 @@
   line-height: 1.7;
 }
 
+/* The lines under the tagline: what it runs and where, then the two conditions */
+.lead {
+  max-width: 44rem;
+  margin: 0 auto 1.6rem;
+  text-align: center;
+}
+.lead p {
+  margin: 0;
+}
+.lead .notes {
+  margin-top: 0.6rem;
+  opacity: 0.66;
+  font-size: 0.9em;
+}
+
+/* Where to get it: the Store on the left, GitHub on the right, a rule between.
+   On a phone they stack and the rule goes */
+.get-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 1.2rem 2.4rem;
+  margin: 0 0 1.4rem;
+  text-align: center;
+}
+.get-row > .store {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+}
+.get-row > .store .sub {
+  opacity: 0.66;
+  font-size: 0.9em;
+}
+.get-row > .rule {
+  align-self: stretch;
+  width: 1px;
+  background: var(--sl-color-gray-5);
+}
+@media (max-width: 40rem) {
+  .get-row > .rule {
+    display: none;
+  }
+}
+
 /* Tighten the headings on the cards that list what it can do */
 .card .title {
   line-height: 1.3;
