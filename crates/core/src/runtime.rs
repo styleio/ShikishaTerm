@@ -4755,8 +4755,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if let Some(what) = update::take_apply() {
             if shell.confirm_quit(quit_busy(&tabs, &desk_tabs)) {
                 match what {
-                    update::Apply::Store { version } => {
-                        let _ = shell.install_store_update(&version);
+                    update::Apply::Store => {
+                        let _ = shell.install_store_update();
                     }
                     other => {
                         if update::apply(&other).is_ok() {

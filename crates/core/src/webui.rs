@@ -5871,11 +5871,15 @@ function drawUpdate(box, u) {
     case "applying":
       state.append(text("settings.update.applying"));
       break;
+    case "check_failed":
+      state.append(el("span", {style:"color:var(--danger)"}, fill(T["settings.update.failed.check"], {message: u.message || ""})));
+      break;
     case "failed":
       state.append(el("span", {style:"color:var(--danger)"},
         v ? fill(T["settings.update.failed"], {version: v, message: u.message || ""})
-          : fill(T["settings.update.failed.check"], {message: u.message || ""})));
-      if (v) main.append(primary(T["settings.update.install"], "/install"), quiet(T["settings.update.skip"], "/skip"));
+          : fill(T["settings.update.failed.store"], {message: u.message || ""})));
+      main.append(primary(u.packaged ? T["settings.update.install.store"] : T["settings.update.install"], "/install"),
+                  quiet(T["settings.update.skip"], "/skip"));
       break;
   }
   if (state.childNodes.length) box.append(state);
