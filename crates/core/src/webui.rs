@@ -10535,7 +10535,7 @@ mod tests {
             let t0 = std::time::Instant::now();
             let said = super::ask_about_picture(
                 name,
-                &crate::i18n::t("snip.ai.text.prompt"),
+                &crate::snip::prompt_for("text"),
                 &png,
                 &crate::snip::shape_of("text").unwrap().to_string(),
             );
