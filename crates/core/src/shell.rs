@@ -2881,7 +2881,7 @@ function drawIssueList(box) {
     const proj = issueProject(p.project);
     box.append(el("div", {class:"warn"},
       el("span", {}, "⚠ " + p.project + ": " + p.error),
-      proj && p.settings ? el("button", {onclick:() => openSettings(null, true, proj.dir)}, T["issues.open_settings"] || "") : null));
+      proj && p.settings ? el("button", {onclick:() => openSettings("project", true, proj.dir)}, T["issues.open_settings"] || "") : null));
   }
   const rows = el("div", {class:"rows"});
   if (I.list === null) rows.append(el("div", {class:"empty"}, "…"));

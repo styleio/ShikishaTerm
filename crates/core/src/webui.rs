@@ -10375,6 +10375,9 @@ async function load() {
                  // This desk's own projects (the same repository in another
                  // desk is another project there)
                  projects: Array.isArray(w.projects) ? w.projects : [],
+                 // Its git accounts. Read in as well as written out: left out
+                 // here, the page showed none and the next save erased them
+                 git_accounts: Array.isArray(w.git_accounts) ? w.git_accounts : [],
                  // The assistant AI this desk agreed to send pictures to, by name
                  send_pictures_to: (w.send_pictures_to || "").trim(),
                  stops: Array.isArray(w.stops) ? w.stops : [],
@@ -10730,6 +10733,33 @@ load().then(() => {
   // ?folder=<path> lands on that folder's own page: the tab list's edit
   // entry knows the folder, not which line of the settings file it is on
   const want = (q.get("folder") || "").trim();
+  // ?section=project&folder=<path> lands on the page of the project that folder
+  // is in: where its git account is chosen. Which project a folder is in may
+  // only be known once git has said which repository it is, so that answer is
+  // waited for -- and only a folder git says is in no repository, or an answer
+  // that never comes, settles for the folder's own page
+  if (sec === "project" && want && desks[cur]) {
+    // Either slash: the settings write D:/work, a path said by Windows is D:\work
+    const same = c => (c || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    const gi = (desks[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
+    if (gi >= 0) {
+      const cwd = (desks[cur].folders[gi].cwd || "").trim();
+      // Asked once, then waited for: asking again restarts the moment the
+      // question is gathered in, and a question asked every few moments is never sent
+      deskProjects(desks[cur]);
+      const land = tries => {
+        if (!(cwd in FAMILIES) && tries > 0) return setTimeout(() => land(tries - 1), 200);
+        const home = deskProjects(desks[cur]).projects.find(p => p.folders.includes(gi));
+        sel = home ? {desk:cur, proj:home.key, grp:null, tab:null, global:false}
+                   : {desk:cur, grp:gi, tab:null, global:false};
+        render();
+        const s = document.querySelector(".navitem.sel");
+        if (s) s.scrollIntoView({block:"center"});
+      };
+      land(100);
+      return;
+    }
+  }
   if (want && desks[cur]) {
     const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
     const gi = (desks[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
@@ -11415,6 +11445,24 @@ mod tests {
     /// the connection that worked yesterday cannot find its key. The screen
     /// where a person edits their settings must not be the thing that loses
     /// them, so both halves are checked here by name
+    #[test]
+    fn a_desks_git_accounts_survive_a_reload_and_a_save() {
+        assert!(
+            PAGE.contains("git_accounts: Array.isArray(w.git_accounts) ? w.git_accounts : [],"),
+            "reading drops the git accounts, so the page shows none and a save erases them"
+        );
+        assert!(PAGE.contains("if (accts.length) o.git_accounts = accts;"), "writing drops the git accounts");
+    }
+
+    #[test]
+    fn the_issue_tabs_settings_button_opens_the_project() {
+        assert!(PAGE.contains(r#"if (sec === "project" && want && desks[cur]) {"#), "there is no link to a project's page");
+        assert!(
+            crate::shell::page().contains(r#"openSettings("project", true, proj.dir)"#),
+            "the Issue tab sends people to the folder instead of its project"
+        );
+    }
+
     #[test]
     fn a_server_tabs_settings_survive_a_save() {
         assert!(PAGE.contains("server: t.server || null"), "reading drops the connection settings");
