@@ -69,14 +69,19 @@ impl Plan {
     /// both of them on screen, because a person checking what will happen is
     /// owed all of it and not the first half.
     pub fn argvs(&self) -> Vec<Vec<String>> {
+        let mut steps = self.cutting();
+        steps.extend(self.getting_ready());
+        steps
+    }
+
+    /// The commands that make the folder, before anything is run inside it
+    fn cutting(&self) -> Vec<Vec<String>> {
         let fresh_machine = self.host.as_ref().is_some_and(|h| h.is_made());
         if !fresh_machine {
-            let mut steps = vec![self.argv()];
-            steps.extend(self.getting_ready());
-            return steps;
+            return vec![self.argv()];
         }
         let at = self.folder.display().to_string();
-        let mut steps = vec![
+        vec![
             vec![
                 "git".into(),
                 "clone".into(),
@@ -95,9 +100,7 @@ impl Plan {
                 "-c".into(),
                 self.branch.clone(),
             ],
-        ];
-        steps.extend(self.getting_ready());
-        steps
+        ]
     }
 
     /// What the project says it needs, after it is there to need it.
@@ -378,6 +381,60 @@ fn remote_folder(host: &crate::config::HostSpec, project: &str, branch: &str) ->
 /// branch grew from is a fact about the branch, and one that outlives this app
 /// being installed
 pub fn create(plan: &Plan) -> Result<()> {
+    make(plan, &|_| {}, &|| false)
+}
+
+/// How far a folder being made has got, in the order it gets there
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// Looking at where it goes
+    Preparing = 0,
+    /// Git cutting the folder, or a fresh machine fetching the project
+    Creating = 1,
+    /// What the project says it needs, and what comes along from the checkout
+    SettingUp = 2,
+    /// Asked to stop, and taking back what was made so far
+    Stopping = 3,
+}
+
+impl Stage {
+    /// Its name on the page
+    pub fn key(self) -> &'static str {
+        match self {
+            Stage::Preparing => "preparing",
+            Stage::Creating => "creating",
+            Stage::SettingUp => "setting_up",
+            Stage::Stopping => "stopping",
+        }
+    }
+    fn of(n: u8) -> Stage {
+        match n {
+            1 => Stage::Creating,
+            2 => Stage::SettingUp,
+            3 => Stage::Stopping,
+            _ => Stage::Preparing,
+        }
+    }
+}
+
+/// Why a making ended without a folder, when nobody failed: it was stopped
+#[derive(Debug)]
+pub struct Stopped;
+
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("stopped")
+    }
+}
+
+impl std::error::Error for Stopped {}
+
+/// The same, told how far it has got and asked between commands whether to
+/// go on. Stopped or failed once anything was made, what was made is taken
+/// back: a folder half made and written down nowhere is one nobody will find
+/// again, and it would stand in the way of trying the same name once more
+fn make(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool) -> Result<()> {
+    at_stage(Stage::Preparing);
     // A folder on another machine is not ours to look at, and git over there
     // refuses in its own words if something is already standing in the way
     if plan.host.is_none() {
@@ -386,8 +443,26 @@ pub fn create(plan: &Plan) -> Result<()> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    for argv in plan.argvs() {
-        run_for(plan, &argv)?;
+    if stop() {
+        return Err(Stopped.into());
+    }
+    at_stage(Stage::Creating);
+    let steps = plan.cutting().into_iter().map(|a| (Stage::Creating, a))
+        .chain(plan.getting_ready().into_iter().map(|a| (Stage::SettingUp, a)));
+    for (stage, argv) in steps {
+        at_stage(stage);
+        let ran = run_for(plan, &argv);
+        let stopped = stop();
+        if ran.is_err() || stopped {
+            if stopped {
+                at_stage(Stage::Stopping);
+            }
+            take_back(plan);
+            return match ran {
+                Err(e) if !stopped => Err(e),
+                _ => Err(Stopped.into()),
+            };
+        }
     }
     if plan.fresh {
         // Best effort: the folder is made and usable either way, and a missing
@@ -405,6 +480,119 @@ pub fn create(plan: &Plan) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Takes back a folder that was being made. Only what this making made: the
+/// folder was not there before it began (`free_to_make`), and a new branch is
+/// deleted only while it still points where it grew from, so nothing anybody
+/// committed is ever lost to it
+fn take_back(plan: &Plan) {
+    // A made machine is thrown away whole; nothing in it outlives the making
+    if plan.host.as_ref().is_some_and(|h| h.is_made()) {
+        return;
+    }
+    let folder = plan.folder.display().to_string();
+    let main = plan.main.display().to_string();
+    let _ = run_for(plan, &["git".into(), "-C".into(), main.clone(), "worktree".into(), "remove".into(), "--force".into(), folder]);
+    if plan.host.is_some() {
+        return;
+    }
+    // Git may have stopped before it wrote the folder down anywhere
+    if plan.folder.exists() {
+        let _ = std::fs::remove_dir_all(&plan.folder);
+    }
+    let _ = run(&["git".into(), "-C".into(), main.clone(), "worktree".into(), "prune".into()]);
+    if plan.fresh {
+        let tip = |name: &str| {
+            let mut asking = std::process::Command::new("git");
+            asking.arg("-C").arg(&plan.main).args(["rev-parse", "--verify", "--quiet", &format!("{name}^{{commit}}")]);
+            crate::detach_console(&mut asking)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        };
+        if let (Some(branch), Some(base)) = (tip(&format!("refs/heads/{}", plan.branch)), tip(&plan.base))
+            && branch == base
+        {
+            let _ = run(&["git".into(), "-C".into(), main, "branch".into(), "-D".into(), plan.branch.clone()]);
+        }
+    }
+}
+
+/// A folder being made on a thread of its own.
+///
+/// Making one takes seconds on a large project and minutes on a machine that
+/// fetches it first, and the window cannot wait that long. The page shows how
+/// far it has got from `stage`, a press on its ✕ asks it to `stop`, and the
+/// loop takes the `outcome` once there is one
+pub struct Making {
+    pub plan: Plan,
+    stage: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    outcome: std::sync::Arc<std::sync::Mutex<Option<Result<Brought, String>>>>,
+}
+
+impl Making {
+    /// Starts making `plan`, bringing `carry` along once it is there
+    pub fn start(plan: Plan, carry: Vec<Carry>) -> Making {
+        use std::sync::atomic::Ordering;
+        let making = Making {
+            plan: plan.clone(),
+            stage: Default::default(),
+            stopping: Default::default(),
+            outcome: Default::default(),
+        };
+        let (stage, stopping, outcome) = (making.stage.clone(), making.stopping.clone(), making.outcome.clone());
+        std::thread::spawn(move || {
+            let at_stage = |s: Stage| {
+                // Once stopping, it says so until it has stopped
+                if stage.load(Ordering::Relaxed) != Stage::Stopping as u8 {
+                    stage.store(s as u8, Ordering::Relaxed);
+                }
+            };
+            let stop = || stopping.load(Ordering::Relaxed);
+            let made = make(&plan, &at_stage, &stop).map(|()| {
+                at_stage(Stage::SettingUp);
+                carry_into(&plan, &carry)
+            });
+            // Stopped after the last command: taken back all the same, since
+            // nobody is waiting for the folder any more
+            let made = match made {
+                Ok(_) if stop() => {
+                    take_back(&plan);
+                    Err(Stopped.into())
+                }
+                other => other,
+            };
+            let said = made.map_err(|e: anyhow::Error| match e.downcast_ref::<Stopped>() {
+                Some(_) => String::new(),
+                None => format!("{e:#}"),
+            });
+            *outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(said);
+        });
+        making
+    }
+
+    pub fn stage(&self) -> Stage {
+        Stage::of(self.stage.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Asks it to stop at the next command, and to take back what it made
+    pub fn stop(&self) {
+        self.stopping.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stage.store(Stage::Stopping as u8, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.stopping.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// What became of it, once: what came along, or why not. An empty reason
+    /// is a making that was stopped
+    pub fn outcome(&self) -> Option<Result<Brought, String>> {
+        self.outcome.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
 }
 
 /// What a new folder will not have, and cannot get from git.
@@ -1518,11 +1706,22 @@ pub fn run(argv: &[String]) -> Result<()> {
     if out.status.success() {
         return Ok(());
     }
-    let said = String::from_utf8_lossy(&out.stderr);
-    let said = said.trim();
+    // What it said about why: its errors, or else the end of what it printed
+    // (a project's own setup line often writes only there), or else how it
+    // ended. Never nothing, which reads as a message cut off
+    let errors = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let said = match (errors.is_empty(), printed.is_empty()) {
+        (false, _) => errors,
+        (true, false) => printed.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"),
+        (true, true) => crate::i18n::tp(
+            "err.worktree.exit",
+            &[("code", &out.status.code().map(|c| c.to_string()).unwrap_or_else(|| "?".into()))],
+        ),
+    };
     bail!(crate::i18n::tp(
         "err.worktree.failed",
-        &[("said", said), ("command", &argv.join(" "))]
+        &[("said", &said), ("command", &argv.join(" "))]
     ))
 }
 
@@ -2056,6 +2255,74 @@ tools/conpty.ps1"));
         assert!(!again.fresh, "an existing branch is not made again");
 
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// Made on a thread, a folder says how far it has got and ends in what
+    /// came along. One that fails once git has made it, or is stopped, is taken
+    /// back whole -- folder and new branch -- so the same name can be tried again
+    #[test]
+    fn a_folder_made_in_the_background_ends_made_or_taken_back() {
+        let root = scratch("making");
+        let main = root.join("proj-making");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |args: &[&str]| {
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(&main).args(args);
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(main.join("readme.md"), "hi\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "first"]);
+        let wait = |m: &Making| {
+            for _ in 0..600 {
+                if let Some(o) = m.outcome() {
+                    return o;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            panic!("the making never ended");
+        };
+
+        let good = plan_into(&main, "bg/good", None, Some(&root.join("good")), None).unwrap();
+        let made = Making::start(good.clone(), Vec::new());
+        assert!(wait(&made).is_ok(), "the folder was not made");
+        assert!(good.folder.join("readme.md").exists(), "the contents are not there");
+
+        // The project's setup fails once the folder is there: all of it goes
+        let env = crate::devcontainer::Env { setup: vec!["exit 3".into()], ..Default::default() };
+        let bad = plan_into(&main, "bg/bad", None, Some(&root.join("bad")), Some(env)).unwrap();
+        let failed = wait(&Making::start(bad.clone(), Vec::new()));
+        assert!(matches!(&failed, Err(why) if !why.is_empty()), "a failure says nothing: {failed:?}");
+        assert!(!bad.folder.exists(), "the half-made folder is left behind");
+        assert!(!git(&["branch", "--list", "bg/bad"]).contains("bg/bad"), "the new branch is left behind");
+        assert!(plan_into(&main, "bg/bad", None, Some(&root.join("bad")), None).unwrap().fresh, "the name cannot be tried again");
+
+        // Stopped: nothing is left, and it is not called a failure
+        let stopping = plan_into(&main, "bg/stop", None, Some(&root.join("stop")), None).unwrap();
+        let m = Making::start(stopping.clone(), Vec::new());
+        m.stop();
+        assert_eq!(m.stage(), Stage::Stopping);
+        assert!(matches!(wait(&m), Err(why) if why.is_empty()), "a stop is said as a failure");
+        assert!(!stopping.folder.exists(), "a stopped folder is left behind");
+        assert!(!git(&["branch", "--list", "bg/stop"]).contains("bg/stop"), "a stopped branch is left behind");
+
+        // A branch somebody has committed to is never deleted by taking back
+        git(&["branch", "kept", "main"]);
+        let kept = Plan { fresh: true, branch: "kept".into(), ..plan_into(&main, "kept2", None, Some(&root.join("kept")), None).unwrap() };
+        std::fs::write(main.join("more.md"), "x\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "second"]);
+        take_back(&kept);
+        assert!(git(&["branch", "--list", "kept"]).contains("kept"), "a branch not at its base was deleted");
+
+        let _ = crate::worktree::discard(&good.folder);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// What a fresh folder is missing, and getting it there.

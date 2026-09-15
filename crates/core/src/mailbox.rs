@@ -120,6 +120,8 @@ pub struct Mailbox {
     pub add_projects: Vec<(String, String, String, u64)>,
     /// Answers about a project's found worktrees: (its shared git folder, act)
     pub found: Vec<(String, String)>,
+    /// Answers from the row of a worktree being made: (its number, act)
+    pub makings: Vec<(u64, String)>,
     /// Tabs whose usage-limit notice was read, by screen number
     pub limit_acks: Vec<usize>,
     /// Tabs somebody asked to look at, by screen number (0 is the board): a
@@ -319,6 +321,9 @@ impl Mailbox {
     }
     pub fn take_found(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.found)
+    }
+    pub fn take_makings(&mut self) -> Vec<(u64, String)> {
+        std::mem::take(&mut self.makings)
     }
     pub fn take_add_projects(&mut self) -> Vec<(String, String, String, u64)> {
         std::mem::take(&mut self.add_projects)

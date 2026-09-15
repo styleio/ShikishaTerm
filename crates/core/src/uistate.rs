@@ -733,6 +733,26 @@ pub struct DiscoveredState {
     pub kept: bool,
 }
 
+/// A worktree being made, drawn as a row under its project's heading until it
+/// is a card of its own there.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct MakingState {
+    /// Its own number, which its row's buttons answer with
+    pub id: u64,
+    /// The project's shared git folder, which puts the row under its heading
+    pub family: String,
+    /// The worktree's name (its branch)
+    pub name: String,
+    /// Where it is being made
+    pub folder: String,
+    /// `preparing`, `creating`, `setting_up` or `stopping`; `failed` once
+    /// it failed
+    pub stage: String,
+    /// Why it failed, in git's words where git said
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub error: String,
+}
+
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct FoundWorktree {
     pub folder: String,
@@ -1489,6 +1509,9 @@ pub struct UiState {
     /// Worktrees of this desk's projects that the desk does not list
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub discovered: Vec<DiscoveredState>,
+    /// Worktrees being made, or that failed to be and are still said
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub making: Vec<MakingState>,
     /// Where a cloned or new project goes until somebody picks elsewhere
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_home: String,

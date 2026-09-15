@@ -112,25 +112,29 @@ and drag it shut to give the whole window to the terminal.
 
 ## 3. Working folders and branches
 
-Press the `+` at the end of the **PROJECT** heading. Pick the folder and it appears
-with a `+` to press. Every tab you add from that `+` starts in that folder.
+Press the folder-plus at the end of the **PROJECT** heading to add a project: open a
+folder on this PC, clone one from a URL, or make a new one.
 
-**Work on another branch at the same time**: press the `+` on a folder that is in
-a git repository and choose **Parallel work (git worktree)**. The dialog shows
-what will happen before it happens:
+**Work on another branch at the same time**: press the `+` on the heading. The
+**Create worktree** dialog opens:
 
-- the name of the new branch (leave it and a name is chosen), and what it grows
-  from;
-- **Start here** — what runs in the new folder: the same tabs as this project,
-  one of the AIs installed on this machine, or nothing;
-- **One folder per AI** — tick it and pick the AIs, and one folder is made per AI,
-  each branch named for its AI, so the same task can be given to several at once;
-- the folder that will be made and the exact `git worktree add` line;
-- **Bring along** — things git does not carry (ignored files such as `.env` or
-  `node_modules`) that can come with it.
+- **Project** — which project it is made from;
+- **Name or what to create it from** — three tabs. **GitHub** searches the project's
+  issues and pull requests; picking one names the worktree and ties the work to it
+  (a pull request's branch is fetched). **Branch** picks what it grows from.
+  **Name** is typed; leave it empty and a name is chosen;
+- **AI** — what runs in the new folder. The default is Settings → Basic → Assistant AI;
+- **More** — one folder per AI, where it goes, things git does not carry (`.env`,
+  `node_modules`) to bring along, and the exact `git worktree add` line.
 
-Press **Make it**. The new folder appears under the project in the list. A folder
-made this way lives in `<project>.worktrees/<branch>` beside the project.
+Press **Create worktree** (`Ctrl+Enter`). A "Creating the worktree…" row appears under
+the project's heading and turns into the folder's card once it is made. Its ✕ stops it
+and takes back the half-made folder and the new branch. If it fails, the row says why
+and offers **Try again** or **Dismiss**. Folders made this way live in
+`~/SHIKISHA-TERM/branches/<project>/<name>`.
+
+Worktrees made from a terminal or another tool show up under the heading as "Hiding N
+found worktrees". Open it and **Show in the worktree list**, or press ✕ to keep them hidden.
 
 A folder that is not on this PC (settings carried over from another machine)
 says so in the list; press it and the program tells you what it would take to put
