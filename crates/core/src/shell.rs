@@ -383,6 +383,36 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #addproj .apsumhead .caret { font-size:9px; color:var(--dim); }
   #addproj .apsumhead[aria-expanded="true"] .caret { transform:rotate(180deg); }
   #addproj .apmore { padding:var(--s3); border-top:1px solid var(--line); }
+  /* A project on another machine: where it is added, a way that cannot be
+     taken there, the folder being walked, and the machine's own fields */
+  #addproj button.apway.held { cursor:not-allowed; }
+  #addproj button.apway.held .t, #addproj button.apway.held .tile { color:var(--faint); }
+  #addproj .bpick { width:100%; text-align:left; }
+  #addproj .bpick .ico { display:flex; color:var(--dim); flex:none; }
+  #addproj .aprhere { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s2); min-height:20px;
+    font-size:11.5px; color:var(--dim); }
+  #addproj .aprhere .mono { font-family:var(--mono); overflow-wrap:anywhere; }
+  #addproj .apgit { display:inline-flex; align-items:center; gap:var(--s1); flex:none; font-size:10px; line-height:16px;
+    padding:0 6px; border:1px solid var(--line); border-radius:var(--r-chip); color:var(--text); }
+  #addproj .apgit .ico { display:flex; }
+  #addproj .aprlist { height:240px; overflow:auto; border:1px solid var(--line); border-radius:var(--r-ctl); background:var(--bg); }
+  #addproj .aprrow { display:flex; align-items:center; gap:var(--s2); min-height:30px; padding:0 12px;
+    font-size:12.5px; color:var(--text); cursor:pointer; }
+  #addproj .aprrow:hover { background:var(--raise); }
+  #addproj .aprrow .ico { display:flex; color:var(--dim); flex:none; }
+  #addproj .aprrow .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono); }
+  #addproj .aprsay { padding:12px; font-size:12px; color:var(--dim); }
+  #addproj .aprerr { margin:12px; padding:var(--s2) var(--s3); display:flex; flex-direction:column; gap:var(--s2);
+    font-size:11.5px; color:var(--warn); border-radius:var(--r-ctl);
+    background:color-mix(in srgb, var(--warn) 9%, transparent); border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+  #addproj .aprerr .mono { font-family:var(--mono); color:var(--dim); white-space:pre-wrap; overflow-wrap:anywhere; }
+  #addproj .aprerr button { align-self:flex-start; font:inherit; font-size:11px; min-height:24px; padding:0 var(--s2);
+    border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--panel2); color:var(--text); cursor:pointer; }
+  #addproj .aprow2 { display:grid; grid-template-columns:minmax(0, 1fr) 96px; gap:var(--s3); }
+  .fmenu .aphost { display:flex; align-items:center; gap:var(--s2); min-width:240px; }
+  .fmenu .aphost .ck { width:12px; flex:none; color:var(--brand); }
+  .fmenu .aphost .at { margin-left:auto; padding-left:var(--s3); font-family:var(--mono); font-size:11px; color:var(--dim); }
+  .fmenu .aphostadd { border-top:1px solid var(--line); margin-top:var(--s1); color:var(--text); }
   /* Once: a star, if you like it. Sits above the gear, and goes for good */
   .thanks { margin:auto var(--s2) var(--s2); padding:10px 12px; border:1px solid var(--line); border-radius:var(--r-card);
     background:var(--raise); font-size:12px; }
@@ -1998,16 +2028,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      "you can choose here", the name of what is chosen, and where it is on the
      right in the quiet voice. They had no look of their own before, and read
      as loose words beside the questions they answer */
-  #branch .bpick { display:flex; align-items:center; gap:var(--s2); height:36px; box-sizing:border-box;
+  #branch .bpick, #addproj .bpick { display:flex; align-items:center; gap:var(--s2); height:36px; box-sizing:border-box;
     padding:0 10px 0 12px; font-size:13px; color:var(--text); background:var(--bg);
     border:1px solid var(--edge); border-radius:var(--r-ctl); cursor:pointer; min-width:0; outline:none; }
-  #branch .bpick:hover { border-color:var(--edge-hi); }
-  #branch .bpick:focus { border-color:var(--brand);
+  #branch .bpick:hover, #addproj .bpick:hover { border-color:var(--edge-hi); }
+  #branch .bpick:focus, #addproj .bpick:focus { border-color:var(--brand);
     box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
-  #branch .bpick .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #branch .bpick .at { flex:0 1 auto; max-width:50%; font-family:var(--mono); font-size:11px; color:var(--dim);
+  #branch .bpick .nm, #addproj .bpick .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #branch .bpick .at, #addproj .bpick .at { flex:0 1 auto; max-width:50%; font-family:var(--mono); font-size:11px; color:var(--dim);
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; }
-  #branch .bpick .caret { flex:none; font-size:9px; color:var(--dim); }
+  #branch .bpick .caret, #addproj .bpick .caret { flex:none; font-size:9px; color:var(--dim); }
   #branch .bpick .chip { flex:none; width:10px; height:10px; border-radius:var(--r-chip); background:var(--line); }
   #branch #bproj.empty .nm { color:var(--faint); }
   #branch #bproj.ring { animation:apring .9s 2; }
@@ -3885,6 +3915,7 @@ function openAddProject() {
   // A press outside that began outside: not adding after all
   box.onpointerdown = e => { box.dataset.down = e.target === box ? "1" : ""; };
   box.onclick = e => { if (e.target === box && box.dataset.down === "1") closeAddProject(); };
+  apHost = "";
   apShow("start");
 }
 // Closing it while a clone is under way stops the clone: nobody is left to
@@ -3903,7 +3934,8 @@ function apShow(step) {
   apStep = step;
   apLive = null;
   box.textContent = "";
-  const title = {start:"tui.addproj.title", clone:"tui.addproj.clone", create:"tui.addproj.create"}[step];
+  const title = {start:"tui.addproj.title", clone:"tui.addproj.clone", create:"tui.addproj.create",
+    remote:"tui.addproj.remote", host:"tui.addproj.host"}[step];
   const body = el("div", {class:"sbody"});
   box.append(el("div", {class:"sbox", role:"dialog", "aria-modal":"true"},
     el("div", {class:"shead"},
@@ -3912,6 +3944,8 @@ function apShow(step) {
     body));
   if (step === "start") apStart(body);
   else if (step === "clone") apClone(body);
+  else if (step === "remote") apRemote(body);
+  else if (step === "host") apHostAdd(body);
   else apCreate(body);
 }
 
@@ -3929,22 +3963,41 @@ function apStart(body) {
     });
     return b;
   };
-  const browse = way("browse", "folderOpen", T["tui.addproj.browse"] || "", T["tui.addproj.browse.say"] || "",
-    () => { closeAddProject(); openBrowse(""); }, true);
+  // On a host the first way is its folders, walked over SSH; a new project
+  // there is not made from here, and pressing it says so (5.4)
+  const browse = apHost
+    ? way("browse", "folderOpen", (T["tui.addproj.remote.browse"] || "{host}").replace("{host}", apHost),
+        T["tui.addproj.remote.browse.say"] || "", () => apShow("remote"), true)
+    : way("browse", "folderOpen", T["tui.addproj.browse"] || "", T["tui.addproj.browse.say"] || "",
+        () => { closeAddProject(); openBrowse(""); }, true);
+  const why = el("div", {class:"apwhy", hidden:""});
+  const create = way("create", "plus", T["tui.addproj.create"] || "", T["tui.addproj.create.say"] || "", () => {
+    if (!apHost) { apShow("create"); return; }
+    why.textContent = T["err.addproj.remote_create"] || "";
+    why.hidden = false;
+  });
+  create.classList.toggle("held", !!apHost);
   // Said only to somebody with nothing added yet: after that they know what
   // a project is for
   if (!(S && (S.groups || []).length)) body.append(el("div", {class:"ssay"}, T["tui.addproj.say"] || ""));
+  const where = apWhere(() => apShow("start"));
+  if (where) body.append(where);
   body.append(browse,
     el("div", {class:"sfield"},
       el("div", {class:"apgroup"}, T["tui.addproj.other"] || ""),
       el("div", {class:"aplist"},
         way("clone", "globe", T["tui.addproj.clone"] || "", T["tui.addproj.clone.say"] || "", () => apShow("clone")),
-        way("create", "plus", T["tui.addproj.create"] || "", T["tui.addproj.create.say"] || "", () => apShow("create")))));
+        create,
+        // With no host yet, the door to adding one; after that it is at the
+        // end of the "where" list above
+        ...[where ? null : way("ssh", "server", T["tui.addproj.ssh"] || "", T["tui.addproj.ssh.say"] || "",
+          () => { apHostBack = "start"; apShow("host"); })].filter(Boolean)),
+      why));
   setTimeout(() => browse.focus(), 0);
 }
 
 // The line back to the ways in, above a page that is one of them
-const apBack = () => el("button", {class:"apback", type:"button", onclick:() => apShow("start")},
+const apBack = to => el("button", {class:"apback", type:"button", onclick:() => apShow(to || "start")},
   "← " + (T["tui.addproj.back"] || ""));
 
 // A field: its name above, the control, and what is wrong with it right under
@@ -4001,20 +4054,24 @@ function apProgress() {
 
 function apClone(body) {
   const url = apInput("", "https://github.com/user/repo.git", true);
-  const parent = apInput((S && S.project_home) || "", "", true);
+  const onHost = !!apHost;
+  const parent = apInput(onHost ? apRemoteParent(apHostOf(apHost)) : (S && S.project_home) || "", "", true);
   const prog = apProgress();
   const go = apGo(T["tui.addproj.clone.go"] || "", () =>
       !url.value.trim() ? {at:url, why:T["tui.addproj.clone.need_url"] || ""}
       : !parent.value.trim() ? {at:parent, why:T["tui.addproj.need_parent"] || ""} : null,
     () => {
       apAsk = Date.now();
-      send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk});
+      send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost});
       apLive.running = true;
       drawAddProject();
     });
-  body.append(apBack(), el("div", {class:"ssay"}, T["tui.addproj.clone.say2"] || ""),
+  body.append(apBack(), el("div", {class:"ssay"}, onHost
+      ? (T["tui.addproj.clone.say_on"] || "{host}").replace("{host}", apHost) : T["tui.addproj.clone.say2"] || ""),
+    ...[apWhere(() => apShow("clone"))].filter(Boolean),
     apField(T["tui.addproj.url"] || "", url),
-    apField(T["tui.addproj.parent"] || "", parent, apParent(parent)),
+    // This PC's folder picker cannot look over there: the path is typed
+    onHost ? apField(T["tui.addproj.parent"] || "", parent) : apField(T["tui.addproj.parent"] || "", parent, apParent(parent)),
     el("div", {class:"apfoot"}, go.why, go.btn, prog.bar));
   for (const i of [url, parent]) {
     i.addEventListener("input", go.check);
@@ -4022,7 +4079,7 @@ function apClone(body) {
   }
   go.check();
   apLive = {kind:"clone", running:false, go, prog, label:T["tui.addproj.clone.go"] || "",
-    busy:T["tui.addproj.clone.busy"] || ""};
+    busy:onHost ? (T["tui.addproj.clone.busy_on"] || "{host}").replace("{host}", apHost) : T["tui.addproj.clone.busy"] || ""};
   setTimeout(() => url.focus(), 0);
 }
 
@@ -4058,7 +4115,7 @@ function apCreate(body) {
       : !parent.value.trim() ? {at:parent, why:T["tui.addproj.need_parent"] || ""} : null,
     () => {
       apAsk = Date.now();
-      send({kind:"addproject", how:"create", text:name.value.trim(), parent:parent.value.trim(), ask:apAsk});
+      send({kind:"addproject", how:"create", text:name.value.trim(), parent:parent.value.trim(), ask:apAsk, host:""});
       apLive.running = true;
       drawAddProject();
     });
@@ -4083,6 +4140,7 @@ function apCreate(body) {
 function drawAddProject() {
   const box = document.getElementById("addproj");
   if (!box || box.hidden || !apLive) return;
+  drawRemoteList();
   const st = S && S.add_project;
   const mine = st && st.ask === apAsk && apAsk ? st : null;
   const running = !!(mine ? mine.running : apLive.running) && !(mine && (mine.error || mine.done));
@@ -4103,11 +4161,220 @@ function drawAddProject() {
   }
   if (mine && mine.done) {
     const path = mine.done;
+    const kind = apLive.kind;
     apAsk = 0;
     apLive = null;
+    // A host added: the dialog goes on where it was, on that host
+    if (kind === "host") { apHost = mine.host; apShow(apHostBack || "start"); return; }
     closeAddProject();
-    openBranch({folder: path});
+    // A project over there cannot be cut into worktrees from here: it is
+    // added, and that is the end of it
+    if (!mine.host) openBranch({folder: path});
   }
+}
+
+// ── A project on another machine ──────────────────
+// The machine the dialog adds on: empty for this PC, else the name of a host
+// in the settings. Kept while the dialog is open, so the pages agree
+let apHost = "";
+// The page the SSH host page goes back to once a host is added
+let apHostBack = "start";
+// The dialog's own number for the newest listing of a folder over there
+let apListAsk = 0;
+function apHostOf(name) {
+  return name ? ((S && S.hosts) || []).find(h => h.name === name) || null : null;
+}
+// Where a clone goes over there: beside the project last added there, or home
+function apRemoteParent(h) {
+  const p = (h && h.project) || "";
+  return p ? (p.replace(/\/+$/, "").replace(/\/[^/]*$/, "") || "/") : "~";
+}
+const apAt = at => (at || "").replace(/^ssh:\/\//, "");
+// "Where": this PC or one of the hosts, and at the end of the list a way to
+// add another. Only once there is a host: until then the question has one answer
+function apWhere(redraw) {
+  const hosts = (S && S.hosts) || [];
+  if (!hosts.length && !apHost) return null;
+  const h = apHostOf(apHost);
+  const btn = el("button", {class:"bpick", type:"button"},
+    pickIcon(apHost ? "server" : "desktop"),
+    el("span", {class:"nm"}, apHost || T["tui.addproj.here"] || ""),
+    h ? el("span", {class:"at"}, apAt(h.at)) : null,
+    el("span", {class:"caret"}, "▾"));
+  btn.onclick = e => {
+    e.stopPropagation();
+    const row = (name, label, at) => el("div", {class:"aphost", onclick:() => { closeFolderMenu(); apHost = name; redraw(); }},
+      el("span", {class:"ck"}, name === apHost ? "✓" : ""), el("span", {class:"nm"}, label),
+      at ? el("span", {class:"at"}, at) : null);
+    openList(btn, [row("", T["tui.addproj.here"] || ""),
+      ...hosts.map(x => row(x.name, x.name, apAt(x.at))),
+      el("div", {class:"aphostadd", onclick:() => { closeFolderMenu(); apHostBack = apStep; apShow("host"); }},
+        "+ " + (T["tui.addproj.host.add"] || ""))]);
+  };
+  return apField(T["tui.addproj.where"] || "", btn);
+}
+
+// A folder over there: its path, what is in it, and one button. A press on a
+// folder goes into it; the button adds the one being looked at -- as a project
+// when git says it is one, and after asking when it is not
+function apRemote(body) {
+  const path = apInput(((apHostOf(apHost) || {}).project) || "~", "~", true);
+  const here = el("div", {class:"aprhere"});
+  const list = el("div", {class:"aprlist"});
+  const look = p => {
+    apListAsk = Date.now();
+    send({kind:"remotelist", host:apHost, path:p, ask:apListAsk});
+    if (apLive) apLive.drawn = "";
+    drawRemoteList();
+  };
+  const go = apGo(T["tui.addproj.remote.go"] || "", () => {
+      const st = apListing();
+      return !st || st.busy ? {at:path, why:T["tui.addproj.remote.wait"] || ""}
+        : st.error ? {at:path, why:st.error} : null;
+    },
+    () => {
+      const st = apListing();
+      const add = () => {
+        apAsk = Date.now();
+        send({kind:"addproject", how:"remote", text:st.at, parent:"", ask:apAsk, host:apHost});
+        if (apLive) apLive.running = true;
+        drawAddProject();
+      };
+      if (st.git) { add(); return; }
+      askQuestion({
+        title: T["tui.nongit.title"] || "",
+        say: T["tui.nongit.say"] || "",
+        what: apHost + ":" + st.at,
+        label: T["tui.nongit.go"] || "",
+        go: add,
+      });
+    });
+  body.append(apBack(),
+    el("div", {class:"ssay"}, (T["tui.addproj.remote.say"] || "{host}").replace("{host}", apHost)),
+    ...[apWhere(() => apShow(apHost ? "remote" : "start"))].filter(Boolean),
+    apField(T["tui.addproj.remote.folder"] || "", path,
+      el("button", {class:"apicon", type:"button", title:T["tui.addproj.remote.look"] || "",
+        onclick:() => look(path.value.trim() || "~")}, pickIcon("refresh"))),
+    el("div", {class:"sfield"}, here, list),
+    el("div", {class:"apfoot"}, go.why, go.btn));
+  path.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); look(path.value.trim() || "~"); }
+  });
+  apLive = {kind:"remote", running:false, go, prog:null, label:T["tui.addproj.remote.go"] || "",
+    busy:T["tui.addproj.remote.busy"] || "", path, here, list, look, drawn:"",
+    // A host added a moment ago is not in the settings the app has read yet:
+    // the listing waits for it rather than being told there is no such host
+    waiting: !apHostOf(apHost)};
+  if (!apLive.waiting) look(path.value.trim() || "~");
+  setTimeout(() => path.focus(), 0);
+}
+function apListing() {
+  const st = S && S.remote_list;
+  return st && apListAsk && st.ask === apListAsk ? st : null;
+}
+function drawRemoteList() {
+  const L = apLive;
+  if (!L || L.kind !== "remote") return;
+  if (L.waiting && apHostOf(apHost)) {
+    L.waiting = false;
+    L.look(L.path.value.trim() || "~");
+    return;
+  }
+  const st = apListing();
+  const sig = JSON.stringify([L.waiting, st]);
+  if (L.drawn === sig) return;
+  L.drawn = sig;
+  L.go.check();
+  L.list.textContent = "";
+  L.here.textContent = "";
+  if (L.waiting || !st || st.busy) {
+    L.list.append(el("div", {class:"aprsay"}, (T["tui.addproj.remote.listing"] || "{host}").replace("{host}", apHost)));
+    return;
+  }
+  if (st.error) {
+    L.list.append(el("div", {class:"aprerr"},
+      el("div", {}, (T["tui.addproj.remote.unreached"] || "{host}").replace("{host}", apHost)),
+      el("div", {class:"mono"}, st.error),
+      el("button", {type:"button", onclick:() => L.look(L.path.value.trim() || "~")}, T["tui.making.retry"] || "")));
+    return;
+  }
+  if (document.activeElement !== L.path) L.path.value = st.at;
+  L.here.append(el("span", {class:"mono"}, st.at),
+    st.git ? el("span", {class:"apgit"}, pickIcon("branch"), T["tui.addproj.remote.git"] || "") : null);
+  const rows = [];
+  if (st.at !== "/") rows.push(["..", st.at.replace(/\/[^/]+\/?$/, "") || "/", "up"]);
+  for (const d of st.dirs) rows.push([d, (st.at === "/" ? "" : st.at) + "/" + d, "folder"]);
+  for (const [label, to, icon] of rows) {
+    L.list.append(el("div", {class:"aprrow", title:to, onclick:() => { L.path.value = to; L.look(to); }},
+      pickIcon(icon), el("span", {class:"nm"}, label)));
+  }
+  if (!st.dirs.length) L.list.append(el("div", {class:"aprsay"}, T["tui.addproj.remote.empty"] || ""));
+}
+
+// A machine reached over SSH, written into the settings. Filled in from
+// ~/.ssh/config when it is there; typing user@host:port into the address
+// splits it into the three fields it is
+function apHostAdd(body) {
+  const name = apInput("", "my-server", false);
+  const addr = apInput("", "example.com", true);
+  const user = apInput("", "ubuntu", true);
+  const port = apInput("22", "22", true);
+  const key = apInput("", "~/.ssh/id_ed25519", true);
+  const split = () => {
+    const m = addr.value.trim().match(/^(?:ssh:\/\/)?(?:([^@\s]+)@)?([^\s:@\/]+)(?::(\d+))?$/);
+    if (!m || !(m[1] || m[3] || addr.value.includes("ssh://"))) return;
+    if (m[1]) user.value = m[1];
+    if (m[3]) port.value = m[3];
+    addr.value = m[2];
+  };
+  const taken = n => ((S && S.hosts) || []).some(h => h.name.toLowerCase() === n.toLowerCase());
+  const go = apGo(T["tui.addproj.host.go"] || "", () => {
+      const n = name.value.trim(), a = addr.value.trim(), p = port.value.trim();
+      return !n ? {at:name, why:T["tui.addproj.host.need_name"] || ""}
+        : /[\/\s]/.test(n) ? {at:name, why:T["err.host.name"] || ""}
+        : taken(n) ? {at:name, why:(T["err.host.taken"] || "{name}").replace("{name}", n)}
+        : !a || /[\s\/]/.test(a) ? {at:addr, why:T["tui.addproj.host.need_addr"] || ""}
+        : !user.value.trim() && !/@/.test(a) ? {at:user, why:T["tui.addproj.host.need_user"] || ""}
+        : !/^\d{1,5}$/.test(p) || +p < 1 || +p > 65535 ? {at:port, why:T["tui.addproj.host.bad_port"] || ""} : null;
+    },
+    () => {
+      split();
+      apAsk = Date.now();
+      send({kind:"addhost", name:name.value.trim(), ask:apAsk, key:key.value.trim(),
+        at:"ssh://" + user.value.trim() + "@" + addr.value.trim() + ":" + port.value.trim()});
+      if (apLive) apLive.running = true;
+      drawAddProject();
+    });
+  const aliases = (S && S.ssh_aliases) || [];
+  const fill = aliases.length ? el("button", {class:"bpick", type:"button", onclick:e => {
+      e.stopPropagation();
+      openList(e.currentTarget, aliases.map(a => el("div", {class:"aphost", onclick:() => {
+          closeFolderMenu();
+          if (!name.value.trim()) name.value = a.name;
+          addr.value = a.host;
+          if (a.user) user.value = a.user;
+          port.value = String(a.port || 22);
+          if (a.key) key.value = a.key;
+          go.check();
+        }}, el("span", {class:"nm"}, a.name), a.host !== a.name ? el("span", {class:"at"}, a.host) : null)), aliases.length > 8);
+    }}, pickIcon("server"), el("span", {class:"nm"}, T["tui.addproj.host.fill"] || ""), el("span", {class:"caret"}, "▾")) : null;
+  body.append(apBack(apHostBack),
+    el("div", {class:"ssay"}, T["tui.addproj.host.say"] || ""),
+    ...[fill ? apField(T["tui.addproj.host.from_config"] || "", fill) : null].filter(Boolean),
+    apField(T["tui.addproj.host.name"] || "", name),
+    apField(T["tui.addproj.host.addr"] || "", addr),
+    el("div", {class:"aprow2"}, apField(T["tui.addproj.host.user"] || "", user), apField(T["tui.addproj.host.port"] || "", port)),
+    el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.addproj.host.key"] || ""), key,
+      el("div", {class:"shint"}, T["tui.addproj.host.key.hint"] || "")),
+    el("div", {class:"apfoot"}, go.why, go.btn));
+  addr.addEventListener("blur", () => { split(); go.check(); });
+  for (const i of [name, addr, user, port, key]) {
+    i.addEventListener("input", go.check);
+    i.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); go.btn.click(); } });
+  }
+  go.check();
+  apLive = {kind:"host", running:false, go, prog:null, label:T["tui.addproj.host.go"] || "", busy:T["tui.addproj.host.busy"] || ""};
+  setTimeout(() => (fill || name).focus(), 0);
 }
 
 // A folder chosen in the picker, on its way to being added. A git repository
@@ -4497,7 +4764,8 @@ function folderRow(g, mine, card) {
   // the + is the heading's: one worktree at a time is cut from the project
   row.append(...[drifted(g), card ? null : worktreePlus(g)].filter(Boolean));
   if (card) {
-    row.append(el("span", {class:"fbr", title:T["tui.folder.on.title"] || ""}, g.branch || leafOf(g.folder)));
+    row.append(el("span", {class:"fbr", title:g.host ? g.host + ":" + g.folder : T["tui.folder.on.title"] || ""},
+      (g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder))));
   }
   // Everything else a folder can do is a shortcut, not a door: its settings
   // are on the settings page, a repair is the ⚠ it is already wearing, and a
@@ -4552,7 +4820,7 @@ function emptyRow(g, card) {
     el("span", {class:"nm"}, g.name || ""),
     ...(card
       ? [g.family && !g.linked ? el("span", {class:"prim", title:T["tui.folder.primary.title"] || ""}, T["tui.folder.primary"] || "primary") : null,
-         el("span", {class:"fill"}), el("span", {class:"fbr"}, g.branch || leafOf(g.folder))]
+         el("span", {class:"fill"}), el("span", {class:"fbr"}, (g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder)))]
       : [worktreePlus(g)]).filter(Boolean));
   row.addEventListener("contextmenu", e => { e.preventDefault(); folderMenu(e, g); });
   const next = (S.coach || 0) === 2 ? " pulse" : "";
@@ -4837,6 +5105,7 @@ const PICK_ICON = {
   folderOpen: '<path d="M1.5 11.5V3.5h4l1.3 1.5h4.7v1.5"/><path d="M1.5 11.5 3.2 7h9.3l-1.7 4.5z"/>',
   open: '<path d="M8.5 2h3.5v3.5"/><path d="M6.5 7.5 12 2"/><path d="M10.5 8v3.5a.5.5 0 0 1-.5.5H2.5a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5H6"/>',
   sparkles: '<path d="M6 2.5 7 5.5 10 6.5 7 7.5 6 10.5 5 7.5 2 6.5 5 5.5z"/><path d="M11 1.5v3M9.5 3h3"/><path d="M11 9.5v2M10 10.5h2"/>',
+  server: '<rect x="2" y="2" width="10" height="4" rx="1"/><rect x="2" y="8" width="10" height="4" rx="1"/><path d="M4.5 4h.01M4.5 10h.01"/>',
   refresh: '<path d="M12 7a5 5 0 0 1-8.7 3.4"/><path d="M2 7a5 5 0 0 1 8.7-3.4"/><path d="M11 1.5v2.5H8.5"/><path d="M3 12.5V10h2.5"/>',
 };
 function pickIcon(name) {
@@ -14362,9 +14631,9 @@ mod tests {
         assert!(PAGE.contains(r#"() => { closeAddProject(); openBrowse(""); }, true);"#), "the browse card does not open the picker");
         // The other ways: a clone and a new project, each finished in the same
         // dialog and each ending, as the picker does, at the first worktree
-        assert!(PAGE.contains(r#"send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk});"#),
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost});"#),
             "a clone is never asked for");
-        assert!(PAGE.contains(r#"send({kind:"addproject", how:"create", text:name.value.trim(), parent:parent.value.trim(), ask:apAsk});"#),
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"create", text:name.value.trim(), parent:parent.value.trim(), ask:apAsk, host:""});"#),
             "a new project is never asked for");
         assert!(PAGE.contains("if (apLive && apLive.running) send({kind:\"addproject\", how:\"stop\""),
             "closing the dialog leaves a clone running with nobody to see it");
@@ -14483,6 +14752,19 @@ mod tests {
     }
 
     #[test]
+    fn a_project_can_be_added_on_an_ssh_host_from_the_same_dialog() {
+        assert!(PAGE.contains(r#"send({kind:"remotelist", host:apHost, path:p, ask:apListAsk});"#), "a folder over there is never listed");
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"remote", text:st.at, parent:"", ask:apAsk, host:apHost});"#),
+            "a folder over there is never added");
+        assert!(PAGE.contains("if (st.git) { add(); return; }"), "a folder that is not a repository is added without asking");
+        assert!(PAGE.contains(r#"send({kind:"addhost", name:name.value.trim(), ask:apAsk, key:key.value.trim(),"#), "a host cannot be added");
+        assert!(PAGE.contains(r#"if (kind === "host") { apHost = mine.host; apShow(apHostBack || "start"); return; }"#),
+            "a host added does not become where the dialog adds");
+        assert!(PAGE.contains("if (!mine.host) openBranch({folder: path});"), "a project over there goes on to a worktree this PC cannot cut");
+        assert!(PAGE.contains(r#"create.classList.toggle("held", !!apHost);"#), "a new project is offered on a host");
+    }
+
+    #[test]
     fn a_worktree_being_made_is_a_row_under_its_project_until_it_is_a_card() {
         assert!(PAGE.contains("if (g.family) for (const m of making) if (sameFolder(m.family, g.family)) nav.append(makingRow(m));"),
             "a worktree being made is not said under its project");
@@ -14523,7 +14805,7 @@ mod tests {
         assert!(PAGE.contains(r#"if (folded.has("proj:" + pk)) continue;"#), "a project cannot be put away from its heading");
         assert!(PAGE.contains(r#"onclick:e => { e.stopPropagation(); openBranch(main); }}, "+")"#), "the heading has no + for another worktree");
         assert!(PAGE.contains(r#"T["tui.folder.primary"] || "primary""#), "the checkout is not marked primary");
-        assert!(PAGE.contains(r#"row.append(el("span", {class:"fbr", title:T["tui.folder.on.title"] || ""}, g.branch || leafOf(g.folder)));"#),
+        assert!(PAGE.contains(r#"(g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder))));"#),
             "a card does not say the branch it is on");
         assert!(PAGE.contains(r#"if (g.branch && g.branch !== g.name && !card) {"#), "grouped by state, a folder loses the branch it is on");
         assert!(PAGE.contains(r#"const GROUP_AXES = ["none", "state"];"#), "grouping by project is offered twice");

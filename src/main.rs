@@ -635,7 +635,9 @@ impl WinSurface {
                 Ev::InstallHelp { prog: Some(prog) } => self.mail.install_pages.push(prog),
                 Ev::Setup { ai, yolo } => self.mail.setup = Some((ai, yolo)),
                 Ev::SetupRefresh { step } => self.mail.setup_refresh = Some(step),
-                Ev::AddProject { how, text, parent, ask } => self.mail.add_projects.push((how, text, parent, ask)),
+                Ev::AddProject { how, text, parent, ask, host } => self.mail.add_projects.push((how, text, parent, ask, host)),
+                Ev::RemoteList { host, path, ask } => self.mail.remote_lists.push((host, path, ask)),
+                Ev::AddHost { name, at, key, ask } => self.mail.add_hosts.push((name, at, key, ask)),
                 Ev::Found { family, act } => self.mail.found.push((family, act)),
                 Ev::Making { id, act } => self.mail.makings.push((id, act)),
                 // A tool from the left bar. The window thread owns the screen

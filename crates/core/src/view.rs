@@ -301,6 +301,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         .collect();
     let discovered = discovered_of(&cuts, &listed, &ui.worktrees_kept);
     for (at, g) in groups.iter_mut() {
+        g.host = ui.folder_hosts.iter().find(|(k, _)| k == at).map(|(_, h)| h.clone());
         if g.empty
             && g.color.is_none()
             && let Some((family, linked)) = repos.get(at)
@@ -364,6 +365,9 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         add_project: ui.add_project.clone(),
         discovered,
         making: ui.making.clone(),
+        hosts: ui.hosts.clone(),
+        ssh_aliases: ui.ssh_aliases.clone(),
+        remote_list: ui.remote_list.clone(),
         project_home: ui.project_home.clone(),
         assistant: ui.assistant.clone(),
         thanks: ui.thanks.clone(),
@@ -1011,6 +1015,8 @@ pub struct Ui {
     /// opinion worth having about them: it is asked whether every folder is
     /// here, and for these the answer is "no" and is not a fault
     pub folders_elsewhere: Vec<std::path::PathBuf>,
+    /// Those same folders, each with the name of the machine it is on
+    pub folder_hosts: Vec<(std::path::PathBuf, String)>,
     /// The controls shown over the browser being viewed (None = don't show)
     pub nav: Option<crate::uistate::NavState>,
     /// What each page of this desk is asking the person, by the name
@@ -1036,6 +1042,12 @@ pub struct Ui {
     pub worktrees_kept: std::collections::BTreeSet<String>,
     /// Worktrees being made, as their rows say
     pub making: Vec<crate::uistate::MakingState>,
+    /// The machines a project can be added on
+    pub hosts: Vec<crate::uistate::HostChoice>,
+    /// The aliases of `~/.ssh/config`
+    pub ssh_aliases: Vec<crate::discover::SshAlias>,
+    /// A folder on another machine being walked
+    pub remote_list: Option<crate::uistate::RemoteListState>,
     /// Where a cloned or new project goes by default
     pub project_home: String,
     /// The Assistant AI setting, as its command

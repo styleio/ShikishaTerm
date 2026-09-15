@@ -115,6 +115,12 @@ and drag it shut to give the whole window to the terminal.
 Press the folder-plus at the end of the **PROJECT** heading to add a project: open a
 folder on this PC, clone one from a URL, or make a new one.
 
+**A project on a server you reach over SSH** is added from the same dialog. "A project on an SSH
+host" takes a name, host, user, port and key file, or fills them in from an alias in
+`~/.ssh/config`. Once there is a host, **Where** at the top of the dialog chooses this PC or
+the host. On a host you walk its folders and add one, or clone from a URL on that machine; git
+and the terminal run over there.
+
 **Work on another branch at the same time**: press the `+` on the heading. The
 **Create worktree** dialog opens:
 

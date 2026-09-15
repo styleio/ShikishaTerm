@@ -427,6 +427,10 @@ pub struct HostSpec {
     /// program may ask for one
     #[serde(default)]
     pub minutes: Option<u32>,
+    /// The key file it signs in with (`~/.ssh/id_ed25519`). Absent means the
+    /// password stored under the machine's name
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 impl HostSpec {
@@ -2565,10 +2569,77 @@ pub fn host_spec(host: &HostSpec) -> anyhow::Result<crate::ssh::Spec> {
         port,
         user,
         password_key: Some(format!("ssh/host/{}/password", host.name)),
-        key: None,
+        key: host.key.as_deref().map(str::trim).filter(|k| !k.is_empty()).map(home_path),
         passphrase_key: Some(format!("ssh/host/{}/passphrase", host.name)),
         ..Default::default()
     })
+}
+
+/// A path written the way ssh's own files write one, `~` for this PC's home
+pub fn home_path(p: &str) -> String {
+    let home = ["USERPROFILE", "HOME"].iter().filter_map(|k| std::env::var(k).ok()).find(|h| !h.trim().is_empty());
+    match (p.strip_prefix('~'), home) {
+        (Some(rest), Some(h)) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+            std::path::Path::new(h.trim()).join(rest.trim_start_matches(['/', '\\'])).display().to_string()
+        }
+        _ => p.to_string(),
+    }
+}
+
+/// Writes a machine into the settings' list of hosts. A name already there is
+/// refused rather than written over: it is how every folder on that machine
+/// finds it, and its password is filed under it
+pub fn add_host(spec: &HostSpec) -> Result<()> {
+    add_host_at(&config_file_path(), spec)
+}
+
+pub fn add_host_at(path: &Path, spec: &HostSpec) -> Result<()> {
+    let name = spec.name.trim();
+    if name.is_empty() || name.contains('/') {
+        anyhow::bail!(crate::i18n::t("err.host.name"));
+    }
+    if endpoint_of(&[spec.at.trim().to_string()], "ssh").is_none() {
+        anyhow::bail!(crate::i18n::tp("err.host.address", &[("at", &spec.at)]));
+    }
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
+    let mut root: serde_json::Value = serde_json::from_str(without_bom(&text))
+        .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
+    if !root.get("hosts").is_some_and(|h| h.is_array()) {
+        root["hosts"] = serde_json::json!([]);
+    }
+    let hosts = root["hosts"].as_array_mut().expect("made just above");
+    if hosts.iter().any(|h| h.get("name").and_then(|n| n.as_str()).is_some_and(|n| n.trim().eq_ignore_ascii_case(name))) {
+        anyhow::bail!(crate::i18n::tp("err.host.taken", &[("name", name)]));
+    }
+    let mut clean = spec.clone();
+    clean.name = name.to_string();
+    clean.at = spec.at.trim().to_string();
+    clean.key = spec.key.as_deref().map(str::trim).filter(|k| !k.is_empty()).map(str::to_string);
+    hosts.push(serde_json::to_value(&clean)?);
+    crate::crypto::write_atomic(path, &serde_json::to_string_pretty(&root)?)?;
+    Ok(())
+}
+
+/// Names the folder a machine's project is checked out in, when nothing is
+/// named yet. A worktree cut over there is cut from it
+pub fn set_host_project_if_unset(name: &str, folder: &str) -> Result<()> {
+    let path = config_file_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+    let mut root: serde_json::Value = serde_json::from_str(without_bom(&text))
+        .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
+    let Some(host) = root
+        .get_mut("hosts")
+        .and_then(|h| h.as_array_mut())
+        .and_then(|h| h.iter_mut().find(|h| h.get("name").and_then(|n| n.as_str()) == Some(name)))
+    else {
+        return Ok(());
+    };
+    if host.get("project").and_then(|p| p.as_str()).is_some_and(|p| !p.trim().is_empty()) {
+        return Ok(());
+    }
+    host["project"] = serde_json::json!(folder);
+    crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&root)?)?;
+    Ok(())
 }
 
 /// Where a tab's terminal is, when it is not on this machine.
@@ -6140,6 +6211,29 @@ mod browser_kind_tests {
         assert!(!is_git_panel(&v(&["git", "status"])));
         assert!(!is_git_panel(&v(&["gitk"])));
         assert!(!is_git_panel(&[]));
+    }
+
+    /// A host written from the add-a-project dialog is read back as one, signs
+    /// in with its key, and a second of the same name is refused
+    #[test]
+    fn a_host_is_added_once_under_its_name_with_its_key() {
+        let dir = std::env::temp_dir().join(format!("shikisha-hosts-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"desks":[],"unknown_key":1}"#).unwrap();
+        let spec = crate::config::HostSpec { name: " lab ".into(), at: "ssh://me@lab.example.com:2222".into(), key: Some("~/.ssh/lab".into()), ..Default::default() };
+        crate::config::add_host_at(&path, &spec).unwrap();
+        let cfg: crate::config::Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(cfg.hosts.len(), 1);
+        assert_eq!((cfg.hosts[0].name.as_str(), cfg.hosts[0].key.as_deref()), ("lab", Some("~/.ssh/lab")));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("unknown_key"), "the rest of the settings went");
+        let ssh = crate::config::host_spec(&cfg.hosts[0]).unwrap();
+        assert_eq!((ssh.host.as_str(), ssh.port, ssh.user.as_str()), ("lab.example.com", 2222, "me"));
+        assert!(ssh.key.as_deref().is_some_and(|k| !k.starts_with('~') && k.ends_with("lab")), "the key is not a path here: {:?}", ssh.key);
+        assert!(crate::config::add_host_at(&path, &crate::config::HostSpec { name: "LAB".into(), ..spec.clone() }).is_err(), "a second lab was written");
+        assert!(crate::config::add_host_at(&path, &crate::config::HostSpec { name: "x".into(), at: "lab.example.com".into(), ..Default::default() }).is_err(),
+            "an address with no user was written");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// What a server tab knows beyond its address is read back whole, and a
