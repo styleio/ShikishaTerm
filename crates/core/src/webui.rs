@@ -2519,15 +2519,23 @@ fn handle(
             let account = query_param(req.url(), "account")
                 .map(|c| percent_decode(&c))
                 .unwrap_or_default();
+            // Asked of the account itself, as every other reader does: a gh
+            // account's token comes from GitHub CLI, the others' from the store.
+            // One not saved yet is not in the settings file, and has only the
+            // store to ask
+            let spec = crate::config::load().and_then(|cfg| {
+                cfg.resolve_desks().0.into_iter().find(|d| d.id == desk.trim())?
+                    .git_accounts.into_iter().find(|a| a.name == account.trim())
+            });
             let own = match desk.trim().is_empty() || account.trim().is_empty() {
                 true => None,
                 false => {
                     let pw = password.lock().unwrap().clone();
-                    crate::config::secret_value(
-                        &secrets_file(config_path),
-                        pw.as_deref(),
-                        &crate::config::git_token_key(desk.trim(), account.trim()),
-                    )
+                    let look = |k: &str| crate::config::secret_value(&secrets_file(config_path), pw.as_deref(), k);
+                    match spec {
+                        Some(spec) => spec.token(desk.trim(), &look),
+                        None => look(&crate::config::git_token_key(desk.trim(), account.trim())),
+                    }
                 }
             };
             let said = crate::pr::probe(own);
@@ -8765,7 +8773,7 @@ function gitAccountsCard(desk) {
       rows.append(el("div", {class:"listrow secretrow", onclick: () => gitAccountDialog(desk, a.name, draw)},
         el("span", {class:"mono secretname"}, a.name),
         el("span", {class:"hint mono secretdesc"}, gitAccountAbout(a)),
-        el("span", {class:"hint"}, isSshAccount(a) ? T["settings.gitacct.by_ssh"] : T["settings.gitacct.by_token"]),
+        el("span", {class:"hint"}, signInLabel(a)),
         state,
         el("span", {class:"go"}, "›")));
       gitAccountState(desk, a, state);
@@ -8785,6 +8793,10 @@ function gitAccountsCard(desk) {
 }
 const GIT_HOST = "github.com";
 const isSshAccount = a => (a.method || "").trim().toLowerCase() === "ssh";
+// An account that signs in as whoever GitHub CLI (gh) is signed in as on this PC
+const isGhAccount = a => (a.method || "").trim().toLowerCase() === "gh";
+const signInLabel = a => isSshAccount(a) ? T["settings.gitacct.by_ssh"]
+  : isGhAccount(a) ? T["settings.gitacct.by_gh"] : T["settings.gitacct.by_token"];
 const accountHost = a => ((a.host || "").trim().replace(/\/+$/, "").toLowerCase()) || GIT_HOST;
 // Who it signs in as, in a few words: the user name and the server
 const gitAccountAbout = a => ((a.login || "").trim() ? a.login.trim() + "@" : "") + accountHost(a);
@@ -8801,7 +8813,8 @@ async function gitAccountState(desk, a, out) {
       + "&account=" + encodeURIComponent(a.name), {headers:{"X-Token":TOKEN}})).json();
   } catch (e) { return; }
   if (!j.source) {
-    out.textContent = isSshAccount(a) ? T["settings.gitacct.no_pr"] : T["settings.gitacct.no_token"];
+    out.textContent = isSshAccount(a) ? T["settings.gitacct.no_pr"]
+      : isGhAccount(a) ? T["settings.gitacct.no_gh"] : T["settings.gitacct.no_token"];
     out.classList.toggle("warn", !isSshAccount(a));
   } else if (j.signed_in) {
     const who = j.login ? fill(T["settings.gitacct.as"], {login: j.login}) : T["settings.gitacct.ok"];
@@ -8828,8 +8841,9 @@ function gitAccountDialog(desk, name, redraw) {
   const hostIn = input(a.host, {class:"mono", placeholder:GIT_HOST});
   const method = el("select");
   method.append(el("option", {value:"token"}, T["settings.gitacct.by_token"]),
-                el("option", {value:"ssh"}, T["settings.gitacct.by_ssh"]));
-  method.value = isSshAccount(a) ? "ssh" : "token";
+                el("option", {value:"ssh"}, T["settings.gitacct.by_ssh"]),
+                el("option", {value:"gh"}, T["settings.gitacct.by_gh"]));
+  method.value = isSshAccount(a) ? "ssh" : isGhAccount(a) ? "gh" : "token";
   const loginIn = input(a.login, {class:"mono", placeholder:T["settings.gitacct.login_ph"]});
   const tokenIn = el("input", {type:"password", placeholder:T["settings.gitacct.token_ph"]});
   const keyIn = input(a.key, {class:"mono", placeholder:T["settings.gitacct.key_ph"]});
@@ -8865,10 +8879,15 @@ function gitAccountDialog(desk, name, redraw) {
   const tokenField = el("div", {class:"field"}, el("label", {}, T["settings.gitacct.token"]),
     el("div", {class:"fieldctl"}, tokenIn), tokenHint);
   const keyField = field(T["settings.gitacct.key"], keyIn, T["settings.gitacct.key_hint"]);
+  // Nothing to fill in for a gh account: it signs in with what GitHub CLI has
+  const ghNote = el("div", {class:"hint"}, T["settings.gitacct.gh_hint"]);
   function recheck() {
     const ssh = method.value === "ssh";
-    loginField.hidden = ssh;
+    const gh = method.value === "gh";
+    loginField.hidden = ssh || gh;
     keyField.hidden = !ssh;
+    tokenField.hidden = gh;
+    ghNote.hidden = !gh;
     tokenHint.textContent = ssh ? T["settings.gitacct.token_hint_ssh"] : T["settings.gitacct.token_hint"];
     const faults = [];
     const n = nameIn.value.trim();
@@ -8877,7 +8896,7 @@ function gitAccountDialog(desk, name, redraw) {
       : (!editing && desk.git_accounts.some(x => x.name === n) ? T["settings.gitacct.name_dup"] : null));
     fieldFault(nameIn, nameWhy);
     if (nameWhy) faults.push({at: nameIn, why: nameWhy});
-    const tokenWhy = !ssh && !hasToken && !tokenIn.value.trim() ? T["settings.gitacct.token_required"] : null;
+    const tokenWhy = !ssh && !gh && !hasToken && !tokenIn.value.trim() ? T["settings.gitacct.token_required"] : null;
     fieldFault(tokenIn, tokenWhy);
     if (tokenWhy) faults.push({at: tokenIn, why: tokenWhy});
     const keyWhy = ssh && !keyIn.value.trim() ? T["settings.gitacct.key_required"] : null;
@@ -8900,7 +8919,7 @@ function gitAccountDialog(desk, name, redraw) {
       field(T["settings.gitacct.name"], nameIn, editing ? T["settings.gitacct.name_fixed"] : T["settings.gitacct.name_hint"]),
       field(T["settings.gitacct.host"], hostIn, T["settings.gitacct.host_hint"]),
       field(T["settings.gitacct.method"], method, null),
-      loginField, keyField, tokenField,
+      ghNote, loginField, keyField, tokenField,
       field(T["settings.gitacct.user"], userIn, T["settings.gitacct.user_hint"]),
       field(T["settings.gitacct.mail"], mailIn, null),
       field(T["settings.gitacct.owners"], ownersIn, T["settings.gitacct.owners_hint"])),
@@ -8941,7 +8960,7 @@ function gitAccountDialog(desk, name, redraw) {
     // this desk under
     if (!(desk.id || "").trim()) { toast(T["settings.secrets.desk_needs_id"], true); return; }
     const n = editing ? name : nameIn.value.trim();
-    if (tokenIn.value.trim()) {
+    if (method.value !== "gh" && tokenIn.value.trim()) {
       const r = await saveSecret({key: gitTokenKey(desk, n), description: "git account " + n,
         value: tokenIn.value.trim(), human: true, ai: false, urls: []});
       if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return; }
@@ -8950,6 +8969,7 @@ function gitAccountDialog(desk, name, redraw) {
     const put = (k, v) => { if ((v || "").trim()) it[k] = v.trim(); else delete it[k]; };
     put("host", hostIn.value.trim().toLowerCase() === GIT_HOST ? "" : hostIn.value);
     if (method.value === "ssh") { it.method = "ssh"; put("key", keyIn.value); delete it.login; }
+    else if (method.value === "gh") { it.method = "gh"; delete it.key; delete it.login; }
     else { delete it.method; delete it.key; put("login", loginIn.value); }
     put("user_name", userIn.value);
     put("user_email", mailIn.value);
@@ -13077,6 +13097,17 @@ mod tests {
         for (name, _, _) in super::AI_ENGINES {
             assert!(crate::profile::install_url_for(name).is_some(), "{name} has no install page");
         }
+    }
+
+    /// A git account can sign in with GitHub CLI: offered in the dialog, asks
+    /// for no token, and is saved as such
+    #[test]
+    fn a_git_account_can_sign_in_with_github_cli() {
+        assert!(PAGE.contains(r#"el("option", {value:"gh"}, T["settings.gitacct.by_gh"])"#), "gh is not offered");
+        assert!(PAGE.contains("const tokenWhy = !ssh && !gh && !hasToken"), "a gh account is asked for a token");
+        assert!(PAGE.contains(r#"else if (method.value === "gh") { it.method = "gh"; delete it.key; delete it.login; }"#),
+            "a gh account is not saved as one");
+        assert!(PAGE.contains(r#"if (method.value !== "gh" && tokenIn.value.trim())"#), "a gh account files a token");
     }
 
     /// A tab starts as the AI chosen in the setup, and with Yolo mode its

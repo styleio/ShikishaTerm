@@ -109,15 +109,7 @@ pub fn target(
                     &[("name", &spec.name), ("host", &spec.host())]
                 )));
             }
-            look(&crate::config::git_token_key(desk, &spec.name))
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .ok_or_else(|| {
-                    AccountTrouble(crate::i18n::tp(
-                        "err.git.account.no_token",
-                        &[("name", &spec.name)],
-                    ))
-                })?
+            spec.token(desk, look).ok_or_else(|| AccountTrouble(spec.no_token_said()))?
         }
     };
     Ok((repo, token))

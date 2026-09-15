@@ -90,6 +90,11 @@ pub fn coach_step(folders: usize, seen: u8, past_the_plus: bool) -> (Option<u8>,
 /// The state file that says the first-start setup has been answered
 const SETUP_ANSWERED: &str = "setup";
 
+/// The desk the first-start setup makes, and the name of the git account it
+/// gives that desk when GitHub CLI is installed
+const FIRST_DESK: &str = "DESK";
+const FIRST_DESK_GH: &str = "gh";
+
 /// Whether the first-start setup is asked. Only on a first start -- a machine
 /// that already has settings has already chosen -- and only until it has been
 /// answered once. A first start can happen more than once: until a folder is
@@ -5211,6 +5216,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 config::save_setting(&["ai_engine"], serde_json::json!(ai));
             }
             config::save_setting(&["yolo"], serde_json::json!(yolo));
+            // A desk for the work to go into, signing in to GitHub the way
+            // GitHub CLI already does when it is here. Looked for again rather
+            // than taken from the page: it may have been installed since the
+            // page last asked. The settings file changing is what brings the
+            // desk onto the screen
+            let accounts = match crate::tab::resolve_command("gh").is_some() {
+                true => vec![config::GitAccountSpec {
+                    name: FIRST_DESK_GH.into(),
+                    method: Some(config::GH_METHOD.into()),
+                    ..Default::default()
+                }],
+                false => Vec::new(),
+            };
+            config::make_first_desk(FIRST_DESK, &accounts);
             let _ = crate::crypto::write_atomic(&config::state_path(SETUP_ANSWERED), "1");
         }
         // The update card was answered. Either answer puts it away for this

@@ -149,6 +149,9 @@ pub const THIS_PC: &str = "@pc";
 /// The GitHub server, which is what an account that names none signs in to
 pub const GITHUB_HOST: &str = "github.com";
 
+/// The `method` of a git account that signs in with GitHub CLI's login
+pub const GH_METHOD: &str = "gh";
+
 impl GitAccountSpec {
     pub fn host(&self) -> String {
         self.host
@@ -160,6 +163,33 @@ impl GitAccountSpec {
 
     pub fn is_ssh(&self) -> bool {
         self.method.as_deref().is_some_and(|m| m.trim().eq_ignore_ascii_case("ssh"))
+    }
+
+    /// Whether this account signs in as whoever GitHub CLI (`gh`) is signed in
+    /// as on this PC. Nothing is stored for it: the token is asked of `gh` each
+    /// time, so signing in or out there is signing in or out here
+    pub fn is_gh(&self) -> bool {
+        self.method.as_deref().is_some_and(|m| m.trim().eq_ignore_ascii_case(GH_METHOD))
+    }
+
+    /// The token this account signs in over HTTPS with: GitHub CLI's for a gh
+    /// account, else the one filed under this desk in the secret store. The one
+    /// place every reader asks, so a new way of signing in is added once
+    pub fn token(&self, desk: &str, look: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+        let found = match self.is_gh() {
+            true => crate::pr::gh_token(&self.host()),
+            false => look(&git_token_key(desk, &self.name)),
+        };
+        found.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+    }
+
+    /// What to say when [`Self::token`] has nothing: a gh account is signed in
+    /// with `gh`, the rest with a token put in the settings
+    pub fn no_token_said(&self) -> String {
+        match self.is_gh() {
+            true => crate::i18n::tp("err.git.account.gh_signed_out", &[("name", &self.name), ("host", &self.host())]),
+            false => crate::i18n::tp("err.git.account.no_token", &[("name", &self.name)]),
+        }
     }
 
     /// Whether this account says it is for repositories of `owner`
@@ -238,12 +268,7 @@ impl GitUse {
                         crate::git::Auth::Ssh { key: key.into() }
                     }
                     (true, false) => {
-                        let token = look(&git_token_key(desk, &spec.name))
-                            .map(|t| t.trim().to_string())
-                            .filter(|t| !t.is_empty())
-                            .ok_or_else(|| {
-                                crate::i18n::tp("err.git.account.no_token", &[("name", &spec.name)])
-                            })?;
+                        let token = spec.token(desk, look).ok_or_else(|| spec.no_token_said())?;
                         crate::git::Auth::Token {
                             host: spec.host(),
                             login: some(&spec.login).unwrap_or_else(|| "x-access-token".into()),
@@ -4501,6 +4526,41 @@ pub fn save_setting(at: &[&str], value: serde_json::Value) {
     }
 }
 
+/// The desk the first-start setup makes, so work has a desk to go into from
+/// the first folder on -- rather than a list of loose folders that only reads
+/// as a desk called DEFAULT. Given `accounts` as its git accounts.
+///
+/// Only into settings with nothing to be sorted into it yet: no desks, and no
+/// folders or tabs written the older way, which a list of desks would hide.
+/// Returns whether it was written
+pub fn make_first_desk(name: &str, accounts: &[GitAccountSpec]) -> bool {
+    make_first_desk_at(&config_file_path(), name, accounts)
+}
+
+fn make_first_desk_at(path: &Path, name: &str, accounts: &[GitAccountSpec]) -> bool {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(without_bom(&text)) else {
+        // A file that cannot be read is somebody's settings halfway through an
+        // edit; writing a desk over it would throw the rest away
+        return false;
+    };
+    if !doc.is_object() {
+        doc = serde_json::json!({});
+    }
+    let has = |key: &str| doc.get(key).and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty());
+    if has("desks") || has("folders") || has("tabs") {
+        return false;
+    }
+    let mut desk = serde_json::json!({ "name": name, "id": slug_id(name), "folders": [] });
+    if !accounts.is_empty() {
+        desk["git_accounts"] = serde_json::to_value(accounts).unwrap_or_default();
+    }
+    doc["desks"] = serde_json::json!([desk]);
+    serde_json::to_string_pretty(&doc)
+        .ok()
+        .is_some_and(|out| crate::crypto::write_atomic(path, &out).is_ok())
+}
+
 /// Record one of a desk's own settings back into the settings file, the same
 /// read-modify-write [`save_setting`] does. `None` removes the key. Returns
 /// whether it was written.
@@ -5290,6 +5350,44 @@ mod tests {
     fn read_desk(file: &Path) -> Desk {
         let cfg: Config = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
         cfg.resolve_desks().0.remove(0)
+    }
+
+    /// The first-start setup's desk: written beside what the setup already
+    /// saved, with its git account, and never over settings that have
+    /// something a list of desks would hide
+    #[test]
+    fn the_first_desk_is_made_once_and_only_into_empty_settings() {
+        let gh = GitAccountSpec { name: "gh".into(), method: Some(GH_METHOD.into()), ..Default::default() };
+        let (_dir, file) = tabs_file("first-desk", r#"{"ai_engine": "codex", "yolo": true}"#);
+        assert!(super::make_first_desk_at(&file, "DESK", std::slice::from_ref(&gh)), "no desk was written");
+        let cfg: Config = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(cfg.ai_engine.as_deref(), Some("codex"), "what the setup saved was lost");
+        let desk = read_desk(&file);
+        assert_eq!((desk.name.as_str(), desk.id.as_str()), ("DESK", "desk"));
+        assert_eq!(desk.git_accounts, vec![gh.clone()]);
+        assert!(desk.git_accounts[0].is_gh() && !desk.git_accounts[0].is_ssh());
+        // A second time finds a desk there, and leaves it
+        assert!(!super::make_first_desk_at(&file, "OTHER", &[]), "a desk was written over a desk");
+        // Folders written the older way would be hidden by a list of desks
+        let (_d2, loose) = tabs_file("first-desk-loose", r#"{"folders": [{"cwd": "C:/work"}]}"#);
+        assert!(!super::make_first_desk_at(&loose, "DESK", &[]), "loose folders were hidden behind a desk");
+        // Without gh there is no account to give it
+        let (_d3, bare) = tabs_file("first-desk-bare", "{}");
+        assert!(super::make_first_desk_at(&bare, "DESK", &[]));
+        assert!(read_desk(&bare).git_accounts.is_empty());
+    }
+
+    /// A token account's token is the one in the store; a gh account never
+    /// reads the store, and says how to sign in when it has nothing
+    #[test]
+    fn an_account_says_where_its_token_comes_from() {
+        let token = GitAccountSpec { name: "work".into(), ..Default::default() };
+        let look = |k: &str| (k == git_token_key("d", "work")).then(|| " ghp_x ".to_string());
+        assert_eq!(token.token("d", &look).as_deref(), Some("ghp_x"));
+        let gh = GitAccountSpec { name: "gh".into(), method: Some("gh".into()), ..Default::default() };
+        let never = |_: &str| -> Option<String> { panic!("a gh account read the secret store") };
+        let _ = gh.token("d", &never);
+        assert!(gh.no_token_said().contains("gh auth login"), "a signed-out gh account does not say how to sign in");
     }
 
     /// A path as the settings file spells it, which is JSON

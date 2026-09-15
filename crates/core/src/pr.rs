@@ -181,6 +181,49 @@ pub fn pc_token() -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
+/// The token GitHub CLI (`gh`) is signed in with for `host`, asked of `gh`
+/// itself. None when it is not installed, not signed in to that server, or
+/// does not answer in time -- nobody can see a prompt from here, so none is
+/// allowed to appear.
+///
+/// Found through the same search a new terminal's PATH gets, so a `gh`
+/// installed after this app started is found without starting it again
+pub fn gh_token(host: &str) -> Option<String> {
+    use std::process::{Command, Stdio};
+    let exe = crate::tab::resolve_command("gh")?;
+    let mut cmd = Command::new(exe);
+    cmd.args(["auth", "token", "--hostname", host])
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = crate::detach_console(&mut cmd).spawn().ok()?;
+    let mut out = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = std::io::Read::read_to_string(&mut out, &mut s);
+        s
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait().ok()? {
+            Some(s) => break s,
+            None if started.elapsed() > GH_LIMIT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    let said = reader.join().ok()?;
+    status.success().then(|| said.trim().to_string()).filter(|t| !t.is_empty())
+}
+
+/// How long `gh auth token` is given. It reads a file or the system's
+/// credential store and answers at once; longer is something wrong
+const GH_LIMIT: Duration = Duration::from_secs(10);
+
 fn look_up(agent: &ureq::Agent, token: &str, repo: &str, branch: &str) -> Option<Pr> {
     let (owner, _) = repo.split_once('/')?;
     // Newest first, and only one: a branch can have had several pull requests
