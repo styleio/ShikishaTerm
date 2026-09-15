@@ -8,7 +8,41 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-15
+
+Projects get a heading of their own in the left bar, a worktree is made from
+one dialog, a first start asks which AI to lead with, and your own buttons
+float over everything.
+
 ### Added
+- **A first start sets you up.** It asks which AI to lead with, each shown with
+  the same mark its tab wears, points at the ones this PC does not have yet and
+  looks again once one is installed. A second page asks after GitHub CLI and
+  says so when it is already here. Done makes a desk to work in, and a git
+  account can sign in the way GitHub CLI does, given to that desk when gh is
+  here. Yolo mode starts ticked and says right beside it that it skips the AI's
+  permission checks.
+- **A PROJECT heading in the left bar**, under INDEX and Issue, with the one +
+  that adds a project; a first start blinks it and says so. The + offers every
+  way to add one: pick a folder (a repository goes on to its first worktree,
+  any other folder is asked about first), clone from a URL, make a new one, or
+  do any of these on an SSH host by walking its folders or cloning over there.
+  A host not yet known is added in place, filled in from your ssh config. A
+  project is added with its first tab already open, running the default
+  command chosen under Settings › Basic from PowerShell, Command Prompt or Git
+  Bash.
+- **A worktree is made from one dialog**: a project, a name and an AI, and one
+  button that Ctrl+Enter presses from anywhere. The name can come from a GitHub
+  issue or pull request searched right in the dialog, or the worktree can grow
+  from a branch picked from a list. It is made in the background under a row
+  that says how far along it is; a ✕ stops it and takes it back, and a failure
+  offers another go.
+- **Worktrees a project has that the desk does not list** are found and named
+  under the project's heading, to show on the desk or keep hidden.
+- **Rename a folder or a tab right where it stands**, and edit either from its
+  right-click menu on the board.
+- **A path typed into the folder picker's search box** is gone to on Enter, and
+  a pasted one at once.
 - **Quick commands.** A grid of buttons you make yourself, opened over the whole
   window with the button beside the scissors or Ctrl+B k (the key can be changed
   under Keys). Every press opens a new tab in the folder of the tab you are
@@ -2046,7 +2080,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/styleio/ShikishaTerm/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/styleio/ShikishaTerm/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/styleio/ShikishaTerm/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/styleio/ShikishaTerm/compare/v0.10.0...v0.11.0
