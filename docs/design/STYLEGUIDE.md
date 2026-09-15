@@ -150,7 +150,7 @@ its border is the shape of an admin panel from fifteen years ago.
 | `--r-card` | 10px | What holds them: cards, dialogs, floating menus |
 | `--r-chip` | 4px | What labels them: chips, small pills |
 
-`3px` for a bar and `999px` for the status line's pills are the two exceptions.
+`3px` for a bar and `999px` for the status line's pills and the quick command launcher's plates are the only exceptions.
 - Elevation: one shadow, `0 8px 24px #0007`, and only on a layer that floats
   over the page (menus, bubbles, dialogs). Nothing set into the page has a shadow.
 - Layers, from the bottom: panes (3-6) · composer (18-19) · bars over a pane
@@ -182,6 +182,7 @@ Use the part that exists. Adding a new kind of part is a change to this page.
 | **Bubble** (`#coach`) | Point at the next thing to press | one sentence · ✕ · a corner toward the anchor; at most one on screen |
 | **Card** (sidebar) | Ask once | title · one line · two buttons (one primary, one quiet); goes away for good |
 | **Toast** | Say what just happened | transient; never the only place an error lives |
+| **Button grid** (quick commands, `#quick` / `.qegrid`) | Buttons a person made, found by where they are | Each button is square, corner 10, `--edge` rim. Its face is a line icon (Lucide, the shared part in `quick.rs`) and an 11px name on one line; only a prompt for an AI carries a small "AI" at the top left. **Launcher**: the buttons alone float on the dimming (`#00000099`) in `--panel` with the shadow `0 8px 24px #0007`, and empty places are not drawn. The dimming is dark in every scheme, so no words are written on it directly: they ride on `--panel` plates with 999px corners. Above: a plate with which folder, as a trail, and a plate with the key hint, ⚙ and ✕. Right under the buttons: a plate of page numbers and a one-line plate saying where the button under the pointer sends. Rows no page of the grid uses are not drawn. The buttons come in over 0.2s on opening and on turning a page only (not with reduced motion). A button with nowhere to go is the grey of §5.4 and says why on that line when pressed. Where the grid does not fit, the page's buttons stand in reading order. **Editor**: empty places are drawn dashed; press to pick, drag to move, press a folder twice to enter it. The first place inside a folder is always the way back |
 | **Ask bar** (`#ask`, `.pask`) | A script needs a person to do something on a page | one sentence · one primary button; `--warn` top edge (needs a person); drawn by the board under the page and never inside it, so only a person can press it; stays until the script takes it down |
 | **Button** | Do the thing | primary = filled `--brand` (one per screen or dialog); plain = `--panel2` on an `--edge`; quiet = no border; destructive = `--stop` text, no border. Cancel and Close are quiet, never coloured |
 
@@ -306,6 +307,11 @@ core for as long as it runs. The two allowed motions are `step-end` blinks: the
 BUSY dot, and the pulse on the one thing to press next. Expanding content may
 change size in one step. Respect the platform's reduced-motion setting where the
 page can read it.
+
+One motion that ends by itself sits outside this rule, and only one: on the quick
+command launcher, the buttons come in over 0.2s when it opens and when a page is
+turned (`#quick .qbtn`). It helps the eye find where to press, and nothing moves
+once it is done. Not with reduced motion, and not on any other screen.
 
 ## 7. Words
 

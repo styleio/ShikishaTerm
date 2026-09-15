@@ -928,6 +928,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // is all it does by itself; installing is a button on the settings screen
     update::start(cfg.as_ref().and_then(|c| c.update_check).unwrap_or(true));
     let mut cfg = cfg;
+    // The quick commands as the launcher draws them. Laid out once per read of
+    // the settings rather than per frame: the drawing of every button is looked
+    // up while doing it, and nothing about them changes in between
+    let quick_of = |c: Option<&config::Config>| {
+        std::sync::Arc::new(crate::quick::view(&c.map(|c| c.quick_commands.clone()).unwrap_or_default()))
+    };
+    let mut quick_view = quick_of(cfg.as_ref());
+    // Lines waiting for a tab a quick command has just opened (see `PendingQuick`)
+    let mut pending_quicks: Vec<PendingQuick> = Vec::new();
+    // Where a command with no folder in front opens. Looked up once: it is
+    // asked on every frame the launcher could be showing
+    let home = home_folder();
+    // Whether the window's launcher is up. Pages placed in the window are
+    // windows of their own and nothing drawn can cover them, so they step
+    // aside while it is, the way they do for the help and the desk list
+    let mut quick_open = false;
 
     let mut desk_open = false;
     let mut help_open = false;
@@ -1433,6 +1449,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     };
                 }
                 cfg = Some(newcfg);
+                quick_view = quick_of(cfg.as_ref());
                 // Re-resolve the model bridge's connection info, and hand it to
                 // the tabs — including the ones parked in desks that are
                 // not on screen, which are just as open as the ones that are
@@ -2417,6 +2434,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Say { tab, text }) => {
                         shell.mail().says.push((tab, text));
                     }
+                    // A quick command pressed on the phone: the same queue the
+                    // window's press fills, looked up and sent on this machine
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Quick { id, tab }) => {
+                        shell.mail().quicks.push((id, tab));
+                    }
                     // The bar's button, pressed on the phone: the same queue the
                     // board's press fills. A person's answer from wherever they
                     // are looking
@@ -2801,6 +2823,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             update: update::ask(),
             close_ask: close_ask.clone(),
             closed: desks.get(desk_index).map(|d| closed_tabs.shown(&d.name)).unwrap_or_default(),
+            quick: quick_view.clone(),
+            // Where each kind of button would go right now, for the launcher
+            // to say so before anything is pressed. Only the kinds the buttons
+            // actually are, and asked of the same function the press asks
+            quick_to: quick_view
+                .dests
+                .iter()
+                .map(|key| {
+                    let (kind, ai) = match key.strip_prefix("ai:") {
+                        Some(ai) => (crate::quick::Kind::Ai, ai),
+                        None => (crate::quick::Kind::Terminal, ""),
+                    };
+                    let go = quick_go(kind, ai, &surfaces, &tabs, active, board_open || settings_open,
+                                      &ai_choices, home.as_deref());
+                    (key.clone(), quick_dest(&go, &tabs, &surfaces))
+                })
+                .collect(),
             first_run,
             // Any desk: a phone registers itself once, for whichever desk
             // sends to it
@@ -3316,7 +3355,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // over the screen, the browsers step aside. They keep their pages;
             // being given no rectangle is all that happens to them
             // The question a tab's ✕ asks is one of those things
-            let covered = help_open || desk_open || qr_open || close_ask.is_some();
+            let covered = help_open || desk_open || qr_open || quick_open || close_ask.is_some();
             // The settings form is a screen, not a pane: it covers the content
             // area and the layout waits underneath. It asks about the whole
             // app, so seating it in one corner of the app made as little sense
@@ -3399,6 +3438,135 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if !hand_line(&mut tabs, &surfaces, to, line, now_ms, &mut pending_send, &mut ball) {
                 append_hook_log(&format!("say went nowhere: tab{to} is not a session"));
             }
+        }
+
+        // The window's quick-command launcher went up or down (see `quick_open`)
+        if let Some(on) = shell.mail().take_quick_shown() {
+            quick_open = on;
+        }
+        // Quick commands pressed, on the window or the phone. What each sends
+        // is read from the settings here -- the press only named it -- and any
+        // secret it names is put in now, through the door a script's secrets
+        // go through: the desk on screen, and open to whoever receives it. A
+        // shell tab is the person's own hands; an AI tab is an AI reading it.
+        // A refusal about a secret is said by that door (`caps::take_refusal`)
+        for (id, _tab) in shell.mail().take_quicks() {
+            let now_ms = start.elapsed().as_millis() as u64;
+            let spec = crate::quick::arrange(&cfg.as_ref().map(|c| c.quick_commands.clone()).unwrap_or_default());
+            // A folder is opened on the page and sends nothing; its id arriving
+            // here, or one that is gone, is a page out of step with the settings
+            let Some(item) = spec.find(&id).filter(|i| i.kind != crate::quick::Kind::Folder).cloned() else {
+                flash = Some(i18n::t("msg.quick.gone"));
+                continue;
+            };
+            let label = item.label.clone();
+            if item.body.trim().is_empty() {
+                flash = Some(i18n::tp("msg.quick.empty", &[("label", &label)]));
+                continue;
+            }
+            let go = quick_go(
+                item.kind, &item.ai, &surfaces, &tabs, active, board_open || settings_open,
+                &ai_choices, home.as_deref(),
+            );
+            // Whoever receives it is who a secret in it is for: an AI tab is an
+            // AI reading it, anything else is the person's own shell
+            let who = match (&go, item.kind) {
+                (QuickGo::Send(s), _) => match session_at(&surfaces, *s).and_then(|i| tabs.get(i)) {
+                    Some(t) if t.is_ai() => grants::Subject::Ai,
+                    _ => grants::Subject::Human,
+                },
+                (_, crate::quick::Kind::Ai) => grants::Subject::Ai,
+                _ => grants::Subject::Human,
+            };
+            if let QuickGo::Refuse(why) = go {
+                append_hook_log(&format!("quick command \"{label}\" not sent: {why}"));
+                flash = Some(i18n::tp("msg.quick.refused", &[("label", &label), ("why", &i18n::t(why))]));
+                continue;
+            }
+            if let QuickGo::Send(s) = go
+                && !item.enter
+                && session_at(&surfaces, s).and_then(|i| tabs.get(i)).is_some_and(|t| t.is_model())
+            {
+                flash = Some(i18n::tp("msg.quick.no_draft", &[("label", &label)]));
+                continue;
+            }
+            // Put in any secret it names. A refusal is said by the door itself
+            // (`caps::take_refusal`), in the same words a script would get
+            let text = match crate::quick::expand(&item.body, |name| {
+                caps.script_secret(name, who).map(|(value, _)| value)
+            }) {
+                Ok(text) => text,
+                Err(e) => {
+                    append_hook_log(&format!("quick command \"{label}\" not sent: {e}"));
+                    continue;
+                }
+            };
+            // The log says the button and what it was written as. The text
+            // that goes out may hold a secret's value, so that is never logged
+            match go {
+                QuickGo::Send(s) => {
+                    append_hook_log(&format!("quick command \"{label}\" -> tab{s}: {}", log_excerpt(&item.body, 120)));
+                    hand_over(&mut tabs, &surfaces, s, text, item.enter, now_ms, &mut pending_send, &mut ball);
+                    if s != active {
+                        active = s;
+                        board_open = false;
+                        settings_open = false;
+                        view_touched_ms = now_ms;
+                    }
+                }
+                QuickGo::Open { cwd, command, program } => {
+                    let Some(desk) = desks.get(desk_index).map(|d| d.name.clone()) else { continue };
+                    let (title, tab_id) = quick_tab_names(&label, &program, &tabs);
+                    let line = serde_json::json!({"name": title, "id": tab_id, "command": command});
+                    if config::append_tab(&desk, line, Some(&cwd)) {
+                        append_hook_log(&format!(
+                            "quick command \"{label}\" -> new tab \"{title}\" in {}: {}",
+                            cwd.display(),
+                            log_excerpt(&item.body, 120)
+                        ));
+                        reveal = Some((tab_id.clone(), Instant::now() + Duration::from_secs(20)));
+                        pending_quicks.push(PendingQuick {
+                            id: tab_id,
+                            label,
+                            text,
+                            submit: item.enter,
+                            until: Instant::now() + QUICK_WAIT,
+                        });
+                        watcher.poke();
+                    } else {
+                        flash = Some(i18n::tp("msg.quick.open_failed", &[("label", &label)]));
+                    }
+                }
+                QuickGo::Refuse(_) => {}
+            }
+        }
+        // Lines waiting for a tab a quick command opened: handed over once
+        // the program in it has started and is holding still, the same "ready"
+        // a startup hook waits for. A tab that never comes, or never settles,
+        // is said rather than waited on for ever
+        if !pending_quicks.is_empty() {
+            let now_ms = start.elapsed().as_millis() as u64;
+            let mut still = Vec::new();
+            for p in std::mem::take(&mut pending_quicks) {
+                let at = (1..=surfaces.len()).find(|&s| {
+                    session_at(&surfaces, s)
+                        .and_then(|i| tabs.get(i))
+                        .is_some_and(|t| t.id.as_deref() == Some(p.id.as_str()))
+                });
+                let ready = at
+                    .and_then(|s| session_at(&surfaces, s).and_then(|i| tabs.get(i)))
+                    .is_some_and(|t| quick_ready(t, now_ms));
+                match (at, ready) {
+                    (Some(s), true) => {
+                        hand_over(&mut tabs, &surfaces, s, p.text, p.submit, now_ms, &mut pending_send, &mut ball);
+                    }
+                    _ if Instant::now() > p.until => {
+                        flash = Some(i18n::tp("msg.quick.never_ready", &[("label", &p.label)]));
+                    }
+                    _ => still.push(p),
+                }
+            }
+            pending_quicks = still;
         }
 
         // Lua quick-actions tapped in the bar: look up the code (kept server-side)
@@ -5267,6 +5435,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // Open the command palette from any tab. It is drawn by
                         // the page, so this only nudges it open
                         KeyCode::Char(':') => shell.open_palette(),
+                        // The quick commands, over everything. Drawn by the
+                        // page like the palette, so this only nudges it open
+                        KeyCode::Char('k') => shell.open_quick(),
                         // 0 is the board, which is a screen over everything;
                         // 1.. are the running things, which live in panes. One
                         // key row, two different kinds of destination
@@ -7010,6 +7181,24 @@ pub fn hand_line(
     pending_send: &mut Vec<PendingSend>,
     ball: &mut ball::Ball,
 ) -> bool {
+    hand_over(tabs, surfaces, target, text, true, now_ms, pending_send, ball)
+}
+/// The same, with a choice about the Enter at the end: `submit` false leaves
+/// the text at the prompt for the person to finish (a quick command whose
+/// "press Enter" is off). A model bridge has no prompt to leave anything at,
+/// so it is always told -- whoever asks for less has to find that out first
+/// (see `quick_refusal`)
+#[allow(clippy::too_many_arguments)]
+pub fn hand_over(
+    tabs: &mut [Tab],
+    surfaces: &[Surface],
+    target: usize,
+    text: String,
+    submit: bool,
+    now_ms: u64,
+    pending_send: &mut Vec<PendingSend>,
+    ball: &mut ball::Ball,
+) -> bool {
     let Some(t) = session_at(surfaces, target).and_then(|i| tabs.get_mut(i)) else {
         return false;
     };
@@ -7030,9 +7219,207 @@ pub fn hand_line(
         to_live(t);
         let seen = t.output_count();
         let chunks = paste_chunks(t, &text);
-        pending_send.push(PendingSend::new(target, chunks, true, seen, now_ms));
+        pending_send.push(PendingSend::new(target, chunks, submit, seen, now_ms));
     }
     true
+}
+
+/// Where a quick command goes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QuickGo {
+    /// To a tab that is open, by its place in the list
+    Send(usize),
+    /// Into a new tab, started in this folder with this command
+    Open { cwd: std::path::PathBuf, command: String, program: String },
+    /// Nowhere, and the dictionary key saying why
+    Refuse(&'static str),
+}
+
+/// Where a quick command of this kind would go right now.
+///
+/// It goes to the working folder in front -- the folder of the tab being
+/// looked at -- because that is where a relative path in a command means
+/// something and where an AI asked to do something is meant to do it:
+///
+///   - the tab being looked at, when it is the right kind of tab;
+///   - otherwise the first tab of that kind in the same folder;
+///   - otherwise a new tab in that folder: a shell for a command, the AI the
+///     button names (or the first one this PC can start) for a prompt.
+///
+/// With no folder in front (the board, a page, a tab that works nowhere in
+/// particular), a command opens a shell in the home folder -- which is also
+/// how a button starts a program of this PC's -- and a prompt goes nowhere:
+/// an AI set to work on the whole of somebody's home folder is not a thing
+/// to do by accident.
+///
+/// A shell showing a full-screen program (an editor, a pager) is not
+/// standing at its prompt, and a command typed into it is keystrokes in that
+/// program; it is passed over. One asked to be left alone (locked) is too.
+/// The same function answers the launcher's "where would this go" and the
+/// press itself, so the two cannot disagree.
+#[allow(clippy::too_many_arguments)]
+pub fn quick_go(
+    kind: crate::quick::Kind,
+    ai: &str,
+    surfaces: &[Surface],
+    tabs: &[Tab],
+    active: usize,
+    covered: bool,
+    ais: &[crate::uistate::AiChoice],
+    home: Option<&std::path::Path>,
+) -> QuickGo {
+    use crate::quick::Kind;
+    let at = |s: usize| session_at(surfaces, s).and_then(|i| tabs.get(i));
+    let full_screen = |t: &Tab| t.parser.lock().map(|p| p.screen().alternate_screen()).unwrap_or(false);
+    let fits = |t: &Tab| match kind {
+        Kind::Terminal => !t.is_ai() && !full_screen(t),
+        Kind::Ai => t.is_ai() && (ai.is_empty() || t.ai_kind().as_deref() == Some(ai)),
+        Kind::Folder => false,
+    };
+    let usable = |t: &Tab| !t.locked && fits(t);
+    if kind == Kind::Folder {
+        return QuickGo::Refuse("msg.quick.gone");
+    }
+    if !covered && at(active).is_some_and(usable) {
+        return QuickGo::Send(active);
+    }
+    let folder = (!covered).then(|| surface_folder(surfaces, tabs, active)).flatten();
+    if let Some(f) = folder {
+        let same = (1..=surfaces.len()).find(|&s| {
+            at(s).is_some_and(|t| usable(t) && t.cwd().is_some_and(|c| crate::uistate::same_folder(c, f)))
+        });
+        if let Some(s) = same {
+            return QuickGo::Send(s);
+        }
+    }
+    match kind {
+        Kind::Terminal => match folder.or(home) {
+            Some(cwd) => QuickGo::Open {
+                cwd: cwd.to_path_buf(),
+                command: "powershell.exe".into(),
+                program: "PowerShell".into(),
+            },
+            None => QuickGo::Refuse("msg.quick.no_home"),
+        },
+        _ => {
+            let Some(f) = folder else { return QuickGo::Refuse("msg.quick.ai_needs_folder") };
+            // The AI's own command, without the flag that lets it act without
+            // asking: starting one from a button is not the person choosing
+            // that, which is a box they tick themselves in the settings
+            match quick_ai_choice(ai, ais) {
+                Some(a) => QuickGo::Open { cwd: f.to_path_buf(), command: a.key.clone(), program: a.name.clone() },
+                None => QuickGo::Refuse("msg.quick.no_ai"),
+            }
+        }
+    }
+}
+
+/// The same answer, in the words the launcher shows
+pub fn quick_dest(go: &QuickGo, tabs: &[Tab], surfaces: &[Surface]) -> crate::quick::QuickDest {
+    match go {
+        QuickGo::Send(s) => crate::quick::QuickDest {
+            how: "send",
+            name: session_at(surfaces, *s).and_then(|i| tabs.get(i)).map(|t| t.title.clone()).unwrap_or_default(),
+        },
+        QuickGo::Open { cwd, program, .. } => crate::quick::QuickDest {
+            how: "open",
+            name: i18n::tp(
+                "msg.quick.dest.open",
+                &[
+                    ("folder", &cwd.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| cwd.display().to_string())),
+                    ("program", program),
+                ],
+            ),
+        },
+        QuickGo::Refuse(why) => crate::quick::QuickDest { how: "none", name: i18n::t(why) },
+    }
+}
+
+/// The folder a command with nowhere else to be opens in
+pub fn home_folder() -> Option<std::path::PathBuf> {
+    ["USERPROFILE", "HOME"]
+        .iter()
+        .find_map(std::env::var_os)
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+}
+
+/// A name for a tab a quick command opens: the button's, made one of a kind
+/// in the desk, with an automation name to match
+pub fn quick_tab_names(label: &str, fallback: &str, tabs: &[Tab]) -> (String, String) {
+    let base = if label.trim().is_empty() { fallback.to_string() } else { label.trim().to_string() };
+    let title = (1..)
+        .map(|n| if n == 1 { base.clone() } else { format!("{base} {n}") })
+        .find(|t| !tabs.iter().any(|x| &x.title == t))
+        .unwrap_or(base);
+    let slug: String = title
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let stem = if slug.is_empty() { "quick".to_string() } else { slug };
+    let id = (1..)
+        .map(|n| if n == 1 { stem.clone() } else { format!("{stem}-{n}") })
+        .find(|i| !tabs.iter().any(|x| x.id.as_deref() == Some(i.as_str())))
+        .unwrap_or(stem);
+    (title, id)
+}
+
+/// The AI a prompt with none named starts, in the order the tab form offers
+/// them (`AI_CLIS` in the settings page)
+pub const QUICK_AI_ORDER: &[&str] = &["claude", "codex", "gemini", "aider", "kimi"];
+
+/// Which of the AIs this PC can start a prompt opens: the one it names, or
+/// with none named the first in `QUICK_AI_ORDER` -- not whichever profile
+/// happens to be read first
+pub fn quick_ai_choice<'a>(
+    ai: &str,
+    ais: &'a [crate::uistate::AiChoice],
+) -> Option<&'a crate::uistate::AiChoice> {
+    if !ai.is_empty() {
+        return ais.iter().find(|a| a.key == ai);
+    }
+    QUICK_AI_ORDER
+        .iter()
+        .find_map(|k| ais.iter().find(|a| a.key == *k))
+        .or_else(|| ais.first())
+}
+
+/// How long the screen of a tab a quick command opened has to hold still
+/// before the line is typed into it.
+///
+/// Longer than a startup hook waits (`Tab::ready_for_startup_hook`), and on
+/// purpose: a program just started often draws a line, goes quiet while it
+/// loads, and only then asks its own first question. A line typed into that
+/// quiet lands on the question when it comes (seen with Aider: its "create a
+/// git repository?" took the prompt as the answer). The whole detection window
+/// has to pass, so that a question on screen has been read as one.
+///
+/// And never given up on while a question stands (a folder's trust prompt is
+/// one): the startup hook's "ready anyway after 15 seconds" would type the
+/// line into it. The person answers it, and the line follows -- or, if nobody
+/// does within `QUICK_WAIT`, it is said and dropped
+pub const QUICK_SETTLE_MS: u64 = 2_500;
+pub const QUICK_WAIT: Duration = Duration::from_secs(90);
+
+pub fn quick_ready(t: &Tab, now_ms: u64) -> bool {
+    t.had_output()
+        && !matches!(t.state, crate::detect::TabState::Busy | crate::detect::TabState::Question)
+        && t.ms_since_change(now_ms) >= QUICK_SETTLE_MS
+}
+
+/// A line waiting for a tab a quick command has just opened
+pub struct PendingQuick {
+    /// The new tab's automation name
+    pub id: String,
+    pub label: String,
+    pub text: String,
+    pub submit: bool,
+    pub until: Instant,
 }
 /// The screen to move to, following the ball. None if it shouldn't move.
 ///
@@ -8065,6 +8452,58 @@ mod survey_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tab a quick command opens is named after the button, and has an
+    /// automation name a script can type -- a made-up one when the button's
+    /// name has no letters a name can be made of
+    #[test]
+    fn a_tab_a_quick_command_opens_has_names_of_its_own() {
+        assert_eq!(quick_tab_names("Run tests!", "PowerShell", &[]), ("Run tests!".into(), "run-tests".into()));
+        assert_eq!(quick_tab_names("一覧", "PowerShell", &[]), ("一覧".into(), "quick".into()));
+        assert_eq!(quick_tab_names("  ", "Claude Code", &[]), ("Claude Code".into(), "claude-code".into()));
+    }
+
+    /// With no AI named, a prompt starts the one the tab form offers first,
+    /// whatever order the profiles happen to be read in; a named one that is
+    /// not on this PC starts nothing rather than something else
+    #[test]
+    fn a_prompt_with_no_ai_named_starts_the_first_one_offered() {
+        let ais = vec![
+            crate::uistate::AiChoice { key: "aider".into(), name: "Aider".into(), command: "aider".into() },
+            crate::uistate::AiChoice { key: "codex".into(), name: "Codex CLI".into(), command: "codex --flag".into() },
+        ];
+        assert_eq!(quick_ai_choice("", &ais).map(|a| a.key.as_str()), Some("codex"));
+        assert_eq!(quick_ai_choice("aider", &ais).map(|a| a.key.as_str()), Some("aider"));
+        assert!(quick_ai_choice("gemini", &ais).is_none());
+        assert!(quick_ai_choice("", &[]).is_none());
+    }
+
+    /// Where a button goes with nothing open: a command opens in the home
+    /// folder, a prompt goes nowhere, and neither guesses a folder
+    #[test]
+    fn with_no_folder_in_front_a_command_opens_at_home_and_a_prompt_waits() {
+        let ais = vec![crate::uistate::AiChoice { key: "claude".into(), name: "Claude Code".into(), command: "claude".into() }];
+        let dir = std::env::temp_dir();
+        // No tabs at all: nothing to send to, so a new one opens -- but only
+        // with a folder in front, which the board is not
+        assert_eq!(
+            quick_go(crate::quick::Kind::Ai, "", &[], &[], 0, true, &ais, Some(&dir)),
+            QuickGo::Refuse("msg.quick.ai_needs_folder")
+        );
+        assert_eq!(
+            quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, Some(&dir)),
+            QuickGo::Open { cwd: dir.clone(), command: "powershell.exe".into(), program: "PowerShell".into() }
+        );
+        assert_eq!(
+            quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, None),
+            QuickGo::Refuse("msg.quick.no_home")
+        );
+        // A folder sends nothing, wherever it is pressed
+        assert_eq!(
+            quick_go(crate::quick::Kind::Folder, "", &[], &[], 0, false, &ais, Some(&dir)),
+            QuickGo::Refuse("msg.quick.gone")
+        );
+    }
 
     /// The file panel's own folder is a fence, and `..` is not a gate in it.
     ///

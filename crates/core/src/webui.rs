@@ -1081,6 +1081,21 @@ fn pet_nouns_json() -> String {
     serde_json::to_string(&pet_nouns()).unwrap_or_else(|_| "[]".into())
 }
 
+/// What the quick-command editor has to know that `quick.rs` decides: the
+/// grid's bounds, how long a name and a body may be, where the icons are,
+/// and what a secret named in a body looks like. Handed over rather than
+/// written again in the page, so the two cannot hold different limits
+fn quick_json() -> String {
+    use crate::quick as q;
+    serde_json::json!({
+        "cols": q::COLS_DEFAULT, "rows": q::ROWS_DEFAULT,
+        "colsMax": q::COLS_MAX, "rowsMax": q::ROWS_MAX, "pagesMax": q::PAGES_MAX,
+        "labelMax": q::LABEL_MAX, "bodyMax": q::BODY_MAX,
+        "icons": q::ICONS_PATH, "secretRef": q::SECRET_REF,
+    })
+    .to_string()
+}
+
 fn json_resp(v: serde_json::Value) -> Response<Cursor<Vec<u8>>> {
     secure(Response::from_string(v.to_string()).with_header(
         Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap(),
@@ -1218,6 +1233,7 @@ fn handle(
             let html = crate::i18n::render(&themed(PAGE.to_string()))
                 .replace("__TOKEN__", token)
                 .replace("__HOTKEY_DEFAULT__", crate::hotkeys::DEFAULT)
+                .replace("__QUICK__", &quick_json())
                 .replace("__REMOTE__", if remote_client { "true" } else { "false" })
                 .replace("__GRANTS__", &crate::grants::catalog_json())
                 .replace(
@@ -2571,6 +2587,47 @@ fn handle(
                 "actions": crate::hotkeys::ACTIONS,
             })))?;
         }
+        // The icon set the quick-command picker chooses from. Asked for once,
+        // when the picker is first opened
+        ("GET", p) if crate::quick::asset(p).is_some() => {
+            let bytes = crate::quick::asset(p).unwrap_or_default();
+            req.respond(
+                Response::from_data(bytes)
+                    .with_header(
+                        Header::from_bytes(&b"Content-Type"[..], &b"text/plain; charset=utf-8"[..]).unwrap(),
+                    )
+                    .with_header(
+                        Header::from_bytes(&b"Cache-Control"[..], &b"public, max-age=86400"[..]).unwrap(),
+                    ),
+            )?;
+        }
+        // Where every quick command sits, worked out by the same function the
+        // board is drawn from: after the grid is resized, and before the page
+        // shows what a hand-written file says. The page never places a button
+        // by a rule of its own, so the settings and the launcher cannot come to
+        // disagree about where one is
+        ("POST", "/api/quick/arrange") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                return req
+                    .respond(Response::from_string("payload too large").with_status_code(413))
+                    .map_err(Into::into);
+            };
+            match serde_json::from_str::<crate::quick::QuickSpec>(&body) {
+                Ok(spec) => {
+                    let spec = crate::quick::arrange(&spec);
+                    req.respond(json_resp(serde_json::json!({
+                        "ok": true,
+                        "svgs": crate::quick::drawings(&spec),
+                        "spec": spec,
+                    })))?
+                }
+                Err(e) => req.respond(json_resp(serde_json::json!({
+                    "ok": false,
+                    "error": e.to_string(),
+                })))?,
+            }
+        }
         ("GET", "/api/keys") => {
             let (map, errs) = crate::keys::Keys::load(crate::config::load().as_ref());
             let shown: std::collections::HashMap<&str, String> = crate::keys::ACTIONS
@@ -2949,7 +3006,7 @@ fn handle(
 pub(crate) fn themed(html: String) -> String {
     let look = crate::config::load().map(|c| c.appearance).unwrap_or_default();
     let scheme = look.scheme();
-    crate::push::inject(crate::toast::render(html))
+    crate::quick::render(crate::push::inject(crate::toast::render(html)))
         .replace("{{THEME}}", &scheme.css_vars())
         .replace(
             "{{SCHEME}}",
@@ -3185,10 +3242,77 @@ const PAGE: &str = r##"<!doctype html>
  .row.pair { padding:var(--s1) 0; }
  /* A key that works from any program: three held keys and the key */
  .hkpick { display:flex; align-items:center; gap:var(--s1); flex:none; }
- .hkpick .tog { height:32px; min-width:52px; padding:0 var(--s2); font-size:12.5px; border:1px solid var(--edge);
+ .hkpick .tog, .qseg .tog { height:32px; min-width:52px; padding:0 var(--s2); font-size:12.5px; border:1px solid var(--edge);
    border-radius:var(--r-ctl); background:var(--panel2); color:var(--dim); cursor:pointer; }
  /* Held: marked by its rim, not filled -- the page's one filled button is Save */
- .hkpick .tog.on { border-color:var(--brand); color:var(--text); box-shadow:inset 0 0 0 1px var(--brand); font-weight:600; }
+ .hkpick .tog.on, .qseg .tog.on { border-color:var(--brand); color:var(--text); box-shadow:inset 0 0 0 1px var(--brand); font-weight:600; }
+ /* ── Quick commands: the grid being edited ──
+    The button's face is shared with the launcher (quick.rs, poured in just
+    below); this is the frame it sits in here. Places are drawn even when empty, because an
+    empty place is somewhere to put something */
+{{QUICK_CSS}}
+ .qseg { display:flex; gap:var(--s1); flex-wrap:wrap; }
+ .qsize { max-width:420px; }
+ .qsize > .field { flex:1 1 140px; margin-top:var(--s4); }
+ .qsizehint { margin-top:var(--s2); }
+ .qcrumbs { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s1); margin-top:var(--s5); }
+ .qcrumbs button:last-child { color:var(--text); font-weight:600; }
+ .qcrumbs .qsep { color:var(--faint); }
+ .qegrid { display:grid; gap:var(--s2); margin-top:var(--s2); user-select:none; -webkit-user-select:none; }
+ .qslot { width:var(--qs, 88px); height:var(--qs, 88px); overflow:hidden; position:relative; border-radius:var(--r-card);
+   border:1px solid var(--edge); background:var(--panel2); cursor:pointer; outline:none;
+   -webkit-touch-callout:none; }
+ .qslot:hover { border-color:var(--edge-hi); }
+ /* "vacant", not "empty": .empty is this page's empty-list message */
+ .qslot.vacant { background:transparent; border:1px dashed var(--line); }
+ .qslot.vacant:hover { border-color:var(--edge); }
+ .qslot.back { background:transparent; border-color:var(--line); }
+ /* Picked, or where the keyboard is: the brand rim and its ring (5.1) */
+ .qslot.sel, .qslot:focus-visible { border-color:var(--brand);
+   box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+ /* Where a carried button would land */
+ .qslot.over, .qpager button.over { border-color:var(--brand); border-style:solid;
+   background:color-mix(in srgb, var(--brand) 12%, transparent); }
+ .qslot.carried { opacity:.35; }
+ .qegrid.tiny .qface .ql, .qegrid.tiny .qface .qk { display:none; }
+ .qegrid.tiny .qface { padding:var(--s1); }
+ .qegrid.tiny .qface svg { width:60%; height:60%; }
+ /* A button with no picture has only its name to be told apart by, so it keeps it, smaller */
+ .qegrid.tiny .qface.bare .ql { display:-webkit-box; font-size:10px; -webkit-line-clamp:2; }
+ .qghost { position:fixed; z-index:70; width:72px; height:72px; margin:-36px 0 0 -36px;
+   pointer-events:none; border-radius:var(--r-card); border:1px solid var(--brand);
+   background:var(--panel); box-shadow:0 8px 24px #0007; }
+ .qpager { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:var(--s1);
+   margin-top:var(--s3); }
+ .qpager .qpage { min-width:32px; padding:0 var(--s2); font-variant-numeric:tabular-nums; color:var(--dim); }
+ .qpager .qpage.on { color:var(--text); border-color:var(--brand); box-shadow:inset 0 0 0 1px var(--brand); }
+ .qpanelhint { margin-top:var(--s4); text-align:center; }
+ .qpanel { margin-top:var(--s5); padding-top:var(--s4); border-top:1px solid var(--line); }
+ .qpanelhead { font-size:12px; font-weight:500; color:var(--text); }
+ .qmake { margin:var(--s2) 0; }
+ .qpanelrow { display:flex; align-items:flex-start; gap:var(--s5); flex-wrap:wrap; }
+ .qpreview { flex:none; width:88px; height:88px; border-radius:var(--r-card); border:1px solid var(--edge);
+   background:var(--panel2); }
+ .qfields { flex:1 1 280px; min-width:0; }
+ .qfields > .field:first-child { margin-top:0; }
+ .qfields textarea.qbody { min-height:96px; }
+ .qcount { align-self:center; color:var(--dim); font-size:13px; font-variant-numeric:tabular-nums; }
+ .qdelrow { margin-top:var(--s5); }
+ .fmenuitem.bad { color:var(--stop); }
+ /* The picture picker: a search, then the pictures */
+ .qpicker { width:min(640px, 100%); }
+ .qpicker .mbody > input { width:100%; }
+ .qicons { display:grid; grid-template-columns:repeat(auto-fill, minmax(44px, 1fr)); gap:var(--s1);
+   max-height:min(52vh, 440px); overflow:auto; margin-top:var(--s3); align-content:start; }
+ .qicons .qicon { height:44px; padding:0; display:flex; align-items:center; justify-content:center;
+   background:var(--bg); color:var(--text); }
+ .qicons .qicon svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:2;
+   stroke-linecap:round; stroke-linejoin:round; }
+ .qicons .qicon.on { border-color:var(--brand); box-shadow:inset 0 0 0 1px var(--brand); }
+ .qicons .qiconhead { grid-column:1 / -1; font-size:11.5px; color:var(--dim); margin-top:var(--s2); }
+ .qicons .qiconhead:first-child { margin-top:0; }
+ .qicons .qmore { grid-column:1 / -1; }
+ @media (max-width:760px) { .qpanelrow { gap:var(--s3); } .qpreview { width:64px; height:64px; } }
  .hkpick select.hkkey { height:32px; min-width:92px; margin-left:var(--s1); }
  .hkstate.warnline { color:var(--warn); }
  @media (max-width:700px) { .row.pair.hkrow { flex-wrap:wrap; } .row.pair.hkrow > label { flex-basis:100% !important; } }
@@ -3828,6 +3952,7 @@ async function readUserJson(res) {
 
 {{TOAST_JS}}
 {{PUSH_JS}}
+{{QUICK_JS}}
 // This screen reports results, and a result is either good news or bad — say
 // which. Declared as a function so it exists from the moment the script starts,
 // whatever order the pieces end up in
@@ -5838,6 +5963,649 @@ function keysCard() {
   }
   return box;
 }
+// ── Quick commands ────────────────────────────────────────────
+// Buttons on pages of a grid, each handing a tab a command or a prompt; a
+// button can be a folder with a grid of its own. Edited here as the grid it
+// is: the places are the places the launcher shows. Where a button may sit is
+// never decided in this script -- after anything that could move one, the app
+// is asked (/api/quick/arrange, the same function the launcher is drawn from)
+const QUICK = __QUICK__;
+// Where the editor is standing, kept across redraws of the card: the folders
+// walked into by id, the page, and the place picked on it
+const quickAt = {path: [], page: 0, pick: null};
+// The drawings of the icons in use, by name, as the app hands them back. The
+// whole set is fetched only when the picker is opened
+const quickSvgs = {};
+let quickSet = null;
+// The drawings offered first, before anything is typed: the things a command
+// or a prompt is usually about. Only the ones the set really has are shown
+const QUICK_COMMON_ICONS = ["terminal", "square-terminal", "folder", "folder-open", "folder-git-2",
+  "git-branch", "git-commit-horizontal", "git-pull-request", "git-merge", "bot", "sparkles",
+  "brain", "wand-sparkles", "message-square", "send", "play", "square", "rotate-ccw", "refresh-cw",
+  "rocket", "package", "box", "container", "database", "server", "cloud", "cloud-upload", "globe",
+  "code", "braces", "file-code", "file-text", "notebook-pen", "clipboard", "clipboard-check",
+  "list-checks", "check", "bug", "test-tube", "flask-conical", "wrench", "hammer", "settings", "key",
+  "lock", "shield", "search", "eye", "trash-2", "download", "upload", "zap", "flame", "timer",
+  "calendar", "mail", "bell", "star", "heart", "flag", "house", "power", "monitor", "smartphone"];
+
+// The settings as they stand, read without writing: drawing the card is not
+// an edit, and a key put into the settings by looking would mark them unsaved
+function quickSpec() { return isObj(current.quick_commands) ? current.quick_commands : {items: []}; }
+// ...and the same, ready to be written into
+function quickOwn() {
+  if (!isObj(current.quick_commands)) current.quick_commands = {items: []};
+  if (!Array.isArray(current.quick_commands.items)) current.quick_commands.items = [];
+  return current.quick_commands;
+}
+function quickDims() {
+  const q = quickSpec();
+  return {cols: q.cols || QUICK.cols, rows: q.rows || QUICK.rows};
+}
+// The grid being shown: the top, or the folder walked into. A folder that is
+// no longer there takes the walk back to the last one that still is
+function quickHolder(q) {
+  let at = q;
+  const kept = [];
+  for (const id of quickAt.path) {
+    const f = (at.items || []).find(i => i.id === id && i.kind === "folder");
+    if (!f) break;
+    kept.push(id);
+    at = f;
+  }
+  if (kept.length !== quickAt.path.length) {
+    quickAt.path = kept; quickAt.page = 0; quickAt.pick = null;
+  }
+  return at;
+}
+async function quickArrange(q) {
+  try {
+    const r = await fetch("/api/quick/arrange", {method:"POST",
+      headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
+      body: JSON.stringify(q)}).then(x => x.json());
+    if (r && r.ok) { Object.assign(quickSvgs, r.svgs || {}); return r.spec; }
+  } catch (e) {}
+  return null;
+}
+// The shape quick commands are written in (see payload). Null when there is
+// nothing worth writing at all
+function quickCanon(q, inFolder) {
+  if (!isObj(q)) return null;
+  const items = (Array.isArray(q.items) ? q.items : []).filter(isObj).map(i => {
+    const folder = i.kind === "folder";
+    const o = {id: i.id || "", page: i.page || 0, row: i.row || 0, col: i.col || 0};
+    if (i.icon) o.icon = i.icon;
+    o.label = i.label || "";
+    if (folder || i.kind === "ai") o.kind = i.kind;
+    if (!folder && i.body) o.body = i.body;
+    if (!folder && i.enter === false) o.enter = false;
+    if (i.kind === "ai" && i.ai) o.ai = i.ai;
+    if (folder) {
+      const inner = quickCanon(i, true) || {};
+      if (inner.pages) o.pages = inner.pages;
+      o.items = inner.items || [];
+    }
+    return o;
+  }).filter(o => o.kind === "folder" || o.label.trim() || o.body || o.icon);
+  const out = {};
+  if (!inFolder) {
+    if (q.cols && q.cols !== QUICK.cols) out.cols = q.cols;
+    if (q.rows && q.rows !== QUICK.rows) out.rows = q.rows;
+  }
+  // Pages only when there are more than the buttons already take: the app
+  // counts those itself, so writing them down is saying nothing
+  const used = items.reduce((m, i) => Math.max(m, i.page + 1), 1);
+  if (q.pages && q.pages > used) out.pages = q.pages;
+  out.items = items;
+  if (!inFolder && !items.length && !out.cols && !out.rows && !out.pages) return null;
+  return out;
+}
+// Put the app's answer in, or keep what is there when it could not be asked
+async function quickSettle() {
+  const a = await quickArrange(quickOwn());
+  if (a) current.quick_commands = a;
+  refreshSave();
+}
+function quickNewId() {
+  const b = new Uint8Array(6);
+  crypto.getRandomValues(b);
+  return "q" + [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+}
+const quickSvg = name => quickSvgs[name] || "";
+const quickWayOut = (row, col) => quickAt.path.length > 0 && row === 0 && col === 0;
+// Every button inside a folder, folders inside it included
+function quickCount(f) {
+  return (f.items || []).reduce((n, i) => n + 1 + (i.kind === "folder" ? quickCount(i) : 0), 0);
+}
+// A secret named in a body, as the app reads one (quick.rs SECRET_REF)
+const quickSecretRe = () => new RegExp(QUICK.secretRef, "g");
+function quickSecretNames(body) {
+  const out = [];
+  for (const m of String(body || "").matchAll(quickSecretRe())) if (!out.includes(m[1])) out.push(m[1]);
+  return out;
+}
+// Written the way the app reads it. Put together here rather than typed out,
+// because a pair of braces in this page's source is where its words go
+const quickSecretRef = name => "{" + "{secrets." + name + "}" + "}";
+
+function quickCard() {
+  const body = el("div", {class:"qedit"}, el("div", {class:"hint"}, "…"));
+  const box = card(T["settings.quick.title"],
+    el("div", {class:"hint"}, T["settings.quick.intro"]), body);
+  const draw = () => drawQuick(body, draw);
+  (async () => {
+    // A file written by hand is shown as the app would place it, ids and all.
+    // Saving writes that; merely opening changes nothing
+    if (isObj(current.quick_commands)) {
+      const a = await quickArrange(current.quick_commands);
+      if (a) current.quick_commands = a;
+    }
+    draw();
+  })();
+  return box;
+}
+
+function drawQuick(body, draw) {
+  const q = quickSpec();
+  const {cols, rows} = quickDims();
+  const here = quickHolder(q);
+  const pages = Math.max(1, here.pages || 1);
+  if (quickAt.page >= pages) quickAt.page = pages - 1;
+  const items = here.items || [];
+  const at = (row, col) => items.find(i => i.page === quickAt.page && i.row === row && i.col === col);
+  body.textContent = "";
+
+  // The grid's size. Changing it asks the app where the buttons go now
+  const size = (label, value, max, key) => {
+    const s = el("select");
+    for (let n = 1; n <= max; n++) s.append(el("option", {value:String(n)}, String(n)));
+    s.value = String(value);
+    s.addEventListener("change", async () => {
+      quickOwn()[key] = Number(s.value);
+      quickAt.pick = null;
+      await quickSettle();
+      draw();
+    });
+    return el("div", {class:"field"}, el("label", {}, label), el("div", {class:"fieldctl"}, s));
+  };
+  body.append(el("div", {class:"row2 qsize"},
+      size(T["settings.quick.cols"], cols, QUICK.colsMax, "cols"),
+      size(T["settings.quick.rows"], rows, QUICK.rowsMax, "rows")),
+    el("div", {class:"hint qsizehint"}, T["settings.quick.size.hint"]));
+
+  // Where in the folders this is. At the top the card's own title says it
+  const crumbs = el("div", {class:"qcrumbs", hidden: quickAt.path.length ? null : ""});
+  const goUp = n => { quickAt.path = quickAt.path.slice(0, n); quickAt.page = 0; quickAt.pick = null; draw(); };
+  crumbs.append(el("button", {class:"quiet", onclick:() => goUp(0)}, T["settings.quick.top"]));
+  let walk = q;
+  quickAt.path.forEach((id, n) => {
+    walk = (walk.items || []).find(i => i.id === id) || {};
+    crumbs.append(el("span", {class:"qsep"}, "›"),
+      el("button", {class:"quiet", onclick:() => goUp(n + 1)}, walk.label || T["settings.quick.folder.unnamed"]));
+  });
+  body.append(crumbs);
+
+  // The grid
+  // Each place is a square as wide as the card allows, up to 88px. Worked out
+  // from the width rather than left to the stylesheet's aspect ratio, which a
+  // grid stretches out of shape once the places get narrow
+  const grid = el("div", {class:"qegrid",
+    style:"grid-template-columns:repeat(" + cols + ", var(--qs, 88px))"});
+  const pickSlot = (row, col) => { quickAt.pick = {row, col}; draw(); };
+  const enter = f => { quickAt.path.push(f.id); quickAt.page = 0; quickAt.pick = null; draw(); };
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const item = at(row, col);
+      const way = quickWayOut(row, col);
+      const picked = !!quickAt.pick && quickAt.pick.row === row && quickAt.pick.col === col;
+      const slot = el("div", {class:"qslot" + (way ? " back" : item ? " item" : " vacant") + (picked ? " sel" : ""),
+        tabindex:"0", role:"button", "data-row":String(row), "data-col":String(col),
+        title: way ? T["settings.quick.back"] : item ? (item.label || "") : T["settings.quick.empty.title"]});
+      if (way) slot.append(quickFace({kind:"back"}));
+      else if (item) slot.append(quickFace(item, quickSvg));
+      slot.addEventListener("click", () => {
+        if (quickDragged) return;
+        if (way) { goUp(quickAt.path.length - 1); return; }
+        pickSlot(row, col);
+      });
+      // A folder is walked into with a double press, as a folder is anywhere
+      // else; a single press picks it, to rename it or change its picture
+      slot.addEventListener("dblclick", () => { if (item && item.kind === "folder") enter(item); });
+      slot.addEventListener("keydown", e => {
+        if (e.key === "Enter" && item && item.kind === "folder") { e.preventDefault(); enter(item); }
+        else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); slot.click(); }
+        else if ((e.key === "Delete" || e.key === "Backspace") && item) { e.preventDefault(); quickDelete(item, draw); }
+      });
+      slot.addEventListener("contextmenu", e => {
+        e.preventDefault();
+        if (way) return;
+        const choices = item
+          ? [item.kind === "folder" ? [T["settings.quick.menu.open"], () => enter(item)] : null,
+             [T["common.delete"], () => quickDelete(item, draw), true]]
+          : [[T["settings.quick.menu.command"], () => quickCreate("command", row, col, draw)],
+             [T["settings.quick.menu.folder"], () => quickCreate("folder", row, col, draw)]];
+        quickMenu(e.clientX, e.clientY, choices.filter(Boolean));
+      });
+      if (item) quickDraggable(slot, item, draw);
+      grid.append(slot);
+    }
+  }
+  // On a phone's width the names do not fit under the pictures; the picture
+  // stays, and the name is in the panel below
+  const fit = () => {
+    const room = body.clientWidth;
+    if (!room) return;
+    const size = Math.max(28, Math.min(88, Math.floor((room - 8 * (cols - 1)) / cols)));
+    grid.style.setProperty("--qs", size + "px");
+    grid.classList.toggle("tiny", size < 60);
+  };
+  if (window.ResizeObserver) new ResizeObserver(fit).observe(body);
+  requestAnimationFrame(fit);
+  // Holding a button down on a touch screen is how it is picked up; while one
+  // is being carried, the page does not scroll under the finger
+  grid.addEventListener("touchmove", e => { if (quickCarrying) e.preventDefault(); }, {passive:false});
+  body.append(grid);
+
+  // The pages
+  const pager = el("div", {class:"qpager"});
+  for (let p = 0; p < pages; p++) {
+    pager.append(el("button", {class:"qpage" + (p === quickAt.page ? " on" : ""), "data-page":String(p),
+      title: fill(T["settings.quick.page"], {n: p + 1}),
+      onclick:() => { quickAt.page = p; quickAt.pick = null; draw(); }}, String(p + 1)));
+  }
+  if (pages < QUICK.pagesMax) {
+    pager.append(el("button", {class:"quiet", title:T["settings.quick.page.add"],
+      onclick:() => {
+        const h = quickHolder(quickOwn());
+        h.pages = pages + 1;
+        quickAt.page = pages; quickAt.pick = null;
+        refreshSave(); draw();
+      }}, "+"));
+  }
+  const lastEmpty = pages > 1 && !items.some(i => i.page === pages - 1);
+  if (lastEmpty) {
+    pager.append(el("button", {class:"quiet", title:T["settings.quick.page.remove"],
+      onclick:() => {
+        const h = quickHolder(quickOwn());
+        h.pages = pages - 1;
+        if (quickAt.page >= pages - 1) { quickAt.page = pages - 2; quickAt.pick = null; }
+        refreshSave(); draw();
+      }}, "−"));
+  }
+  body.append(pager);
+
+  // What is picked
+  if (quickAt.pick && !quickWayOut(quickAt.pick.row, quickAt.pick.col)) {
+    body.append(quickPanel(at(quickAt.pick.row, quickAt.pick.col), quickAt.pick, draw, enter));
+  } else {
+    body.append(el("div", {class:"hint qpanelhint"}, T["settings.quick.pick.hint"]));
+  }
+}
+
+// A button being carried to another place. A mouse picks it up on the first
+// few pixels of movement; a finger has to hold still for a moment first, so a
+// swipe past the grid still scrolls the page
+let quickCarrying = false, quickDragged = false;
+function quickDraggable(slot, item, draw) {
+  slot.addEventListener("pointerdown", e => {
+    if (e.button !== 0) return;
+    const x0 = e.clientX, y0 = e.clientY;
+    const touch = e.pointerType !== "mouse";
+    let ghost = null, over = null, timer = null, last = e;
+    const begin = () => {
+      quickCarrying = true;
+      ghost = el("div", {class:"qghost"});
+      ghost.append(quickFace(item, quickSvg));
+      document.body.append(ghost);
+      slot.classList.add("carried");
+      place(last);
+    };
+    const place = ev => {
+      ghost.style.left = ev.clientX + "px";
+      ghost.style.top = ev.clientY + "px";
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const target = under && under.closest(".qslot, .qpage");
+      if (target !== over) {
+        if (over) over.classList.remove("over");
+        over = target === slot ? null : target;
+        if (over) over.classList.add("over");
+      }
+    };
+    const move = ev => {
+      last = ev;
+      if (!ghost) {
+        const far = Math.hypot(ev.clientX - x0, ev.clientY - y0);
+        if (touch) { if (far > 8) finish(); return; }
+        if (far < 5) return;
+        begin();
+      }
+      ev.preventDefault();
+      place(ev);
+    };
+    const finish = () => {
+      clearTimeout(timer);
+      removeEventListener("pointermove", move);
+      removeEventListener("pointerup", up);
+      removeEventListener("pointercancel", finish);
+      quickCarrying = false;
+      if (!ghost) return;
+      ghost.remove();
+      slot.classList.remove("carried");
+      if (over) over.classList.remove("over");
+      // The click that follows a drop is not a press
+      quickDragged = true;
+      setTimeout(() => { quickDragged = false; }, 0);
+    };
+    const up = () => {
+      const target = over;
+      const carried = !!ghost;
+      finish();
+      if (carried && target) quickDrop(item, target, draw);
+    };
+    if (touch) timer = setTimeout(() => { if (!ghost) begin(); }, 350);
+    addEventListener("pointermove", move, {passive:false});
+    addEventListener("pointerup", up);
+    addEventListener("pointercancel", finish);
+  });
+}
+
+// Where a carried button ends up: a free place, a place another button holds
+// (the two change places), a folder (into it), the way out (into the grid
+// the folder is in), or a page number (onto that page)
+async function quickDrop(item, target, draw) {
+  const q = quickOwn();
+  const here = quickHolder(q);
+  const list = here.items || (here.items = []);
+  const idx = list.findIndex(i => i.id === item.id);
+  if (idx < 0) return;
+  const moved = list[idx];
+  if (target.classList.contains("qpage")) {
+    const p = Number(target.dataset.page);
+    if (p === quickAt.page) return;
+    // The app moves it off a place that is taken
+    Object.assign(moved, {page: p, row: 0, col: 0});
+    quickAt.page = p;
+    quickAt.pick = null;
+  } else if (target.classList.contains("back")) {
+    const folderId = quickAt.path[quickAt.path.length - 1];
+    let parent = q;
+    for (const id of quickAt.path.slice(0, -1)) parent = parent.items.find(i => i.id === id);
+    const folder = parent.items.find(i => i.id === folderId);
+    list.splice(idx, 1);
+    Object.assign(moved, {page: folder ? folder.page : 0, row: 0, col: 0});
+    parent.items.push(moved);
+    quickAt.pick = null;
+  } else {
+    const row = Number(target.dataset.row), col = Number(target.dataset.col);
+    const other = list.find(i => i.page === quickAt.page && i.row === row && i.col === col);
+    if (other && other.id === moved.id) return;
+    if (other && other.kind === "folder") {
+      list.splice(idx, 1);
+      if (!Array.isArray(other.items)) other.items = [];
+      // The first place of a folder is its way out, so the app finds this one
+      // the first free place instead
+      Object.assign(moved, {page: 0, row: 0, col: 0});
+      other.items.push(moved);
+      quickAt.pick = null;
+    } else {
+      if (other) Object.assign(other, {page: moved.page, row: moved.row, col: moved.col});
+      Object.assign(moved, {page: quickAt.page, row, col});
+      quickAt.pick = {row, col};
+    }
+  }
+  await quickSettle();
+  draw();
+}
+
+function quickCreate(kind, row, col, draw) {
+  const here = quickHolder(quickOwn());
+  if (!Array.isArray(here.items)) here.items = [];
+  const folder = kind === "folder";
+  here.items.push(Object.assign({id: quickNewId(), page: quickAt.page, row, col, icon: "",
+    label: folder ? T["settings.quick.folder.new"] : "", kind: folder ? "folder" : "terminal",
+    body: "", enter: true}, folder ? {pages: 1, items: []} : {}));
+  quickAt.pick = {row, col};
+  refreshSave();
+  draw();
+  const name = document.querySelector(".qpanel input.qlabel");
+  if (name) { name.focus(); name.select(); }
+}
+
+async function quickDelete(item, draw) {
+  const n = item.kind === "folder" ? quickCount(item) : 0;
+  if (n && !await confirmAction(fill(T["settings.quick.delete.folder"], {name: item.label || "", n}),
+                                T["common.delete"])) return;
+  const here = quickHolder(quickOwn());
+  here.items = (here.items || []).filter(i => i.id !== item.id);
+  quickAt.pick = null;
+  refreshSave();
+  draw();
+}
+
+// A small menu at the pointer. The one kind of floating list this page has
+function quickMenu(x, y, rows) {
+  document.querySelectorAll(".fmenu.qmenu").forEach(m => m.remove());
+  const menu = el("div", {class:"fmenu qmenu", role:"menu"});
+  const close = () => { menu.remove(); removeEventListener("mousedown", outside, true); removeEventListener("keydown", esc, true); };
+  const outside = e => { if (!menu.contains(e.target)) close(); };
+  const esc = e => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  for (const [label, act, bad] of rows) {
+    menu.append(el("button", {class:"fmenuitem" + (bad ? " bad" : ""), role:"menuitem",
+      onclick:() => { close(); act(); }}, label));
+  }
+  document.body.append(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + "px";
+  menu.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + "px";
+  setTimeout(() => { addEventListener("mousedown", outside, true); addEventListener("keydown", esc, true); }, 0);
+  const first = menu.querySelector("button");
+  if (first) first.focus();
+}
+
+// The picked place: what to make there, or the button that is there
+function quickPanel(item, spot, draw, enter) {
+  const panel = el("div", {class:"qpanel"});
+  if (!item) {
+    panel.append(el("div", {class:"qpanelhead"}, T["settings.quick.empty.head"]),
+      el("div", {class:"row2 qmake"},
+        el("button", {onclick:() => quickCreate("command", spot.row, spot.col, draw)}, T["settings.quick.make.command"]),
+        el("button", {onclick:() => quickCreate("folder", spot.row, spot.col, draw)}, T["settings.quick.make.folder"])),
+      el("div", {class:"hint"}, T["settings.quick.empty.hint"]));
+    return panel;
+  }
+  const folder = item.kind === "folder";
+  const preview = el("div", {class:"qpreview"});
+  const repaint = () => {
+    preview.textContent = "";
+    preview.append(quickFace(item, quickSvg));
+    const slot = document.querySelector(".qegrid .qslot.sel");
+    if (slot) { slot.textContent = ""; slot.append(quickFace(item, quickSvg)); slot.title = item.label || ""; }
+  };
+  repaint();
+
+  // The picture
+  const iconBtn = el("button", {onclick:() => quickIconPicker(item.icon, name => {
+    item.icon = name; refreshSave(); repaint();
+    clearIcon.hidden = !item.icon;
+  })}, T["settings.quick.icon.pick"]);
+  const clearIcon = el("button", {class:"quiet", onclick:() => {
+    item.icon = ""; refreshSave(); repaint(); clearIcon.hidden = true;
+  }}, T["settings.quick.icon.none"]);
+  clearIcon.hidden = !item.icon;
+  const fields = el("div", {class:"qfields"},
+    el("div", {class:"field"}, el("label", {}, T["settings.quick.icon"]),
+      el("div", {class:"fieldctl"}, el("div", {class:"row2"}, iconBtn, clearIcon))));
+
+  // The name
+  const label = el("input", {type:"text", class:"qlabel", maxlength:String(QUICK.labelMax),
+    placeholder: folder ? T["settings.quick.folder.new"] : T["settings.quick.label.ph"]});
+  label.value = item.label || "";
+  label.addEventListener("input", () => { item.label = label.value; refreshSave(); repaint(); });
+  fields.append(el("div", {class:"field"}, el("label", {}, T["settings.quick.label"]),
+    el("div", {class:"fieldctl"}, label)));
+
+  if (folder) {
+    const n = quickCount(item);
+    fields.append(el("div", {class:"field"}, el("label", {}, T["settings.quick.folder.inside"]),
+      el("div", {class:"fieldctl"}, el("div", {class:"row2"},
+        el("span", {class:"qcount"}, fill(T["settings.quick.folder.count"], {n})),
+        el("button", {onclick:() => enter(item)}, T["settings.quick.menu.open"]))),
+      el("div", {class:"hint"}, T["settings.quick.folder.hint"])));
+  } else {
+    // Who it is for
+    const kinds = el("div", {class:"qseg", role:"radiogroup"});
+    // Which AI a prompt is for. The same list the tab form offers
+    const aiPick = el("select", {});
+    aiPick.append(el("option", {value:""}, T["settings.quick.ai.any"]));
+    for (const a of AI_CLIS) aiPick.append(el("option", {value:a.cmd}, a.label));
+    aiPick.value = item.ai || "";
+    aiPick.addEventListener("change", () => { item.ai = aiPick.value; if (!item.ai) delete item.ai; refreshSave(); });
+    const aiField = el("div", {class:"field"}, el("label", {}, T["settings.quick.ai"]),
+      el("div", {class:"fieldctl"}, aiPick), el("div", {class:"hint"}, T["settings.quick.ai.hint"]));
+    const bodyLabel = el("label", {});
+    const bodyIn = el("textarea", {rows:"4", class:"qbody", maxlength:String(QUICK.bodyMax), spellcheck:"false"});
+    const bodyHint = el("div", {class:"hint"});
+    const secretNote = el("div", {class:"site-warn"});
+    const drawKind = () => {
+      kinds.textContent = "";
+      for (const k of ["terminal", "ai"]) {
+        const on = (item.kind || "terminal") === k;
+        kinds.append(el("button", {class:"tog" + (on ? " on" : ""), role:"radio", "aria-checked":String(on),
+          onclick:() => { item.kind = k; if (k !== "ai") delete item.ai; refreshSave(); drawKind(); repaint(); }},
+          T["settings.quick.kind." + k]));
+      }
+      const ai = item.kind === "ai";
+      aiField.hidden = !ai;
+      bodyLabel.textContent = T[ai ? "settings.quick.body.prompt" : "settings.quick.body.command"];
+      bodyIn.placeholder = T[ai ? "settings.quick.body.prompt.ph" : "settings.quick.body.command.ph"];
+      bodyIn.classList.toggle("mono", !ai);
+      bodyHint.textContent = T[ai ? "settings.quick.body.prompt.hint" : "settings.quick.body.command.hint"];
+      drawSecrets();
+    };
+    // What a secret named in the body means, said while it is being written
+    const drawSecrets = () => {
+      const names = quickSecretNames(item.body);
+      secretNote.hidden = !names.length;
+      if (!names.length) return;
+      secretNote.textContent = fill(T[item.kind === "ai" ? "settings.quick.secret.ai" : "settings.quick.secret.terminal"],
+        {names: names.map(name => fill(T["settings.quick.secret.name"], {name})).join("")});
+    };
+    bodyIn.value = item.body || "";
+    bodyIn.addEventListener("input", () => { item.body = bodyIn.value; refreshSave(); drawSecrets(); });
+    const secretBtn = el("button", {class:"quiet", onclick: e => quickSecretMenu(e, bodyIn, () => {
+      item.body = bodyIn.value; refreshSave(); drawSecrets();
+    })}, T["settings.quick.secret.insert"]);
+    const enterBox = el("input", {type:"checkbox"});
+    enterBox.checked = item.enter !== false;
+    enterBox.addEventListener("change", () => { item.enter = enterBox.checked; refreshSave(); });
+    fields.append(
+      el("div", {class:"field"}, el("label", {}, T["settings.quick.kind"]), el("div", {class:"fieldctl"}, kinds)),
+      aiField,
+      el("div", {class:"field"}, bodyLabel,
+        el("div", {class:"fieldctl"}, bodyIn, secretNote, el("div", {class:"row2"}, secretBtn)),
+        bodyHint),
+      el("div", {class:"field"}, el("label", {class:"check"}, enterBox, T["settings.quick.enter"]),
+        el("div", {class:"hint"}, T["settings.quick.enter.hint"])));
+    drawKind();
+  }
+  panel.append(el("div", {class:"qpanelrow"}, preview, fields),
+    el("div", {class:"qdelrow"}, el("button", {class:"danger", onclick:() => quickDelete(item, draw)},
+      T[folder ? "settings.quick.delete.folder.button" : "settings.quick.delete.button"])));
+  return panel;
+}
+
+// The secrets a body can name. They belong to desks, and a quick command
+// belongs to none, so each name is listed with the desks that have it; the
+// one used is the one of the desk on screen when the button is pressed
+async function quickSecretMenu(e, input, changed) {
+  const r = e.currentTarget.getBoundingClientRect();
+  const j = await fetchSecrets();
+  const byName = new Map();
+  for (const s of ((j && j.secrets) || [])) {
+    const key = String(s.key || "");
+    if (key.includes("/")) continue;
+    const dot = key.indexOf(".");
+    if (dot < 1) continue;
+    const deskId = key.slice(0, dot), name = key.slice(dot + 1);
+    const desk = desks.find(d => (d.id || "") === deskId);
+    if (!byName.has(name)) byName.set(name, []);
+    byName.get(name).push(desk ? (desk.name || deskId) : deskId);
+  }
+  const rows = [...byName.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([name, where]) =>
+    [name + "  ·  " + where.join(", "), () => {
+      const ref = quickSecretRef(name);
+      const s = input.selectionStart ?? input.value.length, t = input.selectionEnd ?? s;
+      input.value = input.value.slice(0, s) + ref + input.value.slice(t);
+      input.focus();
+      input.setSelectionRange(s + ref.length, s + ref.length);
+      changed();
+    }]);
+  if (!rows.length) { toast(T["settings.quick.secret.none"], true); return; }
+  quickMenu(r.left, r.bottom + 4, rows);
+}
+
+// Choosing a picture: a search over the whole set, with the common ones first
+async function quickIconPicker(now, done) {
+  const search = el("input", {type:"text", placeholder:T["settings.quick.icon.search"], autocomplete:"off", spellcheck:"false"});
+  const list = el("div", {class:"qicons"}, el("div", {class:"hint"}, "…"));
+  const close = () => back.remove();
+  const inner = [
+    el("div", {class:"mhead"}, el("h2", {}, T["settings.quick.icon.title"]),
+      el("button", {class:"quiet icon", title:T["common.close"], "aria-label":T["common.close"], onclick:close}, "✕")),
+    el("div", {class:"mbody"}, search, list),
+    el("div", {class:"mfoot"}, el("span", {class:"grow"}),
+      el("button", {class:"quiet", onclick:close}, T["common.cancel"]))];
+  const back = openModal(...inner);
+  back.querySelector(".modal-inner").classList.add("framed", "qpicker");
+  back.addEventListener("keydown", e => { if (e.key === "Escape") { e.preventDefault(); close(); } });
+  if (!quickSet) {
+    try {
+      const txt = await fetch(QUICK.icons, {headers:{"X-Token":TOKEN}}).then(r => r.text());
+      quickSet = txt.split("\n").filter(l => l && l[0] !== "#").map(l => {
+        const [name, words, svg] = l.replace(/\r$/, "").split("\t");
+        return {name, words: (words || "").toLowerCase(), svg: svg || ""};
+      });
+    } catch (e) { quickSet = null; }
+  }
+  if (!quickSet) { list.textContent = ""; list.append(el("div", {class:"hint"}, T["settings.quick.icon.failed"])); return; }
+  const byName = new Map(quickSet.map(i => [i.name, i]));
+  let shown = 0, matches = [];
+  const button = i => {
+    const b = el("button", {class:"qicon" + (i.name === now ? " on" : ""), title:i.name,
+      onclick:() => { quickSvgs[i.name] = i.svg; close(); done(i.name); }});
+    const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    s.setAttribute("viewBox", "0 0 24 24");
+    s.innerHTML = i.svg;
+    b.append(s);
+    return b;
+  };
+  const more = () => {
+    const next = matches.slice(shown, shown + 240);
+    shown += next.length;
+    list.querySelector(".qmore")?.remove();
+    for (const i of next) list.append(i.head ? el("div", {class:"qiconhead"}, i.head) : button(i));
+    if (shown < matches.length) {
+      list.append(el("button", {class:"quiet qmore", onclick:more}, T["settings.quick.icon.more"]));
+    }
+  };
+  const refill = () => {
+    const word = search.value.trim().toLowerCase();
+    list.textContent = "";
+    shown = 0;
+    if (word) {
+      matches = quickSet.filter(i => i.name.includes(word) || i.words.includes(word));
+      if (!matches.length) { list.append(el("div", {class:"hint"}, T["settings.quick.icon.nothing"])); return; }
+    } else {
+      const common = QUICK_COMMON_ICONS.map(n => byName.get(n)).filter(Boolean);
+      matches = [{head: T["settings.quick.icon.common"]}, ...common,
+                 {head: T["settings.quick.icon.all"]}, ...quickSet];
+    }
+    more();
+  };
+  search.addEventListener("input", refill);
+  refill();
+  search.focus();
+}
+
 // Saved browser logins.
 //
 // Managed here, never made here: a login is saved by signing in once in a
@@ -5956,6 +6724,7 @@ function globalSections() {
     // Two cards: the keys that work from any program, then the keys inside
     {id:"keys",      label:T["settings.sec.keys"],      sub:T["settings.sec.keys.sub"],
      build:() => el("div", {}, hotkeysCard(), keysCard())},
+    {id:"quick",     label:T["settings.sec.quick"],     sub:T["settings.sec.quick.sub"],     build:quickCard},
     {id:"logins",    label:T["settings.sec.logins"],    sub:T["settings.sec.logins.sub"],    build:loginsCard},
     {id:"snapshots", label:T["settings.sec.snapshots"], sub:T["settings.sec.snapshots.sub"], build:snapshotsCard},
     {id:"actions",   label:T["settings.sec.actions"],   sub:T["settings.sec.actions.sub"],   build:actionsCard},
@@ -10652,6 +11421,14 @@ function payload() {
                          max_tokens:(o.max_tokens ?? 400000), on_limit:(o.on_limit || "stop"),
                          settle_ms:(o.settle_ms ?? 1800), confirm:(o.confirm || "off") };
   }
+  // Quick commands, written in one shape whatever state the editor left them
+  // in: what is the default is left out (the app reads it back the same), a
+  // command never filled in is dropped, and nothing is left when nothing is
+  // there -- so opening the editor and closing it is not an edit
+  if (out.quick_commands) {
+    const q = quickCanon(out.quick_commands, false);
+    if (q) out.quick_commands = q; else delete out.quick_commands;
+  }
   if (out.remote && !out.remote.enabled && !out.remote.allow_public) delete out.remote;
   // Where these used to be written for the whole app. They are each desk's
   // now, and a copy left up here would read as an answer that still applies
@@ -11960,6 +12737,7 @@ mod tests {
                 .replace("__TOKEN__", "t")
                 .replace("__REMOTE__", "false")
                 .replace("__HOTKEY_DEFAULT__", crate::hotkeys::DEFAULT)
+                .replace("__QUICK__", &quick_json())
                 .replace("__DICT__", "{}")
                 .replace("__GRANTS__", "[]")
                 .replace("__GITLUA__", "\"\"")

@@ -294,6 +294,8 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             .unwrap_or_default(),
         desk_id: ui.desk_ids.get(ui.desk_index).cloned().unwrap_or_default(),
         hotkeys: crate::hotkeys::working(),
+        quick: ui.quick.clone(),
+        quick_to: ui.quick_to.clone(),
         desks: ui.desk_names.clone(),
         desk_index: ui.desk_index,
         active: ui.active,
@@ -955,6 +957,10 @@ pub struct Ui {
     pub close_ask: Option<crate::uistate::CloseAskState>,
     /// This desk's closed tabs that can be opened again
     pub closed: Vec<crate::uistate::ClosedState>,
+    /// The quick commands as the launcher draws them (see `quick::view`)
+    pub quick: std::sync::Arc<crate::quick::QuickView>,
+    /// Where each kind of quick command would go right now
+    pub quick_to: std::collections::BTreeMap<String, crate::quick::QuickDest>,
 }
 
 /// The name used when placing the result view (finished discussion / review /

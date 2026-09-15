@@ -1316,6 +1316,16 @@ pub struct UiState {
     /// ones that are registered and work. Shown beside what they open
     #[serde(default)]
     pub hotkeys: std::collections::BTreeMap<String, String>,
+    /// The quick commands, laid out and with their drawings, for the launcher.
+    /// Shared rather than copied: it changes only when the settings are saved,
+    /// and the state is put together many times a second
+    #[serde(default)]
+    pub quick: std::sync::Arc<crate::quick::QuickView>,
+    /// Where each kind of quick command would go right now, by
+    /// `quick::dest_key`: to which tab, into a new one in which folder, or
+    /// nowhere and why
+    #[serde(default)]
+    pub quick_to: std::collections::BTreeMap<String, crate::quick::QuickDest>,
     /// The folders this desk's tabs are working in. One means nothing is
     /// drawn: the heading only exists to tell folders apart
     #[serde(default)]

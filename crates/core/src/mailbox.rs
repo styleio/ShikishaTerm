@@ -120,6 +120,11 @@ pub struct Mailbox {
     /// awaiting delivery. Filled from both surfaces: the window's ipc and the
     /// phone's relay.
     pub says: Vec<(usize, String)>,
+    /// Quick commands pressed, by id, each with the tab it is for (0 = the one
+    /// in view). Filled from both surfaces, like `says`
+    pub quicks: Vec<(String, usize)>,
+    /// The window's quick-command launcher went up (true) or came down
+    pub quick_shown: Option<bool>,
     /// Quick-action chips (Lua) fired from the bar, by index into config.actions.
     /// The loop looks up the code and runs it against the active tab.
     pub run_actions: Vec<usize>,
@@ -329,6 +334,13 @@ impl Mailbox {
     /// Takes ownership of chat lines typed into model tabs
     pub fn take_says(&mut self) -> Vec<(usize, String)> {
         std::mem::take(&mut self.says)
+    }
+    /// Takes the quick commands pressed since the last drain
+    pub fn take_quicks(&mut self) -> Vec<(String, usize)> {
+        std::mem::take(&mut self.quicks)
+    }
+    pub fn take_quick_shown(&mut self) -> Option<bool> {
+        self.quick_shown.take()
     }
     /// Takes the indices of Lua quick-actions fired since the last drain.
     pub fn take_run_actions(&mut self) -> Vec<usize> {

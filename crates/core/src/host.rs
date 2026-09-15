@@ -45,6 +45,8 @@ pub trait Shell {
     fn take_open_settings(&mut self) -> Option<crate::mailbox::SettingsWanted>;
     fn open_vault(&self);
     fn open_palette(&self);
+    /// Bring up the quick commands over the window's page
+    fn open_quick(&self);
     fn push_git(&self, json: &str);
     fn push_files(&self, json: &str);
     fn push_issues(&self, json: &str);
@@ -189,6 +191,7 @@ impl Shell for Headless {
     fn take_open_settings( &mut self, ) -> Option<(Option<String>, bool, Option<String>, Option<u32>)> { None }
     fn open_vault(&self) {}
     fn open_palette(&self) {}
+    fn open_quick(&self) {}
     fn push_git(&self, json: &str) { let _ = json; }
     fn push_files(&self, json: &str) { let _ = json; }
     fn push_issues(&self, json: &str) { let _ = json; }

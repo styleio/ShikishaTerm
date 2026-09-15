@@ -145,6 +145,14 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // Finishing a line in the composer from the phone is just like typing
         // into the tab it names.
         Ev::Say { .. } => true,
+        // Pressing one of the person's own quick commands. It sends what they
+        // wrote into the tab in view -- no more than finishing that line in
+        // the composer, which the phone can already do. Any secret it names
+        // is put in on this machine and never travels to the phone
+        Ev::Quick { .. } => true,
+        // Only the window's launcher moves the pages placed in the window;
+        // a phone's launcher covers nothing here
+        Ev::QuickShown { .. } => false,
         // Pressing the bar a script put under a page ("done logging in"). The
         // bar is drawn by the board so that only a person can press it, and
         // the person may well be on the phone -- a login it was waiting for is
@@ -1415,6 +1423,24 @@ fn handle(
                                 &b"public, max-age=86400"[..],
                             )
                             .unwrap(),
+                        ),
+                )
+                .map_err(Into::into);
+        }
+        // The icon set the settings' quick-command picker chooses from. No
+        // token, for the same reason: drawings anyone can download, asked for
+        // by the settings page the phone reaches as /cfg
+        if let Some(bytes) = crate::quick::asset(&path) {
+            return req
+                .respond(
+                    Response::from_data(bytes)
+                        .with_header(
+                            Header::from_bytes(&b"Content-Type"[..], &b"text/plain; charset=utf-8"[..])
+                                .unwrap(),
+                        )
+                        .with_header(
+                            Header::from_bytes(&b"Cache-Control"[..], &b"public, max-age=86400"[..])
+                                .unwrap(),
                         ),
                 )
                 .map_err(Into::into);

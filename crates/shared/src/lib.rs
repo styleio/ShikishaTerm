@@ -520,6 +520,15 @@ pub enum Ev {
     /// in that order -- the discussion's topic box does exactly that pair, and
     /// its topic went to the wrong pane, or to nobody.
     Say { tab: usize, text: String },
+    /// A quick command was pressed, for the tab it names (0 = the one in
+    /// view). Only its id travels: what it sends is looked up in the settings
+    /// on arrival, which is also where any secret it names is put in -- so a
+    /// value never passes through a page
+    Quick { id: String, tab: usize },
+    /// The window's quick-command launcher went up or came down. Pages placed
+    /// in the window step aside while it is up, since nothing the board draws
+    /// can cover them. The window's own; a phone has no placed pages
+    QuickShown { on: bool },
     /// The window was closed
     Closed,
 }
@@ -1192,6 +1201,13 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .and_then(|x| x.as_str())
                 .unwrap_or_default()
                 .to_string(),
+        },
+        Some("quick") => Ev::Quick {
+            id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+        },
+        Some("quickshown") => Ev::QuickShown {
+            on: v.get("on").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         // Save the latest run's replay.lua where the user can grab it
         // (the window board can't download over HTTP, so it asks the app)

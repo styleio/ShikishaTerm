@@ -27,8 +27,19 @@ letters. `Ctrl+B 0` brings it back from anywhere.
   when it has answered, **amber** when it is waiting for you to answer. Under the name, the
   branch it is on, its pull request, and any ports it is listening on; under that,
   what it last said about itself.
-- **Add a working folder** at the bottom of the list, then the gear (settings)
-  and `?` (this page).
+- **Add a working folder** at the bottom of the list, then the gear (settings),
+  `?` (this page), the scissors (tools) and 🎛️ (quick commands).
+
+**Quick commands** are a grid of buttons you make yourself. 🎛️ or `Ctrl+B k` brings
+them up over the whole window. A button works in the folder of the tab you are
+looking at: a command goes to a shell tab in that folder and a prompt to an AI
+tab there, and a new tab is opened in that folder when there is none. With no
+folder in front, a command opens in your home folder (so a button can start a
+program too) and a prompt is not sent. The line under the buttons says where
+the one under the pointer will go before you press it. Make them, move them and
+put them in folders under Quick commands in the settings. A secret named in a
+button's text is replaced, when it is sent, with that secret's value from the
+desk on screen.
 
 **The middle** is the tab in view: a terminal, a browser page, or the git panel.
 Once the window is divided, each pane's caption carries ▥ and ▤ to divide it again
@@ -85,6 +96,7 @@ since every one of them can be changed in the settings.
 | `Ctrl+B x` | Emergency stop |
 | `Ctrl+B b` | Send the prefix key itself to the program |
 | `Ctrl+B :` | Command palette |
+| `Ctrl+B k` | Quick commands |
 | `Ctrl+B ?` | The key list |
 
 On INDEX the menu is single letters: `e` settings, `p` the palette, `f` find,
