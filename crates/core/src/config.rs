@@ -576,6 +576,12 @@ pub struct Config {
     /// when `lua` is set, runs Lua (advanced).
     #[serde(default)]
     pub actions: Vec<ActionSpec>,
+    /// The quick commands: buttons on pages of a grid, each handing the tab in
+    /// view a command or a prompt (see `quick.rs`). App-wide, like the keys:
+    /// they are this person's habits, and a secret they name is looked up in
+    /// the desk on screen when one is pressed
+    #[serde(default)]
+    pub quick_commands: crate::quick::QuickSpec,
     /// Bounds and stall behavior for ad-hoc "operate a tab" (🎯) sessions.
     #[serde(default)]
     pub operate: OperateSpec,

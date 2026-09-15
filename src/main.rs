@@ -457,6 +457,12 @@ impl WinSurface {
         let _ = self.win.eval("window.__openPalette && window.__openPalette();");
     }
 
+    /// Bring up the quick commands on this window's page (the keyboard path;
+    /// the button beside the scissors opens it in the page directly)
+    fn open_quick(&self) {
+        let _ = self.win.eval("window.__openQuick && window.__openQuick();");
+    }
+
     /// Hand one answer back to the git panel (already JSON-encoded)
     fn push_git(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__git && window.__git({json});"));
@@ -695,6 +701,8 @@ impl WinSurface {
                 Ev::Go { go } => self.mail.gos.push(go),
                 Ev::Scroll { by, row, col } => self.mail.scrolls.push((by, row, col)),
                 Ev::Say { tab, text } => self.mail.says.push((tab, text)),
+                Ev::Quick { id, tab } => self.mail.quicks.push((id, tab)),
+                Ev::QuickShown { on } => self.mail.quick_shown = Some(on),
                 Ev::Where {
                     from: Some(name),
                     url,
@@ -1773,6 +1781,7 @@ impl shikisha_core::host::Shell for WinSurface {
     }
     fn open_vault(&self) { WinSurface::open_vault(self) }
     fn open_palette(&self) { WinSurface::open_palette(self) }
+    fn open_quick(&self) { WinSurface::open_quick(self) }
     fn push_git(&self, json: &str) { WinSurface::push_git(self, json) }
     fn push_files(&self, json: &str) { WinSurface::push_files(self, json) }
     fn push_issues(&self, json: &str) { WinSurface::push_issues(self, json) }

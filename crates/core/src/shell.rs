@@ -212,7 +212,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .gearrow .sidebtn:hover { background:var(--hover); color:var(--text); }
   .gearrow .sidebtn.sel { background:var(--raise); color:var(--text); }
   .gearrow .gear { font-size:17px; }
-  .gearrow .snipbtn { font-size:16px; }
+  .gearrow .snipbtn, .gearrow .quickbtn { font-size:16px; }
   .gearrow .help > span { font-size:13px; width:20px; height:20px; border:1px solid var(--line);
     border-radius:50%; display:inline-flex; align-items:center; justify-content:center; }
   .gearrow .help:hover > span { border-color:var(--text); }
@@ -1601,6 +1601,90 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--line); background:var(--panel); color:var(--text); }
   #netveil .nvbtn[hidden] { display:none; }
 
+  /* ── Quick commands: the launcher ──────────────────
+     Over everything, like the palette, but with no box of its own: the page
+     behind goes dark and only the buttons stand on it. The button's face is
+     shared with the settings' editor (quick.rs) */
+{{QUICK_CSS}}
+  #quick[hidden] { display:none !important; }
+  /* Under the window's own bar, which stays where closing and minimising are.
+     A page with no frame (a phone) has no bar to leave */
+  #quick { position:fixed; inset:var(--titleh) 0 0 0; z-index:52; background:#00000099; display:flex; flex-direction:column;
+    outline:none; box-sizing:border-box; animation:qfade .14s ease-out both;
+    padding:env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px); }
+  #quick .qhead { flex:none; display:flex; align-items:center; justify-content:space-between;
+    gap:var(--s2); padding:var(--s3) var(--s4); color:var(--text); font-size:12px; min-width:0; }
+  /* The dimming is dark in every colour scheme, so nothing is written on it
+     directly: the words ride on small plates of the scheme's own panel, the way
+     the page numbers do under a button box */
+  #quick .qplate { display:flex; align-items:center; gap:var(--s1); min-width:0; max-width:100%;
+    background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:2px; }
+  #quick .qcrumbs { flex:0 1 auto; overflow:hidden; white-space:nowrap; }
+  #quick .qtools { flex:none; }
+  #quick .qkeys { color:var(--dim); font-size:11px; padding:0 var(--s2); white-space:nowrap; }
+  @media (max-width:640px) { #quick .qkeys { display:none; } }
+  #quick .qcrumbs button { font:inherit; font-size:12px; min-height:32px; padding:0 var(--s3); border:0;
+    border-radius:999px; background:transparent; color:var(--dim); cursor:pointer;
+    overflow:hidden; text-overflow:ellipsis; max-width:40vw; }
+  #quick .qcrumbs button:last-child { color:var(--text); font-weight:600; }
+  #quick .qcrumbs button:hover { background:var(--hover); color:var(--text); }
+  #quick .qcrumbs .qsep { color:var(--faint); flex:none; }
+  #quick .qtool { flex:none; font:inherit; font-size:15px; width:32px; height:32px; border:0;
+    border-radius:999px; background:transparent; color:var(--dim); cursor:pointer;
+    display:inline-flex; align-items:center; justify-content:center; }
+  #quick .qtool:hover { background:var(--hover); color:var(--text); }
+  /* The buttons, and under them the pages and where the button would go, as
+     one group in the middle: the words are read where the eye already is, and
+     never over the composer at the foot of the window */
+  #quick .qstage { flex:1 1 auto; min-height:0; overflow:auto; display:flex; flex-direction:column;
+    padding:var(--s2) var(--s4) var(--s4); }
+  #quick .qcol { margin:auto; display:flex; flex-direction:column; align-items:center; gap:var(--s4); }
+  #quick .qgrid { display:grid; gap:var(--s3); }
+  #quick .qgap { width:var(--qsize); height:var(--qsize); }
+  /* A button: the only thing on the page that is not dark */
+  #quick .qbtn { width:var(--qsize); height:var(--qsize); padding:0; font:inherit; cursor:pointer;
+    border-radius:var(--r-card); border:1px solid var(--edge); background:var(--panel);
+    box-shadow:0 8px 24px #0007; animation:qin .2s cubic-bezier(.2,.8,.2,1) both;
+    animation-delay:calc(min(var(--i, 0), 24) * 10ms); -webkit-tap-highlight-color:transparent; }
+  #quick.still .qbtn, #quick.still { animation:none; }
+  #quick .qbtn:hover { border-color:var(--edge-hi); background:var(--raise); }
+  #quick .qbtn:focus-visible { outline:none; border-color:var(--brand);
+    box-shadow:0 8px 24px #0007, 0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #quick .qbtn:active { transform:scale(.97); }
+  /* Nowhere to go right now: grey, and still answers with why (5.4) */
+  #quick .qbtn.off { background:var(--panel2); border-color:var(--line); }
+  #quick .qbtn.off .qface { color:var(--faint); }
+  #quick .qbtn.off:hover { background:var(--panel2); border-color:var(--line); }
+  #quick .qbtn.back { background:var(--bg); }
+  #quick.noframe { top:0; }
+  #quick .qfoot { display:flex; flex-direction:column; align-items:center; gap:var(--s2); max-width:100%; }
+  /* Each keeps its room when it has nothing to say, so the buttons above do
+     not move as the pointer crosses them or a folder of one page is opened */
+  #quick .qpagerrow, #quick .qsayrow { min-height:38px; display:flex; align-items:center; justify-content:center; max-width:100%; }
+  #quick .qpager { flex-wrap:wrap; justify-content:center; }
+  #quick .qpager button { font:inherit; font-size:12px; min-width:32px; min-height:32px; padding:0 var(--s2);
+    border:0; border-radius:999px; background:transparent; color:var(--dim);
+    cursor:pointer; font-variant-numeric:tabular-nums; }
+  #quick .qpager button:hover { color:var(--text); background:var(--hover); }
+  #quick .qpager button.on { background:var(--raise); color:var(--text); }
+  /* Where the button under the pointer would go, or why it cannot. The one
+     line of words on this screen, kept to one line */
+  #quick .qsay { max-width:min(640px, 100%); color:var(--text); font-size:12px; line-height:32px;
+    padding:0 var(--s3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #quick .qsay.warn { color:var(--warn); }
+  #quick .qsay:empty { visibility:hidden; }
+  #quick .qempty { margin:auto; max-width:360px; background:var(--panel); border:1px solid var(--line);
+    border-radius:var(--r-card); padding:var(--s5); display:flex; flex-direction:column; gap:var(--s2);
+    box-shadow:0 8px 24px #0007; animation:qin .2s ease-out both; }
+  #quick .qempty .tt { font-size:13.5px; font-weight:600; color:var(--text); }
+  #quick .qempty .tb { font-size:12px; color:var(--dim); line-height:1.5; }
+  #quick .qempty button { align-self:flex-end; margin-top:var(--s2); font:inherit; font-size:12.5px;
+    min-height:32px; padding:0 var(--s3); border-radius:var(--r-ctl); cursor:pointer;
+    border:1px solid var(--brand); background:var(--brand); color:var(--bg); }
+  @keyframes qfade { from { opacity:0; } to { opacity:1; } }
+  @keyframes qin { from { opacity:0; transform:translateY(8px) scale(.94); } to { opacity:1; transform:none; } }
+  @media (prefers-reduced-motion: reduce) { #quick, #quick .qbtn, #quick .qempty { animation:none; } }
+
   /* Behind the add-a-tab dialog. The dialog itself is the settings page placed
      over the board, so all the board draws is the dimming, and a press on it is
      the press outside a dialog: not adding after all */
@@ -2260,6 +2344,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
        first keystroke -->
   <!-- The command palette: one place to find and run anything. Same overlay
        shape as the Vault, a different list underneath -->
+  <!-- The quick commands: buttons over everything, no box of their own -->
+  <div id="quick" hidden tabindex="-1"></div>
   <div id="palette" hidden>
     <div class="vbox">
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
@@ -2495,11 +2581,15 @@ const el = (t, a, ...kids) => {
 let S = null;   // most recent state
 // The message the app last told us about. Kept so an unchanged one isn't shown again
 let lastFlash = null;
+// Whether the quick commands are up (see openQuick). Declared this early
+// because the sidebar, drawn from the very first state, marks its button by it
+let quickOpen = false;
 
 // The shared toast (src/toast.rs). Declared this early because the very first
 // state can arrive with a message already in it.
 {{TOAST_JS}}
 {{PUSH_JS}}
+{{QUICK_JS}}
 
 // -- A phone that should be getting notifications, and is not one yet --------
 //
@@ -2800,7 +2890,11 @@ function drawTabs() {
     // and help, because they are the app's own tools rather than something
     // said to an AI: what they give back goes to the clipboard or a file
     el("span", {class:"sidebtn snipbtn", title:T["tui.snip.title"] || "Tools",
-        onclick:e => { e.stopPropagation(); openSnipMenu(e); }}, "✂️")));
+        onclick:e => { e.stopPropagation(); openSnipMenu(e); }}, "✂️"),
+    // The quick commands, beside the tools: the person's own buttons, over
+    // everything, for the tab in view
+    el("span", {class:"sidebtn quickbtn" + (quickOpen ? " sel" : ""), title:T["tui.quick.title"] || "Quick commands",
+        onclick:e => { e.stopPropagation(); quickOpen ? closeQuick() : window.__openQuick(); }}, "🎛️")));
   drawCoach();
 }
 
@@ -5504,6 +5598,7 @@ window.__state = function (json) {
   drawStatus();
   drawNav();
   drawAsks();
+  if (quickOpen) drawQuickLauncher(false);
   const board = document.getElementById("board");
   const screen = document.getElementById("screen");
   // While viewing a browser tab, the embedded page covers the same spot.
@@ -7185,6 +7280,9 @@ const onTermPty = () => onTerminal();
 const focus = () => {
   const a = document.activeElement;
   if (a && a.closest && a.closest("#nav")) return;
+  // The quick commands hold the keyboard while they are up: arrows walk the
+  // buttons, Enter presses one, Esc puts them away
+  if (quickOpen) return;
   // Never steal focus while a text field is being used (the cast input bar, the
   // discussion-topic box, etc.). Otherwise every keystroke would be swallowed by
   // #kbd and fired as a board shortcut (e.g. typing "w" opens the desk list).
@@ -8395,6 +8493,13 @@ function paletteAll() {
   for (const a of (typeof KEY_ACTIONS !== "undefined" ? KEY_ACTIONS : [])) {
     out.push({grp:"do", label:a.label, run:() => send({kind:"runkey", name:a.name})});
   }
+  // The quick commands, each by the folders it is in, so two called "test"
+  // in different folders can be told apart
+  const quickEach = (items, trail) => (items || []).forEach(t => {
+    if (t.kind === "folder") { quickEach(t.items, trail.concat(t.label || "…")); return; }
+    out.push({grp:"quick", label:trail.concat(t.label || t.body || "").join(" › "), run:() => quickPress(t)});
+  });
+  quickEach(S && S.quick && S.quick.items, []);
   (typeof curActions !== "undefined" && curActions || []).forEach((a, i) => {
     if (!a) return;
     if (a.lua) out.push({grp:"run", label:a.label || "action", run:() => send({kind:"runaction", index:i})});
@@ -8440,6 +8545,284 @@ function renderPalette() {
   });
   v.querySelector(".vclose").addEventListener("click", closePalette);
   v.addEventListener("mousedown", (e) => { if (e.target === v) closePalette(); });
+})();
+// ── Quick commands: the launcher ────────────────────────────────
+// The person's own buttons, over everything. Laid out by the app (S.quick,
+// from quick.rs) with their drawings in; where each kind would go right now
+// comes with them (S.quick_to), from the same function the press is answered
+// by -- so what this says under a button is what pressing it does.
+//
+// A press names the button and nothing else. What it sends, and any secret in
+// it, are looked up on the PC, so neither ever passes through this page.
+const quickWalk = {path: [], page: 0};
+let quickShape = "", quickFocusId = "";
+window.__openQuick = function () {
+  const v = document.getElementById("quick");
+  if (!v) return;
+  if (quickOpen) { closeQuick(); return; }
+  quickOpen = true;
+  quickWalk.path = []; quickWalk.page = 0; quickShape = ""; quickFocusId = "";
+  v.classList.remove("still");
+  v.classList.toggle("noframe", !!REMOTE);
+  v.hidden = false;
+  // Pages placed in the window are windows of their own, over anything this
+  // page draws: they step aside while this is up. A phone has none
+  if (!REMOTE) send({kind:"quickshown", on:true});
+  drawQuickLauncher(true);
+  drawTabs();
+};
+function closeQuick() {
+  const v = document.getElementById("quick");
+  if (!quickOpen || !v) return;
+  quickOpen = false;
+  v.hidden = true;
+  v.textContent = "";
+  if (!REMOTE) send({kind:"quickshown", on:false});
+  drawTabs();
+  focus();
+}
+// The grid being shown: the top, or the folder walked into. A folder that has
+// gone since (the settings were saved meanwhile) takes the walk back out
+function quickHere(q) {
+  let at = q;
+  const kept = [];
+  for (const id of quickWalk.path) {
+    const f = (at.items || []).find(i => i.id === id && i.kind === "folder");
+    if (!f) break;
+    kept.push(f);
+    at = f;
+  }
+  if (kept.length !== quickWalk.path.length) { quickWalk.path = kept.map(f => f.id); quickWalk.page = 0; }
+  return {at, trail: kept};
+}
+const quickDestOf = t => (S && S.quick_to && S.quick_to[t.kind === "ai" ? "ai:" + (t.ai || "") : "terminal"]) || null;
+// What one button would do, in words: where it goes, or why it cannot
+function quickSaying(t) {
+  if (!t) return {text: "", warn: false};
+  if (t.kind === "folder") return {text: t.label || "", warn: false};
+  if (t.kind === "back") return {text: "", warn: false};
+  const d = quickDestOf(t);
+  if (!d) return {text: "", warn: false};
+  if (d.how === "none") return {text: d.name, warn: true};
+  if (d.how === "send") return {text: (T["tui.quick.dest.send"] || "{name}").replace("{name}", d.name), warn: false};
+  return {text: d.name, warn: false};
+}
+function quickSay(t) {
+  const say = document.querySelector("#quick .qsay");
+  if (!say) return;
+  const s = quickSaying(t);
+  say.textContent = s.text;
+  say.title = s.text;
+  say.classList.toggle("warn", s.warn);
+}
+function drawQuickLauncher(fresh) {
+  const v = document.getElementById("quick");
+  if (!v || v.hidden || !S) return;
+  const q = S.quick || {cols: 8, rows: 4, pages: 1, items: []};
+  const {at, trail} = quickHere(q);
+  const inFolder = trail.length > 0;
+  const pages = Math.max(1, at.pages || 1);
+  if (quickWalk.page >= pages) quickWalk.page = pages - 1;
+  // Rebuilt only when what is shown changed shape. The state arrives several
+  // times a second and a rebuilt button replays its entrance and loses the
+  // pointer; between rebuilds only where each would go is brought up to date
+  const shape = JSON.stringify([q, quickWalk.path, quickWalk.page, innerWidth, innerHeight]);
+  if (!fresh && shape === quickShape) {
+    for (const b of v.querySelectorAll(".qbtn[data-id]")) {
+      const t = b._tile;
+      const d = t && quickDestOf(t);
+      b.classList.toggle("off", !!d && d.how === "none");
+    }
+    const cur = v.querySelector(".qbtn:focus-visible, .qbtn:hover");
+    quickSay(cur ? cur._tile : null);
+    return;
+  }
+  // Something changed underneath while it was up: redrawn, without the
+  // entrance, which is for opening and for turning a page
+  v.classList.toggle("still", !fresh);
+  quickShape = shape;
+  v.textContent = "";
+
+  // Head: where in the folders, the way to the settings, and out
+  const crumbs = el("div", {class:"qplate qcrumbs"});
+  const goTo = n => { quickWalk.path = quickWalk.path.slice(0, n); quickWalk.page = 0; quickFocusId = ""; drawQuickLauncher(true); };
+  crumbs.append(el("button", {onclick:() => goTo(0)}, T["tui.quick.title"] || "Quick commands"));
+  trail.forEach((f, n) => crumbs.append(el("span", {class:"qsep"}, "›"),
+    el("button", {onclick:() => goTo(n + 1)}, f.label || "…")));
+  v.append(el("div", {class:"qhead"}, crumbs,
+    el("div", {class:"qplate qtools"},
+      // The keys, where there are keys
+      REMOTE ? null : el("span", {class:"qkeys"}, T["tui.quick.keys"] || ""),
+      el("button", {class:"qtool", title:T["tui.quick.edit"] || "Edit",
+        onclick:() => { closeQuick(); openSettings("quick", true); }}, "⚙️"),
+      el("button", {class:"qtool", title:T["tui.quick.close"] || "Close", onclick:closeQuick}, "✕"))));
+
+  const stage = el("div", {class:"qstage"});
+  const col = el("div", {class:"qcol"});
+  const foot = el("div", {class:"qfoot"});
+  stage.append(col);
+  v.append(stage);
+  const items = (at.items || []).filter(i => i.page === quickWalk.page);
+
+  // Nothing made yet: say what this is, and where to make one
+  if (!inFolder && !(q.items || []).length) {
+    col.append(el("div", {class:"qempty"},
+      el("div", {class:"tt"}, T["tui.quick.empty.title"] || ""),
+      el("div", {class:"tb"}, T["tui.quick.empty.body"] || ""),
+      el("button", {onclick:() => { closeQuick(); openSettings("quick", true); }}, T["tui.quick.empty.go"] || "")));
+    return;
+  }
+
+  // As big as the window lets the whole grid be, up to a size a thumb and an
+  // eye both like. Where even the smallest would not fit -- a phone, a narrow
+  // pane of a window -- the buttons of the page stand in reading order in as
+  // many columns as fit, which keeps every button and loses only the gaps
+  const cols = q.cols || 8, rows = q.rows || 4, gap = 12;
+  const headH = 58, footH = 112;
+  const W = v.clientWidth - 32, H = v.clientHeight - headH - footH - 16;
+  let size = Math.floor(Math.min((W - gap * (cols - 1)) / cols, (H - gap * (rows - 1)) / rows, 104));
+  const flow = size < 60;
+  if (flow) size = Math.max(64, Math.min(84, Math.floor((W - gap * 3) / 4)));
+  const flowCols = Math.max(1, Math.min(cols, Math.floor((W + gap) / (size + gap))));
+  const grid = el("div", {class:"qgrid",
+    style:"--qsize:" + size + "px;grid-template-columns:repeat(" + (flow ? flowCols : cols) + ", var(--qsize))"});
+  col.append(grid, foot);
+
+  let n = 0;
+  const tile = t => {
+    const d = quickDestOf(t);
+    const b = el("button", {class:"qbtn" + (t.kind === "back" ? " back" : "") + (d && d.how === "none" ? " off" : ""),
+      style:"--i:" + (n++), "data-id": t.id || "back"});
+    b._tile = t;
+    b.append(quickFace(t));
+    // What runs is shown: the command as written, a secret by its name
+    const said = quickSaying(t).text;
+    b.title = t.kind === "back" ? (T["settings.quick.back"] || "")
+      : [t.label, said, t.body].filter(Boolean).join("\n");
+    b.onmouseenter = () => quickSay(t);
+    b.onfocus = () => { quickFocusId = t.id || "back"; quickSay(t); };
+    b.onclick = () => quickPress(t);
+    return b;
+  };
+  const place = (row, col) => {
+    if (inFolder && row === 0 && col === 0) return tile({kind:"back"});
+    const t = items.find(i => i.row === row && i.col === col);
+    return t ? tile(t) : (flow ? null : el("div", {class:"qgap"}));
+  };
+  // Rows below the last one any page of this grid uses are not drawn: the
+  // words under the buttons stay near them, and a button is still where it
+  // is on every page, since the rows are counted from the top
+  const used = Math.max(1, ...(at.items || []).map(i => i.row + 1));
+  for (let row = 0; row < Math.min(rows, used); row++) {
+    for (let col = 0; col < cols; col++) {
+      const x = place(row, col);
+      if (x) grid.append(x);
+    }
+  }
+
+  // The row of page numbers keeps its room with one page too, so the buttons
+  // do not move when a folder of one page is opened from a grid of two
+  const pagerRow = el("div", {class:"qpagerrow"});
+  foot.append(pagerRow);
+  if (pages > 1) {
+    const pager = el("div", {class:"qplate qpager"});
+    for (let p = 0; p < pages; p++) {
+      pager.append(el("button", {class:p === quickWalk.page ? "on" : "",
+        title:(T["tui.quick.page"] || "{n}").replace("{n}", p + 1),
+        onclick:() => { quickWalk.page = p; quickFocusId = ""; drawQuickLauncher(true); }}, String(p + 1)));
+    }
+    pagerRow.append(pager);
+  }
+  foot.append(el("div", {class:"qsayrow"}, el("div", {class:"qplate qsay"})));
+
+  // The keyboard lands on the button it was on, or the first one
+  const again = quickFocusId && grid.querySelector('.qbtn[data-id="' + CSS.escape(quickFocusId) + '"]');
+  const first = again || grid.querySelector(".qbtn");
+  if (first && !REMOTE) first.focus({preventScroll:true});
+  else v.focus({preventScroll:true});
+  quickSay(first ? first._tile : null);
+}
+function quickPress(t) {
+  if (t.kind === "back") {
+    quickWalk.path.pop(); quickWalk.page = 0; quickFocusId = "";
+    drawQuickLauncher(true);
+    return;
+  }
+  if (t.kind === "folder") {
+    quickWalk.path.push(t.id); quickWalk.page = 0; quickFocusId = "";
+    drawQuickLauncher(true);
+    return;
+  }
+  const d = quickDestOf(t);
+  // Nowhere to go: the reason stays on screen, and nothing is sent
+  if (d && d.how === "none") { if (quickOpen) quickSay(t); else toast(d.name, true); return; }
+  send({kind:"quick", id:t.id, tab:(S && S.active) || 0});
+  closeQuick();
+}
+(function () {
+  const v = document.getElementById("quick");
+  if (!v) return;
+  v.addEventListener("keydown", e => {
+    if (!quickOpen || typingIME(e)) return;
+    const buttons = [...v.querySelectorAll(".qgrid .qbtn")];
+    const at = buttons.indexOf(document.activeElement);
+    const pages = () => { const q = S && S.quick; return q ? Math.max(1, quickHere(q).at.pages || 1) : 1; };
+    const turn = by => {
+      const p = quickWalk.page + by;
+      if (p < 0 || p >= pages()) return;
+      quickWalk.page = p; quickFocusId = ""; drawQuickLauncher(true);
+    };
+    // Up and down move by a row of what is drawn, which is the grid's
+    // columns, or fewer where the buttons were stood in reading order
+    const across = () => {
+      const g = v.querySelector(".qgrid");
+      return g ? getComputedStyle(g).gridTemplateColumns.split(" ").length : 1;
+    };
+    const by = {ArrowLeft: -1, ArrowRight: 1, ArrowUp: -across(), ArrowDown: across()}[e.key];
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeQuick(); }
+    else if (e.key === "Backspace") {
+      e.preventDefault();
+      if (quickWalk.path.length) { quickWalk.path.pop(); quickWalk.page = 0; quickFocusId = ""; drawQuickLauncher(true); }
+    }
+    else if (e.key === "PageDown") { e.preventDefault(); turn(1); }
+    else if (e.key === "PageUp") { e.preventDefault(); turn(-1); }
+    else if (by) {
+      e.preventDefault();
+      // Only buttons are stepped on: a gap is not somewhere to be. Past the
+      // first or the last, the page turns
+      const flat = [...v.querySelectorAll(".qgrid > *")];
+      let i = flat.indexOf(document.activeElement);
+      if (i < 0) { if (buttons[0]) buttons[0].focus(); return; }
+      for (let j = i + by; j >= 0 && j < flat.length; j += by) {
+        if (flat[j].classList.contains("qbtn")) { flat[j].focus(); return; }
+      }
+      if (e.key === "ArrowRight" && at === buttons.length - 1) turn(1);
+      if (e.key === "ArrowLeft" && at === 0) turn(-1);
+    }
+  });
+  // A press on the dark, not on a button, puts it away. Where the press went
+  // down is what counts (a drag that ends outside is not a press outside)
+  v.addEventListener("pointerdown", e => {
+    const dark = ["qstage", "qcol", "qfoot", "qpagerrow", "qsayrow", "qgrid", "qhead"];
+    if (e.target === v || dark.some(c => e.target.classList.contains(c))) closeQuick();
+  });
+  // A swipe across the page turns it, on a phone
+  let x0 = null, y0 = null;
+  v.addEventListener("touchstart", e => { const t = e.touches[0]; x0 = t.clientX; y0 = t.clientY; }, {passive:true});
+  v.addEventListener("touchend", e => {
+    if (x0 === null) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - x0, dy = t.clientY - y0;
+    x0 = null;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    const q = S && S.quick;
+    const pages = q ? Math.max(1, quickHere(q).at.pages || 1) : 1;
+    const p = quickWalk.page + (dx < 0 ? 1 : -1);
+    if (p < 0 || p >= pages) return;
+    quickWalk.page = p; quickFocusId = "";
+    drawQuickLauncher(true);
+  }, {passive:true});
+  addEventListener("resize", () => { if (quickOpen) drawQuickLauncher(false); });
 })();
 window.__setTheme = function (vars, light) {
   document.getElementById("theme").textContent =
@@ -11104,7 +11487,7 @@ fn built(sticky: bool, by: Served) -> String {
     let words: std::collections::BTreeMap<&str, &str> = MENU.iter().copied().collect();
     // The message toast is the app's, not this screen's — every surface that
     // says anything to the user says it the same way (src/toast.rs)
-    crate::push::inject(crate::toast::render(PAGE.to_string())).replace(
+    crate::quick::render(crate::push::inject(crate::toast::render(PAGE.to_string()))).replace(
         "{{MENU_KEYS}}",
         &serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into()),
     )
