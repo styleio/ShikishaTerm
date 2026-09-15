@@ -3882,19 +3882,33 @@ const inDeskPlace = () => !sel.global && sel.tab == null && (sel.grp ?? null) ==
 function toTree(di) {
   sel = {desk:di, grp:null, tab:null, global:false, dsection:"basic"};
 }
+// The entry for the page on screen, brought into view inside the list -- which
+// scrolls on its own -- and the page itself shown from its top. Scrolling the
+// entry into view the browser's way moved the whole window with it, so a page
+// opened from the board started halfway down, below the heading that says
+// which page it is
+function showSelected(block) {
+  const nav = document.getElementById("nav");
+  const cur = nav && nav.querySelector(".navitem.sel");
+  if (cur) {
+    const r = cur.getBoundingClientRect(), n = nav.getBoundingClientRect();
+    if (block === "center") nav.scrollTop += (r.top - n.top) - (n.height - r.height) / 2;
+    else if (r.top < n.top) nav.scrollTop += r.top - n.top;
+    else if (r.bottom > n.bottom) nav.scrollTop += r.bottom - n.bottom;
+  }
+  window.scrollTo(0, 0);
+}
 // One of a desk's settings on screen, by id
 function goDeskSection(id, block) {
   sel = {desk:sel.desk, grp:null, tab:null, global:false, dsection:id};
   render();
-  const cur = document.querySelector(".navitem.sel");
-  if (cur) cur.scrollIntoView({block: block || "nearest"});
+  showSelected(block);
 }
 // Put one global card on screen, by id, with its entry in the list in view.
 function goSection(id, block) {
   sel = {desk:sel.desk, tab:null, global:true, section:id};
   render();
-  const cur = document.querySelector(".navitem.sel");
-  if (cur) cur.scrollIntoView({block: block || "nearest"});
+  showSelected(block);
 }
 // When opened via a deep-link shortcut (?ret=1), returning to the board after a
 // successful save is the natural finish, so the caller doesn't have to close it.
@@ -11521,8 +11535,7 @@ function floatMore() {
   if (window.ipc) { try { window.ipc.postMessage(JSON.stringify({kind:"settingsfull"})); } catch (e) {} }
   sel = {desk:wi, grp:t.group || 0, tab:i, global:false};
   render();
-  const s = document.querySelector(".navitem.sel");
-  if (s) s.scrollIntoView({block:"center"});
+  showSelected("center");
 }
 // Esc is the dialog's way out (style guide 5.2), and only the dialog's: a
 // confirmation opened over it takes its own Esc first
@@ -11572,7 +11585,7 @@ load().then(() => {
     // Asked for from a folder: that is where it goes. The form used to add it
     // wherever the default was, which is the first folder -- so a tab asked
     // for from the third one turned up in the first
-    const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
+    const same = c => (c || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const from = (q.get("folder") || "").trim();
     const gi = from
       ? (desks[wi].folders || []).findIndex(g => same(g.cwd) === same(from))
@@ -11582,8 +11595,7 @@ load().then(() => {
     // The board's + asks for only the one question, over the board
     if (q.get("float") === "1") { render(); enterFloat(wi, sel.tab); return; }
     render();
-    const s = document.querySelector(".navitem.sel");
-    if (s) s.scrollIntoView({block:"center"});
+    showSelected("center");
     return;
   }
   // "Edit settings" (?gen=1), or an open with no desk to focus, lands on the
@@ -11600,7 +11612,7 @@ load().then(() => {
   // no path of its own (the app's folder), where a group-less tab lives.
   const tabPos = /^\d+$/.test(q.get("tabpos") || "") ? Number(q.get("tabpos")) : -1;
   if (tabPos >= 0 && desks[cur]) {
-    const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
+    const same = c => (c || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const from = (q.get("folder") || "").trim();
     const gi = from
       ? (desks[cur].folders || []).findIndex(g => same(g.cwd) === same(from))
@@ -11608,13 +11620,20 @@ load().then(() => {
     if (gi >= 0) {
       const tabs = desks[cur].tabs || [];
       const here = [];
-      tabs.forEach((t, i) => { if ((t.group || 0) === gi) here.push(i); });
+      // Only the ones the board counts: a tab that runs something in a
+      // terminal. A page, a git or file panel, or a tab with nothing to run is
+      // written in the same list and is not one of them, so counting it sent
+      // the board's second tab to whatever stood second here
+      const terminal = t => {
+        const c = cmdToText(t.command).trim();
+        return !!c && !["browser", "git", "sftp", "editor"].includes(catOf(c));
+      };
+      tabs.forEach((t, i) => { if ((t.group || 0) === gi && terminal(t)) here.push(i); });
       const ti = here[tabPos];
       if (ti != null) {
         sel = {desk:cur, grp:gi, tab:ti, global:false};
         render();
-        const s = document.querySelector(".navitem.sel");
-        if (s) s.scrollIntoView({block:"center"});
+        showSelected("center");
         return;
       }
     }
@@ -11642,21 +11661,19 @@ load().then(() => {
         sel = home ? {desk:cur, proj:home.key, grp:null, tab:null, global:false}
                    : {desk:cur, grp:gi, tab:null, global:false};
         render();
-        const s = document.querySelector(".navitem.sel");
-        if (s) s.scrollIntoView({block:"center"});
+        showSelected("center");
       };
       land(100);
       return;
     }
   }
   if (want && desks[cur]) {
-    const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
+    const same = c => (c || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const gi = (desks[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
     if (gi >= 0) {
       sel = {desk:cur, grp:gi, tab:null, global:false};
       render();
-      const s = document.querySelector(".navitem.sel");
-      if (s) s.scrollIntoView({block:"center"});
+      showSelected("center");
       return;
     }
   }
@@ -11668,8 +11685,7 @@ load().then(() => {
     toTree(cur);
   }
   render();
-  const s = document.querySelector(".navitem.sel");
-  if (s) s.scrollIntoView({block:"center"});
+  showSelected("center");
 });
 </script></body></html>
 "##;
