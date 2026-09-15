@@ -108,13 +108,13 @@ pub struct Mailbox {
     pub help_site: bool,
     /// "How to install it" was pressed on a tab that could not start
     pub install_help: bool,
-    /// "How to install it" was pressed beside a named program (its command),
-    /// in a list of several
+    /// "How to install it" was pressed beside a named program (its command)
     pub install_pages: Vec<String>,
     /// The first-start setup was answered: the AI to prefer, and Yolo mode
     pub setup: Option<(Option<String>, bool)>,
-    /// The setup's "Refresh" was pressed: look for the installed AIs again
-    pub setup_refresh: bool,
+    /// The setup's "Refresh" was pressed, on which of its pages: look for
+    /// what is installed again
+    pub setup_refresh: Option<u8>,
     /// Tabs whose usage-limit notice was read, by screen number
     pub limit_acks: Vec<usize>,
     /// Tabs somebody asked to look at, by screen number (0 is the board): a
@@ -312,8 +312,8 @@ impl Mailbox {
     pub fn take_setup(&mut self) -> Option<(Option<String>, bool)> {
         self.setup.take()
     }
-    pub fn take_setup_refresh(&mut self) -> bool {
-        std::mem::take(&mut self.setup_refresh)
+    pub fn take_setup_refresh(&mut self) -> Option<u8> {
+        self.setup_refresh.take()
     }
     pub fn take_help_site(&mut self) -> bool {
         std::mem::take(&mut self.help_site)

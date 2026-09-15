@@ -99,6 +99,19 @@ pub fn setup_wanted(first_run: bool, answered: bool) -> bool {
     first_run && !answered
 }
 
+/// What the setup's "Refresh" found, said about the page it was pressed on:
+/// the AIs on the first, GitHub CLI on the second
+fn setup_found(now: &crate::uistate::SetupState, step: u8) -> String {
+    if step >= 2 {
+        return i18n::t(if now.gh { "msg.setup.gh.found" } else { "msg.setup.gh.found_none" });
+    }
+    let names: Vec<&str> = now.installed.iter().map(|a| a.name.as_str()).collect();
+    match names.is_empty() {
+        true => i18n::t("msg.setup.found_none"),
+        false => i18n::tp("msg.setup.found", &[("names", &names.join(", "))]),
+    }
+}
+
 /// The AIs this machine can start, one per profile whose command is on PATH.
 ///
 /// Offered the way the settings' own form would launch them: with the CLI's
@@ -5165,33 +5178,32 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         {
             crate::webui::open_external(url);
         }
-        // The same page for a program named beside its button, in a list of
-        // several. Named by its command; the address is still the profile's
-        for ai in shell.mail().take_install_pages() {
-            if let Some(url) = crate::profile::install_url_for(&ai) {
+        // The same kind of page for a program named beside its button. Named by
+        // its command; the address is still the app's own
+        for prog in shell.mail().take_install_pages() {
+            if let Some(url) = crate::webui::install_page(&prog) {
                 crate::webui::open_external(&url);
             }
+        }
+        // "Refresh" on the setup: the PC is asked again, because the person
+        // has just installed something. The list for new folders is asked with
+        // it -- it answers the same question, and would otherwise go on saying
+        // the AI is not there until the next start
+        if let Some(step) = shell.mail().take_setup_refresh()
+            && setup_view.is_some()
+        {
+            let now = crate::webui::setup_state();
+            // Said either way, and about what the page it was pressed on asks:
+            // a press that finds nothing new changes nothing on the setup, and
+            // would otherwise look like a press that missed
+            flash = Some(setup_found(&now, step));
+            setup_view = Some(now);
+            ai_choices = startable_ais();
         }
         // The first-start setup was answered. The AI is kept only if it is one
         // the setup offered as installed: the page says which card was
         // pressed, it does not get to write any word it likes into the
         // settings. Written down as answered either way, so it is asked once
-        // "Refresh" on the setup: the PC is asked again, because the person
-        // has just installed one. The list for new folders is asked with it --
-        // it answers the same question, and would otherwise go on saying the
-        // AI is not there until the next start
-        if shell.mail().take_setup_refresh() && setup_view.is_some() {
-            let now = crate::webui::setup_state();
-            // Said either way: a press that finds nothing new changes nothing
-            // on the setup, and would otherwise look like a press that missed
-            let names: Vec<&str> = now.installed.iter().map(|a| a.name.as_str()).collect();
-            flash = Some(match names.is_empty() {
-                true => i18n::t("msg.setup.found_none"),
-                false => i18n::tp("msg.setup.found", &[("names", &names.join(", "))]),
-            });
-            setup_view = Some(now);
-            ai_choices = startable_ais();
-        }
         if let Some((ai, yolo)) = shell.mail().take_setup()
             && let Some(offered) = setup_view.take()
         {
@@ -9181,6 +9193,18 @@ mod tests {
         assert!(super::setup_wanted(true, false), "a first start is not asked");
         assert!(!super::setup_wanted(true, true), "answered, and asked again");
         assert!(!super::setup_wanted(false, false), "somebody with settings is asked");
+    }
+
+    /// "Refresh" says what it found about the page it was pressed on
+    #[test]
+    fn the_setups_refresh_speaks_about_its_own_page() {
+        let ai = |id: &str, name: &str| crate::uistate::SetupAi { id: id.into(), name: name.into(), install: true };
+        let with = crate::uistate::SetupState { installed: vec![ai("claude", "Claude Code")], missing: vec![], gh: false };
+        assert_eq!(super::setup_found(&with, 1), crate::i18n::tp("msg.setup.found", &[("names", "Claude Code")]));
+        assert_eq!(super::setup_found(&with, 2), crate::i18n::t("msg.setup.gh.found_none"), "page 2 talks about the AIs");
+        let gh = crate::uistate::SetupState { gh: true, ..Default::default() };
+        assert_eq!(super::setup_found(&gh, 2), crate::i18n::t("msg.setup.gh.found"));
+        assert_eq!(super::setup_found(&gh, 1), crate::i18n::t("msg.setup.found_none"), "page 1 talks about GitHub");
     }
 
     /// The add-a-tab dialog sits where the style guide puts a dialog: at most

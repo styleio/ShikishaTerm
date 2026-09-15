@@ -173,11 +173,12 @@ fn pct(s: &str) -> String {
     out
 }
 
-/// Where to read how to install a program a tab needs: git's own download page,
+/// Where to read how to install a program: git's and GitHub CLI's own pages,
 /// or the page the program's profile names
 pub fn install_page(prog: &str) -> Option<String> {
     match prog.trim() {
         p if p.eq_ignore_ascii_case("git") => Some("https://git-scm.com/downloads".to_string()),
+        p if p.eq_ignore_ascii_case("gh") => Some("https://cli.github.com/".to_string()),
         p => crate::profile::install_url_for(p),
     }
 }
@@ -806,18 +807,19 @@ pub fn assistant_ai(want: Option<&str>) -> Option<(&'static str, &'static str)> 
 }
 
 /// What the first-start setup offers: the assistant AIs, the installed ones to
-/// pick from and the rest with the way to install them. The same list, in the
-/// same order, as Basic > Assistant AI, since that is where the pick is kept.
+/// pick from and the rest with the way to install them, and whether GitHub CLI
+/// is here. The same list, in the same order, as Basic > Assistant AI, since
+/// that is where the pick is kept.
 pub fn setup_state() -> crate::uistate::SetupState {
     setup_state_of(
         |name| crate::tab::resolve_command(name).is_some(),
-        |name| crate::profile::install_url_for(name).is_some(),
+        |name| install_page(name).is_some(),
     )
 }
 
 /// [`setup_state`], asked about a machine described rather than this one
 fn setup_state_of(installed: impl Fn(&str) -> bool, has_page: impl Fn(&str) -> bool) -> crate::uistate::SetupState {
-    let mut out = crate::uistate::SetupState::default();
+    let mut out = crate::uistate::SetupState { gh: installed("gh"), ..Default::default() };
     for (name, _, label) in AI_ENGINES {
         let ai = crate::uistate::SetupAi { id: name.to_string(), name: label.to_string(), install: has_page(name) };
         match installed(name) {
@@ -13061,6 +13063,9 @@ mod tests {
         let ids = |v: &[crate::uistate::SetupAi]| v.iter().map(|a| a.id.clone()).collect::<Vec<_>>();
         let st = super::setup_state_of(|n| n == "codex", |n| n != "gemini");
         assert_eq!(ids(&st.installed), ["codex"]);
+        assert!(!st.gh, "GitHub CLI is said to be here");
+        assert!(super::setup_state_of(|n| n == "gh", |_| true).gh, "GitHub CLI is not found");
+        assert_eq!(super::install_page("gh").as_deref(), Some("https://cli.github.com/"), "GitHub CLI's page is not its own");
         assert_eq!(ids(&st.missing), ["claude", "gemini"], "the rest is out of order or missing");
         assert!(st.missing[0].install && !st.missing[1].install, "a page is claimed that is not there");
         assert_eq!(st.installed[0].name, "Codex CLI", "not the name the settings call it");

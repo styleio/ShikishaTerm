@@ -345,22 +345,24 @@ pub enum Ev {
     /// Window-only -- a phone reaches the same page through a plain link
     Help,
     /// "How to install it": the maker's page for a program, in the PC's
-    /// browser. `ai` names the program (its command, `claude`) when the press
-    /// came from somewhere that lists several; left out, it is the one the tab
-    /// in front could not start. The address is the app's own, from the
-    /// profile -- the page only says which button was pressed. Window-only,
-    /// like `Help`: a phone follows the same address as a link
-    InstallHelp { ai: Option<String> },
+    /// browser. `prog` names the program by its command (`claude`, `gh`) when
+    /// the press came from somewhere that lists several; left out, it is the
+    /// one the tab in front could not start. The address is the app's own --
+    /// the page only says which button was pressed. Window-only, like `Help`:
+    /// a phone follows the same address as a link
+    InstallHelp { prog: Option<String> },
     /// The first-start setup was answered: the AI to prefer (its command, or
     /// nothing when none is installed) and whether new AI tabs skip the AI's
     /// own permission checks. Window-only: remote access is off until
     /// somebody turns it on in settings, and the setup stands in front of
     /// settings, so no phone can be looking when it is up
     Setup { ai: Option<String>, yolo: bool },
-    /// The first-start setup's "Refresh": look again for the AIs this PC has,
-    /// after somebody installed one with the setup still up. Window-only, for
+    /// The first-start setup's "Refresh": look again for what this PC has
+    /// installed, after somebody installed something with the setup still up.
+    /// `step` is the page it was pressed on (1 the AIs, 2 GitHub), so what is
+    /// said about the result is about what that page asks. Window-only, for
     /// the reason `Setup` is
-    SetupRefresh,
+    SetupRefresh { step: u8 },
     /// A tool from the left bar's scissors: wait `delay` seconds, take the
     /// screen the pointer is on, and open `tool` over the picture.
     ///
@@ -934,13 +936,15 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("update") => Ev::Update { open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false) },
         Some("help") => Ev::Help,
         Some("installhelp") => Ev::InstallHelp {
-            ai: v.get("ai").and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+            prog: v.get("prog").and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
         },
         Some("setup") => Ev::Setup {
             ai: v.get("ai").and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
             yolo: v.get("yolo").and_then(|x| x.as_bool()).unwrap_or(false),
         },
-        Some("setuprefresh") => Ev::SetupRefresh,
+        Some("setuprefresh") => Ev::SetupRefresh {
+            step: v.get("step").and_then(|x| x.as_u64()).unwrap_or(1).min(255) as u8,
+        },
         Some("snip") => Ev::Snip {
             tool: v.get("tool").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             // A wait longer than this is not a wait anybody chose
