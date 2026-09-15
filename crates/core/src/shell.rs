@@ -452,6 +452,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     align-items:center; justify-content:center; border-radius:var(--r-chip);
     color:var(--dim); font-size:14px; line-height:1; cursor:pointer; }
   .tab.projhead .padd:hover { color:var(--text); background:var(--hover); }
+  .tab.projhead .padd.pnew { margin-left:0; }
+  .tab.projhead .padd .ico { display:flex; }
   /* The one thing to press next, said by blinking it rather than by adding a
      button: an empty folder's +, and the projects' + when there is nothing at
      all. Two values a second, like the busy dot -- a smooth pulse in this
@@ -1865,14 +1867,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* One thing to fill in: its name above, the control, and the next one a step
      further away than the two halves of this one are from each other */
   #branch .bfield { display:flex; flex-direction:column; gap:var(--s2); }
-  /* Settled before the dialog opened -- which project, and where it runs. Said
-     rather than offered, because the row somebody pressed already chose the
-     one and this machine is still the only answer to the other. A picker with
-     one entry that cannot change is a control that lies about being one */
-  #branch .bproject { display:flex; align-items:baseline; gap:var(--s3);
-    font-size:13px; color:var(--text); min-height:22px; }
-  #branch .bproject .at { font-family:var(--mono); font-size:11px; color:var(--faint);
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #branch .berr:empty, #branch .bsay:empty { display:none; }
   /* The branch is open in another folder already: one question, two answers,
      in the place the button to make it would be */
@@ -1932,14 +1926,48 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bsay { color:var(--dim); font-size:11.5px; }
   /* The name to give it, and what it starts from. One is typed and the other
      is picked, because one of them is new and the other already exists */
+  /* The pickers of this dialog are fields (5.1): 36px, the edge that says
+     "you can choose here", the name of what is chosen, and where it is on the
+     right in the quiet voice. They had no look of their own before, and read
+     as loose words beside the questions they answer */
+  #branch .bpick { display:flex; align-items:center; gap:var(--s2); height:36px; box-sizing:border-box;
+    padding:0 10px 0 12px; font-size:13px; color:var(--text); background:var(--bg);
+    border:1px solid var(--edge); border-radius:var(--r-ctl); cursor:pointer; min-width:0; outline:none; }
+  #branch .bpick:hover { border-color:var(--edge-hi); }
+  #branch .bpick:focus { border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #branch .bpick .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #branch .bpick .at { flex:0 1 auto; max-width:50%; font-family:var(--mono); font-size:11px; color:var(--dim);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; }
+  #branch .bpick .caret { flex:none; font-size:9px; color:var(--dim); }
+  #branch .bpick .chip { flex:none; width:10px; height:10px; border-radius:var(--r-chip); background:var(--line); }
+  #branch #bproj.empty .nm { color:var(--faint); }
+  #branch #bproj.ring { animation:apring .9s 2; }
+  #branch #bbase { flex:none; max-width:45%; }
+  #branch .bprojsay { font-size:11.5px; color:var(--faint); }
+  #branch .bprojsay:empty { display:none; }
+  #branch .bdestf[hidden], #branch .bstartf[hidden] { display:none; }
+  #branch .blabelrow { display:flex; align-items:center; justify-content:space-between; gap:var(--s2); }
+  #branch button.bicon { min-height:22px; width:22px; padding:0; border:0; background:transparent;
+    color:var(--dim); display:flex; align-items:center; justify-content:center; }
+  #branch button.bicon:hover { color:var(--text); background:var(--hover); }
+  #branch button.bicon .ico { display:flex; }
+  #branch .bopt { margin-left:var(--s1); color:var(--faint); font-weight:normal; }
+  /* The foot: "create more" on the left, the one button on the right with the
+     keys that press it from anywhere in the dialog */
+  #branch .bgo { justify-content:space-between; align-items:center; }
+  #branch .bagain { display:flex; align-items:center; gap:var(--s2); font-size:12px; color:var(--dim); cursor:pointer; }
+  #branch .bagain:hover { color:var(--text); }
+  #branch .bagain input { width:15px; height:15px; margin:0; }
+  #branch button.go { display:inline-flex; align-items:center; gap:var(--s2); }
+  #branch button.go .kbd { font-size:10px; font-weight:normal; padding:0 4px; border-radius:var(--r-chip);
+    border:1px solid color-mix(in srgb, var(--bg) 45%, transparent); }
+  #branch button.go.held { background:var(--panel2); border-color:var(--line); color:var(--faint); cursor:not-allowed; filter:none; }
+  #branch button.go.held .kbd { border-color:var(--line); }
   #branch .brow2 { display:flex; gap:var(--s2); align-items:stretch; }
   #branch .brow2 #bq { flex:1; min-width:0; }
-  /* What the new folder runs: the same tabs as its project, nothing, or one
-     AI -- or one folder per AI, ticked below. Only shown when this machine
-     has an AI to start; without one the dialog is what it always was */
-  #branch .bstartrow { display:flex; gap:var(--s2); align-items:center; }
   /* A display rule of their own would otherwise beat the hidden attribute */
-  #branch .bstartrow[hidden], #branch .bfan[hidden], #branch .bais[hidden],
+  #branch .bfan[hidden], #branch .bais[hidden],
   #branch .bsetup[hidden], #branch .bsetupsay[hidden] { display:none; }
   /* A file this project could have. Shown whole, because what is being agreed
      to is the file, not the idea of a file */
@@ -1964,6 +1992,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--edge); background:var(--panel); color:var(--text); }
   #branch .bcarry select:hover { border-color:var(--edge-hi); }
   #branch .berr, #browse .berr { color:var(--stop); font-size:12px; white-space:pre-wrap; }
+  /* Why the button did nothing is a person being needed, not a failure (5.4) */
+  #branch .berr.need { color:var(--warn); font-size:11.5px; }
+  /* No project, nothing to grow from: no empty box where the picker would be */
+  #branch #bbase:empty { display:none; }
   /* Putting a folder back. The same frame as the branch dialog, because it is
      the same kind of question -- what will happen, said before it happens */
   #repair .rname { font-size:13px; font-weight:600; }
@@ -2105,7 +2137,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-radius:var(--r-card); padding:var(--s1); min-width:190px; box-shadow:0 8px 24px #0007; }
   .fmenu div { padding:var(--s2) var(--s3); border-radius:var(--r-ctl); cursor:pointer;
     font-size:12.5px; color:var(--text); }
-  .fmenu div:hover { background:var(--raise); }
+  .fmenu div:hover, .fmenu div:focus { background:var(--raise); outline:none; }
+  /* A project in the worktree dialog's list: its colour, its name, and where
+     it is, the way the picker itself says it */
+  .fmenu .projrow, .fmenu .projadd { display:flex; align-items:center; gap:var(--s2); min-width:280px; }
+  .fmenu .projrow .chip { width:10px; height:10px; border-radius:var(--r-chip); flex:none; }
+  .fmenu .projrow .nm { font-weight:600; }
+  .fmenu .projrow .at { margin-left:auto; padding-left:var(--s3); font-family:var(--mono); font-size:11px;
+    color:var(--dim); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; }
+  .fmenu .projadd { border-top:1px solid var(--line); margin-top:var(--s1); color:var(--text); }
+  .fmenu .projadd .ico { display:flex; color:var(--dim); }
   .fmenu div.warn { color:var(--stop); }
   /* A fact at the foot of a menu, not one of its choices */
   .fmenu div.note { color:var(--dim); font-size:11px; cursor:default;
@@ -2490,8 +2531,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <div id="veil" hidden></div>
   <!-- The first-start setup: which AI to prefer, before anything else -->
   <div id="setup" hidden></div>
-  <!-- Adding a project: the ways a project can come to this desk -->
-  <div id="addproj" hidden></div>
   <!-- The Vault: search past conversations and reopen one. Its own overlay
        rather than the veil, because it has an input and must not close on the
        first keystroke -->
@@ -2524,24 +2563,28 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
       <div class="bsay"></div>
       <div class="bfield">
-        <span class="blabel"></span>
-        <div class="bproject"><span class="nm"></span><span class="at"></span></div>
+        <div class="blabelrow"><span class="blabel"></span><button class="bicon badd" type="button"></button></div>
+        <div id="bproj" class="bpick" tabindex="0"></div>
+        <div class="bprojsay"></div>
       </div>
-      <div class="bfield">
+      <div class="bfield bdestf" hidden>
         <span class="blabel"></span>
-        <div id="bdest"><span class="nm"></span><span class="caret">&#9662;</span></div>
+        <div id="bdest" class="bpick" tabindex="0"><span class="nm"></span><span class="caret">&#9662;</span></div>
       </div>
       <div class="bfield">
         <label class="blabel" for="bq"></label>
-        <div class="brow2"><div id="bbase"></div><input id="bq" type="text" autocomplete="off" spellcheck="false"></div>
+        <div class="brow2"><div id="bbase" class="bpick" tabindex="0"></div><input id="bq" type="text" autocomplete="off" spellcheck="false"></div>
       </div>
-      <div class="bfield">
-        <label class="blabel" for="bat"></label>
-        <input id="bat" type="text" autocomplete="off" spellcheck="false">
+      <div class="bfield bstartf" hidden>
+        <div class="blabelrow"><span class="blabel"></span><button class="bicon bconf" type="button"></button></div>
+        <div id="bstart" class="bpick" tabindex="0"></div>
       </div>
       <button class="bmore" type="button" aria-expanded="false"><span class="caret">&#9656;</span><span class="nm"></span></button>
       <div class="bextra" hidden>
-        <div class="bstartrow" hidden><span class="say"></span><div id="bstart"></div></div>
+        <div class="bfield">
+          <label class="blabel" for="bat"></label>
+          <input id="bat" type="text" autocomplete="off" spellcheck="false">
+        </div>
         <label class="bsetup" hidden><input type="checkbox" id="bsetupon" checked><span></span></label>
         <div class="bsetupsay hint" hidden></div>
         <label class="bfan" hidden><input type="checkbox" id="bfanon"><span></span></label>
@@ -2559,7 +2602,28 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <div class="ask"></div>
         <div class="brow"><button class="no" type="button"></button><button class="yes go" type="button"></button></div>
       </div>
-      <div class="brow bgo"><button class="go"></button></div>
+      <div class="brow bgo"><label class="bagain"><input type="checkbox" id="bagain"><span></span></label><button class="go"><span class="gl"></span><span class="kbd">Ctrl &#9166;</span></button></div>
+    </div>
+  </div>
+  <!-- Adding a project: the ways a project can come to this desk -->
+  <div id="addproj" hidden></div>
+  <div id="browse" hidden>
+    <div class="vbox picker">
+      <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">&#10005;</span></div>
+      <div class="pfilter"><span class="pqi"></span><input class="pq" type="text" autocomplete="off" spellcheck="false"></div>
+      <div class="pbody">
+        <div class="pplaces"></div>
+        <div class="pmain">
+          <div class="pcrumb"></div>
+          <div class="pnote"></div>
+          <div class="prows"></div>
+        </div>
+      </div>
+      <div class="pfoot">
+        <div class="psel"><span class="plab"></span><span class="ppath"></span></div>
+        <div class="pwhy"></div>
+        <div class="pbtns"><button class="pmake" type="button"></button><span class="sp"></span><button class="quiet pcancel" type="button"></button><button class="go" type="button"></button></div>
+      </div>
     </div>
   </div>
   <!-- A working folder that is not on this machine. What will run is shown
@@ -2580,25 +2644,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   </div>
   <div id="dlgscrim" hidden></div>
   <!-- Somewhere else to work. The same list on the window and on a phone -->
-  <div id="browse" hidden>
-    <div class="vbox picker">
-      <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">&#10005;</span></div>
-      <div class="pfilter"><span class="pqi"></span><input class="pq" type="text" autocomplete="off" spellcheck="false"></div>
-      <div class="pbody">
-        <div class="pplaces"></div>
-        <div class="pmain">
-          <div class="pcrumb"></div>
-          <div class="pnote"></div>
-          <div class="prows"></div>
-        </div>
-      </div>
-      <div class="pfoot">
-        <div class="psel"><span class="plab"></span><span class="ppath"></span></div>
-        <div class="pwhy"></div>
-        <div class="pbtns"><button class="pmake" type="button"></button><span class="sp"></span><button class="quiet pcancel" type="button"></button><button class="go" type="button"></button></div>
-      </div>
-    </div>
-  </div>
   <!-- The reader: what was said on this tab, as text you can scroll and copy.
        Its own layer rather than a pane, because it covers the terminal and
        gives it straight back — nothing about the session changes while it is up -->
@@ -2911,7 +2956,11 @@ function drawTabs() {
   nav.append(el("div", {class:"tab projhead"},
     el("span", {class:"nm"}, T["tui.project.head"] || "PROJECT"),
     el("span", {class:"padd" + (bare ? " pulse" : ""), title:T["tui.project.add"] || "",
-        onclick:() => openAddProject()}, pickIcon("folderPlus"))));
+        onclick:() => openAddProject()}, pickIcon("folderPlus")),
+    // And another worktree, on the project in front: the other thing this
+    // heading is for
+    el("span", {class:"padd pnew", title:T["tui.project.new"] || "",
+        onclick:() => openNewWorktree()}, pickIcon("plus"))));
   // The folder each run of tabs works in. A heading appears when the folder
   // changes, and only when there is more than one to change to -- with a single
   // folder the sidebar looks exactly as it always has. A tab that is in no
@@ -3661,6 +3710,7 @@ let apLive = null;
 function openAddProject() {
   const box = document.getElementById("addproj");
   if (!box) return;
+  coachAside();
   // Opening this is doing what the first-run pointer asked, however it was
   // opened -- a press with a finger, a click, a key -- so the pointer goes
   if ((S && S.coach) === 1 && coachShut !== 1) {
@@ -4315,6 +4365,29 @@ function openList(anchor, rows, tall) {
   // entry would look dead
   folderMenuAway = ev => { if (!m.contains(ev.target)) closeFolderMenu(); };
   setTimeout(() => document.addEventListener("mousedown", folderMenuAway, true), 0);
+  // The keyboard reaches it too: opened from a control that has the keyboard,
+  // the first entry takes it, the arrows walk, Enter chooses, Esc puts the
+  // list away and goes back -- without closing whatever dialog it opened over
+  const items = rows.filter(r => r && r.onclick);
+  items.forEach(i => { i.tabIndex = -1; });
+  m.addEventListener("keydown", e => {
+    const at = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const n = items.length;
+      if (n) items[(at + (e.key === "ArrowDown" ? 1 : n - 1) + (at < 0 && e.key === "ArrowUp" ? 1 : 0)) % n].focus();
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (at >= 0) items[at].click();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeFolderMenu();
+      anchor.focus();
+    }
+  });
+  if (document.activeElement === anchor && items.length) items[0].focus();
   return m;
 }
 
@@ -4434,6 +4507,7 @@ const PICK_ICON = {
   folderPlus: '<path d="M1.5 3.5h4l1.3 1.5h5.7v6.5h-11z"/><path d="M7 6.8v3M5.5 8.3h3"/>',
   globe: '<circle cx="7" cy="7" r="5.5"/><path d="M1.5 7h11M7 1.5c1.6 1.6 2.4 3.4 2.4 5.5S8.6 10.9 7 12.5M7 1.5C5.4 3.1 4.6 4.9 4.6 7s.8 3.9 2.4 5.5"/>',
   plus: '<path d="M7 2.5v9M2.5 7h9"/>',
+  sliders: '<path d="M2 4h6M11 4h1M2 10h1M6 10h6"/><circle cx="9.5" cy="4" r="1.5"/><circle cx="4.5" cy="10" r="1.5"/>',
   branch: '<circle cx="4" cy="3.5" r="1.3"/><circle cx="4" cy="10.5" r="1.3"/><circle cx="10" cy="5" r="1.3"/><path d="M4 4.8v4.4M10 6.3c0 2-2 2.5-5 3.2"/>',
   folderOpen: '<path d="M1.5 11.5V3.5h4l1.3 1.5h4.7v1.5"/><path d="M1.5 11.5 3.2 7h9.3l-1.7 4.5z"/>',
   open: '<path d="M8.5 2h3.5v3.5"/><path d="M6.5 7.5 12 2"/><path d="M10.5 8v3.5a.5.5 0 0 1-.5.5H2.5a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5H6"/>',
@@ -4462,6 +4536,7 @@ const leafOf = p => (p || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p |
 function openBrowse(at, handBack) {
   const b = document.getElementById("browse");
   if (!b) return;
+  coachAside();
   const first = b.hidden;
   b.hidden = false;
   pickFor = typeof handBack === "function" ? handBack : null;
@@ -4799,26 +4874,54 @@ function drawAsk(ask, p) {
 }
 // The issue or pull request a worktree is being made for, when it is
 let branchLink = null;
+// The first-run bubble stands over the list, and a dialog opening over the list
+// is where attention goes: put away the moment one opens, not a frame later.
+// It comes back, if its step is not done, when the list is next drawn with no
+// dialog up (drawCoach)
+function coachAside() {
+  const bubble = document.getElementById("coach");
+  if (bubble) bubble.hidden = true;
+}
 function openBranch(g, preset) {
   const b = document.getElementById("branch");
   if (!b) return;
+  coachAside();
   preset = preset || {};
   branchLink = preset.link || null;
   branchFrom = g.folder || "";
   b.hidden = false;
   b.querySelector(".vtitle").textContent = T["tui.branch.title"] || "WORKTREE";
   showMore(b, false);
+  // Said only when the worktree is for something -- an issue, a pull request.
+  // Otherwise the questions below say what this is without a preface
   b.querySelector(".bsay").textContent = preset.about
     ? (T["tui.branch.for_item"] || "{item}").replace("{item}", preset.about)
-    : (T["tui.branch.hint"] || "");
-  b.querySelector(".bgo .go").textContent = T["tui.branch.make"] || "Make it";
-  // Every control says what it is, in the order they stand
+    : "";
+  b.querySelector(".bgo .go .gl").textContent = T["tui.branch.make"] || "Make it";
+  // Every control says what it is, in the order they stand. The name says it
+  // can be left alone, the way the placeholder in it does
   const names = [T["tui.branch.project"] || "Project",
                  T["tui.branch.dest"] || "Where it runs",
                  T["tui.branch.name"] || "Branch name",
+                 T["tui.branch.ai"] || "AI",
                  T["tui.branch.where"] || "Where it goes",
                  T["tui.branch.cmd"] || "What actually runs"];
   b.querySelectorAll(".blabel").forEach((l, i) => { l.textContent = names[i] || ""; });
+  const nameLabel = b.querySelector('label[for="bq"]');
+  nameLabel.append(el("span", {class:"bopt"}, T["tui.branch.optional"] || ""));
+  const add = b.querySelector(".badd");
+  add.textContent = "";
+  add.append(pickIcon("folderPlus"));
+  add.title = T["tui.project.add"] || "";
+  const conf = b.querySelector(".bconf");
+  conf.textContent = "";
+  conf.append(pickIcon("sliders"));
+  conf.title = T["tui.branch.ai.settings"] || "";
+  b.querySelector(".bagain span").textContent = T["tui.branch.again"] || "";
+  // "Create more" starts off every time: it is a mode for one sitting, and
+  // one left on from last week would keep a dialog open that was meant to close
+  if (!preset.keepAgain) document.getElementById("bagain").checked = false;
+  branchDone = "";
   branchHost = "";
   const dest = document.getElementById("bdest");
   if (dest) { dest.dataset.said = ""; dest.textContent = ""; }
@@ -4836,8 +4939,10 @@ function openBranch(g, preset) {
   const sel = document.getElementById("bbase");
   sel.dataset.said = "";
   sel.textContent = "";
-  // What it runs: the same as its project until somebody says otherwise
-  branchStart = "";
+  // What it runs: the AI chosen under Basic > Assistant AI when this PC has
+  // it, else the first AI it has -- a worktree is made to be worked in. A
+  // project switched to inside the dialog keeps whatever was picked already
+  if (!preset.keepStart) branchStart = firstStart();
   const fan = document.getElementById("bfanon");
   if (fan) fan.checked = false;
   const setupOn = document.getElementById("bsetupon");
@@ -4845,13 +4950,85 @@ function openBranch(g, preset) {
   const ais = b.querySelector(".bais");
   ais.dataset.key = "";
   ais.textContent = "";
+  const proj = document.getElementById("bproj");
+  proj.dataset.said = "";
+  b.querySelector(".bprojsay").textContent = "";
   drawStart(b);
   drawBranch();
   // Asked before a single letter is typed: what this project can be grown
   // from does not depend on the name, and a picker that is empty until you
-  // type is a picker nobody finds anything in
-  send({kind:"branch", from:branchFrom, branch:q.value, base:branchBase, make:false, carry:[], link:branchLink});
-  setTimeout(() => q.focus(), 30);
+  // type is a picker nobody finds anything in. With no project yet there is
+  // nothing to ask about, and the first thing to do is choose one
+  if (branchFrom) send({kind:"branch", from:branchFrom, branch:q.value, base:branchBase, make:false, carry:[], link:branchLink});
+  setTimeout(() => (branchFrom ? q : proj).focus(), 30);
+}
+// The worktree dialog opened from the PROJECT heading's +: on the project in
+// front, else the first one this desk has, else on none -- where it asks for one
+function openNewWorktree() {
+  const list = branchProjects();
+  const front = list.find(g => inFront(g)) || list[0];
+  openBranch({folder: front ? front.folder : ""});
+}
+// The projects a worktree can be cut from: this desk's own checkouts of a git
+// repository, not the worktrees already cut from them
+function branchProjects() {
+  return ((S && S.groups) || []).filter(g => g.color && !g.linked && g.folder);
+}
+function firstStart() {
+  const ais = (S && S.ais) || [];
+  const want = (S && S.assistant) || "";
+  return (ais.find(a => a.key === want) || ais[0] || {key:""}).key;
+}
+// The folder the last "made" answer was about, so one answer closes the
+// dialog -- or, with "create more", clears it -- once and not on every frame
+let branchDone = "";
+// Which project: a picker of this desk's projects, each with its colour and
+// where it is, and at the foot the way to add one without leaving the dialog
+function drawProject(b, p) {
+  const box = document.getElementById("bproj");
+  const list = branchProjects();
+  const g = list.find(x => sameFolder(x.folder, branchFrom));
+  const name = !branchFrom ? ""
+    : ((p && p.from === branchFrom && (p.project_name || p.project)) || (g && (g.project || g.name)) || leafOf(branchFrom));
+  const said = JSON.stringify([name, branchFrom, g ? g.color : ""]);
+  if (box.dataset.said !== said) {
+    box.dataset.said = said;
+    box.textContent = "";
+    const chip = el("span", {class:"chip"});
+    if (g && g.color) chip.style.background = g.color;
+    box.classList.toggle("empty", !branchFrom);
+    box.append(chip, el("span", {class:"nm"}, name || T["tui.branch.pick_project"] || ""),
+      el("span", {class:"at"}, branchFrom ? homeShort(branchFrom) : ""), el("span", {class:"caret"}, "▾"));
+  }
+  // With nothing to choose from, said under the picker: the one step before
+  // this one
+  b.querySelector(".bprojsay").textContent = list.length ? "" : (T["tui.branch.need_add"] || "");
+  box.onclick = e => {
+    e.stopPropagation();
+    const rows = list.map(x => {
+      const c = el("span", {class:"chip"});
+      c.style.background = x.color;
+      return el("div", {class:"projrow", onclick:() => {
+        closeFolderMenu();
+        if (sameFolder(x.folder, branchFrom)) return;
+        const keep = document.getElementById("bagain").checked;
+        openBranch({folder: x.folder}, {keepStart:true, keepAgain:keep});
+      }}, c, el("span", {class:"nm"}, x.project || x.name), el("span", {class:"at"}, homeShort(x.folder)));
+    });
+    if (!rows.length) rows.push(el("div", {class:"say"}, T["tui.branch.no_projects"] || ""));
+    rows.push(el("div", {class:"projadd", onclick:() => { closeFolderMenu(); openAddProject(); }},
+      pickIcon("folderPlus"), el("span", {}, T["tui.branch.add_project"] || "")));
+    openList(box, rows);
+  };
+}
+// A path said the short way: this PC's home as ~. Held left to right inside
+// the marks on either side: the box it sits in runs right to left so a long
+// path is cut at the front, and without them the ~ and the separators drift to
+// the wrong end
+function homeShort(p) {
+  const home = ((S && S.project_home) || "").replace(/[\\/]SHIKISHA-TERM[\\/]projects$/i, "");
+  const short = home && (p || "").toLowerCase().startsWith(home.toLowerCase()) ? "~" + p.slice(home.length) : (p || "");
+  return "‎" + short + "‎";
 }
 // Folded or not, and what the row says while it is folded.
 //
@@ -4902,7 +5079,7 @@ function fanning() {
 // machine has an AI to offer: without one the dialog is what it always was
 function drawStart(b) {
   const ais = (S && S.ais) || [];
-  const row = b.querySelector(".bstartrow");
+  const row = b.querySelector(".bstartf");
   const fan = b.querySelector(".bfan");
   const list = b.querySelector(".bais");
   row.hidden = !ais.length;
@@ -4911,18 +5088,20 @@ function drawStart(b) {
   const on = document.getElementById("bfanon").checked;
   row.hidden = on;
   list.hidden = !on;
-  row.querySelector(".say").textContent = T["tui.branch.start"] || "Start here:";
   fan.querySelector("span").textContent = T["tui.branch.fan"] || "One folder per AI";
   const said = branchStart === "" ? (T["tui.branch.start.same"] || "the same tabs as the project")
     : branchStart === "none" ? (T["tui.branch.start.none"] || "nothing")
     : ((ais.find(a => a.key === branchStart) || {}).name || branchStart);
   const box = document.getElementById("bstart");
   // Written only when it changed: every touch of this document is another
-  // chance to shut a list that somebody has open
+  // chance to shut a list that somebody has open. An AI wears the mark its
+  // tab will
   if (box.dataset.said !== said) {
     box.dataset.said = said;
     box.textContent = "";
-    box.append(el("span", {class:"nm"}, said), el("span", {class:"caret"}, "\u25BE"));
+    const known = ais.find(a => a.key === branchStart);
+    box.append(known ? aiMark(branchStart) : el("span", {class:"aim"}), el("span", {class:"nm"}, said),
+      el("span", {class:"caret"}, "\u25BE"));
   }
   box.onclick = e => {
     e.stopPropagation();
@@ -4933,8 +5112,8 @@ function drawStart(b) {
       askBranch();
     }}, label);
     openList(box, [
-      pick("", T["tui.branch.start.same"] || "the same tabs as the project"),
       ...ais.map(a => pick(a.key, a.name)),
+      pick("", T["tui.branch.start.same"] || "the same tabs as the project"),
       pick("none", T["tui.branch.start.none"] || "nothing"),
     ]);
   };
@@ -4988,18 +5167,28 @@ function drawBranch() {
   // The lists belong to the folder, not to the name: an answer for this folder
   // fills them whatever was typed when it was asked
   const here = p && p.from === branchFrom;
-  if (mine && p.done) { closeBranch(); return; }
+  // Made. Closed -- or, with "create more" on, left open on the same project
+  // and AI with the name cleared for the next one. Once per folder made: the
+  // same answer arrives on every frame until another question replaces it
+  if (mine && p.done && branchDone !== p.folder) {
+    branchDone = p.folder;
+    if (!document.getElementById("bagain").checked) { closeBranch(); return; }
+    q.value = "";
+    q.placeholder = T["tui.branch.placeholder"] || "";
+    const at = document.getElementById("bat");
+    if (at) at.value = "";
+    askBranch();
+    q.focus();
+    return;
+  }
   // Shown in the empty field rather than written into it, so the app's own
   // answer is visible and typing over it needs no clearing first
   const at = document.getElementById("bat");
   if (at && mine && !p.error && !at.value.trim()) at.placeholder = p.folder || "";
   // Which project this is cut from, and where that project itself lives
-  if (here) {
-    // What it is called in the settings, when somebody has written it down.
-    // Otherwise the folder's own name, which is what it was always
-    b.querySelector(".bproject .nm").textContent = p.project_name || p.project || "";
-    b.querySelector(".bproject .at").textContent = p.project_at || "";
-  }
+  // What it is called in the settings, when somebody has written it down.
+  // Otherwise the folder's own name, which is what it was always
+  drawProject(b, here ? p : null);
   // Every line when several folders are being made, so what is shown is
   // the whole of what will run
   b.querySelector(".bcmd").textContent = mine && !p.error
@@ -5010,7 +5199,10 @@ function drawBranch() {
   drawCarry(b, here ? (p.carry || []) : []);
   showMore(b, !b.querySelector(".bextra").hidden);
   drawBases(b, here ? p : null);
-  b.querySelector(".berr").textContent = mine && p.error ? p.error : "";
+  // The reason a press without a project was refused stays until a project is
+  // chosen; the app's own errors are about the project that is
+  const err = b.querySelector(".berr");
+  if (!err.dataset.need) err.textContent = mine && p.error ? p.error : "";
   // Open in another folder already: asked, with the two answers in place of
   // the button that would only have failed
   const taken = mine && !p.error ? p.in_use : null;
@@ -5030,7 +5222,15 @@ function drawBranch() {
   } else {
     ask.dataset.key = "";
   }
-  b.querySelector(".bgo .go").disabled = !(mine && !p.error && !taken);
+  // With no project chosen the button stays pressable, and a press says what
+  // is missing (5.4); otherwise it waits for the app to say this can be made
+  b.querySelector(".bgo .go").disabled = !!branchFrom && !(mine && !p.error && !taken);
+  b.querySelector(".bgo .go").classList.toggle("held", !branchFrom);
+  if (branchFrom && b.querySelector(".berr").dataset.need) {
+    b.querySelector(".berr").dataset.need = "";
+    b.querySelector(".berr").classList.remove("need");
+    b.querySelector(".berr").textContent = mine && p.error ? p.error : "";
+  }
 }
 // The branches this one can grow from. Filled once, then left alone: rebuilt
 // on every answer it would jump back to the first one each time somebody
@@ -5065,6 +5265,10 @@ function drawDest(b, p) {
   const box = document.getElementById("bdest");
   if (!box) return;
   const machines = (p && p.hosts) || [];
+  // Asked only where there is a choice: on a PC with no other machine set up,
+  // "where it runs" has one answer and a picker for it is a question nobody
+  // can get wrong
+  b.querySelector(".bdestf").hidden = !machines.length && !branchHost;
   const here = T["tui.branch.dest.here"] || "This PC";
   const said = branchHost || here;
   if (box.dataset.said !== said) {
@@ -5188,6 +5392,20 @@ function drawCarry(b, items) {
   b.querySelector(".vclose").onclick = closeBranch;
   b.addEventListener("mousedown", e => { if (e.target === b) closeBranch(); });
   const makeIt = adopt => {
+    // Nothing to cut a worktree from yet: said where it stays, and the eye is
+    // taken to the picker that answers it (5.4)
+    if (!branchFrom) {
+      const err = b.querySelector(".berr");
+      err.dataset.need = "1";
+      err.classList.add("need");
+      err.textContent = T["tui.branch.need_project"] || "";
+      const proj = document.getElementById("bproj");
+      proj.classList.remove("ring");
+      void proj.offsetWidth;
+      proj.classList.add("ring");
+      proj.focus();
+      return;
+    }
     const q = document.getElementById("bq");
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
@@ -5195,6 +5413,33 @@ function drawCarry(b, items) {
           at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, adopt});
   };
   b.querySelector(".bgo .go").onclick = () => makeIt(false);
+  // Ctrl+Enter makes it from anywhere in the dialog, as the chip on the button
+  // says. Not while a list is open over it: that Enter belongs to the list
+  b.addEventListener("keydown", e => {
+    if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey) || typingIME(e)) return;
+    if (document.querySelector(".fmenu")) return;
+    const go = b.querySelector(".bgo .go");
+    if (b.querySelector(".bgo").hidden || go.disabled) return;
+    e.preventDefault();
+    e.stopPropagation();
+    makeIt(false);
+  });
+  // A picker opens with Enter or Space as well as a press: the keyboard reaches
+  // everything a pointer does. Enter on the AI, the last question, makes it
+  for (const id of ["bproj", "bdest", "bbase", "bstart"]) {
+    const pick = document.getElementById(id);
+    pick.addEventListener("keydown", e => {
+      if (e.ctrlKey || e.metaKey || typingIME(e)) return;
+      if (e.key === "Enter" && id === "bstart" && !document.querySelector(".fmenu")) {
+        e.preventDefault();
+        b.querySelector(".bgo .go").click();
+        return;
+      }
+      if (e.key === " " || e.key === "Enter" || e.key === "ArrowDown") { e.preventDefault(); pick.click(); }
+    });
+  }
+  b.querySelector(".badd").onclick = () => openAddProject();
+  b.querySelector(".bconf").onclick = () => { closeBranch(); openSettings("basic"); };
   // The branch is open in another folder: yes is that folder, no is this one
   // under the free name offered beside it
   b.querySelector(".binuse .yes").onclick = () => makeIt(true);
@@ -5230,12 +5475,15 @@ function drawCarry(b, items) {
   q.addEventListener("input", askBranch);
   q.addEventListener("keydown", e => {
     if (e.key === "Escape") { e.preventDefault(); closeBranch(); }
-    if (typingIME(e)) return;
-    // Enter makes it, but only once the app has said it can be made
-    if (e.key === "Enter" && !b.querySelector(".bgo .go").disabled) {
-      e.preventDefault();
-      b.querySelector(".bgo .go").click();
-    }
+    if (typingIME(e) || e.ctrlKey || e.metaKey) return;
+    // Enter goes on to the next question, which AI, when there is one to ask;
+    // Enter there makes it. Without it, Enter here makes it -- once the app
+    // has said it can be made
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const ai = b.querySelector(".bstartf");
+    if (ai && !ai.hidden) { document.getElementById("bstart").focus(); return; }
+    if (!b.querySelector(".bgo .go").disabled) b.querySelector(".bgo .go").click();
   });
 })();
 
@@ -13571,6 +13819,33 @@ mod tests {
         assert!(PAGE.contains("row.hidden = !ais.length;") && PAGE.contains("fan.hidden = !ais.length;"));
         // Every line is shown when several folders are being made
         assert!(PAGE.contains(r#"(p.lines && p.lines.length) ? p.lines.join("\n") : p.line"#));
+    }
+
+    /// Creating a worktree asks in this order -- project, where it runs (only
+    /// when there is a choice), name or what to grow from, AI -- with the rest
+    /// folded, and finishes from anywhere with Ctrl+Enter. A project can be
+    /// chosen or added without leaving it, and with none chosen the button
+    /// says so instead of doing nothing.
+    #[test]
+    fn a_worktree_is_created_from_a_project_picker_an_ai_and_one_button() {
+        let dialog = PAGE.split(r#"<div id="branch" hidden>"#).nth(1).unwrap_or_default();
+        let at = |needle: &str| dialog.find(needle).unwrap_or_else(|| panic!("the dialog has no {needle}"));
+        assert!(at(r#"id="bproj""#) < at(r#"id="bdest""#) && at(r#"id="bdest""#) < at(r#"id="bq""#)
+            && at(r#"id="bq""#) < at(r#"id="bstart""#) && at(r#"id="bstart""#) < at(r#"class="bmore""#),
+            "the questions are not in the order they are asked");
+        assert!(at(r#"class="bmore""#) < at(r#"id="bat""#), "where it goes is not folded away");
+        assert!(dialog.contains(r#"id="bagain""#) && dialog.contains(r#"<span class="kbd">"#), "the foot has no create-more or no keys on the button");
+        assert!(PAGE.contains(r#"b.querySelector(".bdestf").hidden = !machines.length && !branchHost;"#), "where it runs is asked on a PC with one answer");
+        assert!(PAGE.contains(r#"err.textContent = T["tui.branch.need_project"] || "";"#), "a press with no project says nothing");
+        assert!(PAGE.contains(r#"rows.push(el("div", {class:"projadd", onclick:() => { closeFolderMenu(); openAddProject(); }},"#),
+            "a project cannot be added from the picker");
+        assert!(PAGE.contains("if (e.key !== \"Enter\" || !(e.ctrlKey || e.metaKey) || typingIME(e)) return;"), "Ctrl+Enter does not make it");
+        assert!(PAGE.contains("if (!preset.keepStart) branchStart = firstStart();"), "a new worktree does not start with the Assistant AI");
+        assert!(PAGE.contains(r#"if (!document.getElementById("bagain").checked) { closeBranch(); return; }"#), "create-more closes the dialog anyway");
+        assert!(PAGE.contains(r#"onclick:() => openNewWorktree()}, pickIcon("plus")"#), "the PROJECT heading has no new worktree");
+        // The dialogs stack in the order they open over each other
+        let (branch, add, browse) = (PAGE.find(r#"<div id="branch" hidden>"#), PAGE.find(r#"<div id="addproj" hidden>"#), PAGE.find(r#"<div id="browse" hidden>"#));
+        assert!(branch < add && add < browse, "a dialog opened over another is drawn under it");
     }
 
     /// A project and the branches cut from it are one household: one box,

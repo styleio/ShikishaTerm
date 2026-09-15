@@ -4493,6 +4493,17 @@ pub fn save_appearance(key: &str, value: serde_json::Value) {
     save_setting(&["appearance", key], value);
 }
 
+/// The Assistant AI as the settings file has it written, whether or not the
+/// file counts as settings yet. On a first start the setup writes this before
+/// any folder exists, and [`load`] does not read a file with no folders
+pub fn assistant_written() -> String {
+    std::fs::read_to_string(config_file_path())
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(without_bom(&t)).ok())
+        .and_then(|v| v.get("ai_engine").and_then(|a| a.as_str()).map(str::to_string))
+        .unwrap_or_default()
+}
+
 /// Record one setting back into the settings file, leaving every other line of
 /// it as the person wrote it. `at` is the nesting, outermost first.
 ///
