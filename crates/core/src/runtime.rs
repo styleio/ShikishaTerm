@@ -2837,7 +2837,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     };
                     let go = quick_go(kind, ai, &surfaces, &tabs, active, board_open || settings_open,
                                       &ai_choices, home.as_deref());
-                    (key.clone(), quick_dest(&go, &tabs, &surfaces))
+                    (key.clone(), quick_dest(&go))
                 })
                 .collect(),
             first_run,
@@ -3444,14 +3444,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if let Some(on) = shell.mail().take_quick_shown() {
             quick_open = on;
         }
-        // Quick commands pressed, on the window or the phone. What each sends
-        // is read from the settings here -- the press only named it -- and any
-        // secret it names is put in now, through the door a script's secrets
-        // go through: the desk on screen, and open to whoever receives it. A
-        // shell tab is the person's own hands; an AI tab is an AI reading it.
-        // A refusal about a secret is said by that door (`caps::take_refusal`)
+        // Quick commands pressed, on the window or the phone. Each opens a tab
+        // of its own (`quick_go`); what it sends is read from the settings here
+        // -- the press only named it -- and any secret it names is put in now,
+        // through the door a script's secrets go through: the desk on screen,
+        // and open to whoever receives it. A shell is the person's own hands;
+        // an AI is an AI reading it. A refusal about a secret is said by that
+        // door (`caps::take_refusal`)
         for (id, _tab) in shell.mail().take_quicks() {
-            let now_ms = start.elapsed().as_millis() as u64;
             let spec = crate::quick::arrange(&cfg.as_ref().map(|c| c.quick_commands.clone()).unwrap_or_default());
             // A folder is opened on the page and sends nothing; its id arriving
             // here, or one that is gone, is a page out of step with the settings
@@ -3468,28 +3468,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 item.kind, &item.ai, &surfaces, &tabs, active, board_open || settings_open,
                 &ai_choices, home.as_deref(),
             );
+            let QuickGo::Open { cwd, command, program } = go else {
+                if let QuickGo::Refuse(why) = go {
+                    append_hook_log(&format!("quick command \"{label}\" not sent: {why}"));
+                    flash = Some(i18n::tp("msg.quick.refused", &[("label", &label), ("why", &i18n::t(why))]));
+                }
+                continue;
+            };
             // Whoever receives it is who a secret in it is for: an AI tab is an
-            // AI reading it, anything else is the person's own shell
-            let who = match (&go, item.kind) {
-                (QuickGo::Send(s), _) => match session_at(&surfaces, *s).and_then(|i| tabs.get(i)) {
-                    Some(t) if t.is_ai() => grants::Subject::Ai,
-                    _ => grants::Subject::Human,
-                },
-                (_, crate::quick::Kind::Ai) => grants::Subject::Ai,
+            // AI reading it, a shell is the person's own
+            let who = match item.kind {
+                crate::quick::Kind::Ai => grants::Subject::Ai,
                 _ => grants::Subject::Human,
             };
-            if let QuickGo::Refuse(why) = go {
-                append_hook_log(&format!("quick command \"{label}\" not sent: {why}"));
-                flash = Some(i18n::tp("msg.quick.refused", &[("label", &label), ("why", &i18n::t(why))]));
-                continue;
-            }
-            if let QuickGo::Send(s) = go
-                && !item.enter
-                && session_at(&surfaces, s).and_then(|i| tabs.get(i)).is_some_and(|t| t.is_model())
-            {
-                flash = Some(i18n::tp("msg.quick.no_draft", &[("label", &label)]));
-                continue;
-            }
             // Put in any secret it names. A refusal is said by the door itself
             // (`caps::take_refusal`), in the same words a script would get
             let text = match crate::quick::expand(&item.body, |name| {
@@ -3503,41 +3494,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             };
             // The log says the button and what it was written as. The text
             // that goes out may hold a secret's value, so that is never logged
-            match go {
-                QuickGo::Send(s) => {
-                    append_hook_log(&format!("quick command \"{label}\" -> tab{s}: {}", log_excerpt(&item.body, 120)));
-                    hand_over(&mut tabs, &surfaces, s, text, item.enter, now_ms, &mut pending_send, &mut ball);
-                    if s != active {
-                        active = s;
-                        board_open = false;
-                        settings_open = false;
-                        view_touched_ms = now_ms;
-                    }
-                }
-                QuickGo::Open { cwd, command, program } => {
-                    let Some(desk) = desks.get(desk_index).map(|d| d.name.clone()) else { continue };
-                    let (title, tab_id) = quick_tab_names(&label, &program, &tabs);
-                    let line = serde_json::json!({"name": title, "id": tab_id, "command": command});
-                    if config::append_tab(&desk, line, Some(&cwd)) {
-                        append_hook_log(&format!(
-                            "quick command \"{label}\" -> new tab \"{title}\" in {}: {}",
-                            cwd.display(),
-                            log_excerpt(&item.body, 120)
-                        ));
-                        reveal = Some((tab_id.clone(), Instant::now() + Duration::from_secs(20)));
-                        pending_quicks.push(PendingQuick {
-                            id: tab_id,
-                            label,
-                            text,
-                            submit: item.enter,
-                            until: Instant::now() + QUICK_WAIT,
-                        });
-                        watcher.poke();
-                    } else {
-                        flash = Some(i18n::tp("msg.quick.open_failed", &[("label", &label)]));
-                    }
-                }
-                QuickGo::Refuse(_) => {}
+            let Some(desk) = desks.get(desk_index).map(|d| d.name.clone()) else { continue };
+            let (title, tab_id) = quick_tab_names(&label, &program, &tabs);
+            let line = serde_json::json!({"name": title, "id": tab_id, "command": command});
+            if config::append_tab(&desk, line, Some(&cwd)) {
+                append_hook_log(&format!(
+                    "quick command \"{label}\" -> new tab \"{title}\" in {}: {}",
+                    cwd.display(),
+                    log_excerpt(&item.body, 120)
+                ));
+                reveal = Some((tab_id.clone(), Instant::now() + Duration::from_secs(20)));
+                pending_quicks.push(PendingQuick {
+                    id: tab_id,
+                    label,
+                    text,
+                    submit: item.enter,
+                    until: Instant::now() + QUICK_WAIT,
+                });
+                watcher.poke();
+            } else {
+                flash = Some(i18n::tp("msg.quick.open_failed", &[("label", &label)]));
             }
         }
         // Lines waiting for a tab a quick command opened: handed over once
@@ -7186,8 +7162,7 @@ pub fn hand_line(
 /// The same, with a choice about the Enter at the end: `submit` false leaves
 /// the text at the prompt for the person to finish (a quick command whose
 /// "press Enter" is off). A model bridge has no prompt to leave anything at,
-/// so it is always told -- whoever asks for less has to find that out first
-/// (see `quick_refusal`)
+/// so it is always told
 #[allow(clippy::too_many_arguments)]
 pub fn hand_over(
     tabs: &mut [Tab],
@@ -7227,8 +7202,6 @@ pub fn hand_over(
 /// Where a quick command goes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QuickGo {
-    /// To a tab that is open, by its place in the list
-    Send(usize),
     /// Into a new tab, started in this folder with this command
     Open { cwd: std::path::PathBuf, command: String, program: String },
     /// Nowhere, and the dictionary key saying why
@@ -7237,14 +7210,13 @@ pub enum QuickGo {
 
 /// Where a quick command of this kind would go right now.
 ///
-/// It goes to the working folder in front -- the folder of the tab being
-/// looked at -- because that is where a relative path in a command means
-/// something and where an AI asked to do something is meant to do it:
-///
-///   - the tab being looked at, when it is the right kind of tab;
-///   - otherwise the first tab of that kind in the same folder;
-///   - otherwise a new tab in that folder: a shell for a command, the AI the
-///     button names (or the first one this PC can start) for a prompt.
+/// Always into a tab of its own, opened for it in the working folder in front
+/// -- the folder of the tab being looked at -- because that is where a
+/// relative path in a command means something and where an AI asked to do
+/// something is meant to do it. A shell for a command; for a prompt, the AI
+/// the button names, or the first one this PC can start. Never into a tab
+/// that is already open: what is running there, or half typed there, is the
+/// person's, and a button is not a reason to type over it.
 ///
 /// With no folder in front (the board, a page, a tab that works nowhere in
 /// particular), a command opens a shell in the home folder -- which is also
@@ -7252,9 +7224,6 @@ pub enum QuickGo {
 /// an AI set to work on the whole of somebody's home folder is not a thing
 /// to do by accident.
 ///
-/// A shell showing a full-screen program (an editor, a pager) is not
-/// standing at its prompt, and a command typed into it is keystrokes in that
-/// program; it is passed over. One asked to be left alone (locked) is too.
 /// The same function answers the launcher's "where would this go" and the
 /// press itself, so the two cannot disagree.
 #[allow(clippy::too_many_arguments)]
@@ -7269,29 +7238,10 @@ pub fn quick_go(
     home: Option<&std::path::Path>,
 ) -> QuickGo {
     use crate::quick::Kind;
-    let at = |s: usize| session_at(surfaces, s).and_then(|i| tabs.get(i));
-    let full_screen = |t: &Tab| t.parser.lock().map(|p| p.screen().alternate_screen()).unwrap_or(false);
-    let fits = |t: &Tab| match kind {
-        Kind::Terminal => !t.is_ai() && !full_screen(t),
-        Kind::Ai => t.is_ai() && (ai.is_empty() || t.ai_kind().as_deref() == Some(ai)),
-        Kind::Folder => false,
-    };
-    let usable = |t: &Tab| !t.locked && fits(t);
     if kind == Kind::Folder {
         return QuickGo::Refuse("msg.quick.gone");
     }
-    if !covered && at(active).is_some_and(usable) {
-        return QuickGo::Send(active);
-    }
     let folder = (!covered).then(|| surface_folder(surfaces, tabs, active)).flatten();
-    if let Some(f) = folder {
-        let same = (1..=surfaces.len()).find(|&s| {
-            at(s).is_some_and(|t| usable(t) && t.cwd().is_some_and(|c| crate::uistate::same_folder(c, f)))
-        });
-        if let Some(s) = same {
-            return QuickGo::Send(s);
-        }
-    }
     match kind {
         Kind::Terminal => match folder.or(home) {
             Some(cwd) => QuickGo::Open {
@@ -7315,12 +7265,8 @@ pub fn quick_go(
 }
 
 /// The same answer, in the words the launcher shows
-pub fn quick_dest(go: &QuickGo, tabs: &[Tab], surfaces: &[Surface]) -> crate::quick::QuickDest {
+pub fn quick_dest(go: &QuickGo) -> crate::quick::QuickDest {
     match go {
-        QuickGo::Send(s) => crate::quick::QuickDest {
-            how: "send",
-            name: session_at(surfaces, *s).and_then(|i| tabs.get(i)).map(|t| t.title.clone()).unwrap_or_default(),
-        },
         QuickGo::Open { cwd, program, .. } => crate::quick::QuickDest {
             how: "open",
             name: i18n::tp(

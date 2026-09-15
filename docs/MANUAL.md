@@ -31,9 +31,9 @@ letters. `Ctrl+B 0` brings it back from anywhere.
   `?` (this page), the scissors (tools) and 🎛️ (quick commands).
 
 **Quick commands** are a grid of buttons you make yourself. 🎛️ or `Ctrl+B k` brings
-them up over the whole window. A button works in the folder of the tab you are
-looking at: a command goes to a shell tab in that folder and a prompt to an AI
-tab there, and a new tab is opened in that folder when there is none. With no
+them up over the whole window. Every press opens a new tab in the folder of the
+tab you are looking at: a command runs in a new shell tab, and a prompt is given
+to an AI started in a new tab. With no
 folder in front, a command opens in your home folder (so a button can start a
 program too) and a prompt is not sent. The line under the buttons says where
 the one under the pointer will go before you press it. Make them, move them and

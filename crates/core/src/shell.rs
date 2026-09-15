@@ -8604,7 +8604,6 @@ function quickSaying(t) {
   const d = quickDestOf(t);
   if (!d) return {text: "", warn: false};
   if (d.how === "none") return {text: d.name, warn: true};
-  if (d.how === "send") return {text: (T["tui.quick.dest.send"] || "{name}").replace("{name}", d.name), warn: false};
   return {text: d.name, warn: false};
 }
 function quickSay(t) {

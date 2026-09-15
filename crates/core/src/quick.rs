@@ -393,10 +393,10 @@ pub fn dest_key(kind: Kind, ai: &str) -> String {
 /// Where a button of one kind would go if it were pressed now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QuickDest {
-    /// `send` (to a tab that is open), `open` (a new tab), or `none`
+    /// `open` (a new tab) or `none`
     pub how: &'static str,
-    /// The tab it would be handed to (its title), or the folder a new tab
-    /// would open in (its name), or the sentence saying why it cannot go
+    /// Where the new tab would open and with what, or the sentence saying why
+    /// it cannot go
     pub name: String,
 }
 
