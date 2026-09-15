@@ -684,6 +684,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.folder.wcard .fbr { flex-basis:100%; padding-left:14px; font-size:10px; color:var(--dim);
     font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .tab.intab.wcard { padding-left:30px; }
+  /* An AI's row: what it is doing, then which tab, then how long ago. The
+     state reads first and plain; the tab's name and the time are the quiet
+     part (65% and 10px), so the eye runs down the states */
+  .tab .nm.agent .st { color:var(--text); font-weight:600; }
+  .tab.aitab .nm.agent { color:var(--text); font-weight:normal; }
+  .tab .nm.agent .who { color:var(--dim); font-weight:normal; }
+  .tab .ago { flex:none; margin-left:auto; font-size:10px; color:var(--dim); font-variant-numeric:tabular-nums; }
   /* Choosing one. The swatches are the colours picked from when nobody has,
      and the last square opens whatever the system offers */
   .swatches { display:flex; flex-wrap:wrap; gap:var(--s2); padding:6px 8px 8px; max-width:200px; }
@@ -4381,9 +4388,16 @@ function tabRow(t, g, deep, head) {
     // After the dot, never before it: the dot's column is what makes the
     // sidebar read as one line down the side
     markFor(t),
-    el("span", {class:"nm", title:t.profile}, t.name),
+    // An AI says what it is doing first and which tab it is second -- "Done -
+    // claude" -- because the state is what the list is scanned for, and how
+    // long ago it came to that at the end of the row. Anything else keeps its
+    // name and its bars
+    t.ai
+      ? el("span", {class:"nm agent", title:t.profile},
+          el("span", {class:"st"}, t.state_label || t.state), el("span", {class:"who"}, " - " + t.name))
+      : el("span", {class:"nm", title:t.profile}, t.name),
     t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
-    spark(t.activity));
+    t.ai && t.since ? agoMark(t.since) : spark(t.activity));
   // Where it is, then what it last said. Each only when there is one: a
   // blank line on every tab would spend the sidebar saying nothing
   if (t.place) {
@@ -4416,6 +4430,28 @@ function tabRow(t, g, deep, head) {
   }
   return row;
 }
+
+// How long ago something came to be, in the fewest letters a row has room for:
+// now, 5m, 3h, 2d. The whole date and time under the pointer
+function agoText(since) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - since);
+  if (s < 60) return T["tui.ago.now"] || "now";
+  if (s < 3600) return (T["tui.ago.m"] || "{n}m").replace("{n}", Math.floor(s / 60));
+  if (s < 86400) return (T["tui.ago.h"] || "{n}h").replace("{n}", Math.floor(s / 3600));
+  return (T["tui.ago.d"] || "{n}d").replace("{n}", Math.floor(s / 86400));
+}
+function agoMark(since) {
+  return el("span", {class:"ago", "data-since":String(since), title:new Date(since * 1000).toLocaleString()}, agoText(since));
+}
+// The list is drawn when something changes, and "now" stops being true while
+// nothing does: the words alone are brought up to date, twice a minute, with
+// nothing rebuilt under a pointer
+setInterval(() => {
+  for (const a of document.querySelectorAll("#tabs .ago[data-since]")) {
+    const said = agoText(Number(a.dataset.since));
+    if (a.textContent !== said) a.textContent = said;
+  }
+}, 30000);
 
 // Folders whose tabs are put away for now. Kept here rather than in the app:
 // how much of a list is on screen is this screen's business, and the phone and
@@ -13946,6 +13982,17 @@ mod tests {
     /// the others were cut from first and marked primary, each with the branch
     /// it is on underneath. A folder in no repository is a project of its own.
     /// Grouped by state instead, a folder stands alone and names its project.
+    /// An AI's row says its state, then its name, then how long ago it came to
+    /// that state -- and the time is brought up to date without the list being
+    /// rebuilt. Anything that is not an AI keeps its name and its bars.
+    #[test]
+    fn an_ai_row_says_its_state_its_name_and_how_long_ago() {
+        assert!(PAGE.contains(r#"el("span", {class:"st"}, t.state_label || t.state), el("span", {class:"who"}, " - " + t.name))"#),
+            "an AI's row does not lead with its state");
+        assert!(PAGE.contains("t.ai && t.since ? agoMark(t.since) : spark(t.activity));"), "an AI's row does not say how long ago");
+        assert!(PAGE.contains(r##"for (const a of document.querySelectorAll("#tabs .ago[data-since]")) {"##), "the time goes stale on a quiet board");
+    }
+
     #[test]
     fn the_list_is_drawn_by_project_with_every_folder_a_card_under_its_heading() {
         assert!(PAGE.contains("nav.append(projectHead(g, kin, kin.flatMap(o => inside[folders.indexOf(o)] || [])));"),
