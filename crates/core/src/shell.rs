@@ -363,14 +363,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .num { color:var(--dim); font-size:12px; min-width:14px; }
   .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .lock { color:var(--warn); font-size:11px; }
-  /* The "+" stays muted by default; it only reaches full contrast on hover/touch */
-  .tab.addtab { color:var(--dim); }
-  .tab.addtab:hover { color:inherit; }
+  /* The heading over the projects, under INDEX and Issue, with the one way to
+     add a project at its end. A quiet heading (11.5px), not a row to press:
+     only its + does anything, and the + is the size of a finger (§8) */
+  .tab.projhead { color:var(--dim); font-size:11.5px; letter-spacing:.02em; cursor:default; }
+  .tab.projhead:hover { background:none; }
+  .tab.projhead .padd { margin-left:auto; min-width:22px; min-height:22px; display:flex;
+    align-items:center; justify-content:center; border-radius:var(--r-chip);
+    color:var(--dim); font-size:14px; line-height:1; cursor:pointer; }
+  .tab.projhead .padd:hover { color:var(--text); background:var(--hover); }
   /* The one thing to press next, said by blinking it rather than by adding a
-     button: an empty folder's +, and "add a folder" when there is none at
+     button: an empty folder's +, and the projects' + when there is nothing at
      all. Two values a second, like the busy dot -- a smooth pulse in this
      page costs a core a fifth of itself for as long as it runs */
-  .tab.folder .more.pulse, .tab.addtab.pulse { color:var(--brand); font-weight:700;
+  .tab.folder .more.pulse, .tab.projhead .padd.pulse { color:var(--brand); font-weight:700;
     animation:pulse 1.2s step-end infinite; }
   /* Desk switcher above INDEX. Clicking it opens the desk list popup */
   .tab.deskrow { color:var(--dim); font-weight:700; border-bottom:1px solid var(--line); }
@@ -2808,6 +2814,16 @@ function drawTabs() {
       onclick:() => send({kind:"openissues"})},
     el("span", {class:"num"}, "◎"),
     el("span", {class:"nm"}, T["tui.issues.tab"] || "Issues")));
+  // The heading over the projects, and at its end the way to add one. It is
+  // the only such way: a second door at the foot of the list, meaning the same
+  // thing, was one more thing on a first screen to wonder about.
+  // Blinking on a machine that has nothing set up yet, while the pointer
+  // beside it says the same in words (drawCoach)
+  const bare = (S.coach || 0) === 1;
+  nav.append(el("div", {class:"tab projhead"},
+    el("span", {class:"nm"}, T["tui.project.head"] || "PROJECT"),
+    el("span", {class:"padd" + (bare ? " pulse" : ""), title:T["tui.project.add"] || "",
+        onclick:() => openBrowse("")}, "+")));
   // The folder each run of tabs works in. A heading appears when the folder
   // changes, and only when there is more than one to change to -- with a single
   // folder the sidebar looks exactly as it always has. A tab that is in no
@@ -2887,17 +2903,6 @@ function drawTabs() {
     for (const t of mine) into.append(tabRow(t, g, kin, top));
   }
   for (const t of loose) nav.append(tabRow(t, null, false, false));
-  // A "+" at the end of the list. Opens the settings page already in the "add tab" state
-  // A folder, not a tab: a tab has to go somewhere, and at the bottom of the
-  // whole list there was no saying where. Tabs are added from the folder they
-  // will run in.
-  // Blinking on a machine that has nothing set up yet: the shell that opened
-  // says the program runs, and this says what to press next. The pointer
-  // beside it says the same in words (drawCoach)
-  const bare = (S.coach || 0) === 1;
-  nav.append(el("div", {class:"tab addtab" + (bare ? " pulse" : ""), onclick:() => openBrowse("")},
-    el("span", {class:"num"}, "+"),
-    el("span", {class:"nm"}, T["tui.folder.add"] || "ADD A FOLDER")));
   // Once, after the first answer an AI has finished here: a star, if you
   // like it. On the window only -- the page it opens is this PC's
   if (S.thanks && !REMOTE) {
@@ -3657,7 +3662,7 @@ async function askForSnip(f, msg) {
 let coachShut = 0;
 // What each step points at. Asked for by name rather than held on to, because
 // the list it lives in is rebuilt several times a second
-const coachAt = step => step === 1 ? document.querySelector("#tabs .tab.addtab")
+const coachAt = step => step === 1 ? document.querySelector("#tabs .projhead .padd")
   : step === 2 ? document.querySelector("#tabs .tab.fnew") : null;
 // Doing the thing is an answer to being asked, so pressing what it points at
 // takes it down -- and takes it down for good, the same as its ✕. It waited
@@ -12768,8 +12773,10 @@ mod tests {
     fn every_plus_means_one_thing() {
         assert!(PAGE.contains("onclick:e => { e.stopPropagation(); openBranch(g); }}, \"+\")"),
                 "the working folder's + is not only for worktrees");
-        assert!(PAGE.contains(r#"class:"tab addtab" + (bare ? " pulse" : ""), onclick:() => openBrowse("")"#),
-                "the + under the list is not only for adding a working folder");
+        assert!(PAGE.contains(r#"el("span", {class:"padd" + (bare ? " pulse" : ""), title:T["tui.project.add"] || "",
+        onclick:() => openBrowse("")}, "+")"#),
+                "the projects' + is not only for adding a working folder");
+        assert!(!PAGE.contains("tab addtab"), "a second way to add a folder is back at the foot of the list");
         assert!(!PAGE.contains("function addMenu("), "the old menu that offers worktree and working folder side by side is still there");
         // Nothing to cut a worktree from, so no + that can only fail
         assert!(PAGE.contains("if (!g.color) return null;"), "a working folder that is not a repository shows the worktree +");
@@ -13095,7 +13102,7 @@ mod tests {
 
     #[test]
     fn the_first_run_pointer_the_thanks_card_and_the_manual_link_are_drawn() {
-        assert!(PAGE.contains(r##"const coachAt = step => step === 1 ? document.querySelector("#tabs .tab.addtab")"##), "there is nothing for step 1 to point at");
+        assert!(PAGE.contains(r##"const coachAt = step => step === 1 ? document.querySelector("#tabs .projhead .padd")"##), "there is nothing for step 1 to point at");
         // The second step points at the line that starts an AI in an empty folder.
         // The folder's own + means another worktree now, which is not "start one here"
         assert!(PAGE.contains(r##": step === 2 ? document.querySelector("#tabs .tab.fnew") : null;"##), "there is nothing for step 2 to point at");

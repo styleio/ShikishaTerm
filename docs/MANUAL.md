@@ -27,8 +27,9 @@ letters. `Ctrl+B 0` brings it back from anywhere.
   when it has answered, **amber** when it is waiting for you to answer. Under the name, the
   branch it is on, its pull request, and any ports it is listening on; under that,
   what it last said about itself.
-- **Add a working folder** at the bottom of the list, then the gear (settings),
-  `?` (this page), the scissors (tools) and 🎛️ (quick commands).
+- Under INDEX and Issue, the **PROJECT** heading with a `+` at its end (add a project).
+  At the very bottom, the gear (settings), `?` (this page), the scissors (tools) and
+  🎛️ (quick commands).
 
 **Quick commands** are a grid of buttons you make yourself. 🎛️ or `Ctrl+B k` brings
 them up over the whole window. Every press opens a new tab in the folder of the
@@ -111,7 +112,7 @@ and drag it shut to give the whole window to the terminal.
 
 ## 3. Working folders and branches
 
-**Add a working folder** at the bottom of the list. Pick the folder and it appears
+Press the `+` at the end of the **PROJECT** heading. Pick the folder and it appears
 with a `+` to press. Every tab you add from that `+` starts in that folder.
 
 **Work on another branch at the same time**: press the `+` on a folder that is in
