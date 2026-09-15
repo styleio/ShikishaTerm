@@ -452,7 +452,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     align-items:center; justify-content:center; border-radius:var(--r-chip);
     color:var(--dim); font-size:14px; line-height:1; cursor:pointer; }
   .tab.projhead .padd:hover { color:var(--text); background:var(--hover); }
-  .tab.projhead .padd.pnew { margin-left:0; }
+  .tab.projhead .padd + .padd { margin-left:0; }
+  /* The ways the list can be drawn, the one in use ticked */
+  .fmenu .grouprow { display:flex; align-items:center; gap:var(--s2); min-width:160px; }
+  .fmenu .grouprow .tick { width:14px; color:var(--brand); }
   .tab.projhead .padd .ico { display:flex; }
   /* The one thing to press next, said by blinking it rather than by adding a
      button: an empty folder's +, and the projects' + when there is nothing at
@@ -632,27 +635,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .tab.folder > .chip, .tab.folder > .cut, .tab.folder > .caret, .tab.folder > .dot,
     .tab.folder > .spark, .tab.folder > .more, .tab.folder > .drift { flex-shrink:0; }
-  /* A household: a project's own folder with the branches cut from it. One
-     box, so the eye reads them as one project; the head of it a shade
-     heavier than any other heading, since it is the row that names the
-     project, and the branches a step in from it. The step is 14px -- enough
-     to read as "under", not enough to eat the branch's name */
-  .family { margin:var(--s1) var(--s2); padding:2px 0 4px; border-radius:var(--r-card); background:var(--raise); }
-  .tab.folder.head .nm { font-size:12px; font-weight:600; opacity:1; }
-  .family .tab.folder.cut { padding-left:24px; }
-  .family .tab.intab.deep { padding-left:40px; }
-  /* Which branch the project itself is standing on, worn by the head of a
-     household only: alone, a folder's own branch is already on its tabs */
+  /* Which branch a folder is standing on, when the list is grouped by state
+     and the folder stands without its project's heading */
   .tab.folder .on { flex:0 100 auto; min-width:0; font-size:10px; color:var(--dim); font-family:var(--mono);
     border:1px solid var(--line); border-radius:var(--r-chip); padding:0 4px; max-width:90px;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  /* How many branches hang under this project, and the one press that puts
-     them all away or brings them all back */
-  .tab.folder .kin { margin-left:auto; flex:0 10 auto; min-width:1.6em; font-size:10px; color:var(--dim);
-    cursor:pointer; padding:0 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .tab.folder .kin:hover { color:var(--text); }
-  .tab.folder .kin ~ .drift { margin-left:6px; }
-  .tab.folder .kin ~ .more { margin-left:6px; }
   /* Both marks take the same slot, so every folder's name starts on one
      column whichever kind it is */
   .tab.folder .chip { width:8px; height:8px; border-radius:2px; flex:0 0 auto;
@@ -669,6 +656,34 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      depth here to draw. What tells them apart is the mark, not the margin.
      Tabs are one step in, because those really are inside a folder */
   .tab.intab { padding-left:26px; }
+  /* The list by project. A heading names the project once -- its colour, its
+     name -- and every folder of it stands under it as a card: whether it is at
+     work, its name, "primary" on the checkout the rest were cut from, and on
+     the line below the branch it is on. The heading carries what belongs to
+     the project as a whole, so no card repeats it: the colour, the name, the +
+     for another worktree */
+  .tab.phead { padding:10px 10px 2px; gap:var(--s2); flex-wrap:nowrap; cursor:default; min-width:0; }
+  .tab.phead:hover { background:none; }
+  .tab.phead .chip { flex:none; width:10px; height:10px; border-radius:var(--r-chip); background:var(--line); }
+  .tab.phead > .ico { display:flex; color:var(--dim); flex:none; }
+  .tab.phead .nm { font-size:13px; font-weight:600; color:var(--text); flex:1 1 auto; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tab.phead .caret { flex:none; cursor:pointer; color:var(--dim); font-size:9px; min-width:22px; min-height:22px;
+    display:flex; align-items:center; justify-content:center; }
+  .tab.phead .caret:hover, .tab.phead .more:hover { color:var(--text); }
+  .tab.phead .more { flex:none; padding:0 4px; color:var(--dim); cursor:pointer; font-size:13px; line-height:1;
+    min-width:22px; min-height:22px; display:flex; align-items:center; justify-content:center; }
+  .tab.phead > .dot { flex:none; }
+  .tab.folder.wcard { padding:6px 10px 6px 14px; flex-wrap:wrap; row-gap:2px; }
+  .tab.folder.wcard .nm { font-size:13px; opacity:1; letter-spacing:0; flex:0 1 auto; }
+  .tab.folder.wcard.front .nm { font-weight:600; }
+  .tab.folder.wcard > .dot { flex:none; }
+  .tab.folder.wcard .prim { flex:none; font-size:10px; line-height:16px; padding:0 6px; color:var(--dim);
+    border:1px solid var(--line); border-radius:var(--r-chip); }
+  .tab.folder.wcard .fill { flex:1 1 0; min-width:0; }
+  .tab.folder.wcard .fbr { flex-basis:100%; padding-left:14px; font-size:10px; color:var(--dim);
+    font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tab.intab.wcard { padding-left:30px; }
   /* Choosing one. The swatches are the colours picked from when nobody has,
      and the last square opens whatever the system offers */
   .swatches { display:flex; flex-wrap:wrap; gap:var(--s2); padding:6px 8px 8px; max-width:200px; }
@@ -2955,6 +2970,12 @@ function drawTabs() {
   const bare = (S.coach || 0) === 1;
   nav.append(el("div", {class:"tab projhead"},
     el("span", {class:"nm"}, T["tui.project.head"] || "PROJECT"),
+    // How the list is drawn. Only once there is more than one folder to draw
+    // in more than one way
+    (S.groups || []).length > 1
+      ? el("span", {class:"padd popt", title:T["tui.project.options"] || "",
+          onclick:e => { e.stopPropagation(); openGroupMenu(e.currentTarget); }}, pickIcon("sliders"))
+      : null,
     el("span", {class:"padd" + (bare ? " pulse" : ""), title:T["tui.project.add"] || "",
         onclick:() => openAddProject()}, pickIcon("folderPlus")),
     // And another worktree, on the project in front: the other thing this
@@ -2980,24 +3001,26 @@ function drawTabs() {
     if (t.group != null && inside[t.group]) inside[t.group].push(t);
     else loose.push(t);
   }
-  // One household, when a project's own folder and at least one branch cut
-  // from it are both on the list: the project heads it, the branches stand a
-  // step in, and the whole of it sits in one box so the eye reads them as one
-  // project. A project with no branch open, or a branch whose project is not
-  // open, is drawn exactly as it always was -- the depth is git's, not ours
+  // The folders of one project: the repository's own checkout and the
+  // worktrees cut from it. A folder in no repository is a project of its own
   const kinOf = g => g.family ? folders.filter(o => o.family === g.family) : [g];
-  const heads = g => !!g.family && !g.linked && kinOf(g).some(o => o.linked);
-  const housed = g => !!g.family && g.linked && kinOf(g).some(o => !o.linked);
   // The order the folders are read in, and the headings that break it up.
   //
-  // The households above are themselves a grouping -- by the repository a
-  // folder belongs to -- so they are switched off whenever another axis is
-  // chosen. Two groupings at once would put a project's own folder in one
-  // group and its branches in another and still try to draw a box round all
-  // of them
+  // By project unless another axis is chosen. Two groupings at once would put
+  // a project's own folder in one group and its branches in another and still
+  // try to draw one heading over all of them
   const axis = groupBy !== "none" && folders.length > 1 ? groupBy : "none";
-  if (folders.length > 1) nav.append(axisRow());
   const keyed = folders.map((g, gi) => ({ gi, g, ...groupOf(g, inside[gi], axis) }));
+  // Drawn by project, every folder of one repository under its heading: the
+  // folders of a project brought together where the first of them stands,
+  // the checkout the others were cut from first among them. Stable otherwise
+  const projectKey = g => g.family || "dir:" + g.folder;
+  if (axis === "none") {
+    const firsts = [];
+    for (const r of keyed) if (!firsts.includes(projectKey(r.g))) firsts.push(projectKey(r.g));
+    keyed.sort((a, b) => (firsts.indexOf(projectKey(a.g)) - firsts.indexOf(projectKey(b.g)))
+      || ((a.g.linked ? 1 : 0) - (b.g.linked ? 1 : 0)) || (a.gi - b.gi));
+  }
   if (axis !== "none") {
     // Stable: folders keep the order the settings put them in, within their
     // group. A list that reshuffles itself as states change is a list nobody
@@ -3007,25 +3030,46 @@ function drawTabs() {
     seen.sort((a, b) => groupRank(a, axis) - groupRank(b, axis));
     keyed.sort((a, b) => seen.indexOf(a.key) - seen.indexOf(b.key));
   }
-  let box = null, boxKey = null, groupKey = null;
+  let groupKey = null, headKey = null;
   for (const row of keyed) {
     const gi = row.gi, g = row.g;
     if (axis !== "none" && row.key !== groupKey) {
       groupKey = row.key;
       nav.append(el("div", {class:"gset"}, el("span", {}, row.label)));
     }
-    const key = axis === "none" && (heads(g) || housed(g)) ? g.family : null;
-    if (key !== boxKey) {
-      box = key ? el("div", {class:"family"}) : null;
-      boxKey = key;
-      if (box) nav.append(box);
+    // By project: its heading once, over its first folder, and every folder of
+    // it as a card under that. Put away from the heading, all of it at once
+    if (axis === "none") {
+      const pk = projectKey(g);
+      if (pk !== headKey) {
+        headKey = pk;
+        const kin = kinOf(g);
+        nav.append(projectHead(g, kin, kin.flatMap(o => inside[folders.indexOf(o)] || [])));
+      }
+      if (folded.has("proj:" + pk)) continue;
+      if (g.empty) { nav.append(emptyRow(g, true)); continue; }
+      nav.append(folderRow(g, inside[gi], true));
+      // Not asked whether the folder itself was put away: a card has no fold,
+      // and a fold kept from before would hide its tabs with nothing to open
+      const mine = inside[gi];
+      if (mine.length >= 2) {
+        const away = !opened.has("tabs:" + g.folder);
+        const bundle = bundleRow(g, mine, away, false);
+        bundle.classList.add("wcard");
+        nav.append(bundle);
+        if (away) continue;
+      }
+      for (const t of mine) {
+        const tr = tabRow(t, g, false, false);
+        tr.classList.add("wcard");
+        nav.append(tr);
+      }
+      continue;
     }
-    const into = box || nav;
-    // The household's branches put away together, from the pill on its head
-    const kin = axis === "none" && housed(g), top = axis === "none" && heads(g);
-    if (kin && folded.has("kin:" + g.family)) continue;
-    if (g.empty) { into.append(emptyRow(g)); continue; }
-    into.append(folderRow(g, kinOf(g), top, inside[gi]));
+    // Grouped another way -- by what state the work is in -- a folder stands
+    // on its own under its group, and says which project it belongs to itself
+    if (g.empty) { nav.append(emptyRow(g)); continue; }
+    nav.append(folderRow(g, inside[gi]));
     // Its tabs are hidden while it is folded, and the heading says so
     if (folded.has(g.folder)) continue;
     const mine = inside[gi];
@@ -3034,10 +3078,10 @@ function drawTabs() {
     // away together and counted without counting rows
     if (mine.length >= 2) {
       const away = !opened.has("tabs:" + g.folder);
-      into.append(bundleRow(g, mine, away, kin));
+      nav.append(bundleRow(g, mine, away, false));
       if (away) continue;
     }
-    for (const t of mine) into.append(tabRow(t, g, kin, top));
+    for (const t of mine) nav.append(tabRow(t, g, false, false));
   }
   for (const t of loose) nav.append(tabRow(t, null, false, false));
   // Once, after the first answer an AI has finished here: a star, if you
@@ -4149,10 +4193,49 @@ function drawCoach() {
 // which project, the shape is whether this is the project's own folder or a
 // branch of it. The head of a household also says which branch the project
 // itself is standing on, and how many branches hang under it
-function folderRow(g, kin, head, mine) {
+// A project's heading: its colour, its name, and what belongs to it as a whole
+// -- putting all of it away, and another worktree. A folder in no repository
+// is a project of its own, with a folder's mark and nothing to cut from.
+// Shut, it says the state of whichever tab inside is waiting on somebody first
+function projectHead(g, kin, tabs) {
+  const key = g.family || "dir:" + g.folder;
+  const shut = folded.has("proj:" + key);
+  const main = kin.find(o => !o.linked) || g;
+  const git = !!g.family;
+  let mark;
+  if (git) {
+    mark = el("span", {class:"chip"});
+    const color = main.color || g.color;
+    if (color) mark.style.background = color;
+  } else {
+    mark = pickIcon("folder");
+  }
+  // What the settings call it; else the checkout's own folder name; else the
+  // name of the folder the repository lives in
+  const repoName = (g.family || "").replace(/[\\/]\.git[\\/]?$/i, "").split(/[\\/]/).pop();
+  const name = main.project || g.project || (!main.linked ? main.name : "") || repoName || g.name || "";
+  const row = el("div", {class:"tab phead", title:(git ? main.folder : g.folder) || ""},
+    mark, el("span", {class:"nm"}, name));
+  if (shut && tabs.length) {
+    const worst = worstOf(tabs);
+    row.append(el("span", {class:"dot " + worst, title:(tabs.find(t => t.state === worst) || {}).state_label || worst}));
+  }
+  row.append(el("span", {class:"caret", title:T["tui.folder.fold.title"] || "",
+    onclick:e => { e.stopPropagation(); fold("proj:" + key); }}, shut ? "▸" : "▾"));
+  if (git && (main.color || g.color)) {
+    row.append(el("span", {class:"more", title:T["tui.folder.branch"] || "",
+      onclick:e => { e.stopPropagation(); openBranch(main); }}, "+"));
+  }
+  return row;
+}
+
+function folderRow(g, mine, card) {
   const shut = folded.has(g.folder);
-  const chip = g.linked ? cutMark() : el("span", {class:"chip"});
-  if (g.color) {
+  // As a card under its project's heading, a folder's mark is whether it is at
+  // work: the heading already wears the project's colour
+  const chip = card ? el("span", {class:"dot " + ((mine || []).length ? worstOf(mine) : "")})
+    : g.linked ? cutMark() : el("span", {class:"chip"});
+  if (g.color && !card) {
     if (g.linked) chip.style.color = g.color;
     else chip.style.background = g.color;
   }
@@ -4161,11 +4244,15 @@ function folderRow(g, kin, head, mine) {
   // is the caret's alone. A name that folded instead left a phone -- where a
   // folder's tabs start put away -- with a list that could be opened and shut
   // but never led anywhere
-  const row = el("div", {class:"tab folder" + (g.linked ? " cut" : "") + (head ? " head" : "")
-        + (inFront(g) ? " front" : ""),
+  const row = el("div", {class:"tab folder" + (g.linked ? " cut" : "")
+        + (card ? " wcard" : "") + (inFront(g) ? " front" : ""),
       title:g.folder || "", onclick:() => send({kind:"folderview", folder:g.folder || ""})},
     chip,
-    el("span", {class:"caret", title:T["tui.folder.fold.title"] || "",
+    // A card has no fold of its own: its tabs put away from the "N tabs" row
+    // under it, and the whole project from its heading. A caret here stood in
+    // front of the name on some cards and not others, so the names no longer
+    // started on one column
+    card ? null : el("span", {class:"caret", title:T["tui.folder.fold.title"] || "",
         onclick:e => { e.stopPropagation(); fold(g.folder); }}, shut ? "▸" : "▾"),
     // On the row itself as well as in the count above, so a folded list
     // still shows which folder is the one with the problem
@@ -4175,10 +4262,20 @@ function folderRow(g, kin, head, mine) {
   // tab inside is waiting on somebody first, and the shape of the work going
   // on in there. Open, it says neither -- the rows below are already saying
   // both, and a second copy on the heading is the sidebar repeating itself
-  if (shut && (mine || []).length) {
+  // A card's own marks: "primary" on the checkout the others were cut from,
+  // and on the line below, the branch it is on
+  if (card) {
+    if (g.family && !g.linked) {
+      row.append(el("span", {class:"prim", title:T["tui.folder.primary.title"] || ""}, T["tui.folder.primary"] || "primary"));
+    }
+    row.append(el("span", {class:"fill"}));
+  }
+  if (shut && (mine || []).length && !card) {
     const worst = worstOf(mine);
     row.append(el("span", {class:"dot " + worst,
       title:(mine.find(t => t.state === worst) || {}).state_label || worst}));
+  }
+  if (shut && (mine || []).length) {
     // Every tab's bars laid over each other, so one busy tab still shows
     row.append(spark(mine.map(t => t.activity || [])
       .reduce((a, b) => a.map((v, i) => Math.max(v, b[i] || 0)),
@@ -4190,24 +4287,20 @@ function folderRow(g, kin, head, mine) {
   // is usually the project. The project's name comes from the app -- a
   // heading is not a project's name, and reading one as the other put "main"
   // on every worktree of every project standing on main
-  if (g.project && g.project !== g.name) {
+  if (g.project && g.project !== g.name && !card) {
     row.append(el("span", {class:"proj", title:T["tui.folder.project.title"] || ""}, g.project));
   }
-  if (g.branch && g.branch !== g.name) {
+  if (g.branch && g.branch !== g.name && !card) {
     row.append(el("span", {class:"on", title:T["tui.folder.on.title"] || ""}, g.branch));
-  }
-  if (head) {
-    const n = kin.filter(o => o.linked).length;
-    const away = folded.has("kin:" + g.family);
-    row.append(el("span", {class:"kin", title:T["tui.folder.kin.title"] || "",
-        onclick:e => { e.stopPropagation(); fold("kin:" + g.family); }},
-      ((n === 1 && T["tui.folder.kin.one"]) || (T["tui.folder.kin"] || "{n} branches")).replace("{n}", n)
-        + " " + (away ? "▸" : "▾")));
   }
   // A raw append writes a null out as the word "null"; el() filters it, so
   // the tail goes through el() too
-  // The + blinks while the pointer says to press it
-  row.append(...[drifted(g), worktreePlus(g)].filter(Boolean));
+  // The + blinks while the pointer says to press it. Under a project's heading
+  // the + is the heading's: one worktree at a time is cut from the project
+  row.append(...[drifted(g), card ? null : worktreePlus(g)].filter(Boolean));
+  if (card) {
+    row.append(el("span", {class:"fbr", title:T["tui.folder.on.title"] || ""}, g.branch || leafOf(g.folder)));
+  }
   // Everything else a folder can do is a shortcut, not a door: its settings
   // are on the settings page, a repair is the ⚠ it is already wearing, and a
   // tab goes in from the bar over the folder in front. Right-click keeps them
@@ -4253,13 +4346,16 @@ function ailMark(g) {
 // So an empty folder says so underneath, in the words an empty pane already
 // uses. Not opened automatically -- a folder can be on another machine, and
 // opening a tab there is a connection nobody asked for
-function emptyRow(g) {
+function emptyRow(g, card) {
   const box = el("div", {class:"fempty"});
-  const row = el("div", {class:"tab folder empty" + (g.linked ? " cut" : ""), title:g.folder || ""},
-    g.linked ? cutMark() : el("span", {class:"chip"}),
+  const row = el("div", {class:"tab folder empty" + (g.linked ? " cut" : "") + (card ? " wcard" : ""), title:g.folder || ""},
+    card ? el("span", {class:"dot"}) : g.linked ? cutMark() : el("span", {class:"chip"}),
     ailMark(g),
     el("span", {class:"nm"}, g.name || ""),
-    ...[worktreePlus(g)].filter(Boolean));
+    ...(card
+      ? [g.family && !g.linked ? el("span", {class:"prim", title:T["tui.folder.primary.title"] || ""}, T["tui.folder.primary"] || "primary") : null,
+         el("span", {class:"fill"}), el("span", {class:"fbr"}, g.branch || leafOf(g.folder))]
+      : [worktreePlus(g)]).filter(Boolean));
   row.addEventListener("contextmenu", e => { e.preventDefault(); folderMenu(e, g); });
   const next = (S.coach || 0) === 2 ? " pulse" : "";
   box.append(row, el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)},
@@ -5647,7 +5743,10 @@ function drawCloseAsk() {
 // the settings everybody shares -- the same place the sign-in token is kept,
 // and read the same careful way: a window with storage turned off simply gets
 // the ungrouped list rather than a broken one
-const GROUP_AXES = ["none", "state", "project"];
+// By project -- every folder under its project's heading -- or by the state the
+// work is in. A choice of "project" kept from before the headings is the
+// first of these now, which is what it always asked for
+const GROUP_AXES = ["none", "state"];
 let groupBy = (() => {
   try {
     const v = localStorage.getItem("shikisha_groupby");
@@ -5675,10 +5774,6 @@ function groupOf(g, mine, axis) {
     const t = mine.find(x => x.state === st);
     return { key: st, label: (t && t.state_label) || st };
   }
-  if (axis === "project") {
-    if (!g.family) return { key: "-", label: T["tui.group.noproject"] || "No project" };
-    return { key: g.family, label: g.project || g.name || "" };
-  }
   return { key: "", label: "" };
 }
 
@@ -5690,17 +5785,14 @@ function groupRank(key, axis) {
   return key === "-" ? 1 : 0;
 }
 
-// The chooser. Three words, the current one filled -- no menu, because with
-// three choices a menu is one more press for nothing
-function axisRow() {
-  const row = el("div", {class:"axis"});
-  for (const v of GROUP_AXES) {
-    const on = groupBy === v;
-    row.append(el("span", {class:"ax" + (on ? " on" : ""),
-        onclick:e => { e.stopPropagation(); setGroupBy(v); }},
-      T["tui.group." + v] || v));
-  }
-  return row;
+// The chooser, from the sliders on the PROJECT heading: a list of the ways the
+// list can be drawn, the current one ticked. It stood as a row of three words
+// at the top of the list itself, which put a setting between the heading and
+// the projects it heads, on every screen, for a choice made once
+function openGroupMenu(anchor) {
+  openList(anchor, GROUP_AXES.map(v => el("div", {class:"grouprow" + (groupBy === v ? " on" : ""),
+      onclick:() => { closeFolderMenu(); setGroupBy(v); }},
+    el("span", {class:"tick"}, groupBy === v ? "✓" : ""), el("span", {}, T["tui.group." + v] || v))));
 }
 
 // The mark each AI is drawn with.
@@ -13848,32 +13940,27 @@ mod tests {
         assert!(branch < add && add < browse, "a dialog opened over another is drawn under it");
     }
 
-    /// A project and the branches cut from it are one household: one box,
-    /// the project at its head with its own branch and a count of the
-    /// branches, each branch a step in. The depth is git's -- a folder with
-    /// no branch open, or a branch whose project is not open, is drawn flat.
+    /// The list is drawn by project: a heading names each project once -- its
+    /// colour, its name, the + for another worktree, the fold for all of it --
+    /// and every folder of it stands under the heading as a card, the checkout
+    /// the others were cut from first and marked primary, each with the branch
+    /// it is on underneath. A folder in no repository is a project of its own.
+    /// Grouped by state instead, a folder stands alone and names its project.
     #[test]
-    fn a_project_and_its_branches_are_drawn_as_one_household() {
-        assert!(PAGE.contains(r#"el("div", {class:"family"})"#), "there is no family box");
-        assert!(
-            PAGE.contains("const heads = g => !!g.family && !g.linked && kinOf(g).some(o => o.linked);")
-                && PAGE.contains("const housed = g => !!g.family && g.linked && kinOf(g).some(o => !o.linked);"),
-            "the rule that a family is only when both the original and a branch exist is gone"
-        );
-        assert!(PAGE.contains(r#"fold("kin:" + g.family)"#), "there is no tab to fold the branches together");
-        // `kin` is `housed(g)` once the chosen grouping has had its say: the
-        // household is a grouping of its own and steps aside for another
-        assert!(
-            PAGE.contains(r#"const kin = axis === "none" && housed(g)"#),
-            "the family box stays even when another axis is chosen"
-        );
-        assert!(
-            PAGE.contains(r#"if (kin && folded.has("kin:" + g.family)) continue;"#),
-            "the heading of folded branches does not go away"
-        );
-        assert!(PAGE.contains(r#"row.append(el("span", {class:"on""#), "there is no pill for the branch the original is on");
-        assert!(PAGE.contains(".family .tab.folder.cut { padding-left:24px; }"), "the branch heading is not indented one step");
-        assert!(PAGE.contains(".family .tab.intab.deep { padding-left:40px; }"), "a branch's tabs are not aligned with its heading");
+    fn the_list_is_drawn_by_project_with_every_folder_a_card_under_its_heading() {
+        assert!(PAGE.contains("nav.append(projectHead(g, kin, kin.flatMap(o => inside[folders.indexOf(o)] || [])));"),
+            "there is no heading over a project");
+        assert!(PAGE.contains(r#"const projectKey = g => g.family || "dir:" + g.folder;"#), "a folder in no repository has no heading of its own");
+        assert!(PAGE.contains("|| ((a.g.linked ? 1 : 0) - (b.g.linked ? 1 : 0)) || (a.gi - b.gi));"),
+            "a project's folders are not brought together, the checkout first");
+        assert!(PAGE.contains(r#"if (folded.has("proj:" + pk)) continue;"#), "a project cannot be put away from its heading");
+        assert!(PAGE.contains(r#"onclick:e => { e.stopPropagation(); openBranch(main); }}, "+")"#), "the heading has no + for another worktree");
+        assert!(PAGE.contains(r#"T["tui.folder.primary"] || "primary""#), "the checkout is not marked primary");
+        assert!(PAGE.contains(r#"row.append(el("span", {class:"fbr", title:T["tui.folder.on.title"] || ""}, g.branch || leafOf(g.folder)));"#),
+            "a card does not say the branch it is on");
+        assert!(PAGE.contains(r#"if (g.branch && g.branch !== g.name && !card) {"#), "grouped by state, a folder loses the branch it is on");
+        assert!(PAGE.contains(r#"const GROUP_AXES = ["none", "state"];"#), "grouping by project is offered twice");
+        assert!(PAGE.contains("openGroupMenu(e.currentTarget);"), "the grouping is still a row in the list");
         // Tabs are numbered on their rows, so moving a heading never moves a number
         assert!(PAGE.contains(r#"el("span", {class:"num"}, String(t.index))"#));
         // A browser belongs to no folder and comes after every folder
@@ -13887,7 +13974,8 @@ mod tests {
     /// walked from tabs, and a new folder has none.
     #[test]
     fn an_empty_folder_is_drawn_and_its_plus_blinks() {
-        assert!(PAGE.contains("if (g.empty) { into.append(emptyRow(g)); continue; }"), "an empty folder is not drawn");
+        assert!(PAGE.contains("if (g.empty) { nav.append(emptyRow(g, true)); continue; }")
+            && PAGE.contains("if (g.empty) { nav.append(emptyRow(g)); continue; }"), "an empty folder is not drawn");
         // What blinks is the line that puts the first tab in, on the step that asks for it
         assert!(PAGE.contains(r#"el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)}"#),
                 "in an empty folder the next thing to press does not light up");

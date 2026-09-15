@@ -16,13 +16,13 @@ letters. `Ctrl+B 0` brings it back from anywhere.
 **The list on the left** is the tab bar. From the top:
 
 - **The desk** — the name at the very top. Press it to switch to another.
-- **Working folders** — a heading per folder, with the tabs working in it under
-  it. A folder is where an AI runs; the colour on its heading is which project it
-  belongs to. Its `+` opens the folder's menu (add a tab, work on another branch,
-  edit).
-- **Branches of a project** stand a step in under the project's own folder, in
-  one box. The project's heading says which branch it is on and how many branches
-  hang under it; press that count to put them all away or bring them all back.
+- **Projects** — a heading per project (its colour and name), with its working
+  folders under it. The heading's `+` makes a worktree of the project (parallel
+  work); its ▾ puts the whole project away.
+- **Working folders** — the cards under a heading: a state dot and the name, and
+  on a second line the branch it is on. The original checkout wears a "primary"
+  pill, and the worktrees stand under it. The tabs working in a folder are listed
+  under its card.
 - **A tab** — its number, its name, and a dot: **green** while it works, **blue**
   when it has answered, **amber** when it is waiting for you to answer. Under the name, the
   branch it is on, its pull request, and any ports it is listening on; under that,
