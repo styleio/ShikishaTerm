@@ -3156,19 +3156,6 @@ const PAGE: &str = r##"<!doctype html>
  .deskbanner:hover { background:var(--panel); }
  .deskbanner.sel { background:var(--panel2); }
  .deskbanner .nm { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
- /* Leaving the program's settings: the way back sits where one is looked for */
- /* The way into a settings place (the program's, or this desk's). A plain
-    button (§5: --edge rim on --panel2), so it reads as pressable against the
-    tree of rows around it without competing with the page's one main button */
- .navitem.placebtn { display:flex; align-items:center; gap:var(--s2); min-height:32px;
-   margin:var(--s1) 0 var(--s2); padding:6px 10px; border:1px solid var(--edge);
-   background:var(--panel2); color:var(--text); font-size:12.5px; }
- .navitem.placebtn:hover { background:var(--panel2); border-color:var(--edge-hi); }
- .navitem.placebtn .body { flex:1; min-width:0; }
- .navitem.placebtn .go { flex:none; color:var(--dim); }
- .navback { display:flex; align-items:center; gap:var(--s2); color:var(--dim); }
- .navback .go { flex:none; font-size:16px; line-height:1; }
- .navhead { margin:var(--s3) var(--s3) var(--s2); color:var(--text); font-size:14px; font-weight:600; }
  .wsgap { flex:1 1 auto; }
  .wspick { font-size:12px; color:var(--dim); }
  .deskbanner:hover .wspick { color:var(--text); }
@@ -3177,8 +3164,6 @@ const PAGE: &str = r##"<!doctype html>
  .wsbadge { flex:none; width:22px; height:22px; border-radius:var(--r-chip);
    background:var(--raise); color:var(--dim); font-size:11px; font-weight:600;
    display:flex; align-items:center; justify-content:center; }
- /* An entry inside a settings place, a step in from its heading */
- .appitem { padding-left:var(--s4); }
  /* Choosing another desk. Floats, so the list under it does not move */
  .fmenu { position:fixed; z-index:60; min-width:220px; max-width:280px;
    background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
@@ -3196,16 +3181,7 @@ const PAGE: &str = r##"<!doctype html>
  .navgrouphead .caret { font-size:10px; width:14px; display:inline-block; text-align:center;
    border-radius:var(--r-chip); }
  .navgrouphead .caret:hover { background:var(--panel2); }
- /* The tree, drawn the way a terminal draws one. A rule down the indent was
-    what was here before: it broke at every gap between rows and ran too close
-    to the names to sight along. These say the same thing without either
-    fault, and they say one thing more -- which row is the last of its kind.
-    Drawn only where they are true: `railsFor` works out, for every row,
-    whether anything of its own depth comes after it */
  .navitem { position:relative; display:flex; align-items:flex-start; gap:var(--s2); }
- .rail { flex:none; display:flex; color:var(--edge-hi); font-family:var(--mono);
-   font-size:12px; line-height:20px; user-select:none; }
- .rail i { width:15px; text-align:center; font-style:normal; }
  /* The name and what is under it, once the rails and the mark have had theirs */
  .navitem .body { flex:1 1 auto; min-width:0; }
  /* The mark: what kind of thing this row is, in the colour of which one.
@@ -3217,27 +3193,16 @@ const PAGE: &str = r##"<!doctype html>
  .mark svg { display:block; }
  /* A tab, as the dot the board uses, in the colour of the AI it runs */
  .mark .dot { width:7px; height:7px; border-radius:50%; background:currentColor; }
- /* The fold. Its own column, before the mark, because that is where a person
-    reaches for it -- and wide enough to hit without aiming */
- .twist { flex:none; width:16px; height:20px; display:flex; align-items:center;
-   justify-content:center; color:var(--muted); font-size:10px; cursor:pointer;
-   border-radius:var(--r-chip); }
- .twist:hover { background:var(--panel2); color:var(--text); }
- /* Its press reaches a little past the glyph on every side, so a press meant to
-    fold never lands on the row and opens its page instead */
- .twist { position:relative; }
- .twist::before { content:""; position:absolute; inset:-6px -4px; }
- /* A folder is the level people are looking for, so it keeps its own weight
-    while the tabs under it stay quiet */
- .navfolder { color:var(--text); font-size:12.5px; }
- .navfolder .sub { font-size:11px; }
+ .pageup { display:inline-flex; align-items:center; gap:var(--s2); min-height:24px; margin:0 0 var(--s3);
+   padding:0; border:0; background:none; color:var(--dim); font:inherit; font-size:12.5px; cursor:pointer; }
+ .pageup:hover { color:var(--text); }
+ .pageup .go { font-size:16px; line-height:1; }
+ .navnone { margin:var(--s1) var(--s3); color:var(--muted); font-size:12px; line-height:1.5; }
  /* A project names the repository its folders are in: the one row in the tree
     that names a thing, so it carries the weight (styleguide §3) */
  .navproject { color:var(--text); font-size:12.5px; font-weight:600; }
  .navproject .sub { font-size:11px; font-weight:400; }
  .projmark { width:8px; height:8px; border-radius:2px; background:var(--dim); }
- .navtab.child .nm { opacity:.9; }
- .navadd { color:var(--muted); font-size:12.5px; }
 
  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
    padding:var(--s3) var(--s5) var(--s5); margin-bottom:var(--s4); }
@@ -3915,8 +3880,7 @@ const inDeskPlace = () => !sel.global && sel.tab == null && (sel.grp ?? null) ==
 // the tree is for. A desk with no folder has nothing else to show but its
 // settings, and stays there
 function toTree(di) {
-  const d = desks[di];
-  sel = {desk:di, grp:(d && (d.folders || []).length) ? 0 : null, tab:null, global:false};
+  sel = {desk:di, grp:null, tab:null, global:false, dsection:"basic"};
 }
 // One of a desk's settings on screen, by id
 function goDeskSection(id, block) {
@@ -4700,55 +4664,6 @@ function folderMark(colour) {
   if (colour) s.style.color = colour;
   return s;
 }
-// The fold, where everybody looks for it
-function foldCaret(open, onFold) {
-  const c = el("span", {class:"twist", onclick: e => { e.stopPropagation(); onFold(); }},
-    open ? "▾" : "▸");
-  return c;
-}
-function tabMark(colour) {
-  const s = el("span", {class:"mark"}, el("span", {class:"dot"}));
-  if (colour) s.style.color = colour;
-  return s;
-}
-
-// For every row, the elbows to its left: a `│` for each ancestor that has more
-// rows still to come, and `├` or `└` for itself. Worked out from the list
-// rather than written by hand at each call, so a row cannot claim to be the
-// last of its kind when it is not
-function railsFor(rows) {
-  const more = (i, depth) => {
-    for (let j = i + 1; j < rows.length; j++) {
-      if (rows[j].depth < depth) return false;
-      if (rows[j].depth === depth) return true;
-    }
-    return false;
-  };
-  return rows.map((r, i) => {
-    const rail = [];
-    for (let a = 1; a < r.depth; a++) rail.push(more(i, a) ? "│" : " ");
-    rail.push(more(i, r.depth) ? "├" : "└");
-    return rail;
-  });
-}
-// One row of the tree: its elbows, its mark, then what it says
-function treeRow(rail, mark, opts, ...body) {
-  const row = el("button", opts,
-    el("span", {class:"rail"}, ...rail.map(ch => el("i", {}, ch))));
-  // A row with nothing to show still keeps the columns, so every name in the
-  // tree starts on the same line
-  const marks = (Array.isArray(mark) ? mark : [mark]).filter(Boolean);
-  const want = Array.isArray(mark) ? mark.length : 1;
-  for (const m of marks) row.append(m);
-  for (let i = marks.length; i < want; i++) row.append(el("span", {class:"mark"}));
-  row.append(el("div", {class:"body"}, ...body));
-  return row;
-}
-
-// Folders the person has put away. Kept for as long as the page is open, the
-// same as a desk's own fold
-const folderShut = new Set();
-
 // Which desk the sidebar is showing. A menu rather than a list, because
 // the list under it belongs to one of them at a time
 function pickDesk(anchor) {
@@ -4777,175 +4692,59 @@ function pickDesk(anchor) {
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.textContent = "";
-  // The larger world on top, the smaller under it: the program's own
-  // settings, then the desk, then its folders and their tabs -- so how far
-  // down a row is says how much of the program it decides.
-  //
-  // The program's settings are a place of their own, entered and left. While
-  // they are open nothing of any desk is on the list, and the way back is at
-  // the top where a person looks for one. The two used to share one column,
-  // and nothing said which of them a card below was about
-  // Both settings places -- the program's and one desk's -- are entered the
-  // same way and left the same way: a button with a › to go in, a ‹ at the
-  // top to come back. One pattern to learn, and a column that stays short
-  const place = (head, sections, current, go) => {
-    nav.append(el("button", {class:"navitem navback", onclick:() => { toTree(sel.desk); render(); }},
-      el("span", {class:"go"}, "‹"),
-      el("div", {class:"body"}, T["tui.nav.back"])));
-    nav.append(el("div", {class:"navhead"}, head));
-    sections.forEach(s => {
-      const b = el("button", {class:"navitem appitem" + (current === s.id ? " sel" : ""),
-        onclick:() => go(s.id)});
-      b.append(el("div", {class:"body"}, el("span", {}, s.label),
-        s.sub ? el("span", {class:"sub"}, s.sub) : null));
-      nav.append(b);
-    });
-  };
-  if (sel.global) {
-    place(T["settings.global"], globalSections(), sel.section, goSection);
-    return;
-  }
-  const desk = desks[sel.desk] || desks[0];
-  if (desk && inDeskPlace()) {
-    place(fill(T["settings.dsec.head"], {name: desk.name || T["settings.tab.unnamed"]}),
-      deskSections(desk), sel.dsection, goDeskSection);
-    return;
-  }
-  const enter = (label, onclick) => nav.append(el("button", {class:"navitem placebtn", onclick},
-    el("div", {class:"body"}, label),
-    el("span", {class:"go"}, "›")));
-  enter(T["settings.global"], () => {
-    sel = {desk:sel.desk, tab:null, global:true, section: sel.section || globalSections()[0].id};
-    render();
-  });
-  // The desk: pressing it lists the desks, and choosing one switches the tree
-  // below to that desk -- nothing more. Its settings open only from the button
-  // under it: somebody switching desks is looking for a folder or a tab, and
-  // being carried into a settings page they did not ask for loses the tree
-  if (desk) {
-    const badge = el("span", {class:"wsbadge"},
-      (desk.name || "?").trim().slice(0, 1).toUpperCase());
-    nav.append(el("button", {class:"deskbanner",
-        title:T["settings.desk.switch"],
-        onclick: e => pickDesk(e.currentTarget)},
-      badge,
-      el("span", {class:"nm"}, desk.name || T["settings.tab.unnamed"]),
-      el("span", {class:"wsgap"}),
-      el("span", {class:"wspick"}, "▾")));
-    enter(T["settings.dsec.enter"], () => { goDeskSection(sel.dsection || "basic"); });
-  }
+  // One column, read top to bottom, the larger world first: the program's own
+  // settings, then the desk in view, then its projects. Every entry opens one
+  // page; nothing here is entered and left, and nothing here adds anything --
+  // projects, worktrees and tabs are added on the board, where they are used.
+  // A worktree and a tab are not listed at all: they come and go on the board
+  // every day, and their pages are reached from there (right-click, Settings)
+  // or from the project's own page
+  const item = (s, on, go) => nav.append(el("button", {class:"navitem" + (on ? " sel" : ""), onclick:go},
+    el("div", {class:"body"}, el("span", {}, s.label), s.sub ? el("span", {class:"sub"}, s.sub) : null)));
+  nav.append(el("div", {class:"navgroup"}, T["settings.global"]));
+  for (const s of globalSections()) item(s, sel.global && sel.section === s.id, () => goSection(s.id));
 
-  [desks[sel.desk]].forEach((desk) => {
-    if (!desk) return;
-    const wi = sel.desk;
-    // `?? null` because a selection made elsewhere (the gear, a deep link) may
-    // simply not mention a folder, and "no folder" has to match "no folder"
-    const here = (g, t) => !sel.global && (sel.grp ?? null) === g
-      && (sel.tab ?? null) === t;
-    // Every folder, always -- the one a desk starts with is a folder like
-    // any other, and hiding it is how "where does this actually run" became
-    // impossible to find.
-    //
-    // Laid out as a list first and drawn second, because an elbow can only be
-    // drawn once it is known what comes after it
-    const rows = [];
-    // A folder and its tabs, a step in when the folder stands inside a project
-    const folderRows = (gi, base) => {
-      const g = desk.folders[gi];
-      rows.push({depth:base, kind:"folder", g, gi});
-      // A folder that is folded keeps its tabs to itself. What it is holding
-      // is still said by its mark, which is why the mark is the way to fold it
-      if (folderShut.has(wi + ":" + gi)) return;
-      (desk.tabs || []).forEach((t, ti) => {
-        if ((t.group || 0) !== gi) return;
-        rows.push({depth: base + (t.depth ? 2 : 1), kind:"tab", t, ti, gi});
-      });
-      rows.push({depth:base + 1, kind:"addtab", gi});
-    };
-    // The desk's projects first, each with the folders of its repository --
-    // its own checkout and its worktrees side by side -- then the folders that
-    // are in no repository, then the way to add a project
-    const {projects, loose} = deskProjects(desk);
-    for (const p of projects) {
-      rows.push({depth:1, kind:"project", p});
-      if (projShut.has(wi + ":" + p.key)) continue;
-      p.folders.forEach(gi => folderRows(gi, 2));
-      rows.push({depth:2, kind:"addfolder", p});
-    }
-    loose.forEach(gi => folderRows(gi, 1));
-    rows.push({depth:1, kind:"addfolder", p:null});
-    rows.push({depth:1, kind:"addproject"});
-    const rails = railsFor(rows);
-    rows.forEach((r, i) => {
-      if (r.kind === "project") {
-        const key = wi + ":" + r.p.key;
-        const shut = projShut.has(key);
-        const twist = foldCaret(!shut, () => {
-          if (shut) projShut.delete(key); else projShut.add(key);
-          render();
-        });
-        twist.title = shut ? T["settings.project.unfold"] : T["settings.project.fold"];
-        nav.append(treeRow(rails[i], [twist, projectMark()],
-          {class:"navitem navproject" + (!sel.global && sel.proj === r.p.key && sel.grp == null ? " sel" : ""),
-           onclick:() => { sel = {desk:wi, proj:r.p.key, grp:null, tab:null, global:false}; render(); }},
-          el("span", {}, r.p.name),
-          el("span", {class:"sub"}, r.p.at || T["settings.project.no_at"])));
-      } else if (r.kind === "addproject") {
-        nav.append(treeRow(rails[i], [null, null], {class:"navitem navadd",
-          onclick:() => {
-            desk.projects = desk.projects || [];
-            const name = uniqueProjectName(desk, T["settings.project.new_name"]);
-            desk.projects.push({name});
-            sel = {desk:wi, proj:"p:" + name, grp:null, tab:null, global:false};
-            render(); refreshSave();
-          }}, T["settings.project.add"]));
-      } else if (r.kind === "folder") {
-        const key = wi + ":" + r.gi;
-        const shut = folderShut.has(key);
-        const twist = foldCaret(!shut, () => {
-          if (shut) folderShut.delete(key); else folderShut.add(key);
-          render();
-        });
-        twist.title = shut ? T["settings.group.unfold"] : T["settings.group.fold"];
-        nav.append(treeRow(rails[i], [twist, folderMark(r.g.color)],
-          {class:"navitem navfolder" + (here(r.gi, null) ? " sel" : ""),
-           onclick:() => { sel = {desk:wi, grp:r.gi, tab:null, global:false}; render(); }},
-          el("span", {}, folderLabel(r.g, r.gi)),
-          el("span", {class:"sub"}, r.g.cwd || T["settings.group.folder.ph"])));
-      } else if (r.kind === "tab") {
-        nav.append(treeRow(rails[i], [null, tabMark(aiColour(r.t.command))],
-          {class:"navitem navtab" + (r.t.depth ? " child" : "") +
-             (here(r.gi, r.ti) ? " sel" : ""),
-           onclick:() => { sel = {desk:wi, grp:r.gi, tab:r.ti, global:false}; render(); }},
-          el("span", {class:"nm"}, r.t.name || T["settings.tab.unnamed"]),
-          el("span", {class:"sub"}, cmdToText(r.t.command) || T["automation.unset"])));
-      } else if (r.kind === "addtab") {
-        nav.append(treeRow(rails[i], [null, null], {class:"navitem navadd",
-          onclick:() => {
-            sel = {desk:wi, grp:r.gi, tab:addTabTo(desk, r.gi), global:false};
-            render();
-          }}, T["settings.tab.add"]));
-      } else {
-        // Inside a project the new folder is that project's from the start
-        nav.append(treeRow(rails[i], [null, null], {class:"navitem navadd",
-          onclick:() => {
-            const g = {name:"", id:"", cwd:""};
-            if (r.p) g.project = ensureProject(desk, r.p).name;
-            (desk.folders = desk.folders || []).push(g);
-            sel = {desk:wi, grp:desk.folders.length - 1, tab:null, global:false};
-            render(); refreshSave();
-          }}, T["settings.group.add"]));
-      }
-    });
-  });
+  const desk = desks[sel.desk] || desks[0];
+  if (!desk) return;
+  // The desk: its name is the heading of everything under it, and pressing it
+  // lists the desks -- choosing one switches this column to that desk
+  nav.append(el("div", {class:"navgroup"}, T["settings.nav.desk"]));
+  nav.append(el("button", {class:"deskbanner", title:T["settings.desk.switch"], onclick:e => pickDesk(e.currentTarget)},
+    el("span", {class:"wsbadge"}, (desk.name || "?").trim().slice(0, 1).toUpperCase()),
+    el("span", {class:"nm"}, desk.name || T["settings.tab.unnamed"]),
+    el("span", {class:"wsgap"}),
+    el("span", {class:"wspick"}, "▾")));
+  for (const s of deskSections(desk)) item(s, inDeskPlace() && sel.dsection === s.id, () => goDeskSection(s.id));
+
+  // Its projects: a repository's checkout and worktrees are one entry, and a
+  // folder in no repository is a project of its own. The entry stays lit while
+  // one of its folders or tabs is the page on screen, so where that page
+  // belongs is never a question
+  nav.append(el("div", {class:"navgroup"}, T["settings.nav.projects"]));
+  const {projects, loose} = deskProjects(desk);
+  const within = gi => !sel.global && (sel.grp ?? null) === gi;
+  for (const p of projects) {
+    const on = !sel.global && (sel.proj === p.key && (sel.grp ?? null) === null || p.folders.some(within));
+    nav.append(el("button", {class:"navitem navproject" + (on ? " sel" : ""),
+        onclick:() => { sel = {desk:sel.desk, proj:p.key, grp:null, tab:null, global:false}; render(); }},
+      projectMark(p.family ? (current.folder_colors || {})[p.family] : null),
+      el("div", {class:"body"}, el("span", {}, p.name), el("span", {class:"sub"}, p.at || T["settings.project.no_at"]))));
+  }
+  for (const gi of loose) {
+    const g = desk.folders[gi];
+    nav.append(el("button", {class:"navitem navproject" + (within(gi) ? " sel" : ""),
+        onclick:() => { sel = {desk:sel.desk, grp:gi, tab:null, global:false}; render(); }},
+      folderMark(null),
+      el("div", {class:"body"}, el("span", {}, folderLabel(g, gi)), el("span", {class:"sub"}, g.cwd || T["settings.group.folder.ph"]))));
+  }
+  if (!projects.length && !loose.length) nav.append(el("div", {class:"navnone"}, T["settings.nav.projects.none"]));
 }
 
-// Projects put away in the tree, the same way folders are
-const projShut = new Set();
-
-// A project, drawn: a filled square, the mark the board gives a repository
-function projectMark() {
-  return el("span", {class:"mark"}, el("span", {class:"projmark"}));
+// A project, drawn: a filled square in its colour, the mark the board gives a repository
+function projectMark(colour) {
+  const m = el("span", {class:"projmark"});
+  if (colour) m.style.background = colour;
+  return el("span", {class:"mark"}, m);
 }
 
 // Which repository each folder is in, as the app last said: path -> {family,
@@ -9047,9 +8846,18 @@ function deskCapsCard(desk) {
 // A folder, and everything about it. One page per folder, reached the same way
 // it is reached in the tab list, because "where does this run" is a fact about
 // the folder rather than about the desk it happens to sit in.
+// The line over a page the list does not carry -- a worktree, a tab -- back to
+// the page that does: the list lights that one, and this says how to get there
+function pageUp(label, go) {
+  return el("button", {class:"pageup", onclick:go}, el("span", {class:"go"}, "‹"), el("span", {}, label));
+}
+
 function folderPane(desk, g, gi) {
   const box = el("div");
   const tabsHere = () => (desk.tabs || []).filter(t => (t.group || 0) === gi);
+  // Up to its project, when it is one of a project's folders
+  const home = deskProjects(desk).projects.find(x => x.folders.includes(gi));
+  if (home) box.append(pageUp(home.name, () => { sel = {desk:sel.desk, proj:home.key, grp:null, tab:null, global:false}; render(); }));
 
   // This folder's own answer about which branches refuse a direct commit.
   // Unticked it follows the app's, which is what the box shows greyed out
@@ -9119,6 +8927,18 @@ function folderPane(desk, g, gi) {
   paint(null);
   box.append(card(T["settings.group.color"], colours,
     el("div", {class:"hint"}, T["settings.group.color.hint"])));
+
+  const tabRows = el("div", {class:"rows"});
+  (desk.tabs || []).forEach((t, ti) => {
+    if ((t.group || 0) !== gi) return;
+    tabRows.append(el("div", {class:"listrow secretrow", onclick:() => { sel = {desk:sel.desk, grp:gi, tab:ti, global:false}; render(); }},
+      el("span", {class:"secretname"}, t.name || T["settings.tab.unnamed"]),
+      el("span", {class:"hint mono secretdesc"}, cmdToText(t.command) || T["automation.unset"]),
+      el("span", {class:"go"}, "›")));
+  });
+  box.append(card(T["settings.group.tabs"],
+    el("div", {class:"hint"}, T["settings.group.tabs.hint"]),
+    tabsHere().length ? tabRows : el("div", {class:"hint"}, T["settings.group.tabs.none"])));
 
   // Taking it out of the list, and -- for a folder the app made for a branch --
   // getting rid of the folder itself. Two different acts: one can be undone by
@@ -10220,6 +10040,9 @@ function launchCard(t, renamed) {
 
 function tabPane(desk, t) {
   const box = el("div");
+  const gi = t.group || 0;
+  const g = (desk.folders || [])[gi];
+  if (g) box.append(pageUp(folderLabel(g, gi), () => { sel = {desk:sel.desk, grp:gi, tab:null, global:false}; render(); }));
 
   // Basics: name and ID are identity, so place them side by side.
   // If ID is empty, auto-derive one from the name (English → slug / Japanese-only → 5-char hash).
