@@ -370,6 +370,11 @@ pub enum Ev {
     /// Window-only: what it makes is a
     /// folder on this PC, chosen with this PC's folder picker
     AddProject { how: String, text: String, parent: String, ask: u64 },
+    /// What to do about a project's worktrees that git knows and the desk does
+    /// not list. `family` names the project by its shared git folder; `act` is
+    /// `show` (put them on the desk), `keep` (keep them hidden, the row goes)
+    /// or `offer` (take back a keep, the row returns)
+    Found { family: String, act: String },
     /// A tool from the left bar's scissors: wait `delay` seconds, take the
     /// screen the pointer is on, and open `tool` over the picture.
     ///
@@ -954,6 +959,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             text: v.get("text").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             parent: v.get("parent").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             ask: v.get("ask").and_then(|x| x.as_u64()).unwrap_or(0),
+        },
+        Some("found") => Ev::Found {
+            family: v.get("family").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("setuprefresh") => Ev::SetupRefresh {
             step: v.get("step").and_then(|x| x.as_u64()).unwrap_or(1).min(255) as u8,

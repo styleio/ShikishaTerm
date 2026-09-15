@@ -230,6 +230,31 @@ mod screen_push_tests {
     }
 }
 
+/// The worktrees git knows each project has and the desk does not list, by
+/// project. `on_desk` is every folder the list holds; `kept` the projects whose
+/// found worktrees somebody chose to keep hidden, which are still said -- as
+/// kept -- so the project's heading can offer them back
+fn discovered_of(
+    cuts: &std::collections::HashMap<std::path::PathBuf, Vec<(std::path::PathBuf, Option<String>)>>,
+    on_desk: &[std::path::PathBuf],
+    kept: &std::collections::BTreeSet<String>,
+) -> Vec<crate::uistate::DiscoveredState> {
+    let mut out: Vec<crate::uistate::DiscoveredState> = cuts
+        .iter()
+        .filter_map(|(family, found)| {
+            let away: Vec<crate::uistate::FoundWorktree> = found
+                .iter()
+                .filter(|(f, _)| !on_desk.iter().any(|d| crate::uistate::same_folder(d, f)))
+                .map(|(f, b)| crate::uistate::FoundWorktree { folder: f.display().to_string(), branch: b.clone() })
+                .collect();
+            let family = family.display().to_string();
+            (!away.is_empty()).then(|| crate::uistate::DiscoveredState { kept: kept.contains(&family), family, found: away })
+        })
+        .collect();
+    out.sort_by(|a, b| a.family.cmp(&b.family));
+    out
+}
+
 pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
     // The folders these tabs are actually in. Worked out here, once, so the
     // window and the phone are looking at the same list
@@ -264,6 +289,10 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     // and without a colour it had no + to cut a worktree with: a project added
     // a moment ago could not be given its first worktree until a tab ran there
     let repos = folders::watch().repos(&groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>());
+    // The worktrees each project has that this desk does not list, as the same
+    // background look found them
+    let cuts = folders::watch().cuts(&groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>());
+    let discovered = discovered_of(&cuts, &groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(), &ui.worktrees_kept);
     for (at, g) in groups.iter_mut() {
         if g.empty
             && g.color.is_none()
@@ -326,6 +355,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         coach: ui.coach,
         setup: ui.setup.clone(),
         add_project: ui.add_project.clone(),
+        discovered,
         project_home: ui.project_home.clone(),
         assistant: ui.assistant.clone(),
         thanks: ui.thanks.clone(),
@@ -599,6 +629,34 @@ mod drawn_away_tests {
     }
 
     /// Nothing is said about a page drawn here, which is nearly every page.
+    /// A project's worktrees are offered only when the desk does not list them,
+    /// and a project whose were kept hidden still says so -- as kept -- so its
+    /// heading can offer them back. A project with none to offer says nothing
+    #[test]
+    fn found_worktrees_are_the_ones_the_desk_does_not_list() {
+        use std::path::PathBuf;
+        let family = PathBuf::from(r"C:\work\app\.git");
+        let quiet = PathBuf::from(r"C:\work\other\.git");
+        let cuts = std::collections::HashMap::from([
+            (family.clone(), vec![
+                (PathBuf::from(r"C:\wt\app-login"), Some("login".to_string())),
+                (PathBuf::from(r"C:\wt\app-fix"), None),
+            ]),
+            (quiet.clone(), vec![(PathBuf::from(r"C:\wt\other-a"), None)]),
+        ]);
+        // One of app's is on the desk already -- spelled differently -- and other's only one is
+        let on_desk = vec![PathBuf::from(r"c:/wt/APP-LOGIN"), PathBuf::from(r"C:\wt\other-a")];
+        let none_kept = std::collections::BTreeSet::new();
+        let found = super::discovered_of(&cuts, &on_desk, &none_kept);
+        assert_eq!(found.len(), 1, "a project with nothing to offer is offered: {found:?}");
+        assert_eq!(found[0].found.len(), 1);
+        assert_eq!(found[0].found[0].folder, r"C:\wt\app-fix");
+        assert!(!found[0].kept);
+        let kept = std::collections::BTreeSet::from([family.display().to_string()]);
+        let again = super::discovered_of(&cuts, &on_desk, &kept);
+        assert!(again[0].kept, "a kept project is not said to be kept");
+    }
+
     #[test]
     fn a_page_of_this_machines_own_says_nothing_about_where_it_is() {
         let ui = Ui {
@@ -963,6 +1021,9 @@ pub struct Ui {
     pub setup: Option<crate::uistate::SetupState>,
     /// A project being cloned or made new
     pub add_project: Option<crate::uistate::AddProjectState>,
+    /// The projects whose found worktrees somebody chose to keep hidden, by
+    /// shared git folder
+    pub worktrees_kept: std::collections::BTreeSet<String>,
     /// Where a cloned or new project goes by default
     pub project_home: String,
     /// The Assistant AI setting, as its command

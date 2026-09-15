@@ -684,6 +684,32 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.folder.wcard .fbr { flex-basis:100%; padding-left:14px; font-size:10px; color:var(--dim);
     font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .tab.intab.wcard { padding-left:30px; }
+  /* Worktrees git knows and the desk does not list: one quiet line under the
+     project's heading that opens to say where, with two answers */
+  .found { margin:0 var(--s2) 2px 14px; }
+  .found .frow { display:flex; align-items:center; gap:var(--s2); min-height:28px; padding:0 6px;
+    border-radius:var(--r-ctl); font-size:11px; color:var(--dim); cursor:pointer; }
+  .found .frow:hover { background:var(--hover); color:var(--text); }
+  .found .caret { flex:none; font-size:9px; width:12px; text-align:center; }
+  .found .fsay { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .found .fx { flex:none; min-width:22px; min-height:22px; display:flex; align-items:center; justify-content:center;
+    border-radius:var(--r-chip); }
+  .found .fx:hover { background:var(--raise); color:var(--text); }
+  .found .fpanel { margin:2px 0 var(--s2) 12px; padding-left:var(--s2); border-left:1px solid var(--line);
+    display:flex; flex-direction:column; gap:var(--s2); }
+  .found .fparent { display:flex; align-items:center; gap:var(--s2); }
+  .found .fpath { min-width:0; font-family:var(--mono); font-size:10px; color:var(--dim); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; direction:rtl; }
+  .found .fcount { flex:none; font-size:10px; padding:0 5px; border-radius:999px; background:var(--raise); color:var(--dim); }
+  .found .fname { font-size:11px; color:var(--text); padding-left:var(--s1); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .found .fmore { font-size:11px; color:var(--dim); cursor:pointer; padding-left:var(--s1); }
+  .found .fmore:hover { color:var(--text); }
+  .found .fnote { font-size:11px; color:var(--dim); padding:var(--s1) var(--s2); border-radius:var(--r-ctl);
+    background:var(--raise); }
+  .found .fbtns { display:flex; flex-wrap:wrap; gap:var(--s2); }
+  .found .fbtns button { font:inherit; font-size:11px; min-height:24px; padding:0 var(--s2); border-radius:var(--r-ctl);
+    border:1px solid var(--edge); background:var(--panel2); color:var(--text); cursor:pointer; }
+  .found .fbtns button:hover { border-color:var(--edge-hi); }
   /* An AI's row: what it is doing, then which tab, then how long ago. The
      state reads first and plain; the tab's name and the time are the quiet
      part (65% and 10px), so the eye runs down the states */
@@ -3052,6 +3078,10 @@ function drawTabs() {
         headKey = pk;
         const kin = kinOf(g);
         nav.append(projectHead(g, kin, kin.flatMap(o => inside[folders.indexOf(o)] || [])));
+        // Worktrees git knows this project has and the desk does not list, said
+        // under the heading until somebody shows them or keeps them hidden
+        const found = foundFor(g);
+        if (found && !found.kept && !folded.has("proj:" + pk)) nav.append(foundRow(found));
       }
       if (folded.has("proj:" + pk)) continue;
       if (g.empty) { nav.append(emptyRow(g, true)); continue; }
@@ -4233,7 +4263,78 @@ function projectHead(g, kin, tabs) {
     row.append(el("span", {class:"more", title:T["tui.folder.branch"] || "",
       onclick:e => { e.stopPropagation(); openBranch(main); }}, "+"));
   }
+  // The project's own menu, by right-click: where found worktrees that were
+  // kept hidden are offered back
+  row.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    const found = foundFor(g);
+    const rows = [];
+    if (found && found.kept) {
+      rows.push(el("div", {onclick:() => { closeFolderMenu(); send({kind:"found", family:found.family, act:"offer"}); }},
+        (T["tui.found.offer"] || "{n}").replace("{n}", found.found.length)));
+      rows.push(el("div", {onclick:() => { closeFolderMenu(); send({kind:"found", family:found.family, act:"show"}); }},
+        T["tui.found.show"] || ""));
+    }
+    if (git && (main.color || g.color)) {
+      rows.push(el("div", {onclick:() => { closeFolderMenu(); openBranch(main); }}, T["tui.folder.branch"] || ""));
+    }
+    if (rows.length) openList(row, rows);
+  });
   return row;
+}
+
+// The worktrees of a project that the desk does not list, when there are any
+function foundFor(g) {
+  return g.family ? ((S && S.discovered) || []).find(d => sameFolder(d.family, g.family)) : null;
+}
+// Which of those rows are opened out, and which groups inside them show all
+// their names. The screen's own business, like the folds
+const foundOpen = new Set();
+const foundAll = new Set();
+// "Hiding 3 found worktrees": a line under the project's heading that opens
+// to say where they are, with the two answers -- show them on the desk, or
+// keep them hidden. The × is the second answer without opening it
+function foundRow(d) {
+  const open = foundOpen.has(d.family);
+  const n = d.found.length;
+  const box = el("div", {class:"found"});
+  box.append(el("div", {class:"frow", onclick:() => { open ? foundOpen.delete(d.family) : foundOpen.add(d.family); drawTabs(); }},
+    el("span", {class:"caret"}, open ? "▾" : "▸"),
+    el("span", {class:"fsay"}, ((n === 1 && T["tui.found.hiding.one"]) || T["tui.found.hiding"] || "{n}").replace("{n}", n)),
+    el("span", {class:"fx", title:T["tui.found.keep.title"] || "",
+      onclick:e => { e.stopPropagation(); send({kind:"found", family:d.family, act:"keep"}); }}, "✕")));
+  if (!open) return box;
+  // By the folder they sit in, five places at most, three names a place until
+  // somebody asks for the rest
+  const byParent = new Map();
+  for (const w of d.found) {
+    const parent = (w.folder || "").replace(/[\\/][^\\/]*$/, "");
+    if (!byParent.has(parent)) byParent.set(parent, []);
+    byParent.get(parent).push(w);
+  }
+  const panel = el("div", {class:"fpanel"});
+  const places = [...byParent.entries()];
+  for (const [parent, list] of places.slice(0, 5)) {
+    const key = d.family + " " + parent;
+    const all = foundAll.has(key);
+    const group = el("div", {class:"fgroup"},
+      el("div", {class:"fparent", title:parent}, el("span", {class:"fpath"}, homeShort(parent)), el("span", {class:"fcount"}, String(list.length))));
+    for (const w of (all ? list : list.slice(0, 3))) {
+      group.append(el("div", {class:"fname", title:w.folder}, "• " + leafOf(w.folder) + (w.branch && w.branch !== leafOf(w.folder) ? "  (" + w.branch + ")" : "")));
+    }
+    if (list.length > 3) {
+      group.append(el("div", {class:"fmore", onclick:() => { all ? foundAll.delete(key) : foundAll.add(key); drawTabs(); }},
+        all ? (T["tui.found.fewer"] || "") : (T["tui.found.more"] || "{n}").replace("{n}", list.length - 3)));
+    }
+    panel.append(group);
+  }
+  if (places.length > 5) panel.append(el("div", {class:"fmore"}, (T["tui.found.places"] || "{n}").replace("{n}", places.length - 5)));
+  panel.append(el("div", {class:"fnote"}, T["tui.found.note"] || ""),
+    el("div", {class:"fbtns"},
+      el("button", {type:"button", onclick:() => send({kind:"found", family:d.family, act:"keep"})}, T["tui.found.keep"] || ""),
+      el("button", {type:"button", onclick:() => send({kind:"found", family:d.family, act:"show"})}, T["tui.found.show"] || "")));
+  box.append(panel);
+  return box;
 }
 
 function folderRow(g, mine, card) {
@@ -13985,6 +14086,18 @@ mod tests {
     /// An AI's row says its state, then its name, then how long ago it came to
     /// that state -- and the time is brought up to date without the list being
     /// rebuilt. Anything that is not an AI keeps its name and its bars.
+    /// Worktrees the desk does not list are said under their project's heading
+    /// and answered from there: shown, or kept hidden -- and a kept project
+    /// offers them back from its heading's menu
+    #[test]
+    fn found_worktrees_are_offered_under_their_project_and_answered_there() {
+        assert!(PAGE.contains(r#"if (found && !found.kept && !folded.has("proj:" + pk)) nav.append(foundRow(found));"#),
+            "found worktrees are never said");
+        assert!(PAGE.contains(r#"send({kind:"found", family:d.family, act:"show"})"#) && PAGE.contains(r#"send({kind:"found", family:d.family, act:"keep"})"#),
+            "the two answers are not sent");
+        assert!(PAGE.contains(r#"send({kind:"found", family:found.family, act:"offer"})"#), "a kept project cannot have them back");
+    }
+
     #[test]
     fn an_ai_row_says_its_state_its_name_and_how_long_ago() {
         assert!(PAGE.contains(r#"el("span", {class:"st"}, t.state_label || t.state), el("span", {class:"who"}, " - " + t.name))"#),
