@@ -327,6 +327,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         setup: ui.setup.clone(),
         add_project: ui.add_project.clone(),
         project_home: ui.project_home.clone(),
+        assistant: ui.assistant.clone(),
         thanks: ui.thanks.clone(),
         update: ui.update.clone(),
         usage: ui.usage.clone(),
@@ -964,6 +965,8 @@ pub struct Ui {
     pub add_project: Option<crate::uistate::AddProjectState>,
     /// Where a cloned or new project goes by default
     pub project_home: String,
+    /// The Assistant AI setting, as its command
+    pub assistant: String,
     /// What Claude's subscription has left, when known
     pub usage: Option<crate::uistate::UsageState>,
     /// The thanks card, when it is up: which page it would open

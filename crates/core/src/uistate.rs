@@ -1460,6 +1460,10 @@ pub struct UiState {
     /// Where a cloned or new project goes until somebody picks elsewhere
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_home: String,
+    /// The AI chosen under Basic > Assistant AI (its command), which a new
+    /// worktree starts with when this PC has it
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub assistant: String,
     /// The thanks card, when it is up: `github` or `store`, which is where
     /// its button leads
     #[serde(default, skip_serializing_if = "Option::is_none")]

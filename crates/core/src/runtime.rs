@@ -918,6 +918,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut add_job: Option<(u64, crate::addproject::Job)> = None;
     let mut add_view: Option<crate::uistate::AddProjectState> = None;
     let project_home = crate::addproject::projects_root().display().to_string();
+    // The Assistant AI setting. Read from the file itself, once: on a first
+    // start the setup writes it before there are settings that count as
+    // loaded. Kept up to date where it changes -- the setup, a settings reload
+    let mut assistant_ai = config::assistant_written();
     let mut thanks_show = false;
     // Where thanks would go: the Store's review page for the Store's copy, the
     // repository for the zip's
@@ -1412,6 +1416,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 settings_gen += 1;
                 ai_choices = startable_ais();
                 max_chain = newcfg.max_chain.unwrap_or(10);
+                assistant_ai = newcfg.ai_engine.clone().unwrap_or_default();
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
                 resident = newcfg.resident.unwrap_or(true);
                 claude_usage_on = newcfg.claude_usage.unwrap_or(true);
@@ -2903,6 +2908,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             setup: setup_view.clone(),
             add_project: add_view.clone(),
             project_home: project_home.clone(),
+            assistant: assistant_ai.clone(),
             usage,
             thanks: thanks_show.then(|| thanks_kind.to_string()),
             update: update::ask(),
@@ -5323,6 +5329,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         {
             if let Some(ai) = ai.filter(|a| offered.installed.iter().any(|x| &x.id == a)) {
                 config::save_setting(&["ai_engine"], serde_json::json!(ai));
+                assistant_ai = ai;
             }
             config::save_setting(&["yolo"], serde_json::json!(yolo));
             // A desk for the work to go into, signing in to GitHub the way
