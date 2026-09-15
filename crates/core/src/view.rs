@@ -311,6 +311,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         push_wanted: ui.push_wanted,
         ais: ui.ais.clone(),
         coach: ui.coach,
+        setup: ui.setup.clone(),
         thanks: ui.thanks.clone(),
         update: ui.update.clone(),
         usage: ui.usage.clone(),
@@ -942,6 +943,8 @@ pub struct Ui {
     pub ais: Vec<crate::uistate::AiChoice>,
     /// Which first-run pointer is up, if one is (see `coach_step`)
     pub coach: Option<u8>,
+    /// The first-start setup, while it has not been answered
+    pub setup: Option<crate::uistate::SetupState>,
     /// What Claude's subscription has left, when known
     pub usage: Option<crate::uistate::UsageState>,
     /// The thanks card, when it is up: which page it would open

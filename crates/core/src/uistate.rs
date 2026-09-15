@@ -698,6 +698,33 @@ pub struct AiChoice {
     pub command: String,
 }
 
+/// The setup a first start asks before anything else: which AI to prefer.
+///
+/// Asked because a PC with none of the AIs installed meets nothing but tabs
+/// that cannot start, and nobody can tell from those what is missing. The
+/// same three the Assistant AI setting offers, split by whether this PC has
+/// each one.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct SetupState {
+    /// The ones installed here, to pick from. The first is picked until
+    /// somebody picks another
+    pub installed: Vec<SetupAi>,
+    /// The ones this PC does not have, each with the way to its install page
+    pub missing: Vec<SetupAi>,
+}
+
+/// One AI in the first-start setup.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct SetupAi {
+    /// Its command, which is also what the page sends back
+    pub id: String,
+    /// What it is called
+    pub name: String,
+    /// Whether there is a page on how to install it. The address stays with
+    /// the app; the page only asks for it to be opened
+    pub install: bool,
+}
+
 /// Putting a working folder back on this machine.
 ///
 /// The dialog does not decide anything: it shows what will happen and asks. All
@@ -1385,6 +1412,9 @@ pub struct UiState {
     /// The first-run pointer that is up: 1 = add a folder, 2 = press its +
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coach: Option<u8>,
+    /// The first-start setup, while it has not been answered
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<SetupState>,
     /// The thanks card, when it is up: `github` or `store`, which is where
     /// its button leads
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -805,6 +805,29 @@ pub fn assistant_ai(want: Option<&str>) -> Option<(&'static str, &'static str)> 
         .map(|(name, _, label)| (*name, *label))
 }
 
+/// What the first-start setup offers: the assistant AIs, the installed ones to
+/// pick from and the rest with the way to install them. The same list, in the
+/// same order, as Basic > Assistant AI, since that is where the pick is kept.
+pub fn setup_state() -> crate::uistate::SetupState {
+    setup_state_of(
+        |name| crate::tab::resolve_command(name).is_some(),
+        |name| crate::profile::install_url_for(name).is_some(),
+    )
+}
+
+/// [`setup_state`], asked about a machine described rather than this one
+fn setup_state_of(installed: impl Fn(&str) -> bool, has_page: impl Fn(&str) -> bool) -> crate::uistate::SetupState {
+    let mut out = crate::uistate::SetupState::default();
+    for (name, _, label) in AI_ENGINES {
+        let ai = crate::uistate::SetupAi { id: name.to_string(), name: label.to_string(), install: has_page(name) };
+        match installed(name) {
+            true => out.installed.push(ai),
+            false => out.missing.push(ai),
+        }
+    }
+    out
+}
+
 /// The name a person knows an assistant AI by, from its name in the settings
 pub fn assistant_label(name: &str) -> Option<&'static str> {
     AI_ENGINES.iter().find(|(n, _, _)| *n == name).map(|(_, _, label)| *label)
@@ -4555,11 +4578,19 @@ const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
 // Others map 1:1. CLI AIs and API providers then sit side by side inside the AI panel.
 const catOf = c => { const k = kindOf(cmdToText(c));
   return k === "model" ? "ai" : k === "cmd" ? (isAiCli(c) ? "ai" : "cmd") : k; };
-// The AI a tab starts as when nobody has chosen yet: the first CLI that is
-// actually installed here, else Claude Code. Aider is skipped -- it has no
-// detection, so picking it would only mean "we never looked".
-const defaultAiCommand = () =>
-  (AI_CLIS.find(c => c.check && aiEngines.some(e => e.id === c.check)) || AI_CLIS[0]).cmd;
+// The AI a tab starts as when nobody has chosen yet: the one chosen under
+// Basic > Assistant AI while it is installed, else the first CLI that is
+// installed here, else Claude Code. Aider is skipped -- it has no detection,
+// so picking it would only mean "we never looked". With Yolo mode on, the
+// CLI's "act without asking" flag is already in the command, where its
+// checkbox below shows it ticked and one press takes it out again
+const defaultAiCommand = () => {
+  const installed = c => c.check && aiEngines.some(e => e.id === c.check);
+  const head = (AI_CLIS.find(c => installed(c) && c.cmd === current.ai_engine)
+    || AI_CLIS.find(installed) || AI_CLIS[0]).cmd;
+  const flag = current.yolo ? cliFlagOf(head) : "";
+  return flag ? head + " " + flag : head;
+};
 // What picking a kind puts in the command field. The AI entry is a function
 // because its answer depends on which CLI this machine has.
 const CAT_START = {ai:defaultAiCommand, cmd:"", remote:"ssh://user@example.com:22", ssh:"ssh ",
@@ -5694,6 +5725,8 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.conpty.hint"])),
     row(T["settings.ai_engine"], aiSelect(),
         el("span", {class:"hint", id:"aihint"}, "")),
+    row(T["settings.yolo"], check(current, "yolo", T["settings.yolo.label"]),
+        el("span", {class:"hint warn"}, T["settings.tab.ai.autoapprove_risk"])),
     row(T["settings.browser_data"],
         choose(current, "browser_data", [
           ["", T["settings.browser_data.local"] || "This PC only (recommended)"],
@@ -13019,6 +13052,38 @@ mod tests {
         );
         // Errors out (and isn't saved) for conversational text alone
         assert!(extract_lua("どのような自動化を作りますか？").is_err());
+    }
+
+    /// The setup splits the assistant AIs by whether this PC has them, in the
+    /// settings' own order, and says which have a page to install from.
+    #[test]
+    fn the_first_start_setup_offers_what_is_installed_and_points_at_the_rest() {
+        let ids = |v: &[crate::uistate::SetupAi]| v.iter().map(|a| a.id.clone()).collect::<Vec<_>>();
+        let st = super::setup_state_of(|n| n == "codex", |n| n != "gemini");
+        assert_eq!(ids(&st.installed), ["codex"]);
+        assert_eq!(ids(&st.missing), ["claude", "gemini"], "the rest is out of order or missing");
+        assert!(st.missing[0].install && !st.missing[1].install, "a page is claimed that is not there");
+        assert_eq!(st.installed[0].name, "Codex CLI", "not the name the settings call it");
+        // Nothing installed: nothing to pick, all three to install
+        let none = super::setup_state_of(|_| false, |_| true);
+        assert!(none.installed.is_empty());
+        assert_eq!(ids(&none.missing), ["claude", "codex", "gemini"]);
+        // Every one of them has a page in the profiles that ship
+        for (name, _, _) in super::AI_ENGINES {
+            assert!(crate::profile::install_url_for(name).is_some(), "{name} has no install page");
+        }
+    }
+
+    /// A tab starts as the AI chosen in the setup, and with Yolo mode its
+    /// flag is already in the command -- where the checkbox shows it
+    #[test]
+    fn a_new_tab_starts_as_the_chosen_ai_and_carries_yolo_in_its_command() {
+        assert!(PAGE.contains("AI_CLIS.find(c => installed(c) && c.cmd === current.ai_engine)"),
+            "the Assistant AI does not decide what a new tab runs");
+        assert!(PAGE.contains(r#"const flag = current.yolo ? cliFlagOf(head) : "";"#),
+            "Yolo mode does not reach a new tab");
+        assert!(PAGE.contains(r#"check(current, "yolo", T["settings.yolo.label"])"#),
+            "Yolo mode is not under Basic");
     }
 
     #[test]
