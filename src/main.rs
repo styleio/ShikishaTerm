@@ -624,6 +624,7 @@ impl WinSurface {
                 Ev::FolderColor { folder, color } => self.mail.folder_colors.push((folder, color)),
                 Ev::Browse { path, open, make } => self.mail.browses.push((path, open, make)),
                 Ev::FolderName { folder, name } => self.mail.folder_names.push((folder, name)),
+                Ev::TabName { tab, name } => self.mail.tab_names.push((tab, name)),
                 Ev::FolderClose { folder } => self.mail.folder_closes.push(folder),
                 Ev::FolderDiscard { folder } => self.mail.folder_discards.push(folder),
                 Ev::RemoteCut => self.mail.remote_cut = true,

@@ -3298,6 +3298,43 @@ pub fn append_folder_at(
 
 /// Renames a folder in the list. An empty name hands it back to what the
 /// folder itself says -- its branch, or its own last part
+/// Renames a tab in the settings, found by the title it has now: its name, or
+/// what its command calls it when it has none. An empty name hands it back to
+/// its command. Answers the title it goes by afterwards, or None when no tab
+/// of this desk has that title
+pub fn rename_tab(desk_name: &str, title: &str, name: &str) -> Result<Option<String>> {
+    rename_tab_at(&config_file_path(), desk_name, title, name)
+}
+
+pub fn rename_tab_at(path: &Path, desk_name: &str, title: &str, name: &str) -> Result<Option<String>> {
+    let mut after = None;
+    with_folders(path, desk_name, |folders| {
+        for tab in folders.iter_mut().filter_map(|g| g.get_mut("tabs")).filter_map(|t| t.as_array_mut()).flatten() {
+            let Ok(cfg) = serde_json::from_value::<TabConfig>(tab.clone()) else { continue };
+            let argv = cfg.command.argv();
+            let now = cfg.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| crate::view::title_of(&argv));
+            if now != title {
+                continue;
+            }
+            match name.trim() {
+                "" => {
+                    if let Some(o) = tab.as_object_mut() {
+                        o.shift_remove("name");
+                    }
+                    after = Some(crate::view::title_of(&argv));
+                }
+                n => {
+                    tab["name"] = serde_json::json!(n);
+                    after = Some(n.to_string());
+                }
+            }
+            break;
+        }
+        Ok(())
+    })?;
+    Ok(after)
+}
+
 pub fn rename_folder(desk_name: &str, cwd: &Path, name: &str) -> Result<()> {
     with_folders(&config_file_path(), desk_name, |folders| {
         let Some(g) = find_folder(folders, cwd) else {
@@ -6211,6 +6248,24 @@ mod browser_kind_tests {
         assert!(!is_git_panel(&v(&["git", "status"])));
         assert!(!is_git_panel(&v(&["gitk"])));
         assert!(!is_git_panel(&[]));
+    }
+
+    /// A tab is found by the title it goes by, named or not, and an empty name
+    /// hands it back to its command
+    #[test]
+    fn a_tab_is_renamed_by_the_title_it_goes_by() {
+        let dir = std::env::temp_dir().join(format!("shikisha-tabname-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"desks":[{"name":"W","folders":[{"cwd":"D:/a","tabs":[
+            {"name":"lead","command":"claude"},{"command":"codex --x"}]}]}]}"#).unwrap();
+        assert_eq!(crate::config::rename_tab_at(&path, "W", "CODEX", "second").unwrap().as_deref(), Some("second"));
+        assert_eq!(crate::config::rename_tab_at(&path, "W", "lead", "").unwrap().as_deref(), Some("CLAUDE"), "an empty name keeps a name");
+        assert_eq!(crate::config::rename_tab_at(&path, "W", "nobody", "x").unwrap(), None);
+        let cfg: crate::config::Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let tabs = &cfg.desks[0].folders[0].tabs;
+        assert_eq!((tabs[0].name.as_deref(), tabs[1].name.as_deref()), (None, Some("second")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A host written from the add-a-project dialog is read back as one, signs
