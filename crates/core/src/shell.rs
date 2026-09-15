@@ -246,6 +246,53 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #coach.below::before { left:14px; top:-7px; transform:rotate(135deg); }
   #coach .cx { color:var(--dim); cursor:pointer; flex:none; }
   #coach .cx:hover { color:var(--text); }
+  /* The first-start setup. A framed dialog (5.2): head, body, foot, each divided
+     by a rule. It stands in front of everything until it is answered, so it has
+     no ✕ and the backdrop does not close it -- Continue is always pressable, even
+     with nothing picked, and that is the only way out */
+  #setup { position:fixed; inset:0; background:#00000099; display:flex; align-items:flex-start;
+    justify-content:center; z-index:52; padding:56px 16px 16px; }
+  #setup[hidden] { display:none; }
+  #setup .sbox { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
+    width:min(560px,100%); max-height:calc(100vh - 72px); box-shadow:0 8px 24px #0007;
+    display:flex; flex-direction:column; }
+  #setup .shead { display:flex; align-items:center; gap:var(--s3); padding:16px 20px;
+    border-bottom:1px solid var(--line); }
+  #setup .stitle { flex:1; min-width:0; font-size:13.5px; font-weight:600; color:var(--text);
+    text-transform:uppercase; }
+  #setup .sbody { display:flex; flex-direction:column; gap:var(--s5); padding:20px; overflow:auto; }
+  #setup .sfoot { display:flex; justify-content:flex-end; gap:var(--s2); padding:12px 20px;
+    border-top:1px solid var(--line); }
+  /* One question: its name, what answers it, a line saying what it does */
+  #setup .sfield { display:flex; flex-direction:column; gap:var(--s2); }
+  #setup .slabel { font-size:12px; font-weight:500; color:var(--text); }
+  #setup .shint { font-size:11.5px; color:var(--faint); line-height:1.5; }
+  /* Cards to pick one AI from. A card is the size of a thing to press with a
+     finger, and wears its AI's colour where a tab row does: the left edge and
+     the name. Picked is the selection's own recipe -- the raised surface and the
+     brand edge -- so it reads the same as a picked row anywhere else */
+  #setup .scards { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:var(--s3); }
+  #setup button.scard { display:flex; flex-direction:column; align-items:flex-start; gap:var(--s1);
+    min-height:56px; padding:var(--s3); border-radius:var(--r-card); border:1px solid var(--edge);
+    background:transparent; box-shadow:inset 3px 0 0 var(--ai,var(--edge)); text-align:left; font-weight:normal; }
+  #setup button.scard:hover { border-color:var(--edge-hi); }
+  #setup button.scard[aria-checked="true"] { background:var(--raise); border-color:var(--brand); }
+  #setup .scard .nm { font-size:13px; font-weight:600; color:var(--ai,var(--text)); }
+  #setup .scard .cmd { font-family:var(--mono); font-size:11px; color:var(--dim); }
+  #setup .slinks { display:flex; flex-wrap:wrap; gap:var(--s2); }
+  #setup button.slink { display:inline-flex; align-items:center; gap:var(--s2); background:var(--panel2); }
+  #setup button.slink .ico, #setup button.srefresh .ico { display:flex; color:var(--dim); }
+  #setup button.srefresh { display:inline-flex; align-items:center; gap:var(--s2); flex:none; }
+  /* Nothing to pick: said in the place the cards would be, in the colour that
+     means somebody is needed (5.1's box for a field that is wrong) */
+  #setup .snone { padding:var(--s2) var(--s3); border-radius:var(--r-ctl); font-size:12px;
+    line-height:1.5; color:var(--text);
+    background:color-mix(in srgb, var(--warn) 9%, transparent);
+    border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+  #setup .syolo { display:flex; align-items:center; gap:var(--s2); flex-wrap:wrap; cursor:pointer;
+    font-size:14px; color:var(--text); }
+  #setup .syolo input { width:15px; height:15px; margin:0; }
+  #setup .syolo .risk { font-size:12px; color:var(--stop); }
   /* Once: a star, if you like it. Sits above the gear, and goes for good */
   .thanks { margin:auto var(--s2) var(--s2); padding:10px 12px; border:1px solid var(--line); border-radius:var(--r-card);
     background:var(--raise); font-size:12px; }
@@ -1936,16 +1983,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #browse .pbtns .pcancel { margin-left:auto; }
   }
   #browse button { white-space:nowrap; }
-  #branch button, #browse button { font:inherit; font-size:12.5px; min-height:32px; padding:0 var(--s4);
+  #branch button, #browse button, #setup button { font:inherit; font-size:12.5px; min-height:32px; padding:0 var(--s4);
     border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--raise);
     color:var(--text); cursor:pointer; }
-  #branch button:hover, #browse button:hover { border-color:var(--edge-hi); }
+  #branch button:hover, #browse button:hover, #setup button:hover { border-color:var(--edge-hi); }
   /* Filled, not outlined. These two dialogs each ask for one thing and then
      have one button to press, and an outline put it at the same weight as the
      ✕ beside it -- the same recipe the sftp panel's own button already uses */
-  #branch button.go, #browse button.go { border-color:var(--brand); background:var(--brand);
+  #branch button.go, #browse button.go, #setup button.go { border-color:var(--brand); background:var(--brand);
     color:var(--bg); font-weight:600; }
-  #branch button.go:hover, #browse button.go:hover { filter:brightness(1.1); }
+  #branch button.go:hover, #browse button.go:hover, #setup button.go:hover { filter:brightness(1.1); }
   /* Off is grey, not a faded version of the live colour: a pale brand outline
      still reads as the brand outline */
   #branch button[disabled], #browse button[disabled] { background:var(--panel2);
@@ -2339,6 +2386,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <!-- The column's edge, as something you can take hold of -->
   <div id="sidegrip" hidden></div>
   <div id="veil" hidden></div>
+  <!-- The first-start setup: which AI to prefer, before anything else -->
+  <div id="setup" hidden></div>
   <!-- The Vault: search past conversations and reopen one. Its own overlay
        rather than the veil, because it has an input and must not close on the
        first keystroke -->
@@ -3370,6 +3419,96 @@ function drawFailed(t) {
     acts));
 }
 
+// ── The first-start setup ──────────────────
+// Which AI to prefer, asked before anything else on a first start. What is
+// picked and ticked lives here until Continue: the app only hears the answer.
+// A phone never draws it -- remote access cannot be on before it is answered
+let setupPick = "";
+let setupYolo = true;
+const setupUp = () => !REMOTE && !!(S && S.setup);
+function drawWelcome() {
+  const box = document.getElementById("setup");
+  if (!box) return;
+  const st = REMOTE ? null : (S && S.setup);
+  box.hidden = !st;
+  if (!st) { box.dataset.sig = ""; return; }
+  const installed = st.installed || [];
+  // The card picked stays picked while it is still there; a refresh that
+  // finds it gone, or a first draw, lands on the first one
+  if (!installed.some(a => a.id === setupPick)) setupPick = installed.length ? installed[0].id : "";
+  // Built again only when what the app says has changed -- a refresh that
+  // found another AI. Picking a card or ticking the box changes the page in
+  // place, so the button being pressed is never taken out from under a finger
+  const sig = JSON.stringify(st);
+  if (box.dataset.sig === sig) return;
+  const first = !box.dataset.sig;
+  // The control that had the keyboard, by what it is, to hand it back after
+  // the rebuild: the refresh button, most of the time
+  const had = document.activeElement && box.contains(document.activeElement)
+    ? document.activeElement.dataset.f : "";
+  box.dataset.sig = sig;
+  box.textContent = "";
+
+  const refresh = el("button", {class:"srefresh", "data-f":"refresh", title:T["tui.setup.refresh.title"] || "",
+      onclick:() => send({kind:"setuprefresh"})},
+    pickIcon("refresh"), T["tui.setup.refresh"] || "");
+  const head = el("div", {class:"shead"},
+    el("span", {class:"stitle"}, T["tui.setup.title"] || ""), refresh);
+
+  const pick = el("div", {class:"sfield"}, el("div", {class:"slabel"}, T["tui.setup.pick"] || ""));
+  if (installed.length) {
+    const cards = el("div", {class:"scards", role:"radiogroup"});
+    const mark = () => { for (const c of cards.children) c.setAttribute("aria-checked", String(c.dataset.id === setupPick)); };
+    for (const a of installed) {
+      cards.append(el("button", {class:"scard ai-" + a.id, role:"radio", "data-id":a.id, "data-f":"ai:" + a.id,
+          onclick:() => { setupPick = a.id; mark(); }},
+        el("span", {class:"nm"}, a.name),
+        el("span", {class:"cmd"}, a.id)));
+    }
+    mark();
+    pick.append(cards, el("div", {class:"shint"}, T["tui.setup.pick.hint"] || ""));
+  } else {
+    pick.append(el("div", {class:"snone"}, T["tui.setup.none"] || ""));
+  }
+
+  const body = el("div", {class:"sbody"}, pick);
+  const missing = st.missing || [];
+  if (missing.length) {
+    const links = el("div", {class:"slinks"});
+    for (const a of missing) {
+      // Every one of them has a page today. One that did not would be named
+      // and nothing more, rather than a button that goes nowhere
+      links.append(a.install
+        ? el("button", {class:"slink", "data-f":"open:" + a.id, title:T["tui.setup.open"] || "",
+              onclick:() => send({kind:"installhelp", ai:a.id})},
+            el("span", {}, a.name), pickIcon("open"))
+        : el("span", {class:"shint"}, a.name));
+    }
+    body.append(el("div", {class:"sfield"},
+      el("div", {class:"slabel"}, T["tui.setup.supported"] || ""),
+      links,
+      el("div", {class:"shint"}, T["tui.setup.supported.hint"] || "")));
+  }
+
+  const yolo = el("input", {type:"checkbox", "data-f":"yolo"});
+  yolo.checked = setupYolo;
+  yolo.addEventListener("change", () => { setupYolo = yolo.checked; });
+  body.append(el("label", {class:"syolo"}, yolo,
+    el("span", {}, T["tui.setup.yolo"] || ""),
+    el("span", {class:"risk"}, T["tui.setup.yolo.risk"] || "")));
+
+  const go = el("button", {class:"go", "data-f":"go",
+      onclick:() => send({kind:"setup", ai:setupPick || null, yolo:setupYolo})},
+    T["tui.setup.go"] || "");
+  box.append(el("div", {class:"sbox", role:"dialog", "aria-modal":"true"},
+    head, body, el("div", {class:"sfoot"}, go)));
+  // Enter presses Continue from the moment it opens; after a refresh the
+  // keyboard stays on what it was on
+  const back = had && [...box.querySelectorAll("[data-f]")].find(n => n.dataset.f === had);
+  if (back) back.focus();
+  else if (first || had) go.focus();
+}
+
 // ── The tools that start from a picture ──────────────────
 // What the app can run and how long it can wait, handed in by the app
 // (snip.rs) so the menu never offers a tool the tool page cannot open
@@ -3864,6 +4003,8 @@ const PICK_ICON = {
   desktop: '<rect x="1.5" y="2.5" width="11" height="7.5" rx="1"/><path d="M5 12.5h4M7 10v2.5"/>',
   project: '<rect x="2.5" y="2.5" width="9" height="9" rx="1.5"/>',
   drive: '<rect x="1.5" y="4" width="11" height="6" rx="1"/><path d="M10 7h.01"/>',
+  open: '<path d="M8.5 2h3.5v3.5"/><path d="M6.5 7.5 12 2"/><path d="M10.5 8v3.5a.5.5 0 0 1-.5.5H2.5a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5H6"/>',
+  refresh: '<path d="M12 7a5 5 0 0 1-8.7 3.4"/><path d="M2 7a5 5 0 0 1 8.7-3.4"/><path d="M11 1.5v2.5H8.5"/><path d="M3 12.5V10h2.5"/>',
 };
 function pickIcon(name) {
   const s = el("span", {class:"ico"});
@@ -5632,6 +5773,7 @@ window.__state = function (json) {
   // Nothing to draw for a pane with nothing in it -- it says so itself
   screen.hidden = cover || S.active === 0 || web || git || files || edit || !!failedTab || issuesUp;
   drawFailed(cover ? null : failedTab);
+  drawWelcome();
   const ipanel = document.getElementById("issuespanel");
   if (ipanel) {
     const was = !ipanel.hidden;
@@ -7238,6 +7380,7 @@ const NAMED = {
 };
 kbd.addEventListener("keydown", e => {
   if (e.isComposing) return;
+  if (setupUp()) { e.preventDefault(); return; }
   const nm = NAMED[e.key];
   // Shift and Alt travel with a named key. A character carries its own shift
   // already (the browser hands over "%", not shift and "5"), but Enter, Tab and
@@ -7283,6 +7426,9 @@ const focus = () => {
   // The quick commands hold the keyboard while they are up: arrows walk the
   // buttons, Enter presses one, Esc puts them away
   if (quickOpen) return;
+  // The first-start setup holds the keyboard while it is up: Enter is its
+  // Continue, and a letter must not reach the board's menu behind it
+  if (setupUp()) return;
   // Never steal focus while a text field is being used (the cast input bar, the
   // discussion-topic box, etc.). Otherwise every keystroke would be swallowed by
   // #kbd and fired as a board shortcut (e.g. typing "w" opens the desk list).
@@ -12875,6 +13021,22 @@ mod tests {
     /// Two pointers and no more, each beside the thing it names, closed by
     /// its ✕ or by doing the thing. The thanks card and the `?` live by the
     /// gear: the window asks the app, the phone follows a link.
+    /// The first-start setup: drawn from the state, answered with what was
+    /// picked and ticked, able to look again, and holding the keyboard so a
+    /// letter never reaches the board's menu behind it. Never on a phone.
+    #[test]
+    fn the_first_start_setup_is_drawn_answered_and_refreshed() {
+        assert!(PAGE.contains(r#"<div id="setup" hidden></div>"#), "there is nowhere to draw it");
+        assert!(PAGE.contains("drawWelcome();"), "it is never drawn");
+        assert!(PAGE.contains("const setupUp = () => !REMOTE && !!(S && S.setup);"), "a phone draws it");
+        assert!(PAGE.contains(r#"send({kind:"setup", ai:setupPick || null, yolo:setupYolo})"#), "Continue sends nothing");
+        assert!(PAGE.contains(r#"send({kind:"setuprefresh"})"#), "Refresh asks for nothing");
+        assert!(PAGE.contains(r#"send({kind:"installhelp", ai:a.id})"#), "a supported AI does not open its page");
+        assert!(PAGE.contains("let setupYolo = true;"), "Yolo mode does not start ticked");
+        assert!(PAGE.contains("if (setupUp()) return;") && PAGE.contains("if (setupUp()) { e.preventDefault(); return; }"),
+            "the board's keys reach past it");
+    }
+
     #[test]
     fn the_first_run_pointer_the_thanks_card_and_the_manual_link_are_drawn() {
         assert!(PAGE.contains(r##"const coachAt = step => step === 1 ? document.querySelector("#tabs .tab.addtab")"##), "there is nothing for step 1 to point at");

@@ -87,6 +87,18 @@ pub fn coach_step(folders: usize, seen: u8, past_the_plus: bool) -> (Option<u8>,
         _ => (None, seen),
     }
 }
+/// The state file that says the first-start setup has been answered
+const SETUP_ANSWERED: &str = "setup";
+
+/// Whether the first-start setup is asked. Only on a first start -- a machine
+/// that already has settings has already chosen -- and only until it has been
+/// answered once. A first start can happen more than once: until a folder is
+/// added the settings file does not count as settings, so the answer is kept
+/// on its own rather than inferred from that file
+pub fn setup_wanted(first_run: bool, answered: bool) -> bool {
+    first_run && !answered
+}
+
 /// The AIs this machine can start, one per profile whose command is on PATH.
 ///
 /// Offered the way the settings' own form would launch them: with the CLI's
@@ -846,6 +858,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
     let mut thanks_asked = config::state_path("thanks-asked").exists();
+    // The first-start setup: up on a first start until it is answered, and
+    // never on a machine that already had settings. Which AIs are installed is
+    // asked once, here, like the list above
+    let mut setup_view = setup_wanted(first_run, config::state_path(SETUP_ANSWERED).exists())
+        .then(crate::webui::setup_state);
     let mut thanks_show = false;
     // Where thanks would go: the Store's review page for the Store's copy, the
     // repository for the zip's
@@ -2817,7 +2834,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         });
         let ui = Ui {
             ais: ai_choices.clone(),
-            coach,
+            // The pointer waits behind the setup: it points at the list, and
+            // the setup is in front of the list
+            coach: coach.filter(|_| setup_view.is_none()),
+            setup: setup_view.clone(),
             usage,
             thanks: thanks_show.then(|| thanks_kind.to_string()),
             update: update::ask(),
@@ -5144,6 +5164,42 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             && let Some(Surface::Failed { install_url: Some(url), .. }) = surfaces.get(active.wrapping_sub(1))
         {
             crate::webui::open_external(url);
+        }
+        // The same page for a program named beside its button, in a list of
+        // several. Named by its command; the address is still the profile's
+        for ai in shell.mail().take_install_pages() {
+            if let Some(url) = crate::profile::install_url_for(&ai) {
+                crate::webui::open_external(&url);
+            }
+        }
+        // The first-start setup was answered. The AI is kept only if it is one
+        // the setup offered as installed: the page says which card was
+        // pressed, it does not get to write any word it likes into the
+        // settings. Written down as answered either way, so it is asked once
+        // "Refresh" on the setup: the PC is asked again, because the person
+        // has just installed one. The list for new folders is asked with it --
+        // it answers the same question, and would otherwise go on saying the
+        // AI is not there until the next start
+        if shell.mail().take_setup_refresh() && setup_view.is_some() {
+            let now = crate::webui::setup_state();
+            // Said either way: a press that finds nothing new changes nothing
+            // on the setup, and would otherwise look like a press that missed
+            let names: Vec<&str> = now.installed.iter().map(|a| a.name.as_str()).collect();
+            flash = Some(match names.is_empty() {
+                true => i18n::t("msg.setup.found_none"),
+                false => i18n::tp("msg.setup.found", &[("names", &names.join(", "))]),
+            });
+            setup_view = Some(now);
+            ai_choices = startable_ais();
+        }
+        if let Some((ai, yolo)) = shell.mail().take_setup()
+            && let Some(offered) = setup_view.take()
+        {
+            if let Some(ai) = ai.filter(|a| offered.installed.iter().any(|x| &x.id == a)) {
+                config::save_setting(&["ai_engine"], serde_json::json!(ai));
+            }
+            config::save_setting(&["yolo"], serde_json::json!(yolo));
+            let _ = crate::crypto::write_atomic(&config::state_path(SETUP_ANSWERED), "1");
         }
         // The update card was answered. Either answer puts it away for this
         // version; "open" leads to the settings' Update card, where the one
@@ -9114,6 +9170,17 @@ mod tests {
         assert_eq!(super::coach_step(3, 0, false), (None, 0));
         // Folders all removed later: not a first run any more
         assert_eq!(super::coach_step(0, 2, false), (None, 2));
+    }
+
+    /// The first-start setup is asked on a first start, once. A machine with
+    /// settings is never asked, and a first start after it was answered -- no
+    /// folder added yet, so still a first start by the settings -- is not
+    /// asked again.
+    #[test]
+    fn the_first_start_setup_is_asked_once_and_only_on_a_first_start() {
+        assert!(super::setup_wanted(true, false), "a first start is not asked");
+        assert!(!super::setup_wanted(true, true), "answered, and asked again");
+        assert!(!super::setup_wanted(false, false), "somebody with settings is asked");
     }
 
     /// The add-a-tab dialog sits where the style guide puts a dialog: at most

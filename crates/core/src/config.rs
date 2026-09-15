@@ -527,6 +527,13 @@ pub struct Config {
     /// Uses whichever is found if empty
     #[serde(default)]
     pub ai_engine: Option<String>,
+    /// Yolo mode: a new AI tab starts with its CLI's "act without asking" flag
+    /// already ticked (see `tab::bypass_flag`). Only where a tab starts --
+    /// the flag is written into that tab's command, visible and removable
+    /// there, and nothing already written is changed. Asked by the first-start
+    /// setup, kept under Basic
+    #[serde(default)]
+    pub yolo: bool,
     /// Keys that open the tools from any program, by what they open (see
     /// `hotkeys::ACTIONS`): "Alt+Shift+X". Only what was changed is written;
     /// the scissors not written at all have `hotkeys::DEFAULT`, written empty
