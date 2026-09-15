@@ -748,6 +748,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   input.rename { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--brand);
     border-radius:var(--r-ctl); height:22px; padding:0 6px; min-width:0; width:100%; flex:1 1 auto; outline:none;
     box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  /* Its name's place, which is sized to the name and cut short with an ellipsis,
+     takes the rest of the row while the field is in it -- or the field is
+     squeezed to nothing and shows only the ellipsis */
+  .nm:has(input.rename), .nm .who:has(> input.rename) { flex:1 1 auto; min-width:0; max-width:none;
+    display:flex; align-items:center; gap:var(--s1); overflow:visible; }
+  input.rename { min-width:96px; }
   .making { margin:2px var(--s2) 2px 14px; padding:6px 4px 6px 10px; border:1px solid var(--line);
     border-radius:var(--r-ctl); display:flex; flex-wrap:wrap; align-items:center; column-gap:var(--s2); row-gap:2px; }
   .making > .dot { flex:none; }
@@ -2308,6 +2314,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.folder .more:hover { color:var(--text); }
   /* The line an empty folder uses to invite its first tab. Stands where
      that tab's own row will stand once it exists */
+  .tab.folder.empty.pulse .nm { color:var(--brand); font-weight:700; }
   .tab.fnew { padding-left:29px; color:var(--dim); font-size:12.5px; }
   .tab.fnew:hover { color:var(--text); }
   .tab.fnew.pulse { color:var(--brand); font-weight:700; }
@@ -4509,7 +4516,7 @@ let coachShut = 0;
 // What each step points at. Asked for by name rather than held on to, because
 // the list it lives in is rebuilt several times a second
 const coachAt = step => step === 1 ? document.querySelector("#tabs .projhead .padd")
-  : step === 2 ? document.querySelector("#tabs .tab.fnew") : null;
+  : step === 2 ? document.querySelector("#tabs .tab.fnew, #tabs .tab.folder.empty") : null;
 // Doing the thing is an answer to being asked, so pressing what it points at
 // takes it down -- and takes it down for good, the same as its ✕. It waited
 // for the ✕ before, which left it sitting over the screen it had just sent
@@ -4810,19 +4817,20 @@ function ailMark(g) {
   return el("span", {class:"ail", title:whyFolder(g),
       onclick:e => { e.stopPropagation(); openRepair(g); }}, "⚠");
 }
-// A folder with nothing in it yet. The tab walk never reaches one -- and a
-// folder just added is exactly that, which left "add a folder" ending in
-// nothing on screen. Its + blinks: that is the same + every folder has, and
-// the whole reason to show an empty one
+// A folder with nothing in it yet. The tab walk never reaches one, so it is
+// drawn from the settings.
 //
-// With a folder's + meaning a worktree, the first tab needed a door of its own:
-// a folder with no tab has no bar over it, and the bar is where tabs are added.
-// So an empty folder says so underneath, in the words an empty pane already
-// uses. Not opened automatically -- a folder can be on another machine, and
-// opening a tab there is a connection nobody asked for
+// A project's own folder opens with the default command running when it is
+// added, so it is only empty when its tabs were closed: pressing it opens the
+// default command there again (Basic > Default command), and there is no line
+// under it. A worktree shown from the ones git found starts with nothing, and
+// what to run in it is a choice -- so it keeps the line that adds its first tab
 function emptyRow(g, card) {
   const box = el("div", {class:"fempty"});
-  const row = el("div", {class:"tab folder empty" + (g.linked ? " cut" : "") + (card ? " wcard" : ""), title:g.folder || ""},
+  const next = (S.coach || 0) === 2 ? " pulse" : "";
+  const own = !g.linked;
+  const row = el("div", {class:"tab folder empty" + (g.linked ? " cut" : "") + (card ? " wcard" : "") + (own ? next : ""), title:g.folder || "",
+      onclick:() => { if (own) send({kind:"folderview", folder:g.folder || ""}); }},
     card ? el("span", {class:"dot"}) : g.linked ? cutMark() : el("span", {class:"chip"}),
     ailMark(g),
     nameSlot("tabs", "f:" + g.folder, g.name || "", v => send({kind:"foldername", folder:g.folder, name:v}), "nm"),
@@ -4831,8 +4839,8 @@ function emptyRow(g, card) {
          el("span", {class:"fill"}), el("span", {class:"fbr"}, (g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder)))]
       : [worktreePlus(g)]).filter(Boolean));
   row.addEventListener("contextmenu", e => { e.preventDefault(); folderMenu(e, g); });
-  const next = (S.coach || 0) === 2 ? " pulse" : "";
-  box.append(row, el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)},
+  box.append(row);
+  if (!own) box.append(el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)},
     el("span", {class:"nm"}, T["tui.pane.add"] || "+ Add tab")));
   return box;
 }
@@ -14414,10 +14422,11 @@ mod tests {
         assert!(!PAGE.contains("function addMenu("), "the old menu that offers worktree and working folder side by side is still there");
         // Nothing to cut a worktree from, so no + that can only fail
         assert!(PAGE.contains("if (!g.color) return null;"), "a working folder that is not a repository shows the worktree +");
-        // And the empty folder still has a way to its first tab
-        assert!(PAGE.contains("onclick:() => addTabHere(g)},\n    el(\"span\", {class:\"nm\"}, T[\"tui.pane.add\"]"),
+        // And the empty folder still has a way to its first tab: pressed, it opens the default command
+        assert!(PAGE.contains(r#"onclick:() => { if (own) send({kind:"folderview", folder:g.folder || ""}); }},"#)
+            && PAGE.contains(r#"if (!own) box.append(el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)},"#),
                 "there is no way to put the first tab in an empty working folder");
-        assert!(PAGE.contains(r##"step === 2 ? document.querySelector("#tabs .tab.fnew")"##),
+        assert!(PAGE.contains(r##"step === 2 ? document.querySelector("#tabs .tab.fnew, #tabs .tab.folder.empty")"##),
                 "the second step of the first-run guide points at a + whose meaning has changed");
     }
 
@@ -14765,7 +14774,7 @@ mod tests {
         assert!(PAGE.contains(r##"const coachAt = step => step === 1 ? document.querySelector("#tabs .projhead .padd")"##), "there is nothing for step 1 to point at");
         // The second step points at the line that starts an AI in an empty folder.
         // The folder's own + means another worktree now, which is not "start one here"
-        assert!(PAGE.contains(r##": step === 2 ? document.querySelector("#tabs .tab.fnew") : null;"##), "there is nothing for step 2 to point at");
+        assert!(PAGE.contains(r##": step === 2 ? document.querySelector("#tabs .tab.fnew, #tabs .tab.folder.empty") : null;"##), "there is nothing for step 2 to point at");
         assert!(PAGE.contains(r#"send({kind:"coach", step:coachShut});"#), "closing it is never reported");
         // Doing the thing is an answer to being asked. Without this the bubble
         // sat over the screen it had just sent somebody to, until its ✕
@@ -14961,7 +14970,7 @@ mod tests {
         assert!(PAGE.contains("if (g.empty) { nav.append(emptyRow(g, true)); continue; }")
             && PAGE.contains("if (g.empty) { nav.append(emptyRow(g)); continue; }"), "an empty folder is not drawn");
         // What blinks is the line that puts the first tab in, on the step that asks for it
-        assert!(PAGE.contains(r#"el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)}"#),
+        assert!(PAGE.contains(r#"(card ? " wcard" : "") + (own ? next : ""), title:g.folder || "","#),
                 "in an empty folder the next thing to press does not light up");
         assert!(
             PAGE.contains("const bare = (S.coach || 0) === 1;"),
