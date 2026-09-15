@@ -716,6 +716,26 @@ pub struct SetupState {
     pub gh: bool,
 }
 
+/// A project on its way from a URL or being made new, as the dialog shows it.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct AddProjectState {
+    /// The dialog's own number for the attempt this is about
+    pub ask: u64,
+    /// Still going
+    pub running: bool,
+    /// git's word for the stage a clone is at, and how far through it
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percent: Option<u8>,
+    /// Why it did not happen
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The project it made, once it is on the desk
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done: Option<String>,
+}
+
 /// One AI in the first-start setup.
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct SetupAi {
@@ -1434,6 +1454,12 @@ pub struct UiState {
     /// The first-start setup, while it has not been answered
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<SetupState>,
+    /// A project being cloned or made new, from the add-a-project dialog
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub add_project: Option<AddProjectState>,
+    /// Where a cloned or new project goes until somebody picks elsewhere
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_home: String,
     /// The thanks card, when it is up: `github` or `store`, which is where
     /// its button leads
     #[serde(default, skip_serializing_if = "Option::is_none")]

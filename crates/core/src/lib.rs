@@ -7,6 +7,7 @@
 //! runs with no shell at all.
 
 pub mod ace;
+pub mod addproject;
 pub mod agenthook;
 pub mod api;
 pub mod askpass;

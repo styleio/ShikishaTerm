@@ -115,6 +115,9 @@ pub struct Mailbox {
     /// The setup's "Refresh" was pressed, on which of its pages: look for
     /// what is installed again
     pub setup_refresh: Option<u8>,
+    /// A project to clone or make new, or the clone under way to stop:
+    /// (how, the URL or the name, the folder it goes in)
+    pub add_projects: Vec<(String, String, String, u64)>,
     /// Tabs whose usage-limit notice was read, by screen number
     pub limit_acks: Vec<usize>,
     /// Tabs somebody asked to look at, by screen number (0 is the board): a
@@ -311,6 +314,9 @@ impl Mailbox {
     }
     pub fn take_setup(&mut self) -> Option<(Option<String>, bool)> {
         self.setup.take()
+    }
+    pub fn take_add_projects(&mut self) -> Vec<(String, String, String, u64)> {
+        std::mem::take(&mut self.add_projects)
     }
     pub fn take_setup_refresh(&mut self) -> Option<u8> {
         self.setup_refresh.take()
