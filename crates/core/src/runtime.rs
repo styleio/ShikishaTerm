@@ -87,6 +87,70 @@ pub fn coach_step(folders: usize, seen: u8, past_the_plus: bool) -> (Option<u8>,
         _ => (None, seen),
     }
 }
+/// A worktree being made from the dialog, from the press until its card is on
+/// the desk. The making runs on a thread; what it is written down as, and
+/// where, is decided here when it is pressed, so a desk switched in between
+/// still gets the folder it was asked for
+struct Pending {
+    id: u64,
+    making: crate::worktree::Making,
+    desk: String,
+    /// The folder the dialog was opened on
+    from: std::path::PathBuf,
+    /// The project's shared git folder, which puts its row under its heading
+    family: String,
+    start: config::Start,
+    /// The issue or pull request it is for, when it is for one
+    link: serde_json::Value,
+    carry: Vec<crate::worktree::Carry>,
+    /// The folder is there; only writing it down is left (or failed)
+    made: bool,
+    /// Why it failed, once it has
+    error: Option<String>,
+    /// When it was written into the settings. The row stays until the desk
+    /// that was read back lists the folder, so a card takes its place in the
+    /// same frame the row goes
+    written: Option<Instant>,
+    /// Stopped and taken back: the row goes
+    gone: bool,
+}
+
+impl Pending {
+    fn state(&self) -> crate::uistate::MakingState {
+        let plan = &self.making.plan;
+        crate::uistate::MakingState {
+            id: self.id,
+            family: self.family.clone(),
+            name: plan.branch.clone(),
+            folder: plan.folder.display().to_string(),
+            stage: match (&self.error, self.made || self.written.is_some()) {
+                (Some(_), _) => "failed".into(),
+                (None, true) => crate::worktree::Stage::SettingUp.key().into(),
+                (None, false) => self.making.stage().key().into(),
+            },
+            error: self.error.clone().unwrap_or_default(),
+        }
+    }
+
+    /// Writes the made folder into the settings, beside the folder it was
+    /// asked from, running what the dialog chose
+    fn write_down(&self) -> anyhow::Result<()> {
+        let plan = &self.making.plan;
+        config::append_folder_starting(
+            &self.desk,
+            Some(plan.like(&self.from)),
+            &plan.folder,
+            Some(&plan.branch),
+            &self.start,
+            plan.host.as_ref().map(|h| h.name.as_str()),
+        )
+    }
+}
+
+/// How long a written-down worktree's row waits for the desk to list it
+/// before it goes anyway. A reload that never comes must not leave it forever
+const MAKING_CARD_WAIT: Duration = Duration::from_secs(10);
+
 /// The state file holding the projects whose found worktrees are kept hidden,
 /// one shared git folder to a line
 const WORKTREES_KEPT: &str = "worktrees-kept";
@@ -943,6 +1007,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut assistant_ai = config::assistant_written();
     // The projects whose found worktrees somebody chose to keep hidden
     let mut worktrees_kept = load_kept();
+    // Worktrees being made, each a row under its project's heading
+    let mut makings: Vec<Pending> = Vec::new();
+    let mut making_seq: u64 = 0;
     let mut thanks_show = false;
     // Where thanks would go: the Store's review page for the Store's copy, the
     // repository for the zip's
@@ -2502,6 +2569,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Git { panel, act, args }) => {
                         shell.mail().gits.push((panel, act, args));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Making { id, act }) => {
+                        shell.mail().makings.push((id, act));
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Found { family, act }) => {
+                        shell.mail().found.push((family, act));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::GitAccount { panel, account }) => {
                         shell.mail().git_accounts.push((panel, account));
                     }
@@ -2929,6 +3002,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             setup: setup_view.clone(),
             add_project: add_view.clone(),
             worktrees_kept: worktrees_kept.clone(),
+            making: makings.iter().map(Pending::state).collect(),
             project_home: project_home.clone(),
             assistant: assistant_ai.clone(),
             usage,
@@ -4519,6 +4593,64 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 _ => {}
             }
         }
+        // The rows of worktrees being made: stopped, tried again, put away
+        for (id, act) in shell.mail().take_makings() {
+            let Some(p) = makings.iter_mut().find(|p| p.id == id) else { continue };
+            match act.as_str() {
+                "stop" if p.error.is_none() && !p.made && p.written.is_none() => p.making.stop(),
+                "retry" if p.error.is_some() => {
+                    p.error = None;
+                    // Made already, and only writing it down failed: that
+                    // is what is tried again, since the folder is there
+                    if !p.made {
+                        p.making = crate::worktree::Making::start(p.making.plan.clone(), p.carry.clone());
+                    }
+                }
+                "dismiss" if p.error.is_some() => p.gone = true,
+                _ => {}
+            }
+        }
+        // How each is getting on. Made: written down, and the row waits for
+        // the card that replaces it
+        for p in makings.iter_mut().filter(|p| p.error.is_none() && p.written.is_none() && !p.gone) {
+            if !p.made {
+                match p.making.outcome() {
+                    None => continue,
+                    Some(Err(why)) if why.is_empty() => {
+                        p.gone = true;
+                        continue;
+                    }
+                    Some(Err(why)) => {
+                        append_hook_log(&format!("could not make {}: {why}", p.making.plan.branch));
+                        p.error = Some(why);
+                        continue;
+                    }
+                    Some(Ok(brought)) => {
+                        p.made = true;
+                        let said = brought_note(&p.making.plan.branch, &brought);
+                        said_before_reload = Some((Instant::now(), said.clone()));
+                        flash = Some(said);
+                    }
+                }
+            }
+            match p.write_down() {
+                Ok(()) => {
+                    p.written = Some(Instant::now());
+                    remember_work_item(&p.desk, &p.making.plan.folder, &p.link, &mut pending_drafts);
+                }
+                Err(e) => p.error = Some(format!("{e:#}")),
+            }
+        }
+        makings.retain(|p| {
+            let listed = || {
+                desks.iter().filter(|d| d.name == p.desk).any(|d| {
+                    d.folders
+                        .iter()
+                        .any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &p.making.plan.folder)))
+                })
+            };
+            !p.gone && !p.written.is_some_and(|at| at.elapsed() > MAKING_CARD_WAIT || listed())
+        });
         // A project from a URL, or made new. Cloning takes as long as the
         // network does, so it runs on its own and is looked at every turn; a
         // new project is a folder and two quick git commands, done here
@@ -4916,31 +5048,33 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         view.line = plan.line();
                         view.base = plan.base.clone();
                         if ask.make {
-                            // Made first, written down second: settings naming a
-                            // folder that does not exist would launch tabs into
-                            // nowhere on the next reload
-                            let wrote = crate::worktree::create(&plan).and_then(|()| {
-                                config::append_folder_starting(
-                                    &desk,
-                                    Some(plan.like(&from)),
-                                    &plan.folder,
-                                    Some(&plan.branch),
-                                    &start,
-                                    plan.host.as_ref().map(|h| h.name.as_str()),
-                                )
-                            });
-                            match wrote {
-                                Ok(()) => {
-                                    view.done = true;
-                                    // What could not be brought along is said out
-                                    // loud: the folder is made either way, and the
-                                    // first build is what would otherwise fail
-                                    let brought = crate::worktree::carry_into(&plan, &carryable);
-                                    flash = Some(brought_note(&plan.branch, &brought));
-                                    remember_work_item(&desk, &plan.folder, &ask.link, &mut pending_drafts);
-                                }
-                                Err(e) => view.error = Some(format!("{e:#}")),
-                            }
+                            // Made on a thread, a row under the project saying how
+                            // far it has got; written down once it is there, since
+                            // settings naming a folder that does not exist would
+                            // launch tabs into nowhere on the next reload. What
+                            // could not be brought along is said when it is made
+                            // A second press on the same folder is the first one
+                            // still going, not another worktree. One that failed
+                            // there is what this press tries again
+                            let same = |p: &Pending| crate::uistate::same_folder(&p.making.plan.folder, &plan.folder);
+                            makings.retain(|p| !(same(p) && p.error.is_some() && !p.made));
+                            let already = makings.iter().any(|p| !p.gone && same(p));
+                            making_seq += 1;
+                            if !already { makings.push(Pending {
+                                id: making_seq,
+                                making: crate::worktree::Making::start(plan, carryable.clone()),
+                                desk: desk.clone(),
+                                from: from.clone(),
+                                family: crate::repo::family_of(&from).map(|f| f.display().to_string()).unwrap_or_default(),
+                                start: start.clone(),
+                                link: ask.link.clone(),
+                                carry: carryable.clone(),
+                                made: false,
+                                error: None,
+                                written: None,
+                                gone: false,
+                            }); }
+                            view.done = true;
                         }
                     }
                 }
@@ -4971,45 +5105,31 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if let Some((_, Err(e))) = fanned.iter().find(|(_, p)| p.is_err()) {
                     view.error = Some(format!("{e:#}"));
                 } else if ask.make {
-                    let mut made: Vec<String> = Vec::new();
-                    let mut failed: Vec<String> = Vec::new();
-                    for (ai, plan) in fanned.iter() {
+                    // One row each, made side by side: each says for itself how
+                    // far it has got, and one that fails says so on its own row
+                    // while the others become cards
+                    for (ai, plan) in fanned {
                         let Ok(plan) = plan else { continue };
-                        let one = start_of(ai, &ai_choices);
-                        let wrote = crate::worktree::create(plan).and_then(|()| {
-                            config::append_folder_starting(
-                                &desk,
-                                Some(plan.like(&from)),
-                                &plan.folder,
-                                Some(&plan.branch),
-                                &one,
-                                plan.host.as_ref().map(|h| h.name.as_str()),
-                            )
-                        });
-                        match wrote {
-                            Ok(()) => {
-                                crate::worktree::carry_into(plan, &carryable);
-                                remember_work_item(&desk, &plan.folder, &ask.link, &mut pending_drafts);
-                                made.push(plan.branch.clone());
-                            }
-                            Err(e) => {
-                                append_hook_log(&format!("could not make {}: {e:#}", plan.branch));
-                                failed.push(plan.branch.clone());
-                            }
+                        if makings.iter().any(|p| !p.gone && crate::uistate::same_folder(&p.making.plan.folder, &plan.folder)) {
+                            continue;
                         }
+                        making_seq += 1;
+                        makings.push(Pending {
+                            id: making_seq,
+                            making: crate::worktree::Making::start(plan, carryable.clone()),
+                            desk: desk.clone(),
+                            from: from.clone(),
+                            family: crate::repo::family_of(&from).map(|f| f.display().to_string()).unwrap_or_default(),
+                            start: start_of(&ai, &ai_choices),
+                            link: ask.link.clone(),
+                            carry: carryable.clone(),
+                            made: false,
+                            error: None,
+                            written: None,
+                            gone: false,
+                        });
                     }
-                    view.done = !made.is_empty();
-                    flash = Some(match (made.is_empty(), failed.is_empty()) {
-                        (true, _) => i18n::tp("msg.branch.fanned_none", &[("failed", &failed.join(", "))]),
-                        (false, true) => i18n::tp("msg.branch.fanned", &[("names", &made.join(", "))]),
-                        (false, false) => i18n::tp(
-                            "msg.branch.fanned_partly",
-                            &[("names", &made.join(", ")), ("failed", &failed.join(", "))],
-                        ),
-                    });
-                    if made.is_empty() {
-                        view.error = flash.clone();
-                    }
+                    view.done = true;
                 }
             }
             // Made: the next dialog on this folder is new work and gets a

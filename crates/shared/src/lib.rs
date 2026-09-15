@@ -375,6 +375,10 @@ pub enum Ev {
     /// `show` (put them on the desk), `keep` (keep them hidden, the row goes)
     /// or `offer` (take back a keep, the row returns)
     Found { family: String, act: String },
+    /// A worktree being made, answered from its row in the sidebar. `id` is
+    /// the making's own number; `act` is `stop` (take it back), `retry` (make
+    /// it again after it failed) or `dismiss` (put a failed one away)
+    Making { id: u64, act: String },
     /// A tool from the left bar's scissors: wait `delay` seconds, take the
     /// screen the pointer is on, and open `tool` over the picture.
     ///
@@ -962,6 +966,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("found") => Ev::Found {
             family: v.get("family").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
+        Some("making") => Ev::Making {
+            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0),
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("setuprefresh") => Ev::SetupRefresh {

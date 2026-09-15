@@ -710,6 +710,26 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .found .fbtns button { font:inherit; font-size:11px; min-height:24px; padding:0 var(--s2); border-radius:var(--r-ctl);
     border:1px solid var(--edge); background:var(--panel2); color:var(--text); cursor:pointer; }
   .found .fbtns button:hover { border-color:var(--edge-hi); }
+  /* A worktree being made: a framed line under its project's heading with the
+     dot that says work is under way, its name, and below it how far it has
+     got. The ✕ takes it back. Failed, the dot is a mark, the line says why, and
+     the two answers follow */
+  .making { margin:2px var(--s2) 2px 14px; padding:6px 4px 6px 10px; border:1px solid var(--line);
+    border-radius:var(--r-ctl); display:flex; flex-wrap:wrap; align-items:center; column-gap:var(--s2); row-gap:2px; }
+  .making > .dot { flex:none; }
+  .making .mk { flex:none; width:10px; font-size:11px; line-height:1; text-align:center; color:var(--stop); }
+  .making .nm { flex:1 1 0; min-width:0; font-size:13px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .making .ms { flex-basis:100%; padding-left:18px; font-size:11px; color:var(--dim); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  .making .fx { flex:none; min-width:22px; min-height:22px; display:flex; align-items:center; justify-content:center;
+    border-radius:var(--r-chip); color:var(--dim); cursor:pointer; }
+  .making .fx:hover { background:var(--raise); color:var(--text); }
+  .making.failed { border-color:color-mix(in srgb, var(--stop) 35%, transparent); }
+  .making.failed .ms { color:var(--stop); white-space:normal; overflow-wrap:anywhere; max-height:4.5em; overflow:auto; }
+  .making .mbtns { flex-basis:100%; display:flex; flex-wrap:wrap; gap:var(--s2); padding:var(--s1) 0 2px 18px; }
+  .making .mbtns button { font:inherit; font-size:11px; min-height:24px; padding:0 var(--s2); border-radius:var(--r-ctl);
+    border:1px solid var(--edge); background:var(--panel2); color:var(--text); cursor:pointer; }
+  .making .mbtns button:hover { border-color:var(--edge-hi); }
   /* An AI's row: what it is doing, then which tab, then how long ago. The
      state reads first and plain; the tab's name and the time are the quiet
      part (65% and 10px), so the eye runs down the states */
@@ -3081,6 +3101,12 @@ function drawTabs() {
   // a project's own folder in one group and its branches in another and still
   // try to draw one heading over all of them
   const axis = groupBy !== "none" && folders.length > 1 ? groupBy : "none";
+  // Worktrees being made go under their project's heading. One whose project
+  // has no heading here -- or with the list drawn another way -- goes first,
+  // where it is seen
+  const making = S.making || [];
+  const headed = m => axis === "none" && folders.some(g => g.family && sameFolder(g.family, m.family));
+  for (const m of making) if (!headed(m)) nav.append(makingRow(m));
   const keyed = folders.map((g, gi) => ({ gi, g, ...groupOf(g, inside[gi], axis) }));
   // Drawn by project, every folder of one repository under its heading: the
   // folders of a project brought together where the first of them stands,
@@ -3120,6 +3146,9 @@ function drawTabs() {
         // under the heading until somebody shows them or keeps them hidden
         const found = foundFor(g);
         if (found && !found.kept && !folded.has("proj:" + pk)) nav.append(foundRow(found));
+        // Said even with the project put away: it is on its way, and its ✕
+        // is the only way to stop it
+        if (g.family) for (const m of making) if (sameFolder(m.family, g.family)) nav.append(makingRow(m));
       }
       if (folded.has("proj:" + pk)) continue;
       if (g.empty) { nav.append(emptyRow(g, true)); continue; }
@@ -4357,7 +4386,7 @@ function foundRow(d) {
   const panel = el("div", {class:"fpanel"});
   const places = [...byParent.entries()];
   for (const [parent, list] of places.slice(0, 5)) {
-    const key = d.family + " " + parent;
+    const key = d.family + "|" + parent;
     const all = foundAll.has(key);
     const group = el("div", {class:"fgroup"},
       el("div", {class:"fparent", title:parent}, el("span", {class:"fpath"}, homeShort(parent)), el("span", {class:"fcount"}, String(list.length))));
@@ -4377,6 +4406,25 @@ function foundRow(d) {
       el("button", {type:"button", onclick:() => send({kind:"found", family:d.family, act:"show"})}, T["tui.found.show"] || "")));
   box.append(panel);
   return box;
+}
+
+// A worktree being made: what it is called and how far it has got, with a ✕
+// that takes it back. Failed: why, and "Try again" or "Dismiss"
+function makingRow(m) {
+  const failed = m.stage === "failed";
+  const stopping = m.stage === "stopping";
+  const row = el("div", {class:"making" + (failed ? " failed" : ""), title:m.folder || ""},
+    failed ? el("span", {class:"mk"}, "⚠") : el("span", {class:"dot BUSY"}),
+    el("span", {class:"nm"}, m.name || ""),
+    failed || stopping ? null : el("span", {class:"fx", title:T["tui.making.stop"] || "",
+      onclick:e => { e.stopPropagation(); send({kind:"making", id:m.id, act:"stop"}); }}, "✕"),
+    el("span", {class:"ms"}, failed ? (m.error || T["tui.making.failed"] || "") : (T["tui.making.stage." + m.stage] || "")));
+  if (failed) {
+    row.append(el("div", {class:"mbtns"},
+      el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"retry"})}, T["tui.making.retry"] || ""),
+      el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"dismiss"})}, T["tui.making.dismiss"] || "")));
+  }
+  return row;
 }
 
 function folderRow(g, mine, card) {
@@ -14432,6 +14480,20 @@ mod tests {
             "an AI's row does not lead with its state");
         assert!(PAGE.contains("t.ai && t.since ? agoMark(t.since) : spark(t.activity));"), "an AI's row does not say how long ago");
         assert!(PAGE.contains(r##"for (const a of document.querySelectorAll("#tabs .ago[data-since]")) {"##), "the time goes stale on a quiet board");
+    }
+
+    #[test]
+    fn a_worktree_being_made_is_a_row_under_its_project_until_it_is_a_card() {
+        assert!(PAGE.contains("if (g.family) for (const m of making) if (sameFolder(m.family, g.family)) nav.append(makingRow(m));"),
+            "a worktree being made is not said under its project");
+        assert!(PAGE.contains("for (const m of making) if (!headed(m)) nav.append(makingRow(m));"),
+            "one whose project has no heading is not said at all");
+        assert!(PAGE.contains(r#"send({kind:"making", id:m.id, act:"stop"})"#), "it cannot be stopped");
+        assert!(PAGE.contains(r#"send({kind:"making", id:m.id, act:"retry"})"#) && PAGE.contains(r#"send({kind:"making", id:m.id, act:"dismiss"})"#),
+            "a failed one has no answers");
+        // Moving only as the style guide lets things move
+        let css = PAGE.split(".making {").nth(1).and_then(|s| s.split("/* An AI's row").next()).unwrap_or_default();
+        assert!(!css.contains("animation") && !css.contains("rotate"), "the row spins");
     }
 
     #[test]

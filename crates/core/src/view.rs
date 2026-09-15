@@ -292,7 +292,14 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     // The worktrees each project has that this desk does not list, as the same
     // background look found them
     let cuts = folders::watch().cuts(&groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>());
-    let discovered = discovered_of(&cuts, &groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(), &ui.worktrees_kept);
+    // A worktree being made is git's before it is the desk's; its own row says
+    // it, and it is not a stranger found for that moment in between
+    let listed: Vec<std::path::PathBuf> = groups
+        .iter()
+        .map(|(k, _)| k.clone())
+        .chain(ui.making.iter().map(|m| std::path::PathBuf::from(&m.folder)))
+        .collect();
+    let discovered = discovered_of(&cuts, &listed, &ui.worktrees_kept);
     for (at, g) in groups.iter_mut() {
         if g.empty
             && g.color.is_none()
@@ -356,6 +363,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         setup: ui.setup.clone(),
         add_project: ui.add_project.clone(),
         discovered,
+        making: ui.making.clone(),
         project_home: ui.project_home.clone(),
         assistant: ui.assistant.clone(),
         thanks: ui.thanks.clone(),
@@ -1026,6 +1034,8 @@ pub struct Ui {
     /// The projects whose found worktrees somebody chose to keep hidden, by
     /// shared git folder
     pub worktrees_kept: std::collections::BTreeSet<String>,
+    /// Worktrees being made, as their rows say
+    pub making: Vec<crate::uistate::MakingState>,
     /// Where a cloned or new project goes by default
     pub project_home: String,
     /// The Assistant AI setting, as its command
