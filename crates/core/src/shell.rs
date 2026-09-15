@@ -295,6 +295,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     font-size:14px; color:var(--text); }
   #setup .syolo input { width:15px; height:15px; margin:0; }
   #setup .syolo .risk { font-size:12px; color:var(--stop); }
+  /* Back, beside the page's own button: quiet, like every cancel (5.3) */
+  #setup button.quiet { border-color:transparent; background:transparent; color:var(--dim); }
+  #setup button.quiet:hover { color:var(--text); }
+  /* Something that is already in place, said as a fact. The mark wears the
+     colour that means "answered" -- the same as a finished tab's dot */
+  #setup .sready { display:flex; align-items:center; gap:var(--s2); min-height:32px; font-size:13px;
+    color:var(--text); }
+  #setup .sready .ico { display:flex; color:var(--brand); }
   /* Once: a star, if you like it. Sits above the gear, and goes for good */
   .thanks { margin:auto var(--s2) var(--s2); padding:10px 12px; border:1px solid var(--line); border-radius:var(--r-card);
     background:var(--raise); font-size:12px; }
@@ -3422,11 +3430,13 @@ function drawFailed(t) {
 }
 
 // ── The first-start setup ──────────────────
-// Which AI to prefer, asked before anything else on a first start. What is
-// picked and ticked lives here until Continue: the app only hears the answer.
-// A phone never draws it -- remote access cannot be on before it is answered
+// Asked before anything else on a first start, one page at a time: which AI to
+// prefer, then GitHub CLI. What is picked and ticked, and which page is up,
+// live here until Done: the app only hears the answer. A phone never draws it
+// -- remote access cannot be on before it is answered
 let setupPick = "";
 let setupYolo = true;
+let setupStep = 1;
 const setupUp = () => !REMOTE && !!(S && S.setup);
 function drawWelcome() {
   const box = document.getElementById("setup");
@@ -3439,24 +3449,50 @@ function drawWelcome() {
   // finds it gone, or a first draw, lands on the first one
   if (!installed.some(a => a.id === setupPick)) setupPick = installed.length ? installed[0].id : "";
   // Built again only when what the app says has changed -- a refresh that
-  // found another AI. Picking a card or ticking the box changes the page in
-  // place, so the button being pressed is never taken out from under a finger
-  const sig = JSON.stringify(st);
+  // found something new -- or the page turned. Picking a card or ticking the
+  // box changes the page in place, so the button being pressed is never taken
+  // out from under a finger
+  const sig = JSON.stringify([st, setupStep]);
   if (box.dataset.sig === sig) return;
   const first = !box.dataset.sig;
   // The control that had the keyboard, by what it is, to hand it back after
-  // the rebuild: the refresh button, most of the time
+  // the rebuild: the refresh button, or the button that turned the page
   const had = document.activeElement && box.contains(document.activeElement)
     ? document.activeElement.dataset.f : "";
   box.dataset.sig = sig;
   box.textContent = "";
 
   const refresh = el("button", {class:"srefresh", "data-f":"refresh", title:T["tui.setup.refresh.title"] || "",
-      onclick:() => send({kind:"setuprefresh"})},
+      onclick:() => send({kind:"setuprefresh", step:setupStep})},
     pickIcon("refresh"), T["tui.setup.refresh"] || "");
   const head = el("div", {class:"shead"},
     el("span", {class:"stitle"}, T["tui.setup.title"] || ""), refresh);
+  const turn = n => { setupStep = n; drawWelcome(); };
+  const foot = el("div", {class:"sfoot"});
+  let go;
+  let body;
+  if (setupStep === 1) {
+    body = welcomeAiPage(st);
+    go = el("button", {class:"go", "data-f":"go", onclick:() => turn(2)}, T["tui.setup.go"] || "");
+    foot.append(go);
+  } else {
+    body = welcomeGhPage(st);
+    go = el("button", {class:"go", "data-f":"go",
+        onclick:() => send({kind:"setup", ai:setupPick || null, yolo:setupYolo})},
+      T["tui.setup.done"] || "");
+    foot.append(el("button", {class:"quiet", "data-f":"back", onclick:() => turn(1)}, T["tui.setup.back"] || ""), go);
+  }
+  box.append(el("div", {class:"sbox", role:"dialog", "aria-modal":"true"}, head, body, foot));
+  // Enter presses the page's own button from the moment it opens; after a
+  // refresh or a turned page the keyboard stays on what it was on
+  const back = had && [...box.querySelectorAll("[data-f]")].find(n => n.dataset.f === had);
+  if (back) back.focus();
+  else if (first || had) go.focus();
+}
 
+// The setup's first page: which AI to prefer, the ones to install, Yolo mode
+function welcomeAiPage(st) {
+  const installed = st.installed || [];
   const pick = el("div", {class:"sfield"}, el("div", {class:"slabel"}, T["tui.setup.pick"] || ""));
   if (installed.length) {
     const cards = el("div", {class:"scards", role:"radiogroup"});
@@ -3482,7 +3518,7 @@ function drawWelcome() {
       // and nothing more, rather than a button that goes nowhere
       links.append(a.install
         ? el("button", {class:"slink", "data-f":"open:" + a.id, title:T["tui.setup.open"] || "",
-              onclick:() => send({kind:"installhelp", ai:a.id})},
+              onclick:() => send({kind:"installhelp", prog:a.id})},
             aiMark(a.id), el("span", {}, a.name), pickIcon("open"))
         : el("span", {class:"shint"}, a.name));
     }
@@ -3498,17 +3534,24 @@ function drawWelcome() {
   body.append(el("label", {class:"syolo"}, yolo,
     el("span", {}, T["tui.setup.yolo"] || ""),
     el("span", {class:"risk"}, T["tui.setup.yolo.risk"] || "")));
+  return body;
+}
 
-  const go = el("button", {class:"go", "data-f":"go",
-      onclick:() => send({kind:"setup", ai:setupPick || null, yolo:setupYolo})},
-    T["tui.setup.go"] || "");
-  box.append(el("div", {class:"sbox", role:"dialog", "aria-modal":"true"},
-    head, body, el("div", {class:"sfoot"}, go)));
-  // Enter presses Continue from the moment it opens; after a refresh the
-  // keyboard stays on what it was on
-  const back = had && [...box.querySelectorAll("[data-f]")].find(n => n.dataset.f === had);
-  if (back) back.focus();
-  else if (first || had) go.focus();
+// The setup's second page: GitHub CLI. Said as a fact when it is here; when it
+// is not, the way to its install page. Done is pressable either way
+function welcomeGhPage(st) {
+  const field = el("div", {class:"sfield"}, el("div", {class:"slabel"}, T["tui.setup.gh"] || ""));
+  if (st.gh) {
+    field.append(el("div", {class:"sready"}, pickIcon("sparkles"), el("span", {}, T["tui.setup.gh.ready"] || "")));
+  } else {
+    field.append(
+      el("div", {class:"slinks"},
+        el("button", {class:"slink", "data-f":"open:gh", title:T["tui.setup.open"] || "",
+            onclick:() => send({kind:"installhelp", prog:"gh"})},
+          el("span", {}, T["tui.setup.gh.name"] || ""), pickIcon("open"))),
+      el("div", {class:"shint"}, T["tui.setup.supported.hint"] || ""));
+  }
+  return el("div", {class:"sbody"}, field);
 }
 
 // ── The tools that start from a picture ──────────────────
@@ -4006,6 +4049,7 @@ const PICK_ICON = {
   project: '<rect x="2.5" y="2.5" width="9" height="9" rx="1.5"/>',
   drive: '<rect x="1.5" y="4" width="11" height="6" rx="1"/><path d="M10 7h.01"/>',
   open: '<path d="M8.5 2h3.5v3.5"/><path d="M6.5 7.5 12 2"/><path d="M10.5 8v3.5a.5.5 0 0 1-.5.5H2.5a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5H6"/>',
+  sparkles: '<path d="M6 2.5 7 5.5 10 6.5 7 7.5 6 10.5 5 7.5 2 6.5 5 5.5z"/><path d="M11 1.5v3M9.5 3h3"/><path d="M11 9.5v2M10 10.5h2"/>',
   refresh: '<path d="M12 7a5 5 0 0 1-8.7 3.4"/><path d="M2 7a5 5 0 0 1 8.7-3.4"/><path d="M11 1.5v2.5H8.5"/><path d="M3 12.5V10h2.5"/>',
 };
 function pickIcon(name) {
@@ -13031,9 +13075,15 @@ mod tests {
         assert!(PAGE.contains(r#"<div id="setup" hidden></div>"#), "there is nowhere to draw it");
         assert!(PAGE.contains("drawWelcome();"), "it is never drawn");
         assert!(PAGE.contains("const setupUp = () => !REMOTE && !!(S && S.setup);"), "a phone draws it");
-        assert!(PAGE.contains(r#"send({kind:"setup", ai:setupPick || null, yolo:setupYolo})"#), "Continue sends nothing");
-        assert!(PAGE.contains(r#"send({kind:"setuprefresh"})"#), "Refresh asks for nothing");
-        assert!(PAGE.contains(r#"send({kind:"installhelp", ai:a.id})"#), "a supported AI does not open its page");
+        // Two pages: Continue turns to GitHub, Done there is the one answer
+        assert!(PAGE.contains(r#"onclick:() => turn(2)}, T["tui.setup.go"]"#), "Continue does not turn the page");
+        assert!(PAGE.contains(r#"send({kind:"setup", ai:setupPick || null, yolo:setupYolo})"#), "Done sends nothing");
+        assert!(PAGE.contains(r#"onclick:() => turn(1)}, T["tui.setup.back"]"#), "the second page has no way back");
+        assert!(PAGE.contains(r#"send({kind:"setuprefresh", step:setupStep})"#), "Refresh asks for nothing");
+        assert!(PAGE.contains(r#"send({kind:"installhelp", prog:a.id})"#), "a supported AI does not open its page");
+        // GitHub: a fact when it is here, the way to its page when it is not
+        assert!(PAGE.contains(r#"if (st.gh) {"#) && PAGE.contains(r#"T["tui.setup.gh.ready"]"#), "gh being here is never said");
+        assert!(PAGE.contains(r#"send({kind:"installhelp", prog:"gh"})"#), "GitHub CLI does not open its page");
         assert!(PAGE.contains("let setupYolo = true;"), "Yolo mode does not start ticked");
         // Each AI with the mark its tab wears, on the cards and on the links alike
         assert!(PAGE.contains(r#"el("span", {class:"nm"}, aiMark(a.id), a.name)"#)

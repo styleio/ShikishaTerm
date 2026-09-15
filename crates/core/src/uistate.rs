@@ -698,7 +698,8 @@ pub struct AiChoice {
     pub command: String,
 }
 
-/// The setup a first start asks before anything else: which AI to prefer.
+/// The setup a first start asks before anything else: which AI to prefer, then
+/// whether GitHub CLI is here.
 ///
 /// Asked because a PC with none of the AIs installed meets nothing but tabs
 /// that cannot start, and nobody can tell from those what is missing. The
@@ -711,6 +712,8 @@ pub struct SetupState {
     pub installed: Vec<SetupAi>,
     /// The ones this PC does not have, each with the way to its install page
     pub missing: Vec<SetupAi>,
+    /// Whether GitHub CLI (`gh`) is installed here, for the setup's second page
+    pub gh: bool,
 }
 
 /// One AI in the first-start setup.
