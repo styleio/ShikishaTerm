@@ -1125,6 +1125,11 @@ impl BrowseState {
         if at.is_empty() {
             return Self { at, dirs: Self::top(), ..Default::default() };
         }
+        // A file, named or pasted, is looked at from the folder it is in
+        let at = match std::path::Path::new(&at).is_file() {
+            true => std::path::Path::new(&at).parent().map(|p| p.display().to_string()).unwrap_or(at),
+            false => at,
+        };
         let here = std::path::Path::new(&at);
         // A drive has no folder above it, but there is still somewhere to go
         // back to -- the list of drives itself. Without this, stepping into
