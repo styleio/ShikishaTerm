@@ -881,6 +881,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // asked once, here, like the list above
     let mut setup_view = setup_wanted(first_run, config::state_path(SETUP_ANSWERED).exists())
         .then(crate::webui::setup_state);
+    // When the setup last wrote the settings itself, so the reload that follows
+    // does not announce it
+    let mut setup_reload: Option<std::time::Instant> = None;
     let mut thanks_show = false;
     // Where thanks would go: the Store's review page for the Store's copy, the
     // repository for the zip's
@@ -1502,7 +1505,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if lang_restart {
                     note.push_str(&i18n::t("msg.lang_restart"));
                 }
-                flash = Some(format!(">> {note}"));
+                // The setup wrote the desk itself. What the reload would say
+                // about that -- settings read, the first shell closed -- is
+                // about something nobody did, on the first screen anybody sees
+                let from_setup = setup_reload
+                    .take()
+                    .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(10));
+                if !from_setup {
+                    flash = Some(format!(">> {note}"));
+                }
                 // A settings save may have changed the quick actions — push them
                 // into the shell so the composer updates without a reload.
                 shell.push_actions(&crate::shell::actions_json());
@@ -5229,7 +5240,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }],
                 false => Vec::new(),
             };
-            config::make_first_desk(FIRST_DESK, &accounts);
+            if config::make_first_desk(FIRST_DESK, &accounts) {
+                setup_reload = Some(std::time::Instant::now());
+            }
             let _ = crate::crypto::write_atomic(&config::state_path(SETUP_ANSWERED), "1");
         }
         // The update card was answered. Either answer puts it away for this
