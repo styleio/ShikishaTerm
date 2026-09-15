@@ -38,4 +38,11 @@ fn main() {
         .unwrap_or(false);
     println!("cargo:rustc-env=BUILD_REV={rev}{}", if dirty { "+" } else { "" });
     println!("cargo:rerun-if-changed=src");
+    // And again after every commit. Without it the stamp kept the commit the
+    // sources were last edited at: fix, build, then commit, and the app went on
+    // calling itself the commit before -- which the deploy rightly refused
+    watch_git_head();
+    println!("cargo:rerun-if-changed=../../tools/build_git_head.rs");
 }
+
+include!("../../tools/build_git_head.rs");
