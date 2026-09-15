@@ -5199,6 +5199,9 @@ function pickIcon(name) {
 // (empty means the one being looked at), the filter, and a folder being named
 let pickSel = "";
 let pickQ = "";
+// A place typed or pasted into the same box, when what is there is a path
+// rather than words: the list goes there, instead of being narrowed by it
+let pickTyped = "";
 let pickMaking = false;
 let pickMadeSeen = "";
 let pickDrawn = "";
@@ -5226,12 +5229,22 @@ function openBrowse(at, handBack) {
   // The first thing a person does in a list this long is narrow it
   if (first) setTimeout(() => b.querySelector(".pq").focus(), 0);
 }
+// Whether what is in the box is a place rather than words to look for. A drive
+// letter says so (C:\ or C:/, and a bare C:), and so does a network share
+// (\\server\share) -- no folder's name starts either way. The quotes Explorer's
+// "Copy as path" puts around a path are taken off
+function typedPath(text) {
+  let t = (text || "").trim().replace(/^"(.*)"$/, "$1").trim();
+  if (/^[A-Za-z]:$/.test(t)) t += "\\";
+  return /^[A-Za-z]:[\\/]/.test(t) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(t) ? t : "";
+}
 // Somewhere else in the tree. What was picked and typed belongs to the folder
 // it was picked in, so it goes
 function pickGo(path) {
   const b = document.getElementById("browse");
   pickSel = "";
   pickQ = "";
+  pickTyped = "";
   pickMaking = false;
   if (b) {
     b.querySelector(".pq").value = "";
@@ -5278,7 +5291,7 @@ function drawBrowse() {
   // board. Rebuilding the list on each one threw the scroll back to the top and
   // replaced a row between the two clicks of a double-click, so the second
   // click landed on nothing. Only a change to what this dialog shows redraws it
-  const sig = JSON.stringify([st, pickSel, pickQ, pickMaking, T["tui.browse.title"]]);
+  const sig = JSON.stringify([st, pickSel, pickQ, pickTyped, pickMaking, T["tui.browse.title"]]);
   if (sig === pickDrawn) return;
   pickDrawn = sig;
   const keepRows = b.querySelector(".prows").scrollTop;
@@ -5342,7 +5355,8 @@ function drawBrowse() {
   const note = b.querySelector(".pnote");
   note.className = "pnote";
   note.textContent = "";
-  if (st.error) { note.className = "pnote bad"; note.textContent = st.error; }
+  if (pickTyped) note.textContent = (T["tui.browse.jump"] || "{path}").replace("{path}", pickTyped);
+  else if (st.error) { note.className = "pnote bad"; note.textContent = st.error; }
   else if (words.length && !shown.length) note.textContent = (T["tui.browse.nomatch"] || "{q}").replace("{q}", pickQ.trim());
 
   const rows = b.querySelector(".prows");
@@ -5432,7 +5446,19 @@ function pickChoose() {
     drawBrowse();
   };
   const q = b.querySelector(".pq");
-  q.addEventListener("input", () => { pickQ = q.value; drawBrowse(); });
+  // A path is where to go, not what to look for: said under the box, and gone
+  // to on Enter -- or at once when it was pasted, which is the whole of the ask
+  q.addEventListener("input", () => {
+    pickTyped = typedPath(q.value);
+    pickQ = pickTyped ? "" : q.value;
+    drawBrowse();
+  });
+  q.addEventListener("paste", e => {
+    const to = typedPath(e.clipboardData && e.clipboardData.getData("text"));
+    if (!to) return;
+    e.preventDefault();
+    pickGo(to);
+  });
   // Pressing down on the backdrop closes; pressing down inside and letting go
   // outside -- selecting text past the edge -- does not (5.2)
   let downIn = false;
@@ -5441,7 +5467,10 @@ function pickChoose() {
   b.addEventListener("keydown", e => {
     if (typingIME(e)) return;
     if (e.key === "Escape") { e.preventDefault(); closeBrowse(); }
-    else if (e.key === "Enter" && e.target === q) { e.preventDefault(); pickChoose(); }
+    else if (e.key === "Enter" && e.target === q) {
+      e.preventDefault();
+      if (typedPath(q.value)) pickGo(typedPath(q.value)); else pickChoose();
+    }
   });
 })();
 
@@ -14834,6 +14863,13 @@ mod tests {
             "an AI's row does not lead with its state");
         assert!(PAGE.contains("t.ai && t.since ? agoMark(t.since) : spark(t.activity));"), "an AI's row does not say how long ago");
         assert!(PAGE.contains(r##"for (const a of document.querySelectorAll("#tabs .ago[data-since]")) {"##), "the time goes stale on a quiet board");
+    }
+
+    #[test]
+    fn a_path_in_the_pickers_box_goes_there_instead_of_filtering() {
+        assert!(PAGE.contains(r#"if (typedPath(q.value)) pickGo(typedPath(q.value)); else pickChoose();"#), "Enter on a path does not go there");
+        assert!(PAGE.contains("const to = typedPath(e.clipboardData && e.clipboardData.getData(\"text\"));"), "a pasted path does not go there at once");
+        assert!(PAGE.contains(r#"return /^[A-Za-z]:[\\/]/.test(t) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(t) ? t : "";"#), "a drive letter or a share is not read as a path");
     }
 
     #[test]
