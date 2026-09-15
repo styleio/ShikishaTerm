@@ -325,6 +325,8 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         ais: ui.ais.clone(),
         coach: ui.coach,
         setup: ui.setup.clone(),
+        add_project: ui.add_project.clone(),
+        project_home: ui.project_home.clone(),
         thanks: ui.thanks.clone(),
         update: ui.update.clone(),
         usage: ui.usage.clone(),
@@ -958,6 +960,10 @@ pub struct Ui {
     pub coach: Option<u8>,
     /// The first-start setup, while it has not been answered
     pub setup: Option<crate::uistate::SetupState>,
+    /// A project being cloned or made new
+    pub add_project: Option<crate::uistate::AddProjectState>,
+    /// Where a cloned or new project goes by default
+    pub project_home: String,
     /// What Claude's subscription has left, when known
     pub usage: Option<crate::uistate::UsageState>,
     /// The thanks card, when it is up: which page it would open

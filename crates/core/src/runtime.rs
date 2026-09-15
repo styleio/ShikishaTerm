@@ -87,6 +87,34 @@ pub fn coach_step(folders: usize, seen: u8, past_the_plus: bool) -> (Option<u8>,
         _ => (None, seen),
     }
 }
+/// What adding a folder to the desk came to
+enum Added {
+    /// It is on the desk now; the words to say so
+    New(String),
+    /// It was already there; the words to say so
+    Already(String),
+}
+
+/// Put a folder on the desk as a project -- the one way every door (the
+/// picker, a clone, a new project) ends. Once only: a second press on the same
+/// folder would put two headings over one place, each with its own tabs. The
+/// words say which it is, a git repository or a plain folder
+fn add_to_desk(desk: Option<&config::Desk>, at: &std::path::Path) -> Result<Added, String> {
+    let name = at.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| at.display().to_string());
+    let here = desk.is_some_and(|w| {
+        w.folders.iter().filter_map(|f| f.cwd.as_ref()).any(|c| crate::uistate::same_folder(c, at))
+    });
+    if here {
+        return Ok(Added::Already(i18n::tp("msg.project.already", &[("name", &name)])));
+    }
+    let desk_name = desk.map(|w| w.name.clone()).unwrap_or_default();
+    config::append_folder(&desk_name, None, at, None).map_err(|e| format!("{e:#}"))?;
+    Ok(Added::New(match crate::repo::family_of(at).is_some() {
+        true => i18n::tp("msg.project.added", &[("name", &name)]),
+        false => i18n::tp("msg.folder.added", &[("name", &name)]),
+    }))
+}
+
 /// The state file that says the first-start setup has been answered
 const SETUP_ANSWERED: &str = "setup";
 
@@ -884,6 +912,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // When the setup last wrote the settings itself, so the reload that follows
     // does not announce it
     let mut setup_reload: Option<std::time::Instant> = None;
+    // A project being cloned, with the dialog's number for the attempt, and
+    // what the dialog is told about it. Where such a project goes by default
+    // is asked once
+    let mut add_job: Option<(u64, crate::addproject::Job)> = None;
+    let mut add_view: Option<crate::uistate::AddProjectState> = None;
+    let project_home = crate::addproject::projects_root().display().to_string();
     let mut thanks_show = false;
     // Where thanks would go: the Store's review page for the Store's copy, the
     // repository for the zip's
@@ -2867,6 +2901,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // the setup is in front of the list
             coach: coach.filter(|_| setup_view.is_none()),
             setup: setup_view.clone(),
+            add_project: add_view.clone(),
+            project_home: project_home.clone(),
             usage,
             thanks: thanks_show.then(|| thanks_kind.to_string()),
             update: update::ask(),
@@ -4394,31 +4430,76 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 browse_view = Some(view);
                 continue;
             }
-            let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
-            let at = std::path::PathBuf::from(&path);
-            let name = at.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
             browse_view = None;
-            // Once is enough: a second press on the same folder would put two
-            // headings over one place, each with its own tabs
-            let here = desks.get(desk_index).is_some_and(|w| {
-                w.folders.iter().filter_map(|f| f.cwd.as_ref()).any(|c| crate::uistate::same_folder(c, &at))
-            });
-            if here {
-                flash = Some(i18n::tp("msg.project.already", &[("name", &name)]));
-                continue;
-            }
-            match config::append_folder(&desk, None, &at, None) {
+            match add_to_desk(desks.get(desk_index), std::path::Path::new(&path)) {
                 // Said by the reload that brings it onto the list, instead of
                 // "settings reloaded": what happened is that a project arrived
-                Ok(()) => {
-                    let said = match crate::repo::family_of(&at).is_some() {
-                        true => i18n::tp("msg.project.added", &[("name", &name)]),
-                        false => i18n::tp("msg.folder.added", &[("name", &name)]),
-                    };
+                Ok(Added::New(said)) => {
                     said_before_reload = Some((Instant::now(), said.clone()));
                     flash = Some(said);
                 }
-                Err(e) => flash = Some(format!("{e:#}")),
+                Ok(Added::Already(said)) | Err(said) => flash = Some(said),
+            }
+        }
+        // A project from a URL, or made new. Cloning takes as long as the
+        // network does, so it runs on its own and is looked at every turn; a
+        // new project is a folder and two quick git commands, done here
+        for (how, text, parent, ask) in shell.mail().take_add_projects() {
+            match how.as_str() {
+                "stop" => {
+                    if let Some((_, job)) = &add_job {
+                        job.stop();
+                    }
+                }
+                "clone" if add_job.is_none() => match crate::addproject::start_clone(&text, &parent) {
+                    Ok(job) => {
+                        add_view = Some(crate::uistate::AddProjectState { ask, running: true, ..Default::default() });
+                        add_job = Some((ask, job));
+                    }
+                    Err(e) => add_view = Some(crate::uistate::AddProjectState { ask, error: Some(e), ..Default::default() }),
+                },
+                "create" => {
+                    add_view = Some(match crate::addproject::create(&text, &parent) {
+                        Ok(at) => match add_to_desk(desks.get(desk_index), &at) {
+                            Ok(Added::New(said)) | Ok(Added::Already(said)) => {
+                                said_before_reload = Some((Instant::now(), said.clone()));
+                                flash = Some(said);
+                                crate::uistate::AddProjectState { ask, done: Some(at.display().to_string()), ..Default::default() }
+                            }
+                            Err(e) => crate::uistate::AddProjectState { ask, error: Some(e), ..Default::default() },
+                        },
+                        Err(e) => crate::uistate::AddProjectState { ask, error: Some(e), ..Default::default() },
+                    });
+                }
+                _ => {}
+            }
+        }
+        if let Some((ask, job)) = add_job.clone() {
+            match job.outcome() {
+                crate::addproject::Outcome::Running(p) => {
+                    add_view = Some(crate::uistate::AddProjectState {
+                        ask,
+                        running: true,
+                        phase: p.phase,
+                        percent: p.percent,
+                        ..Default::default()
+                    });
+                }
+                crate::addproject::Outcome::Done(at) => {
+                    add_job = None;
+                    add_view = Some(match add_to_desk(desks.get(desk_index), &at) {
+                        Ok(Added::New(said)) | Ok(Added::Already(said)) => {
+                            said_before_reload = Some((Instant::now(), said.clone()));
+                            flash = Some(said);
+                            crate::uistate::AddProjectState { ask, done: Some(at.display().to_string()), ..Default::default() }
+                        }
+                        Err(e) => crate::uistate::AddProjectState { ask, error: Some(e), ..Default::default() },
+                    });
+                }
+                crate::addproject::Outcome::Failed(e) => {
+                    add_job = None;
+                    add_view = Some(crate::uistate::AddProjectState { ask, error: Some(e), ..Default::default() });
+                }
             }
         }
         // A colour chosen for a project. Written against the folder git shares

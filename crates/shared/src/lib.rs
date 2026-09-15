@@ -363,6 +363,13 @@ pub enum Ev {
     /// said about the result is about what that page asks. Window-only, for
     /// the reason `Setup` is
     SetupRefresh { step: u8 },
+    /// A project that is not on this PC yet. `how` is `clone` (`text` is the
+    /// URL), `create` (`text` is the name) or `stop` (the clone under way).
+    /// `parent` is the folder it goes in, and `ask` the dialog's own number
+    /// for this attempt, so what it is told is about the attempt it is showing.
+    /// Window-only: what it makes is a
+    /// folder on this PC, chosen with this PC's folder picker
+    AddProject { how: String, text: String, parent: String, ask: u64 },
     /// A tool from the left bar's scissors: wait `delay` seconds, take the
     /// screen the pointer is on, and open `tool` over the picture.
     ///
@@ -941,6 +948,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("setup") => Ev::Setup {
             ai: v.get("ai").and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
             yolo: v.get("yolo").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        Some("addproject") => Ev::AddProject {
+            how: v.get("how").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            text: v.get("text").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            parent: v.get("parent").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            ask: v.get("ask").and_then(|x| x.as_u64()).unwrap_or(0),
         },
         Some("setuprefresh") => Ev::SetupRefresh {
             step: v.get("step").and_then(|x| x.as_u64()).unwrap_or(1).min(255) as u8,

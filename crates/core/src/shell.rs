@@ -329,6 +329,60 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #addproj .apway .enter { flex:none; visibility:hidden; font-size:11px; color:var(--dim); padding:1px 6px;
     border:1px solid var(--edge); border-radius:var(--r-chip); }
   #addproj .apway.on .enter, #addproj .apway:focus-visible .enter { visibility:visible; }
+  /* The other ways, one enclosed list (5.5): a line between, no box of their own */
+  #addproj .apgroup { font-size:11.5px; color:var(--dim); letter-spacing:.02em; text-transform:uppercase; }
+  #addproj .aplist { border:1px solid var(--line); border-radius:var(--r-card); overflow:hidden; }
+  #addproj .aplist button.apway { border:0; border-radius:0; }
+  #addproj .aplist button.apway + button.apway { border-top:1px solid var(--line); }
+  #addproj .aplist button.apway.on, #addproj .aplist button.apway:focus-visible {
+    box-shadow:inset 0 0 0 1px var(--brand); }
+  #addproj .apback { align-self:flex-start; border:0; background:transparent; min-height:22px; padding:0;
+    color:var(--dim); font-size:12px; }
+  #addproj .apback:hover { color:var(--text); }
+  /* A field of this dialog (5.1): 36px, the edge that says "type here", a ring
+     rather than a thicker border on focus */
+  #addproj .aprow .apin { flex:1; }
+  #addproj .apin { width:100%; min-width:0; height:36px; box-sizing:border-box; padding:0 12px; font:inherit;
+    font-size:13px; color:var(--text); background:var(--bg); border:1px solid var(--edge);
+    border-radius:var(--r-ctl); outline:none; }
+  #addproj .apin.mono { font-family:var(--mono); }
+  #addproj .apin:focus { border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #addproj .apin.ring { animation:apring .9s 2; }
+  @keyframes apring { 0%,100% { box-shadow:0 0 0 0 transparent } 50% {
+    box-shadow:0 0 0 6px color-mix(in srgb, var(--warn) 45%, transparent) } }
+  #addproj .aprow { display:flex; gap:var(--s2); align-items:center; }
+  #addproj button.apicon { flex:none; width:32px; padding:0; display:flex; align-items:center;
+    justify-content:center; background:var(--panel2); }
+  #addproj button.apicon .ico { display:flex; color:var(--dim); }
+  /* The one button that finishes the page: the dialog's width and a step
+     taller, so it is plainly the thing to press. Grey, not faded brand, while
+     it cannot go -- and it still answers (5.4) */
+  #addproj .apfoot { display:flex; flex-direction:column; gap:var(--s2); }
+  #addproj button.go.wide { width:100%; min-height:36px; }
+  #addproj button.go.held { background:var(--panel2); border-color:var(--line); color:var(--faint);
+    cursor:not-allowed; filter:none; }
+  #addproj button.go.busy { cursor:progress; }
+  #addproj .apwhy { font-size:11.5px; color:var(--warn); line-height:1.5; white-space:pre-wrap; }
+  #addproj .apwhy[hidden], #addproj .approg[hidden], #addproj .apmore[hidden] { display:none; }
+  #addproj .approg { display:flex; flex-direction:column; gap:var(--s1); }
+  #addproj .apsay { font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  #addproj .approg .track { height:3px; border-radius:3px; background:var(--line); overflow:hidden; }
+  #addproj .approg .fill { display:block; height:100%; width:0; background:var(--live); }
+  /* Where a new project will be, said before it is: a card that opens to
+     change it */
+  #addproj .apcard { border:1px solid var(--line); border-radius:var(--r-card); overflow:hidden; }
+  #addproj button.apsumhead { display:flex; align-items:center; gap:var(--s3); width:100%; border:0;
+    border-radius:0; background:transparent; padding:var(--s2) var(--s3); min-height:52px; text-align:left;
+    font-weight:normal; }
+  #addproj .apsumhead .tile { flex:none; width:28px; height:28px; border-radius:var(--r-ctl); display:flex;
+    align-items:center; justify-content:center; background:var(--raise); color:var(--dim); }
+  #addproj .apsumhead .words { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+  #addproj .apsum { font-size:12.5px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #addproj .apwhere { font-family:var(--mono); font-size:11px; color:var(--dim); overflow-wrap:anywhere; }
+  #addproj .apsumhead .caret { font-size:9px; color:var(--dim); }
+  #addproj .apsumhead[aria-expanded="true"] .caret { transform:rotate(180deg); }
+  #addproj .apmore { padding:var(--s3); border-top:1px solid var(--line); }
   /* Once: a star, if you like it. Sits above the gear, and goes for good */
   .thanks { margin:auto var(--s2) var(--s2); padding:10px 12px; border:1px solid var(--line); border-radius:var(--r-card);
     background:var(--raise); font-size:12px; }
@@ -2038,9 +2092,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Filled, not outlined. These two dialogs each ask for one thing and then
      have one button to press, and an outline put it at the same weight as the
      ✕ beside it -- the same recipe the sftp panel's own button already uses */
-  #branch button.go, #browse button.go, #setup button.go { border-color:var(--brand); background:var(--brand);
+  #branch button.go, #browse button.go, #setup button.go, #addproj button.go { border-color:var(--brand); background:var(--brand);
     color:var(--bg); font-weight:600; }
-  #branch button.go:hover, #browse button.go:hover, #setup button.go:hover { filter:brightness(1.1); }
+  #branch button.go:hover, #browse button.go:hover, #setup button.go:hover, #addproj button.go:hover { filter:brightness(1.1); }
   /* Off is grey, not a faded version of the live colour: a pale brand outline
      still reads as the brand outline */
   #branch button[disabled], #browse button[disabled] { background:var(--panel2);
@@ -3597,6 +3651,13 @@ function welcomeGhPage(st) {
 // The ways a project can come to this desk, as cards. Pressing one chooses the
 // way and nothing more: the folder picker, and what follows it, does the
 // adding. Opened from the folder mark on the PROJECT heading
+// Which page of the dialog is up -- the ways in, a clone, a new project -- and
+// the number of the attempt the app's answers are about. The pieces an answer
+// changes are held on to, so a progress bar moves without the fields being
+// rebuilt under somebody's typing
+let apStep = "start";
+let apAsk = 0;
+let apLive = null;
 function openAddProject() {
   const box = document.getElementById("addproj");
   if (!box) return;
@@ -3608,35 +3669,12 @@ function openAddProject() {
     if (bubble) bubble.hidden = true;
     send({kind:"coach", step:1});
   }
-  box.textContent = "";
-  const ways = [];
-  const way = (id, icon, title, say, go, main) => {
-    const b = el("button", {class:"apway" + (main ? " main" : ""), "data-ap":id, type:"button",
-        onclick:() => { closeAddProject(); go(); }},
-      el("span", {class:"tile"}, pickIcon(icon)),
-      el("span", {class:"words"}, el("span", {class:"t"}, title), el("span", {class:"d"}, say)),
-      el("span", {class:"enter"}, "⏎"));
-    // The card the keyboard is on is the one Enter presses, and says so
-    b.addEventListener("focus", () => { for (const w of ways) w.classList.toggle("on", w === b); });
-    ways.push(b);
-    return b;
-  };
-  const browse = way("browse", "folderOpen", T["tui.addproj.browse"] || "", T["tui.addproj.browse.say"] || "",
-    () => openBrowse(""), true);
-  const body = el("div", {class:"sbody"});
-  // Said only to somebody with nothing added yet: after that they know what
-  // a project is for
-  if (!(S && (S.groups || []).length)) body.append(el("div", {class:"ssay"}, T["tui.addproj.say"] || ""));
-  body.append(browse);
-  box.append(el("div", {class:"sbox", role:"dialog", "aria-modal":"true"},
-    el("div", {class:"shead"},
-      el("span", {class:"stitle"}, T["tui.addproj.title"] || ""),
-      el("span", {class:"vclose", title:T["tui.coach.close"] || "", onclick:() => closeAddProject()}, "✕")),
-    body));
   box.hidden = false;
   box.onkeydown = e => {
     if (e.key === "Escape") { e.preventDefault(); closeAddProject(); return; }
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const ways = [...box.querySelectorAll("[data-ap]")];
+    if (!ways.length) return;
     e.preventDefault();
     const at = ways.indexOf(document.activeElement);
     const next = (at + (e.key === "ArrowDown" ? 1 : ways.length - 1)) % ways.length;
@@ -3645,11 +3683,229 @@ function openAddProject() {
   // A press outside that began outside: not adding after all
   box.onpointerdown = e => { box.dataset.down = e.target === box ? "1" : ""; };
   box.onclick = e => { if (e.target === box && box.dataset.down === "1") closeAddProject(); };
-  setTimeout(() => browse.focus(), 0);
+  apShow("start");
 }
+// Closing it while a clone is under way stops the clone: nobody is left to
+// see where it went
 function closeAddProject() {
   const box = document.getElementById("addproj");
   if (box) box.hidden = true;
+  if (apLive && apLive.running) send({kind:"addproject", how:"stop", text:"", parent:"", ask:apAsk});
+  apAsk = 0;
+  apLive = null;
+}
+
+// One page of the dialog: the head says which, the body holds it
+function apShow(step) {
+  const box = document.getElementById("addproj");
+  apStep = step;
+  apLive = null;
+  box.textContent = "";
+  const title = {start:"tui.addproj.title", clone:"tui.addproj.clone", create:"tui.addproj.create"}[step];
+  const body = el("div", {class:"sbody"});
+  box.append(el("div", {class:"sbox", role:"dialog", "aria-modal":"true"},
+    el("div", {class:"shead"},
+      el("span", {class:"stitle"}, T[title] || ""),
+      el("span", {class:"vclose", title:T["tui.coach.close"] || "", onclick:() => closeAddProject()}, "✕")),
+    body));
+  if (step === "start") apStart(body);
+  else if (step === "clone") apClone(body);
+  else apCreate(body);
+}
+
+// The ways in. The one nearly everybody wants stands alone; the others share
+// a list below it
+function apStart(body) {
+  const way = (id, icon, title, say, go, main) => {
+    const b = el("button", {class:"apway" + (main ? " main" : ""), "data-ap":id, type:"button", onclick:go},
+      el("span", {class:"tile"}, pickIcon(icon)),
+      el("span", {class:"words"}, el("span", {class:"t"}, title), el("span", {class:"d"}, say)),
+      el("span", {class:"enter"}, "⏎"));
+    // The card the keyboard is on is the one Enter presses, and says so
+    b.addEventListener("focus", () => {
+      for (const w of body.querySelectorAll("[data-ap]")) w.classList.toggle("on", w === b);
+    });
+    return b;
+  };
+  const browse = way("browse", "folderOpen", T["tui.addproj.browse"] || "", T["tui.addproj.browse.say"] || "",
+    () => { closeAddProject(); openBrowse(""); }, true);
+  // Said only to somebody with nothing added yet: after that they know what
+  // a project is for
+  if (!(S && (S.groups || []).length)) body.append(el("div", {class:"ssay"}, T["tui.addproj.say"] || ""));
+  body.append(browse,
+    el("div", {class:"sfield"},
+      el("div", {class:"apgroup"}, T["tui.addproj.other"] || ""),
+      el("div", {class:"aplist"},
+        way("clone", "globe", T["tui.addproj.clone"] || "", T["tui.addproj.clone.say"] || "", () => apShow("clone")),
+        way("create", "plus", T["tui.addproj.create"] || "", T["tui.addproj.create.say"] || "", () => apShow("create")))));
+  setTimeout(() => browse.focus(), 0);
+}
+
+// The line back to the ways in, above a page that is one of them
+const apBack = () => el("button", {class:"apback", type:"button", onclick:() => apShow("start")},
+  "← " + (T["tui.addproj.back"] || ""));
+
+// A field: its name above, the control, and what is wrong with it right under
+// it once somebody has pressed the button (5.1)
+function apField(label, control, extra) {
+  return el("div", {class:"sfield"}, el("label", {class:"slabel"}, label),
+    extra ? el("div", {class:"aprow"}, control, extra) : control);
+}
+function apInput(value, placeholder, mono) {
+  const i = el("input", {class:"apin" + (mono ? " mono" : ""), type:"text", autocomplete:"off", spellcheck:"false",
+    placeholder: placeholder || ""});
+  i.value = value || "";
+  return i;
+}
+// Choosing the folder a project goes in, with the same picker that chooses a
+// project: it hands the path back instead of adding it
+function apParent(input) {
+  return el("button", {class:"apicon", type:"button", title:T["tui.addproj.choose"] || "",
+      onclick:() => openBrowse(input.value.trim() || (S && S.project_home) || "", path => { input.value = path; input.dispatchEvent(new Event("input")); })},
+    pickIcon("folder"));
+}
+// The button that finishes a page: as wide as the dialog and a step taller than
+// the others, so the one thing to press is the thing that stands out. Grey
+// while it cannot go, and a press then says why and points at what to fix (5.4)
+function apGo(label, blocker, go) {
+  const why = el("div", {class:"apwhy", hidden:""});
+  const btn = el("button", {class:"go wide", type:"button"}, label);
+  const check = () => btn.classList.toggle("held", !!blocker());
+  btn.onclick = () => {
+    if (apLive && apLive.running) return;
+    const stop = blocker();
+    if (stop) {
+      why.textContent = stop.why;
+      why.hidden = false;
+      stop.at.classList.remove("ring");
+      void stop.at.offsetWidth;
+      stop.at.classList.add("ring");
+      stop.at.focus();
+      return;
+    }
+    why.hidden = true;
+    go();
+  };
+  return {btn, why, check};
+}
+// Progress under the button rather than above it, so the button does not move
+// while it fills
+function apProgress() {
+  const fill = el("span", {class:"fill"});
+  const said = el("div", {class:"apsay"});
+  const bar = el("div", {class:"approg", hidden:""}, said, el("div", {class:"track"}, fill));
+  return {bar, fill, said};
+}
+
+function apClone(body) {
+  const url = apInput("", "https://github.com/user/repo.git", true);
+  const parent = apInput((S && S.project_home) || "", "", true);
+  const prog = apProgress();
+  const go = apGo(T["tui.addproj.clone.go"] || "", () =>
+      !url.value.trim() ? {at:url, why:T["tui.addproj.clone.need_url"] || ""}
+      : !parent.value.trim() ? {at:parent, why:T["tui.addproj.need_parent"] || ""} : null,
+    () => {
+      apAsk = Date.now();
+      send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk});
+      apLive.running = true;
+      drawAddProject();
+    });
+  body.append(apBack(), el("div", {class:"ssay"}, T["tui.addproj.clone.say2"] || ""),
+    apField(T["tui.addproj.url"] || "", url),
+    apField(T["tui.addproj.parent"] || "", parent, apParent(parent)),
+    el("div", {class:"apfoot"}, go.why, go.btn, prog.bar));
+  for (const i of [url, parent]) {
+    i.addEventListener("input", go.check);
+    i.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); go.btn.click(); } });
+  }
+  go.check();
+  apLive = {kind:"clone", running:false, go, prog, label:T["tui.addproj.clone.go"] || "",
+    busy:T["tui.addproj.clone.busy"] || ""};
+  setTimeout(() => url.focus(), 0);
+}
+
+function apCreate(body) {
+  const name = apInput("", "my-project", true);
+  const parent = apInput((S && S.project_home) || "", "", true);
+  const where = el("div", {class:"apwhere mono"});
+  const summary = el("div", {class:"apsum"});
+  const change = el("div", {class:"apmore", hidden:""},
+    apField(T["tui.addproj.parent"] || "", parent, apParent(parent)));
+  const head = el("button", {class:"apsumhead", type:"button", "aria-expanded":"false",
+      onclick:() => {
+        const open = head.getAttribute("aria-expanded") !== "true";
+        head.setAttribute("aria-expanded", String(open));
+        change.hidden = !open;
+      }},
+    el("span", {class:"tile"}, pickIcon("branch")),
+    el("span", {class:"words"}, summary, where),
+    el("span", {class:"caret"}, "▾"));
+  // The folder said the short way, home as ~, so the line says where rather
+  // than running out of room saying the part everybody's path shares
+  const home = ((S && S.project_home) || "").replace(/[\\/]SHIKISHA-TERM[\\/]projects$/i, "");
+  const short = p => home && p.toLowerCase().startsWith(home.toLowerCase()) ? "~" + p.slice(home.length) : p;
+  const say = () => {
+    const p = parent.value.trim();
+    const n = name.value.trim() || "my-project";
+    summary.textContent = (T["tui.addproj.create.in"] || "{parent}").replace("{parent}", short(p));
+    where.textContent = p ? p.replace(/[\\/]+$/, "") + "\\" + n : "";
+  };
+  const go = apGo(T["tui.addproj.create.go"] || "", () =>
+      !name.value.trim() ? {at:name, why:T["tui.addproj.create.need_name"] || ""}
+      : /[<>:"/\\|?*]/.test(name.value) ? {at:name, why:T["err.addproj.bad_name"] || ""}
+      : !parent.value.trim() ? {at:parent, why:T["tui.addproj.need_parent"] || ""} : null,
+    () => {
+      apAsk = Date.now();
+      send({kind:"addproject", how:"create", text:name.value.trim(), parent:parent.value.trim(), ask:apAsk});
+      apLive.running = true;
+      drawAddProject();
+    });
+  body.append(apBack(), el("div", {class:"ssay"}, T["tui.addproj.create.say2"] || ""),
+    apField(T["tui.addproj.name"] || "", name),
+    el("div", {class:"apcard"}, head, change),
+    el("div", {class:"apfoot"}, go.why, go.btn));
+  for (const i of [name, parent]) {
+    i.addEventListener("input", () => { say(); go.check(); });
+    i.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); go.btn.click(); } });
+  }
+  say();
+  go.check();
+  apLive = {kind:"create", running:false, go, prog:null, label:T["tui.addproj.create.go"] || "",
+    busy:T["tui.addproj.create.busy"] || ""};
+  setTimeout(() => name.focus(), 0);
+}
+
+// What the app says about the attempt this dialog made: how far a clone has
+// got, why it did not happen, or the project it came to -- which goes on, as a
+// project from the picker does, to its first worktree
+function drawAddProject() {
+  const box = document.getElementById("addproj");
+  if (!box || box.hidden || !apLive) return;
+  const st = S && S.add_project;
+  const mine = st && st.ask === apAsk && apAsk ? st : null;
+  const running = !!(mine ? mine.running : apLive.running) && !(mine && (mine.error || mine.done));
+  apLive.running = running;
+  const {go, prog} = apLive;
+  go.btn.textContent = running ? apLive.busy : apLive.label;
+  go.btn.classList.toggle("busy", running);
+  if (prog) {
+    prog.bar.hidden = !running;
+    const pct = mine && mine.percent != null ? mine.percent : 0;
+    prog.fill.style.width = pct + "%";
+    const phase = mine && mine.phase ? (T["tui.addproj.phase." + mine.phase] || mine.phase) : (T["tui.addproj.clone.start"] || "");
+    prog.said.textContent = mine && mine.percent != null ? phase + " · " + pct + "%" : phase;
+  }
+  if (mine && mine.error) {
+    go.why.textContent = mine.error;
+    go.why.hidden = false;
+  }
+  if (mine && mine.done) {
+    const path = mine.done;
+    apAsk = 0;
+    apLive = null;
+    closeAddProject();
+    openBranch({folder: path});
+  }
 }
 
 // A folder chosen in the picker, on its way to being added. A git repository
@@ -3800,7 +4056,12 @@ function drawCoach() {
   let box = document.getElementById("coach");
   const step = (S && S.coach) || 0;
   const anchor = coachAt(step);
-  if (!step || step === coachShut || !anchor) {
+  // It points at the list, and a dialog over the list is where somebody's
+  // attention is: the bubble stood above whichever dialog was open, covering
+  // what that dialog was asking. It comes back when the dialog goes
+  const dialogUp = ["setup", "addproj", "branch", "browse", "sask", "repair"]
+    .some(id => { const d = document.getElementById(id); return d && !d.hidden; });
+  if (!step || step === coachShut || !anchor || dialogUp) {
     if (box) box.hidden = true;
     return;
   }
@@ -4171,6 +4432,9 @@ const PICK_ICON = {
   project: '<rect x="2.5" y="2.5" width="9" height="9" rx="1.5"/>',
   drive: '<rect x="1.5" y="4" width="11" height="6" rx="1"/><path d="M10 7h.01"/>',
   folderPlus: '<path d="M1.5 3.5h4l1.3 1.5h5.7v6.5h-11z"/><path d="M7 6.8v3M5.5 8.3h3"/>',
+  globe: '<circle cx="7" cy="7" r="5.5"/><path d="M1.5 7h11M7 1.5c1.6 1.6 2.4 3.4 2.4 5.5S8.6 10.9 7 12.5M7 1.5C5.4 3.1 4.6 4.9 4.6 7s.8 3.9 2.4 5.5"/>',
+  plus: '<path d="M7 2.5v9M2.5 7h9"/>',
+  branch: '<circle cx="4" cy="3.5" r="1.3"/><circle cx="4" cy="10.5" r="1.3"/><circle cx="10" cy="5" r="1.3"/><path d="M4 4.8v4.4M10 6.3c0 2-2 2.5-5 3.2"/>',
   folderOpen: '<path d="M1.5 11.5V3.5h4l1.3 1.5h4.7v1.5"/><path d="M1.5 11.5 3.2 7h9.3l-1.7 4.5z"/>',
   open: '<path d="M8.5 2h3.5v3.5"/><path d="M6.5 7.5 12 2"/><path d="M10.5 8v3.5a.5.5 0 0 1-.5.5H2.5a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5H6"/>',
   sparkles: '<path d="M6 2.5 7 5.5 10 6.5 7 7.5 6 10.5 5 7.5 2 6.5 5 5.5z"/><path d="M11 1.5v3M9.5 3h3"/><path d="M11 9.5v2M10 10.5h2"/>',
@@ -4190,14 +4454,18 @@ let pickQ = "";
 let pickMaking = false;
 let pickMadeSeen = "";
 let pickDrawn = "";
+// What choosing does, when it is not adding a project: another dialog asked
+// for a folder -- where a clone or a new project goes -- and is handed it back
+let pickFor = null;
 const leafOf = p => (p || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p || "";
 
-function openBrowse(at) {
+function openBrowse(at, handBack) {
   const b = document.getElementById("browse");
   if (!b) return;
   const first = b.hidden;
   b.hidden = false;
-  b.querySelector(".vtitle").textContent = T["tui.browse.title"] || "";
+  pickFor = typeof handBack === "function" ? handBack : null;
+  b.querySelector(".vtitle").textContent = T[pickFor ? "tui.browse.title.place" : "tui.browse.title"] || "";
   b.querySelector(".pq").placeholder = T["tui.browse.filter"] || "";
   b.querySelector(".plab").textContent = T["tui.browse.selected"] || "";
   b.querySelector(".pmake").textContent = T["tui.browse.make"] || "";
@@ -4228,6 +4496,7 @@ function closeBrowse() {
   const b = document.getElementById("browse");
   if (b) b.hidden = true;
   pickMaking = false;
+  pickFor = null;
 }
 // "today 18:50", "yesterday 21:15", "09/10 14:20", and the year only when it is not
 // this one. A date is read against today, so it is said against today
@@ -4395,8 +4664,10 @@ function pickChoose() {
   const st = (S && S.browse) || {};
   const row = pickSel ? (st.dirs || []).indexOf(pickSel) : -1;
   const git = row >= 0 ? !!(st.git || [])[row] : !!st.at_git;
+  const handBack = pickFor;
   closeBrowse();
-  addChosenFolder(path, git);
+  if (handBack) handBack(path);
+  else addChosenFolder(path, git);
 }
 (function () {
   const b = document.getElementById("browse");
@@ -5949,6 +6220,7 @@ window.__state = function (json) {
   screen.hidden = cover || S.active === 0 || web || git || files || edit || !!failedTab || issuesUp;
   drawFailed(cover ? null : failedTab);
   drawWelcome();
+  drawAddProject();
   const ipanel = document.getElementById("issuespanel");
   if (ipanel) {
     const was = !ipanel.hidden;
@@ -13234,7 +13506,17 @@ mod tests {
     fn a_project_is_added_by_way_of_its_cards_and_git_decides_what_follows() {
         assert!(PAGE.contains(r#"<div id="addproj" hidden></div>"#), "there is nowhere to draw adding a project");
         assert!(PAGE.contains("setTimeout(() => browse.focus(), 0);"), "the browse card does not take the keyboard");
-        assert!(PAGE.contains(r#"() => openBrowse(""), true);"#), "the browse card does not open the picker");
+        assert!(PAGE.contains(r#"() => { closeAddProject(); openBrowse(""); }, true);"#), "the browse card does not open the picker");
+        // The other ways: a clone and a new project, each finished in the same
+        // dialog and each ending, as the picker does, at the first worktree
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk});"#),
+            "a clone is never asked for");
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"create", text:name.value.trim(), parent:parent.value.trim(), ask:apAsk});"#),
+            "a new project is never asked for");
+        assert!(PAGE.contains("if (apLive && apLive.running) send({kind:\"addproject\", how:\"stop\""),
+            "closing the dialog leaves a clone running with nobody to see it");
+        assert!(PAGE.contains("if (handBack) handBack(path);"), "choosing where a project goes adds it instead");
+        assert!(PAGE.contains("drawAddProject();"), "a clone's progress is never drawn");
         assert!(PAGE.contains("const git = row >= 0 ? !!(st.git || [])[row] : !!st.at_git;"),
             "what was picked is not asked whether it is a repository");
         assert!(PAGE.contains("if (!here) openBranch({folder: path});"), "a repository does not go on to its first worktree");
