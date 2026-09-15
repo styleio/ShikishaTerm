@@ -277,7 +277,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     background:transparent; box-shadow:inset 3px 0 0 var(--ai,var(--edge)); text-align:left; font-weight:normal; }
   #setup button.scard:hover { border-color:var(--edge-hi); }
   #setup button.scard[aria-checked="true"] { background:var(--raise); border-color:var(--brand); }
-  #setup .scard .nm { font-size:13px; font-weight:600; color:var(--ai,var(--text)); }
+  /* The AI's mark in front of its name, the same one its tab wears in the list */
+  #setup .scard .nm { display:flex; align-items:center; gap:var(--s2); font-size:13px; font-weight:600;
+    color:var(--ai,var(--text)); }
   #setup .scard .cmd { font-family:var(--mono); font-size:11px; color:var(--dim); }
   #setup .slinks { display:flex; flex-wrap:wrap; gap:var(--s2); }
   #setup button.slink { display:inline-flex; align-items:center; gap:var(--s2); background:var(--panel2); }
@@ -3462,7 +3464,7 @@ function drawWelcome() {
     for (const a of installed) {
       cards.append(el("button", {class:"scard ai-" + a.id, role:"radio", "data-id":a.id, "data-f":"ai:" + a.id,
           onclick:() => { setupPick = a.id; mark(); }},
-        el("span", {class:"nm"}, a.name),
+        el("span", {class:"nm"}, aiMark(a.id), a.name),
         el("span", {class:"cmd"}, a.id)));
     }
     mark();
@@ -3481,7 +3483,7 @@ function drawWelcome() {
       links.append(a.install
         ? el("button", {class:"slink", "data-f":"open:" + a.id, title:T["tui.setup.open"] || "",
               onclick:() => send({kind:"installhelp", ai:a.id})},
-            el("span", {}, a.name), pickIcon("open"))
+            aiMark(a.id), el("span", {}, a.name), pickIcon("open"))
         : el("span", {class:"shint"}, a.name));
     }
     body.append(el("div", {class:"sfield"},
@@ -13033,6 +13035,10 @@ mod tests {
         assert!(PAGE.contains(r#"send({kind:"setuprefresh"})"#), "Refresh asks for nothing");
         assert!(PAGE.contains(r#"send({kind:"installhelp", ai:a.id})"#), "a supported AI does not open its page");
         assert!(PAGE.contains("let setupYolo = true;"), "Yolo mode does not start ticked");
+        // Each AI with the mark its tab wears, on the cards and on the links alike
+        assert!(PAGE.contains(r#"el("span", {class:"nm"}, aiMark(a.id), a.name)"#)
+            && PAGE.contains(r#"aiMark(a.id), el("span", {}, a.name), pickIcon("open")"#),
+            "an AI in the setup has no mark");
         assert!(PAGE.contains("if (setupUp()) return;") && PAGE.contains("if (setupUp()) { e.preventDefault(); return; }"),
             "the board's keys reach past it");
     }
