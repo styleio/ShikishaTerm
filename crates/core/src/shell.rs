@@ -250,23 +250,23 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      by a rule. It stands in front of everything until it is answered, so it has
      no ✕ and the backdrop does not close it -- Continue is always pressable, even
      with nothing picked, and that is the only way out */
-  #setup { position:fixed; inset:0; background:#00000099; display:flex; align-items:flex-start;
+  #setup, #addproj { position:fixed; inset:0; background:#00000099; display:flex; align-items:flex-start;
     justify-content:center; z-index:52; padding:56px 16px 16px; }
-  #setup[hidden] { display:none; }
-  #setup .sbox { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
+  #setup[hidden], #addproj[hidden] { display:none; }
+  #setup .sbox, #addproj .sbox { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
     width:min(560px,100%); max-height:calc(100vh - 72px); box-shadow:0 8px 24px #0007;
     display:flex; flex-direction:column; }
-  #setup .shead { display:flex; align-items:center; gap:var(--s3); padding:16px 20px;
+  #setup .shead, #addproj .shead { display:flex; align-items:center; gap:var(--s3); padding:16px 20px;
     border-bottom:1px solid var(--line); }
-  #setup .stitle { flex:1; min-width:0; font-size:13.5px; font-weight:600; color:var(--text);
+  #setup .stitle, #addproj .stitle { flex:1; min-width:0; font-size:13.5px; font-weight:600; color:var(--text);
     text-transform:uppercase; }
-  #setup .sbody { display:flex; flex-direction:column; gap:var(--s5); padding:20px; overflow:auto; }
-  #setup .sfoot { display:flex; justify-content:flex-end; gap:var(--s2); padding:12px 20px;
+  #setup .sbody, #addproj .sbody { display:flex; flex-direction:column; gap:var(--s5); padding:20px; overflow:auto; }
+  #setup .sfoot, #addproj .sfoot { display:flex; justify-content:flex-end; gap:var(--s2); padding:12px 20px;
     border-top:1px solid var(--line); }
   /* One question: its name, what answers it, a line saying what it does */
-  #setup .sfield { display:flex; flex-direction:column; gap:var(--s2); }
-  #setup .slabel { font-size:12px; font-weight:500; color:var(--text); }
-  #setup .shint { font-size:11.5px; color:var(--faint); line-height:1.5; }
+  #setup .sfield, #addproj .sfield { display:flex; flex-direction:column; gap:var(--s2); }
+  #setup .slabel, #addproj .slabel { font-size:12px; font-weight:500; color:var(--text); }
+  #setup .shint, #addproj .shint { font-size:11.5px; color:var(--faint); line-height:1.5; }
   /* Cards to pick one AI from. A card is the size of a thing to press with a
      finger, and wears its AI's colour where a tab row does: the left edge and
      the name. Picked is the selection's own recipe -- the raised surface and the
@@ -303,6 +303,32 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #setup .sready { display:flex; align-items:center; gap:var(--s2); min-height:32px; font-size:13px;
     color:var(--text); }
   #setup .sready .ico { display:flex; color:var(--brand); }
+  /* Adding a project. Every way in is a card to press, and the one nearly
+     everybody wants -- a folder already on this PC -- stands alone above the
+     rest, a step taller and with its mark at full strength: the size tells it
+     apart less than standing on its own does. The card the keyboard is on
+     wears the selection's recipe and a ⏎, so what Enter will do is always on
+     screen. Pressing one only chooses the way; nothing is added until the
+     step it leads to is finished */
+  #addproj .shead .vclose { cursor:pointer; color:var(--dim); font-size:16px; padding:2px 6px; }
+  #addproj .shead .vclose:hover { color:var(--text); }
+  #addproj .ssay { font-size:12px; color:var(--dim); line-height:1.5; }
+  #addproj button.apway { display:flex; align-items:center; gap:var(--s3); width:100%; min-height:52px;
+    padding:var(--s2) var(--s3); text-align:left; border-radius:var(--r-card); background:transparent;
+    font-weight:normal; }
+  #addproj button.apway.main { min-height:60px; }
+  #addproj button.apway:focus-visible, #addproj button.apway.on { background:var(--raise);
+    border-color:var(--brand); outline:none; }
+  #addproj .apway .tile { flex:none; width:28px; height:28px; border-radius:var(--r-ctl); display:flex;
+    align-items:center; justify-content:center; background:var(--raise); color:var(--dim); }
+  #addproj .apway.main .tile { color:var(--text); }
+  #addproj button.apway.on .tile, #addproj button.apway:focus-visible .tile { background:var(--bg); }
+  #addproj .apway .words { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+  #addproj .apway .t { font-size:13px; font-weight:600; color:var(--text); }
+  #addproj .apway .d { font-size:11.5px; color:var(--dim); line-height:1.4; }
+  #addproj .apway .enter { flex:none; visibility:hidden; font-size:11px; color:var(--dim); padding:1px 6px;
+    border:1px solid var(--edge); border-radius:var(--r-chip); }
+  #addproj .apway.on .enter, #addproj .apway:focus-visible .enter { visibility:visible; }
   /* Once: a star, if you like it. Sits above the gear, and goes for good */
   .thanks { margin:auto var(--s2) var(--s2); padding:10px 12px; border:1px solid var(--line); border-radius:var(--r-card);
     background:var(--raise); font-size:12px; }
@@ -1768,6 +1794,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #browse .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
     margin-bottom:var(--s1); }
   #browse .vsay, #sask .vsay { color:var(--dim); font-size:12px; line-height:1.5; }
+  /* The thing the question is about -- a path -- quoted as it is: the mono
+     well (5), quiet, broken anywhere so a long path never widens the dialog */
+  #sask .bwhere { font-family:var(--mono); font-size:11.5px; color:var(--dim); background:var(--sunk);
+    border:1px solid var(--line); border-radius:var(--r-ctl); padding:var(--s2) var(--s3);
+    overflow-wrap:anywhere; line-height:1.5; }
+  #sask .bwhere[hidden] { display:none; }
   #sask .vbox, #branch .vbox { width:min(560px,92vw); }
   /* The head is one thing and the foot is another, both divided by a rule --
      the shape every dialog in section 5.2 has. #browse and #sask already had
@@ -1999,10 +2031,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #browse .pbtns .pcancel { margin-left:auto; }
   }
   #browse button { white-space:nowrap; }
-  #branch button, #browse button, #setup button { font:inherit; font-size:12.5px; min-height:32px; padding:0 var(--s4);
+  #branch button, #browse button, #setup button, #addproj button { font:inherit; font-size:12.5px; min-height:32px; padding:0 var(--s4);
     border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--raise);
     color:var(--text); cursor:pointer; }
-  #branch button:hover, #browse button:hover, #setup button:hover { border-color:var(--edge-hi); }
+  #branch button:hover, #browse button:hover, #setup button:hover, #addproj button:hover { border-color:var(--edge-hi); }
   /* Filled, not outlined. These two dialogs each ask for one thing and then
      have one button to press, and an outline put it at the same weight as the
      ✕ beside it -- the same recipe the sftp panel's own button already uses */
@@ -2404,6 +2436,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <div id="veil" hidden></div>
   <!-- The first-start setup: which AI to prefer, before anything else -->
   <div id="setup" hidden></div>
+  <!-- Adding a project: the ways a project can come to this desk -->
+  <div id="addproj" hidden></div>
   <!-- The Vault: search past conversations and reopen one. Its own overlay
        rather than the veil, because it has an input and must not close on the
        first keystroke -->
@@ -2823,7 +2857,7 @@ function drawTabs() {
   nav.append(el("div", {class:"tab projhead"},
     el("span", {class:"nm"}, T["tui.project.head"] || "PROJECT"),
     el("span", {class:"padd" + (bare ? " pulse" : ""), title:T["tui.project.add"] || "",
-        onclick:() => openBrowse("")}, "+")));
+        onclick:() => openAddProject()}, pickIcon("folderPlus"))));
   // The folder each run of tabs works in. A heading appears when the folder
   // changes, and only when there is more than one to change to -- with a single
   // folder the sidebar looks exactly as it always has. A tab that is in no
@@ -3559,6 +3593,89 @@ function welcomeGhPage(st) {
   return el("div", {class:"sbody"}, field);
 }
 
+// ── Adding a project ──────────────────
+// The ways a project can come to this desk, as cards. Pressing one chooses the
+// way and nothing more: the folder picker, and what follows it, does the
+// adding. Opened from the folder mark on the PROJECT heading
+function openAddProject() {
+  const box = document.getElementById("addproj");
+  if (!box) return;
+  // Opening this is doing what the first-run pointer asked, however it was
+  // opened -- a press with a finger, a click, a key -- so the pointer goes
+  if ((S && S.coach) === 1 && coachShut !== 1) {
+    coachShut = 1;
+    const bubble = document.getElementById("coach");
+    if (bubble) bubble.hidden = true;
+    send({kind:"coach", step:1});
+  }
+  box.textContent = "";
+  const ways = [];
+  const way = (id, icon, title, say, go, main) => {
+    const b = el("button", {class:"apway" + (main ? " main" : ""), "data-ap":id, type:"button",
+        onclick:() => { closeAddProject(); go(); }},
+      el("span", {class:"tile"}, pickIcon(icon)),
+      el("span", {class:"words"}, el("span", {class:"t"}, title), el("span", {class:"d"}, say)),
+      el("span", {class:"enter"}, "⏎"));
+    // The card the keyboard is on is the one Enter presses, and says so
+    b.addEventListener("focus", () => { for (const w of ways) w.classList.toggle("on", w === b); });
+    ways.push(b);
+    return b;
+  };
+  const browse = way("browse", "folderOpen", T["tui.addproj.browse"] || "", T["tui.addproj.browse.say"] || "",
+    () => openBrowse(""), true);
+  const body = el("div", {class:"sbody"});
+  // Said only to somebody with nothing added yet: after that they know what
+  // a project is for
+  if (!(S && (S.groups || []).length)) body.append(el("div", {class:"ssay"}, T["tui.addproj.say"] || ""));
+  body.append(browse);
+  box.append(el("div", {class:"sbox", role:"dialog", "aria-modal":"true"},
+    el("div", {class:"shead"},
+      el("span", {class:"stitle"}, T["tui.addproj.title"] || ""),
+      el("span", {class:"vclose", title:T["tui.coach.close"] || "", onclick:() => closeAddProject()}, "✕")),
+    body));
+  box.hidden = false;
+  box.onkeydown = e => {
+    if (e.key === "Escape") { e.preventDefault(); closeAddProject(); return; }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const at = ways.indexOf(document.activeElement);
+    const next = (at + (e.key === "ArrowDown" ? 1 : ways.length - 1)) % ways.length;
+    ways[next < 0 ? 0 : next].focus();
+  };
+  // A press outside that began outside: not adding after all
+  box.onpointerdown = e => { box.dataset.down = e.target === box ? "1" : ""; };
+  box.onclick = e => { if (e.target === box && box.dataset.down === "1") closeAddProject(); };
+  setTimeout(() => browse.focus(), 0);
+}
+function closeAddProject() {
+  const box = document.getElementById("addproj");
+  if (box) box.hidden = true;
+}
+
+// A folder chosen in the picker, on its way to being added. A git repository
+// is added and goes straight on to its first worktree; a folder that is not one
+// is asked about first -- it works, with less, and that is worth knowing before
+// rather than after. One already on the desk is not added twice
+function addChosenFolder(path, git) {
+  const here = (S && S.groups || []).some(g => sameFolder(g.folder, path));
+  if (here || git) {
+    send({kind:"browse", path, open:true});
+    if (!here) openBranch({folder: path});
+    return;
+  }
+  askQuestion({
+    title: T["tui.nongit.title"] || "",
+    say: T["tui.nongit.say"] || "",
+    what: path,
+    label: T["tui.nongit.go"] || "",
+    go: () => send({kind:"browse", path, open:true}),
+  });
+}
+// Two spellings of one folder: case and the direction of the slashes do not
+// make a different folder on Windows
+const sameFolder = (a, b) => (a || "").replace(/[\\/]+$/, "").replace(/\//g, "\\").toLowerCase()
+  === (b || "").replace(/[\\/]+$/, "").replace(/\//g, "\\").toLowerCase();
+
 // ── The tools that start from a picture ──────────────────
 // What the app can run and how long it can wait, handed in by the app
 // (snip.rs) so the menu never offers a tool the tool page cannot open
@@ -4053,6 +4170,8 @@ const PICK_ICON = {
   desktop: '<rect x="1.5" y="2.5" width="11" height="7.5" rx="1"/><path d="M5 12.5h4M7 10v2.5"/>',
   project: '<rect x="2.5" y="2.5" width="9" height="9" rx="1.5"/>',
   drive: '<rect x="1.5" y="4" width="11" height="6" rx="1"/><path d="M10 7h.01"/>',
+  folderPlus: '<path d="M1.5 3.5h4l1.3 1.5h5.7v6.5h-11z"/><path d="M7 6.8v3M5.5 8.3h3"/>',
+  folderOpen: '<path d="M1.5 11.5V3.5h4l1.3 1.5h4.7v1.5"/><path d="M1.5 11.5 3.2 7h9.3l-1.7 4.5z"/>',
   open: '<path d="M8.5 2h3.5v3.5"/><path d="M6.5 7.5 12 2"/><path d="M10.5 8v3.5a.5.5 0 0 1-.5.5H2.5a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5H6"/>',
   sparkles: '<path d="M6 2.5 7 5.5 10 6.5 7 7.5 6 10.5 5 7.5 2 6.5 5 5.5z"/><path d="M11 1.5v3M9.5 3h3"/><path d="M11 9.5v2M10 10.5h2"/>',
   refresh: '<path d="M12 7a5 5 0 0 1-8.7 3.4"/><path d="M2 7a5 5 0 0 1 8.7-3.4"/><path d="M11 1.5v2.5H8.5"/><path d="M3 12.5V10h2.5"/>',
@@ -4271,8 +4390,13 @@ function pickChoose() {
     setTimeout(() => places.classList.remove("ring"), 1800);
     return;
   }
+  // Whether it is a git repository was read with the listing: the folder being
+  // looked at, or the row picked inside it
+  const st = (S && S.browse) || {};
+  const row = pickSel ? (st.dirs || []).indexOf(pickSel) : -1;
+  const git = row >= 0 ? !!(st.git || [])[row] : !!st.at_git;
   closeBrowse();
-  send({kind:"browse", path, open:true});
+  addChosenFolder(path, git);
 }
 (function () {
   const b = document.getElementById("browse");
@@ -7480,6 +7604,8 @@ const focus = () => {
   // The first-start setup holds the keyboard while it is up: Enter is its
   // Continue, and a letter must not reach the board's menu behind it
   if (setupUp()) return;
+  // Nor while a project is being added: the keyboard walks its cards
+  if (!document.getElementById("addproj").hidden) return;
   // Never steal focus while a text field is being used (the cast input bar, the
   // discussion-topic box, etc.). Otherwise every keystroke would be swallowed by
   // #kbd and fired as a board shortcut (e.g. typing "w" opens the desk list).
@@ -12774,8 +12900,8 @@ mod tests {
         assert!(PAGE.contains("onclick:e => { e.stopPropagation(); openBranch(g); }}, \"+\")"),
                 "the working folder's + is not only for worktrees");
         assert!(PAGE.contains(r#"el("span", {class:"padd" + (bare ? " pulse" : ""), title:T["tui.project.add"] || "",
-        onclick:() => openBrowse("")}, "+")"#),
-                "the projects' + is not only for adding a working folder");
+        onclick:() => openAddProject()}, pickIcon("folderPlus"))"#),
+                "the projects' folder mark does not open adding a project");
         assert!(!PAGE.contains("tab addtab"), "a second way to add a folder is back at the foot of the list");
         assert!(!PAGE.contains("function addMenu("), "the old menu that offers worktree and working folder side by side is still there");
         // Nothing to cut a worktree from, so no + that can only fail
@@ -13098,6 +13224,22 @@ mod tests {
             "an AI in the setup has no mark");
         assert!(PAGE.contains("if (setupUp()) return;") && PAGE.contains("if (setupUp()) { e.preventDefault(); return; }"),
             "the board's keys reach past it");
+    }
+
+    /// Adding a project: a card to browse from, focused so Enter presses it,
+    /// and a folder that comes back from the picker goes one of three ways --
+    /// already here, a repository on to its first worktree, anything else
+    /// asked about first.
+    #[test]
+    fn a_project_is_added_by_way_of_its_cards_and_git_decides_what_follows() {
+        assert!(PAGE.contains(r#"<div id="addproj" hidden></div>"#), "there is nowhere to draw adding a project");
+        assert!(PAGE.contains("setTimeout(() => browse.focus(), 0);"), "the browse card does not take the keyboard");
+        assert!(PAGE.contains(r#"() => openBrowse(""), true);"#), "the browse card does not open the picker");
+        assert!(PAGE.contains("const git = row >= 0 ? !!(st.git || [])[row] : !!st.at_git;"),
+            "what was picked is not asked whether it is a repository");
+        assert!(PAGE.contains("if (!here) openBranch({folder: path});"), "a repository does not go on to its first worktree");
+        assert!(PAGE.contains(r#"title: T["tui.nongit.title"] || "","#), "a folder that is not a repository is added without a word");
+        assert!(PAGE.contains("if (!document.getElementById(\"addproj\").hidden) return;"), "the board takes the keyboard from the cards");
     }
 
     #[test]

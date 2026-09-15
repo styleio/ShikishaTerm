@@ -102,6 +102,11 @@ pub fn drive_of(p: &Path) -> Option<String> {
 /// One folder's last answer, and whether a new one is on its way.
 struct Entry {
     health: Health,
+    /// The repository it is in, and whether it is a worktree cut from it
+    /// rather than the checkout itself -- read on the same thread as the
+    /// health, because it is the same kind of question: small files on a
+    /// drive that may not be answering
+    repo: Option<(PathBuf, bool)>,
     /// When the answer being held was arrived at. Absent while the very first
     /// look is still out, which is what makes a folder nobody has looked at
     /// yet different from one that answered
@@ -175,6 +180,22 @@ impl Watch {
         }
     }
 
+    /// The repository each of these folders was found to be in, for the ones
+    /// a look has come back about. Never asks: [`Self::look`] does that, on
+    /// the same frame, for the same folders. A folder in no repository, or
+    /// not looked at yet, is simply absent
+    pub fn repos(&self, paths: &[PathBuf]) -> HashMap<PathBuf, (PathBuf, bool)> {
+        let known = self.known.lock().unwrap_or_else(|e| e.into_inner());
+        paths
+            .iter()
+            .filter_map(|p| {
+                let e = known.get(p)?;
+                e.settled?;
+                Some((p.clone(), e.repo.clone()?))
+            })
+            .collect()
+    }
+
     /// What came back about this folder, if anything has.
     fn answered(&self, p: &Path) -> Option<Health> {
         let known = self.known.lock().unwrap_or_else(|e| e.into_inner());
@@ -194,6 +215,7 @@ impl Watch {
             for p in paths {
                 let e = known.entry(p.clone()).or_insert(Entry {
                     health: Health::Fine,
+                    repo: None,
                     settled: None,
                     started: None,
                 });
@@ -236,12 +258,17 @@ impl Watch {
             let known = Arc::clone(&self.known);
             std::thread::spawn(move || {
                 let health = health_of(&p);
+                let repo = match health {
+                    Health::Fine => crate::repo::family_of(&p).map(|f| (f, crate::repo::is_linked(&p))),
+                    _ => None,
+                };
                 if let Ok(mut map) = known.lock() {
                     // Only if it is still wanted: the answer to a question
                     // about a folder that has since been closed is not an
                     // answer about anything
                     if let Some(e) = map.get_mut(&p) {
                         e.health = health;
+                        e.repo = repo;
                         e.settled = Some(Instant::now());
                         e.started = None;
                     }
