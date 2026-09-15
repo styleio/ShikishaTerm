@@ -11,9 +11,9 @@ once it reaches its first tagged release.
 ### Added
 - **Quick commands.** A grid of buttons you make yourself, opened over the whole
   window with the button beside the scissors or Ctrl+B k (the key can be changed
-  under Keys). A button sends a command to a shell or a prompt to an AI in the
-  folder of the tab you are looking at: to that folder's tab of the right kind,
-  or into a new tab opened there. With no folder in front, a command opens in
+  under Keys). Every press opens a new tab in the folder of the tab you are
+  looking at, and runs a command in a shell there or gives a prompt to an AI
+  started there. With no folder in front, a command opens in
   the home folder, so a button can also start a program. The line under the
   buttons says where the one under the pointer will go before it is pressed.
   Buttons can wear a line icon, be put on pages and into folders, and be
