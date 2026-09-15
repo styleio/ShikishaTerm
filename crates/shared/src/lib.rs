@@ -251,6 +251,9 @@ pub enum Ev {
     /// A folder was renamed in the list, or taken out of it. An empty name
     /// hands it back to what the folder itself says
     FolderName { folder: String, name: String },
+    /// A tab was renamed where it stands, by its screen number. An empty name
+    /// hands it back to what its command calls it
+    TabName { tab: usize, name: String },
     /// A folder was closed: its tabs go, the files stay
     FolderClose { folder: String },
     /// A branch's folder was thrown away for good. Refused while there is
@@ -844,6 +847,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("folderview") => Ev::FolderView {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
+        Some("tabname") => Ev::TabName {
+            tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+            name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("foldername") => Ev::FolderName {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

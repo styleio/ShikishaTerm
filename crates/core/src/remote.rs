@@ -289,6 +289,7 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // phone already opens folders (`Ev::Browse`) and hands agents whole
         // tasks inside them; what was missing was tidying up afterwards
         Ev::FolderName { .. }
+        | Ev::TabName { .. }
         | Ev::FolderClose { .. }
         | Ev::FolderDiscard { .. }
         | Ev::FolderColor { .. } => true,

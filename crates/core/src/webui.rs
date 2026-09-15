@@ -5326,6 +5326,12 @@ function wizardReview() {
 // One phone-width layout, driven from here so the CSS and the DOM never disagree
 // about where things are. The same nav, the same links, the same header — moved,
 // never duplicated, so a card added later needs no phone-specific counterpart.
+// The browser's own menu -- Save as, Print, View source -- belongs to a web
+// page, and this is the program's settings: a right-click here offers nothing.
+// A field keeps its menu, which is where cut, copy and paste are
+document.addEventListener("contextmenu", e => {
+  if (!(e.target.closest && e.target.closest("input, textarea, [contenteditable]"))) e.preventDefault();
+});
 const narrow = window.matchMedia("(max-width: 760px)");
 // Held as a node, not looked up by id: renderNav() empties the drawer on every
 // render, which detaches this element from the document.

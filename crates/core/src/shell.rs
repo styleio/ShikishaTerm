@@ -744,6 +744,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      dot that says work is under way, its name, and below it how far it has
      got. The ✕ takes it back. Failed, the dot is a mark, the line says why, and
      the two answers follow */
+  /* A name being changed where it stands: a field the size of the name */
+  input.rename { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--brand);
+    border-radius:var(--r-ctl); height:22px; padding:0 6px; min-width:0; width:100%; flex:1 1 auto; outline:none;
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
   .making { margin:2px var(--s2) 2px 14px; padding:6px 4px 6px 10px; border:1px solid var(--line);
     border-radius:var(--r-ctl); display:flex; flex-wrap:wrap; align-items:center; column-gap:var(--s2); row-gap:2px; }
   .making > .dot { flex:none; }
@@ -3064,7 +3068,7 @@ function heldDown(id) {
 
 // ── Left tab bar ────────────────────────────
 function drawTabs() {
-  if (heldDown("tabs")) return;
+  if (heldDown("tabs") || renameHeld("tabs")) return;
   const nav = document.getElementById("tabs");
   nav.textContent = "";
   // Above INDEX: the current desk and a switcher. Clicking opens the list popup
@@ -4726,7 +4730,7 @@ function folderRow(g, mine, card) {
     // On the row itself as well as in the count above, so a folded list
     // still shows which folder is the one with the problem
     ailMark(g),
-    el("span", {class:"nm"}, g.name || ""));
+    nameSlot("tabs", "f:" + g.folder, g.name || "", v => send({kind:"foldername", folder:g.folder, name:v}), "nm"));
   // Shut, the row has to speak for what it is hiding: the state of whichever
   // tab inside is waiting on somebody first, and the shape of the work going
   // on in there. Open, it says neither -- the rows below are already saying
@@ -4821,7 +4825,7 @@ function emptyRow(g, card) {
   const row = el("div", {class:"tab folder empty" + (g.linked ? " cut" : "") + (card ? " wcard" : ""), title:g.folder || ""},
     card ? el("span", {class:"dot"}) : g.linked ? cutMark() : el("span", {class:"chip"}),
     ailMark(g),
-    el("span", {class:"nm"}, g.name || ""),
+    nameSlot("tabs", "f:" + g.folder, g.name || "", v => send({kind:"foldername", folder:g.folder, name:v}), "nm"),
     ...(card
       ? [g.family && !g.linked ? el("span", {class:"prim", title:T["tui.folder.primary.title"] || ""}, T["tui.folder.primary"] || "primary") : null,
          el("span", {class:"fill"}), el("span", {class:"fbr"}, (g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder)))]
@@ -4857,19 +4861,13 @@ function tabRow(t, g, deep, head) {
     // name and its bars
     t.ai
       ? el("span", {class:"nm agent", title:t.profile},
-          el("span", {class:"st"}, t.state_label || t.state), el("span", {class:"who"}, " - " + t.name))
-      : el("span", {class:"nm", title:t.profile}, t.name),
+          el("span", {class:"st"}, t.state_label || t.state), el("span", {class:"who"}, " - ", tabName(t, "tabs", "")))
+      : el("span", {class:"nm", title:t.profile}, tabName(t, "tabs", "")),
     t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
     t.ai && t.since ? agoMark(t.since) : spark(t.activity));
   // Its settings are its own page, opened from here: the settings list no
   // longer carries every tab of every folder
-  if (t.kind === "pty" && !t.settings) {
-    row.addEventListener("contextmenu", e => {
-      e.preventDefault();
-      openList(row, [el("div", {onclick:() => { closeFolderMenu(); openSettings(null, false, null, t); }},
-        T["tui.tab.settings"] || "")]);
-    });
-  }
+  row.addEventListener("contextmenu", e => { e.preventDefault(); tabMenu(row, t, "tabs"); });
   // Where it is, then what it last said. Each only when there is one: a
   // blank line on every tab would spend the sidebar saying nothing
   if (t.place) {
@@ -4905,6 +4903,11 @@ function tabRow(t, g, deep, head) {
 
 // How long ago something came to be, in the fewest letters a row has room for:
 // now, 5m, 3h, 2d. The whole date and time under the pointer
+// A tab's name where it is drawn, or the field that renames it
+function tabName(t, where, cls) {
+  return nameSlot(where, "t:" + t.index, t.name || "", v => send({kind:"tabname", tab:t.index, name:v}), cls);
+}
+
 function agoText(since) {
   const s = Math.max(0, Math.floor(Date.now() / 1000) - since);
   if (s < 60) return T["tui.ago.now"] || "now";
@@ -5071,17 +5074,79 @@ function troubleRow(nav, folders) {
   }
 }
 
+// ── Renaming where it stands ──────────────────
+// "Rename" turns the name into a field in place, holding what it says now;
+// leaving the field keeps what was typed, Escape keeps what was there. The
+// list is drawn afresh many times a second, so the field is drawn by the list
+// itself (nameSlot) and the list holds still while it is up
+let renaming = null;
+// Names just given, shown until the app says the same -- or a few seconds, when
+// it never does -- so the old name does not flash back while it is written down
+const renamed = new Map();
+function shownName(key, name) {
+  const r = renamed.get(key);
+  if (!r) return name;
+  if (r.name === name || Date.now() - r.at > 5000) { renamed.delete(key); return name; }
+  return r.name;
+}
+function startRename(where, key) {
+  renaming = {where, key, input:null};
+  if (where === "strip") drawStrip(); else drawTabs();
+}
+// Held still while its field is up and in the page
+const renameHeld = where => !!(renaming && renaming.where === where && renaming.input && renaming.input.isConnected);
+function nameSlot(where, key, now, save, cls) {
+  if (!renaming || renaming.where !== where || renaming.key !== key) return el("span", {class:cls}, shownName(key, now));
+  if (renaming.input) return renaming.input;
+  const input = el("input", {class:"rename", type:"text", spellcheck:"false", autocomplete:"off"});
+  input.value = now;
+  let done = false;
+  const finish = keep => {
+    if (done) return;
+    done = true;
+    renaming = null;
+    const v = input.value.trim();
+    if (keep && v !== now) {
+      if (v) renamed.set(key, {name:v, at:Date.now()});
+      save(v);
+    }
+    if (where === "strip") drawStrip(); else drawTabs();
+  };
+  input.onblur = () => finish(true);
+  input.onkeydown = e => {
+    e.stopPropagation();
+    if (typingIME(e)) return;
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  };
+  // A press inside the field is typing, not a press on the row under it
+  for (const ev of ["onclick", "onmousedown", "onpointerdown", "ondblclick", "oncontextmenu"]) input[ev] = e => e.stopPropagation();
+  renaming.input = input;
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+  return input;
+}
+
+// A tab's own menu, from its row in the list or its tab over the pane: its
+// name, changed where it stands, and its settings page -- which the list of
+// settings no longer carries. A browser or a git panel has neither
+function tabMenu(anchor, t, where) {
+  if (t.kind !== "pty" || t.settings) return;
+  const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
+  openList(anchor, [
+    item(T["tui.menu.rename"] || "", () => startRename(where || "tabs", "t:" + t.index)),
+    item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),
+  ]);
+}
 function folderMenu(e, g) {
   const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
   openList(e.currentTarget, [
     // First when the folder is not here at all: nothing else in this menu can
     // be done in a folder that does not exist
     ailing(g) ? item(T["tui.repair.go"] || "", () => openRepair(g)) : null,
-    item(T["tui.tab.add"] || "ADD TAB", () => addTabHere(g)),
-    // The name, the colour and getting rid of it are settings, and settings
-    // live on that folder's own page rather than in a menu that grows a little
-    // every time one is added. Folding is the caret on the row itself
-    item(T["tui.folder.edit"] || "Edit...", () => openSettings(null, false, g.folder)),
+    item(T["tui.menu.rename"] || "", () => startRename("tabs", "f:" + g.folder)),
+    // Everything else about it -- the colour, where it is, taking it off the
+    // list -- is on its own page in the settings
+    item(T["tui.menu.edit"] || "", () => openSettings(null, false, g.folder)),
   ]);
 }
 let folderMenuAway = null;
@@ -6408,7 +6473,7 @@ function cutMark() {
 // the app's to decide (closeTab)
 let stripSel = null;
 function drawStrip() {
-  if (heldDown("strip")) return;
+  if (heldDown("strip") || renameHeld("strip")) return;
   const strip = document.getElementById("strip");
   if (!strip) return;
   const was = strip.hidden;
@@ -6441,9 +6506,10 @@ function drawStrip() {
         // The middle button closes, on the release as a click does. Its press
         // is kept from starting the page's scroll-by-dragging
         onmousedown:e => { if (e.button === 1) e.preventDefault(); },
-        onauxclick:e => { if (e.button === 1) { e.preventDefault(); closeTab(t); } }},
+        onauxclick:e => { if (e.button === 1) { e.preventDefault(); closeTab(t); } },
+        oncontextmenu:e => { e.preventDefault(); tabMenu(e.currentTarget, t, "strip"); }},
       markFor(t) || el("span", {class:"dot " + t.state}),
-      el("span", {class:"nm"}, t.name || ""),
+      tabName(t, "strip", "nm"),
       el("span", {class:"x", title:T["tui.tab.close"] || "",
           onclick:e => { e.stopPropagation(); closeTab(t); }}, "\u2715"));
     if (t.index === S.active) sel = one;
@@ -9672,7 +9738,7 @@ document.addEventListener("mouseup", e => {
   focus();
 });
 document.addEventListener("contextmenu", e => {
-  if (inBar(e)) return;
+  if (inBar(e) || e.defaultPrevented) return;
   e.preventDefault();
   send({kind:"paste"});
   focus();
@@ -14759,10 +14825,22 @@ mod tests {
 
     #[test]
     fn an_ai_row_says_its_state_its_name_and_how_long_ago() {
-        assert!(PAGE.contains(r#"el("span", {class:"st"}, t.state_label || t.state), el("span", {class:"who"}, " - " + t.name))"#),
+        assert!(PAGE.contains(r#"el("span", {class:"st"}, t.state_label || t.state), el("span", {class:"who"}, " - ", tabName(t, "tabs", "")))"#),
             "an AI's row does not lead with its state");
         assert!(PAGE.contains("t.ai && t.since ? agoMark(t.since) : spark(t.activity));"), "an AI's row does not say how long ago");
         assert!(PAGE.contains(r##"for (const a of document.querySelectorAll("#tabs .ago[data-since]")) {"##), "the time goes stale on a quiet board");
+    }
+
+    #[test]
+    fn a_folder_or_a_tab_is_renamed_where_it_stands_and_edited_from_its_right_click() {
+        assert!(PAGE.contains(r#"item(T["tui.menu.rename"] || "", () => startRename("tabs", "f:" + g.folder)),"#), "a folder's menu cannot rename it");
+        assert!(PAGE.contains(r#"item(T["tui.menu.edit"] || "", () => openSettings(null, false, g.folder)),"#), "a folder's menu cannot edit it");
+        assert!(PAGE.contains(r#"item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),"#), "a tab's menu cannot edit it");
+        assert!(PAGE.contains(r#"oncontextmenu:e => { e.preventDefault(); tabMenu(e.currentTarget, t, "strip"); }},"#), "a tab over the pane has no menu");
+        assert!(PAGE.contains("input.onblur = () => finish(true);"), "leaving the field does not keep the name");
+        assert!(PAGE.contains(r#"send({kind:"tabname", tab:t.index, name:v})"#), "a tab's new name is not sent");
+        assert!(PAGE.contains(r#"if (heldDown("tabs") || renameHeld("tabs")) return;"#), "the list is redrawn over the field being typed in");
+        assert!(PAGE.contains(r#"if (inBar(e) || e.defaultPrevented) return;"#), "a right-click that opened a menu also pastes");
     }
 
     #[test]

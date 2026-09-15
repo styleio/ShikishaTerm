@@ -2750,6 +2750,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             shell.inject(e);
                         }
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::TabName { tab, name }) => {
+                        shell.mail().tab_names.push((tab, name));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderName { folder, name }) => {
                         shell.mail().folder_names.push((folder, name));
                     }
@@ -4519,6 +4522,29 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         // A folder renamed in the list, or taken out of it. Both are changes
         // to the settings, so the reload that follows is what actually shows
+        // A tab renamed where it stands. The settings match a running tab to
+        // its entry by title, so the running tab takes the new title first:
+        // the reload that follows the write then finds it under that title,
+        // rather than ending it and starting another under the new one
+        for (index, name) in shell.mail().take_tab_names() {
+            let Some(i) = session_at(&surfaces, index) else { continue };
+            let Some(old) = tabs.get(i).map(|t| t.title.clone()) else { continue };
+            let wanted = name.trim();
+            if !wanted.is_empty() && wanted != old && tabs.iter().any(|t| t.title == wanted) {
+                flash = Some(i18n::tp("err.tab.name_taken", &[("name", wanted)]));
+                continue;
+            }
+            let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
+            match config::rename_tab(&desk, &old, wanted) {
+                Ok(Some(title)) => {
+                    if let Some(t) = tabs.get_mut(i) {
+                        t.title = title;
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => flash = Some(format!("{e:#}")),
+            }
+        }
         for (folder, name) in shell.mail().take_folder_names() {
             let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
             if let Err(e) = config::rename_folder(&desk, std::path::Path::new(&folder), &name) {
