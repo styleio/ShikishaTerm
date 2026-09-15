@@ -609,8 +609,8 @@ impl WinSurface {
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
                 Ev::CloseSettings => self.mail.close_settings = true,
                 Ev::SettingsFull => self.mail.settings_full = true,
-                Ev::OpenSettings { section, ret, folder, tabpos } => {
-                    self.mail.open_settings = Some((section, ret, folder, tabpos))
+                Ev::OpenSettings { section, ret, folder, tabpos, tabname } => {
+                    self.mail.open_settings = Some((section, ret, folder, tabpos, tabname))
                 }
                 Ev::VaultSearch { query } => self.mail.vault_queries.push(query),
                 ev @ Ev::VaultOpen { .. } => self.mail.vault_opens.push(ev),

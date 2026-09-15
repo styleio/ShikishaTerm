@@ -16,7 +16,7 @@ use shikisha_shared::Ev;
 /// whether to come back to the board once saved, which item to look at,
 /// and which tab of it. Four maybes with no names between them was one
 /// too many
-pub type SettingsWanted = (Option<String>, bool, Option<String>, Option<u32>);
+pub type SettingsWanted = (Option<String>, bool, Option<String>, Option<u32>, Option<String>);
 
 /// Reports from a shell, sorted and waiting.
 #[derive(Default)]

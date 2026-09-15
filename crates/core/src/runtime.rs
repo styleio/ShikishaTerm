@@ -5592,7 +5592,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // The sidebar gear. Opens settings from any tab (the menu "e" key only
         // fires while INDEX is in view, so the gear needs its own path).
         // The desk being viewed rides along so its group opens expanded.
-        if let Some((section, ret, folder, tabpos)) = shell.take_open_settings() {
+        if let Some((section, ret, folder, tabpos, tabname)) = shell.take_open_settings() {
             // The gear passes the desk being viewed, and the tab in view so
             // the page opens on its card; a deep-link shortcut may instead name
             // a section to land on and ask to return once saved.
@@ -5602,6 +5602,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             if let Some(n) = tabpos {
                 query += &format!("&tabpos={n}");
+            }
+            if let Some(t) = tabname {
+                query += &format!("&tabname={}", urlish(&t));
             }
             if let Some(s) = section {
                 query += &format!("&section={s}");
@@ -5716,7 +5719,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if let Some(open) = shell.mail().take_update_card() {
             update::card_answered();
             if open {
-                shell.mail().open_settings = Some((Some("update".into()), false, None, None));
+                shell.mail().open_settings = Some((Some("update".into()), false, None, None, None));
             }
         }
         // A tab asked for from the screen: a row in the list or the bar, a

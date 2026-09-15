@@ -188,7 +188,7 @@ impl Shell for Headless {
     fn inject(&mut self, ev: Event) { self.typed.push_back(ev); }
     fn toggle_tab_bar(&self) {}
     fn toggle_side_bar(&self) {}
-    fn take_open_settings( &mut self, ) -> Option<(Option<String>, bool, Option<String>, Option<u32>)> { None }
+    fn take_open_settings( &mut self, ) -> Option<crate::mailbox::SettingsWanted> { None }
     fn open_vault(&self) {}
     fn open_palette(&self) {}
     fn open_quick(&self) {}
