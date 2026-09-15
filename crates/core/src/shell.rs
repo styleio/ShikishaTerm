@@ -1991,7 +1991,40 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bpick .chip { flex:none; width:10px; height:10px; border-radius:var(--r-chip); background:var(--line); }
   #branch #bproj.empty .nm { color:var(--faint); }
   #branch #bproj.ring { animation:apring .9s 2; }
-  #branch #bbase { flex:none; max-width:45%; }
+  /* What it grows from is chosen in the Branch tab now, and said under the
+     tabs; the old picker beside the name is kept only as what the plan's
+     answers are written into */
+  #branch #bbase { display:none; }
+  /* The three ways to say what it is, as line tabs: the one in use underlined
+     in the colour that means focus */
+  #branch .btabs { display:flex; gap:var(--s4); border-bottom:1px solid var(--line); }
+  #branch .btabs button { border:0; border-bottom:2px solid transparent; border-radius:0; background:transparent;
+    min-height:28px; padding:0; font-size:12px; color:var(--dim); font-weight:normal; }
+  #branch .btabs button:hover { color:var(--text); border-color:transparent; border-bottom-color:var(--edge); }
+  #branch .btabs button.on { color:var(--text); border-bottom-color:var(--brand); }
+  #branch .bsrcrow { position:relative; }
+  #branch .bsrcrow[hidden], #branch .bchip[hidden], #branch .bresults[hidden], #branch .brow2[hidden] { display:none; }
+  #branch .bsrcico { position:absolute; left:10px; top:50%; transform:translateY(-50%); display:flex; color:var(--dim); }
+  #branch .bsrcico.spin { animation:pulse 1.2s step-end infinite; }
+  #branch #bsrc { width:100%; height:36px; box-sizing:border-box; padding:0 12px 0 32px; font:inherit; font-size:13px;
+    color:var(--text); background:var(--bg); border:1px solid var(--edge); border-radius:var(--r-ctl); outline:none; }
+  #branch #bsrc:focus { border-color:var(--brand); box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  /* The list under the search: no taller than leaves the dialog's foot in view */
+  #branch .bresults { max-height:7.5rem; overflow:auto; border:1px solid var(--line); border-radius:var(--r-ctl); }
+  #branch .bres { display:flex; align-items:center; gap:var(--s2); padding:6px 12px; font-size:12px; color:var(--text); cursor:pointer; }
+  #branch .bres:hover, #branch .bres.hi { background:var(--raise); }
+  #branch .bres .ico, #branch .bchip .ico { display:flex; color:var(--dim); flex:none; }
+  #branch .bres .nm { flex:1; min-width:0; font-weight:400; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #branch .bempty { padding:12px; font-size:11.5px; color:var(--faint); text-align:center; }
+  #branch .bskel { height:28px; margin:4px 8px; border-radius:var(--r-ctl); background:var(--raise); }
+  #branch .baccts { display:flex; flex-wrap:wrap; gap:var(--s2); justify-content:center; padding:0 12px 12px; }
+  /* What was chosen, in place of the search */
+  #branch .bchip { display:flex; align-items:center; gap:var(--s2); height:36px; box-sizing:border-box; padding:0 4px 0 10px;
+    border:1px solid var(--edge); border-radius:var(--r-ctl); background:var(--raise); font-size:13px; color:var(--text); }
+  #branch .bchip .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #branch .bchip button.bicon { width:24px; min-height:24px; }
+  #branch .bfrom { font-size:11.5px; color:var(--faint); }
+  #branch .bfrom:empty { display:none; }
   #branch .bprojsay { font-size:11.5px; color:var(--faint); }
   #branch .bprojsay:empty { display:none; }
   #branch .bdestf[hidden], #branch .bstartf[hidden] { display:none; }
@@ -2621,7 +2654,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       </div>
       <div class="bfield">
         <label class="blabel" for="bq"></label>
+        <div class="btabs" role="tablist"><button type="button" data-tab="github"></button><button type="button" data-tab="branch"></button><button type="button" data-tab="name"></button></div>
+        <div class="bsrcrow" hidden><span class="bsrcico"></span><input id="bsrc" type="text" autocomplete="off" spellcheck="false"></div>
+        <div class="bchip" hidden></div>
+        <div class="bresults" hidden></div>
         <div class="brow2"><div id="bbase" class="bpick" tabindex="0"></div><input id="bq" type="text" autocomplete="off" spellcheck="false"></div>
+        <div class="bfrom"></div>
       </div>
       <div class="bfield bstartf" hidden>
         <div class="blabelrow"><span class="blabel"></span><button class="bicon bconf" type="button"></button></div>
@@ -3242,6 +3280,8 @@ function issueStart(row) {
 
 window.__issues = function (d) {
   if (!d || !d.act) return;
+  // The worktree dialog's own questions, under numbers of its own
+  if (typeof d.seq === "string" && d.seq.startsWith("wt-")) { ghAnswer(d); return; }
   // The settings changed or another desk came to the front: the projects, their
   // accounts and so what could be read are asked for again, and what is on
   // screen stays until the answers replace it
@@ -3254,6 +3294,8 @@ window.__issues = function (d) {
   }
   if (d.act === "projects") {
     I.projects = d.projects || [];
+    ghAccounts = d.accounts || [];
+    if (ghWaiting) { ghWaiting = false; ghSearch(ghText); }
     if (I.project && !issueProject(I.project)) I.project = "";
     if (!I.list) issuesList(1);
     drawIssues();
@@ -4741,6 +4783,8 @@ const PICK_ICON = {
   globe: '<circle cx="7" cy="7" r="5.5"/><path d="M1.5 7h11M7 1.5c1.6 1.6 2.4 3.4 2.4 5.5S8.6 10.9 7 12.5M7 1.5C5.4 3.1 4.6 4.9 4.6 7s.8 3.9 2.4 5.5"/>',
   plus: '<path d="M7 2.5v9M2.5 7h9"/>',
   sliders: '<path d="M2 4h6M11 4h1M2 10h1M6 10h6"/><circle cx="9.5" cy="4" r="1.5"/><circle cx="4.5" cy="10" r="1.5"/>',
+  pr: '<circle cx="4" cy="3.5" r="1.3"/><circle cx="4" cy="10.5" r="1.3"/><circle cx="10" cy="10.5" r="1.3"/><path d="M4 4.8v4.4M10 9.2V5.5A1.5 1.5 0 0 0 8.5 4H6.5M7.8 2.7 6.5 4l1.3 1.3"/>',
+  issue: '<circle cx="7" cy="7" r="5.2"/><circle cx="7" cy="7" r="1" fill="currentColor"/>',
   branch: '<circle cx="4" cy="3.5" r="1.3"/><circle cx="4" cy="10.5" r="1.3"/><circle cx="10" cy="5" r="1.3"/><path d="M4 4.8v4.4M10 6.3c0 2-2 2.5-5 3.2"/>',
   folderOpen: '<path d="M1.5 11.5V3.5h4l1.3 1.5h4.7v1.5"/><path d="M1.5 11.5 3.2 7h9.3l-1.7 4.5z"/>',
   open: '<path d="M8.5 2h3.5v3.5"/><path d="M6.5 7.5 12 2"/><path d="M10.5 8v3.5a.5.5 0 0 1-.5.5H2.5a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5H6"/>',
@@ -5168,6 +5212,17 @@ function openBranch(g, preset) {
   box.dataset.key = "";
   box.textContent = "";
   branchBase = preset.base || "";
+  branchBaseChosen = !!preset.base;
+  // Opened for an issue or a pull request, that is what it is made from
+  branchTab = preset.link ? "github" : "name";
+  branchPick = preset.link ? Object.assign({title: (preset.about || "").replace(/^#\d+\s*/, "")}, preset.link) : null;
+  branchNamed = !!preset.name && !preset.link;
+  branchHi = -1;
+  ghRows = {issue: [], pr: []}; ghWant = {issue: "", pr: ""}; ghSaid = ""; ghBusy = false; ghFresh = false;
+  document.getElementById("bsrc").value = "";
+  const tabNames = {github: T["tui.branch.tab.github"] || "GitHub", branch: T["tui.branch.tab.branch"] || "", name: T["tui.branch.tab.name"] || ""};
+  for (const t of b.querySelectorAll(".btabs button")) t.textContent = tabNames[t.dataset.tab] || "";
+  drawBranchTabs(b);
   branchBases = [];
   const sel = document.getElementById("bbase");
   sel.dataset.said = "";
@@ -5254,6 +5309,236 @@ function drawProject(b, p) {
     openList(box, rows);
   };
 }
+// ── Name, or what to create it from ──────────────────
+// Three ways to say what the worktree is: its name; the branch it grows from;
+// or an issue or a pull request on GitHub, which names it and links it. One
+// tab at a time. What each chose stays when another tab is looked at
+let branchTab = "name";
+// The issue or pull request picked, as a row of the list
+let branchPick = null;
+// Whether the name was typed by a person: then a pick does not write over it
+let branchNamed = false;
+// The newest GitHub question and its rows. Issues and pull requests are asked
+// separately and shown as one list
+let ghSeq = 0;
+let ghWant = {issue: "", pr: ""};
+let ghRows = {issue: [], pr: []};
+let ghSaid = "";
+let ghBusy = false;
+let ghTimer = 0;
+let ghText = "";
+let ghWaiting = false;
+let ghAccounts = [];
+let ghFresh = false;
+let branchHi = -1;
+
+function drawBranchTabs(b) {
+  const tabs = b.querySelector(".btabs");
+  for (const t of tabs.children) {
+    const on = t.dataset.tab === branchTab;
+    t.classList.toggle("on", on);
+    t.setAttribute("aria-selected", String(on));
+  }
+  const src = b.querySelector(".bsrcrow");
+  const chip = b.querySelector(".bchip");
+  const results = b.querySelector(".bresults");
+  const named = b.querySelector(".brow2");
+  const input = document.getElementById("bsrc");
+  named.hidden = branchTab !== "name";
+  const picked = branchTab === "github" ? branchPick : branchTab === "branch" && branchBaseChosen ? {branch: branchBase} : null;
+  src.hidden = branchTab === "name" || !!picked;
+  results.hidden = src.hidden;
+  chip.hidden = !picked;
+  if (picked) drawBranchChip(chip, picked);
+  const icon = b.querySelector(".bsrcico");
+  const want = branchTab === "github" ? (ghBusy ? "refresh" : "globe") : "branch";
+  if (icon.dataset.icon !== want) { icon.dataset.icon = want; icon.textContent = ""; icon.append(pickIcon(want)); }
+  icon.classList.toggle("spin", branchTab === "github" && ghBusy);
+  input.placeholder = branchTab === "github" ? (T["tui.branch.gh.search"] || "") : (T["tui.branch.base.search"] || "");
+  // What it grows from, said under whichever tab is up: the one thing the
+  // other two tabs decide without showing it
+  b.querySelector(".bfrom").textContent = branchBase ? (T["tui.branch.from.say"] || "{name}").replace("{name}", branchBase) : "";
+  if (!results.hidden) drawBranchResults(b);
+}
+
+// The chosen issue, pull request or branch, in place of the search: what it
+// is, a way to open it, and a way to take it back
+function drawBranchChip(chip, picked) {
+  chip.textContent = "";
+  if (picked.branch !== undefined) {
+    chip.append(el("span", {class:"ico"}, pickIcon("branch")),
+      el("span", {class:"nm"}, (T["tui.branch.from"] || "{name}").replace("{name}", picked.branch)));
+  } else {
+    chip.append(el("span", {class:"ico"}, pickIcon(picked.kind === "pr" ? "pr" : "issue")),
+      el("span", {class:"nm"}, el("b", {}, "#" + picked.number), " " + (picked.title || "")),
+      picked.url ? el("button", {type:"button", class:"bicon", title:T["tui.branch.gh.open"] || "",
+        onclick:e => { e.stopPropagation(); send({kind:"issues", act:"link", args:{url: picked.url}}); }}, pickIcon("open")) : null);
+  }
+  chip.append(el("button", {type:"button", class:"bicon", title:T["tui.branch.gh.clear"] || "",
+    onclick:e => { e.stopPropagation(); clearBranchPick(); }}, "✕"));
+}
+
+function clearBranchPick() {
+  const b = document.getElementById("branch");
+  if (branchTab === "branch") {
+    branchBaseChosen = false;
+    branchBase = "";
+    const sel = document.getElementById("bbase");
+    if (sel) sel.dataset.said = "";
+  } else {
+    const q = document.getElementById("bq");
+    if (!branchNamed && branchPick) q.value = "";
+    branchPick = null;
+    branchLink = null;
+    b.querySelector(".bsay").textContent = "";
+  }
+  drawBranchTabs(b);
+  askBranch();
+  setTimeout(() => document.getElementById("bsrc").focus(), 0);
+}
+
+// The list under the search: branches filtered by what is typed, or what
+// GitHub answered. Rows are chosen with a press, or with the arrows and Enter
+function drawBranchResults(b) {
+  const box = b.querySelector(".bresults");
+  box.textContent = "";
+  const rows = branchResultRows();
+  if (branchHi >= rows.length) branchHi = rows.length - 1;
+  if (branchTab === "github" && !rows.length) {
+    if (ghBusy) {
+      for (let i = 0; i < 3; i++) box.append(el("div", {class:"bskel"}));
+      return;
+    }
+    box.append(el("div", {class:"bempty"}, ghSaid || T["tui.branch.gh.empty"] || ""));
+    // No account to read GitHub with: the accounts this desk has, one press
+    // each, for this project
+    if (ghAccounts.length && ghSaid === (T["tui.branch.gh.unset"] || "")) {
+      const pick = el("div", {class:"baccts"});
+      for (const a of ghAccounts) {
+        pick.append(el("button", {type:"button", onclick:() => {
+          send({kind:"gitaccount", panel:"folder:" + branchFrom, account:a.name});
+          ghSaid = "";
+          ghBusy = true;
+          drawBranchTabs(b);
+          setTimeout(() => { ghFresh = false; ghSearch(ghText); }, 800);
+        }}, (T["tui.branch.gh.use"] || "{name}").replace("{name}", a.name)));
+      }
+      box.append(pick);
+    }
+    return;
+  }
+  if (!rows.length) {
+    box.append(el("div", {class:"bempty"}, T["tui.branch.base.none"] || ""));
+    return;
+  }
+  rows.forEach((r, i) => {
+    const row = branchTab === "github"
+      ? el("div", {class:"bres" + (i === branchHi ? " hi" : "")},
+          el("span", {class:"ico"}, pickIcon(r.kind === "pr" ? "pr" : "issue")),
+          el("b", {}, "#" + r.number), el("span", {class:"nm"}, r.title || ""))
+      : el("div", {class:"bres" + (i === branchHi ? " hi" : "")},
+          el("span", {class:"ico"}, pickIcon("branch")), el("span", {class:"nm"}, r));
+    row.onmousedown = e => e.preventDefault();
+    row.onclick = () => chooseBranchResult(r);
+    box.append(row);
+  });
+}
+function branchResultRows() {
+  const q = (document.getElementById("bsrc").value || "").trim().toLowerCase();
+  if (branchTab === "branch") return branchBases.filter(n => !q || n.toLowerCase().includes(q)).slice(0, 50);
+  return ghRows.issue.concat(ghRows.pr).sort((a, b) => (b.number || 0) - (a.number || 0)).slice(0, 12);
+}
+function chooseBranchResult(r) {
+  const b = document.getElementById("branch");
+  if (branchTab === "branch") {
+    branchBase = r;
+    branchBaseChosen = true;
+    const sel = document.getElementById("bbase");
+    if (sel) sel.dataset.said = "";
+  } else {
+    branchPick = r;
+    branchLink = {kind: r.kind, repo: r.repo, number: r.number, url: r.url};
+    const q = document.getElementById("bq");
+    if (!branchNamed) q.value = r.workspace || "";
+    b.querySelector(".bsay").textContent = (T["tui.branch.for_item"] || "{item}").replace("{item}", "#" + r.number + " " + (r.title || ""));
+    // A pull request is worked on on its own branch, fetched first
+    if (r.kind === "pr") {
+      const proj = ghProject();
+      if (proj) send({kind:"issues", act:"prepare", args:{kind:"pr", project:proj.name, number:r.number, seq:"wt-prep-" + (++ghSeq)}});
+    }
+  }
+  branchHi = -1;
+  drawBranchTabs(b);
+  askBranch();
+}
+
+// The Issue tab's project this worktree's project is, by its folder
+function ghProject() {
+  return ((I && I.projects) || []).find(p => sameFolder(p.dir, branchFrom)) || null;
+}
+// Ask GitHub, a moment after the last letter. The open ones when nothing is
+// typed. Asked of the same questions the Issue tab asks, under a number of
+// this dialog's own, so the two never take each other's answers
+function ghSearch(text) {
+  ghText = text || "";
+  if (!branchFrom) return;
+  // The projects are asked afresh once each time the dialog opens: the
+  // folder may have been added, or given an account, since they were last read
+  if (!I.projects || !ghFresh) {
+    ghFresh = true;
+    ghWaiting = true;
+    ghBusy = true;
+    issuesAsk("projects", {});
+    drawBranchTabs(document.getElementById("branch"));
+    return;
+  }
+  const proj = ghProject();
+  if (!proj) {
+    ghBusy = false;
+    ghRows = {issue: [], pr: []};
+    ghSaid = T["tui.branch.gh.norepo"] || "";
+    drawBranchTabs(document.getElementById("branch"));
+    return;
+  }
+  if (proj.unset) {
+    ghBusy = false;
+    ghRows = {issue: [], pr: []};
+    ghSaid = T["tui.branch.gh.unset"] || "";
+    drawBranchTabs(document.getElementById("branch"));
+    return;
+  }
+  ghSaid = "";
+  ghBusy = true;
+  const n = ++ghSeq;
+  for (const kind of ["issue", "pr"]) {
+    ghWant[kind] = "wt-" + kind + "-" + n;
+    send({kind:"issues", act:"list", args:{kind, project:proj.name, text:ghText, page:1, seq:ghWant[kind]}});
+  }
+  drawBranchTabs(document.getElementById("branch"));
+}
+// An answer to one of this dialog's questions
+function ghAnswer(d) {
+  const b = document.getElementById("branch");
+  if (d.act === "prepare") {
+    if (!d.ok) { b.querySelector(".berr").textContent = d.error || ""; return; }
+    const data = d.data || {};
+    if (data.base) { branchBase = data.base; branchBaseChosen = true; }
+    const q = document.getElementById("bq");
+    if (!branchNamed && data.branch) q.value = data.branch;
+    drawBranchTabs(b);
+    askBranch();
+    return;
+  }
+  const kind = d.kind === "pr" ? "pr" : "issue";
+  if (d.seq !== ghWant[kind]) return;
+  ghWant[kind] = "";
+  ghRows[kind] = d.ok ? (d.items || []) : [];
+  if (!d.ok) ghSaid = d.error || "";
+  else if ((d.problems || []).length) ghSaid = (d.problems[0] || {}).error || "";
+  ghBusy = !!(ghWant.issue || ghWant.pr);
+  if (!b.hidden && branchTab === "github") drawBranchTabs(b);
+}
+
 // A path said the short way: this PC's home as ~. Held left to right inside
 // the marks on either side: the box it sits in runs right to left so a long
 // path is cut at the front, and without them the ~ and the separators drift to
@@ -5367,6 +5652,8 @@ function drawStart(b) {
 
 // What it will grow from: whatever the picker is showing
 let branchBase = "";
+// Whether that base was chosen in the Branch tab rather than suggested
+let branchBaseChosen = false;
 let branchHost = "";
 function basing() { return branchBase; }
 // Whether the project's own preparation runs. On unless somebody turned it off
@@ -5432,6 +5719,7 @@ function drawBranch() {
   drawCarry(b, here ? (p.carry || []) : []);
   showMore(b, !b.querySelector(".bextra").hidden);
   drawBases(b, here ? p : null);
+  drawBranchTabs(b);
   // The reason a press without a project was refused stays until a project is
   // chosen; the app's own errors are about the project that is
   const err = b.querySelector(".berr");
@@ -5704,8 +5992,48 @@ function drawCarry(b, items) {
       }
     });
   }
+  // The tabs. GitHub asks for the open ones the moment it is opened, so the
+  // list is there before a letter is typed
+  for (const t of b.querySelectorAll(".btabs button")) {
+    t.addEventListener("click", () => {
+      branchTab = t.dataset.tab;
+      branchHi = -1;
+      drawBranchTabs(b);
+      if (branchTab === "github" && !branchPick && !ghBusy && !ghRows.issue.length && !ghRows.pr.length) ghSearch(document.getElementById("bsrc").value);
+      setTimeout(() => (branchTab === "name" ? document.getElementById("bq") : document.getElementById("bsrc")).focus(), 0);
+    });
+  }
+  const src = document.getElementById("bsrc");
+  src.addEventListener("input", () => {
+    branchHi = -1;
+    if (branchTab === "github") {
+      clearTimeout(ghTimer);
+      ghTimer = setTimeout(() => ghSearch(src.value), 200);
+    }
+    drawBranchTabs(b);
+  });
+  src.addEventListener("keydown", e => {
+    if (typingIME(e) || e.ctrlKey || e.metaKey) return;
+    const rows = branchResultRows();
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!rows.length) return;
+      branchHi = e.key === "ArrowDown" ? (branchHi + 1) % rows.length : (branchHi <= 0 ? rows.length - 1 : branchHi - 1);
+      drawBranchResults(b);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      // A row the arrows are on is chosen; with none, Enter makes the worktree
+      if (branchHi >= 0 && rows[branchHi]) chooseBranchResult(rows[branchHi]);
+      else if (!b.querySelector(".bgo .go").disabled) b.querySelector(".bgo .go").click();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      // The search first, then the dialog
+      if (src.value) { src.value = ""; src.dispatchEvent(new Event("input")); } else closeBranch();
+    }
+  });
   const q = document.getElementById("bq");
-  q.addEventListener("input", askBranch);
+  q.addEventListener("input", () => { branchNamed = !!q.value.trim(); askBranch(); });
   q.addEventListener("keydown", e => {
     if (e.key === "Escape") { e.preventDefault(); closeBranch(); }
     if (typingIME(e) || e.ctrlKey || e.metaKey) return;
@@ -14104,6 +14432,23 @@ mod tests {
             "an AI's row does not lead with its state");
         assert!(PAGE.contains("t.ai && t.since ? agoMark(t.since) : spark(t.activity));"), "an AI's row does not say how long ago");
         assert!(PAGE.contains(r##"for (const a of document.querySelectorAll("#tabs .ago[data-since]")) {"##), "the time goes stale on a quiet board");
+    }
+
+    #[test]
+    fn a_worktree_can_be_made_from_a_github_issue_or_pull_request_or_a_branch() {
+        let dialog = PAGE.split(r#"<div id="branch" hidden>"#).nth(1).unwrap_or_default();
+        for tab in ["github", "branch", "name"] {
+            assert!(dialog.contains(&format!(r#"data-tab="{tab}""#)), "the dialog has no {tab} tab");
+        }
+        assert!(PAGE.contains(r#"send({kind:"issues", act:"list", args:{kind, project:proj.name, text:ghText, page:1, seq:ghWant[kind]}});"#),
+            "GitHub is not asked from the dialog");
+        assert!(PAGE.contains(r#"if (typeof d.seq === "string" && d.seq.startsWith("wt-")) { ghAnswer(d); return; }"#),
+            "the dialog's answers go to the Issue tab");
+        assert!(PAGE.contains(r#"if (d.seq !== ghWant[kind]) return;"#), "an old answer writes over a newer search");
+        assert!(PAGE.contains(r#"send({kind:"issues", act:"prepare", args:{kind:"pr", project:proj.name, number:r.number, seq:"wt-prep-" + (++ghSeq)}});"#),
+            "a pull request is not fetched before its worktree is made");
+        assert!(PAGE.contains(r#"if (!branchNamed) q.value = r.workspace || "";"#), "a pick does not name the worktree");
+        assert!(PAGE.contains("if (!I.projects || !ghFresh) {"), "a folder added a moment ago is not a GitHub project yet");
     }
 
     #[test]

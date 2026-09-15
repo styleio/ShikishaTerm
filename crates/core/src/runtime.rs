@@ -3722,9 +3722,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Surface::Git { key, .. } if *key == panel => Some(key.clone()),
                 _ => None,
             });
-            let saved = match git_tab {
-                Some(key) => config::save_git_account(&desk.id, config::GitChoiceAt::Tab(&key), &account),
-                None => match tab_places(&tabs)
+            // Named by its folder rather than by a panel: the worktree dialog
+            // choosing the account its GitHub search reads with
+            let by_folder = panel.strip_prefix("folder:").map(std::path::PathBuf::from);
+            let saved = match (git_tab, by_folder) {
+                (_, Some(dir)) => config::save_git_account(&desk.id, config::GitChoiceAt::Folder(&dir), &account),
+                (Some(key), None) => config::save_git_account(&desk.id, config::GitChoiceAt::Tab(&key), &account),
+                (None, None) => match tab_places(&tabs)
                     .into_iter()
                     .find(|p| p.key.matches(&panel) && !p.dir.as_os_str().is_empty())
                 {
@@ -4169,7 +4173,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         })
                     })
                     .collect();
-                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects}).to_string();
+                // The accounts a project can be given, for the screens that offer
+                // to choose one where reading GitHub needs it
+                let accounts: Vec<serde_json::Value> = desk
+                    .git_accounts
+                    .iter()
+                    .map(|a| serde_json::json!({"name": a.name, "gh": a.is_gh(), "host": a.host()}))
+                    .collect();
+                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects, "accounts": accounts}).to_string();
                 shell.push_issues(&js);
                 if let Some(r) = remote_ui.as_ref() {
                     r.push_state(format!("{{\"issues\":{js}}}"));

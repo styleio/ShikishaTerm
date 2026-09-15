@@ -644,8 +644,10 @@ mod drawn_away_tests {
             ]),
             (quiet.clone(), vec![(PathBuf::from(r"C:\wt\other-a"), None)]),
         ]);
-        // One of app's is on the desk already -- spelled differently -- and other's only one is
-        let on_desk = vec![PathBuf::from(r"c:/wt/APP-LOGIN"), PathBuf::from(r"C:\wt\other-a")];
+        // One of app's is on the desk already -- spelled differently where
+        // Windows spells one folder more than one way -- and other's only one is
+        let login = if cfg!(windows) { r"c:/wt/APP-LOGIN" } else { r"C:\wt\app-login" };
+        let on_desk = vec![PathBuf::from(login), PathBuf::from(r"C:\wt\other-a")];
         let none_kept = std::collections::BTreeSet::new();
         let found = super::discovered_of(&cuts, &on_desk, &none_kept);
         assert_eq!(found.len(), 1, "a project with nothing to offer is offered: {found:?}");
