@@ -281,6 +281,10 @@ pub enum Ev {
         /// terminal tabs of `folder` (0-based). A place, not a name, so a tab
         /// that was never named lands the same. Paired with `folder`.
         tabpos: Option<u32>,
+        /// The same tab's title, which lands on it first. The ordinal alone
+        /// counted tabs the settings do not count the same way -- one written
+        /// with nothing to run is a tab on one side and not on the other
+        tabname: Option<String>,
     },
     /// Save the newest run's replay.lua to the user's Downloads folder
     ReplaySave,
@@ -933,6 +937,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .map(str::to_string),
             ret: v.get("ret").and_then(|x| x.as_bool()).unwrap_or(false),
             tabpos: v.get("tabpos").and_then(|x| x.as_u64()).map(|n| n as u32),
+            tabname: v.get("tabname").and_then(|x| x.as_str()).filter(|s| !s.trim().is_empty()).map(str::to_string),
         },
         Some("menu") => Ev::Menu {
             key: v

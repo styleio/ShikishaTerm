@@ -4624,7 +4624,7 @@ function projectHead(g, kin, tabs) {
     // and what a new worktree of it is given
     rows.push(el("div", {onclick:() => { closeFolderMenu(); openSettings(git ? "project" : null, false, main.folder); }},
       T["tui.project.settings"] || ""));
-    openList(row, rows);
+    openList(row, rows, false, e);
   });
   return row;
 }
@@ -4867,7 +4867,7 @@ function tabRow(t, g, deep, head) {
     t.ai && t.since ? agoMark(t.since) : spark(t.activity));
   // Its settings are its own page, opened from here: the settings list no
   // longer carries every tab of every folder
-  row.addEventListener("contextmenu", e => { e.preventDefault(); tabMenu(row, t, "tabs"); });
+  row.addEventListener("contextmenu", e => { e.preventDefault(); tabMenu(row, t, "tabs", e); });
   // Where it is, then what it last said. Each only when there is one: a
   // blank line on every tab would spend the sidebar saying nothing
   if (t.place) {
@@ -4957,16 +4957,18 @@ function fold(folder) {
 // arrival touches this document, which shuts a native popup the instant it
 // opens -- the same thing that once kept the browser dock's dropdown from
 // staying open. A list of our own is untouched by any of that.
-function openList(anchor, rows, tall) {
+function openList(anchor, rows, tall, point) {
   closeFolderMenu();
   // A long list scrolls inside itself, and is measured that way
   const m = el("div", {class:"fmenu" + (tall ? " tall" : "")}, ...rows);
   document.body.append(m);
-  // Below what was pressed, and never off the bottom of the window
+  // Below what was pressed -- or, opened by a right-click, where the pointer
+  // is, the way every menu of that kind opens -- and never off the window
   const r = anchor.getBoundingClientRect();
   const box = m.getBoundingClientRect();
-  m.style.left = Math.min(r.left, window.innerWidth - box.width - 8) + "px";
-  m.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - box.height - 8)) + "px";
+  const x = point ? point.clientX : r.left, y = point ? point.clientY + 2 : r.bottom + 4;
+  m.style.left = Math.max(8, Math.min(x, window.innerWidth - box.width - 8)) + "px";
+  m.style.top = Math.max(8, Math.min(y, window.innerHeight - box.height - 8)) + "px";
   // A press anywhere else puts it away -- but a press *on it* must not, or the
   // list would be gone before the release that makes the click, and every
   // entry would look dead
@@ -5129,13 +5131,13 @@ function nameSlot(where, key, now, save, cls) {
 // A tab's own menu, from its row in the list or its tab over the pane: its
 // name, changed where it stands, and its settings page -- which the list of
 // settings no longer carries. A browser or a git panel has neither
-function tabMenu(anchor, t, where) {
+function tabMenu(anchor, t, where, e) {
   if (t.kind !== "pty" || t.settings) return;
   const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
   openList(anchor, [
     item(T["tui.menu.rename"] || "", () => startRename(where || "tabs", "t:" + t.index)),
     item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),
-  ]);
+  ], false, e);
 }
 function folderMenu(e, g) {
   const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
@@ -5147,7 +5149,7 @@ function folderMenu(e, g) {
     // Everything else about it -- the colour, where it is, taking it off the
     // list -- is on its own page in the settings
     item(T["tui.menu.edit"] || "", () => openSettings(null, false, g.folder)),
-  ]);
+  ], false, e);
 }
 let folderMenuAway = null;
 function closeFolderMenu() {
@@ -6507,7 +6509,7 @@ function drawStrip() {
         // is kept from starting the page's scroll-by-dragging
         onmousedown:e => { if (e.button === 1) e.preventDefault(); },
         onauxclick:e => { if (e.button === 1) { e.preventDefault(); closeTab(t); } },
-        oncontextmenu:e => { e.preventDefault(); tabMenu(e.currentTarget, t, "strip"); }},
+        oncontextmenu:e => { e.preventDefault(); tabMenu(e.currentTarget, t, "strip", e); }},
       markFor(t) || el("span", {class:"dot " + t.state}),
       tabName(t, "strip", "nm"),
       el("span", {class:"x", title:T["tui.tab.close"] || "",
@@ -10746,6 +10748,7 @@ function openSettings(section, ret, folder, tab) {
   // folder's row) and a tab is actually in view (INDEX is no tab) -- or when a
   // tab's own row asked, which names the tab itself
   let tabpos = null;
+  let tabname = null;
   if (tab || (!section && !folder && S && !S.board)) {
     const at = tab || (S.tabs || []).find(t => t.index === S.active);
     if (at && at.kind === "pty" && !at.settings) {
@@ -10756,6 +10759,7 @@ function openSettings(section, ret, folder, tab) {
       const sibs = (S.tabs || []).filter(t =>
         t.kind === "pty" && !t.settings && (t.group == null ? null : t.group) === grp);
       tabpos = sibs.indexOf(at);
+      tabname = at.name || null;
       const g = grp != null ? (S.groups || [])[grp] : null;
       if (g && g.folder) folder = g.folder;
     }
@@ -10769,10 +10773,11 @@ function openSettings(section, ret, folder, tab) {
     if (ret) p.ret = "1";
     if (folder) p.folder = folder;
     if (tabpos != null) p.tabpos = tabpos;
+    if (tabname) p.tabname = tabname;
     walkToSettings(p);
   } else {
     send({kind:"opensettings", section: section || null, ret: !!ret, folder: folder || null,
-          tabpos: tabpos});
+          tabpos: tabpos, tabname: tabname});
   }
 }
 // The phone's only way in: hand the token over once (the proxy trades it for a
@@ -14643,7 +14648,7 @@ mod tests {
             PAGE.contains("const p = {desk: (S && S.desk_index) || 0};"),
             "the desk is not carried on the phone's path (without it, it falls back to the basic card)"
         );
-        assert!(PAGE.contains("tabpos: tabpos});"), "the position is not carried on the window's path");
+        assert!(PAGE.contains("tabpos: tabpos, tabname: tabname});"), "the position is not carried on the window's path");
     }
 
     /// The subscription's reading is shown only over a Claude tab, and only
@@ -14836,7 +14841,9 @@ mod tests {
         assert!(PAGE.contains(r#"item(T["tui.menu.rename"] || "", () => startRename("tabs", "f:" + g.folder)),"#), "a folder's menu cannot rename it");
         assert!(PAGE.contains(r#"item(T["tui.menu.edit"] || "", () => openSettings(null, false, g.folder)),"#), "a folder's menu cannot edit it");
         assert!(PAGE.contains(r#"item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),"#), "a tab's menu cannot edit it");
-        assert!(PAGE.contains(r#"oncontextmenu:e => { e.preventDefault(); tabMenu(e.currentTarget, t, "strip"); }},"#), "a tab over the pane has no menu");
+        assert!(PAGE.contains(r#"oncontextmenu:e => { e.preventDefault(); tabMenu(e.currentTarget, t, "strip", e); }},"#), "a tab over the pane has no menu");
+        assert!(PAGE.contains("const x = point ? point.clientX : r.left, y = point ? point.clientY + 2 : r.bottom + 4;"), "a right-click menu does not open at the pointer");
+        assert!(PAGE.contains("tabname = at.name || null;"), "a tab's settings are looked for by position alone");
         assert!(PAGE.contains("input.onblur = () => finish(true);"), "leaving the field does not keep the name");
         assert!(PAGE.contains(r#"send({kind:"tabname", tab:t.index, name:v})"#), "a tab's new name is not sent");
         assert!(PAGE.contains(r#"if (heldDown("tabs") || renameHeld("tabs")) return;"#), "the list is redrawn over the field being typed in");

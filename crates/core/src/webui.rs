@@ -3193,10 +3193,13 @@ const PAGE: &str = r##"<!doctype html>
  .mark svg { display:block; }
  /* A tab, as the dot the board uses, in the colour of the AI it runs */
  .mark .dot { width:7px; height:7px; border-radius:50%; background:currentColor; }
- .pageup { display:inline-flex; align-items:center; gap:var(--s2); min-height:24px; margin:0 0 var(--s3);
-   padding:0; border:0; background:none; color:var(--dim); font:inherit; font-size:12.5px; cursor:pointer; }
- .pageup:hover { color:var(--text); }
- .pageup .go { font-size:16px; line-height:1; }
+ .crumbs { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s1) var(--s2); margin:0 0 var(--s3);
+   font-size:12.5px; color:var(--dim); min-width:0; }
+ .crumbs .crumb { border:0; background:none; padding:2px 4px; margin:0 -4px; min-height:24px; border-radius:var(--r-ctl);
+   color:var(--dim); font:inherit; cursor:pointer; max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .crumbs .crumb:hover { color:var(--text); background:var(--panel); }
+ .crumbs .sep { color:var(--muted); }
+ .crumbs .here { color:var(--text); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:320px; }
  .navnone { margin:var(--s1) var(--s3); color:var(--muted); font-size:12px; line-height:1.5; }
  /* A project names the repository its folders are in: the one row in the tree
     that names a thing, so it carries the weight (styleguide §3) */
@@ -8866,18 +8869,31 @@ function deskCapsCard(desk) {
 // A folder, and everything about it. One page per folder, reached the same way
 // it is reached in the tab list, because "where does this run" is a fact about
 // the folder rather than about the desk it happens to sit in.
-// The line over a page the list does not carry -- a worktree, a tab -- back to
-// the page that does: the list lights that one, and this says how to get there
-function pageUp(label, go) {
-  return el("button", {class:"pageup", onclick:go}, el("span", {class:"go"}, "‹"), el("span", {}, label));
+// Where a page stands, over it: the desk, the project, the folder, the tab --
+// each one above the page a press away, the page itself last and not pressed.
+// A worktree and a tab are not in the list, so this is how their pages say
+// what they belong to, and the way up to any of those
+function pageCrumbs(...parts) {
+  const box = el("div", {class:"crumbs"});
+  const all = parts.filter(Boolean);
+  all.forEach((p, i) => {
+    if (i) box.append(el("span", {class:"sep"}, "›"));
+    box.append(i === all.length - 1
+      ? el("span", {class:"here"}, p.label)
+      : el("button", {class:"crumb", onclick:p.go}, p.label));
+  });
+  return box;
 }
+const deskCrumb = desk => ({label: desk.name || T["settings.tab.unnamed"], go: () => goDeskSection("basic")});
+const projectCrumb = p => ({label: p.name, go: () => { sel = {desk:sel.desk, proj:p.key, grp:null, tab:null, global:false}; render(); window.scrollTo(0, 0); }});
+const folderCrumb = (g, gi) => ({label: folderLabel(g, gi), go: () => { sel = {desk:sel.desk, grp:gi, tab:null, global:false}; render(); window.scrollTo(0, 0); }});
 
 function folderPane(desk, g, gi) {
   const box = el("div");
   const tabsHere = () => (desk.tabs || []).filter(t => (t.group || 0) === gi);
   // Up to its project, when it is one of a project's folders
   const home = deskProjects(desk).projects.find(x => x.folders.includes(gi));
-  if (home) box.append(pageUp(home.name, () => { sel = {desk:sel.desk, proj:home.key, grp:null, tab:null, global:false}; render(); }));
+  box.append(pageCrumbs(deskCrumb(desk), home ? projectCrumb(home) : null, {label: folderLabel(g, gi)}));
 
   // This folder's own answer about which branches refuse a direct commit.
   // Unticked it follows the app's, which is what the box shows greyed out
@@ -9399,6 +9415,7 @@ function extraFilesCard(desk, p) {
 // project's worktrees never each carry a copy
 function projectPane(desk, p) {
   const box = el("div");
+  box.append(pageCrumbs(deskCrumb(desk), {label: p.name}));
   const nameIn = el("input", {type:"text", value:p.name, style:"width:280px"});
   nameIn.addEventListener("change", () => {
     const to = nameIn.value.trim();
@@ -10062,7 +10079,9 @@ function tabPane(desk, t) {
   const box = el("div");
   const gi = t.group || 0;
   const g = (desk.folders || [])[gi];
-  if (g) box.append(pageUp(folderLabel(g, gi), () => { sel = {desk:sel.desk, grp:gi, tab:null, global:false}; render(); }));
+  const home = deskProjects(desk).projects.find(x => x.folders.includes(gi));
+  box.append(pageCrumbs(deskCrumb(desk), home ? projectCrumb(home) : null, g ? folderCrumb(g, gi) : null,
+    {label: t.name || T["settings.tab.unnamed"]}));
 
   // Basics: name and ID are identity, so place them side by side.
   // If ID is empty, auto-derive one from the name (English → slug / Japanese-only → 5-char hash).
@@ -11611,7 +11630,11 @@ load().then(() => {
   // that was never named lands the same. An empty folder means the one with
   // no path of its own (the app's folder), where a group-less tab lives.
   const tabPos = /^\d+$/.test(q.get("tabpos") || "") ? Number(q.get("tabpos")) : -1;
-  if (tabPos >= 0 && desks[cur]) {
+  // ...and &tabname=<title> is the tab itself, found by the title it goes by:
+  // its name, or -- unnamed -- what its command is called, the way the app
+  // titles it. Tried first; the ordinal is only for a title two tabs share
+  const tabName = (q.get("tabname") || "").trim().toLowerCase();
+  if ((tabPos >= 0 || tabName) && desks[cur]) {
     const same = c => (c || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const from = (q.get("folder") || "").trim();
     const gi = from
@@ -11620,16 +11643,18 @@ load().then(() => {
     if (gi >= 0) {
       const tabs = desks[cur].tabs || [];
       const here = [];
-      // Only the ones the board counts: a tab that runs something in a
-      // terminal. A page, a git or file panel, or a tab with nothing to run is
-      // written in the same list and is not one of them, so counting it sent
-      // the board's second tab to whatever stood second here
+      // Only the ones the board counts as terminals. A page, a git or a file
+      // panel is written in the same list and is not one of them, so counting
+      // it sent the board's second tab to whatever stood second here
       const terminal = t => {
         const c = cmdToText(t.command).trim();
-        return !!c && !["browser", "git", "sftp", "editor"].includes(catOf(c));
+        return !["browser", "git", "sftp", "editor"].includes(catOf(c));
       };
       tabs.forEach((t, i) => { if ((t.group || 0) === gi && terminal(t)) here.push(i); });
-      const ti = here[tabPos];
+      const titleOf = t => ((t.name || "").trim()
+        || (cmdToText(t.command).trim().split(/s+/)[0] || "").split(/[\/]/).pop().replace(/.[^.]*$/, "")).toLowerCase();
+      const named = tabName ? here.filter(i => titleOf(tabs[i]) === tabName) : [];
+      const ti = named.length === 1 ? named[0] : here[tabPos];
       if (ti != null) {
         sel = {desk:cur, grp:gi, tab:ti, global:false};
         render();
