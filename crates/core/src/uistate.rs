@@ -28,6 +28,10 @@ pub struct TabState {
     pub state: String,
     /// Human-readable state name (translated). Use this one for display
     pub state_label: String,
+    /// When that state began, as seconds since 1970, so a row can say how long
+    /// ago a tab finished. Absent for what has no state of its own (a page)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u64>,
     /// Detection profile name (Codex CLI, etc). Lets you eyeball whether it matched correctly
     pub profile: String,
     pub locked: bool,
@@ -1570,6 +1574,7 @@ impl TabState {
             id: t.id.clone(),
             state: t.state.label().to_string(),
             state_label: t.state.display(),
+            since: t.state_since.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs()),
             profile: t.profile_name().to_string(),
             locked: t.locked,
             depth: t.chain_depth,
@@ -1683,6 +1688,7 @@ impl TabState {
             id: Some(key.to_string()),
             state: "WEB".into(),
             state_label: crate::i18n::t("tui.state.web"),
+            since: None,
             profile: String::new(),
             limit: None,
             locked: false,
@@ -2048,6 +2054,7 @@ mod tests {
             id: None,
             state: "WAIT".into(),
             state_label: "WAIT".into(),
+            since: None,
             profile: "GENERIC".into(),
             locked: false,
             depth: 0,

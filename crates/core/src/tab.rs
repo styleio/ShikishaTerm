@@ -2709,6 +2709,8 @@ pub struct Tab {
     last_change_ms: u64,
     /// Capture of the latest response (DESIGN 7.3: submit-boundary marker scheme)
     pub last_response: Option<String>,
+    /// When the state last changed, for saying how long ago a tab finished
+    pub state_since: std::time::SystemTime,
     /// Start position of the response (scrollback accumulation amount). u64::MAX = unset.
     ///
     /// What matters is "the position where execution happened," not "the
@@ -3172,6 +3174,7 @@ impl Tab {
             activity_mark: 0,
             last_hash: 0,
             last_change_ms: 0,
+            state_since: std::time::SystemTime::now(),
             last_response: None,
             response_marker: AtomicU64::new(u64::MAX),
             resized_while_waiting: AtomicBool::new(false),
@@ -3659,6 +3662,16 @@ impl Tab {
     /// Activity is judged by "screen content change" (excluding the bottom status row).
     /// Returns (old state, new state) for firing hooks
     pub fn tick(&mut self, start: Instant) -> (TabState, TabState) {
+        let turned = self.tick_state(start);
+        // Written down here, the one place every change passes through, so
+        // "done, 5 minutes ago" is counted from the change and not from a guess
+        if turned.0 != turned.1 {
+            self.state_since = std::time::SystemTime::now();
+        }
+        turned
+    }
+
+    fn tick_state(&mut self, start: Instant) -> (TabState, TabState) {
         if self.exited() {
             let old = self.state;
             self.state = TabState::Exited;
