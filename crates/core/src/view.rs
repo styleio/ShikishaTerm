@@ -259,7 +259,20 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     let drift = folders::drifts().look(
         &groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
     );
+    // Which repository a folder with nothing running in it belongs to, as the
+    // background look found it. Its household was only guessed from the path,
+    // and without a colour it had no + to cut a worktree with: a project added
+    // a moment ago could not be given its first worktree until a tab ran there
+    let repos = folders::watch().repos(&groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>());
     for (at, g) in groups.iter_mut() {
+        if g.empty
+            && g.color.is_none()
+            && let Some((family, linked)) = repos.get(at)
+        {
+            g.color = Some(crate::uistate::GroupState::color_of(family, &ui.folder_colors));
+            g.linked = *linked;
+            g.family = Some(family.display().to_string());
+        }
         g.health = health.get(at).cloned().unwrap_or_default();
         g.drift = drift.get(at).cloned().unwrap_or_default();
         // A folder with a panel in it is not empty. The list is built from

@@ -4396,10 +4396,27 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
             let at = std::path::PathBuf::from(&path);
+            let name = at.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
+            browse_view = None;
+            // Once is enough: a second press on the same folder would put two
+            // headings over one place, each with its own tabs
+            let here = desks.get(desk_index).is_some_and(|w| {
+                w.folders.iter().filter_map(|f| f.cwd.as_ref()).any(|c| crate::uistate::same_folder(c, &at))
+            });
+            if here {
+                flash = Some(i18n::tp("msg.project.already", &[("name", &name)]));
+                continue;
+            }
             match config::append_folder(&desk, None, &at, None) {
+                // Said by the reload that brings it onto the list, instead of
+                // "settings reloaded": what happened is that a project arrived
                 Ok(()) => {
-                    browse_view = None;
-                    flash = Some(i18n::tp("msg.folder.opened", &[("path", &path)]));
+                    let said = match crate::repo::family_of(&at).is_some() {
+                        true => i18n::tp("msg.project.added", &[("name", &name)]),
+                        false => i18n::tp("msg.folder.added", &[("name", &name)]),
+                    };
+                    said_before_reload = Some((Instant::now(), said.clone()));
+                    flash = Some(said);
                 }
                 Err(e) => flash = Some(format!("{e:#}")),
             }

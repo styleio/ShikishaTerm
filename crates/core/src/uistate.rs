@@ -944,6 +944,12 @@ pub struct BrowseState {
     pub made: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_error: Option<String>,
+    /// Whether the folder being looked at is in a git repository
+    #[serde(default)]
+    pub at_git: bool,
+    /// Whether each folder in `dirs` is, in the same order
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub git: Vec<bool>,
 }
 
 /// One place a walk can start from.
@@ -1057,8 +1063,18 @@ impl BrowseState {
             }
             Err(e) => error = Some(e.to_string()),
         }
-        let (dirs, modified) = dirs.into_iter().unzip();
-        Self { at, up, dirs, files, error, modified, ..Default::default() }
+        let (dirs, modified): (Vec<String>, _) = dirs.into_iter().unzip();
+        // Whether choosing each would add a git repository, which decides what
+        // happens next: a repository goes on to its first worktree, anything
+        // else is asked about first. Inside a repository every folder is in
+        // it; elsewhere a folder is a repository when it holds a `.git` of its
+        // own -- one look per folder, not a walk up from each
+        let at_git = crate::repo::family_of(here).is_some();
+        let git = match at_git {
+            true => vec![true; dirs.len()],
+            false => dirs.iter().map(|d| std::path::Path::new(d).join(".git").exists()).collect(),
+        };
+        Self { at, up, dirs, files, error, modified, at_git, git, ..Default::default() }
     }
 
     /// The same walk, with the places to start from filled in.
