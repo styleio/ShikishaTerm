@@ -369,7 +369,16 @@ pub enum Ev {
     /// for this attempt, so what it is told is about the attempt it is showing.
     /// Window-only: what it makes is a
     /// folder on this PC, chosen with this PC's folder picker
-    AddProject { how: String, text: String, parent: String, ask: u64 },
+    AddProject { how: String, text: String, parent: String, ask: u64, host: String },
+    /// A folder on another machine, listed for the add-a-project dialog.
+    /// `host` is the machine's name in the settings; `ask` the dialog's own
+    /// number, so an answer to an older listing is not taken for this one.
+    /// Window-only, as `AddProject` is
+    RemoteList { host: String, path: String, ask: u64 },
+    /// A machine reached over SSH, written into the settings from the
+    /// add-a-project dialog: its name, its address (`ssh://user@host:port`)
+    /// and the key file it signs in with. Window-only, as `AddProject` is
+    AddHost { name: String, at: String, key: String, ask: u64 },
     /// What to do about a project's worktrees that git knows and the desk does
     /// not list. `family` names the project by its shared git folder; `act` is
     /// `show` (put them on the desk), `keep` (keep them hidden, the row goes)
@@ -962,6 +971,18 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             how: v.get("how").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             text: v.get("text").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             parent: v.get("parent").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            ask: v.get("ask").and_then(|x| x.as_u64()).unwrap_or(0),
+            host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
+        },
+        Some("remotelist") => Ev::RemoteList {
+            host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
+            path: v.get("path").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            ask: v.get("ask").and_then(|x| x.as_u64()).unwrap_or(0),
+        },
+        Some("addhost") => Ev::AddHost {
+            name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            at: v.get("at").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            key: v.get("key").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             ask: v.get("ask").and_then(|x| x.as_u64()).unwrap_or(0),
         },
         Some("found") => Ev::Found {

@@ -87,6 +87,31 @@ pub fn coach_step(folders: usize, seen: u8, past_the_plus: bool) -> (Option<u8>,
         _ => (None, seen),
     }
 }
+/// The same for a folder on another machine. What it is cannot be asked of the
+/// disk here, so the dialog says whether it is a repository: it listed it
+fn add_remote_to_desk(desk: Option<&config::Desk>, host: &str, at: &str) -> Result<Added, String> {
+    let at = at.trim().trim_end_matches('/');
+    let at = if at.is_empty() { "/" } else { at };
+    let name = at.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or(at).to_string();
+    let here = desk.is_some_and(|w| {
+        w.folders.iter().any(|f| {
+            f.host.as_ref().is_some_and(|h| h.name == host)
+                && f.cwd.as_ref().is_some_and(|c| c.to_string_lossy().trim_end_matches('/') == at)
+        })
+    });
+    if here {
+        return Ok(Added::Already(i18n::tp("msg.project.already", &[("name", &name)])));
+    }
+    let desk_name = desk.map(|w| w.name.clone()).unwrap_or_default();
+    config::append_folder_starting(&desk_name, None, std::path::Path::new(at), None, &config::Start::Same, Some(host))
+        .map_err(|e| format!("{e:#}"))?;
+    // The first folder added on a machine is where its worktrees are cut from
+    if let Err(e) = config::set_host_project_if_unset(host, at) {
+        append_hook_log(&format!("could not note the project of {host}: {e:#}"));
+    }
+    Ok(Added::New(i18n::tp("msg.project.remote_added", &[("name", &name), ("host", host)])))
+}
+
 /// A worktree being made from the dialog, from the press until its card is on
 /// the desk. The making runs on a thread; what it is written down as, and
 /// where, is decided here when it is pressed, so a desk switched in between
@@ -998,8 +1023,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // A project being cloned, with the dialog's number for the attempt, and
     // what the dialog is told about it. Where such a project goes by default
     // is asked once
-    let mut add_job: Option<(u64, crate::addproject::Job)> = None;
+    // With the machine it runs on, empty for this PC
+    let mut add_job: Option<(u64, crate::addproject::Job, String)> = None;
     let mut add_view: Option<crate::uistate::AddProjectState> = None;
+    // A folder on another machine, walked from the same dialog. Listed on a
+    // thread: a machine that does not answer takes as long as its timeout
+    let mut remote_view: Option<crate::uistate::RemoteListState> = None;
+    let (listing_tx, listing_rx) = std::sync::mpsc::channel::<crate::uistate::RemoteListState>();
+    // The aliases a new machine can be filled in from, read again with the settings
+    let mut ssh_aliases = crate::discover::ssh_aliases();
     let project_home = crate::addproject::projects_root().display().to_string();
     // The Assistant AI setting. Read from the file itself, once: on a first
     // start the setup writes it before there are settings that count as
@@ -1505,6 +1537,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 ai_choices = startable_ais();
                 max_chain = newcfg.max_chain.unwrap_or(10);
                 assistant_ai = newcfg.ai_engine.clone().unwrap_or_default();
+                ssh_aliases = crate::discover::ssh_aliases();
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
                 resident = newcfg.resident.unwrap_or(true);
                 claude_usage_on = newcfg.claude_usage.unwrap_or(true);
@@ -3003,6 +3036,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             add_project: add_view.clone(),
             worktrees_kept: worktrees_kept.clone(),
             making: makings.iter().map(Pending::state).collect(),
+            hosts: cfg
+                .as_ref()
+                .map(|c| {
+                    c.hosts
+                        .iter()
+                        .filter(|h| !h.is_made() && !h.name.trim().is_empty())
+                        .map(|h| crate::uistate::HostChoice {
+                            name: h.name.clone(),
+                            at: h.at.clone(),
+                            project: h.project.clone().unwrap_or_default(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            ssh_aliases: ssh_aliases.clone(),
+            remote_list: remote_view.clone(),
             project_home: project_home.clone(),
             assistant: assistant_ai.clone(),
             usage,
@@ -3107,6 +3156,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .iter()
                         .filter(|f| f.host.is_some())
                         .filter_map(|f| f.cwd.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            folder_hosts: desks
+                .get(desk_index)
+                .map(|w| {
+                    w.folders
+                        .iter()
+                        .filter_map(|f| f.cwd.clone().zip(f.host.as_ref().map(|h| h.name.clone())))
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -4654,21 +4712,57 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // A project from a URL, or made new. Cloning takes as long as the
         // network does, so it runs on its own and is looked at every turn; a
         // new project is a folder and two quick git commands, done here
-        for (how, text, parent, ask) in shell.mail().take_add_projects() {
-            match how.as_str() {
-                "stop" => {
-                    if let Some((_, job)) = &add_job {
+        // The machine a project is asked for on, by name. Only one reached
+        // over SSH: a machine that is made when wanted has no folders to add
+        let host_named = |name: &str| {
+            cfg.as_ref().and_then(|c| c.hosts.iter().find(|h| h.name == name && !h.is_made()).cloned())
+        };
+        for (how, text, parent, ask, host) in shell.mail().take_add_projects() {
+            let failed = |e: String| Some(crate::uistate::AddProjectState { ask, error: Some(e), ..Default::default() });
+            let on = match host.is_empty() {
+                true => None,
+                false => match host_named(&host) {
+                    Some(h) => Some(h),
+                    None => {
+                        add_view = failed(i18n::tp("err.addproj.no_host", &[("host", &host)]));
+                        continue;
+                    }
+                },
+            };
+            match (how.as_str(), on) {
+                ("stop", _) => {
+                    if let Some((_, job, _)) = &add_job {
                         job.stop();
                     }
                 }
-                "clone" if add_job.is_none() => match crate::addproject::start_clone(&text, &parent) {
-                    Ok(job) => {
-                        add_view = Some(crate::uistate::AddProjectState { ask, running: true, ..Default::default() });
-                        add_job = Some((ask, job));
+                ("clone", on) if add_job.is_none() => {
+                    let started = match &on {
+                        None => crate::addproject::start_clone(&text, &parent),
+                        Some(h) => config::host_spec(h)
+                            .map_err(|e| format!("{e:#}"))
+                            .and_then(|spec| crate::addproject::start_clone_on(spec, &text, &parent)),
+                    };
+                    match started {
+                        Ok(job) => {
+                            add_view = Some(crate::uistate::AddProjectState { ask, running: true, ..Default::default() });
+                            add_job = Some((ask, job, host.clone()));
+                        }
+                        Err(e) => add_view = failed(e),
                     }
-                    Err(e) => add_view = Some(crate::uistate::AddProjectState { ask, error: Some(e), ..Default::default() }),
-                },
-                "create" => {
+                }
+                // A folder over there, chosen in the dialog's own listing
+                ("remote", Some(h)) => {
+                    add_view = match add_remote_to_desk(desks.get(desk_index), &h.name, &text) {
+                        Ok(Added::New(said)) | Ok(Added::Already(said)) => {
+                            said_before_reload = Some((Instant::now(), said.clone()));
+                            flash = Some(said);
+                            Some(crate::uistate::AddProjectState { ask, done: Some(text.clone()), host: h.name.clone(), ..Default::default() })
+                        }
+                        Err(e) => failed(e),
+                    };
+                }
+                ("create", Some(_)) => add_view = failed(i18n::t("err.addproj.remote_create")),
+                ("create", None) => {
                     add_view = Some(match crate::addproject::create(&text, &parent) {
                         Ok(at) => match add_to_desk(desks.get(desk_index), &at) {
                             Ok(Added::New(said)) | Ok(Added::Already(said)) => {
@@ -4684,7 +4778,50 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 _ => {}
             }
         }
-        if let Some((ask, job)) = add_job.clone() {
+        // A folder on another machine to list, and the listings that came back.
+        // Only the newest listing the dialog asked for is kept
+        for (host, path, ask) in shell.mail().take_remote_lists() {
+            let Some(h) = host_named(&host) else {
+                remote_view = Some(crate::uistate::RemoteListState {
+                    ask,
+                    host: host.clone(),
+                    error: Some(i18n::tp("err.addproj.no_host", &[("host", &host)])),
+                    ..Default::default()
+                });
+                continue;
+            };
+            remote_view = Some(crate::uistate::RemoteListState { ask, host: host.clone(), busy: true, ..Default::default() });
+            let tx = listing_tx.clone();
+            std::thread::spawn(move || {
+                let listed = config::host_spec(&h)
+                    .map_err(|e| format!("{e:#}"))
+                    .and_then(|spec| crate::addproject::list_remote(&spec, &path));
+                let _ = tx.send(match listed {
+                    Ok(l) => crate::uistate::RemoteListState { ask, host, busy: false, at: l.at, dirs: l.dirs, git: l.git, error: None },
+                    Err(e) => crate::uistate::RemoteListState { ask, host, error: Some(e), ..Default::default() },
+                });
+            });
+        }
+        while let Ok(answer) = listing_rx.try_recv() {
+            if remote_view.as_ref().is_none_or(|v| v.ask <= answer.ask) {
+                remote_view = Some(answer);
+            }
+        }
+        // A machine written into the settings from the dialog. The dialog goes
+        // on with it chosen once the settings are read back
+        for (name, at, key, ask) in shell.mail().take_add_hosts() {
+            let spec = config::HostSpec { name: name.trim().to_string(), at, key: Some(key), ..Default::default() };
+            add_view = Some(match config::add_host(&spec) {
+                Ok(()) => {
+                    let said = i18n::tp("msg.host.added", &[("name", &spec.name)]);
+                    said_before_reload = Some((Instant::now(), said.clone()));
+                    flash = Some(said);
+                    crate::uistate::AddProjectState { ask, done: Some(spec.name.clone()), host: spec.name.clone(), ..Default::default() }
+                }
+                Err(e) => crate::uistate::AddProjectState { ask, error: Some(format!("{e:#}")), ..Default::default() },
+            });
+        }
+        if let Some((ask, job, on)) = add_job.clone() {
             match job.outcome() {
                 crate::addproject::Outcome::Running(p) => {
                     add_view = Some(crate::uistate::AddProjectState {
@@ -4697,11 +4834,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 crate::addproject::Outcome::Done(at) => {
                     add_job = None;
-                    add_view = Some(match add_to_desk(desks.get(desk_index), &at) {
+                    let added = match on.is_empty() {
+                        true => add_to_desk(desks.get(desk_index), &at),
+                        false => add_remote_to_desk(desks.get(desk_index), &on, &at.to_string_lossy()),
+                    };
+                    add_view = Some(match added {
                         Ok(Added::New(said)) | Ok(Added::Already(said)) => {
                             said_before_reload = Some((Instant::now(), said.clone()));
                             flash = Some(said);
-                            crate::uistate::AddProjectState { ask, done: Some(at.display().to_string()), ..Default::default() }
+                            crate::uistate::AddProjectState { ask, done: Some(at.display().to_string()), host: on.clone(), ..Default::default() }
                         }
                         Err(e) => crate::uistate::AddProjectState { ask, error: Some(e), ..Default::default() },
                     });

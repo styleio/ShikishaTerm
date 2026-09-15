@@ -110,6 +110,8 @@ pub enum Outcome {
 pub struct Job {
     state: Arc<Mutex<Outcome>>,
     child: Arc<Mutex<Option<Child>>>,
+    /// Asked to stop, for a clone on another machine that has no child here
+    stopped: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Job {
@@ -121,6 +123,7 @@ impl Job {
     /// clone that did not finish is not a project, and leaving it would make
     /// the same name refuse the next attempt
     pub fn stop(&self) {
+        self.stopped.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut c) = self.child.lock()
             && let Some(child) = c.as_mut()
         {
@@ -155,6 +158,7 @@ pub fn start_clone(url: &str, parent: &str) -> Result<Job, String> {
     let job = Job {
         state: Arc::new(Mutex::new(Outcome::Running(Progress::default()))),
         child: Arc::new(Mutex::new(Some(child))),
+        stopped: Default::default(),
     };
     let watch = job.clone();
     std::thread::spawn(move || {
@@ -232,6 +236,128 @@ pub fn create(name: &str, parent: &str) -> Result<PathBuf, String> {
     Ok(at)
 }
 
+/// A path on a server's shell, quoted so nothing in it is read twice. A `~` at
+/// its head is left for the shell to turn into the home folder
+pub fn remote_quote(path: &str) -> String {
+    let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    match path.trim() {
+        "" | "~" => "~".into(),
+        p => match p.strip_prefix("~/") {
+            Some(rest) if rest.is_empty() => "~".into(),
+            Some(rest) => format!("~/{}", q(rest)),
+            None => q(p),
+        },
+    }
+}
+
+/// One folder on another machine, as the add-a-project dialog walks it
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Listing {
+    /// Where it is, the way that machine spells it once `~` is taken away
+    pub at: String,
+    /// The folders in it, by name
+    pub dirs: Vec<String>,
+    /// Whether it is a git repository's own folder
+    pub git: bool,
+}
+
+/// The shell line that lists a folder over there: where it is, then what is in
+/// it, folders marked with a trailing `/`
+pub fn listing_line(path: &str) -> String {
+    format!("cd {} && pwd && ls -1Ap", remote_quote(path))
+}
+
+/// Reads what [`listing_line`] prints
+pub fn listing_of(printed: &str) -> Option<Listing> {
+    let mut lines = printed.lines().map(|l| l.trim_end_matches('\r'));
+    let at = lines.next()?.trim().to_string();
+    if !at.starts_with('/') {
+        return None;
+    }
+    let mut out = Listing { at, ..Default::default() };
+    for l in lines {
+        match l.strip_suffix('/') {
+            Some(".git") => out.git = true,
+            Some(d) if !d.is_empty() && d != "." && d != ".." => out.dirs.push(d.to_string()),
+            // A worktree's `.git` is a file that points at its repository
+            None if l == ".git" => out.git = true,
+            _ => {}
+        }
+    }
+    out.dirs.sort_by_key(|d| (d.starts_with('.'), d.to_lowercase()));
+    Some(out)
+}
+
+/// Lists a folder on a machine this PC reaches over SSH
+pub fn list_remote(spec: &crate::ssh::Spec, path: &str) -> Result<Listing, String> {
+    let ran = crate::ssh::exec(spec, &listing_line(path), 25_000).map_err(|e| format!("{e:#}"))?;
+    if !ran.ok() {
+        return Err(ran.said());
+    }
+    listing_of(&ran.out).ok_or_else(|| crate::i18n::tp("err.addproj.remote_list", &[("path", path)]))
+}
+
+/// A folder's path joined the way a server writes it
+pub fn remote_join(parent: &str, name: &str) -> String {
+    let p = parent.trim().trim_end_matches('/');
+    match p {
+        "" => name.to_string(),
+        _ => format!("{p}/{name}"),
+    }
+}
+
+/// Start cloning `url` into a new folder under `parent` on another machine.
+/// Git there cannot say how far it has got through one command, so it runs
+/// until it is done; a stop takes back whatever it made once it ends
+pub fn start_clone_on(spec: crate::ssh::Spec, url: &str, parent: &str) -> Result<Job, String> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err(crate::i18n::t("err.addproj.no_url"));
+    }
+    let name = repo_name_of(&url).ok_or_else(|| crate::i18n::t("err.addproj.bad_url"))?;
+    if parent.trim().is_empty() {
+        return Err(crate::i18n::t("err.addproj.no_parent"));
+    }
+    let parent = parent.trim().to_string();
+    let job = Job {
+        state: Arc::new(Mutex::new(Outcome::Running(Progress::default()))),
+        child: Arc::new(Mutex::new(None)),
+        stopped: Default::default(),
+    };
+    let watch = job.clone();
+    let stopped = job.stopped.clone();
+    std::thread::spawn(move || {
+        let quoted_url = format!("'{}'", url.replace('\'', "'\\''"));
+        // Resolved over there first, so the folder added is the one made
+        let line = format!(
+            "mkdir -p {p} && cd {p} && test ! -e {n} && GIT_TERMINAL_PROMPT=0 git clone -q -- {quoted_url} {n} && cd {n} && pwd",
+            p = remote_quote(&parent),
+            n = format!("'{}'", name.replace('\'', "'\\''")),
+        );
+        let end = match crate::ssh::exec(&spec, &line, 30 * 60_000) {
+            Ok(ran) if ran.ok() && !stopped.load(std::sync::atomic::Ordering::Relaxed) => {
+                match ran.out.lines().last().map(str::trim).filter(|l| l.starts_with('/')) {
+                    Some(at) => Outcome::Done(PathBuf::from(at)),
+                    None => Outcome::Failed(crate::i18n::t("err.addproj.clone_stopped")),
+                }
+            }
+            Ok(ran) if ran.ok() => {
+                let _ = crate::ssh::exec(&spec, &format!("rm -rf {}", remote_quote(&remote_join(&parent, &name))), 60_000);
+                Outcome::Failed(crate::i18n::t("err.addproj.clone_stopped"))
+            }
+            Ok(ran) => Outcome::Failed(match ran.said().trim() {
+                "" => crate::i18n::tp("err.addproj.exists", &[("path", &remote_join(&parent, &name))]),
+                said => said.trim_start_matches("fatal:").trim().to_string(),
+            }),
+            Err(e) => Outcome::Failed(format!("{e:#}")),
+        };
+        if let Ok(mut s) = watch.state.lock() {
+            *s = end;
+        }
+    });
+    Ok(job)
+}
+
 /// A git that failed, in words: a missing git is named as missing
 fn bail_str(e: &anyhow::Error) -> Result<(), String> {
     Err(match e.downcast_ref::<crate::git::NotInstalled>() {
@@ -270,6 +396,23 @@ mod tests {
         assert_eq!((r.phase.as_str(), r.percent), ("Counting objects", Some(100)));
         assert_eq!(progress_of("Cloning into 'repo'..."), None);
         assert_eq!(progress_of("fatal: repository not found"), None);
+    }
+
+    /// A folder over there is read from what one shell line prints: where it
+    /// is, its folders, and whether git is at home in it
+    #[test]
+    fn a_folder_over_there_is_read_from_one_line_of_its_shell() {
+        assert_eq!(listing_line("~"), "cd ~ && pwd && ls -1Ap");
+        assert_eq!(remote_quote("~/my work"), "~/'my work'");
+        assert_eq!(remote_quote("/srv/it's"), "'/srv/it'\\''s'");
+        let l = listing_of("/home/me/app\n./\n../\n.git/\nsrc/\nREADME.md\n.github/\nDocs/\n").unwrap();
+        assert_eq!(l.at, "/home/me/app");
+        assert!(l.git, "a repository is not seen as one");
+        assert_eq!(l.dirs, ["Docs", "src", ".github"], "folders are not listed plain first, files left out");
+        assert!(listing_of("/w/tree\n.git\nsrc/\n").unwrap().git, "a worktree's .git file is not seen");
+        assert!(!listing_of("/tmp\nsrc/\n").unwrap().git);
+        assert_eq!(listing_of("bash: cd: nope: No such file"), None, "an error was read as a folder");
+        assert_eq!(remote_join("~/projects/", "app"), "~/projects/app");
     }
 
     #[test]

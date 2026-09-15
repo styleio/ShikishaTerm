@@ -117,7 +117,11 @@ pub struct Mailbox {
     pub setup_refresh: Option<u8>,
     /// A project to clone or make new, or the clone under way to stop:
     /// (how, the URL or the name, the folder it goes in)
-    pub add_projects: Vec<(String, String, String, u64)>,
+    pub add_projects: Vec<(String, String, String, u64, String)>,
+    /// Folders on another machine to list: (host, path, the dialog's number)
+    pub remote_lists: Vec<(String, String, u64)>,
+    /// Machines to write into the settings: (name, address, key file, number)
+    pub add_hosts: Vec<(String, String, String, u64)>,
     /// Answers about a project's found worktrees: (its shared git folder, act)
     pub found: Vec<(String, String)>,
     /// Answers from the row of a worktree being made: (its number, act)
@@ -325,8 +329,14 @@ impl Mailbox {
     pub fn take_makings(&mut self) -> Vec<(u64, String)> {
         std::mem::take(&mut self.makings)
     }
-    pub fn take_add_projects(&mut self) -> Vec<(String, String, String, u64)> {
+    pub fn take_add_projects(&mut self) -> Vec<(String, String, String, u64, String)> {
         std::mem::take(&mut self.add_projects)
+    }
+    pub fn take_remote_lists(&mut self) -> Vec<(String, String, u64)> {
+        std::mem::take(&mut self.remote_lists)
+    }
+    pub fn take_add_hosts(&mut self) -> Vec<(String, String, String, u64)> {
+        std::mem::take(&mut self.add_hosts)
     }
     pub fn take_setup_refresh(&mut self) -> Option<u8> {
         self.setup_refresh.take()

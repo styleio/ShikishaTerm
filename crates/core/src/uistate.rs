@@ -352,6 +352,10 @@ pub struct GroupState {
     /// wrote it (`issue:owner/name#12`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_item: Option<String>,
+    /// The machine the folder is on, when it is not this one: the card says
+    /// it where a folder here says its branch
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 impl GroupState {
@@ -412,6 +416,7 @@ impl GroupState {
                     drift: Default::default(),
                     empty: false,
                     work_item: None,
+                    host: None,
                 },
             ));
         }
@@ -445,6 +450,7 @@ impl GroupState {
                     drift: Default::default(),
                     empty: true,
                     work_item: None,
+                    host: None,
                 },
             ));
         }
@@ -778,6 +784,41 @@ pub struct AddProjectState {
     /// The project it made, once it is on the desk
     #[serde(skip_serializing_if = "Option::is_none")]
     pub done: Option<String>,
+    /// Made on another machine: its name. What was made there cannot be cut
+    /// into worktrees from here, so the dialog ends instead of going on
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub host: String,
+}
+
+/// A machine a project can be on, besides this PC: one reached over SSH.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct HostChoice {
+    pub name: String,
+    /// Its address as written, `ssh://user@host:port`
+    pub at: String,
+    /// The folder its project was last added from, where looking starts
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub project: String,
+}
+
+/// A folder on another machine, listed for the add-a-project dialog.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct RemoteListState {
+    /// The dialog's own number for the listing this answers
+    pub ask: u64,
+    pub host: String,
+    /// Still being asked
+    pub busy: bool,
+    /// Where it is, the way that machine spells it
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub at: String,
+    pub dirs: Vec<String>,
+    /// Whether it is a git repository's own folder
+    pub git: bool,
+    /// Why it could not be listed: the machine could not be reached, or the
+    /// folder is not there
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// One AI in the first-start setup.
@@ -1512,6 +1553,15 @@ pub struct UiState {
     /// Worktrees being made, or that failed to be and are still said
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub making: Vec<MakingState>,
+    /// The machines a project can be added on, besides this PC
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<HostChoice>,
+    /// The aliases of `~/.ssh/config`, which a new machine can be filled in from
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ssh_aliases: Vec<crate::discover::SshAlias>,
+    /// A folder on another machine, listed for the add-a-project dialog
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_list: Option<RemoteListState>,
     /// Where a cloned or new project goes until somebody picks elsewhere
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_home: String,

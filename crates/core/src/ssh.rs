@@ -621,7 +621,11 @@ async fn do_exec(live: &mut Live, spec: &Spec, command: &str) -> Result<Ran> {
             ChannelMsg::Data { ref data } => out.extend_from_slice(data),
             ChannelMsg::ExtendedData { ref data, .. } => err.extend_from_slice(data),
             ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status as i32),
-            ChannelMsg::Eof | ChannelMsg::Close => break,
+            // OpenSSH ends the output first and says how the command ended
+            // after: stopping at the end of the output lost the code, and every
+            // command that worked read as one that did not
+            ChannelMsg::Eof => {}
+            ChannelMsg::Close => break,
             _ => {}
         }
     }
@@ -1277,14 +1281,17 @@ mod tests {
         ) -> Result<(), Self::Error> {
             let line = String::from_utf8_lossy(command).to_string();
             session.channel_success(channel)?;
-            if line.contains("fail") {
+            // In the order OpenSSH sends them: the output ends, then how the
+            // command ended, then the channel closes
+            let code = if line.contains("fail") {
                 session.extended_data(channel, 1, russh::keys::ssh_encoding::bytes::Bytes::from_static(b"it went wrong"))?;
-                session.exit_status_request(channel, 3)?;
+                3
             } else {
                 session.data(channel, russh::keys::ssh_encoding::bytes::Bytes::from(format!("ran:{line}").into_bytes()))?;
-                session.exit_status_request(channel, 0)?;
-            }
+                0
+            };
             session.eof(channel)?;
+            session.exit_status_request(channel, code)?;
             session.close(channel)?;
             Ok(())
         }

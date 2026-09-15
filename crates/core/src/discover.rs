@@ -196,6 +196,90 @@ fn directive(line: &str) -> Option<(String, &str)> {
     Some((k.to_ascii_lowercase(), rest))
 }
 
+/// One host alias from `~/.ssh/config` with what it says about reaching it:
+/// enough to fill in a machine without typing its address again
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct SshAlias {
+    pub name: String,
+    /// `HostName`, or the alias itself when none is written
+    pub host: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub user: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// `IdentityFile`, as written
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub key: String,
+}
+
+/// The aliases of `~/.ssh/config`, each with its address, user, port and key.
+/// ssh takes the first value it meets for each, so later ones do not win
+pub fn ssh_aliases() -> Vec<SshAlias> {
+    let Some(home) = home_dir() else {
+        return Vec::new();
+    };
+    let mut out: Vec<SshAlias> = Vec::new();
+    read_ssh_aliases(&home.join(".ssh").join("config"), &home, 0, &mut out, &mut Vec::new());
+    for a in out.iter_mut() {
+        if a.host.is_empty() {
+            a.host = a.name.clone();
+        }
+    }
+    out
+}
+
+fn read_ssh_aliases(
+    path: &std::path::Path,
+    home: &std::path::Path,
+    depth: usize,
+    out: &mut Vec<SshAlias>,
+    current: &mut Vec<usize>,
+) {
+    if depth > SSH_INCLUDE_DEPTH {
+        return;
+    }
+    let Ok(meta) = std::fs::metadata(path) else { return };
+    if !meta.is_file() || meta.len() > SSH_CONFIG_MAX {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else { return };
+    for (keyword, rest) in text.lines().filter_map(directive) {
+        let value = rest.trim().trim_matches('"').to_string();
+        match keyword.as_str() {
+            "host" => {
+                current.clear();
+                for a in rest.split_whitespace().filter(|a| is_alias(a)) {
+                    if !out.iter().any(|o| o.name == a) {
+                        out.push(SshAlias { name: a.to_string(), ..Default::default() });
+                        current.push(out.len() - 1);
+                    }
+                }
+            }
+            "match" => current.clear(),
+            "include" => {
+                for arg in rest.split_whitespace() {
+                    for f in included_files(arg, home) {
+                        read_ssh_aliases(&f, home, depth + 1, out, &mut Vec::new());
+                    }
+                }
+            }
+            "hostname" | "user" | "port" | "identityfile" => {
+                for &i in current.iter() {
+                    let a = &mut out[i];
+                    match keyword.as_str() {
+                        "hostname" if a.host.is_empty() => a.host = value.clone(),
+                        "user" if a.user.is_empty() => a.user = value.clone(),
+                        "port" if a.port.is_none() => a.port = value.parse().ok(),
+                        "identityfile" if a.key.is_empty() => a.key = value.clone(),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn is_alias(a: &str) -> bool {
     !a.is_empty() && !a.starts_with('!') && !a.contains('*') && !a.contains('?')
 }
@@ -363,6 +447,29 @@ mod tests {
         let mut out = Vec::new();
         read_ssh_config(&ssh.join("config"), &dir, 0, &mut out);
         assert_eq!(out, vec!["web", "prod", "db", "web"], "the order counts too {out:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An alias comes with what its block says about reaching it, the first
+    /// value winning as it does for ssh, and a block of patterns lends nothing
+    #[test]
+    fn an_alias_carries_its_address_user_port_and_key() {
+        let dir = std::env::temp_dir().join(format!("shikisha-ssh-alias-{}", std::process::id()));
+        let ssh = dir.join(".ssh");
+        let _ = std::fs::create_dir_all(&ssh);
+        std::fs::write(
+            ssh.join("config"),
+            "Host web prod\n  HostName 10.0.0.5\n  User deploy\n  Port 2222\n  IdentityFile ~/.ssh/web\n  User later\n\
+             Host *\n  User everyone\nHost db\n  HostName=db.example.com\n",
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        read_ssh_aliases(&ssh.join("config"), &dir, 0, &mut out, &mut Vec::new());
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert_eq!((out[0].host.as_str(), out[0].user.as_str(), out[0].port, out[0].key.as_str()),
+            ("10.0.0.5", "deploy", Some(2222), "~/.ssh/web"));
+        assert_eq!(out[1].host, "10.0.0.5", "the second alias of a block does not share it");
+        assert_eq!((out[2].host.as_str(), out[2].user.as_str()), ("db.example.com", ""), "a pattern's user was lent");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
