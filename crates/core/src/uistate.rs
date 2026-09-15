@@ -720,6 +720,26 @@ pub struct SetupState {
     pub gh: bool,
 }
 
+/// Worktrees of a project on this desk that git knows about and the desk does
+/// not list: made from a terminal, by another tool, or on another desk.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct DiscoveredState {
+    /// The repository's shared git folder, which is what the project is known by
+    pub family: String,
+    /// Each one: its folder and the branch it is on
+    pub found: Vec<FoundWorktree>,
+    /// Whether somebody chose to keep them hidden. The row is not drawn then;
+    /// the project's heading still offers to show them
+    pub kept: bool,
+}
+
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct FoundWorktree {
+    pub folder: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
 /// A project on its way from a URL or being made new, as the dialog shows it.
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct AddProjectState {
@@ -920,9 +940,14 @@ fn by_family(list: Vec<(std::path::PathBuf, GroupState)>) -> Vec<(std::path::Pat
     out
 }
 
+/// Whether two spellings name one folder. On Windows the case of the letters
+/// and the direction of the slashes do not make a different folder: git writes
+/// its notes with forward slashes, the settings keep whatever was typed, and a
+/// worktree compared only by case read as a stranger to itself
 pub fn same_folder(a: &std::path::Path, b: &std::path::Path) -> bool {
     let key = |p: &std::path::Path| {
-        p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase()
+        let s = p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase();
+        if cfg!(windows) { s.replace('/', "\\") } else { s }
     };
     key(a) == key(b)
 }
@@ -1461,6 +1486,9 @@ pub struct UiState {
     /// A project being cloned or made new, from the add-a-project dialog
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub add_project: Option<AddProjectState>,
+    /// Worktrees of this desk's projects that the desk does not list
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discovered: Vec<DiscoveredState>,
     /// Where a cloned or new project goes until somebody picks elsewhere
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_home: String,

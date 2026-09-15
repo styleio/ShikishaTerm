@@ -107,6 +107,9 @@ struct Entry {
     /// health, because it is the same kind of question: small files on a
     /// drive that may not be answering
     repo: Option<(PathBuf, bool)>,
+    /// For a repository's own checkout, the worktrees git knows were cut from
+    /// it -- the list those not on the desk are offered from
+    cut: Vec<(PathBuf, Option<String>)>,
     /// When the answer being held was arrived at. Absent while the very first
     /// look is still out, which is what makes a folder nobody has looked at
     /// yet different from one that answered
@@ -196,6 +199,21 @@ impl Watch {
             .collect()
     }
 
+    /// The worktrees cut from each repository whose own checkout is among these
+    /// folders, by the repository's shared git folder, as the background look
+    /// last found them. Never asks, like [`Self::repos`]
+    pub fn cuts(&self, paths: &[PathBuf]) -> HashMap<PathBuf, Vec<(PathBuf, Option<String>)>> {
+        let known = self.known.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = HashMap::new();
+        for p in paths {
+            let Some(e) = known.get(p) else { continue };
+            if let Some((family, false)) = &e.repo {
+                out.insert(family.clone(), e.cut.clone());
+            }
+        }
+        out
+    }
+
     /// What came back about this folder, if anything has.
     fn answered(&self, p: &Path) -> Option<Health> {
         let known = self.known.lock().unwrap_or_else(|e| e.into_inner());
@@ -216,6 +234,7 @@ impl Watch {
                 let e = known.entry(p.clone()).or_insert(Entry {
                     health: Health::Fine,
                     repo: None,
+                    cut: Vec::new(),
                     settled: None,
                     started: None,
                 });
@@ -262,6 +281,10 @@ impl Watch {
                     Health::Fine => crate::repo::family_of(&p).map(|f| (f, crate::repo::is_linked(&p))),
                     _ => None,
                 };
+                let cut = match &repo {
+                    Some((family, false)) => crate::repo::worktrees_of(family),
+                    _ => Vec::new(),
+                };
                 if let Ok(mut map) = known.lock() {
                     // Only if it is still wanted: the answer to a question
                     // about a folder that has since been closed is not an
@@ -269,6 +292,7 @@ impl Watch {
                     if let Some(e) = map.get_mut(&p) {
                         e.health = health;
                         e.repo = repo;
+                        e.cut = cut;
                         e.settled = Some(Instant::now());
                         e.started = None;
                     }

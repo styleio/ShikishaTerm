@@ -636,6 +636,7 @@ impl WinSurface {
                 Ev::Setup { ai, yolo } => self.mail.setup = Some((ai, yolo)),
                 Ev::SetupRefresh { step } => self.mail.setup_refresh = Some(step),
                 Ev::AddProject { how, text, parent, ask } => self.mail.add_projects.push((how, text, parent, ask)),
+                Ev::Found { family, act } => self.mail.found.push((family, act)),
                 // A tool from the left bar. The window thread owns the screen
                 // and the tool's window; nothing about it is the runtime's
                 Ev::Snip { tool, delay } => {

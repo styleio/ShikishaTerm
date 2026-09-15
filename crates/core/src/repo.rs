@@ -234,6 +234,37 @@ pub fn is_linked(cwd: &Path) -> bool {
     }
 }
 
+/// The worktrees cut from a repository, wherever they are: each folder and the
+/// branch it is on. Read from the notes git keeps in the shared git folder
+/// (`worktrees/<name>/gitdir` and `HEAD`), not by starting git, and only the
+/// ones whose folder is still there -- git keeps a note for a deleted
+/// worktree until it is pruned, and a folder that is gone is nothing to show.
+/// `family` is the shared git folder, as [`family_of`] names it
+pub fn worktrees_of(family: &Path) -> Vec<(PathBuf, Option<String>)> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(family.join("worktrees")) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let note = entry.path();
+        let Ok(gitdir) = std::fs::read_to_string(note.join("gitdir")) else { continue };
+        // It names the `.git` file inside the working folder; the folder is
+        // around it. Put back together from its parts, so it is spelled the
+        // way the rest of the screen spells a path here
+        let file: PathBuf = Path::new(gitdir.trim()).components().collect();
+        let Some(folder) = file.parent().map(Path::to_path_buf) else { continue };
+        if !folder.is_dir() {
+            continue;
+        }
+        let branch = std::fs::read_to_string(note.join("HEAD"))
+            .ok()
+            .and_then(|h| h.trim().strip_prefix("ref: refs/heads/").map(str::to_string));
+        out.push((folder, branch));
+    }
+    out.sort_by_key(|(f, _)| f.display().to_string().to_lowercase());
+    out
+}
+
 /// The same path written the one way, so that two of them can be compared.
 ///
 /// `..` is resolved by reading the path rather than by asking the disk: the
@@ -549,6 +580,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// A repository's worktrees are read from the notes in its git folder:
+    /// each folder and its branch, and not a folder that has been deleted
+    #[test]
+    fn a_repositorys_worktrees_are_read_from_its_notes_and_a_deleted_one_is_left_out() {
+        let root = tmp("worktrees");
+        let git = root.join("repo").join(".git");
+        let here = root.join("wt-here");
+        std::fs::create_dir_all(&here).unwrap();
+        for (name, folder, head) in [
+            ("here", here.clone(), "ref: refs/heads/feature/login\n"),
+            ("gone", root.join("wt-gone"), "ref: refs/heads/old\n"),
+            ("detached", here.clone(), "0123456789abcdef\n"),
+        ] {
+            let note = git.join("worktrees").join(name);
+            std::fs::create_dir_all(&note).unwrap();
+            // git writes forward slashes on every system
+            std::fs::write(note.join("gitdir"), format!("{}\n", folder.join(".git").display().to_string().replace('\\', "/"))).unwrap();
+            std::fs::write(note.join("HEAD"), head).unwrap();
+        }
+        let found = worktrees_of(&git);
+        assert_eq!(found.len(), 2, "a deleted worktree was listed: {found:?}");
+        assert!(found.iter().any(|(f, b)| f == &here && b.as_deref() == Some("feature/login")), "the branch was not read: {found:?}");
+        assert!(found.iter().any(|(f, b)| f == &here && b.is_none()), "a detached worktree was dropped: {found:?}");
+        assert!(worktrees_of(&root.join("nowhere")).is_empty());
     }
 
     #[test]

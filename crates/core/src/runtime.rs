@@ -87,6 +87,25 @@ pub fn coach_step(folders: usize, seen: u8, past_the_plus: bool) -> (Option<u8>,
         _ => (None, seen),
     }
 }
+/// The state file holding the projects whose found worktrees are kept hidden,
+/// one shared git folder to a line
+const WORKTREES_KEPT: &str = "worktrees-kept";
+
+fn load_kept() -> std::collections::BTreeSet<String> {
+    std::fs::read_to_string(config::state_path(WORKTREES_KEPT))
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn save_kept(kept: &std::collections::BTreeSet<String>) {
+    let text: String = kept.iter().map(|k| format!("{k}\n")).collect();
+    let _ = crate::crypto::write_atomic(&config::state_path(WORKTREES_KEPT), &text);
+}
+
 /// What adding a folder to the desk came to
 enum Added {
     /// It is on the desk now; the words to say so
@@ -922,6 +941,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // start the setup writes it before there are settings that count as
     // loaded. Kept up to date where it changes -- the setup, a settings reload
     let mut assistant_ai = config::assistant_written();
+    // The projects whose found worktrees somebody chose to keep hidden
+    let mut worktrees_kept = load_kept();
     let mut thanks_show = false;
     // Where thanks would go: the Store's review page for the Store's copy, the
     // repository for the zip's
@@ -2907,6 +2928,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             coach: coach.filter(|_| setup_view.is_none()),
             setup: setup_view.clone(),
             add_project: add_view.clone(),
+            worktrees_kept: worktrees_kept.clone(),
             project_home: project_home.clone(),
             assistant: assistant_ai.clone(),
             usage,
@@ -4445,6 +4467,45 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     flash = Some(said);
                 }
                 Ok(Added::Already(said)) | Err(said) => flash = Some(said),
+            }
+        }
+        // A project's worktrees that git knows and the desk does not list. Shown
+        // means put on the desk, each as a folder with nothing started in it --
+        // they were made somewhere else, and what runs in them is for the
+        // person to say. Kept hidden is remembered on this machine, per project
+        for (family, act) in shell.mail().take_found() {
+            match act.as_str() {
+                "show" => {
+                    let Some(desk) = desks.get(desk_index) else { continue };
+                    let here: Vec<std::path::PathBuf> = desk.folders.iter().filter_map(|f| f.cwd.clone()).collect();
+                    let found = folders::watch().cuts(&here).remove(std::path::Path::new(&family)).unwrap_or_default();
+                    let mut added = 0;
+                    for (folder, branch) in found {
+                        if here.iter().any(|h| crate::uistate::same_folder(h, &folder)) {
+                            continue;
+                        }
+                        match config::append_folder_starting(&desk.name, None, &folder, branch.as_deref(), &config::Start::Nothing, None) {
+                            Ok(()) => added += 1,
+                            Err(e) => flash = Some(format!("{e:#}")),
+                        }
+                    }
+                    if added > 0 {
+                        let said = i18n::tp("msg.found.shown", &[("n", &added.to_string())]);
+                        said_before_reload = Some((Instant::now(), said.clone()));
+                        flash = Some(said);
+                    }
+                    worktrees_kept.remove(&family);
+                    save_kept(&worktrees_kept);
+                }
+                "keep" => {
+                    worktrees_kept.insert(family);
+                    save_kept(&worktrees_kept);
+                }
+                "offer" => {
+                    worktrees_kept.remove(&family);
+                    save_kept(&worktrees_kept);
+                }
+                _ => {}
             }
         }
         // A project from a URL, or made new. Cloning takes as long as the
