@@ -4616,7 +4616,11 @@ function projectHead(g, kin, tabs) {
     if (git && (main.color || g.color)) {
       rows.push(el("div", {onclick:() => { closeFolderMenu(); openBranch(main); }}, T["tui.folder.branch"] || ""));
     }
-    if (rows.length) openList(row, rows);
+    // The project's own page in the settings: its name, colour, git account,
+    // and what a new worktree of it is given
+    rows.push(el("div", {onclick:() => { closeFolderMenu(); openSettings(git ? "project" : null, false, main.folder); }},
+      T["tui.project.settings"] || ""));
+    openList(row, rows);
   });
   return row;
 }
@@ -4857,6 +4861,15 @@ function tabRow(t, g, deep, head) {
       : el("span", {class:"nm", title:t.profile}, t.name),
     t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
     t.ai && t.since ? agoMark(t.since) : spark(t.activity));
+  // Its settings are its own page, opened from here: the settings list no
+  // longer carries every tab of every folder
+  if (t.kind === "pty" && !t.settings) {
+    row.addEventListener("contextmenu", e => {
+      e.preventDefault();
+      openList(row, [el("div", {onclick:() => { closeFolderMenu(); openSettings(null, false, null, t); }},
+        T["tui.tab.settings"] || "")]);
+    });
+  }
   // Where it is, then what it last said. Each only when there is one: a
   // blank line on every tab would spend the sidebar saying nothing
   if (t.place) {
@@ -10659,15 +10672,16 @@ let castTarget = null;
 // /cfg page (native + responsive) on the phone, handing the token over once.
 // section: deep-link to one settings card (e.g. "actions"). ret: come back to the
 // board once it's saved. Both optional — the sidebar gear passes neither.
-function openSettings(section, ret, folder) {
+function openSettings(section, ret, folder, tab) {
   // The tab in view rides along by its PLACE, not its name: which folder it is
   // in, and which tab it is within that folder. A tab need never have been
   // named for this to land on it -- a gear pressed on tab 2 means "the settings
   // for this tab". Only when the ask names no place of its own (a section, a
-  // folder's row) and a tab is actually in view (INDEX is no tab).
+  // folder's row) and a tab is actually in view (INDEX is no tab) -- or when a
+  // tab's own row asked, which names the tab itself
   let tabpos = null;
-  if (!section && !folder && S && !S.board) {
-    const at = (S.tabs || []).find(t => t.index === S.active);
+  if (tab || (!section && !folder && S && !S.board)) {
+    const at = tab || (S.tabs || []).find(t => t.index === S.active);
     if (at && at.kind === "pty" && !at.settings) {
       const grp = at.group == null ? null : at.group;
       // Its ordinal among the terminal tabs of the same folder, in order.
@@ -14554,7 +14568,7 @@ mod tests {
     #[test]
     fn the_gear_carries_the_tab_in_view() {
         assert!(
-            PAGE.contains("const at = (S.tabs || []).find(t => t.index === S.active);")
+            PAGE.contains("const at = tab || (S.tabs || []).find(t => t.index === S.active);")
                 && PAGE.contains("tabpos = sibs.indexOf(at);"),
             "the gear does not pick up the position of the tab being looked at"
         );
