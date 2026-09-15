@@ -556,6 +556,10 @@ pub struct Config {
     /// Uses whichever is found if empty
     #[serde(default)]
     pub ai_engine: Option<String>,
+    /// What a folder runs when nothing else is said: `powershell` (also what
+    /// absent means), `cmd` or `gitbash`
+    #[serde(default)]
+    pub default_shell: Option<String>,
     /// Yolo mode: a new AI tab starts with its CLI's "act without asking" flag
     /// already ticked (see `tab::bypass_flag`). Only where a tab starts --
     /// the flag is written into that tab's command, visible and removable
@@ -3190,6 +3194,49 @@ pub fn append_folder_starting(
     append_folder_at(&config_file_path(), desk_name, like, cwd, name, start, host)
 }
 
+/// The tab a folder opens with when nothing else is said: the shell chosen
+/// under Basic > Default command. Git Bash is looked for where Git for Windows
+/// puts it; a PC without it gets PowerShell rather than a tab that cannot start
+pub fn default_shell_start(which: Option<&str>) -> Start {
+    let powershell = || Start::One { name: "PowerShell".into(), command: "powershell.exe".into() };
+    match which.map(str::trim).unwrap_or_default() {
+        "cmd" => Start::One { name: crate::i18n::t("shell.cmd"), command: "cmd.exe".into() },
+        "gitbash" => match git_bash() {
+            Some(bash) => Start::One { name: "Git Bash".into(), command: format!("\"{}\" --login -i", bash.display()) },
+            None => powershell(),
+        },
+        _ => powershell(),
+    }
+}
+
+/// Git for Windows' bash: beside the git on PATH (\<Git>\cmd\git.exe has
+/// \<Git>\bin\bash.exe), else where its installer puts it
+pub fn git_bash() -> Option<std::path::PathBuf> {
+    let beside_git = std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .filter(|d| d.join("git.exe").is_file())
+        .filter_map(|d| d.parent().map(|g| g.join("bin").join("bash.exe")));
+    let installed = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"].iter()
+        .filter_map(|k| std::env::var_os(k))
+        .map(|p| std::path::PathBuf::from(p).join("Git").join("bin").join("bash.exe"))
+        .chain(std::env::var_os("LOCALAPPDATA").map(|p| std::path::PathBuf::from(p).join("Programs").join("Git").join("bin").join("bash.exe")));
+    beside_git.chain(installed).find(|b| b.is_file())
+}
+
+/// A command as it is written into a tab: one line, or -- when its program is
+/// quoted because its path has spaces in it -- the program and its arguments
+/// apart, since a line is split at every space when it is read back
+pub fn command_value(command: &str) -> serde_json::Value {
+    let c = command.trim();
+    match c.strip_prefix('"').and_then(|rest| rest.split_once('"')) {
+        Some((program, args)) => {
+            let mut argv = vec![program.to_string()];
+            argv.extend(args.split_whitespace().map(str::to_string));
+            serde_json::json!(argv)
+        }
+        None => serde_json::json!(c),
+    }
+}
+
 /// What a folder just made should run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Start {
@@ -3235,7 +3282,7 @@ pub fn append_folder_at(
                 })
                 .and_then(|g| g.get("tabs").cloned())
                 .unwrap_or_else(|| serde_json::json!([])),
-            (None, Start::One { name, command }) => serde_json::json!([{ "name": name, "command": command }]),
+            (None, Start::One { name, command }) => serde_json::json!([{ "name": name, "command": command_value(command) }]),
         };
         // What marks the copies apart. The branch when there is one, since two
         // branches can end in the same word (`feature/login`, `fix/login`) and
@@ -6248,6 +6295,22 @@ mod browser_kind_tests {
         assert!(!is_git_panel(&v(&["git", "status"])));
         assert!(!is_git_panel(&v(&["gitk"])));
         assert!(!is_git_panel(&[]));
+    }
+
+    /// The default command a folder opens with: PowerShell unless something
+    /// else is chosen, and a quoted program written apart from its arguments
+    #[test]
+    fn a_folder_opens_with_the_default_command() {
+        use crate::config::{Start, command_value, default_shell_start};
+        assert_eq!(default_shell_start(None), Start::One { name: "PowerShell".into(), command: "powershell.exe".into() });
+        assert!(matches!(default_shell_start(Some("cmd")), Start::One { command, .. } if command == "cmd.exe"));
+        match default_shell_start(Some("gitbash")) {
+            Start::One { name, command } => assert!(name == "Git Bash" && command.ends_with("--login -i") || command == "powershell.exe"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(command_value(r#""C:\Program Files\Git\bin\bash.exe" --login -i"#),
+            serde_json::json!([r"C:\Program Files\Git\bin\bash.exe", "--login", "-i"]));
+        assert_eq!(command_value("powershell.exe"), serde_json::json!("powershell.exe"));
     }
 
     /// A tab is found by the title it goes by, named or not, and an empty name

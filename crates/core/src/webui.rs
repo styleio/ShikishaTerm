@@ -5555,6 +5555,14 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.tui_clipboard.hint"])),
     row(T["settings.conpty"], conptyState(),
         el("span", {class:"hint"}, T["settings.conpty.hint"])),
+    // What a folder opens with: a project added, or an empty folder pressed
+    row(T["settings.default_shell"],
+        choose(current, "default_shell", [
+          ["", T["settings.default_shell.powershell"]],
+          ["cmd", T["settings.default_shell.cmd"]],
+          ["gitbash", T["settings.default_shell.gitbash"]],
+        ]),
+        el("span", {class:"hint"}, T["settings.default_shell.hint"])),
     row(T["settings.ai_engine"], aiSelect(),
         el("span", {class:"hint", id:"aihint"}, "")),
     row(T["settings.yolo"], check(current, "yolo", T["settings.yolo.label"]),

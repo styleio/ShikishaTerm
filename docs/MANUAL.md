@@ -114,7 +114,9 @@ and drag it shut to give the whole window to the terminal.
 ## 3. Working folders and branches
 
 Press the folder-plus at the end of the **PROJECT** heading to add a project: open a
-folder on this PC, clone one from a URL, or make a new one.
+folder on this PC, clone one from a URL, or make a new one. A project added starts with
+Settings → Basic → **Default command** running (PowerShell, Command Prompt or Git Bash; PowerShell
+unless chosen). A folder left empty by closing its tabs opens it again when pressed.
 
 **A project on a server you reach over SSH** is added from the same dialog. "A project on an SSH
 host" takes a name, host, user, port and key file, or fills them in from an alias in

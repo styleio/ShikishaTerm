@@ -207,7 +207,7 @@ enum Added {
 /// picker, a clone, a new project) ends. Once only: a second press on the same
 /// folder would put two headings over one place, each with its own tabs. The
 /// words say which it is, a git repository or a plain folder
-fn add_to_desk(desk: Option<&config::Desk>, at: &std::path::Path) -> Result<Added, String> {
+fn add_to_desk(desk: Option<&config::Desk>, at: &std::path::Path, start: &config::Start) -> Result<Added, String> {
     let name = at.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| at.display().to_string());
     let here = desk.is_some_and(|w| {
         w.folders.iter().filter_map(|f| f.cwd.as_ref()).any(|c| crate::uistate::same_folder(c, at))
@@ -216,7 +216,9 @@ fn add_to_desk(desk: Option<&config::Desk>, at: &std::path::Path) -> Result<Adde
         return Ok(Added::Already(i18n::tp("msg.project.already", &[("name", &name)])));
     }
     let desk_name = desk.map(|w| w.name.clone()).unwrap_or_default();
-    config::append_folder(&desk_name, None, at, None).map_err(|e| format!("{e:#}"))?;
+    // Open, running the default command: a project added is somewhere to work
+    // at once, not a card with nothing in it
+    config::append_folder_starting(&desk_name, None, at, None, start, None).map_err(|e| format!("{e:#}"))?;
     Ok(Added::New(match crate::repo::family_of(at).is_some() {
         true => i18n::tp("msg.project.added", &[("name", &name)]),
         false => i18n::tp("msg.folder.added", &[("name", &name)]),
@@ -1382,6 +1384,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let Some(n) = (1..=surface_count)
                             .find(|&s| surface_folder(&surfaces, &tabs, s).is_some_and(is_want))
                         else {
+                            // Nothing runs there yet: pressing it opens the
+                            // default command in it, which is what a folder
+                            // with a card and no tab is waiting for
+                            let desk = desks.get(desk_index);
+                            let listed = desk.is_some_and(|d| {
+                                d.folders.iter().any(|f| f.host.is_none() && f.cwd.as_deref().is_some_and(|c| is_want(c)))
+                            });
+                            if listed && let config::Start::One { name, command } =
+                                config::default_shell_start(cfg.as_ref().and_then(|c| c.default_shell.as_deref()))
+                            {
+                                let tab = serde_json::json!({"name": name, "command": config::command_value(&command)});
+                                let desk_name = desk.map(|d| d.name.clone()).unwrap_or_default();
+                                if config::append_tab(&desk_name, tab, Some(&want)) {
+                                    said_before_reload = Some((Instant::now(), i18n::tp("msg.shell.opened", &[("name", &name)])));
+                                }
+                            }
                             continue;
                         };
                         pane_layout.show(n);
@@ -4628,7 +4646,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             }
             browse_view = None;
-            match add_to_desk(desks.get(desk_index), std::path::Path::new(&path)) {
+            match add_to_desk(desks.get(desk_index), std::path::Path::new(&path), &config::default_shell_start(cfg.as_ref().and_then(|c| c.default_shell.as_deref()))) {
                 // Said by the reload that brings it onto the list, instead of
                 // "settings reloaded": what happened is that a project arrived
                 Ok(Added::New(said)) => {
@@ -4790,7 +4808,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 ("create", Some(_)) => add_view = failed(i18n::t("err.addproj.remote_create")),
                 ("create", None) => {
                     add_view = Some(match crate::addproject::create(&text, &parent) {
-                        Ok(at) => match add_to_desk(desks.get(desk_index), &at) {
+                        Ok(at) => match add_to_desk(desks.get(desk_index), &at, &config::default_shell_start(cfg.as_ref().and_then(|c| c.default_shell.as_deref()))) {
                             Ok(Added::New(said)) | Ok(Added::Already(said)) => {
                                 said_before_reload = Some((Instant::now(), said.clone()));
                                 flash = Some(said);
@@ -4861,7 +4879,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 crate::addproject::Outcome::Done(at) => {
                     add_job = None;
                     let added = match on.is_empty() {
-                        true => add_to_desk(desks.get(desk_index), &at),
+                        true => add_to_desk(desks.get(desk_index), &at, &config::default_shell_start(cfg.as_ref().and_then(|c| c.default_shell.as_deref()))),
                         false => add_remote_to_desk(desks.get(desk_index), &on, &at.to_string_lossy()),
                     };
                     add_view = Some(match added {
