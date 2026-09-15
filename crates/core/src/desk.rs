@@ -611,11 +611,7 @@ pub fn hand_over(
     prs.use_tokens(
         desk.git_accounts
             .iter()
-            .filter_map(|a| {
-                let token = caps.secret_value(&config::git_token_key(&desk.id, &a.name)).ok()?;
-                let token = token.trim().to_string();
-                (!token.is_empty()).then(|| (a.name.clone(), token))
-            })
+            .filter_map(|a| Some((a.name.clone(), a.token(&desk.id, &look)?)))
             .collect(),
     );
 }
