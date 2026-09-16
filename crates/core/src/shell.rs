@@ -590,19 +590,17 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .axis .ax.on { background:var(--raise); color:var(--text); }
   .gset { padding:6px 10px 2px; color:var(--muted); font-size:11.5px;
     text-transform:uppercase; letter-spacing:.04em; }
-  /* 29px, not a number of its own: a tab under a folder sits at 26px of
-     padding behind a 3px border, and this heading stands where those rows do */
-  .bundle { display:flex; align-items:center; gap:var(--s2); padding:1px 0 1px 29px;
-    color:var(--dim); font-size:12px; cursor:pointer; }
-  .bundle .caret { flex:none; }
-  /* Put away, the set is one box and the whole box is the button: the pills,
-     then a › at the right end saying it opens. Its left edge at 22px so the
+  /* The set is one box either way and the whole box is the button: put away,
+     the pills and a › at the right end saying it opens; brought out, the count
+     and a ▾ in that same place saying it shuts. Its left edge at 22px so the
      first dot, inside the box's 1px border and the pill's 6px, lands in the
      column every status dot above it stands in */
-  .bundle.away { margin:1px 8px 3px 22px; padding:2px 6px 2px 0; min-height:26px;
-    border:1px solid var(--line); border-radius:var(--r-ctl); gap:var(--s1); }
-  .bundle.away:hover { background:var(--hover); }
-  .bundle.away .caret { font-size:14px; line-height:1; color:var(--muted); }
+  .bundle { display:flex; align-items:center; gap:var(--s1); margin:1px 8px 3px 22px;
+    padding:2px 6px 2px 0; min-height:26px; border:1px solid var(--line);
+    border-radius:var(--r-ctl); color:var(--dim); font-size:12px; cursor:pointer; }
+  .bundle:hover { background:var(--hover); }
+  .bundle .word { flex:1; min-width:0; padding-left:6px; }
+  .bundle .caret { flex:none; font-size:14px; line-height:1; color:var(--muted); }
   .tab.folder.front .nm { opacity:1; color:var(--text); }
   /* What a put-away set says instead of its rows. One pill per state, each
      wearing that state's dot and a chip for every tab in it -- so the row
@@ -2569,7 +2567,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #app.drawer #tabs { transform:none; }
     /* On a phone this box is how a folder's tabs are reached at all, so it is
        as tall as the rows a finger already presses, not a strip under them */
-    #tabs .bundle.away { min-height:40px; }
+    #tabs .bundle { min-height:40px; }
     #app.drawer #backdrop { display:block; position:fixed; inset:0; z-index:20;
       background:rgba(0,0,0,.45); }
 
@@ -3206,8 +3204,8 @@ function drawTabs() {
       // Not asked whether the folder itself was put away: a card has no fold,
       // and a fold kept from before would hide its tabs with nothing to open
       const mine = inside[gi];
-      if (mine.length >= 2) {
-        const away = !opened.has("tabs:" + g.folder);
+      if (mine.length) {
+        const away = tabsPutAway(g, mine);
         const bundle = bundleRow(g, mine, away, false);
         bundle.classList.add("wcard");
         nav.append(bundle);
@@ -3227,11 +3225,11 @@ function drawTabs() {
     // Its tabs are hidden while it is folded, and the heading says so
     if (folded.has(g.folder)) continue;
     const mine = inside[gi];
-    // A folder running one thing needs no heading over it -- the row above
-    // already is that heading. Two or more get one, so the set can be put
-    // away together and counted without counting rows
-    if (mine.length >= 2) {
-      const away = !opened.has("tabs:" + g.folder);
+    // Every folder with tabs gets the box that puts them away, one tab or
+    // several: without it a folder running one thing had no way to be made
+    // smaller at all
+    if (mine.length) {
+      const away = tabsPutAway(g, mine);
       nav.append(bundleRow(g, mine, away, false));
       if (away) continue;
     }
@@ -4950,19 +4948,24 @@ setInterval(() => {
 // how much of a list is on screen is this screen's business, and the phone and
 // the window are each looking at their own
 const folded = new Set();
-// Folders whose set of tabs has been brought out. The other way round from the
-// rest: a set of tabs starts put away, as its pills, so a folder running five
-// things is one line until somebody asks to see them one by one -- the list is
-// for finding the folder, and the pills already say which of its tabs wants you
-const opened = new Set();
+// Folders whose tabs somebody put away or brought out, and which of the two.
+// Until then a set of several starts put away, as its pills, so a folder
+// running five things is one line until somebody asks to see them one by one
+// -- the list is for finding the folder, and the pills already say which of its
+// tabs wants you. A single tab starts out: one row is no longer than its box
+const tabsAway = new Map();
+const tabsPutAway = (g, mine) => tabsAway.has(g.folder) ? tabsAway.get(g.folder) : mine.length >= 2;
 // Redraws the list it just changed. Asking for the address bar instead left
 // the fold recorded and the screen untouched until the next state push
 // happened to arrive -- and the app only pushes when something has actually
 // changed, so on a quiet board that was seconds away and the press read as dead
 function fold(folder) {
   if (!folder) return;
-  const set = folder.startsWith("tabs:") ? opened : folded;
-  set.has(folder) ? set.delete(folder) : set.add(folder);
+  folded.has(folder) ? folded.delete(folder) : folded.add(folder);
+  drawTabs();
+}
+function putTabsAway(folder, away) {
+  tabsAway.set(folder, away);
   drawTabs();
 }
 
@@ -6797,19 +6800,21 @@ const rankOf = st => { const i = STATE_RANK.indexOf(st); return i < 0 ? STATE_RA
 const worstOf = ts => (ts || []).map(t => t.state)
     .sort((a, b) => rankOf(a) - rankOf(b))[0] || "";
 
-// A folder's set of tabs, when it has more than one.
+// A folder's set of tabs.
 //
 // Put away, it is one box: a pill per state, and a › at its right end. The
 // whole box is the button, and it brings the tabs out row by row -- a pill
 // that went to a tab instead left a finger on a phone choosing between two
 // meanings in a strip a few millimetres tall. Going somewhere is the folder's
-// name's job (it goes to the tab last looked at). Brought out, it is the
-// heading over the rows, with the count, and pressing it puts them away.
+// name's job (it goes to the tab last looked at). Brought out, it is the same
+// box in the same place, with the count and a ▾ where the › was, and pressing
+// it puts them away. It used to become a line of small grey words over the
+// rows, which nobody took for the way to shut what they had just opened.
 function bundleRow(g, mine, away, deep) {
   const word = mine.length === 1
       ? (T["tui.folder.tabs.one"] || "1 tab")
       : (T["tui.folder.tabs"] || "{n} tabs").replace("{n}", mine.length);
-  const toggle = e => { e.stopPropagation(); fold("tabs:" + g.folder); };
+  const toggle = e => { e.stopPropagation(); putTabsAway(g.folder, !away); };
   if (away) {
     // The words for what the pills can only show in colour, for the eye that
     // does not know the colours yet: the state of whatever wants somebody first
@@ -6822,8 +6827,7 @@ function bundleRow(g, mine, away, deep) {
   }
   return el("div", {class:"bundle" + (deep ? " deep" : ""),
       title:T["tui.folder.tabs.title"] || "", onclick:toggle},
-    el("span", {}, word),
-    // Last, the way the branch count above it wears its own
+    el("span", {class:"word"}, word),
     el("span", {class:"caret"}, "▾"));
 }
 
@@ -13641,8 +13645,12 @@ mod tests {
     fn the_tab_list_redraws_itself_when_it_folds() {
         let p = super::page();
         assert!(
-            p.contains("set.has(folder) ? set.delete(folder) : set.add(folder);\n  drawTabs();"),
+            p.contains("folded.has(folder) ? folded.delete(folder) : folded.add(folder);\n  drawTabs();"),
             "folding does not redraw the list (the screen does not change until the next state arrives)"
+        );
+        assert!(
+            p.contains("tabsAway.set(folder, away);\n  drawTabs();"),
+            "putting a folder's tabs away does not redraw the list"
         );
         assert!(
             p.contains("troubleOpen = !troubleOpen; drawTabs();"),
@@ -14643,11 +14651,15 @@ mod tests {
     /// rows that have to be read one at a time.
     #[test]
     fn a_folder_with_several_tabs_can_be_put_away_as_one() {
-        assert!(PAGE.contains("if (mine.length >= 2) {"), "the bundle heading shows (or does not) for a single tab");
-        assert!(PAGE.contains(r#"fold("tabs:" + g.folder)"#), "there is no tab to fold the bundle");
-        // A set of tabs starts put away: only a set somebody opened is shown row by row
-        assert!(PAGE.contains(r#"const away = !opened.has("tabs:" + g.folder);"#), "a bundle of tabs starts out open");
-        assert!(PAGE.contains(r#"const set = folder.startsWith("tabs:") ? opened : folded;"#), "opening a bundle is mixed up with the record of what is folded");
+        // One tab can be put away too, and nothing else stands in for the box
+        assert!(!PAGE.contains("if (mine.length >= 2) {"), "a folder running one tab has no box to put it away");
+        assert!(PAGE.contains("putTabsAway(g.folder, !away)"), "there is no press that folds the bundle");
+        // Several start put away, one starts out, and a press is remembered either way
+        assert!(PAGE.contains("const tabsPutAway = (g, mine) => tabsAway.has(g.folder) ? tabsAway.get(g.folder) : mine.length >= 2;"),
+            "a bundle does not start the way its size says");
+        assert!(PAGE.contains("const away = tabsPutAway(g, mine);"), "a bundle ignores what somebody chose");
+        // Brought out, it is still the box, so the way to shut it is where the way to open it was
+        assert!(!PAGE.contains(".bundle.away { margin"), "only a folded bundle is drawn as a box");
         assert!(PAGE.contains("function pillsRow(mine)"), "there is nothing shown when folded");
         // Put away, the set is one box that opens from anywhere on it, with a ›
         // at its end -- the pills inside are not buttons of their own
