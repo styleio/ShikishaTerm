@@ -1964,6 +1964,30 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--line); border-radius:var(--r-ctl); padding:var(--s2) var(--s3);
     overflow-wrap:anywhere; line-height:1.5; }
   #sask .bwhere[hidden] { display:none; }
+  /* What a send would do, before any of it is done. The enclosed list of
+     section 5.5 -- one frame round the whole, a line between the rows -- since
+     this is several of one thing rather than several things */
+  #sask .blist { border:1px solid var(--line); border-radius:var(--r-ctl);
+    overflow:auto; max-height:40vh; }
+  #sask .blist[hidden] { display:none; }
+  #sask .blist .brow2 { display:flex; align-items:center; gap:var(--s3);
+    padding:10px 12px; border-top:1px solid var(--line); }
+  #sask .blist .brow2:first-child { border-top:0; }
+  #sask .blist .brow2:hover { background:var(--panel2); }
+  /* The names of the columns, so that no number stands on its own (section 5) */
+  #sask .blist .bhead { position:sticky; top:0; padding:6px 12px; background:var(--sunk);
+    color:var(--dim); font-size:11px; letter-spacing:.02em; }
+  #sask .blist .bhead:hover { background:var(--sunk); }
+  #sask .blist .nm { flex:1 1 auto; min-width:0; font-family:var(--mono);
+    font-size:11.5px; color:var(--text); overflow-wrap:anywhere; }
+  /* Its own width, so the columns beside it line up down the whole list */
+  #sask .blist .tag { flex:0 0 68px; font-size:11px; color:var(--dim); }
+  #sask .blist .brow2.over .tag { color:var(--warn); }
+  #sask .blist .arrow { flex:0 0 14px; text-align:center; color:var(--faint); font-size:11px; }
+  #sask .blist .cell { flex:0 0 92px; text-align:right;
+    font-variant-numeric:tabular-nums; font-size:11.5px; color:var(--text); }
+  #sask .blist .cell .at { display:block; font-size:10px; color:var(--dim); }
+  #sask .blist .cell.none { color:var(--faint); }
   #sask .vbox, #branch .vbox { width:min(560px,92vw); }
   /* The head is one thing and the foot is another, both divided by a rule --
      the shape every dialog in section 5.2 has. #browse and #sask already had
@@ -2240,6 +2264,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     cursor:not-allowed; filter:none; font-weight:500; }
   #browse .pplaces.ring { box-shadow:inset 0 0 0 6px color-mix(in srgb, var(--warn) 45%, transparent); }
   @media (max-width:640px) {
+    #sask .blist .brow2 { flex-wrap:wrap; }
+    #sask .blist .nm { flex:1 1 100%; }
+    #sask .blist .cell { flex:1 1 0; }
     /* The places stop being a column and become a row across the top, so the
        list keeps the width a phone has */
     #browse .pbody { grid-template-columns:1fr; grid-template-rows:auto 1fr; height:62vh; }
@@ -2632,6 +2659,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">&#10005;</span></div>
         <div class="vsay"></div>
         <div class="bwhere"></div>
+        <div class="blist" hidden></div>
         <input id="sq" type="text" autocomplete="off" spellcheck="false" hidden>
         <div class="brow"><button class="quiet"></button><button class="go"></button></div>
       </div>
@@ -11783,6 +11811,14 @@ function parentOf(path) {
   const cut = path.replace(/\/+$/, "").lastIndexOf("/");
   return cut <= 0 ? "" : path.slice(0, cut);
 }
+// A path, and the machine it is on. Written together every time, because
+// `/var/www/site` is a folder on every machine there is and the question is
+// about one of them. The server is named the way the world names it, the way
+// the column above the list already named it
+function sftpWhere(which, path) {
+  const who = which === "local" ? (T["sftp.here"] || "") : (F.server || (T["sftp.there"] || ""));
+  return who + ": " + (path || "");
+}
 function bytesSay(n) {
   if (n < 1024) return n + " B";
   if (n < 1024 * 1024) return Math.round(n / 1024) + " KB";
@@ -11906,22 +11942,69 @@ function sftpSend(which) {
   const act = which === "local" ? "put" : "get";
   const picked = from.rows.filter(r => from.sel.has(r.name));
   const files = picked.filter(r => !r.dir);
-  const clash = files.filter(r => to.rows.some(o => o.name === r.name && !o.dir));
+  // What is already standing where this one would land, if anything
+  const there = name => to.rows.find(o => o.name === name && !o.dir);
+  const clash = files.filter(r => there(r.name));
   const build = over => files.map(r => ({
     act, name: r.name,
     args: act === "put"
       ? {from: ljoin(from.at, r.name), to: rjoin(to.at, r.name), overwrite: over}
       : {from: rjoin(from.at, r.name), to: ljoin(to.at, r.name)},
   }));
+  // Nothing is replaced, so nothing can be lost and there is nothing to ask.
+  // A question whose only answer is yes is one people stop reading
   if (!clash.length) return sftpMove(act, build(false), picked.length && !files.length);
-  askOver(clash.map(r => r.name), () => sftpMove(act, build(true), false));
+  askSend(which, files, there, () => sftpMove(act, build(true), false));
+}
+
+// Every file this send would touch, and what it would do to each one. The file
+// already standing there is named beside the one replacing it, with both sizes
+// and both times, so that "replace" is something read rather than agreed to.
+//
+// No verdict is drawn from the two times. Each machine keeps its own clock,
+// and a file is stamped by the server as it lands rather than carrying the
+// time it had here -- so "the other one is newer" would be true of everything
+// this panel has ever sent. The times are shown; the reading is the person's
+function askSend(which, files, there, go) {
+  const dest = which === "local" ? "remote" : "local";
+  const over = files.filter(f => there(f.name)).length;
+  const cell = row => {
+    if (!row) return el("span", {class:"cell none"}, T["sftp.plan.none"] || "");
+    return el("span", {class:"cell"},
+      bytesSay(row.size || 0),
+      el("span", {class:"at"}, whenSay(row.modified)));
+  };
+  const rows = [el("div", {class:"brow2 bhead"},
+    el("span", {class:"nm"}, T["sftp.plan.col.name"] || ""),
+    el("span", {class:"tag"}, ""),
+    el("span", {class:"cell"}, T["sftp.plan.col.now"] || ""),
+    el("span", {class:"arrow"}, ""),
+    el("span", {class:"cell"}, T["sftp.plan.col.after"] || ""))];
+  for (const f of files) {
+    const was = there(f.name);
+    rows.push(el("div", {class:"brow2" + (was ? " over" : "")},
+      el("span", {class:"nm"}, f.name),
+      el("span", {class:"tag"}, was ? (T["sftp.plan.replace"] || "") : (T["sftp.plan.new"] || "")),
+      cell(was),
+      el("span", {class:"arrow"}, "→"),
+      cell(f)));
+  }
+  askQuestion({
+    title: T["sftp.over.title"] || "",
+    say: (T["sftp.over.say"] || "").replace("{n}", files.length).replace("{over}", over),
+    what: sftpWhere(dest, F[dest].at),
+    rows,
+    label: T["sftp.over.go"] || "",
+    danger: true,
+    go,
+  });
 }
 
 // ── The question, for the things that cannot be undone ─────────────────────
 // `back` is told when the question is put away without its button: the close
 // mark, Esc, a press outside, Cancel
 let sAskGo = null, sAskBack = null;
-function askQuestion({title, say, what, field, label, danger, go, back}) {
+function askQuestion({title, say, what, rows, field, label, danger, go, back}) {
   const box = document.getElementById("sask");
   box.hidden = false;
   box.querySelector(".vtitle").textContent = title;
@@ -11929,6 +12012,12 @@ function askQuestion({title, say, what, field, label, danger, go, back}) {
   const where = box.querySelector(".bwhere");
   where.textContent = what || "";
   where.hidden = !what;
+  // The rows are built by whoever asked, because only they know what the
+  // columns mean. All this does is hold them
+  const list = box.querySelector(".blist");
+  list.textContent = "";
+  list.hidden = !(rows && rows.length);
+  for (const r of rows || []) list.append(r);
   const input = box.querySelector("#sq");
   input.hidden = !field;
   input.value = field || "";
@@ -11955,16 +12044,6 @@ function closeAsk(quiet) {
   sAskBack = null;
   if (back && !quiet) back();
 }
-function askOver(names, go) {
-  askQuestion({
-    title: T["sftp.over.title"] || "",
-    say: (T["sftp.over.say"] || "").replace("{n}", names.length),
-    what: names.join("\n"),
-    label: T["sftp.over.go"] || "",
-    danger: true,
-    go,
-  });
-}
 
 // What one row can do. The same list on a window and on a phone: it opens from
 // a button that is always there, not from hovering or from a right button a
@@ -11986,7 +12065,7 @@ function sftpRowMenu(anchor, which, row) {
     rows.push(item(T["sftp.rename"] || "", false, () => askQuestion({
       title: T["sftp.rename.title"] || "",
       say: T["sftp.rename.say"] || "",
-      what: rjoin(side.at, row.name),
+      what: sftpWhere(which, rjoin(side.at, row.name)),
       field: row.name,
       label: T["sftp.rename"] || "",
       go: name => {
@@ -11998,7 +12077,7 @@ function sftpRowMenu(anchor, which, row) {
     rows.push(item(T["sftp.remove"] || "", true, () => askQuestion({
       title: T["sftp.remove.title"] || "",
       say: row.dir ? (T["sftp.remove.dir"] || "") : (T["sftp.remove.say"] || ""),
-      what: rjoin(side.at, row.name),
+      what: sftpWhere(which, rjoin(side.at, row.name)),
       label: T["sftp.remove"] || "",
       danger: true,
       go: () => sftpMove("rm", [{act:"rm", name: row.name,
@@ -12192,7 +12271,7 @@ function drawSftp() {
       () => askQuestion({
         title: T["sftp.mkdir.title"] || "",
         say: which === "local" ? (T["sftp.mkdir.here.say"] || "") : (T["sftp.mkdir.say"] || ""),
-        what: side.at,
+        what: sftpWhere(which, side.at),
         field: "",
         label: T["sftp.mkdir.go"] || "",
         go: name => name && sftpMove(which === "local" ? "local_mkdir" : "mkdir",
