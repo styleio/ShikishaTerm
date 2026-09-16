@@ -220,29 +220,30 @@ mod tests {
     }
 
     /// The half that was the hole: a script naming a file this tab was never
-    /// given, to send somewhere it can then read it back from
+    /// given, to send somewhere it can then read it back from.
+    ///
+    /// Written without a path that only one kind of machine reads as absolute.
+    /// `C:/Users/...` is a *relative* path on Linux, so it lands inside the
+    /// fence and is allowed -- correctly, and the first version of this test
+    /// called that a failure on the build machine and nowhere else
     #[test]
     fn a_file_outside_this_machines_folder_is_refused() {
         let root = std::env::temp_dir().join("shikisha-fence");
         let fences = Fences { here: Some(root.clone()), there: String::new() };
-        let ok = FileJob::Put {
-            from: root.join("dist/a.txt"),
-            to: "public/a.txt".into(),
-            overwrite: false,
+        let put = |from: PathBuf| FileJob::Put { from, to: "public/a.txt".into(), overwrite: false };
+
+        assert!(inside(put(root.join("dist/a.txt")), &fences).is_ok());
+        // Climbing out, which reads the same on every machine there is
+        assert!(inside(put(root.join("../elsewhere/id_rsa")), &fences).is_err());
+        // ...and a path this machine calls absolute
+        let elsewhere = if cfg!(windows) {
+            PathBuf::from("C:/Windows/System32/config/SAM")
+        } else {
+            PathBuf::from("/etc/shadow")
         };
-        assert!(inside(ok, &fences).is_ok());
-        let out = FileJob::Put {
-            from: PathBuf::from("C:/Users/someone/.ssh/id_rsa"),
-            to: "tmp/x".into(),
-            overwrite: false,
-        };
-        assert!(inside(out, &fences).is_err(), "a path outside the folder is refused");
-        // ...and the same coming back, which would write over it instead
-        let back = FileJob::Get {
-            from: "tmp/x".into(),
-            to: PathBuf::from("C:/Windows/System32/drivers/etc/hosts"),
-            overwrite: true,
-        };
+        assert!(inside(put(elsewhere.clone()), &fences).is_err());
+        // The same coming back, which would write over it rather than read it
+        let back = FileJob::Get { from: "tmp/x".into(), to: elsewhere, overwrite: true };
         assert!(inside(back, &fences).is_err());
     }
 }
