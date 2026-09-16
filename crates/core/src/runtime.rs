@@ -4069,9 +4069,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 Ok(said) => serde_json::json!({
                                     "act": act2, "ok": true, "data": said.trim(),
                                 }),
-                                Err(e) => serde_json::json!({
-                                    "act": act2, "ok": false, "error": plain_error(&e.to_string()),
-                                }),
+                                // Uncommitted work in the way of a pull is named,
+                                // so the panel can put those files in front
+                                Err(e) => match e.downcast_ref::<crate::git::PullBlocked>() {
+                                    Some(blocked) => serde_json::json!({
+                                        "act": act2, "ok": false, "error": e.to_string(),
+                                        "why": "in_the_way", "paths": blocked.0,
+                                    }),
+                                    None => serde_json::json!({
+                                        "act": act2, "ok": false, "error": plain_error(&e.to_string()),
+                                    }),
+                                },
                             };
                             let _ = tx.send(js.to_string());
                         });

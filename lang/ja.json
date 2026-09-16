@@ -2713,6 +2713,8 @@
   "err.git.account.wants_token": "このリポジトリの接続は HTTPS です。git アカウント「{name}」は SSH 鍵のアカウントです。トークンのアカウントを選んでください。",
   "err.git.account.not_saved": "git アカウントの選択を設定に保存できませんでした。",
   "err.git.failed": "git {cmd} が失敗しました: {said}",
+  "err.git.pull_blocked": "プルできません: 取り込む変更と同じファイルに、コミットしていない変更があります（{files}）。先にコミットしてから、もう一度プルしてください。",
+  "err.git.pull_blocked.more": " ほか{n}件",
   "err.git.timeout": "git {cmd} が終わらないので止めました",
   "err.git.protected": "{branch} は保護ブランチです。新しいブランチを作るか、承知のうえなら { allow_protected = true } を渡してください",
   "err.git.empty_message": "コミットにはメッセージが要ります",

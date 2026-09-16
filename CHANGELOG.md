@@ -29,6 +29,12 @@ once it reaches its first tagged release.
   bar. A chat with a model, a 🎯 goal and ▶ Lua keep Backspace to themselves.
 
 ### Fixed
+- **A pull that would write over uncommitted work says so, and shows the files.**
+  git refuses such a pull, and the panel showed its whole answer: a dozen lines
+  about line endings with the reason at the bottom. It now says the pull could not
+  go ahead because those files have uncommitted changes, names them, and picks
+  them in the list, asking for them to be committed first. Line-ending notes are
+  left out of every git error.
 - **A long worktree name no longer breaks the top of the right-hand column.** The
   Files and Changes buttons were allowed to shrink, so a name like
   `issue-3-feature-request-tell-product` folded them onto two lines and the strip

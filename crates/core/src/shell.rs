@@ -11502,6 +11502,17 @@ window.__git = function (d) {
       ? (T["git.protected"] || "").replace("{branch}", d.branch || (G.branch && G.branch.name) || "")
       : (d.error || "");
     G.bad = true;
+    // Uncommitted work in the way of a pull: a person is needed, not a failure,
+    // and the files it names are put in front and picked, so the list shows
+    // what to commit
+    if (d.why === "in_the_way") {
+      G.bad = false;
+      G.need = true;
+      G.view = "changes";
+      gitPane = "files";
+      G.pick = {};
+      for (const p of d.paths || []) G.pick[p] = "work";
+    }
     drawGit();
     return;
   }
@@ -12023,7 +12034,9 @@ function drawGitCommit() {
 
   u.naming.hidden = !G.offer;
   if (G.offer && document.activeElement !== u.name) u.name.focus();
-  if (G.need && gitMessage().trim()) { G.need = false; G.said = ""; }
+  // The missing-message reason goes as soon as there is a message; a reason
+  // of another kind stays until the next answer replaces it
+  if (G.need && !G.offer && G.said === (T["git.need.message"] || "") && gitMessage().trim()) { G.need = false; G.said = ""; }
   u.said.textContent = G.busy ? "" : (G.said || "");
   // A refusal with a way out under it is a person being needed, like a missing
   // message; only a failure is said as one
