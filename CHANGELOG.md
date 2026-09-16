@@ -34,6 +34,18 @@ once it reaches its first tagged release.
 - **A folder renamed in the left bar keeps its new name.** While its tabs were
   running, the new name showed for a few seconds and then went back to the old
   one. The name is saved, and the tabs already running now take it too.
+- **The worktree dialog keeps its button in the window however much a project
+  brings along.** Opening "More" on a project with many ignored files pushed the
+  list and the create button out past the bottom of the dialog. The middle now
+  scrolls between the title and the button, what comes along is one boxed list
+  with its choices in a single column, and the command that runs sits in its
+  own well.
+- **Comments in a .gitignore name the lines under them in the project
+  settings.** Each comment used to be a faint row of its own in the list, which
+  read as gaps. A comment is now the heading of its group, further comment lines
+  the description under it, rulers like `####` are left out, and every line's
+  choice stands in one column. What Link does is said once above the lists
+  instead of under every line set to it.
 - **A worktree with a folder carried in as a link can be thrown away on Linux
   and macOS.** There the link is a symbolic link, and an ignore line written
   for folders (`node_modules/`) does not match one, so git counted it as a new

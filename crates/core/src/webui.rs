@@ -3391,6 +3391,30 @@ const PAGE: &str = r##"<!doctype html>
  /* The lines of a list that is not pressed as a whole -- an ignore file's lines,
     each with its own controls -- keep off the box's edge the same distance */
  #project-bring .rows > *, #project-extra .rows > * { padding-left:var(--s3); padding-right:var(--s3); }
+ /* An ignore file, in the groups its own comments make. A comment is the name
+    of the lines under it, so it is set as a name above their box rather than
+    as one more line inside it: read as a line, every comment was a gap in the
+    list. More comment lines are the description under that name */
+ .igbox { display:flex; flex-direction:column; gap:var(--s4); }
+ .iggroups { display:flex; flex-direction:column; gap:var(--s5); }
+ .iggroup { display:flex; flex-direction:column; gap:var(--s2); }
+ .ighead { display:flex; flex-direction:column; gap:var(--s1); }
+ .igname { font-size:12px; font-weight:500; color:var(--text); }
+ /* One line of the file, and what hangs off it, as one item. The parts are
+    columns, so the choices stand in one line down the box whatever each line
+    matches */
+ #project-bring .rows > .igitem { padding-top:var(--s2); padding-bottom:var(--s2); }
+ .igrow { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) 132px 32px;
+   align-items:center; gap:var(--s3); }
+ .igpat { display:flex; flex-direction:column; min-width:0; }
+ .igpat > .mono { color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .igmatch { justify-self:end; min-width:0; max-width:100%; }
+ .igmatch > button { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .igrow > select { width:100%; }
+ .igneg > .hint { grid-column:2 / 4; }
+ .ignote { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s2); margin-top:var(--s1); }
+ .igbox .caution { color:var(--warn); }
+ .igpaths { white-space:pre-wrap; margin-top:var(--s1); }
  /* One secret. Reads across on a window, and stacks into a card on a phone. */
  .secretrow { cursor:pointer; padding:10px var(--s3); gap:var(--s3); }
  .secretrow:hover { background:var(--panel2); }
@@ -3712,6 +3736,14 @@ const PAGE: &str = r##"<!doctype html>
    /* A row of facts becomes a small card: the name on its own line, the rest
       under it, and the way in still a whole-row press. */
    .secretrow { align-items:flex-start; padding:10px 0; row-gap:var(--s1); }
+   /* An ignore line: its name and its choice on the first line, what it
+      matches under them */
+   .igrow { grid-template-columns:minmax(0,1fr) 132px 32px; row-gap:var(--s1); }
+   .igmatch { grid-column:1 / -1; grid-row:2; justify-self:start; }
+   /* Its words start under the name; the button's padding hangs out to the left */
+   .igmatch > button { margin-left:calc(-1 * var(--s3)); }
+   .igneg > .hint { grid-column:1 / -1; grid-row:2; }
+   .igneg > :last-child { grid-column:3; grid-row:1; }
    .secretname { flex-basis:100%; font-size:13px; }
    .secretdesc { flex:1 1 auto; }
    /* The last line: where it may go, and the way in at the end of it */
@@ -9303,7 +9335,7 @@ function replaceDialog(rule, done) {
 // The project's .gitignore, line by line, each with how its files come along
 function ignoreCard(desk, p) {
   const root = (p.at || "").trim();
-  const box = el("div");
+  const box = el("div", {class:"igbox"});
   const known = IGNORES[root];
   if (!known) {
     box.append(el("div", {class:"hint"}, T["settings.bring.reading"]));
@@ -9314,6 +9346,10 @@ function ignoreCard(desk, p) {
   const matchesOf = (source, pattern) => j.ignored.filter(i => i.source === source && i.pattern === pattern);
   const defaultOf = (source, pattern) => (j.defaults.find(d => d.source === source && d.pattern === pattern) || {}).how || "skip";
   const opened = (ignoreCard.open = ignoreCard.open || new Set());
+
+  // How many lines are set to link: what that does is said once for all of
+  // them, above the lists, rather than the same sentence under every one
+  let linked = 0;
 
   // One line that decides something, with its picker, what it matches, and
   // (for the project's own file) a way to take it out
@@ -9333,14 +9369,14 @@ function ignoreCard(desk, p) {
           render();
         })}, fill(T["settings.bring.replace.n"], {n: ((rule || {}).replace || []).length}))
       : null;
-    const row = el("div", {class:"listrow"},
-      el("span", {class:"mono secretname", title: pattern}, pattern),
-      source === ".gitignore" ? null : el("span", {class:"hint"}, fill(T["settings.bring.from_file"], {file: source})),
-      el("span", {class:"grow"}),
-      count,
+    // Every cell is there on every line, empty or not, so the columns hold
+    const row = el("div", {class:"igrow"},
+      el("div", {class:"igpat"},
+        el("span", {class:"mono", title: pattern}, pattern),
+        source === ".gitignore" ? null : el("span", {class:"hint"}, fill(T["settings.bring.from_file"], {file: source}))),
+      el("div", {class:"igmatch"}, count),
       howSelect(how, files, v => { setBringRule(desk, p, source, pattern, r => { r.how = v; }); render(); }),
-      replaceBtn,
-      n ? el("button", {class:"quiet icon", title: T["settings.bring.remove"], onclick: async () => {
+      !n ? el("span") : el("button", {class:"quiet icon", title: T["settings.bring.remove"], onclick: async () => {
         if (!await confirmAction(fill(T["settings.bring.remove_confirm"], {line: pattern}), T["settings.bring.remove"])) return;
         const r = await askIgnore(root, {remove: {n, text: pattern}});
         if (r.ok && p.entry && p.entry.bring) {
@@ -9348,35 +9384,63 @@ function ignoreCard(desk, p) {
           refreshSave();
         }
         redraw(r);
-      }}, "✕") : null);
+      }}, "✕"));
+    // What hangs off the line stays inside its item: the replacements of a
+    // copy that is rewritten, and what a choice will do that is worth a word
     const under = [];
-    if (how === "link") under.push(el("div", {class:"hint warn"}, T["settings.bring.link_warn"]));
-    if (how === "replace" && !((rule || {}).replace || []).length) under.push(el("div", {class:"hint warn"}, T["settings.bring.replace.none"]));
-    if (opened.has(key) && matched.length > 1) {
-      under.push(el("div", {class:"hint mono"}, matched.map(m => m.path).join("\n")));
-      under[under.length - 1].style.whiteSpace = "pre-wrap";
-    }
-    return [row, ...under];
+    const swaps = ((rule || {}).replace || []).length;
+    if (how === "link") linked++;
+    if (replaceBtn) under.push(el("div", {class:"hint ignote" + (swaps ? "" : " caution")},
+      replaceBtn, swaps ? null : el("span", {}, T["settings.bring.replace.none"])));
+    if (opened.has(key) && matched.length > 1) under.push(el("div", {class:"hint mono igpaths"}, matched.map(m => m.path).join("\n")));
+    return el("div", {class:"igitem"}, row, ...under);
   };
 
-  const rows = el("div");
+  // A line that takes files back out of what is ignored: nothing to choose
+  const negateRow = (line, n) => el("div", {class:"igitem"},
+    el("div", {class:"igrow igneg"},
+      el("div", {class:"igpat"}, el("span", {class:"mono", title: line}, line)),
+      el("span", {class:"hint"}, T["settings.bring.negate"]),
+      el("button", {class:"quiet icon", title: T["settings.bring.remove"], onclick: async () => {
+        if (!await confirmAction(fill(T["settings.bring.remove_confirm"], {line}), T["settings.bring.remove"])) return;
+        redraw(await askIgnore(root, {remove: {n, text: line}}));
+      }}, "✕")));
+
+  // The file as its author laid it out. A run of comments opens a group and
+  // names the lines that follow, up to the next comment. A comment with
+  // nothing under it before a blank line (the note at the top of a file)
+  // stands alone. A line of nothing but marks is a ruler drawn in the file,
+  // and the grouping already draws it
+  const groups = [];
+  let group = null;
   j.lines.forEach((text, i) => {
     const line = text.trim();
-    if (!line) return;
-    if (line.startsWith("#")) { rows.append(el("div", {class:"listrow hint mono"}, text)); return; }
-    if (line.startsWith("!")) {
-      rows.append(el("div", {class:"listrow"},
-        el("span", {class:"mono secretname"}, line),
-        el("span", {class:"hint grow"}, T["settings.bring.negate"]),
-        el("button", {class:"quiet icon", title: T["settings.bring.remove"], onclick: async () => {
-          if (!await confirmAction(fill(T["settings.bring.remove_confirm"], {line}), T["settings.bring.remove"])) return;
-          redraw(await askIgnore(root, {remove: {n: i + 1, text: line}}));
-        }}, "✕")));
+    if (!line) { if (group && !group.lines.length) group = null; return; }
+    if (line.startsWith("#")) {
+      if (/^#[#=*_~+\-\s]*$/.test(line)) return;
+      if (!group || group.lines.length) groups.push(group = {notes: [], lines: []});
+      group.notes.push(line);
       return;
     }
-    rows.append(...ruleRow(".gitignore", line, i + 1));
+    if (!group) groups.push(group = {notes: [], lines: []});
+    group.lines.push(line.startsWith("!") ? negateRow(line, i + 1) : ruleRow(".gitignore", line, i + 1));
   });
-  if (known && !j.lines.some(l => l.trim())) rows.append(el("div", {class:"hint"}, T["settings.bring.no_lines"]));
+  // Written as a sentence ("# Build output") a comment is the name, without
+  // its mark. Written as a line switched off ("#.idea/") it is quoted as it
+  // is, under the name when there is one
+  const sentence = c => /^#+\s/.test(c);
+  const heading = notes => {
+    const name = notes.findIndex(sentence);
+    return el("div", {class:"ighead"},
+      name < 0 ? null : el("div", {class:"igname"}, notes[name].replace(/^#+\s+/, "")),
+      ...notes.filter((_, k) => k !== name).map(c => sentence(c)
+        ? el("div", {class:"hint"}, c.replace(/^#+\s+/, ""))
+        : el("div", {class:"hint mono"}, c)));
+  };
+  const lists = el("div", {class:"iggroups"}, ...groups.map(g => el("div", {class:"iggroup"},
+    ...[g.notes.length ? heading(g.notes) : null,
+        g.lines.length ? el("div", {class:"rows"}, ...g.lines) : null].filter(Boolean))));
+  if (known && !j.lines.some(l => l.trim())) lists.append(el("div", {class:"hint"}, T["settings.bring.no_lines"]));
 
   // Adding a line
   const addIn = el("input", {type:"text", class:"mono grow", placeholder: T["settings.bring.add_ph"]});
@@ -9402,13 +9466,14 @@ function ignoreCard(desk, p) {
   // Lines from somewhere other than the project's own file: chosen here,
   // changed where they are written
   const others = [];
-  for (const d of j.defaults.filter(d => d.source !== ".gitignore")) others.push(...ruleRow(d.source, d.pattern, 0));
+  for (const d of j.defaults.filter(d => d.source !== ".gitignore")) others.push(ruleRow(d.source, d.pattern, 0));
 
   // Native append writes an absent part as the word "null", so the parts that
   // may be absent are left out first
   box.append(...[
     el("div", {class:"hint"}, fill(T["settings.bring.hint"], {root: j.root || root, branch: j.branch || "-"})),
-    el("div", {class:"rows"}, rows),
+    linked ? el("div", {class:"hint caution"}, T["settings.bring.link_warn_lines"]) : null,
+    lists,
     el("div", {class:"row"}, addIn, el("button", {onclick: add}, T["settings.bring.add"])),
     trackedBox,
     others.length ? el("div", {class:"hint"}, T["settings.bring.others"]) : null,

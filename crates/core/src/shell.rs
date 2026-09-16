@@ -1960,7 +1960,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #browse .vsay, #sask .vsay { color:var(--dim); font-size:12px; line-height:1.5; }
   /* The thing the question is about -- a path -- quoted as it is: the mono
      well (5), quiet, broken anywhere so a long path never widens the dialog */
-  #sask .bwhere { font-family:var(--mono); font-size:11.5px; color:var(--dim); background:var(--sunk);
+  #sask .bwhere, #branch .bcmd { font-family:var(--mono); font-size:11.5px; color:var(--dim); background:var(--sunk);
     border:1px solid var(--line); border-radius:var(--r-ctl); padding:var(--s2) var(--s3);
     overflow-wrap:anywhere; line-height:1.5; }
   #sask .bwhere[hidden] { display:none; }
@@ -1970,6 +1970,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     cursor:pointer; user-select:none; }
   #sask .snever[hidden] { display:none; }
   #sask .snever input { width:15px; height:15px; margin:0; }
+  #branch .bcmd { white-space:pre-wrap; }
+  #branch .bcmd:empty { display:none; }
   #sask .vbox, #branch .vbox { width:min(560px,92vw); }
   /* The head is one thing and the foot is another, both divided by a rule --
      the shape every dialog in section 5.2 has. #browse and #sask already had
@@ -2127,17 +2129,41 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bmore:hover { color:var(--text); }
   #branch .bmore .caret { font-size:9px; display:inline-block; }
   #branch .bmore[aria-expanded="true"] .caret { transform:rotate(90deg); }
-  #branch .bextra { display:flex; flex-direction:column; gap:var(--s2); }
+  #branch .bextra { display:flex; flex-direction:column; gap:var(--s5); }
   #branch .bextra[hidden] { display:none; }
-  /* What the new folder cannot get from git. Set as it will happen -- the
-     project's own answer -- so nobody has to read it unless they disagree */
-  #branch .bcarry { display:flex; flex-wrap:wrap; gap:var(--s2) var(--s4); align-items:center; }
-  #branch .bcarry .say { color:var(--dim); font-size:11.5px; }
-  #branch .bcarry label { display:flex; align-items:center; gap:var(--s2); font-size:12px;
-    color:var(--text); }
-  #branch .bcarry select { font:inherit; font-size:12px; padding:2px 6px; border-radius:var(--r-ctl);
-    border:1px solid var(--edge); background:var(--panel); color:var(--text); }
+  /* A field whose every part is put away takes no step of the gap either */
+  #branch .bextra > .bfield:not(:has(> :not([hidden]))) { display:none; }
+  /* Everything between the title and the button. However much a project
+     brings along, this is the part that scrolls: the head says what the dialog
+     is and the foot holds the button, so neither may leave the window. The
+     padding is the width of a focus ring, which the scrolling edge would
+     otherwise cut off */
+  #branch .bbody { flex:1 1 auto; min-height:0; overflow-y:auto; display:flex; flex-direction:column;
+    gap:var(--s5); padding:3px; margin:-3px; }
+  /* A tick box and its words, beside each other (5.1) */
+  #branch .bsetup, #branch .bfan, #branch .bais label { display:flex; align-items:center; gap:var(--s2);
+    font-size:14px; color:var(--text); cursor:pointer; }
+  #branch .bsetup input, #branch .bfan input, #branch .bais input { width:15px; height:15px; margin:0; flex:none; }
+  #branch .bsetupsay { font-size:11.5px; color:var(--faint); }
+  /* One per AI, under the box that asks for them: across, and wrapping */
+  #branch .bais { display:flex; flex-wrap:wrap; gap:var(--s2) var(--s5); padding-left:var(--s6); }
+  /* What the new folder cannot get from git, one line each, the choices in
+     one column so the list is read down rather than hunted across. Set as it
+     will happen -- the project's own answer -- so nobody has to read it unless
+     they disagree. However long, it scrolls with the rest of the dialog: a
+     frame scrolling inside the scrolling part is two hands on one wheel */
+  #branch .bcarryf:has(> .bcarry:empty) { display:none; }
+  #branch .bcarry { border:1px solid var(--line); border-radius:var(--r-ctl); }
+  #branch .bcarry > div { display:flex; align-items:center; gap:var(--s3); padding:var(--s1) var(--s3); }
+  #branch .bcarry > div + div { border-top:1px solid var(--line); }
+  /* A path is cut at its front: the end is the file's own name */
+  #branch .bcarry .nm { flex:1; min-width:0; font-family:var(--mono); font-size:12px; color:var(--text);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
+  #branch .bcarry select { flex:none; width:132px; height:32px; box-sizing:border-box; font:inherit; font-size:12px;
+    padding:0 var(--s2); border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--bg); color:var(--text); }
   #branch .bcarry select:hover { border-color:var(--edge-hi); }
+  #branch .bcarry select:focus { outline:none; border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
   #branch .berr, #browse .berr { color:var(--stop); font-size:12px; white-space:pre-wrap; }
   /* Why the button did nothing is a person being needed, not a failure (5.4) */
   #branch .berr.need { color:var(--warn); font-size:11.5px; }
@@ -2710,6 +2736,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <div id="branch" hidden>
     <div class="vbox">
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
+      <div class="bbody">
       <div class="bsay"></div>
       <div class="bfield">
         <div class="blabelrow"><span class="blabel"></span><button class="bicon badd" type="button"></button></div>
@@ -2739,15 +2766,23 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
           <label class="blabel" for="bat"></label>
           <input id="bat" type="text" autocomplete="off" spellcheck="false">
         </div>
-        <label class="bsetup" hidden><input type="checkbox" id="bsetupon" checked><span></span></label>
-        <div class="bsetupsay hint" hidden></div>
-        <label class="bfan" hidden><input type="checkbox" id="bfanon"><span></span></label>
-        <div class="bais" hidden></div>
-        <div class="bcarry"></div>
+        <div class="bfield">
+          <label class="bsetup" hidden><input type="checkbox" id="bsetupon" checked><span></span></label>
+          <div class="bsetupsay" hidden></div>
+        </div>
+        <div class="bfield">
+          <label class="bfan" hidden><input type="checkbox" id="bfanon"><span></span></label>
+          <div class="bais" hidden></div>
+        </div>
+        <div class="bfield bcarryf">
+          <span class="blabel bcarrysay"></span>
+          <div class="bcarry"></div>
+        </div>
         <div class="bfield">
           <span class="blabel"></span>
           <div class="bcmd"></div>
         </div>
+      </div>
       </div>
       <div class="berr"></div>
       <div class="binuse" hidden>
@@ -6325,7 +6360,7 @@ function drawCarry(b, items) {
   box.dataset.key = key;
   box.textContent = "";
   if (!items.length) return;
-  box.append(el("span", {class:"say"}, T["tui.branch.carry"] || "Bring along:"));
+  b.querySelector(".bcarrysay").textContent = T["tui.branch.carry"] || "Brought along";
   for (const it of items) {
     const pick = el("select", {"data-name": it.name});
     for (const how of ["copy", "replace", "link", "skip"]) {
@@ -6335,7 +6370,10 @@ function drawCarry(b, items) {
     }
     pick.value = it.how || "skip";
     pick.onchange = () => { showMore(b, !b.querySelector(".bextra").hidden); askBranch(); };
-    box.append(el("label", {}, el("span", {class:"mono"}, it.name), pick));
+    // Held left to right inside the marks: the box runs right to left so a
+    // long path is cut at the front, and a folder ends in the / that says so
+    const name = it.name + (it.folder ? "/" : "");
+    box.append(el("div", {}, el("span", {class:"nm", title:name}, "‎" + name + "‎"), pick));
   }
 }
 
