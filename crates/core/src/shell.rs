@@ -1495,9 +1495,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .hunk .lines { padding:4px 12px; }
   #gitpanel .filehead { padding:5px 12px; font-size:12px;
     border-bottom:1px solid var(--line); color:var(--text); background:var(--panel); }
-  #gitpanel .diff .a { color:var(--live); }
-  #gitpanel .diff .d { color:var(--danger); }
-  #gitpanel .diff .h { color:var(--muted); }
+  /* A diff's lines, wherever one is shown: the git panel's hunks and the file
+     panel's comparison. Written once, because two copies of "what green means"
+     drift apart the first time either is touched */
+  .dlines { margin:0; font-family:var(--mono); font-size:11.5px; line-height:1.55;
+    white-space:pre-wrap; overflow-wrap:anywhere; }
+  .dlines .a { color:var(--live); }
+  .dlines .d { color:var(--stop); }
+  .dlines .h { color:var(--dim); }
   #gitpanel .empty { color:var(--muted); padding:12px 10px; font-size:12px; }
   /* On a phone the three columns become one, and the row of chips says which
      one is in front. Everything a person can reach on the window is reachable
@@ -1943,17 +1948,17 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the press outside a dialog: not adding after all */
   #dlgscrim { position:fixed; inset:0; background:#00000099; z-index:52; }
   #dlgscrim[hidden] { display:none; }
-  #vault, #palette, #branch, #browse, #repair, #sask { position:fixed; inset:0; background:#00000099; display:flex;
+  #vault, #palette, #branch, #browse, #repair, #sask, #sdiff { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
   #vault[hidden], #palette[hidden], #branch[hidden], #browse[hidden],
-  #repair[hidden], #sask[hidden] { display:none; }
+  #repair[hidden], #sask[hidden], #sdiff[hidden] { display:none; }
   #vault .vbox, #palette .vbox, #branch .vbox, #browse .vbox,
-  #sask .vbox { background:var(--panel); border:1px solid var(--line);
+  #sask .vbox, #sdiff .vbox { background:var(--panel); border:1px solid var(--line);
     border-radius:var(--r-card); padding:var(--s4) var(--s5); width:min(720px,92vw);
     max-height:82vh; display:flex; flex-direction:column; gap:var(--s3); }
   #branch .vbox { gap:var(--s5); }
   #vault .vhead, #palette .vhead, #branch .vhead, #browse .vhead,
-  #sask .vhead { display:flex; align-items:center; }
+  #sask .vhead, #sdiff .vhead { display:flex; align-items:center; }
   /* The title is one thing and what is under it is another */
   #browse .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
     margin-bottom:var(--s1); }
@@ -1989,6 +1994,27 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #sask .blist .cell .at { display:block; font-size:10px; color:var(--dim); }
   #sask .blist .cell.none { color:var(--faint); }
   #sask .vbox, #branch .vbox { width:min(560px,92vw); }
+  /* Wider than a question, because what is in it is somebody's file and a
+     line broken in three is not the line they wrote */
+  #sdiff .vbox { width:min(900px,96vw); }
+  #sdiff .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
+    margin-bottom:var(--s1); }
+  #sdiff .vsay { color:var(--dim); font-size:12px; line-height:1.5; }
+  /* The two files being held up against each other, one to a line */
+  #sdiff .bwhere { font-family:var(--mono); font-size:11.5px; color:var(--dim);
+    background:var(--sunk); border:1px solid var(--line); border-radius:var(--r-ctl);
+    padding:var(--s2) var(--s3); overflow-wrap:anywhere; line-height:1.6; }
+  #sdiff .bwhere span { display:block; }
+  #sdiff .dbody { border:1px solid var(--line); border-radius:var(--r-ctl);
+    padding:var(--s2) var(--s3); overflow:auto; max-height:52vh; }
+  #sdiff .dsay { color:var(--dim); font-size:12px; padding:var(--s3) 0; }
+  #sdiff .dsay.bad { color:var(--stop); }
+  #sdiff .brow { padding-top:var(--s3); border-top:1px solid var(--line);
+    display:flex; gap:var(--s2); justify-content:flex-end; }
+  #sdiff .quiet { font:inherit; font-size:12.5px; min-height:32px; padding:0 14px;
+    border-radius:var(--r-ctl); border:1px solid transparent; background:transparent;
+    color:var(--dim); cursor:pointer; }
+  #sdiff .quiet:hover { color:var(--text); }
   /* The head is one thing and the foot is another, both divided by a rule --
      the shape every dialog in section 5.2 has. #browse and #sask already had
      it; this one was a single stack of boxes with nothing telling the title
@@ -2031,13 +2057,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #sask .go.stop { border-color:var(--stop); background:transparent; color:var(--stop); }
   #browse .brow { padding-top:var(--s3); border-top:1px solid var(--line); }
   #vault .vtitle, #palette .vtitle, #branch .vtitle, #browse .vtitle,
-  #sask .vtitle { color:var(--text);
+  #sask .vtitle, #sdiff .vtitle { color:var(--text);
     font-size:13.5px; font-weight:600; text-transform:uppercase; flex:1; }
   #vault .vclose, #palette .vclose, #branch .vclose, #browse .vclose,
-  #sask .vclose { cursor:pointer;
+  #sask .vclose, #sdiff .vclose { cursor:pointer;
     color:var(--dim); font-size:16px; padding:2px 6px; }
   #vault .vclose:hover, #palette .vclose:hover, #branch .vclose:hover,
-  #browse .vclose:hover, #repair .vclose:hover, #sask .vclose:hover { color:var(--text); }
+  #browse .vclose:hover, #repair .vclose:hover, #sask .vclose:hover,
+  #sdiff .vclose:hover { color:var(--text); }
   #vault #vq, #palette #pq { font:inherit; font-size:14px; background:var(--bg);
     color:var(--text); border:1px solid var(--line); border-radius:var(--r-ctl); padding:9px 12px; outline:none; }
   #vault #vq:focus, #palette #pq:focus { border-color:var(--brand); }
@@ -2662,6 +2689,17 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <div class="blist" hidden></div>
         <input id="sq" type="text" autocomplete="off" spellcheck="false" hidden>
         <div class="brow"><button class="quiet"></button><button class="go"></button></div>
+      </div>
+    </div>
+    <!-- The same file on both machines, held up against each other. A reading
+         rather than a decision, so its foot has nothing to press but "close" -->
+    <div id="sdiff" hidden>
+      <div class="vbox">
+        <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">&#10005;</span></div>
+        <div class="vsay"></div>
+        <div class="bwhere"></div>
+        <div class="dbody"></div>
+        <div class="brow"><button class="quiet"></button></div>
       </div>
     </div>
     <canvas id="cast" hidden></canvas>
@@ -6366,6 +6404,20 @@ function drawCarry(b, items) {
     if (e.key === "Escape") { e.preventDefault(); closeAsk(); }
     if (typingIME(e)) return;
     if (e.key === "Enter" && sAskGo) { e.preventDefault(); sAskGo(); }
+  });
+})();
+
+// A reading, so there is nothing to answer: every way out of it is the way out
+(function () {
+  const b = document.getElementById("sdiff");
+  if (!b) return;
+  b.querySelector(".vclose").onclick = closeDiff;
+  b.addEventListener("mousedown", e => { if (e.target === b) closeDiff(); });
+  b.addEventListener("keydown", e => {
+    if (e.key === "Escape" || (e.key === "Enter" && !typingIME(e))) {
+      e.preventDefault();
+      closeDiff();
+    }
   });
 })();
 
@@ -11690,13 +11742,7 @@ function drawHistory(u) {
     // simply being taken back out of what is here now
     head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, reverse:true})},
       T["git.hunk.drop"] || ""));
-    const lines = el("pre", {class:"lines", style:"margin:0"});
-    h.patch.split("\n").forEach(line => {
-      if (line.startsWith("diff --git ") || line.startsWith("index ")
-        || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("@@")) return;
-      const cls = line.startsWith("+") ? "a" : line.startsWith("-") ? "d" : "";
-      lines.append(el("span", {class:cls}, line + "\n"));
-    });
+    const lines = diffLines(h.patch);
     u.commitDiff.append(el("div", {class:"hunk"}, head, lines));
   });
 }
@@ -11885,6 +11931,10 @@ window.__sftp = msg => {
     drawSftp();
     return;
   }
+  if (act === "diff") {
+    showDiff(msg);
+    return;
+  }
   // A transfer, a new folder, a rename or a removal: the next one starts when
   // this one is answered, and a refusal stops the rest rather than plodding on
   if (msg.ok) {
@@ -12000,6 +12050,82 @@ function askSend(which, files, there, go) {
   });
 }
 
+// The same file on both machines, held up against each other. Both sides are
+// read where they are: nothing is written to this machine to do it, which is
+// the difference between looking and fetching
+function sftpDiff(name) {
+  // Which side the row was on does not come into it: there are two copies of
+  // this name and both of them are read where they are
+  sftpAsk("diff", {
+    name,
+    here: ljoin(F.local.at, name),
+    there: rjoin(F.remote.at, name),
+  });
+  openDiff(name);
+}
+
+let diffUi = null;
+// Which file this window is waiting on. An answer for anything else is one
+// somebody asked for, read, and closed before it arrived
+let diffFor = "";
+function diffParts() {
+  const box = document.getElementById("sdiff");
+  if (!box) return null;
+  if (!diffUi || diffUi.box !== box) {
+    diffUi = {
+      box,
+      title: box.querySelector(".vtitle"),
+      say: box.querySelector(".vsay"),
+      where: box.querySelector(".bwhere"),
+      body: box.querySelector(".dbody"),
+      close: box.querySelector(".brow .quiet"),
+    };
+  }
+  return diffUi;
+}
+
+// Opened before the answer is back, saying what it is reading. A window that
+// appears only once the reading is done leaves the press looking ignored
+function openDiff(name) {
+  const u = diffParts();
+  if (!u) return;
+  u.box.hidden = false;
+  diffFor = name;
+  u.title.textContent = T["sftp.diff.title"] || "";
+  u.say.textContent = T["sftp.diff.say"] || "";
+  // What the two marks mean, while there are marks to explain
+  u.say.hidden = true;
+  u.where.textContent = "";
+  u.where.append(el("span", {}, sftpWhere("remote", rjoin(F.remote.at, name))));
+  u.where.append(el("span", {}, sftpWhere("local", ljoin(F.local.at, name))));
+  u.body.textContent = "";
+  u.body.append(el("div", {class:"dsay"}, T["sftp.diff.reading"] || ""));
+  u.close.textContent = T["common.close"] || T["common.cancel"] || "";
+  u.close.onclick = closeDiff;
+  setTimeout(() => u.close.focus(), 0);
+}
+function closeDiff() {
+  const u = diffParts();
+  diffFor = "";
+  if (u) u.box.hidden = true;
+}
+function showDiff(msg) {
+  const u = diffParts();
+  if (!u || u.box.hidden) return;
+  if (msg.name && msg.name !== diffFor) return;
+  u.body.textContent = "";
+  u.say.hidden = !(msg.ok && msg.text);
+  if (!msg.ok) {
+    u.body.append(el("div", {class:"dsay bad"}, msg.error || ""));
+    return;
+  }
+  if (!msg.text) {
+    u.body.append(el("div", {class:"dsay"}, T["sftp.diff.same"] || ""));
+    return;
+  }
+  u.body.append(diffLines(msg.text));
+}
+
 // ── The question, for the things that cannot be undone ─────────────────────
 // `back` is told when the question is put away without its button: the close
 // mark, Esc, a press outside, Cancel
@@ -12060,6 +12186,12 @@ function sftpRowMenu(anchor, which, row) {
     rows.push(item(which === "local" ? (T["sftp.send"] || "") : (T["sftp.fetch"] || ""), false, () => {
       side.sel.clear(); side.sel.add(row.name); sftpSend(which);
     }));
+    // Only when there is a second copy to hold it against. With nothing on the
+    // other side there is no comparison to offer, and a row for one would open
+    // a window that could only say so
+    const twin = F[which === "local" ? "remote" : "local"].rows
+      .some(o => o.name === row.name && !o.dir);
+    if (twin) rows.push(item(T["sftp.diff"] || "", false, () => sftpDiff(row.name)));
   }
   if (which === "remote") {
     rows.push(item(T["sftp.rename"] || "", false, () => askQuestion({
@@ -12366,6 +12498,19 @@ function drawSftp() {
   u.safe.textContent = F.server ? (T["sftp.safe"] || "") : "";
 }
 
+// A diff's lines, drawn. The header a patch carries is for whoever applies it,
+// not for whoever reads it, so what is left on screen is what changed
+function diffLines(patch) {
+  const box = el("pre", {class:"lines dlines"});
+  for (const line of String(patch || "").split("\n")) {
+    if (line.startsWith("diff --git ") || line.startsWith("index ")
+      || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("@@")) continue;
+    box.append(el("span", {class: line.startsWith("+") ? "a" : line.startsWith("-") ? "d" : ""},
+      line + "\n"));
+  }
+  return box;
+}
+
 function drawGit() {
   const box = document.getElementById("gitpanel");
   if (!box || box.hidden) return;
@@ -12508,14 +12653,7 @@ function drawGit() {
       head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, reverse:true})},
         T["git.hunk.drop"] || ""));
     }
-    const lines = el("pre", {class:"lines", style:"margin:0"});
-    // The patch carries its file header; on screen the lines are the point
-    h.patch.split("\n").forEach(line => {
-      if (line.startsWith("diff --git ") || line.startsWith("index ")
-        || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("@@")) return;
-      const cls = line.startsWith("+") ? "a" : line.startsWith("-") ? "d" : "";
-      lines.append(el("span", {class:cls}, line + "\n"));
-    });
+    const lines = diffLines(h.patch);
     u.diff.append(el("div", {class:"hunk"}, head, lines));
   });
 }

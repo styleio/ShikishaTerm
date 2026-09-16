@@ -6785,6 +6785,37 @@ pub fn aim_of(
 /// Shorter than a script's own wait: a person is looking at the screen, and a
 /// list that takes a minute to arrive is a broken screen whatever it says
 pub const SFTP_WAIT_MS: u64 = 45_000;
+
+/// How large a file the panel will read to compare it with another.
+///
+/// Both sides are read whole and held in memory to be compared, and a person
+/// cannot read a diff of a file this size anyway. A build artefact dropped
+/// into the wrong folder is the usual way somebody arrives here, and being
+/// told so beats waiting for a megabyte of minified JavaScript to arrive
+pub const SFTP_DIFF_MAX: usize = 1 << 20;
+
+/// A file's text, or why it is not going to be compared.
+///
+/// Size first: a refusal that arrives before the reading is a refusal that
+/// cost nothing. Then whether it is text at all, because a diff of two
+/// pictures is a wall of replacement characters, not an answer
+pub fn diff_text(name: &str, bytes: &[u8]) -> std::result::Result<String, String> {
+    if bytes.len() > SFTP_DIFF_MAX {
+        return Err(i18n::tp(
+            "err.sftp.diff_big",
+            &[("name", name), ("max", &format!("{} MB", SFTP_DIFF_MAX / (1 << 20)))],
+        ));
+    }
+    // A zero byte is what every tool uses to tell a picture from a page, and
+    // it agrees with "not valid text" on everything either of them can see
+    if bytes.contains(&0) {
+        return Err(i18n::tp("err.sftp.diff_not_text", &[("name", name)]));
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(t) => Ok(t.to_string()),
+        Err(_) => Err(i18n::tp("err.sftp.diff_not_text", &[("name", name)])),
+    }
+}
 /// One thing the file panel asked for.
 ///
 /// Returns the answer when there is one to give at once, and `None` when the
@@ -7075,6 +7106,10 @@ pub fn sftp_answer(
         ),
         // Reaching the far end at all, to say so before anything is saved
         "test" => ("sftp_ls", ssh::FileJob::List { path: at("") }),
+        // Not a job of its own: the far side is read the way any read is read,
+        // and what comes back is put beside the copy on this machine instead
+        // of being written down
+        "diff" => ("sftp_read", ssh::FileJob::Read { path: str_of("there") }),
         _ => return None,
     };
     // A transfer names a file on this machine, and that file has to be inside
@@ -7087,6 +7122,26 @@ pub fn sftp_answer(
         && local_under(root, &to.display().to_string()).is_none() {
             return fail(i18n::t("err.sftp.outside"));
         }
+    // Read here rather than in the thread: it is this machine's own disk, and
+    // a file that is missing or too big should say so before a connection is
+    // spent on the other half of the comparison
+    let mut here: Option<(String, String)> = None;
+    if act == "diff" {
+        let Some(root) = local_root.clone() else {
+            return fail(i18n::t("err.sftp.no_folder"));
+        };
+        let Some(path) = local_under(&root, &str_of("here")) else {
+            return fail(i18n::t("err.sftp.outside"));
+        };
+        let file = str_of("name");
+        match std::fs::read(&path) {
+            Err(e) => return fail(format!("{e}")),
+            Ok(bytes) => match diff_text(&file, &bytes) {
+                Err(why) => return fail(why),
+                Ok(text) => here = Some((file, text)),
+            },
+        }
+    }
     if !caps.allows(name, grants::Subject::Human) {
         return fail(i18n::tp(
             "err.hooks.not_permitted",
@@ -7117,6 +7172,24 @@ pub fn sftp_answer(
                     "modified": e.modified,
                 })).collect::<Vec<_>>(),
             }),
+            // The far side, put beside the one here. `-` is the server's and
+            // `+` is this machine's, whichever way the person was going to
+            // move the file -- one reading, so the signs never swap meaning
+            Ok(ssh::FileAnswer::Bytes(bytes)) => match here {
+                None => serde_json::json!({"act": act, "panel": panel, "ok": true}),
+                Some((file, mine)) => match diff_text(&file, &bytes) {
+                    Err(why) => serde_json::json!(
+                        {"act": act, "panel": panel, "ok": false, "name": file, "error": why}),
+                    Ok(theirs) => serde_json::json!({
+                        "act": act,
+                        "panel": panel,
+                        "ok": true,
+                        "name": file,
+                        "text": crate::diff::unified(
+                            &theirs, &mine, &file, crate::diff::CONTEXT),
+                    }),
+                },
+            },
             Ok(_) => serde_json::json!({"act": act, "panel": panel, "ok": true}),
             Err(e) => {
                 serde_json::json!({"act": act, "panel": panel, "ok": false, "error": format!("{e:#}")})
@@ -10219,6 +10292,25 @@ mod tests {
     /// Writing it all in one go means Enter arrives before the AI CLI's input
     /// box has finished processing the paste, leaving the text typed but never
     /// submitted (this actually happened with sends from a phone).
+    /// What the panel will and will not hold up against another file. Checked
+    /// here because both refusals happen before anything is asked of a server,
+    /// and a refusal that arrives after a megabyte has crossed the wire is not
+    /// a refusal, it is an apology
+    #[test]
+    fn only_text_of_a_readable_size_is_compared() {
+        assert_eq!(diff_text("a.txt", b"one\ntwo\n").as_deref(), Ok("one\ntwo\n"));
+        // Empty is text: two empty files are the same, which is an answer
+        assert_eq!(diff_text("a.txt", b"").as_deref(), Ok(""));
+        let big = vec![b'x'; SFTP_DIFF_MAX + 1];
+        assert!(diff_text("big.js", &big).is_err(), "a file past the limit is refused");
+        let edge = vec![b'x'; SFTP_DIFF_MAX];
+        assert!(diff_text("big.js", &edge).is_ok(), "the limit itself is still read");
+        // A picture: the zero bytes in it are what says so
+        assert!(diff_text("logo.png", &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]).is_err());
+        // Bytes that are not text, with no zero in them to give it away
+        assert!(diff_text("odd.txt", &[0xff, 0xfe, 0x41]).is_err(), "invalid text is refused");
+    }
+
     #[test]
     fn a_prompt_is_typed_first_and_submitted_after() {
         let argv = vec![crate::test_shell()];
