@@ -439,6 +439,8 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     t.file = showing;
                     t.file_stamp =
                         ui.editors.iter().find(|e| &e.key == key).and_then(|e| e.stamp.clone());
+                    t.file_diff =
+                        ui.editors.iter().find(|e| &e.key == key).and_then(|e| e.diff.clone());
                     Some(t)
                 }
                 Surface::Issues { key } => Some(crate::uistate::TabState::issues(i + 1, key)),
@@ -712,6 +714,10 @@ pub struct EditorOpen {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stamp: Option<String>,
     pub scratch: bool,
+    /// Which change of the file it is showing instead of the file itself --
+    /// `work`, `staged` or `commit:<hash>` -- when a list of changes opened it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
 }
 
 pub fn surfaces_of(

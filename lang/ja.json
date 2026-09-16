@@ -725,6 +725,8 @@
   "tui.side.git": "変更",
   "tui.side.files": "ファイル",
   "tui.edit.save": "保存",
+  "tui.edit.open_file": "ファイルを開く",
+  "tui.edit.diff.commit": "コミット {hash}",
   "tui.edit.saved": "保存しました",
   "tui.edit.dirty": "未保存",
   "tui.edit.close": "このファイルを閉じる",

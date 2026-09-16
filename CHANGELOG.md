@@ -29,6 +29,13 @@ once it reaches its first tagged release.
   bar. A chat with a model, a 🎯 goal and ▶ Lua keep Backspace to themselves.
 
 ### Fixed
+- **A change is read in an editor tab, and the list of changes stays where it
+  is.** In the right-hand column, pressing a file replaced the list with that
+  file's change, so after picking files the "Add picked" button was no longer on
+  screen. The change now opens in the editor tab beside the terminals, one piece
+  at a time with the same Add, Remove and Discard buttons, and follows the file
+  when it moves between the two lists; "Open the file" switches it to the file
+  itself. Ctrl-click only picks. The column no longer has a Diff pane.
 - **A pull that would write over uncommitted work says so, and shows the files.**
   git refuses such a pull, and the panel showed its whole answer: a dozen lines
   about line endings with the reason at the bottom. It now says the pull could not

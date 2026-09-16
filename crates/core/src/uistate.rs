@@ -125,6 +125,10 @@ pub struct TabState {
     /// did -- which is the whole reason this travels
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_stamp: Option<String>,
+    /// Which change of that file the editor is showing instead of the file
+    /// itself: `work`, `staged` or `commit:<hash>`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_diff: Option<String>,
     /// The device this page is drawn on, when that is not this machine at all
     /// (the `browser_draw` setting). Such a page is already in front of the
     /// person whose machine it is and there is no picture of it to send
@@ -1717,6 +1721,7 @@ impl TabState {
             // ...and a session is not showing a file
             file: None,
             file_stamp: None,
+            file_diff: None,
             // ...and a session is drawn wherever its terminal is, which is here
             away: None,
             git_acct: None,
@@ -1831,6 +1836,7 @@ impl TabState {
             ask: None,
             file: None,
             file_stamp: None,
+            file_diff: None,
             // Where it is drawn is known to the runtime, not to this; filled
             // in by `view::ui_state_of` along with everything else
             away: None,
@@ -2195,6 +2201,7 @@ mod tests {
             draft: None,
             file: None,
             file_stamp: None,
+            file_diff: None,
             key: format!("tab:{index}"),
         }
     }
