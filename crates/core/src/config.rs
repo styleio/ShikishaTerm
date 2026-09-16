@@ -463,6 +463,36 @@ pub struct HostSpec {
     pub key: Option<String>,
 }
 
+/// What a person calls a server, so that production can be told from staging
+/// without reading an address.
+///
+/// Only the person knows which server is production, so nothing here is
+/// guessed: not from the address, and not from the words in the name either --
+/// "prod" is not asked to mean anything, and a server called "Kunden" is as
+/// careful as one called "Production" when the box is ticked.
+///
+/// Held against the server rather than a tab (`Config::server_marks`, keyed by
+/// [`crate::ssh::Spec::machine`]), because a terminal and a file panel on the
+/// same machine are two tabs and one server. Named on one of them, it is worn
+/// by both -- a mark that has to be given twice is a mark one of them is
+/// missing, and the one missing it is the one nobody is looking out for.
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default, PartialEq, Eq)]
+pub struct ServerMark {
+    /// "Production", "Staging". Without one there is no mark at all: a colour
+    /// on its own says nothing to someone seeing it for the first time, or to
+    /// someone who cannot tell the colours apart
+    #[serde(default)]
+    pub name: String,
+    /// `#rrggbb`. Absent means one worked out from the name, the way a project
+    /// that nobody coloured still has a colour
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Whether something that cannot be undone on this server waits for its
+    /// name to be typed, rather than for a button alone
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub careful: bool,
+}
+
 impl HostSpec {
     /// Whether this machine has to be asked for before anything can run on it.
     pub fn is_made(&self) -> bool {
@@ -499,6 +529,11 @@ pub struct Config {
     /// somebody actually gave
     #[serde(default)]
     pub folder_colors: std::collections::HashMap<String, String>,
+    /// What each server is called and how careful to be with it, by the
+    /// machine it is ([`crate::ssh::Spec::machine`]). Only servers somebody
+    /// named are here
+    #[serde(default)]
+    pub server_marks: std::collections::HashMap<String, ServerMark>,
     /// Global automation shared by everything (e.g. "scripts/common" or "scripts/hooks.lua")
     #[serde(default)]
     pub automation: Option<String>,
