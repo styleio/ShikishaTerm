@@ -22,6 +22,11 @@ once it reaches its first tagged release.
   a commit row, and Send on a git tab no longer commits.
 - **`shikisha.git_branch` also says what the branch follows.** `upstream`,
   `ahead` and `behind`, as of the last fetch, and absent when it follows nothing.
+- **Backspace in the empty input bar deletes in the tab it sends to.** In a
+  terminal or a browser page, a Backspace with nothing typed goes on to the
+  prompt or the page, so a character sent a moment ago can be taken back without
+  leaving the bar. Holding Backspace to clear what was typed stops at the empty
+  bar. A chat with a model, a 🎯 goal and ▶ Lua keep Backspace to themselves.
 
 ### Fixed
 - **A long worktree name no longer breaks the top of the right-hand column.** The
