@@ -25,6 +25,7 @@ const setup = `
   F.local.root = "D:/site/dist"; F.local.at = "D:/site/dist";
   F.remote.root = "/var/www/site"; F.remote.at = "/var/www/site";
   F.local.rows = [
+    {name:"assets", dir:true, size:0, modified:1789000000},
     {name:"index.html", dir:false, size:24710, modified:1789000000},
     {name:"app.8f21c4.js", dir:false, size:1462300, modified:1789000000},
     {name:"logo.svg", dir:false, size:3120, modified:1788900000}];
@@ -68,18 +69,24 @@ export default {
     },
     // The way in to a comparison, on a name that is on both sides...
     menu: {
-      run: 'sftpRowMenu(document.body, "local", F.local.rows[0]); "ok"',
+      run: 'sftpRowMenu(document.body, "local", F.local.rows[1]); "ok"',
       langs: ['ja'],
       looks: ['dark'],
       sizes: [['wide', 1280, 860]],
     },
     // ...and on one that is not, where there is nothing to hold it against
     menualone: {
-      run: 'sftpRowMenu(document.body, "local", F.local.rows[2]); "ok"',
+      run: 'sftpRowMenu(document.body, "local", F.local.rows[3]); "ok"',
       langs: ['ja'],
       looks: ['dark'],
       sizes: [['wide', 1280, 860]],
     },
+    // A folder is asked about as a folder: the walk is the template's, so
+    // there is nothing here to itemise
+    folders: 'F.local.sel = new Set(["assets", "index.html"]); sftpSend("local"); "ok"',
+    // ...and how far it has got, as the template reports it
+    moving: 'F.said = ""; window.__sftp({act:"progress", ok:true, value:0.35,'
+          + ' label:"assets/img/hero.png"}); "ok"',
     diff: 'openDiff("index.html"); '
       + answer({ act: 'diff', ok: true, name: 'index.html', text: patch }),
     diffsame: {

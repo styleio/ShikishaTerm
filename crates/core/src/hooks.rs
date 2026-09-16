@@ -1385,6 +1385,85 @@ const SKIP_MARKER: &str = "__shikisha_skip__";
 /// a hook's, which nobody is waiting on
 const SNIPPET: &str = "snippet:";
 
+/// What the file panel runs when a folder is sent or brought back.
+///
+/// Lua rather than Rust because a folder transfer is a walk and a series of
+/// moves, and there are several right ways to arrange one -- deepest first,
+/// biggest first, skip what matches, stop on the first refusal. A command that
+/// did it would be one arrangement with no way in. This is the arrangement the
+/// panel's button uses; anybody can write another beside it.
+///
+/// `job` is what the panel asked for: which tab, which way, where each side is
+/// standing, the names that were ticked, and whether what is already there may
+/// be replaced. Everything else is these commands in a loop.
+pub const FOLDER_MOVE_LUA: &str = r#"
+local at, out = job.tab, job.send
+local list = out and shikisha.sftp_ls_here or shikisha.sftp_ls
+local move = out and shikisha.sftp_put or shikisha.sftp_get
+local from = out and job.here or job.there
+local to = out and job.there or job.here
+
+local function join(a, b)
+  if a == nil or a == "" or a == "." then return b end
+  if b == nil or b == "" then return a end
+  return a .. "/" .. b
+end
+
+-- What was ticked, and everything under it. Folders are collected on the way
+-- so that nothing has to hold the whole tree at once, and so a file never
+-- lands before the folder it goes in exists
+local want, files, dirs = {}, {}, {}
+for _, name in ipairs(job.names) do want[name] = true end
+
+local function walk(rel)
+  for _, e in ipairs(list(at, join(from, rel))) do
+    local path = join(rel, e.name)
+    if e.dir then
+      dirs[#dirs + 1] = path
+      walk(path)
+    else
+      files[#files + 1] = path
+    end
+  end
+end
+
+for _, e in ipairs(list(at, from)) do
+  if want[e.name] then
+    if e.dir then
+      dirs[#dirs + 1] = e.name
+      walk(e.name)
+    else
+      files[#files + 1] = e.name
+    end
+  end
+end
+
+-- The places, before the things that go in them. Only going out: a file
+-- brought back makes its own folders on the way in.
+--
+-- Making one that is already there is not a fault -- it is the ordinary case
+-- the second time a folder is sent -- so the refusal is swallowed here rather
+-- than asked about first, which would be a second round trip per folder
+if out then
+  for _, d in ipairs(dirs) do
+    pcall(shikisha.sftp_mkdir, at, join(to, d))
+  end
+end
+
+-- `nil` as the amount means "nothing is running"; a word beside it then means
+-- something went wrong, and no word means it finished
+local total = #files
+for i, f in ipairs(files) do
+  shikisha.set_progress(i / total, f, at)
+  local ok, why = pcall(move, at, join(from, f), join(to, f), { overwrite = job.overwrite })
+  if not ok then
+    shikisha.set_progress(nil, tostring(why), at)
+    return
+  end
+end
+shikisha.set_progress(nil, "", at)
+"#;
+
 /// What the commit-message button runs when nobody has written their own.
 ///
 /// It is Lua rather than Rust so that "I want it in English" and "I want a
@@ -5011,6 +5090,18 @@ end
     /// standard library are available), with `tab` bound to the active tab. Its
     /// commands are collected like a hook's and drained by the caller.
     pub fn fire_action(&mut self, code: &str, ctx: &TabCtx) {
+        self.fire_with(code, ctx, None)
+    }
+
+    /// The same door, with the thing this run is about on the table beside the
+    /// tab. A template is the arrangement and `job` is what to arrange -- which
+    /// is the whole of the difference between a mode written in Rust and one
+    /// written as Lua plus data
+    pub fn fire_template(&mut self, code: &str, ctx: &TabCtx, job: &serde_json::Value) {
+        self.fire_with(code, ctx, Some(job))
+    }
+
+    fn fire_with(&mut self, code: &str, ctx: &TabCtx, job: Option<&serde_json::Value>) {
         self.current_origin.set(ctx.index);
         self.subject.set(crate::grants::Subject::Human);
         let result = (|| -> mlua::Result<()> {
@@ -5019,6 +5110,9 @@ end
             mt.set("__index", self.lua.globals())?;
             env.set_metatable(Some(mt))?;
             env.set("tab", self.make_tab_table(ctx)?)?;
+            if let Some(job) = job {
+                env.set("job", json_to_lua(&self.lua, job)?)?;
+            }
             let func = self
                 .lua
                 .load(code)
@@ -5720,6 +5814,19 @@ mod tests {
         let mut eng = super::HookEngine::with_caps(caps).expect("engine");
         eng.load_browser_agent("BR", "{}").expect("browser rally template");
         eng.load_ai_agent("target").expect("operate template");
+        // Loaded the way `fire_template` loads it, but not run: running it
+        // wants a server. A typo would otherwise wait until somebody sent a
+        // folder for the first time
+        for (what, code) in [
+            ("commit message", super::COMMIT_MESSAGE_LUA),
+            ("folder move", super::FOLDER_MOVE_LUA),
+        ] {
+            eng.lua
+                .load(code)
+                .set_name(what)
+                .into_function()
+                .unwrap_or_else(|e| panic!("the {what} template does not compile: {e}"));
+        }
 
         // ...and each must define every local helper it calls. Templates are
         // separate Lua worlds, so a helper borrowed from the one above compiles
