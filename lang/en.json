@@ -2725,6 +2725,8 @@
   "err.git.account.wants_token": "This repository is reached over HTTPS, and the git account \"{name}\" is an SSH key account. Choose a token account.",
   "err.git.account.not_saved": "The git account could not be saved to the settings.",
   "err.git.failed": "git {cmd} failed: {said}",
+  "err.git.pull_blocked": "Can't pull: files the pull would change have uncommitted changes ({files}). Commit them first, then pull again.",
+  "err.git.pull_blocked.more": " and {n} more",
   "err.git.timeout": "git {cmd} did not finish and was stopped",
   "err.git.protected": "{branch} is a protected branch. Make a branch for this, or pass { allow_protected = true } to say you meant it",
   "err.git.empty_message": "A commit needs a message",

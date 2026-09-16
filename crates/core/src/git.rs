@@ -275,7 +275,7 @@ pub fn run_as(dir: &Path, args: &[&str], input: &str, limit: Duration, who: &As)
     let stdout = out.and_then(|h| h.join().ok()).unwrap_or_default();
     let stderr = err.and_then(|h| h.join().ok()).unwrap_or_default();
     if !status.success() {
-        let said = String::from_utf8_lossy(&stderr).trim().to_string();
+        let said = without_line_ending_notes(&String::from_utf8_lossy(&stderr));
         if let Some(why) = pc_sign_in_said(&who.auth, &said) {
             bail!(why);
         }
@@ -285,6 +285,63 @@ pub fn run_as(dir: &Path, args: &[&str], input: &str, limit: Duration, who: &As)
         ));
     }
     Ok(String::from_utf8_lossy(&stdout).to_string())
+}
+
+/// git's words for a failure, less its notes about line endings.
+///
+/// On Windows every command that touches a file checked out with LF prints
+/// "LF will be replaced by CRLF" for it -- a dozen lines that are not the
+/// failure, stacked on top of the one line that is
+fn without_line_ending_notes(said: &str) -> String {
+    said.lines()
+        .filter(|l| !(l.starts_with("warning: in the working copy of ") && l.contains(" will be replaced by ")))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// A pull that would write over files somebody has not committed yet.
+///
+/// Worked out from git's own lists rather than read out of its message: the
+/// message is in whatever language git speaks on the PC, and the lists are the
+/// same everywhere. The paths are the files in both -- changed here and not
+/// committed, and changed by what the pull brings in
+#[derive(Debug)]
+pub struct PullBlocked(pub Vec<String>);
+
+impl std::fmt::Display for PullBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const SHOWN: usize = 3;
+        let mut names = self.0.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(", ");
+        if self.0.len() > SHOWN {
+            names.push_str(&crate::i18n::tp(
+                "err.git.pull_blocked.more",
+                &[("n", &(self.0.len() - SHOWN).to_string())],
+            ));
+        }
+        f.write_str(&crate::i18n::tp("err.git.pull_blocked", &[("files", &names)]))
+    }
+}
+
+impl std::error::Error for PullBlocked {}
+
+/// The uncommitted files a pull would change, once the pull has fetched.
+/// Empty when there are none or it cannot be told
+fn in_the_way(dir: &Path) -> Vec<String> {
+    let Ok(coming) = run(dir, &["diff", "--name-only", "-z", "HEAD...@{upstream}"]) else {
+        return Vec::new();
+    };
+    let coming: std::collections::HashSet<&str> = coming.split('\0').filter(|p| !p.is_empty()).collect();
+    let Ok(here) = status(dir) else { return Vec::new() };
+    let mut both: Vec<String> = here
+        .into_iter()
+        .flat_map(|c| std::iter::once(c.path).chain(c.from))
+        .filter(|p| coming.contains(p.as_str()))
+        .collect();
+    both.sort();
+    both.dedup();
+    both
 }
 
 /// What to say when git on this PC wanted to ask somebody how to sign in.
@@ -822,7 +879,10 @@ pub fn fetch(dir: &Path, who: &As) -> Result<String> {
 
 pub fn pull(dir: &Path, who: &As) -> Result<String> {
     fits(dir, who)?;
-    run_as(dir, &["pull"], "", NETWORK_LIMIT, who)
+    run_as(dir, &["pull"], "", NETWORK_LIMIT, who).map_err(|e| {
+        let both = in_the_way(dir);
+        if both.is_empty() { e } else { anyhow::Error::new(PullBlocked(both)) }
+    })
 }
 
 /// Send it. A branch made here has never been pushed, so the first push is the
@@ -1088,6 +1148,46 @@ mod tests {
         assert!(is_not_installed(&err));
         assert!(!is_not_installed(&anyhow::anyhow!("anything else")));
         assert!(!err.to_string().is_empty());
+    }
+
+    /// A pull refused because it would write over uncommitted work names the
+    /// files in the way, and nothing but them
+    #[test]
+    fn a_pull_in_the_way_of_uncommitted_work_names_the_files() {
+        let Some(far) = scratch_repo("blocked-far") else { return };
+        for f in ["a.txt", "b.txt"] {
+            std::fs::write(far.join(f), "one\n").unwrap();
+        }
+        run(&far, &["add", "."]).unwrap();
+        run(&far, &["commit", "-m", "one"]).unwrap();
+        let near = std::env::temp_dir().join(format!("shikisha-git-{}-blocked-near", std::process::id()));
+        let _ = std::fs::remove_dir_all(&near);
+        run(&far, &["clone", "-q", &far.display().to_string(), &near.display().to_string()]).unwrap();
+
+        // There: a.txt changes. Here: a.txt and b.txt are edited, not committed
+        std::fs::write(far.join("a.txt"), "far\n").unwrap();
+        run(&far, &["commit", "-am", "far"]).unwrap();
+        std::fs::write(near.join("a.txt"), "near\n").unwrap();
+        std::fs::write(near.join("b.txt"), "near\n").unwrap();
+
+        let err = pull(&near, &As::default()).unwrap_err();
+        let blocked = err.downcast_ref::<PullBlocked>().expect("the refusal is not recognised");
+        assert_eq!(blocked.0, vec!["a.txt".to_string()], "only the file in the way is named");
+        assert!(err.to_string().contains("a.txt"), "{err}");
+
+        // Out of the way, the same pull goes through
+        run(&near, &["checkout", "--", "a.txt"]).unwrap();
+        pull(&near, &As::default()).expect("the pull still fails with nothing in the way");
+        let _ = std::fs::remove_dir_all(&near);
+        let _ = std::fs::remove_dir_all(&far);
+    }
+
+    #[test]
+    fn a_failure_is_not_buried_under_line_ending_notes() {
+        let said = "warning: in the working copy of 'a.md', LF will be replaced by CRLF the next time Git touches it\n\
+                    error: something real\n\
+                    warning: in the working copy of 'b.rs', CRLF will be replaced by LF the next time Git touches it";
+        assert_eq!(without_line_ending_notes(said), "error: something real");
     }
 
     /// A branch that follows another says how many commits each side has that
