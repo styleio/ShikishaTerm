@@ -148,7 +148,7 @@ fn serve(
         let token = match account.as_str() {
             crate::config::THIS_PC => {
                 if pc.as_ref().is_none_or(|(at, _)| at.elapsed() > PC_FRESH) {
-                    pc = Some((Instant::now(), pc_token()));
+                    pc = Some((Instant::now(), pc_token().ok()));
                 }
                 pc.as_ref().and_then(|(_, t)| t.clone())
             }
@@ -162,23 +162,69 @@ fn serve(
     }
 }
 
+/// Why git on this PC handed out no GitHub credential
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PcSignIn {
+    /// Nothing stored, or nothing that can be told apart from nothing
+    None,
+    /// More than one account stored, by these names. Git would ask which one,
+    /// and nobody is there to answer
+    Many(Vec<String>),
+}
+
 /// What git on this PC hands out for GitHub: the credential a push from a
 /// terminal here would sign in with. Asked of git's own credential store the
-/// way git asks it, with nobody to prompt -- a store that has nothing says so
-/// and this is None
-pub fn pc_token() -> Option<String> {
+/// way git asks it, with nobody to prompt.
+///
+/// A store holding two accounts fails the same way as one holding none -- it
+/// wants to ask which -- so on a failure the store is asked what it holds,
+/// and the two are told apart
+pub fn pc_token() -> Result<String, PcSignIn> {
     let said = crate::git::run_as(
         &std::env::temp_dir(),
         &["-c", "credential.interactive=never", "credential", "fill"],
         &format!("protocol=https\nhost={}\n\n", crate::config::GITHUB_HOST),
         Duration::from_secs(15),
         &crate::git::As::default(),
+    );
+    let token = said.ok().and_then(|said| {
+        said.lines()
+            .find_map(|l| l.strip_prefix("password="))
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+    });
+    match token {
+        Some(t) => Ok(t),
+        None => match pc_accounts() {
+            names if names.len() > 1 => Err(PcSignIn::Many(names)),
+            _ => Err(PcSignIn::None),
+        },
+    }
+}
+
+/// The GitHub accounts Git Credential Manager holds on this PC. Empty when it
+/// holds none, or when the helper is another one that cannot be asked this
+fn pc_accounts() -> Vec<String> {
+    crate::git::run_as(
+        &std::env::temp_dir(),
+        &["credential-manager", "github", "list"],
+        "",
+        Duration::from_secs(15),
+        &crate::git::As::default(),
     )
-    .ok()?;
-    said.lines()
-        .find_map(|l| l.strip_prefix("password="))
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
+    .map(|out| account_names(&out))
+    .unwrap_or_default()
+}
+
+/// One account per line, as the credential manager lists them
+fn account_names(listed: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in listed.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
 }
 
 /// The token GitHub CLI (`gh`) is signed in with for `host`, asked of `gh`
@@ -409,6 +455,15 @@ mod tests {
         assert_eq!(Pr { number: 12, state: State::Draft }.short(), "#12 draft");
         assert_eq!(Pr { number: 12, state: State::Merged }.short(), "#12 merged");
         assert_eq!(Pr { number: 12, state: State::Closed }.short(), "#12 closed");
+    }
+
+    #[test]
+    fn stored_accounts_are_read_one_per_line() {
+        // Two accounts is what makes git ask which, so a name listed twice or a
+        // blank line must not be counted as a second one
+        assert_eq!(account_names("styleio\r\nx-access-token\r\n"), ["styleio", "x-access-token"]);
+        assert_eq!(account_names("styleio\n\nstyleio\n"), ["styleio"]);
+        assert!(account_names("").is_empty());
     }
 
     #[test]

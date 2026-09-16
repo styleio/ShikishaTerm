@@ -9,6 +9,12 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **Two GitHub accounts stored on this PC are said as two, not as none.** A
+  project signing in with this PC's git settings asks git for its GitHub
+  credential with nobody there to answer a question. When the credential
+  manager holds more than one account it wants to ask which, fails, and the
+  Issue tab said no sign-in was stored at all. It now names the accounts it
+  found and asks for a git account to be chosen for the project.
 - **A link deeper than the top of a worktree is made, and unhooked before the
   folder goes.** `web/node_modules` was asked of `mklink` with the `/` still in
   it, which cmd read as a switch, so every nested link quietly came out as "not

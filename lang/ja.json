@@ -2518,6 +2518,7 @@
   "err.github.not_github": "{p} は GitHub のリポジトリではありません。",
   "err.github.account.unset": "このプロジェクトの git アカウントが選ばれていません。設定のプロジェクトのページで選んでください。",
   "err.github.pc_none": "この PC の git に GitHub のサインインが保存されていません。git から一度 GitHub にサインインするか、このプロジェクトの git アカウントを選んでください。",
+  "err.github.pc_many": "この PC の git に GitHub のアカウントが複数保存されていて（{names}）、どれを使うか決められません。設定のプロジェクトのページで、このプロジェクトの git アカウントを選んでください。",
   "err.github.host": "git アカウント「{name}」は {host} のアカウントで、GitHub には使えません。",
   "err.github.unreachable": "GitHub につながりませんでした: {error}",
   "err.github.401": "GitHub がこのアカウントのトークンを受け付けません。期限切れか、取り消されています。",
