@@ -141,18 +141,19 @@ fn serve(
         .timeout_global(Some(Duration::from_secs(10)))
         .build()
         .new_agent();
-    let mut pc: Option<(Instant, Option<String>)> = None;
+    // By how the PC's git was chosen: as it is, or as one of its accounts
+    let mut pc: HashMap<String, (Instant, Option<String>)> = HashMap::new();
     while let Ok((account, repo, branch)) = inbox.recv() {
         // Read for each question rather than once: the desk, and with it the
         // accounts, can have changed since the last one
-        let token = match account.as_str() {
-            crate::config::THIS_PC => {
-                if pc.as_ref().is_none_or(|(at, _)| at.elapsed() > PC_FRESH) {
-                    pc = Some((Instant::now(), pc_token().ok()));
+        let token = match crate::config::pc_choice(&account) {
+            Some(login) => {
+                if pc.get(&account).is_none_or(|(at, _)| at.elapsed() > PC_FRESH) {
+                    pc.insert(account.clone(), (Instant::now(), pc_token(login).ok()));
                 }
-                pc.as_ref().and_then(|(_, t)| t.clone())
+                pc.get(&account).and_then(|(_, t)| t.clone())
             }
-            name => tokens.lock().ok().and_then(|t| t.get(name).cloned()),
+            None => tokens.lock().ok().and_then(|t| t.get(&account).cloned()),
         };
         let Some(token) = token else { continue };
         let pr = look_up(&agent, &token, &repo, &branch);
@@ -170,20 +171,24 @@ pub enum PcSignIn {
     /// More than one account stored, by these names. Git would ask which one,
     /// and nobody is there to answer
     Many(Vec<String>),
+    /// The account asked for by name is not one of those stored
+    Gone(String),
 }
 
 /// What git on this PC hands out for GitHub: the credential a push from a
-/// terminal here would sign in with. Asked of git's own credential store the
-/// way git asks it, with nobody to prompt.
+/// terminal here would sign in with, or -- given `login` -- the one it holds
+/// for that account. Asked of git's own credential store the way git asks it,
+/// with nobody to prompt.
 ///
 /// A store holding two accounts fails the same way as one holding none -- it
 /// wants to ask which -- so on a failure the store is asked what it holds,
 /// and the two are told apart
-pub fn pc_token() -> Result<String, PcSignIn> {
+pub fn pc_token(login: Option<&str>) -> Result<String, PcSignIn> {
+    let named = login.map(|l| format!("username={l}\n")).unwrap_or_default();
     let said = crate::git::run_as(
         &std::env::temp_dir(),
         &["-c", "credential.interactive=never", "credential", "fill"],
-        &format!("protocol=https\nhost={}\n\n", crate::config::GITHUB_HOST),
+        &format!("protocol=https\nhost={}\n{named}\n", crate::config::GITHUB_HOST),
         Duration::from_secs(15),
         &crate::git::As::default(),
     );
@@ -193,19 +198,27 @@ pub fn pc_token() -> Result<String, PcSignIn> {
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
     });
-    match token {
-        Some(t) => Ok(t),
-        None => match pc_accounts() {
+    match (token, login) {
+        (Some(t), _) => Ok(t),
+        (None, Some(l)) => Err(PcSignIn::Gone(l.to_string())),
+        (None, None) => match pc_accounts() {
             names if names.len() > 1 => Err(PcSignIn::Many(names)),
             _ => Err(PcSignIn::None),
         },
     }
 }
 
-/// The GitHub accounts Git Credential Manager holds on this PC. Empty when it
-/// holds none, or when the helper is another one that cannot be asked this
-fn pc_accounts() -> Vec<String> {
-    crate::git::run_as(
+/// How long the list of the PC's GitHub accounts is kept before it is read again
+const PC_ACCOUNTS_FRESH: Duration = Duration::from_secs(30);
+
+static PC_ACCOUNTS: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
+static PC_ACCOUNTS_ASKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The GitHub accounts Git Credential Manager holds on this PC, read now.
+/// Empty when it holds none, or when the helper is another one that cannot
+/// be asked this
+pub fn pc_accounts() -> Vec<String> {
+    let names = crate::git::run_as(
         &std::env::temp_dir(),
         &["credential-manager", "github", "list"],
         "",
@@ -213,7 +226,26 @@ fn pc_accounts() -> Vec<String> {
         &crate::git::As::default(),
     )
     .map(|out| account_names(&out))
-    .unwrap_or_default()
+    .unwrap_or_default();
+    if let Ok(mut kept) = PC_ACCOUNTS.lock() {
+        *kept = Some((Instant::now(), names.clone()));
+    }
+    names
+}
+
+/// The same, as last read, for a screen that cannot wait on a program: what
+/// is known now, and a fresh read on its way when that is old. Empty until
+/// the first read comes back
+pub fn pc_accounts_known() -> Vec<String> {
+    let kept = PC_ACCOUNTS.lock().ok().and_then(|k| k.clone());
+    let stale = kept.as_ref().is_none_or(|(at, _)| at.elapsed() > PC_ACCOUNTS_FRESH);
+    if stale && !PC_ACCOUNTS_ASKING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        std::thread::spawn(|| {
+            pc_accounts();
+            PC_ACCOUNTS_ASKING.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    kept.map(|(_, names)| names).unwrap_or_default()
 }
 
 /// One account per line, as the credential manager lists them

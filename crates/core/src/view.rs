@@ -396,6 +396,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     ts.git_acct = t.place.family.is_some().then(|| {
                         crate::uistate::GitAcctState::of(
                             &ui.git_accounts,
+                            &ui.pc_accounts,
                             &t.git_use,
                             t.place.repo.as_deref(),
                             "project",
@@ -466,7 +467,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                             .map(|(_, r)| r.as_str())
                     });
                     t.git_acct =
-                        Some(crate::uistate::GitAcctState::of(&ui.git_accounts, git, repo, "tab", None));
+                        Some(crate::uistate::GitAcctState::of(&ui.git_accounts, &ui.pc_accounts, git, repo, "tab", None));
                     Some(t)
                 }
             }?)))
@@ -1060,6 +1061,9 @@ pub struct Ui {
     pub update: Option<crate::update::Offer>,
     /// The current desk's git accounts, for the account menu on the git column
     pub git_accounts: Vec<config::GitAccountSpec>,
+    /// The GitHub accounts git on this PC holds, for the same menu: with two,
+    /// "this PC's git" has to be told which
+    pub pc_accounts: Vec<String>,
     /// Where each git tab's folder pushes to on GitHub (`owner/name`), looked
     /// up every couple of seconds with the tabs' places rather than per frame
     pub git_repos: Vec<(std::path::PathBuf, String)>,
