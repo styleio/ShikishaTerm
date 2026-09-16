@@ -8,6 +8,14 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **A worktree is deleted from its right-click menu in the left bar.** The last
+  entry, in red, is "Delete completely": the whole folder goes, links are
+  unhooked first so what they point to stays, and files copied in that git does
+  not track go too. It still refuses while there are uncommitted changes. The
+  question it asks has "Don't show this again", and Settings > Basic > "Ask
+  before deleting a worktree" is where that answer is kept and turned back on.
+
 ### Fixed
 - **The input bar no longer covers the bottom of a terminal.** An AI keeps its
   prompt on the last rows of the screen, with the line saying which mode it is

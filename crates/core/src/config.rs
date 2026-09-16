@@ -515,6 +515,10 @@ pub struct Config {
     pub auto_switch: Option<bool>,
     /// Whether to start from the last-opened desk (default: yes)
     pub restore_desk: Option<bool>,
+    /// Whether "Delete completely" on a worktree in the list asks first
+    /// (default: yes). Turned off from the question itself, with "Don't show
+    /// this again", and on again under Basic
+    pub confirm_worktree_delete: Option<bool>,
     /// Whether the window's ✕ puts the program away in the notification area
     /// rather than quitting (default: yes). Put away, the tabs go on working
     /// and the phone stays connected; the icon's menu is where quitting is

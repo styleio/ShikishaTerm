@@ -1966,6 +1966,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--line); border-radius:var(--r-ctl); padding:var(--s2) var(--s3);
     overflow-wrap:anywhere; line-height:1.5; }
   #sask .bwhere[hidden] { display:none; }
+  /* "Don't show this again": a checkbox the size of the one in the setup,
+     in the dialog's quiet text colour, under what the question is about */
+  #sask .snever { display:flex; align-items:center; gap:var(--s2); font-size:12px; color:var(--dim);
+    cursor:pointer; user-select:none; }
+  #sask .snever[hidden] { display:none; }
+  #sask .snever input { width:15px; height:15px; margin:0; }
   #sask .vbox, #branch .vbox { width:min(560px,92vw); }
   /* The head is one thing and the foot is another, both divided by a rule --
      the shape every dialog in section 5.2 has. #browse and #sask already had
@@ -2634,6 +2640,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">&#10005;</span></div>
         <div class="vsay"></div>
         <div class="bwhere"></div>
+        <label class="snever" hidden><input type="checkbox"><span></span></label>
         <input id="sq" type="text" autocomplete="off" spellcheck="false" hidden>
         <div class="brow"><button class="quiet"></button><button class="go"></button></div>
       </div>
@@ -5160,7 +5167,27 @@ function folderMenu(e, g) {
     // Everything else about it -- the colour, where it is, taking it off the
     // list -- is on its own page in the settings
     item(T["tui.menu.edit"] || "", () => openSettings(null, false, g.folder)),
+    // Last and in red, the one entry that cannot be taken back. Only a
+    // worktree: a project's own checkout is the repository itself
+    g.linked && !g.host
+      ? el("div", {class:"warn", onclick:() => { closeFolderMenu(); discardFolder(g); }}, T["tui.menu.discard"] || "")
+      : null,
   ], false, e);
+}
+// A worktree deleted for good, folder and all. Asked first unless the person
+// said not to ask again -- here, or under Basic
+function discardFolder(g) {
+  const go = unasked => send({kind:"folderdiscard", folder:g.folder, unasked});
+  if (S && S.discard_unasked) { go(false); return; }
+  askQuestion({
+    title: T["tui.discard.title"] || "",
+    say: T["tui.discard.say"] || "",
+    what: g.folder,
+    label: T["tui.menu.discard"] || "",
+    danger: true,
+    never: T["tui.discard.never"] || "",
+    go: (_, unasked) => go(unasked),
+  });
 }
 let folderMenuAway = null;
 function closeFolderMenu() {
@@ -11931,7 +11958,9 @@ function sftpSend(which) {
 // `back` is told when the question is put away without its button: the close
 // mark, Esc, a press outside, Cancel
 let sAskGo = null, sAskBack = null;
-function askQuestion({title, say, what, field, label, danger, go, back}) {
+// `never` is the words of a "don't show this again" box. Its answer is handed
+// to `go` after the field's
+function askQuestion({title, say, what, field, label, danger, never, go, back}) {
   const box = document.getElementById("sask");
   box.hidden = false;
   box.querySelector(".vtitle").textContent = title;
@@ -11942,6 +11971,11 @@ function askQuestion({title, say, what, field, label, danger, go, back}) {
   const input = box.querySelector("#sq");
   input.hidden = !field;
   input.value = field || "";
+  const again = box.querySelector(".snever");
+  again.hidden = !never;
+  again.querySelector("span").textContent = never || "";
+  const unasked = again.querySelector("input");
+  unasked.checked = false;
   const cancel = box.querySelector(".quiet");
   cancel.textContent = T["common.cancel"] || "";
   cancel.onclick = () => closeAsk();
@@ -11952,7 +11986,7 @@ function askQuestion({title, say, what, field, label, danger, go, back}) {
   // not answered
   if (sAskBack) { const was = sAskBack; sAskBack = null; was(); }
   sAskBack = back || null;
-  sAskGo = () => { sAskBack = null; closeAsk(); go(input.value.trim()); };
+  sAskGo = () => { sAskBack = null; closeAsk(); go(input.value.trim(), !!never && unasked.checked); };
   btn.onclick = sAskGo;
   setTimeout(() => (field ? input : btn).focus(), 0);
 }
@@ -14945,6 +14979,21 @@ mod tests {
         assert!(PAGE.contains(r#"send({kind:"tabname", tab:t.index, name:v})"#), "a tab's new name is not sent");
         assert!(PAGE.contains(r#"if (heldDown("tabs") || renameHeld("tabs")) return;"#), "the list is redrawn over the field being typed in");
         assert!(PAGE.contains(r#"if (inBar(e) || e.defaultPrevented) return;"#), "a right-click that opened a menu also pastes");
+    }
+
+    /// A worktree is deleted for good from the last, red entry of its
+    /// right-click menu. It asks first, with a box that stops it asking again,
+    /// and the answer is kept in the settings (Basic) rather than in this page
+    #[test]
+    fn a_worktree_is_deleted_from_its_right_click_asking_first_unless_told_not_to() {
+        assert!(PAGE.contains(r#"g.linked && !g.host
+      ? el("div", {class:"warn", onclick:() => { closeFolderMenu(); discardFolder(g); }}, T["tui.menu.discard"] || "")"#),
+            "the menu has no red delete, or offers it on a project's own checkout");
+        assert!(PAGE.contains("if (S && S.discard_unasked) { go(false); return; }"), "turned off, it still asks");
+        assert!(PAGE.contains(r#"never: T["tui.discard.never"] || "","#), "the question has no box to stop it asking");
+        assert!(PAGE.contains("go(input.value.trim(), !!never && unasked.checked)"), "the box's answer is not handed on");
+        assert!(PAGE.contains(r#"send({kind:"folderdiscard", folder:g.folder, unasked})"#), "the answer does not reach the app");
+        assert!(PAGE.contains("unasked.checked = false;"), "a box ticked once stays ticked in the next question");
     }
 
     #[test]

@@ -5583,6 +5583,8 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.auto_switch.hint"])),
     row(T["settings.restore_ws"], checkDefaultOn(current, "restore_desk", T["settings.restore_ws.label"]),
         el("span", {class:"hint"}, T["settings.restore_ws.hint"])),
+    row(T["settings.confirm_worktree_delete"], checkDefaultOn(current, "confirm_worktree_delete", T["settings.confirm_worktree_delete.label"]),
+        el("span", {class:"hint"}, T["settings.confirm_worktree_delete.hint"])),
     row(T["settings.resident"], checkDefaultOn(current, "resident", T["settings.resident.label"]),
         el("span", {class:"hint"}, T["settings.resident.hint"])),
     row(T["settings.tui_clipboard"], checkDefaultOn(current, "tui_clipboard", T["settings.tui_clipboard.label"]),
