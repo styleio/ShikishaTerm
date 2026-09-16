@@ -373,6 +373,12 @@ pub fn tab_places(tabs: &[Tab]) -> Vec<hooks::TabPlace> {
                     }
                     (None, None) => None,
                 },
+                // A terminal tab was given an address, not a folder over there
+                // -- a shell starts wherever signing in puts it. So there is
+                // nothing on that end for a path to be outside of, and the
+                // fence that does hold is this tab's own working folder. A
+                // file panel is the one that was given both (`panel_places`)
+                remote_dir: String::new(),
                 protect: t.protect().to_vec(),
                 git: t.git_use.clone(),
             }
@@ -2336,7 +2342,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .map(|t| t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents())
                     });
                 }
-                let cmds = eng.drain_commands();
+                // What a person started from a panel is not automation, and the
+                // brake on automation does not hold it: a folder sent from the
+                // file panel goes on with automation stopped, the way a single
+                // file always has
+                if !auto_enabled {
+                    eng.tick_panel_pending();
+                }
+                // A report aimed at a file panel goes to that panel. Taken out
+                // here because `exec_commands` knows about tabs and a panel is
+                // not one -- and because this is where the panel's other news
+                // is already pushed from
+                let cmds = panel_progress_out(eng.drain_commands(), &surfaces, &sftp_tx);
                 if !cmds.is_empty() {
                     let now_ms = start.elapsed().as_millis() as u64;
                     exec_commands(
@@ -4401,6 +4418,49 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // because a folder listing over a network is a wait and this loop
         // draws the window
         for (panel, act, args) in shell.mail().take_sftps() {
+            // A folder is not one job. It is a walk and a series of them, and
+            // how to arrange that is a template's business rather than this
+            // loop's -- so the ask is handed to Lua with what it is about, and
+            // the loop goes back to drawing while it runs
+            if act == "move_folder" {
+                let refuse = |why: String| {
+                    let js = serde_json::json!({
+                        "act": "progress", "panel": panel, "ok": false, "error": why,
+                    });
+                    let _ = sftp_tx.send(js.to_string());
+                };
+                let Some(at) = surfaces
+                    .iter()
+                    .position(|s| matches!(s, Surface::Sftp { key, .. } if *key == panel))
+                else {
+                    refuse(i18n::t("err.sftp.no_panel"));
+                    continue;
+                };
+                // A desk with no Lua of its own has no engine until something
+                // asks for one, and this is something asking. Made here, the
+                // way the outside door makes one -- without it the folder was
+                // refused on every desk nobody had written automation for,
+                // which is nearly all of them, and refused as a panel that was
+                // no longer in the settings, which it was
+                if engine.is_none() {
+                    match crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)) {
+                        Ok(eng) => engine = Some(eng),
+                        Err(e) => {
+                            refuse(format!("{e:#}"));
+                            continue;
+                        }
+                    }
+                }
+                let Some(eng) = engine.as_mut() else { continue };
+                let mut folders = tab_places(&tabs);
+                folders.extend(panel_places(&surfaces));
+                eng.set_states(tab_states(&tabs));
+                eng.set_places(folders);
+                let mut job = args.clone();
+                job["tab"] = serde_json::json!(panel);
+                eng.fire_template(crate::hooks::FOLDER_MOVE_LUA, &panel_ctx(at + 1, &panel), &job);
+                continue;
+            }
             let js = sftp_answer(&panel, &act, &args, &surfaces, &caps, &sftp_tx);
             if let Some(js) = js {
                 shell.push_sftp(&js);
@@ -6795,6 +6855,37 @@ pub fn aim_of(
 /// Shorter than a script's own wait: a person is looking at the screen, and a
 /// list that takes a minute to arrive is a broken screen whatever it says
 pub const SFTP_WAIT_MS: u64 = 45_000;
+
+/// How large a file the panel will read to compare it with another.
+///
+/// Both sides are read whole and held in memory to be compared, and a person
+/// cannot read a diff of a file this size anyway. A build artefact dropped
+/// into the wrong folder is the usual way somebody arrives here, and being
+/// told so beats waiting for a megabyte of minified JavaScript to arrive
+pub const SFTP_DIFF_MAX: usize = 1 << 20;
+
+/// A file's text, or why it is not going to be compared.
+///
+/// Size first: a refusal that arrives before the reading is a refusal that
+/// cost nothing. Then whether it is text at all, because a diff of two
+/// pictures is a wall of replacement characters, not an answer
+pub fn diff_text(name: &str, bytes: &[u8]) -> std::result::Result<String, String> {
+    if bytes.len() > SFTP_DIFF_MAX {
+        return Err(i18n::tp(
+            "err.sftp.diff_big",
+            &[("name", name), ("max", &format!("{} MB", SFTP_DIFF_MAX / (1 << 20)))],
+        ));
+    }
+    // A zero byte is what every tool uses to tell a picture from a page, and
+    // it agrees with "not valid text" on everything either of them can see
+    if bytes.contains(&0) {
+        return Err(i18n::tp("err.sftp.diff_not_text", &[("name", name)]));
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(t) => Ok(t.to_string()),
+        Err(_) => Err(i18n::tp("err.sftp.diff_not_text", &[("name", name)])),
+    }
+}
 /// One thing the file panel asked for.
 ///
 /// Returns the answer when there is one to give at once, and `None` when the
@@ -6853,7 +6944,7 @@ pub fn files_answer(
                     "at": rel_of(&root, &at),
                     "rows": rows
                         .into_iter()
-                        .filter(|r| r.get("name").and_then(|n| n.as_str()) != Some(".git"))
+                        .filter(|r| r.name != ".git")
                         .collect::<Vec<_>>(),
                 })
                 .to_string(),
@@ -7055,7 +7146,9 @@ pub fn sftp_answer(
         return fail(i18n::t("err.sftp.no_address"));
     };
 
-    // The name this act is asking permission under, and the job it becomes
+    // The job a pressed button becomes. Only the translation is here: what the
+    // job then means -- how far it may reach and who may ask for it -- is
+    // `transfer`, which is where a script's commands go through too
     let at = |given: &str| match given.trim() {
         "" => match remote_root.trim() {
             "" => ".".to_string(),
@@ -7063,46 +7156,60 @@ pub fn sftp_answer(
         },
         g => g.to_string(),
     };
-    let (name, job): (&str, ssh::FileJob) = match act {
-        "remote" => ("sftp_ls", ssh::FileJob::List { path: at(&str_of("at")) }),
-        "mkdir" => ("sftp_mkdir", ssh::FileJob::MakeDir { path: str_of("path") }),
-        "rename" => (
-            "sftp_rename",
-            ssh::FileJob::Rename { from: str_of("from"), to: str_of("to") },
-        ),
-        "rm" => ("sftp_rm", ssh::FileJob::Remove { path: str_of("path") }),
-        "put" => (
-            "sftp_put",
-            ssh::FileJob::Put {
-                from: std::path::PathBuf::from(str_of("from")),
-                to: str_of("to"),
-                overwrite: args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false),
-            },
-        ),
-        "get" => (
-            "sftp_get",
-            ssh::FileJob::Get { from: str_of("from"), to: std::path::PathBuf::from(str_of("to")) },
-        ),
+    let job: ssh::FileJob = match act {
+        "remote" => ssh::FileJob::List { path: at(&str_of("at")) },
+        "mkdir" => ssh::FileJob::MakeDir { path: str_of("path") },
+        "rename" => ssh::FileJob::Rename { from: str_of("from"), to: str_of("to") },
+        "rm" => ssh::FileJob::Remove { path: str_of("path") },
+        "put" => ssh::FileJob::Put {
+            from: std::path::PathBuf::from(str_of("from")),
+            to: str_of("to"),
+            overwrite: args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false),
+        },
+        "get" => ssh::FileJob::Get {
+            from: str_of("from"),
+            to: std::path::PathBuf::from(str_of("to")),
+            overwrite: args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false),
+        },
         // Reaching the far end at all, to say so before anything is saved
-        "test" => ("sftp_ls", ssh::FileJob::List { path: at("") }),
+        "test" => ssh::FileJob::List { path: at("") },
+        // Not a job of its own: the far side is read the way any read is read,
+        // and what comes back is put beside the copy on this machine instead
+        // of being written down
+        "diff" => ssh::FileJob::Read { path: str_of("there") },
         _ => return None,
     };
-    // A transfer names a file on this machine, and that file has to be inside
-    // the panel's own folder -- the same promise the far side gets
-    if let (Some(root), ssh::FileJob::Put { from, .. }) = (&local_root, &job)
-        && local_under(root, &from.display().to_string()).is_none() {
+    // Read here rather than in the thread: it is this machine's own disk, and
+    // a file that is missing or too big should say so before a connection is
+    // spent on the other half of the comparison
+    let mut here: Option<(String, String)> = None;
+    if act == "diff" {
+        let Some(root) = local_root.clone() else {
+            return fail(i18n::t("err.sftp.no_folder"));
+        };
+        let Some(path) = local_under(&root, &str_of("here")) else {
             return fail(i18n::t("err.sftp.outside"));
+        };
+        let file = str_of("name");
+        match std::fs::read(&path) {
+            Err(e) => return fail(format!("{e}")),
+            Ok(bytes) => match diff_text(&file, &bytes) {
+                Err(why) => return fail(why),
+                Ok(text) => here = Some((file, text)),
+            },
         }
-    if let (Some(root), ssh::FileJob::Get { to, .. }) = (&local_root, &job)
-        && local_under(root, &to.display().to_string()).is_none() {
-            return fail(i18n::t("err.sftp.outside"));
-        }
-    if !caps.allows(name, grants::Subject::Human) {
-        return fail(i18n::tp(
-            "err.hooks.not_permitted",
-            &[("name", name), ("who", &i18n::t("grant.who.human"))],
-        ));
     }
+    // Inside the fences and allowed, settled here where the answer can still be
+    // handed straight back. What crosses to the thread is the settled job, so
+    // nothing reads a path a second time between the checking and the doing
+    let fences = crate::transfer::Fences {
+        here: local_root.clone(),
+        there: remote_root.clone(),
+    };
+    let job = match crate::transfer::ready(job, &fences, caps, grants::Subject::Human) {
+        Ok(job) => job,
+        Err(e) => return fail(format!("{e}")),
+    };
     // The folder that was asked about, sent back with the answer: by the time
     // it arrives the person may have moved on, and a listing that lands in the
     // wrong folder is worse than one that never lands
@@ -7120,13 +7227,26 @@ pub fn sftp_answer(
                 "panel": panel,
                 "ok": true,
                 "at": asked,
-                "rows": rows.iter().map(|e| serde_json::json!({
-                    "name": e.name,
-                    "dir": e.dir,
-                    "size": e.size,
-                    "modified": e.modified,
-                })).collect::<Vec<_>>(),
+                "rows": rows,
             }),
+            // The far side, put beside the one here. `-` is the server's and
+            // `+` is this machine's, whichever way the person was going to
+            // move the file -- one reading, so the signs never swap meaning
+            Ok(ssh::FileAnswer::Bytes(bytes)) => match here {
+                None => serde_json::json!({"act": act, "panel": panel, "ok": true}),
+                Some((file, mine)) => match diff_text(&file, &bytes) {
+                    Err(why) => serde_json::json!(
+                        {"act": act, "panel": panel, "ok": false, "name": file, "error": why}),
+                    Ok(theirs) => serde_json::json!({
+                        "act": act,
+                        "panel": panel,
+                        "ok": true,
+                        "name": file,
+                        "text": crate::diff::unified(
+                            &theirs, &mine, &file, crate::diff::CONTEXT),
+                    }),
+                },
+            },
             Ok(_) => serde_json::json!({"act": act, "panel": panel, "ok": true}),
             Err(e) => {
                 serde_json::json!({"act": act, "panel": panel, "ok": false, "error": format!("{e:#}")})
@@ -7138,27 +7258,25 @@ pub fn sftp_answer(
 }
 /// What is in a folder on this machine, in the same shape the far end answers
 /// in -- folders first and then by name, so the two lists read alike
-pub fn local_rows(at: &std::path::Path) -> Result<Vec<serde_json::Value>> {
-    let mut rows: Vec<(bool, String, u64, u64)> = Vec::new();
+pub fn local_rows(at: &std::path::Path) -> Result<Vec<ssh::Entry>> {
+    let mut rows: Vec<ssh::Entry> = Vec::new();
     for e in std::fs::read_dir(at)? {
         let Ok(e) = e else { continue };
-        let name = e.file_name().to_string_lossy().to_string();
         let Ok(m) = e.metadata() else { continue };
-        let modified = m
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        rows.push((m.is_dir(), name, m.len(), modified));
+        rows.push(ssh::Entry {
+            name: e.file_name().to_string_lossy().to_string(),
+            dir: m.is_dir(),
+            size: m.len(),
+            modified: m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        });
     }
-    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    Ok(rows
-        .into_iter()
-        .map(|(dir, name, size, modified)| {
-            serde_json::json!({"name": name, "dir": dir, "size": size, "modified": modified})
-        })
-        .collect())
+    rows.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.name.cmp(&b.name)));
+    Ok(rows)
 }
 /// The same path, refused if it is not inside the folder this panel works in.
 ///
@@ -7713,6 +7831,63 @@ pub fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
 /// A minimal context for a browser pane, so a quick action's Lua can run while a
 /// browser tab is active. `tab.name` is the browser's key, ready to hand to the
 /// browser_* functions (e.g. `shikisha.browser_go(tab.name, "to", url)`).
+/// A file panel, as the thing a template runs against. Named the way a page is
+/// named -- by its key, which is what `sftp_*` is told -- so the template does
+/// not have to be handed the tab twice
+/// Progress reports meant for a file panel, sent there and taken out of the
+/// list. Everything else goes on to `exec_commands` untouched.
+///
+/// A template says how far it has got with `set_progress`, the same command a
+/// hook uses for a tab. Which of the two it lands on is decided by what it was
+/// aimed at, not by two different commands
+fn panel_progress_out(
+    cmds: Vec<crate::hooks::Command>,
+    surfaces: &[Surface],
+    tx: &std::sync::mpsc::Sender<String>,
+) -> Vec<crate::hooks::Command> {
+    cmds.into_iter()
+        .filter(|cmd| {
+            let crate::hooks::Command::SetProgress { value, label, target, .. } = cmd else {
+                return true;
+            };
+            let Some(hooks::TabRef::Name(name)) = target else {
+                return true;
+            };
+            if !surfaces
+                .iter()
+                .any(|s| matches!(s, Surface::Sftp { key, .. } if key == name))
+            {
+                return true;
+            }
+            let _ = tx.send(
+                serde_json::json!({
+                    "act": "progress",
+                    "panel": name,
+                    "ok": true,
+                    "value": value,
+                    "label": label,
+                })
+                .to_string(),
+            );
+            false
+        })
+        .collect()
+}
+
+pub fn panel_ctx(index: usize, key: &str) -> TabCtx {
+    TabCtx {
+        index,
+        name: key.to_string(),
+        id: Some(key.to_string()),
+        state: "FILES".into(),
+        profile: String::new(),
+        output: String::new(),
+        chain_depth: 0,
+        locked: false,
+        is_model: false,
+        reply: None,
+    }
+}
 pub fn browser_ctx(index: usize, key: &str) -> TabCtx {
     TabCtx {
         index,
@@ -10242,6 +10417,48 @@ mod tests {
     /// Writing it all in one go means Enter arrives before the AI CLI's input
     /// box has finished processing the paste, leaving the text typed but never
     /// submitted (this actually happened with sends from a phone).
+    /// The order a listing comes in, and the fields it carries. Promised to
+    /// three callers now -- the file panel, the transfer panel, and a script
+    /// walking a folder -- so it is checked once here rather than assumed
+    /// three times
+    #[test]
+    fn a_folder_is_listed_with_its_folders_first_and_then_by_name() {
+        let dir = std::env::temp_dir().join(format!("shikisha-rows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("zeta")).unwrap();
+        std::fs::create_dir_all(dir.join("alpha")).unwrap();
+        std::fs::write(dir.join("b.txt"), "hello").unwrap();
+        std::fs::write(dir.join("a.txt"), "").unwrap();
+
+        let rows = local_rows(&dir).unwrap();
+        let names: Vec<&str> = rows.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["alpha", "zeta", "a.txt", "b.txt"], "folders first, then by name");
+        assert!(rows[0].dir && !rows[2].dir);
+        let b = rows.iter().find(|e| e.name == "b.txt").unwrap();
+        assert_eq!(b.size, 5);
+        assert!(b.modified > 0, "a file that exists has a time on it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the panel will and will not hold up against another file. Checked
+    /// here because both refusals happen before anything is asked of a server,
+    /// and a refusal that arrives after a megabyte has crossed the wire is not
+    /// a refusal, it is an apology
+    #[test]
+    fn only_text_of_a_readable_size_is_compared() {
+        assert_eq!(diff_text("a.txt", b"one\ntwo\n").as_deref(), Ok("one\ntwo\n"));
+        // Empty is text: two empty files are the same, which is an answer
+        assert_eq!(diff_text("a.txt", b"").as_deref(), Ok(""));
+        let big = vec![b'x'; SFTP_DIFF_MAX + 1];
+        assert!(diff_text("big.js", &big).is_err(), "a file past the limit is refused");
+        let edge = vec![b'x'; SFTP_DIFF_MAX];
+        assert!(diff_text("big.js", &edge).is_ok(), "the limit itself is still read");
+        // A picture: the zero bytes in it are what says so
+        assert!(diff_text("logo.png", &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]).is_err());
+        // Bytes that are not text, with no zero in them to give it away
+        assert!(diff_text("odd.txt", &[0xff, 0xfe, 0x41]).is_err(), "invalid text is refused");
+    }
+
     #[test]
     fn a_prompt_is_typed_first_and_submitted_after() {
         let argv = vec![crate::test_shell()];

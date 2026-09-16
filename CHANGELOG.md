@@ -9,6 +9,35 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **A question about the far end says which machine it is about.** Deleting,
+  renaming and making a folder quoted a path and nothing else, so the one thing
+  that decides whether the answer is safe was left to memory.
+- **A send says what it would do before it does it.** Every file going over is
+  listed: what is standing there now beside what is arriving, both sizes and
+  both times, and which rows replace something. Nothing is asked when nothing
+  would be replaced.
+- **Compare.** A row whose name is on the other side too can be held up against
+  it. Both copies are read where they are, nothing is written here to do it, and
+  the server's lines are marked `-` against this machine's `+`. A file past a
+  megabyte, or one that is not text, says so instead.
+- **`shikisha.diff(before, after, opts)`** for automation: what changed between
+  two texts, written the way git writes a diff.
+- **`shikisha.sftp_read(tab, path)`**: a file on the far end, as a string,
+  without a copy of it being left here.
+- **`shikisha.list_files(name, rel)`** and **`shikisha.list_path(p)`**: what is
+  in a folder on this machine, in the shape `sftp_ls` answers in. The manual has
+  always said to send a folder by writing `ls` and `put` in a loop; going out,
+  there was nothing to walk this side with.
+- **A folder can be sent, and brought back.** Tick it and press the same button
+  a file uses. What is asked first is about the folders rather than the files
+  inside them -- nothing shows what is in one until somebody walks it, and
+  itemising here would walk the tree twice. The walk itself is a template, so
+  "deepest first" or "skip what matches" is an edit rather than a feature
+  request, and the panel says which file it is on as it goes.
+- **`shikisha.sftp_ls_here(tab, rel)`**: the same listing on this machine's side
+  of a transfer, told the same tab and stopping at the same folder -- so a walk
+  written for one side reads the same written for the other.
+
 - **A worktree is deleted from its right-click menu in the left bar.** The last
   entry, in red, is "Delete completely": the whole folder goes, links are
   unhooked first so what they point to stays, and files copied in that git does
@@ -17,6 +46,43 @@ once it reaches its first tagged release.
   before deleting a worktree" is where that answer is kept and turned back on.
 
 ### Fixed
+- **A folder sent from the file panel never started on a desk with no
+  automation of its own** -- which is nearly every desk. The walk runs as Lua,
+  and nothing had made the engine that runs it; it said the panel was no longer
+  in the settings, which it was.
+- **A send said it had finished for a few milliseconds and then said nothing.**
+  Every transfer reads both lists again the moment it ends, and a list that read
+  cleared the line whatever was on it. It now clears only a complaint that the
+  list could not be read.
+- **Stopping automation also stopped a folder a person was sending.** The stop
+  holds hooks and quick commands; a transfer started from the panel goes on,
+  the way sending a single file always has.
+- **A file that was not on the server yet could not be sent, and a shorter file
+  sent over a longer one kept the longer one's tail.** Sending opened the file
+  for writing and nothing else. A real server takes that literally: a file that
+  is not there cannot be opened, and one that is there is written over from the
+  start without being cut short. It now opens to make the file if it is missing
+  and empty it if it is not. Neither showed against the test server this was
+  first checked with, which made and emptied a file whenever it was opened for
+  writing; that server now does only what it is asked, the way OpenSSH does.
+- **A file command no longer stops the app while it runs.** `sftp_put` and the
+  rest waited where they stood, and the engine runs on the main loop -- so one
+  transfer froze every tab on screen, the keyboard and the phone relay for as
+  long as the far end took, up to two minutes. They now hand the work to a
+  thread and wait the way asking the AI already waited.
+- **Commands that wait can be called from the outside door too.** `sleep`,
+  `ai_ask` and the file commands are on the list the API hands out and used to
+  fail there at once, because Lua cannot stop outside a coroutine. That door
+  drives one now.
+
+- **A file command from a script is fenced the way the panel's always was.** The
+  panel kept a transfer inside the folder its tab works in; a script naming the
+  same tab could name any path on either machine, so `sftp_put` followed by
+  `sftp_read` handed back a file that `read_path` exists to keep an AI away
+  from. What a file command means -- how far it reaches and who may ask for it
+  -- now lives in one place that both come through. A tab that was given no
+  folder on the far end is reached as before: there is nothing there to be
+  outside of.
 - **A folder's tabs in the left bar can be shut again after being opened, and
   one tab can be put away too.** Opened, the box that brought the tabs out
   turned into a line of small grey words, which did not read as the way to shut
@@ -71,6 +137,12 @@ once it reaches its first tagged release.
   whole folder first, asking what is really there rather than what the settings
   say today -- a line set to Link when the folder was made can say Copy by the
   time it goes.
+
+### Changed
+- **`shikisha.sftp_get` no longer replaces a file on this machine without being
+  asked.** It takes `{ overwrite = true }`, the same word in the same place as
+  `shikisha.sftp_put` already took. A script that fetched the same name twice
+  now has to say so.
 
 ## [0.14.0] - 2026-09-15
 

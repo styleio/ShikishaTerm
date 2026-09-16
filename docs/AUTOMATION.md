@@ -862,6 +862,18 @@ thought of.
 | `shikisha.sleep(ms)` | Wait (other tabs keep running) |
 | `shikisha.now("%Y-%m-%d")` | The local date/time, formatted. Sorts chronologically by default — good in file names |
 | `shikisha.epoch_ms()` | Milliseconds since the epoch, as a number, for measuring elapsed time |
+| `shikisha.diff(before, after, opts)` | What changed between two texts, written the way git writes a diff. `""` when they are the same. `opts` is `{ name = "plan.md", context = 3 }`: the name goes on the header lines, and the context is how many unchanged lines are kept either side of a change |
+
+It is handed the two texts and never told where to find them, so the same
+command serves a reply, a page, a file and a recording:
+
+```lua
+-- What the AI changed between this answer and the last one
+local was = shikisha.get_var("answer") or ""
+local d = shikisha.diff(was, now, { name = "answer.md" })
+if d ~= "" then shikisha.note(tab, d) end
+shikisha.set_var("answer", now)
+```
 
 ### Remembering, logging, telling someone
 
@@ -947,25 +959,45 @@ The files where an SSH tab is connected. **Which machine is said by naming the
 tab that is connected to it**, the same way the git commands are told a tab. A
 path over there is the far end's; a path here is this machine's.
 
+**Both ends are fenced by what that tab was given.** A path on this machine has
+to be inside the tab's working folder, and a path over there inside the folder
+the tab was given on that machine, if it was given one. `..` does not get out of
+either. So a command told one tab cannot reach a file that tab was never handed
+-- which is the same promise `read_file` keeps, kept here too.
+
+**None of them stop the app while they run.** A transfer takes as long as the
+link takes; the command hands the work over and waits, and every tab on screen
+carries on. So a loop that sends a folder a file at a time is a loop somebody
+can watch.
+
 | Command | Description |
 |---|---|
 | `shikisha.sftp_ls(tab, "public/")` | A listing: `{name, dir, size, modified}` each. Folders first, then by name |
+| `shikisha.sftp_ls_here(tab, "dist/")` | The same, on this machine's side of that tab -- so a walk written for one side reads the same written for the other |
 | `shikisha.sftp_stat(tab, "public/index.html")` | One of them, or `nil` if it is not there |
-| `shikisha.sftp_get(tab, "there", "here")` | Bring a file here |
+| `shikisha.sftp_get(tab, "there", "here", opts)` | Bring a file here. `opts` is `{ overwrite = true }` (a file that is already here is not replaced otherwise) |
+| `shikisha.sftp_read(tab, "public/index.html")` | The file itself, as a string, without leaving a copy here |
 | `shikisha.sftp_put(tab, "here", "there", opts)` | Send one. `opts` is `{ overwrite = true }` (a file that is already there is not replaced otherwise) |
 | `shikisha.sftp_mkdir(tab, "public/img")` | Make a folder |
 | `shikisha.sftp_rename(tab, "a.txt", "b.txt")` | Rename or move |
 | `shikisha.sftp_rm(tab, "b.txt")` | Delete. **A file, or a folder with nothing in it** |
 
-**There is no "send the whole folder".** Write it as `sftp_ls` and `sftp_put` in
-a loop. One command for it could only ever be the first arrangement somebody
+`sftp_read` is what `shikisha.diff` is usually handed: read the copy over
+there, compare it with the one here, and a script can say what a send would
+change before anything is sent.
+
+**There is no "send the whole folder".** Write it as `sftp_ls_here` and
+`sftp_put` in a loop going out, `sftp_ls` and `sftp_get` coming back. The
+panel's own folder button is that loop, written as a template rather than built
+in -- deepest first, biggest first, skip what matches, stop on the first refusal
+are all arrangements somebody might want, and a command would be one of them. One command for it could only ever be the first arrangement somebody
 thought of -- the same reason `split_pane` and `show` stayed two.
 
 **Deleting, making and renaming are for people by default** (automation
-permissions). Open the reading ones (`sftp_ls` / `sftp_get`) and `sftp_put` to
+permissions). Open the reading ones (`sftp_ls` / `sftp_get` / `sftp_read`) and `sftp_put` to
 an AI first, if any.
 
-**The same seven on a screen.** A tab whose command is
+**The same on a screen.** A tab whose command is
 `sftp://deploy@example.com:22` is the file panel: two lists of files, this
 tab's working folder on the left and that server on the right. It has no way of
 moving a file that is not one of the commands above, and it asks the same
@@ -1058,5 +1090,6 @@ Off unless you register a gateway — see section 6.
 | Command | Description |
 |---|---|
 | `shikisha.read_file(name, rel)` / `shikisha.write_file(name, rel, data)` | Through a registered file gateway |
+| `shikisha.list_files(name, rel)` | What is in that folder, one level: `{name, dir, size, modified}` each, folders first and then by name -- the shape `sftp_ls` answers in, so a walk written for one side reads the same on the other |
 | `shikisha.http(name, body)` | Through a registered HTTP gateway |
-| `shikisha.read_path(p)` / `shikisha.write_path(p, data)` / `shikisha.http_raw(url, body)` | Raw path / raw URL. Always fails unless `allow_dirs` / `allow_hosts` says otherwise |
+| `shikisha.read_path(p)` / `shikisha.write_path(p, data)` / `shikisha.list_path(p)` / `shikisha.http_raw(url, body)` | Raw path / raw URL. Always fails unless `allow_dirs` / `allow_hosts` says otherwise |

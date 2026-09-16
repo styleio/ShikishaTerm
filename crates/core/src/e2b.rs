@@ -747,7 +747,14 @@ pub fn files(
             )?;
             Ok(FileAnswer::Nothing)
         }
-        FileJob::Get { from, to } => {
+        FileJob::Read { path } => Ok(FileAnswer::Bytes(download(sandbox, &path, wait_ms)?)),
+        FileJob::Get { from, to, overwrite } => {
+            if !overwrite && to.exists() {
+                bail!(crate::i18n::tp(
+                    "err.ssh.file_exists",
+                    &[("path", &to.display().to_string())]
+                ));
+            }
             let bytes = download(sandbox, &from, wait_ms)?;
             if let Some(d) = to.parent() {
                 std::fs::create_dir_all(d)?;
