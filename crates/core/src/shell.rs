@@ -11913,7 +11913,12 @@ window.__sftp = msg => {
       if (msg.at != null) side.at = msg.at;
       side.rows = msg.rows || [];
       side.failed = false;
-      F.said = ""; F.bad = false;
+      // A folder that reads again takes away the complaint that it could not
+      // be read -- and nothing else. Every transfer asks for both lists the
+      // moment it ends, so clearing the line here whatever it said erased
+      // "done" a few milliseconds after it was written: nobody ever saw that a
+      // send had finished, only that the words had come and gone
+      if (F.bad) { F.said = ""; F.bad = false; }
     } else {
       // Which side could not be read, so the list says "could not open this"
       // rather than "nothing here" -- an empty folder and an unreachable one

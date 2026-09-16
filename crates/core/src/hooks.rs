@@ -1385,6 +1385,11 @@ const SKIP_MARKER: &str = "__shikisha_skip__";
 /// a hook's, which nobody is waiting on
 const SNIPPET: &str = "snippet:";
 
+/// The name a template started from a panel runs under. Kept apart from
+/// "action" -- a quick command -- because stopping automation should stop a
+/// quick command and should not stop a person's own transfer
+pub const PANEL_HOOK: &str = "panel";
+
 /// What the file panel runs when a folder is sent or brought back.
 ///
 /// Lua rather than Rust because a folder transfer is a walk and a series of
@@ -5090,7 +5095,7 @@ end
     /// standard library are available), with `tab` bound to the active tab. Its
     /// commands are collected like a hook's and drained by the caller.
     pub fn fire_action(&mut self, code: &str, ctx: &TabCtx) {
-        self.fire_with(code, ctx, None)
+        self.fire_with("action", code, ctx, None)
     }
 
     /// The same door, with the thing this run is about on the table beside the
@@ -5098,10 +5103,16 @@ end
     /// is the whole of the difference between a mode written in Rust and one
     /// written as Lua plus data
     pub fn fire_template(&mut self, code: &str, ctx: &TabCtx, job: &serde_json::Value) {
-        self.fire_with(code, ctx, Some(job))
+        self.fire_with(PANEL_HOOK, code, ctx, Some(job))
     }
 
-    fn fire_with(&mut self, code: &str, ctx: &TabCtx, job: Option<&serde_json::Value>) {
+    fn fire_with(
+        &mut self,
+        hook: &str,
+        code: &str,
+        ctx: &TabCtx,
+        job: Option<&serde_json::Value>,
+    ) {
         self.current_origin.set(ctx.index);
         self.subject.set(crate::grants::Subject::Human);
         let result = (|| -> mlua::Result<()> {
@@ -5120,7 +5131,7 @@ end
                 .set_environment(env)
                 .into_function()?;
             let thread = self.lua.create_thread(func)?;
-            self.resume_thread(thread, "action", ctx.index, MultiValue::from_vec(vec![]));
+            self.resume_thread(thread, hook, ctx.index, MultiValue::from_vec(vec![]));
             Ok(())
         })();
         if let Err(e) = result {
@@ -5241,9 +5252,34 @@ end
 
     /// Called on every detection tick. Evaluates the condition for coroutines waiting on wait/sleep and resumes them
     pub fn tick_pending(&mut self, screens: &dyn Fn(usize) -> Option<String>) {
+        self.tick_pending_where(&|_| true, screens)
+    }
+
+    /// Move on only what a person started from a panel.
+    ///
+    /// Stopping automation stops automation -- a hook, a quick command, a
+    /// loop somebody needs to halt -- and it is the loop above that decides to
+    /// stop ticking those. A folder sent from the file panel is not one of
+    /// them: it is a person's own transfer, the same kind of thing as sending a
+    /// single file, which runs on a thread and never cared whether automation
+    /// was on. Without this it sat at "looking through the folder" for as long
+    /// as automation stayed stopped
+    pub fn tick_panel_pending(&mut self) {
+        self.tick_pending_where(&|hook| hook == PANEL_HOOK, &|_| None)
+    }
+
+    fn tick_pending_where(
+        &mut self,
+        wanted: &dyn Fn(&str) -> bool,
+        screens: &dyn Fn(usize) -> Option<String>,
+    ) {
         let now = Instant::now();
         let pending = std::mem::take(&mut self.pending);
         for p in pending {
+            if !wanted(&p.hook) {
+                self.pending.push(p);
+                continue;
+            }
             // The AI answers with words rather than yes/no, so it hands back
             // what to resume with instead of a flag
             if let WaitKind::Ai { rx, deadline } = &p.wait {
@@ -6964,6 +7000,36 @@ mod tests {
         );
         assert!(out.is_err(), "it cannot walk out of the tab's folder: {out:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Stopping automation stops a quick command and leaves a person's own
+    /// transfer from a panel running. Both are Lua fired from a button, so
+    /// what tells them apart is which door they came in by
+    #[test]
+    fn a_panel_template_moves_on_with_automation_stopped_and_a_quick_command_does_not() {
+        let mut e = HookEngine::new().unwrap();
+        let ctx = crate::runtime::panel_ctx(1, "deploy");
+        e.fire_action("shikisha.sleep(1); shikisha.log('quick went on')", &ctx);
+        e.fire_template(
+            "shikisha.sleep(1); shikisha.log('panel went on')",
+            &ctx,
+            &serde_json::json!({}),
+        );
+        assert_eq!(e.pending.len(), 2, "both stopped to wait");
+        std::thread::sleep(Duration::from_millis(20));
+
+        e.tick_panel_pending();
+        let logs: Vec<String> = e
+            .drain_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::Log(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        assert!(logs.iter().any(|l| l.contains("panel went on")), "{logs:?}");
+        assert!(!logs.iter().any(|l| l.contains("quick went on")), "{logs:?}");
+        assert_eq!(e.pending.len(), 1, "the quick command is still held");
     }
 
     /// A command that has to stop and wait can be asked for from the outside

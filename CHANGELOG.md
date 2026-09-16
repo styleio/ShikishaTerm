@@ -39,6 +39,17 @@ once it reaches its first tagged release.
   written for one side reads the same written for the other.
 
 ### Fixed
+- **A folder sent from the file panel never started on a desk with no
+  automation of its own** -- which is nearly every desk. The walk runs as Lua,
+  and nothing had made the engine that runs it; it said the panel was no longer
+  in the settings, which it was.
+- **A send said it had finished for a few milliseconds and then said nothing.**
+  Every transfer reads both lists again the moment it ends, and a list that read
+  cleared the line whatever was on it. It now clears only a complaint that the
+  list could not be read.
+- **Stopping automation also stopped a folder a person was sending.** The stop
+  holds hooks and quick commands; a transfer started from the panel goes on,
+  the way sending a single file always has.
 - **A file that was not on the server yet could not be sent, and a shorter file
   sent over a longer one kept the longer one's tail.** Sending opened the file
   for writing and nothing else. A real server takes that literally: a file that
