@@ -8,6 +8,12 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-16
+
+The file panel sends and brings back whole folders, says what a send would
+replace before it does, and holds a file up against its copy on the server. A
+worktree is deleted from its right-click menu.
+
 ### Added
 - **A question about the far end says which machine it is about.** Deleting,
   renaming and making a folder quoted a path and nothing else, so the one thing
@@ -46,6 +52,10 @@ once it reaches its first tagged release.
   before deleting a worktree" is where that answer is kept and turned back on.
 
 ### Fixed
+- **A folder with an editor tab opens the editor.** It tried to run a program
+  called "editor" instead, and said to install it.
+- **The account list in the changes panel stays open when it is pressed.** In
+  the column on the right it shut again the moment it dropped open.
 - **A folder sent from the file panel never started on a desk with no
   automation of its own** -- which is nearly every desk. The walk runs as Lua,
   and nothing had made the engine that runs it; it said the panel was no longer
@@ -2216,7 +2226,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/styleio/ShikishaTerm/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/styleio/ShikishaTerm/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/styleio/ShikishaTerm/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/styleio/ShikishaTerm/compare/v0.11.0...v0.12.0
