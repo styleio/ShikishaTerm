@@ -17,6 +17,12 @@ once it reaches its first tagged release.
   before deleting a worktree" is where that answer is kept and turned back on.
 
 ### Fixed
+- **A folder's tabs in the left bar can be shut again after being opened, and
+  one tab can be put away too.** Opened, the box that brought the tabs out
+  turned into a line of small grey words, which did not read as the way to shut
+  them, and a folder running a single tab had no box at all. The box now stays
+  where it is either way, with the count and a ▾ while the tabs are out, and
+  every folder with tabs has one. A single tab starts out; several start put away.
 - **The input bar no longer covers the bottom of a terminal.** An AI keeps its
   prompt on the last rows of the screen, with the line saying which mode it is
   in (`bypass permissions on`) under it, and the input bar was laid over both.
