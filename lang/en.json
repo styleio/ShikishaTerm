@@ -2538,6 +2538,7 @@
   "err.github.not_github": "{p} is not a repository on GitHub.",
   "err.github.account.unset": "No git account is chosen for this project. Choose one on the project's page in the settings.",
   "err.github.pc_none": "Git on this PC has no GitHub sign-in stored. Sign in to GitHub from git once, or choose a git account for this project.",
+  "err.github.pc_many": "Git on this PC has more than one GitHub account stored ({names}) and cannot tell which one to use. Choose a git account for this project on the project's page in the settings.",
   "err.github.host": "The git account \"{name}\" is for {host}, not GitHub.",
   "err.github.unreachable": "GitHub could not be reached: {error}",
   "err.github.401": "GitHub does not accept this account's token: it has expired or been revoked.",
