@@ -187,6 +187,9 @@ pub enum FileJob {
     Stat { path: String },
     /// Bring a file here
     Get { from: String, to: std::path::PathBuf },
+    /// Read a file out, without writing it down anywhere. What a script wants
+    /// when it is going to look at the contents rather than keep them
+    Read { path: String },
     /// Send a file there
     Put { from: std::path::PathBuf, to: String, overwrite: bool },
     MakeDir { path: String },
@@ -203,6 +206,10 @@ pub enum FileAnswer {
     Nothing,
     Listing(Vec<Entry>),
     One(Entry),
+    /// A file's contents, as they were. Bytes rather than text because that is
+    /// what was on the far end, and deciding it is not text is the caller's
+    /// to make
+    Bytes(Vec<u8>),
 }
 
 /// What the connection thread is asked to do. One enum, because one thread
@@ -693,6 +700,7 @@ async fn run_file_job(
                 modified: m.mtime.unwrap_or(0) as u64,
             }))
         }
+        FileJob::Read { path } => Ok(FileAnswer::Bytes(sftp.read(&path).await?)),
         FileJob::Get { from, to } => {
             let bytes = sftp.read(&from).await?;
             if let Some(d) = to.parent() {

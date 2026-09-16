@@ -985,18 +985,22 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | `shikisha.sftp_ls(タブ, "public/")` | 一覧。1件ずつ `{name, dir, size, modified}`。フォルダが先、次に名前順 |
 | `shikisha.sftp_stat(タブ, "public/index.html")` | 1件ぶん。無ければ `nil` |
 | `shikisha.sftp_get(タブ, "向こうのパス", "こちらのパス")` | 持ってくる |
+| `shikisha.sftp_read(タブ, "public/index.html")` | 中身を、こちらに残さず文字列で返す |
 | `shikisha.sftp_put(タブ, "こちらのパス", "向こうのパス", opts)` | 送る。`opts` は `{ overwrite = true }`（既定では、もうあるファイルは上書きしません） |
 | `shikisha.sftp_mkdir(タブ, "public/img")` | フォルダを作る |
 | `shikisha.sftp_rename(タブ, "a.txt", "b.txt")` | 名前を変える・移す |
 | `shikisha.sftp_rm(タブ, "b.txt")` | 消す。**ファイルと、空のフォルダだけ**です |
 
+`sftp_read` は `shikisha.diff` に渡すためにあります。向こうの1枚を読んでこちらの1枚と比べれば、
+送る前に何が変わるかを出せます。
+
 **フォルダごと送る命令はありません。** `sftp_ls` と `sftp_put` を繰り返して書きます。1つの命令にすると、
 最初に思いついた1通りのやり方しか選べなくなるからです（`split_pane` と `show` と同じ理由）。
 
 **既定では、消す・作る・名前を変えるは人間だけです**（自動化の権限）。AIに開くなら、まず読む
-（`sftp_ls` / `sftp_get`）と送る（`sftp_put`）からどうぞ。
+（`sftp_ls` / `sftp_get` / `sftp_read`）と送る（`sftp_put`）からどうぞ。
 
-**同じ7つを、画面から。** コマンドが `sftp://deploy@example.com:22` のタブは、ファイルのパネルです。
+**同じことを、画面から。** コマンドが `sftp://deploy@example.com:22` のタブは、ファイルのパネルです。
 左にこのタブの作業フォルダ、右にそのサーバーの、2枚の一覧が出ます。画面が持っている手立ては上の命令だけで、
 権限も同じ表を見ます。手でできることと台本にできることが食い違わないためです。
 

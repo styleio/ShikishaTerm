@@ -2884,6 +2884,27 @@ impl HookEngine {
                 .map_err(lerr)?,
             ).map_err(lerr)?;
 
+            // The same file, not written down. Its own command rather than
+            // `sftp_get` with the destination left off, because where a file
+            // ends up is the whole difference between the two: one leaves a
+            // copy on this machine and one does not, and a command whose
+            // return value changes shape with the number of arguments is a
+            // command people have to test to understand.
+            //
+            // Bytes, handed over as Lua's own string, which is a string of
+            // bytes. Nothing here decides the far end was text
+            let j = Rc::clone(&job);
+            shikisha.set(
+                "sftp_read",
+                lua.create_function(move |lua, (tab, path): (Value, String)| {
+                    match j(&tab, crate::ssh::FileJob::Read { path })? {
+                        crate::ssh::FileAnswer::Bytes(b) => lua.create_string(&b),
+                        _ => lua.create_string(""),
+                    }
+                })
+                .map_err(lerr)?,
+            ).map_err(lerr)?;
+
             let j = Rc::clone(&job);
             shikisha.set(
                 "sftp_put",

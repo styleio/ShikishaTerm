@@ -747,6 +747,7 @@ pub fn files(
             )?;
             Ok(FileAnswer::Nothing)
         }
+        FileJob::Read { path } => Ok(FileAnswer::Bytes(download(sandbox, &path, wait_ms)?)),
         FileJob::Get { from, to } => {
             let bytes = download(sandbox, &from, wait_ms)?;
             if let Some(d) = to.parent() {

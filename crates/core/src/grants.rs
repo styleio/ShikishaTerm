@@ -220,6 +220,7 @@ pub const CATALOG: &[Entry] = &[
     e("sftp_ls", Group::Files, true, true, false),
     e("sftp_stat", Group::Files, true, true, false),
     e("sftp_get", Group::Files, true, true, false),
+    e("sftp_read", Group::Files, true, true, false),
     e("sftp_put", Group::Files, true, true, false),
     e("sftp_mkdir", Group::Files, true, false, false),
     e("sftp_rename", Group::Files, true, false, false),
