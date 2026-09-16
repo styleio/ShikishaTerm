@@ -8,6 +8,29 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **A question about the far end says which machine it is about.** Deleting,
+  renaming and making a folder quoted a path and nothing else, so the one thing
+  that decides whether the answer is safe was left to memory.
+- **A send says what it would do before it does it.** Every file going over is
+  listed: what is standing there now beside what is arriving, both sizes and
+  both times, and which rows replace something. Nothing is asked when nothing
+  would be replaced.
+- **Compare.** A row whose name is on the other side too can be held up against
+  it. Both copies are read where they are, nothing is written here to do it, and
+  the server's lines are marked `-` against this machine's `+`. A file past a
+  megabyte, or one that is not text, says so instead.
+- **`shikisha.diff(before, after, opts)`** for automation: what changed between
+  two texts, written the way git writes a diff.
+- **`shikisha.sftp_read(tab, path)`**: a file on the far end, as a string,
+  without a copy of it being left here.
+
+### Changed
+- **`shikisha.sftp_get` no longer replaces a file on this machine without being
+  asked.** It takes `{ overwrite = true }`, the same word in the same place as
+  `shikisha.sftp_put` already took. A script that fetched the same name twice
+  now has to say so.
+
 ## [0.14.0] - 2026-09-15
 
 Projects get a heading of their own in the left bar, a worktree is made from

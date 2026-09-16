@@ -984,7 +984,7 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 |---|---|
 | `shikisha.sftp_ls(タブ, "public/")` | 一覧。1件ずつ `{name, dir, size, modified}`。フォルダが先、次に名前順 |
 | `shikisha.sftp_stat(タブ, "public/index.html")` | 1件ぶん。無ければ `nil` |
-| `shikisha.sftp_get(タブ, "向こうのパス", "こちらのパス")` | 持ってくる |
+| `shikisha.sftp_get(タブ, "向こうのパス", "こちらのパス", opts)` | 持ってくる。`opts` は `{ overwrite = true }`（既定では、こちらにもうあるファイルは上書きしません） |
 | `shikisha.sftp_read(タブ, "public/index.html")` | 中身を、こちらに残さず文字列で返す |
 | `shikisha.sftp_put(タブ, "こちらのパス", "向こうのパス", opts)` | 送る。`opts` は `{ overwrite = true }`（既定では、もうあるファイルは上書きしません） |
 | `shikisha.sftp_mkdir(タブ, "public/img")` | フォルダを作る |

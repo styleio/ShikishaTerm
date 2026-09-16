@@ -185,8 +185,9 @@ pub struct Entry {
 pub enum FileJob {
     List { path: String },
     Stat { path: String },
-    /// Bring a file here
-    Get { from: String, to: std::path::PathBuf },
+    /// Bring a file here. `overwrite` is asked for the same way `Put` asks for
+    /// it: this end may be the only copy just as easily as the other one
+    Get { from: String, to: std::path::PathBuf, overwrite: bool },
     /// Read a file out, without writing it down anywhere. What a script wants
     /// when it is going to look at the contents rather than keep them
     Read { path: String },
@@ -701,7 +702,15 @@ async fn run_file_job(
             }))
         }
         FileJob::Read { path } => Ok(FileAnswer::Bytes(sftp.read(&path).await?)),
-        FileJob::Get { from, to } => {
+        FileJob::Get { from, to, overwrite } => {
+            // Asked before the reading, not after: after is too late, and the
+            // file it would have asked about is already gone
+            if !overwrite && to.exists() {
+                bail!(crate::i18n::tp(
+                    "err.ssh.file_exists",
+                    &[("path", &to.display().to_string())]
+                ));
+            }
             let bytes = sftp.read(&from).await?;
             if let Some(d) = to.parent() {
                 std::fs::create_dir_all(d)?;
