@@ -13,8 +13,8 @@
  * JavaScript, and photographed. What comes out is the real page: the real
  * stylesheet, the real wording from lang/, the real scheme from theme.rs.
  *
- *     node tools/shoot.mjs tools/scenes/files.mjs
- *     node tools/shoot.mjs tools/scenes/files.mjs --only diff
+ *     node tools/debug/shoot.mjs tools/debug/scenes/files.mjs
+ *     node tools/debug/shoot.mjs tools/debug/scenes/files.mjs --only diff
  *
  * Pictures land in target/shots. A scene file is described in the one there is.
  */
@@ -24,7 +24,7 @@ import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-const ROOT = path.resolve(import.meta.dirname, '..');
+const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const OUT = path.join(ROOT, 'target', 'shots');
 const PORT = 9333;
 
@@ -119,7 +119,7 @@ async function connect(chrome) {
 }
 
 const file = process.argv[2];
-if (!file) die('say which scenes to photograph: node tools/shoot.mjs <scenes.mjs>');
+if (!file) die('say which scenes to photograph: node tools/debug/shoot.mjs <scenes.mjs>');
 const only = process.argv.includes('--only')
   ? process.argv[process.argv.indexOf('--only') + 1]
   : null;

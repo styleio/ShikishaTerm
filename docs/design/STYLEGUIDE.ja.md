@@ -334,12 +334,10 @@ AI の名前。ほかは太くしない。字間 `.02em` は 11〜12px の見出
 画面を変えたセッションは、終わる前にスクリーンショットを撮り、この表で採点します。
 効き目の大きい直しを3つ先に挙げ、直してから `/announce` に渡します。
 
-**撮り方は `tools/shoot.mjs`。** 盤面のページをそのまま書き出して headless Chrome で開き、
-英語/日本語 × 暗い/明るい × 窓/スマホで撮ります。どの画面を出すかは場面ファイルに1行ずつ書く
-（例: `tools/scenes/files.mjs`）。アプリを起動して条件を整えるより速く、しかも
-「整えている途中の別の画面」を採点してしまうことがありません。
+**撮り方は `tools/debug/shoot.mjs`。** 英語/日本語 × 暗い/明るい × 窓/スマホを一度に撮ります。
+使い方と、ほかの確認用の道具は [`tools/debug/README.md`](../../tools/debug/README.md) にあります。
 
-    node tools/shoot.mjs tools/scenes/files.mjs
+    node tools/debug/shoot.mjs tools/debug/scenes/files.mjs
 
 **それぞれに答える。「いいえ」は直すことであって、書き残すことではない。**
 

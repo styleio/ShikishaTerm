@@ -7818,7 +7818,8 @@ mod live_sftp {
     //! The file commands against a real SFTP server, not the in-process probe:
     //! OpenSSH's own sftp-server, which is what a person's server runs.
     //!
-    //! Ignored unless asked for, because it needs a server somebody has started.
+    //! Ignored unless asked for, because it needs a server somebody has started
+    //! -- `tools/debug/sftp-server.wsl.sh` starts one, with nothing installed.
     //! `SHIKISHA_LIVE_SFTP` names it and the rest say who signs in and where:
     //!
     //! ```text

@@ -1,5 +1,5 @@
 /**
- * The file panel's windows, for tools/shoot.mjs.
+ * The file panel's windows, for tools/debug/shoot.mjs.
  *
  * A scene file default-exports:
  *
