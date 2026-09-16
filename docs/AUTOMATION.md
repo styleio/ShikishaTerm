@@ -963,7 +963,7 @@ path over there is the far end's; a path here is this machine's.
 |---|---|
 | `shikisha.sftp_ls(tab, "public/")` | A listing: `{name, dir, size, modified}` each. Folders first, then by name |
 | `shikisha.sftp_stat(tab, "public/index.html")` | One of them, or `nil` if it is not there |
-| `shikisha.sftp_get(tab, "there", "here")` | Bring a file here |
+| `shikisha.sftp_get(tab, "there", "here", opts)` | Bring a file here. `opts` is `{ overwrite = true }` (a file that is already here is not replaced otherwise) |
 | `shikisha.sftp_read(tab, "public/index.html")` | The file itself, as a string, without leaving a copy here |
 | `shikisha.sftp_put(tab, "here", "there", opts)` | Send one. `opts` is `{ overwrite = true }` (a file that is already there is not replaced otherwise) |
 | `shikisha.sftp_mkdir(tab, "public/img")` | Make a folder |

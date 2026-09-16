@@ -7102,7 +7102,11 @@ pub fn sftp_answer(
         ),
         "get" => (
             "sftp_get",
-            ssh::FileJob::Get { from: str_of("from"), to: std::path::PathBuf::from(str_of("to")) },
+            ssh::FileJob::Get {
+                from: str_of("from"),
+                to: std::path::PathBuf::from(str_of("to")),
+                overwrite: args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false),
+            },
         ),
         // Reaching the far end at all, to say so before anything is saved
         "test" => ("sftp_ls", ssh::FileJob::List { path: at("") }),

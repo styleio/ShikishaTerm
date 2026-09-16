@@ -98,7 +98,11 @@ fn files_on(sandbox: &shikisha_core::e2b::Sandbox) -> anyhow::Result<()> {
     println!("bringing it back...");
     let back = std::env::temp_dir().join("shikisha-e2b-probe-back.bin");
     let _ = std::fs::remove_file(&back);
-    go(FileJob::Get { from: "/home/user/probe/thing.bin".into(), to: back.clone() })?;
+    go(FileJob::Get {
+        from: "/home/user/probe/thing.bin".into(),
+        to: back.clone(),
+        overwrite: true,
+    })?;
     let returned = std::fs::read(&back)?;
     if returned != payload {
         anyhow::bail!("what came back is not what went out: {} bytes vs {}", returned.len(), payload.len());

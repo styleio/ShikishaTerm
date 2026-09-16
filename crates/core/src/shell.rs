@@ -11999,7 +11999,7 @@ function sftpSend(which) {
     act, name: r.name,
     args: act === "put"
       ? {from: ljoin(from.at, r.name), to: rjoin(to.at, r.name), overwrite: over}
-      : {from: rjoin(from.at, r.name), to: ljoin(to.at, r.name)},
+      : {from: rjoin(from.at, r.name), to: ljoin(to.at, r.name), overwrite: over},
   }));
   // Nothing is replaced, so nothing can be lost and there is nothing to ask.
   // A question whose only answer is yes is one people stop reading

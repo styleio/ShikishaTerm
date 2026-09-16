@@ -2877,10 +2877,20 @@ impl HookEngine {
             let j = Rc::clone(&job);
             shikisha.set(
                 "sftp_get",
-                lua.create_function(move |_, (tab, from, to): (Value, String, String)| {
-                    j(&tab, crate::ssh::FileJob::Get { from, to: to.into() })?;
-                    Ok(())
-                })
+                lua.create_function(
+                    move |_, (tab, from, to, opts): (Value, String, String, Option<Table>)| {
+                        // The same word in the same place as `sftp_put`. A file
+                        // on this machine is somebody's only copy as easily as
+                        // one on the far end, and a folder being fetched over
+                        // for the second time should not quietly take it
+                        let overwrite = match &opts {
+                            Some(t) => t.get::<bool>("overwrite").unwrap_or(false),
+                            _ => false,
+                        };
+                        j(&tab, crate::ssh::FileJob::Get { from, to: to.into(), overwrite })?;
+                        Ok(())
+                    },
+                )
                 .map_err(lerr)?,
             ).map_err(lerr)?;
 
