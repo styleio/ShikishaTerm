@@ -32,7 +32,7 @@ Dev.cmd                # build, stage into run\, and launch from there
 Dev.cmd release        # same, from the release build
 cargo test             # all offline, no PTY-less environment needed
 
-node tools/shoot.mjs tools/scenes/files.mjs    # photograph the screen
+node tools/debug/shoot.mjs tools/debug/scenes/files.mjs    # photograph the screen
 ```
 
 Rust with the MSVC toolchain on Windows. There is nothing else to install — Lua is vendored
@@ -44,12 +44,11 @@ settings — an automation deleted in one is still live in the other, which is c
 diagnose. `Dev.cmd` keeps a single `run\` folder (gitignored) and refreshes only the
 application files into it, so your config, scripts and secrets are never overwritten.
 
-**A change to the screen is judged from a photograph of it** — see section 9 of
-[the screen rules](docs/design/STYLEGUIDE.md). `tools/shoot.mjs` takes them: it writes the
-board page out as the app serves it, opens it in a headless Chrome, and photographs it in
-both languages, both schemes and at both widths, into `target\shots`. Which screens to put
-up is a line each in a scene file; `tools/scenes/files.mjs` is the one there is. Nothing
-has to be running, so the state being judged is never the state on the way to it.
+**Tools for debugging and checking are in [`tools/debug/`](tools/debug/README.md)**, with
+an index of every one: the probes, the screenshots a change to the screen is judged from
+(section 9 of [the screen rules](docs/design/STYLEGUIDE.md)), and a real SFTP server to try
+the file commands against. Look there before writing one. When you do write one, put it
+there and give it a row — a tool left in a temporary folder has to be written again.
 
 ## Layout
 

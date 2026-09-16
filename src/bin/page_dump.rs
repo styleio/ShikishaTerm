@@ -6,7 +6,7 @@
 //! that through the app means a build, a window, and whatever the screen needs
 //! to be showing -- a server to be connected to, a repository mid-merge. This
 //! writes the same page to a file, where a browser can open it and a script can
-//! put it into the state being judged. tools/shoot.mjs is that script.
+//! put it into the state being judged. tools/debug/shoot.mjs is that script.
 //!
 //!     cargo run --bin page_dump -- ja        the page in Japanese
 //!     cargo run --bin page_dump -- ja light  ...in the light scheme

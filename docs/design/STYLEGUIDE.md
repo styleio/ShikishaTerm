@@ -349,14 +349,11 @@ Before a session that changed the screen ends, take the screenshot and judge it
 with this rubric. Name the three highest-impact fixes first, make them, and only
 then hand the screen to `/announce`.
 
-**Take it with `tools/shoot.mjs`.** It writes the board page out as it is served,
-opens it in a headless Chrome, and photographs it in both languages, both
-schemes and at both widths. Which screens to put up is a line each in a scene
-file (`tools/scenes/files.mjs` is the one there is). Faster than starting the app
-and arranging the state, and it cannot end up judging the screen that was on the
-way to the one being judged.
+**Take it with `tools/debug/shoot.mjs`.** It photographs both languages, both
+schemes and both widths at once. How to use it, and the other checking tools,
+are in [`tools/debug/README.md`](../../tools/debug/README.md).
 
-    node tools/shoot.mjs tools/scenes/files.mjs
+    node tools/debug/shoot.mjs tools/debug/scenes/files.mjs
 
 **Answer each; a "no" is a fix, not a note.**
 
