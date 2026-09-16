@@ -577,6 +577,7 @@ pub fn branch(dir: &Path) -> Result<Option<String>> {
 /// `patch` is a whole, valid patch on its own -- the file's header and this one
 /// hunk -- so it can be handed straight back to `git apply`. Everything else
 /// here is for the screen
+#[derive(Debug)]
 pub struct Hunk {
     pub file: String,
     /// The `@@ ... @@` line, as git wrote it

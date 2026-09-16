@@ -888,6 +888,18 @@ shikisha.show("br")            -- そこにブラウザが入る
 | `shikisha.sleep(ミリ秒)` | 待つ（待っている間も他のタブは動きます） |
 | `shikisha.now("%Y-%m-%d")` | 現地の日時を整形して返す。既定は時系列に並ぶ形なので、ファイル名向き |
 | `shikisha.epoch_ms()` | エポックからのミリ秒（数値）。経過時間の計測用 |
+| `shikisha.diff(前, 後, 設定)` | 2つの文章の差分を、git と同じ書き方で返す。同じなら `""`。`設定` は `{ name = "plan.md", context = 3 }` で、name は見出し行に出る名前、context は変更の前後に残す行数 |
+
+渡すのは文章そのもので、どこから持ってきたかは問いません。返事でも、ページでも、
+ファイルでも、記録でも、同じ命令で比べられます。
+
+```lua
+-- 前の返事と今の返事で、どこが変わったか
+local was = shikisha.get_var("answer") or ""
+local d = shikisha.diff(was, now, { name = "answer.md" })
+if d ~= "" then shikisha.note(tab, d) end
+shikisha.set_var("answer", now)
+```
 
 ### 覚える・記録する・知らせる
 

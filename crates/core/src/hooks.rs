@@ -2351,6 +2351,34 @@ impl HookEngine {
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
+            // What changed between two texts, written the way git writes a
+            // diff. It is handed the texts, never told where to find them --
+            // so the same command serves a file, a page, a reply and a
+            // recording, and none of them had to be built into it
+            shikisha
+                .set(
+                    "diff",
+                    lua.create_function(
+                        |_, (before, after, opts): (String, String, Option<Table>)| {
+                            let name = match &opts {
+                                Some(t) => t.get::<Option<String>>("name")?.unwrap_or_default(),
+                                None => String::new(),
+                            };
+                            let context = match &opts {
+                                Some(t) => t.get::<Option<usize>>("context")?,
+                                None => None,
+                            };
+                            Ok(crate::diff::unified(
+                                &before,
+                                &after,
+                                &name,
+                                context.unwrap_or(crate::diff::CONTEXT),
+                            ))
+                        },
+                    )
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
         }
         {
             let c = Rc::clone(&commands);
@@ -6572,6 +6600,26 @@ mod tests {
         // A table with names in it is still an object
         let named = e.call_primitive("lua", &[serde_json::json!("return {a = 1}")]).unwrap();
         assert_eq!(named, serde_json::json!([null, {"a": 1}]));
+    }
+
+    /// Reached the way a script reaches it, so the table of options is read
+    /// as well as the algorithm underneath it
+    #[test]
+    fn a_script_gets_a_diff_and_the_options_it_asked_for() {
+        let e = HookEngine::new().unwrap();
+        let out = |src: &str| {
+            e.call_primitive("lua", &[serde_json::json!(src)]).unwrap()[1]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert_eq!(out("return shikisha.diff('one', 'one')"), "");
+        let named = out("return shikisha.diff('one', 'two', {name = 'notes.md'})");
+        assert!(named.starts_with("diff --git a/notes.md b/notes.md"), "{named}");
+        // Nobody said what the two sides are called, and it still says
+        // something rather than writing a name that is one letter
+        let plain = out("return shikisha.diff('one', 'two')");
+        assert!(plain.contains("a/text"), "{plain}");
     }
 
     #[test]

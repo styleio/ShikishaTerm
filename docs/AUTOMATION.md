@@ -862,6 +862,18 @@ thought of.
 | `shikisha.sleep(ms)` | Wait (other tabs keep running) |
 | `shikisha.now("%Y-%m-%d")` | The local date/time, formatted. Sorts chronologically by default — good in file names |
 | `shikisha.epoch_ms()` | Milliseconds since the epoch, as a number, for measuring elapsed time |
+| `shikisha.diff(before, after, opts)` | What changed between two texts, written the way git writes a diff. `""` when they are the same. `opts` is `{ name = "plan.md", context = 3 }`: the name goes on the header lines, and the context is how many unchanged lines are kept either side of a change |
+
+It is handed the two texts and never told where to find them, so the same
+command serves a reply, a page, a file and a recording:
+
+```lua
+-- What the AI changed between this answer and the last one
+local was = shikisha.get_var("answer") or ""
+local d = shikisha.diff(was, now, { name = "answer.md" })
+if d ~= "" then shikisha.note(tab, d) end
+shikisha.set_var("answer", now)
+```
 
 ### Remembering, logging, telling someone
 

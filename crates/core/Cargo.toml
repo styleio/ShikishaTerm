@@ -37,6 +37,12 @@ rand = "0.10.2"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
+# Telling two texts apart, for `shikisha.diff`. Chosen over running `git diff
+# --no-index` because a diff of two strings should not need git on the machine,
+# and over writing the algorithm here because "which lines changed" is a solved
+# problem with well-known edge cases. Pure Rust with no dependencies of its own,
+# so it costs the build nothing
+similar = "2.7.0"
 sha2 = "0.11.0"
 tiny_http = "0.12.0"
 unicode-width = "0.2.2"
