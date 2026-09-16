@@ -3636,7 +3636,7 @@ impl Tab {
     }
 
     /// Swap in settings that can take effect without a restart
-    pub fn apply_live_config(&mut self, profile_spec: Option<String>, locked: bool, auto_restart: bool, depth: u16, notify_on_done: Option<String>, protect: Vec<String>) {
+    pub fn apply_live_config(&mut self, profile_spec: Option<String>, locked: bool, auto_restart: bool, depth: u16, notify_on_done: Option<String>, live: &TabOptions) {
         if self.profile_spec != profile_spec {
             self.profile_spec = profile_spec;
             self.detector = Detector::new(Self::resolve_profile(&self.argv, &self.profile_spec));
@@ -3648,7 +3648,12 @@ impl Tab {
         // Which branches are guarded is read at the moment somebody commits,
         // never at launch -- so a change to it lands on the tabs already
         // running rather than waiting for a restart nobody knew to do
-        self.opts.protect = protect;
+        self.opts.protect = live.protect.clone();
+        // Nor is what its folder is called: the heading over the tabs is read
+        // off them on every frame. Left as it was at launch, a folder renamed
+        // in the list showed the new name for the few seconds the list holds
+        // it, then went back to the old one for as long as its tabs ran
+        self.opts.group = live.group.clone();
     }
 
     /// Stash the launch conditions to use on the next restart (keeps running with the current settings until then)
