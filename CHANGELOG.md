@@ -9,6 +9,12 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A worktree with a folder carried in as a link can be thrown away on Linux
+  and macOS.** There the link is a symbolic link, and an ignore line written
+  for folders (`node_modules/`) does not match one, so git counted it as a new
+  file and the folder was refused as holding uncommitted work, every time. A
+  link nobody committed is not counted as work: it holds nothing, and removing
+  the folder unhooks it and leaves what it points at alone.
 - **Two GitHub accounts stored on this PC are said as two, not as none.** A
   project signing in with this PC's git settings asks git for its GitHub
   credential with nobody there to answer a question. When the credential
