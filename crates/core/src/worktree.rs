@@ -1276,16 +1276,46 @@ pub fn ready_to_discard(folder: &Path) -> Result<()> {
         bail!(crate::i18n::t("err.worktree.not_a_branch"));
     }
     let mut asking = std::process::Command::new("git");
-    asking.arg("-C").arg(folder).args(["status", "--porcelain"]);
+    // Every untracked file named on its own, so a link can be told apart from
+    // the folder it stands in; -z because a path may contain anything
+    asking
+        .arg("-C")
+        .arg(folder)
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
     let dirty = crate::detach_console(&mut asking).output()?;
-    let said = String::from_utf8_lossy(&dirty.stdout);
-    if !said.trim().is_empty() {
-        bail!(crate::i18n::tp(
-            "err.worktree.dirty",
-            &[("count", &said.lines().count().to_string())]
-        ));
+    let count = unsaved_work(&String::from_utf8_lossy(&dirty.stdout), &|p| {
+        std::fs::symlink_metadata(folder.join(p)).is_ok_and(|m| m.file_type().is_symlink())
+    });
+    if count > 0 {
+        bail!(crate::i18n::tp("err.worktree.dirty", &[("count", &count.to_string())]));
     }
     Ok(())
+}
+
+/// How many of the changes `git status -z` lists are work that exists only in
+/// this folder.
+///
+/// An untracked link is not: it holds nothing, and removing the folder unhooks
+/// it and leaves what it points at alone. It is also what carrying a folder in
+/// as a link leaves behind, and an ignore line written for folders --
+/// `node_modules/` -- does not match a symbolic link, so on anything but
+/// Windows every such folder would be refused for good
+fn unsaved_work(status_z: &str, is_link: &dyn Fn(&str) -> bool) -> usize {
+    let mut fields = status_z.split('\0').filter(|f| !f.is_empty());
+    let mut count = 0;
+    while let Some(record) = fields.next() {
+        let code = record.get(..2).unwrap_or_default();
+        let path = record.get(3..).unwrap_or_default();
+        // A rename or copy is followed by where it came from, as its own field
+        if code.contains(['R', 'C']) {
+            fields.next();
+        }
+        if code == "??" && is_link(path.trim_end_matches('/')) {
+            continue;
+        }
+        count += 1;
+    }
+    count
 }
 
 /// Where a branch's folder goes, and why there.
@@ -2444,6 +2474,19 @@ tools/conpty.ps1"));
         unhook.args(["/c", "rmdir"]).arg(cut.folder.join("node_modules"));
         let _ = crate::detach_console(&mut unhook).status();
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A link carried in is not counted as work, whatever git makes of it; a
+    /// file nobody committed still is, and a rename is one change, not two
+    #[test]
+    fn only_work_stops_a_folder_being_thrown_away() {
+        let link = |p: &str| p == "web/node_modules" || p == ".env";
+        assert_eq!(unsaved_work("", &link), 0);
+        assert_eq!(unsaved_work("?? web/node_modules\0?? .env\0", &link), 0);
+        assert_eq!(unsaved_work("?? web/node_modules\0?? notes.txt\0", &link), 1);
+        // A link git follows is a change to it like any other
+        assert_eq!(unsaved_work(" M .env\0", &link), 1);
+        assert_eq!(unsaved_work("R  new.rs\0old.rs\0 M a.rs\0", &link), 2);
     }
 
     /// A link deeper in the tree is unhooked before the folder goes, whatever
