@@ -39,6 +39,14 @@ once it reaches its first tagged release.
   written for one side reads the same written for the other.
 
 ### Fixed
+- **A file that was not on the server yet could not be sent, and a shorter file
+  sent over a longer one kept the longer one's tail.** Sending opened the file
+  for writing and nothing else. A real server takes that literally: a file that
+  is not there cannot be opened, and one that is there is written over from the
+  start without being cut short. It now opens to make the file if it is missing
+  and empty it if it is not. Neither showed against the test server this was
+  first checked with, which made and emptied a file whenever it was opened for
+  writing; that server now does only what it is asked, the way OpenSSH does.
 - **A file command no longer stops the app while it runs.** `sftp_put` and the
   rest waited where they stood, and the engine runs on the main loop -- so one
   transfer froze every tab on screen, the keyboard and the phone relay for as
@@ -49,7 +57,6 @@ once it reaches its first tagged release.
   fail there at once, because Lua cannot stop outside a coroutine. That door
   drives one now.
 
-### Fixed
 - **A file command from a script is fenced the way the panel's always was.** The
   panel kept a transfer inside the folder its tab works in; a script naming the
   same tab could name any path on either machine, so `sftp_put` followed by

@@ -724,7 +724,17 @@ async fn run_file_job(
                 bail!(crate::i18n::tp("err.ssh.file_exists", &[("path", &to)]));
             }
             let bytes = std::fs::read(&from)?;
-            sftp.write(&to, &bytes).await?;
+            // Opened to be made if it is not there and emptied if it is. The
+            // library's own `write` opens for writing and nothing else, which
+            // a real server takes literally: a file that is not there yet
+            // cannot be opened, so nothing new could ever be sent, and a file
+            // that is there is written over from the start and not cut short --
+            // so a shorter file sent over a longer one kept the longer one's
+            // tail. The test server this was first checked against was kinder
+            // than OpenSSH, which is why neither showed until a real one did
+            let mut file = sftp.create(&to).await?;
+            tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await?;
+            file.close().await?;
             Ok(FileAnswer::Nothing)
         }
         FileJob::MakeDir { path } => {
