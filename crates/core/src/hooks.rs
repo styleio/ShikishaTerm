@@ -1203,6 +1203,17 @@ enum WaitKind {
         re: regex::Regex,
         deadline: Instant,
     },
+    /// Waiting on a file on another machine. A transfer over a slow link takes
+    /// as long as the link takes, and the engine runs on the main loop -- so it
+    /// goes to a thread and the coroutine waits here, exactly as asking the AI
+    /// does. Without this, one `sftp_put` stopped every tab on screen for as
+    /// long as the file took
+    File {
+        /// Which command asked, because the answer is shaped to fit it
+        act: String,
+        rx: std::sync::mpsc::Receiver<Result<crate::ssh::FileAnswer, String>>,
+        deadline: Instant,
+    },
 }
 
 struct Pending {
@@ -1216,6 +1227,29 @@ const PRELUDE: &str = r#"
 shikisha.__vars = {}
 function shikisha.get_var(k) return shikisha.__vars[k] end
 function shikisha.set_var(k, v) shikisha.__vars[k] = v end
+-- Files on another machine. Each one hands the work over and stops there: the
+-- transfer runs on a thread of its own and the window carries on drawing,
+-- exactly the way asking the AI does. Written here rather than in Rust because
+-- only a Lua function can stop in the middle.
+--
+-- Two values come back: what was wanted, and why it is not there. The second is
+-- raised, so a script reads the first and nothing else
+local function file(act, tab, a, b, opts)
+  local got, err = coroutine.yield({
+    op = "file", act = act, tab = tab, a = a, b = b,
+    overwrite = opts ~= nil and opts.overwrite == true,
+  })
+  if err then error(err, 0) end
+  return got
+end
+function shikisha.sftp_ls(tab, path) return file("ls", tab, path) end
+function shikisha.sftp_stat(tab, path) return file("stat", tab, path) end
+function shikisha.sftp_read(tab, path) return file("read", tab, path) end
+function shikisha.sftp_mkdir(tab, path) return file("mkdir", tab, path) end
+function shikisha.sftp_rm(tab, path) return file("rm", tab, path) end
+function shikisha.sftp_rename(tab, from, to) return file("rename", tab, from, to) end
+function shikisha.sftp_get(tab, from, to, opts) return file("get", tab, from, to, opts) end
+function shikisha.sftp_put(tab, from, to, opts) return file("put", tab, from, to, opts) end
 -- Wait until the state changes (built from state + sleep, so it's implemented on the Lua side)
 function shikisha.wait_state(tab, want, timeout_ms)
   local left = timeout_ms or 60000
@@ -2875,154 +2909,11 @@ impl HookEngine {
             // read correctly without git itself. See docs/design/git-access.ja.md
         }
         // ── Files on another machine ──────────────────────────────
-        // Told a tab, the way the git commands are told a tab: the tab is
-        // already the name of a place, so nothing new has to be registered and
-        // nothing about the connection is written twice. Paths are the far
-        // end's own; a path here is a path on this machine
-        {
-            let places = Rc::clone(&places);
-            let origin = Rc::clone(&current_origin);
-            let f = |lua: &mlua::Lua, e: &crate::ssh::Entry| -> mlua::Result<mlua::Table> {
-                let row = lua.create_table()?;
-                row.set("name", e.name.clone())?;
-                row.set("dir", e.dir)?;
-                row.set("size", e.size)?;
-                row.set("modified", e.modified)?;
-                Ok(row)
-            };
-            // Every file command, through the one place that decides what a
-            // file command means (`transfer::run`). The panel comes through
-            // the same door: written twice, the two drifted, and a script
-            // could name a path the panel would have refused
-            let c = Rc::clone(&caps);
-            let who = Rc::clone(&subject);
-            let job = move |tab: &Value, job: crate::ssh::FileJob| {
-                let (at, fences) = reach_of(&places, &origin, tab)?;
-                crate::transfer::run(&at, job, &fences, &c, who.get(), FILE_WAIT_MS)
-                    .map_err(|e| mlua::Error::runtime(e.to_string()))
-            };
-            let job = Rc::new(job);
-
-            let j = Rc::clone(&job);
-            shikisha.set(
-                "sftp_ls",
-                lua.create_function(move |lua, (tab, path): (Value, String)| {
-                    let out = lua.create_table()?;
-                    if let crate::ssh::FileAnswer::Listing(list) =
-                        j(&tab, crate::ssh::FileJob::List { path })?
-                    {
-                        for (i, e) in list.iter().enumerate() {
-                            out.set(i + 1, f(lua, e)?)?;
-                        }
-                    }
-                    Ok(out)
-                })
-                .map_err(lerr)?,
-            ).map_err(lerr)?;
-
-            let j = Rc::clone(&job);
-            shikisha.set(
-                "sftp_stat",
-                lua.create_function(move |lua, (tab, path): (Value, String)| {
-                    // Nothing there is not a fault: asking whether something
-                    // exists is the ordinary reason to ask at all
-                    match j(&tab, crate::ssh::FileJob::Stat { path }) {
-                        Ok(crate::ssh::FileAnswer::One(e)) => Ok(Value::Table(f(lua, &e)?)),
-                        _ => Ok(Value::Nil),
-                    }
-                })
-                .map_err(lerr)?,
-            ).map_err(lerr)?;
-
-            let j = Rc::clone(&job);
-            shikisha.set(
-                "sftp_get",
-                lua.create_function(
-                    move |_, (tab, from, to, opts): (Value, String, String, Option<Table>)| {
-                        // The same word in the same place as `sftp_put`. A file
-                        // on this machine is somebody's only copy as easily as
-                        // one on the far end, and a folder being fetched over
-                        // for the second time should not quietly take it
-                        let overwrite = match &opts {
-                            Some(t) => t.get::<bool>("overwrite").unwrap_or(false),
-                            _ => false,
-                        };
-                        j(&tab, crate::ssh::FileJob::Get { from, to: to.into(), overwrite })?;
-                        Ok(())
-                    },
-                )
-                .map_err(lerr)?,
-            ).map_err(lerr)?;
-
-            // The same file, not written down. Its own command rather than
-            // `sftp_get` with the destination left off, because where a file
-            // ends up is the whole difference between the two: one leaves a
-            // copy on this machine and one does not, and a command whose
-            // return value changes shape with the number of arguments is a
-            // command people have to test to understand.
-            //
-            // Bytes, handed over as Lua's own string, which is a string of
-            // bytes. Nothing here decides the far end was text
-            let j = Rc::clone(&job);
-            shikisha.set(
-                "sftp_read",
-                lua.create_function(move |lua, (tab, path): (Value, String)| {
-                    match j(&tab, crate::ssh::FileJob::Read { path })? {
-                        crate::ssh::FileAnswer::Bytes(b) => lua.create_string(&b),
-                        _ => lua.create_string(""),
-                    }
-                })
-                .map_err(lerr)?,
-            ).map_err(lerr)?;
-
-            let j = Rc::clone(&job);
-            shikisha.set(
-                "sftp_put",
-                lua.create_function(
-                    move |_, (tab, from, to, opts): (Value, String, String, Option<Value>)| {
-                        // Replacing what is there is asked for, never assumed:
-                        // the far end may be the only copy
-                        let overwrite = match &opts {
-                            Some(Value::Table(t)) => t.get::<bool>("overwrite").unwrap_or(false),
-                            _ => false,
-                        };
-                        j(&tab, crate::ssh::FileJob::Put { from: from.into(), to, overwrite })?;
-                        Ok(())
-                    },
-                )
-                .map_err(lerr)?,
-            ).map_err(lerr)?;
-
-            let j = Rc::clone(&job);
-            shikisha.set(
-                "sftp_mkdir",
-                lua.create_function(move |_, (tab, path): (Value, String)| {
-                    j(&tab, crate::ssh::FileJob::MakeDir { path })?;
-                    Ok(())
-                })
-                .map_err(lerr)?,
-            ).map_err(lerr)?;
-
-            let j = Rc::clone(&job);
-            shikisha.set(
-                "sftp_rename",
-                lua.create_function(move |_, (tab, from, to): (Value, String, String)| {
-                    j(&tab, crate::ssh::FileJob::Rename { from, to })?;
-                    Ok(())
-                })
-                .map_err(lerr)?,
-            ).map_err(lerr)?;
-
-            let j = Rc::clone(&job);
-            shikisha.set(
-                "sftp_rm",
-                lua.create_function(move |_, (tab, path): (Value, String)| {
-                    j(&tab, crate::ssh::FileJob::Remove { path })?;
-                    Ok(())
-                })
-                .map_err(lerr)?,
-            ).map_err(lerr)?;
-        }
+        // Written in Lua (see PRELUDE), because every one of them has to be
+        // able to stop and let the window carry on. A transfer takes as long
+        // as the link takes, and the engine runs on the main loop -- so the
+        // command hands the work over and waits, the way asking the AI waits.
+        // What each one means is `transfer`, reached from `parse_yield`
         {
             // What has changed, one row per file, in git's own two letters
             let c = Rc::clone(&places);
@@ -3703,13 +3594,71 @@ impl HookEngine {
         for p in params {
             args.push_back(json_to_lua(&self.lua, p).map_err(|e| e.to_string())?);
         }
-        let vals: MultiValue = f.call(args).map_err(|e| e.to_string())?;
+        // Driven as a coroutine rather than simply called, because a command
+        // that has to stop and wait -- a transfer, a sleep, a question put to
+        // the AI -- can only stop inside one. Called plainly, those failed
+        // outright here. The waiting is done where this stands, which is what
+        // the caller of a door like this is already doing
+        let thread = self.lua.create_thread(f).map_err(|e| e.to_string())?;
+        let mut send = args;
+        let vals: MultiValue = loop {
+            let got: MultiValue = thread.resume(send).map_err(|e| e.to_string())?;
+            if thread.status() != ThreadStatus::Resumable {
+                break got;
+            }
+            let wait = self.parse_yield(&got).map_err(|e| e.to_string())?;
+            send = self.finish_here(wait)?;
+        };
         let mut out: Vec<serde_json::Value> = vals.iter().map(lua_to_json).collect();
         Ok(match out.len() {
             0 => serde_json::Value::Null,
             1 => out.remove(0),
             _ => serde_json::Value::Array(out),
         })
+    }
+
+    /// Wait for what a coroutine stopped on, here, rather than handing it to
+    /// the main loop.
+    ///
+    /// Used only by `call_primitive`, whose caller is already waiting for an
+    /// answer. Watching a tab's screen is the one thing that cannot be done
+    /// this way -- the screen is redrawn by the loop this is standing in, so
+    /// waiting for it here would be waiting for something that cannot happen
+    fn finish_here(&self, wait: WaitKind) -> std::result::Result<MultiValue, String> {
+        let text = |s: &str| {
+            self.lua
+                .create_string(s)
+                .map(Value::String)
+                .unwrap_or(Value::Nil)
+        };
+        match wait {
+            WaitKind::Sleep { deadline } => {
+                let now = Instant::now();
+                if deadline > now {
+                    std::thread::sleep(deadline - now);
+                }
+                Ok(MultiValue::from_vec(vec![Value::Boolean(true)]))
+            }
+            WaitKind::File { act, rx, deadline } => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                let said = rx
+                    .recv_timeout(left)
+                    .unwrap_or_else(|_| Err(crate::i18n::t("err.hooks.file_timeout")));
+                Ok(self.file_answer(&act, said))
+            }
+            WaitKind::Ai { rx, deadline } => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                Ok(match rx.recv_timeout(left) {
+                    Ok(Ok(said)) => MultiValue::from_vec(vec![text(&said)]),
+                    Ok(Err(why)) => MultiValue::from_vec(vec![Value::Nil, text(&why)]),
+                    Err(_) => MultiValue::from_vec(vec![
+                        Value::Nil,
+                        text(&crate::i18n::t("err.hooks.ai_timeout")),
+                    ]),
+                })
+            }
+            WaitKind::Screen { .. } => Err(crate::i18n::t("err.hooks.no_screen_wait")),
+        }
     }
 
     pub fn run_browser_lua(&self, browser: &str, code: &str) -> Option<String> {
@@ -5248,10 +5197,39 @@ end
                     }
                 }
             }
+            // The far end answers with a listing, a file or nothing at all --
+            // never with a flag -- so it hands back what to resume with, the
+            // same way the AI does
+            if let WaitKind::File { act, rx, deadline } = &p.wait {
+                let said = match rx.try_recv() {
+                    Ok(said) => said,
+                    Err(std::sync::mpsc::TryRecvError::Empty) if now < *deadline => {
+                        self.pending.push(p);
+                        continue;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        Err(crate::i18n::t("err.hooks.file_timeout"))
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Err(crate::i18n::t("err.hooks.file_gone"))
+                    }
+                };
+                let args = self.file_answer(act, said);
+                self.current_origin.set(p.origin);
+                match self.lua.registry_value::<Thread>(&p.key) {
+                    Ok(thread) => self.resume_thread(thread, &p.hook, p.origin, args),
+                    Err(e) => self.push_log(crate::i18n::tp(
+                        "err.hooks.lua_resume",
+                        &[("e", &format!("{e}"))],
+                    )),
+                }
+                let _ = self.lua.remove_registry_value(p.key);
+                continue;
+            }
             let ready: Option<bool> = match &p.wait {
                 WaitKind::Sleep { deadline } => (now >= *deadline).then_some(true),
-                // Handled above: it answers with words, not with a flag
-                WaitKind::Ai { .. } => None,
+                // Handled above: they answer with what they found, not with a flag
+                WaitKind::Ai { .. } | WaitKind::File { .. } => None,
                 WaitKind::Screen { tab, re, deadline } => match screens(*tab) {
                     Some(text) if re.is_match(&text) => Some(true),
                     _ if now >= *deadline => Some(false),
@@ -5387,7 +5365,112 @@ end
                         + Duration::from_millis(ms.unwrap_or(180_000).clamp(1_000, 900_000)),
                 })
             }
+            "file" => {
+                let act: String = t.get("act").map_err(lerr)?;
+                let tab: Value = t.get("tab").unwrap_or(Value::Nil);
+                let one = |k: &str| -> String {
+                    t.get::<Option<String>>(k).ok().flatten().unwrap_or_default()
+                };
+                let (a, b) = (one("a"), one("b"));
+                let over = t.get::<Option<bool>>("overwrite").ok().flatten().unwrap_or(false);
+                let job = match act.as_str() {
+                    "ls" => crate::ssh::FileJob::List { path: a },
+                    "stat" => crate::ssh::FileJob::Stat { path: a },
+                    "read" => crate::ssh::FileJob::Read { path: a },
+                    "mkdir" => crate::ssh::FileJob::MakeDir { path: a },
+                    "rm" => crate::ssh::FileJob::Remove { path: a },
+                    "rename" => crate::ssh::FileJob::Rename { from: a, to: b },
+                    "get" => crate::ssh::FileJob::Get {
+                        from: a,
+                        to: b.into(),
+                        overwrite: over,
+                    },
+                    "put" => crate::ssh::FileJob::Put {
+                        from: a.into(),
+                        to: b,
+                        overwrite: over,
+                    },
+                    other => anyhow::bail!(crate::i18n::tp(
+                        "err.hooks.unknown_yield",
+                        &[("other", other)]
+                    )),
+                };
+                // Which machine, how far it may reach, and whether whoever is
+                // running may ask -- all settled before a thread is started, so
+                // a refusal costs nothing and arrives at once
+                let (at, fences) = reach_of(&self.places, &self.current_origin, &tab)
+                    .map_err(|e| anyhow::anyhow!(format!("{e}")))?;
+                let job = crate::transfer::ready(job, &fences, &self.caps, self.subject.get())?;
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(
+                        crate::elsewhere::files(&at, job, FILE_WAIT_MS)
+                            .map_err(|e| format!("{e:#}")),
+                    );
+                });
+                Ok(WaitKind::File {
+                    act,
+                    rx,
+                    // A breath past what the transfer itself waits, so the one
+                    // that says "the far end stopped answering" is the transfer
+                    // rather than this
+                    deadline: Instant::now() + Duration::from_millis(FILE_WAIT_MS + 5_000),
+                })
+            }
             other => anyhow::bail!(crate::i18n::tp("err.hooks.unknown_yield", &[("other", other)])),
+        }
+    }
+
+    /// What a file command hands back, shaped to fit the command that asked.
+    ///
+    /// Two values, always: what was wanted and why it is not there. The Lua
+    /// side raises on the second, so a script reads the first and nothing else
+    fn file_answer(
+        &self,
+        act: &str,
+        said: Result<crate::ssh::FileAnswer, String>,
+    ) -> MultiValue {
+        let fail = |why: String| {
+            MultiValue::from_vec(vec![
+                Value::Nil,
+                self.lua
+                    .create_string(&why)
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+            ])
+        };
+        let row = |e: &crate::ssh::Entry| -> mlua::Result<Value> {
+            let one = self.lua.create_table()?;
+            one.set("name", e.name.clone())?;
+            one.set("dir", e.dir)?;
+            one.set("size", e.size)?;
+            one.set("modified", e.modified)?;
+            Ok(Value::Table(one))
+        };
+        let built = (|| -> mlua::Result<Value> {
+            Ok(match said {
+                Err(why) => return Err(mlua::Error::runtime(why)),
+                Ok(crate::ssh::FileAnswer::Listing(list)) => {
+                    let out = self.lua.create_table()?;
+                    for (i, e) in list.iter().enumerate() {
+                        out.set(i + 1, row(e)?)?;
+                    }
+                    Value::Table(out)
+                }
+                // Nothing there is an answer, not a fault: `sftp_stat` is how a
+                // script asks whether something is there at all
+                Ok(crate::ssh::FileAnswer::One(e)) => row(&e)?,
+                Ok(crate::ssh::FileAnswer::Bytes(b)) => {
+                    Value::String(self.lua.create_string(&b)?)
+                }
+                // A listing asked for by `stat` that came back as nothing
+                Ok(crate::ssh::FileAnswer::Nothing) if act == "stat" => Value::Nil,
+                Ok(crate::ssh::FileAnswer::Nothing) => Value::Boolean(true),
+            })
+        })();
+        match built {
+            Ok(v) => MultiValue::from_vec(vec![v]),
+            Err(e) => fail(plain_lua_error(&e.to_string())),
         }
     }
 
@@ -6711,6 +6794,36 @@ mod tests {
         // something rather than writing a name that is one letter
         let plain = out("return shikisha.diff('one', 'two')");
         assert!(plain.contains("a/text"), "{plain}");
+    }
+
+    /// A command that has to stop and wait can be asked for from the outside
+    /// door now. Called plainly it failed at once -- Lua cannot yield outside a
+    /// coroutine -- so `sleep`, `ai_ask` and every file command were on the
+    /// list the API hands out and unusable through it
+    #[test]
+    fn a_command_that_waits_can_be_asked_for_from_outside_a_hook() {
+        let e = HookEngine::new().unwrap();
+        let began = std::time::Instant::now();
+        let said = e.call_primitive("sleep", &[serde_json::json!(60)]).unwrap();
+        assert_eq!(said, serde_json::json!(true));
+        assert!(
+            began.elapsed() >= std::time::Duration::from_millis(50),
+            "it waited rather than returning at once: {:?}",
+            began.elapsed()
+        );
+    }
+
+    /// ...and it comes back through the same door a hook's would: the tab is
+    /// resolved, the fence is read off it, and a tab that reaches no machine
+    /// says so rather than yielding into nowhere
+    #[test]
+    fn a_file_command_needs_a_tab_that_reaches_another_machine() {
+        let e = HookEngine::new().unwrap();
+        let said = e.call_primitive(
+            "sftp_ls",
+            &[serde_json::json!(1), serde_json::json!("public/")],
+        );
+        assert!(said.is_err(), "a tab on this machine is not a server: {said:?}");
     }
 
     #[test]

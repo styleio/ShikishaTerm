@@ -965,6 +965,11 @@ the tab was given on that machine, if it was given one. `..` does not get out of
 either. So a command told one tab cannot reach a file that tab was never handed
 -- which is the same promise `read_file` keeps, kept here too.
 
+**None of them stop the app while they run.** A transfer takes as long as the
+link takes; the command hands the work over and waits, and every tab on screen
+carries on. So a loop that sends a folder a file at a time is a loop somebody
+can watch.
+
 | Command | Description |
 |---|---|
 | `shikisha.sftp_ls(tab, "public/")` | A listing: `{name, dir, size, modified}` each. Folders first, then by name |
