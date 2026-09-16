@@ -681,7 +681,7 @@ impl WinSurface {
                 Ev::Files { panel, act, args } => self.mail.files.push((panel, act, args)),
                 Ev::Issues { act, args } => self.mail.issues.push((act, args)),
                 Ev::OpenIssues => self.mail.open_issues = true,
-                Ev::EditOpen { panel, path } => self.mail.edits.push((panel, path)),
+                Ev::EditOpen { panel, path, diff } => self.mail.edits.push((panel, path, diff)),
                 Ev::Sftp { panel, act, args } => self.mail.sftps.push((panel, act, args)),
                 Ev::Recorded {
                     from: Some(child),

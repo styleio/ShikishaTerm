@@ -433,6 +433,10 @@ pub enum Ev {
     EditOpen {
         panel: String,
         path: String,
+        /// Which change of that file to show instead of the file itself:
+        /// `work` (not added yet), `staged` (in the next commit) or
+        /// `commit:<hash>`. Empty opens the file to edit
+        diff: String,
     },
     /// The window's own bar, which the page draws now that the frame is ours:
     /// "drag" (the bar was taken hold of), "minimize", "maximize" (toggles),
@@ -1045,6 +1049,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("editopen") => Ev::EditOpen {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             path: v.get("path").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            diff: v.get("diff").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         // The window's own bar (see `Ev::Window`).
         Some("window") => Ev::Window {

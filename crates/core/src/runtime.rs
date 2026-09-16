@@ -2655,8 +2655,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Files { panel, act, args }) => {
                         shell.mail().files.push((panel, act, args));
                     }
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::EditOpen { panel, path }) => {
-                        shell.mail().edits.push((panel, path));
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::EditOpen { panel, path, diff }) => {
+                        shell.mail().edits.push((panel, path, diff));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Sftp { panel, act, args }) => {
                         shell.mail().sftps.push((panel, act, args));
@@ -4247,7 +4247,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         //
         // so nothing has to be set up before pressing a file, and pressing ten
         // files leaves one editor rather than ten
-        for (panel, path) in shell.mail().take_edits() {
+        for (panel, path, diff) in shell.mail().take_edits() {
             let Some(dir) = panel_places(&surfaces)
                 .into_iter()
                 .chain(tab_places(&tabs).into_iter().filter(|p| !p.dir.as_os_str().is_empty()))
@@ -4294,6 +4294,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // Filled in when the state is built, from the disk itself
                 stamp: None,
                 scratch: key == EDITOR_SCRATCH,
+                // A change is only ever of a file that is being shown
+                diff: showing.as_ref().and_then(|_| (!diff.trim().is_empty()).then(|| diff.trim().to_string())),
             };
             match editors.iter_mut().find(|e| e.key == key) {
                 Some(e) => *e = entry,

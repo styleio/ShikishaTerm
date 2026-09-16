@@ -1548,17 +1548,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .diff { flex:1 1 auto; overflow:auto; padding:0; margin:0;
     white-space:pre; font-family:var(--mono); font-size:12px; line-height:1.35; }
   /* One hunk: what it covers, what can be done with it, and then the lines */
-  #gitpanel .hunk { border-bottom:1px solid var(--line); }
-  #gitpanel .hunkhead { display:flex; align-items:center; gap:var(--s2); padding:4px 10px;
+  #gitpanel .hunk, #editpanel .hunk { border-bottom:1px solid var(--line); }
+  #gitpanel .hunkhead, #editpanel .hunkhead { display:flex; align-items:center; gap:var(--s2); padding:4px 10px;
     background:var(--panel); font-size:11.5px; color:var(--muted);
     position:sticky; top:0; }
-  #gitpanel .hunkhead .grow { flex:1; }
-  #gitpanel .hunkhead button { font-size:11px; padding:2px 8px; border-radius:var(--r-ctl);
+  #gitpanel .hunkhead .grow, #editpanel .hunkhead .grow { flex:1; }
+  #gitpanel .hunkhead button, #editpanel .hunkhead button { font-size:11px; padding:2px 8px; border-radius:var(--r-ctl);
     border:1px solid var(--line); background:none; color:var(--muted); cursor:pointer; }
-  #gitpanel .hunkhead button:hover { color:var(--text); background:var(--panel2); }
-  #gitpanel .hunk .lines { padding:4px 12px; }
+  #gitpanel .hunkhead button:hover, #editpanel .hunkhead button:hover { color:var(--text); background:var(--panel2); }
+  #gitpanel .hunk .lines, #editpanel .hunk .lines { padding:4px 12px; }
   #gitpanel .filehead { padding:5px 12px; font-size:12px;
     border-bottom:1px solid var(--line); color:var(--text); background:var(--panel); }
+  /* An editor tab showing a change: the pieces fill it and scroll */
+  #editpanel .ediff { flex:1 1 auto; min-height:0; overflow:auto; }
+  #editpanel .ediff .empty { color:var(--muted); padding:12px 10px; font-size:12px; }
+  #editpanel .ekind { flex:0 0 auto; font-size:11px; color:var(--dim); padding:0 var(--s2);
+    border:1px solid var(--line); border-radius:var(--r-chip); white-space:nowrap; }
   /* A diff's lines, wherever one is shown: the git panel's hunks and the file
      panel's comparison. Written once, because two copies of "what green means"
      drift apart the first time either is touched */
@@ -7698,7 +7703,15 @@ window.__state = function (json) {
   if (epanel) {
     const wasEdit = !epanel.hidden;
     epanel.hidden = cover || !edit;
-    if (!epanel.hidden) {
+    const diffing = !epanel.hidden && gitDiffShown();
+    if (diffing) {
+      // A change, not a file to type in: whatever was being typed is kept as
+      // a draft, and the change is what the git panel draws
+      if (ED.path) { edStash(); ED.path = null; ED.text = ""; ED.mark = null; ED.dirty = false; }
+      ED.key = diffing.id || diffing.name;
+      gitDiffFollow(diffing);
+      drawEdit();
+    } else if (!epanel.hidden) {
       const t = editorTab();
       const key = t ? (t.id || t.name) : null;
       const want = (t && t.file) || null;
@@ -8576,6 +8589,12 @@ function editBuild(box) {
   const bar = el("div", {class: "ebar"});
   const where = el("div", {class: "ewhere"});
   const mark = el("span", {class: "emark"});
+  // Showing a change: which one, and the way to the file itself
+  const kind = el("span", {class: "ekind"});
+  const toFile = el("button", {class: "quiet", onclick: () => {
+    const t = editorTab();
+    if (t && t.file) send({kind: "editopen", panel: t.id || t.name || "", path: t.file, diff: ""});
+  }}, T["tui.edit.open_file"] || "");
   const tell = el("button", {class: "quiet", onclick: editTell}, T["tui.edit.tell"] || "");
   const save = el("button", {class: "go", onclick: editSave}, T["tui.edit.save"] || "");
   const shut = el("button", {class: "quiet", title: T["tui.edit.close"] || "",
@@ -8583,25 +8602,57 @@ function editBuild(box) {
       const t = editorTab();
       if (t) send({kind: "editopen", panel: t.id || t.name || "", path: ""});
     }}, "\u2715");
-  bar.append(where, el("span", {class: "emark"}), el("span", {class: "grow"}), tell, save, shut);
+  bar.append(where, el("span", {class: "emark"}), kind, el("span", {class: "grow"}), toFile, tell, save, shut);
   bar.replaceChild(mark, bar.children[1]);
   const host = el("div", {class: "ehost"});
+  const change = el("div", {class: "ediff"});
   const say = el("div", {class: "esay"});
-  box.append(bar, host, say);
-  edUi = {where, mark, save, tell, host, say};
+  box.append(bar, host, change, say);
+  edUi = {where, mark, kind, toFile, save, tell, host, change, say, changeSig: ""};
 }
 function drawEdit() {
   const box = document.getElementById("editpanel");
   if (!box || box.hidden) return;
   if (!edUi || !box.firstChild) editBuild(box);
   const u = edUi;
-  const name = ED.path ? ED.path.split("/").pop() : "";
+  const diffing = gitDiffShown();
+  const path = diffing ? diffing.file : ED.path;
+  const name = path ? path.split("/").pop() : "";
   u.where.textContent = "";
-  if (ED.path) {
-    const cut = ED.path.lastIndexOf("/");
-    if (cut >= 0) u.where.append(document.createTextNode(ED.path.slice(0, cut + 1)));
+  if (path) {
+    const cut = path.lastIndexOf("/");
+    if (cut >= 0) u.where.append(document.createTextNode(path.slice(0, cut + 1)));
     u.where.append(el("b", {}, name));
   }
+  u.kind.style.display = diffing ? "" : "none";
+  u.toFile.style.display = diffing ? "" : "none";
+  u.change.style.display = diffing ? "" : "none";
+  if (diffing) {
+    const how = diffing.file_diff.startsWith("commit:") ? "commit" : (G.staged ? "staged" : "work");
+    u.kind.textContent = how === "commit"
+      ? (T["tui.edit.diff.commit"] || "{hash}").replace("{hash}", diffing.file_diff.slice(7, 14))
+      : (T[how === "staged" ? "git.group.staged" : "git.group.unstaged"] || "");
+    u.mark.textContent = "";
+    u.save.style.display = "none";
+    u.tell.style.display = "none";
+    u.host.style.display = "none";
+    u.say.textContent = "";
+    u.say.className = "esay";
+    // Nothing to say under a change, and an empty line with a rule over it
+    // reads as a part that failed to load
+    u.say.style.display = "none";
+    // Drawn again only when the change itself is different: several states a
+    // second would otherwise take the button out from under the pointer
+    const sig = JSON.stringify([how, G.sel, G.diff, !!G.waiting, (G.hunks || []).map(h => h.patch)]);
+    if (u.changeSig !== sig) {
+      u.changeSig = sig;
+      u.change.textContent = "";
+      gitChangeInto(u.change, how, false);
+    }
+    return;
+  }
+  u.changeSig = "";
+  u.say.style.display = "";
   // Still said while the file has changed underneath: the draft is still not
   // saved, and that is half of what the choice below is about
   u.mark.textContent = ED.dirty ? (T["tui.edit.dirty"] || "") : "";
@@ -11530,25 +11581,25 @@ window.__git = function (d) {
               && (G.staged ? moved.unstaged : moved.staged)) {
       G.staged = !G.staged;
       if (G.pick[G.sel]) { G.pick[G.sel] = G.staged ? "staged" : "work"; }
-      gitAsk("diff", {paths: [G.sel], staged: G.staged});
-      gitAsk("hunks", {paths: [G.sel], staged: G.staged});
+      gitAskChange();
+      // An editor showing this change follows it, so what it says it is
+      // showing stays true -- for a page opened later as much as for this one
+      const ed = editorTab();
+      if (ed && ed.file === G.sel && ed.file_diff && !ed.file_diff.startsWith("commit:")) {
+        gitOpenDiff(G.sel, G.staged ? "staged" : "work");
+      }
     }
   }
   else if (d.act === "branch") { G.branch = d.data || null; }
   else if (d.act === "branches") { G.branches = d.data || []; }
   else if (d.act === "diff") { G.diff = d.data || ""; }
-  else if (d.act === "hunks") { G.hunks = d.data || []; }
+  else if (d.act === "hunks") { G.hunks = d.data || []; G.waiting = false; }
   else if (d.act === "graph") { G.log = d.data || []; }
   else if (d.act === "detail") { G.about = d.data || null; G.sel = null; G.hunks = []; }
   else if (d.act === "hunk") {
     // A piece moved. What is staged changed, and so did the piece list
     gitAsk("status");
-    if (G.view === "history") {
-      if (G.sel && G.commit) gitAsk("hunks", {paths: [G.sel], commit: G.commit});
-    } else if (G.sel) {
-      gitAsk("hunks", {paths: [G.sel], staged: G.staged});
-      gitAsk("diff", {paths: [G.sel], staged: G.staged});
-    }
+    gitAskChange();
   }
   else if (d.act === "message") { gitSetMessage(d.data || ""); G.said = ""; }
   else {
@@ -11578,20 +11629,30 @@ window.__git = function (d) {
     gitRefresh(true);
   }
   drawGit();
+  if (gitDiffShown()) drawEdit();
 };
 
+// Which folder the panel is about. Held by folder rather than by tab: moving
+// from the terminal to the editor showing one of its changes is still the same
+// folder, and starting over there threw away what was picked and being written
+function gitWhere(t) {
+  const g = t && t.group != null ? ((S && S.groups) || [])[t.group] : null;
+  return (g && g.folder) || (t ? (t.id || t.name) : null);
+}
 // Ask for everything the panel shows. `keep` holds on to what was picked --
 // after staging a file the picture changes, but not what the person meant
 function gitRefresh(keep) {
   const t = gitTab();
   if (!t) return;
   const name = t.id || t.name;
-  if (G.panel !== name) {
+  if (G.where !== gitWhere(t)) {
     G = gitFresh(name);
+    G.where = gitWhere(t);
     gitUi = null;
   } else if (!keep) {
     G.pick = {};
   }
+  G.panel = name;
   gitAsk("status"); gitAsk("branch"); gitAsk("branches");
 }
 
@@ -11618,7 +11679,7 @@ function gitBuild(box) {
   const sync = el("span", {class:"up"});
   const head = el("div", {class:"ghead"}, pickIcon("branch"), branchName, sync);
   const msg = el("textarea", {rows:"3", spellcheck:"false", placeholder: T["git.message.ph"] || ""});
-  msg.addEventListener("input", () => { gitMsgs[G.panel] = msg.value; drawGitCommit(); });
+  msg.addEventListener("input", () => { gitMsgs[G.where] = msg.value; drawGitCommit(); });
   // Ctrl+Enter is the button, from inside the box that feeds it
   msg.addEventListener("keydown", e => {
     if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey) || typingIME(e)) return;
@@ -11776,11 +11837,13 @@ function applyGitSize() {
 const GIT_NARROW = 720;
 let gitPane = "files";
 function gitPanes() {
-  return G.view === "history"
+  const all = G.view === "history"
     ? [["branches", T["git.pane.branches"] || ""], ["log", T["git.pane.log"] || ""],
        ["about", T["git.pane.commit"] || ""], ["diff", T["git.pane.diff"] || ""]]
     : [["branches", T["git.pane.branches"] || ""], ["files", T["git.pane.changes"] || ""],
        ["diff", T["git.pane.diff"] || ""]];
+  // In the column a change opens in an editor tab, so it has no pane to pick
+  return gitInSide() ? all.filter(([id]) => id !== "diff") : all;
 }
 
 function gitAllPaths(staged) {
@@ -11790,8 +11853,90 @@ function gitAllPaths(staged) {
 }
 function gitSay(text, bad) { G.said = text; G.bad = !!bad; G.need = false; drawGit(); }
 
+// Whether the panel is standing in the column on the right rather than as a
+// tab of its own
+function gitInSide() {
+  const p = document.getElementById("gitpanel");
+  return !!(p && p.closest("#side"));
+}
+// Ask for the change being read: of a commit, or of one side of the tree
+function gitAskChange() {
+  if (!G.sel) return;
+  // Until the pieces arrive, an empty list means "not here yet", not "no change"
+  G.waiting = true;
+  const ed = gitDiffShown();
+  const commit = ed ? (ed.file_diff.startsWith("commit:") ? ed.file_diff.slice(7) : "") : (G.view === "history" ? G.commit : "");
+  if (commit) { gitAsk("hunks", {paths: [G.sel], commit}); return; }
+  gitAsk("diff", {paths: [G.sel], staged: G.staged});
+  gitAsk("hunks", {paths: [G.sel], staged: G.staged});
+}
+// A change is read in an editor tab where the terminals are, not in the column:
+// the column is narrow, and a change read inside it took the place of the very
+// list whose buttons act on it. `how` is "work", "staged" or "commit:<hash>"
+function gitOpenDiff(path, how) {
+  const t = gitTab();
+  if (!t) return;
+  send({kind:"editopen", panel: t.id || t.name || "", path, diff: how});
+  // Pressed again on the change already open, the state does not change -- so
+  // the change is asked for again when the next state comes, not never
+  gitDiffSig = "";
+  // On a phone the column is a sheet over the page, covering what it opened
+  if (phoneWidth()) { sideStoodAside = true; drawSide(); }
+}
+// The editor tab in front, when what it shows is a change
+function gitDiffShown() {
+  const t = typeof editorTab === "function" ? editorTab() : null;
+  return t && t.file && t.file_diff ? t : null;
+}
+// An editor tab showing a change, as the state describes it: the panel's idea
+// of which file and which side is brought to match, and the change asked for.
+// Once per change -- the state arrives several times a second
+let gitDiffSig = "";
+function gitDiffFollow(t) {
+  const sig = (t.id || t.name) + "\u0000" + t.file + "\u0000" + t.file_diff;
+  if (gitDiffSig === sig) return;
+  gitDiffSig = sig;
+  G.sel = t.file; G.diff = ""; G.hunks = [];
+  if (t.file_diff.startsWith("commit:")) G.commit = t.file_diff.slice(7);
+  else G.staged = t.file_diff === "staged";
+  gitAskChange();
+}
+// One change, piece by piece, into `box`: the same drawing wherever a change is
+// read -- the git tab's own pane, a commit in the history, an editor tab.
+// `how` says what can be done with each piece: a piece not added yet can be
+// added or thrown away, an added one taken back out, and one in a commit
+// walked back out of the tree (the commit itself is untouched)
+function gitChangeInto(box, how, head) {
+  if (head) box.append(el("div", {class:"filehead"}, G.sel));
+  const text = G.diff || "";
+  // git says this itself when it cannot show a change as lines
+  if (how !== "commit" && (/^Binary files /m.test(text) || text.includes("GIT binary patch"))) {
+    box.append(el("div", {class:"empty"}, T["git.binary"] || ""));
+    return;
+  }
+  const hunks = G.hunks || [];
+  if (!hunks.length) {
+    box.append(el("div", {class:"empty"}, how === "commit" || G.waiting || text.trim() ? "\u2026" : (T["git.same"] || "")));
+    return;
+  }
+  hunks.forEach((h, i) => {
+    const bar = el("div", {class:"hunkhead"});
+    bar.append(el("span", {class:"grow"},
+      (T["git.hunk"] || "Hunk") + (i + 1) + "  " +
+      (T["git.hunk.lines"] || "").replace("{from}", h.start).replace("{to}", h.end)));
+    const act = (label, args) => bar.append(el("button", {onclick:() => gitAsk("hunk", Object.assign({text:h.patch}, args))}, label));
+    if (how === "staged") act(T["git.hunk.unstage"] || "", {cached:true, reverse:true});
+    else if (how === "work") {
+      act(T["git.hunk.stage"] || "", {cached:true});
+      act(T["git.hunk.drop"] || "", {reverse:true});
+    } else act(T["git.hunk.drop"] || "", {reverse:true});
+    box.append(el("div", {class:"hunk"}, bar, diffLines(h.patch)));
+  });
+}
+
 // One row of a file list. A click picks it and shows what changed in it;
 // ctrl-click adds to what is picked, which is what the "picked" buttons act on
+// and nothing more -- the list stays where it is, so those buttons can be pressed
 function gitFileRow(r, where) {
   const picked = G.pick[r.path] === where;
   const shown = G.sel === r.path;
@@ -11799,15 +11944,14 @@ function gitFileRow(r, where) {
     onclick:e => {
       if (e.ctrlKey || e.metaKey) {
         if (picked) delete G.pick[r.path]; else G.pick[r.path] = where;
-      } else {
-        G.pick = {}; G.pick[r.path] = where;
+        drawGit();
+        return;
       }
+      G.pick = {}; G.pick[r.path] = where;
       G.sel = r.path; G.staged = where === "staged"; G.diff = ""; G.hunks = [];
-      // On a phone, asking for a file means asking to see it
-      if (document.getElementById("gitpanel").classList.contains("narrow")) gitPane = "diff";
       drawGit();
-      gitAsk("diff", {paths: [r.path], staged: where === "staged"});
-      gitAsk("hunks", {paths: [r.path], staged: where === "staged"});
+      if (gitInSide()) { gitOpenDiff(r.path, where); return; }
+      gitAskChange();
     }});
   row.append(el("span", {class:"x"}, gitMark(r)));
   row.append(el("span", {class:"p", title:r.from ? r.from + " -> " + r.path : r.path}, r.path));
@@ -11871,9 +12015,10 @@ function drawHistory(u) {
       const row = el("div", {class:"row" + (G.sel === f ? " pick" : ""), style:"padding:2px 0",
         onclick:() => {
           G.sel = f; G.hunks = [];
+          if (gitInSide()) { drawGit(); gitOpenDiff(f, "commit:" + G.commit); return; }
           if (document.getElementById("gitpanel").classList.contains("narrow")) gitPane = "diff";
           drawGit();
-          gitAsk("hunks", {paths:[f], commit:G.commit});
+          gitAskChange();
         }});
       row.append(el("span", {class:"p", style:"direction:ltr"}, f));
       u.about.append(row);
@@ -11885,29 +12030,14 @@ function drawHistory(u) {
     u.commitDiff.append(el("div", {class:"empty"}, T["git.pick.file"] || ""));
     return;
   }
-  u.commitDiff.append(el("div", {class:"filehead"}, G.sel));
-  const hunks = G.hunks || [];
-  if (!hunks.length) { u.commitDiff.append(el("div", {class:"empty"}, "\u2026")); return; }
-  hunks.forEach((h, i) => {
-    const head = el("div", {class:"hunkhead"});
-    head.append(el("span", {class:"grow"},
-      (T["git.hunk"] || "Hunk") + (i + 1) + "  " +
-      (T["git.hunk.lines"] || "").replace("{from}", h.start).replace("{to}", h.end)));
-    // Undoing a piece of a commit puts the old lines back in the working tree.
-    // The commit is untouched -- history is not being rewritten, the change is
-    // simply being taken back out of what is here now
-    head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, reverse:true})},
-      T["git.hunk.drop"] || ""));
-    const lines = diffLines(h.patch);
-    u.commitDiff.append(el("div", {class:"hunk"}, head, lines));
-  });
+  gitChangeInto(u.commitDiff, "commit", true);
 }
 
 // The message box and what fills it. The AI's answer lands in the same box a
 // person types in, replacing it, and is read before anything is committed
-function gitMessage() { return gitMsgs[G.panel] || ""; }
+function gitMessage() { return gitMsgs[G.where] || ""; }
 function gitSetMessage(text) {
-  gitMsgs[G.panel] = text;
+  gitMsgs[G.where] = text;
   if (gitUi) gitUi.msg.value = text;
 }
 // The files that go in when everything goes in: what changed, and a conflict
@@ -12020,7 +12150,7 @@ function drawGitCommit() {
 
   const next = gitNext();
   const label = G.busy ? (T["git.busy." + G.busy] || T["git.busy"] || "") : next.label;
-  const key = (G.busy ? "busy" : next.icon) + " " + label;
+  const key = (G.busy ? "busy" : next.icon) + "\u0000" + label;
   if (u.main.dataset.key !== key) {
     u.main.dataset.key = key;
     u.main.textContent = "";
@@ -12883,12 +13013,13 @@ function drawGit() {
   const shows = id => !narrow || gitPane === id;
   u.branchCol.style.display = shows("branches") ? "flex" : "none";
   u.mid.style.display = !history && shows("files") ? "flex" : "none";
-  u.diff.style.display = !history && shows("diff") ? "block" : "none";
+  const side = gitInSide();
+  u.diff.style.display = !history && !side && shows("diff") ? "block" : "none";
   u.hist.style.display = history ? "flex" : "none";
   if (history) {
     u.log.style.display = shows("log") ? "block" : "none";
     u.about.style.display = shows("about") ? "block" : "none";
-    u.commitDiff.style.display = shows("diff") ? "block" : "none";
+    u.commitDiff.style.display = !side && shows("diff") ? "block" : "none";
   }
   // The toolbar stays whole in either view: where you are does not change what
   // you can do, and a button that comes and goes is a button people stop trusting
@@ -12917,41 +13048,11 @@ function drawGit() {
     u.work.append(el("div", {class:"empty"}, T["git.settled"] || ""));
   }
 
+  // In the column there is no pane for it: the change is read in an editor tab
+  if (gitInSide()) return;
   u.diff.textContent = "";
   if (!G.sel) { u.diff.append(el("div", {class:"empty"}, T["git.diff.hint"] || "")); return; }
-  const text = G.diff || "";
-  // git says this itself when it cannot show a change as lines
-  if (/^Binary files /m.test(text) || text.includes("GIT binary patch")) {
-    u.diff.append(el("div", {class:"filehead"}, G.sel));
-    u.diff.append(el("div", {class:"empty"}, T["git.binary"] || ""));
-    return;
-  }
-  u.diff.append(el("div", {class:"filehead"}, G.sel));
-  const hunks = G.hunks || [];
-  if (!hunks.length) {
-    u.diff.append(el("div", {class:"empty"}, text.trim() ? "\u2026" : (T["git.same"] || "")));
-    return;
-  }
-  hunks.forEach((h, i) => {
-    const head = el("div", {class:"hunkhead"});
-    head.append(el("span", {class:"grow"},
-      (T["git.hunk"] || "Hunk") + (i + 1) + "  " +
-      (T["git.hunk.lines"] || "").replace("{from}", h.start).replace("{to}", h.end)));
-    // Staged: the piece can be taken back out. Not staged: it can be put in,
-    // or thrown away -- and throwing away is the one that cannot be undone,
-    // so it says so plainly rather than sitting first
-    if (G.staged) {
-      head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, cached:true, reverse:true})},
-        T["git.hunk.unstage"] || ""));
-    } else {
-      head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, cached:true})},
-        T["git.hunk.stage"] || ""));
-      head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, reverse:true})},
-        T["git.hunk.drop"] || ""));
-    }
-    const lines = diffLines(h.patch);
-    u.diff.append(el("div", {class:"hunk"}, head, lines));
-  });
+  gitChangeInto(u.diff, G.staged ? "staged" : "work", true);
 }
 
 // The PC's own git as menu entries: as it is, and -- once it holds two GitHub
@@ -14970,6 +15071,36 @@ mod tests {
         assert!(!PAGE.contains("castInput.value.trim() : \"\";\n  if (!text) { gitSay"), "the commit still reads the composer");
         let build = PAGE.split("function gitBuild(box) {").nth(1).unwrap_or_default();
         assert!(build.contains("el(\"textarea\""), "the git panel has no message box of its own");
+    }
+
+    /// In the column a change is read in an editor tab, and the list stays in
+    /// front. Reading it inside the column took the place of the list whose
+    /// buttons act on it, so "Add picked" could not be pressed after picking.
+    /// The drawing of a change is one function wherever it appears.
+    #[test]
+    fn a_change_opens_where_the_terminals_are_and_the_list_stays() {
+        let body = |start: &str| -> String {
+            PAGE.split(start).nth(1)
+                .and_then(|r| r.split("\n}\n").next())
+                .unwrap_or_else(|| panic!("there is no {start}"))
+                .to_string()
+        };
+        let row = body("function gitFileRow(r, where) {");
+        assert!(row.contains("if (gitInSide()) { gitOpenDiff(r.path, where); return; }"),
+                "a file pressed in the column is not opened in an editor tab");
+        assert!(!row.contains(r#"gitPane = "diff""#), "pressing a file still moves the list out of the way");
+        let ctrl = row.split("if (e.ctrlKey || e.metaKey) {").nth(1)
+            .and_then(|r| r.split("return;").next()).unwrap_or_default();
+        assert!(!ctrl.contains("gitOpenDiff") && !ctrl.contains("gitAskChange"),
+                "ctrl-click opens a change instead of only picking");
+        let panes = body("function gitPanes() {");
+        assert!(panes.contains(r#"gitInSide() ? all.filter(([id]) => id !== "diff")"#), "the column still offers a change pane");
+        let open = body("function gitOpenDiff(path, how) {");
+        assert!(open.contains(r#"send({kind:"editopen""#), "a change is not opened through the editor's own door");
+        for place in ["gitChangeInto(u.diff,", "gitChangeInto(u.commitDiff,", "gitChangeInto(u.change,"] {
+            assert!(PAGE.contains(place), "{place} does not draw with the shared function");
+        }
+        assert_eq!(PAGE.matches(r#"class:"hunkhead""#).count(), 1, "a change is drawn by more than one hand");
     }
 
     /// The commit's one button is always the next thing to do, in the order a

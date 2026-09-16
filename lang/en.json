@@ -735,6 +735,8 @@
   "tui.side.git": "Changes",
   "tui.side.files": "Files",
   "tui.edit.save": "Save",
+  "tui.edit.open_file": "Open the file",
+  "tui.edit.diff.commit": "Commit {hash}",
   "tui.edit.saved": "Saved",
   "tui.edit.dirty": "Not saved yet",
   "tui.edit.close": "Put this file away",

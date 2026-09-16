@@ -168,9 +168,10 @@ pub struct Mailbox {
     pub issues: Vec<(String, serde_json::Value)>,
     /// The Issue row in the list was pressed
     pub open_issues: bool,
-    /// Files pressed in that list since the last drain: (panel, relative path).
-    /// An empty path means "put this editor's file away"
-    pub edits: Vec<(String, String)>,
+    /// Files pressed in that list since the last drain: (panel, relative path,
+    /// which change of it to show -- empty for the file itself). An empty path
+    /// means "put this editor's file away"
+    pub edits: Vec<(String, String, String)>,
     /// Recorded steps reported by pages. The loop turns each into one Lua
     /// line for the composer.
     pub recorded: Vec<RecordedStep>,
@@ -416,7 +417,7 @@ impl Mailbox {
     pub fn take_files(&mut self) -> Vec<(String, String, serde_json::Value)> {
         std::mem::take(&mut self.files)
     }
-    pub fn take_edits(&mut self) -> Vec<(String, String)> {
+    pub fn take_edits(&mut self) -> Vec<(String, String, String)> {
         std::mem::take(&mut self.edits)
     }
     /// Takes what the file panel has asked for since the last drain
