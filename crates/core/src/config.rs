@@ -2818,6 +2818,20 @@ pub fn is_editor_panel(argv: &[String]) -> bool {
     matches!(argv, [head] if head.eq_ignore_ascii_case("editor"))
 }
 
+/// Whether this tab is drawn by the app itself rather than run as a program:
+/// a page, the git panel, a file transfer or the editor.
+///
+/// One list for every place that starts a folder's programs. Each of those
+/// places once kept its own, and the editor was left out of them: a folder
+/// with an editor tab tried to run a program called "editor" and told the
+/// user to install it
+pub fn is_app_panel(argv: &[String]) -> bool {
+    browser_url_of(argv).is_some()
+        || is_git_panel(argv)
+        || is_sftp_panel(argv)
+        || is_editor_panel(argv)
+}
+
 
 
 impl TabConfig {
@@ -6327,7 +6341,25 @@ mod tests {
 
 #[cfg(test)]
 mod browser_kind_tests {
-    use super::{Config, browser_url_of, is_git_panel, is_sftp_panel, sftp_endpoint, ssh_endpoint};
+    use super::{
+        Config, browser_url_of, is_app_panel, is_git_panel, is_sftp_panel, sftp_endpoint,
+        ssh_endpoint,
+    };
+
+    /// Nothing the app draws itself is started as a program
+    #[test]
+    fn the_app_panels_are_not_programs() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(is_app_panel(&v(&["editor"])));
+        assert!(is_app_panel(&v(&["Editor"])));
+        assert!(is_app_panel(&v(&["git"])));
+        assert!(is_app_panel(&v(&["sftp://user@example.com:22"])));
+        assert!(is_app_panel(&v(&["browser", "https://example.com/"])));
+        // A program that happens to share the word is still a program
+        assert!(!is_app_panel(&v(&["editor", "notes.txt"])));
+        assert!(!is_app_panel(&v(&["pwsh"])));
+        assert!(!is_app_panel(&[]));
+    }
 
     #[test]
     fn the_git_panel_is_the_word_on_its_own() {

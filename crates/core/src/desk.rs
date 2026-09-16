@@ -313,10 +313,7 @@ pub fn apply_ws_config(
         }
         // Browsers aren't child processes, so don't launch them here
         // (open_declared_browsers opens the window)
-        if config::browser_url_of(&argv).is_some()
-            || config::is_git_panel(&argv)
-            || config::is_sftp_panel(&argv)
-        {
+        if config::is_app_panel(&argv) {
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
@@ -485,10 +482,7 @@ pub fn spawn_desk(
         // window. Trying to launch one here would produce a baffling "no
         // executable named browser" failure every time, out of nowhere.
         // (open_declared_browsers opens them)
-        if config::browser_url_of(&argv).is_some()
-            || config::is_git_panel(&argv)
-            || config::is_sftp_panel(&argv)
-        {
+        if config::is_app_panel(&argv) {
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
