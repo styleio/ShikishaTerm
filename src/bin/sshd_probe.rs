@@ -373,12 +373,24 @@ impl russh_sftp::server::Handler for Files {
         _attrs: russh_sftp::protocol::FileAttributes,
     ) -> Result<russh_sftp::protocol::Handle, Self::Error> {
         let path = self.at(&filename);
-        let write = pflags.contains(russh_sftp::protocol::OpenFlags::WRITE);
+        let flag = |f| pflags.contains(f);
+        let write = flag(russh_sftp::protocol::OpenFlags::WRITE);
+        // Told what to do the way OpenSSH is told, and doing only that. This
+        // probe used to make the file and empty it whenever it was opened for
+        // writing, flags or no flags, and make the folder above it too -- which
+        // no real server does. So a client that opened with WRITE alone looked
+        // fine here, while against OpenSSH it could not send a new file at all
+        // and left the old tail on a replaced one. A probe kinder than the real
+        // thing is a probe that hides exactly the faults it exists to find
         if write {
-            if let Some(d) = path.parent() {
-                let _ = std::fs::create_dir_all(d);
+            let there = path.is_file();
+            if !there && !flag(russh_sftp::protocol::OpenFlags::CREATE) {
+                return Err(russh_sftp::protocol::StatusCode::NoSuchFile);
             }
-            std::fs::write(&path, b"").map_err(|_| russh_sftp::protocol::StatusCode::Failure)?;
+            if !there || flag(russh_sftp::protocol::OpenFlags::TRUNCATE) {
+                std::fs::write(&path, b"")
+                    .map_err(|_| russh_sftp::protocol::StatusCode::NoSuchFile)?;
+            }
         } else if !path.is_file() {
             return Err(russh_sftp::protocol::StatusCode::NoSuchFile);
         }

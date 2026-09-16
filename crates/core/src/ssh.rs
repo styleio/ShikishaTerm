@@ -166,8 +166,9 @@ fn remember_host(addr: &str, fingerprint: &str) -> Result<()> {
     crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&all)?)
 }
 
-/// One thing in a folder on the far end
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One thing in a folder -- on the far end, or on this machine. The same shape
+/// either way, so a listing means one thing wherever it is read
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Entry {
     pub name: String,
     pub dir: bool,
@@ -185,8 +186,12 @@ pub struct Entry {
 pub enum FileJob {
     List { path: String },
     Stat { path: String },
-    /// Bring a file here
-    Get { from: String, to: std::path::PathBuf },
+    /// Bring a file here. `overwrite` is asked for the same way `Put` asks for
+    /// it: this end may be the only copy just as easily as the other one
+    Get { from: String, to: std::path::PathBuf, overwrite: bool },
+    /// Read a file out, without writing it down anywhere. What a script wants
+    /// when it is going to look at the contents rather than keep them
+    Read { path: String },
     /// Send a file there
     Put { from: std::path::PathBuf, to: String, overwrite: bool },
     MakeDir { path: String },
@@ -203,6 +208,10 @@ pub enum FileAnswer {
     Nothing,
     Listing(Vec<Entry>),
     One(Entry),
+    /// A file's contents, as they were. Bytes rather than text because that is
+    /// what was on the far end, and deciding it is not text is the caller's
+    /// to make
+    Bytes(Vec<u8>),
 }
 
 /// What the connection thread is asked to do. One enum, because one thread
@@ -693,7 +702,16 @@ async fn run_file_job(
                 modified: m.mtime.unwrap_or(0) as u64,
             }))
         }
-        FileJob::Get { from, to } => {
+        FileJob::Read { path } => Ok(FileAnswer::Bytes(sftp.read(&path).await?)),
+        FileJob::Get { from, to, overwrite } => {
+            // Asked before the reading, not after: after is too late, and the
+            // file it would have asked about is already gone
+            if !overwrite && to.exists() {
+                bail!(crate::i18n::tp(
+                    "err.ssh.file_exists",
+                    &[("path", &to.display().to_string())]
+                ));
+            }
             let bytes = sftp.read(&from).await?;
             if let Some(d) = to.parent() {
                 std::fs::create_dir_all(d)?;
@@ -706,7 +724,17 @@ async fn run_file_job(
                 bail!(crate::i18n::tp("err.ssh.file_exists", &[("path", &to)]));
             }
             let bytes = std::fs::read(&from)?;
-            sftp.write(&to, &bytes).await?;
+            // Opened to be made if it is not there and emptied if it is. The
+            // library's own `write` opens for writing and nothing else, which
+            // a real server takes literally: a file that is not there yet
+            // cannot be opened, so nothing new could ever be sent, and a file
+            // that is there is written over from the start and not cut short --
+            // so a shorter file sent over a longer one kept the longer one's
+            // tail. The test server this was first checked against was kinder
+            // than OpenSSH, which is why neither showed until a real one did
+            let mut file = sftp.create(&to).await?;
+            tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await?;
+            file.close().await?;
             Ok(FileAnswer::Nothing)
         }
         FileJob::MakeDir { path } => {

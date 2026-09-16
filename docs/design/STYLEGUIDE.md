@@ -349,6 +349,12 @@ Before a session that changed the screen ends, take the screenshot and judge it
 with this rubric. Name the three highest-impact fixes first, make them, and only
 then hand the screen to `/announce`.
 
+**Take it with `tools/debug/shoot.mjs`.** It photographs both languages, both
+schemes and both widths at once. How to use it, and the other checking tools,
+are in [`tools/debug/README.md`](../../tools/debug/README.md).
+
+    node tools/debug/shoot.mjs tools/debug/scenes/files.mjs
+
 **Answer each; a "no" is a fix, not a note.**
 
 1. **Read cold.** Would someone who has never seen the program understand every

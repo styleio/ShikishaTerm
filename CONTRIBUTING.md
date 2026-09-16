@@ -31,6 +31,8 @@ you ran, the terminal output, and what you expected is valuable even without a f
 Dev.cmd                # build, stage into run\, and launch from there
 Dev.cmd release        # same, from the release build
 cargo test             # all offline, no PTY-less environment needed
+
+node tools/debug/shoot.mjs tools/debug/scenes/files.mjs    # photograph the screen
 ```
 
 Rust with the MSVC toolchain on Windows. There is nothing else to install — Lua is vendored
@@ -41,6 +43,12 @@ scripts live beside the executable, so the two build outputs each end up with th
 settings — an automation deleted in one is still live in the other, which is confusing to
 diagnose. `Dev.cmd` keeps a single `run\` folder (gitignored) and refreshes only the
 application files into it, so your config, scripts and secrets are never overwritten.
+
+**Tools for debugging and checking are in [`tools/debug/`](tools/debug/README.md)**, with
+an index of every one: the probes, the screenshots a change to the screen is judged from
+(section 9 of [the screen rules](docs/design/STYLEGUIDE.md)), and a real SFTP server to try
+the file commands against. Look there before writing one. When you do write one, put it
+there and give it a row — a tool left in a temporary folder has to be written again.
 
 ## Layout
 

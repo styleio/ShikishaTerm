@@ -888,6 +888,18 @@ shikisha.show("br")            -- そこにブラウザが入る
 | `shikisha.sleep(ミリ秒)` | 待つ（待っている間も他のタブは動きます） |
 | `shikisha.now("%Y-%m-%d")` | 現地の日時を整形して返す。既定は時系列に並ぶ形なので、ファイル名向き |
 | `shikisha.epoch_ms()` | エポックからのミリ秒（数値）。経過時間の計測用 |
+| `shikisha.diff(前, 後, 設定)` | 2つの文章の差分を、git と同じ書き方で返す。同じなら `""`。`設定` は `{ name = "plan.md", context = 3 }` で、name は見出し行に出る名前、context は変更の前後に残す行数 |
+
+渡すのは文章そのもので、どこから持ってきたかは問いません。返事でも、ページでも、
+ファイルでも、記録でも、同じ命令で比べられます。
+
+```lua
+-- 前の返事と今の返事で、どこが変わったか
+local was = shikisha.get_var("answer") or ""
+local d = shikisha.diff(was, now, { name = "answer.md" })
+if d ~= "" then shikisha.note(tab, d) end
+shikisha.set_var("answer", now)
+```
 
 ### 覚える・記録する・知らせる
 
@@ -968,23 +980,38 @@ shikisha.browser_fill_secret("br", "#password", "github")
 SSHのタブがつながっている先のファイルです。**どのマシンかは、そこにつながっているタブで指します**
 （git の命令と同じ指し方）。パスは向こう側のもの、こちら側のパスはこのPCのものです。
 
+**両側とも、そのタブに与えられた範囲の中だけです。** こちら側のパスはそのタブの作業フォルダの中、
+向こう側のパスはそのタブに与えられたフォルダの中（与えられていれば）。`..` で外へは出られません。
+あるタブに渡していないファイルには、そのタブを指した命令では届かない —— `read_file` と同じ約束を、
+ここでも守ります。
+
+**どれもアプリを止めません。** 転送は回線のぶんだけ時間がかかりますが、命令は仕事を渡して待つだけで、
+画面のタブは動き続けます。フォルダを1ファイルずつ送るループも、見ていられます。
+
 | 命令 | 説明 |
 |---|---|
 | `shikisha.sftp_ls(タブ, "public/")` | 一覧。1件ずつ `{name, dir, size, modified}`。フォルダが先、次に名前順 |
+| `shikisha.sftp_ls_here(タブ, "dist/")` | 同じものを、そのタブのこちら側で。片側で書いた歩き方がもう片側でもそのまま読めます |
 | `shikisha.sftp_stat(タブ, "public/index.html")` | 1件ぶん。無ければ `nil` |
-| `shikisha.sftp_get(タブ, "向こうのパス", "こちらのパス")` | 持ってくる |
+| `shikisha.sftp_get(タブ, "向こうのパス", "こちらのパス", opts)` | 持ってくる。`opts` は `{ overwrite = true }`（既定では、こちらにもうあるファイルは上書きしません） |
+| `shikisha.sftp_read(タブ, "public/index.html")` | 中身を、こちらに残さず文字列で返す |
 | `shikisha.sftp_put(タブ, "こちらのパス", "向こうのパス", opts)` | 送る。`opts` は `{ overwrite = true }`（既定では、もうあるファイルは上書きしません） |
 | `shikisha.sftp_mkdir(タブ, "public/img")` | フォルダを作る |
 | `shikisha.sftp_rename(タブ, "a.txt", "b.txt")` | 名前を変える・移す |
 | `shikisha.sftp_rm(タブ, "b.txt")` | 消す。**ファイルと、空のフォルダだけ**です |
 
-**フォルダごと送る命令はありません。** `sftp_ls` と `sftp_put` を繰り返して書きます。1つの命令にすると、
+`sftp_read` は `shikisha.diff` に渡すためにあります。向こうの1枚を読んでこちらの1枚と比べれば、
+送る前に何が変わるかを出せます。
+
+**フォルダごと送る命令はありません。** 送るときは `sftp_ls_here` と `sftp_put`、取り寄せるときは `sftp_ls` と `sftp_get` を繰り返して書きます。
+パネルのフォルダ送信ボタンも、そのループをテンプレートとして書いたものです。深い順・大きい順・同じものは飛ばす・
+最初の失敗で止める——どれも誰かが欲しがる並べ方で、命令にするとそのうち1つだけしか選べなくなります。1つの命令にすると、
 最初に思いついた1通りのやり方しか選べなくなるからです（`split_pane` と `show` と同じ理由）。
 
 **既定では、消す・作る・名前を変えるは人間だけです**（自動化の権限）。AIに開くなら、まず読む
-（`sftp_ls` / `sftp_get`）と送る（`sftp_put`）からどうぞ。
+（`sftp_ls` / `sftp_get` / `sftp_read`）と送る（`sftp_put`）からどうぞ。
 
-**同じ7つを、画面から。** コマンドが `sftp://deploy@example.com:22` のタブは、ファイルのパネルです。
+**同じことを、画面から。** コマンドが `sftp://deploy@example.com:22` のタブは、ファイルのパネルです。
 左にこのタブの作業フォルダ、右にそのサーバーの、2枚の一覧が出ます。画面が持っている手立ては上の命令だけで、
 権限も同じ表を見ます。手でできることと台本にできることが食い違わないためです。
 
@@ -1072,5 +1099,6 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | 命令 | 説明 |
 |---|---|
 | `shikisha.read_file(名前, 相対パス)` / `shikisha.write_file(名前, 相対パス, データ)` | 登録済みのファイル窓口を通して |
+| `shikisha.list_files(名前, 相対パス)` | そのフォルダの中身を1段ぶん。1件ずつ `{name, dir, size, modified}`、フォルダが先で次に名前順。`sftp_ls` と同じ形なので、片側で書いた歩き方がもう片側でもそのまま読めます |
 | `shikisha.http(名前, 本文)` | 登録済みのHTTP窓口を通して |
-| `shikisha.read_path(パス)` / `shikisha.write_path(パス, データ)` / `shikisha.http_raw(url, 本文)` | 生のパス・生のURL。`allow_dirs` / `allow_hosts` が空のあいだは必ず失敗します |
+| `shikisha.read_path(パス)` / `shikisha.write_path(パス, データ)` / `shikisha.list_path(パス)` / `shikisha.http_raw(url, 本文)` | 生のパス・生のURL。`allow_dirs` / `allow_hosts` が空のあいだは必ず失敗します |

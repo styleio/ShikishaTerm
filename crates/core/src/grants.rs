@@ -207,6 +207,9 @@ pub const CATALOG: &[Entry] = &[
     e("t", Group::Basics, true, true, false),
     e("tf", Group::Basics, true, true, false),
     e("list", Group::Basics, true, true, false),
+    // Two strings in, a diff out. It reaches nothing and changes nothing, so
+    // there is no one to keep it from
+    e("diff", Group::Basics, true, true, false),
     // -- git -------------------------------------------------------------------
     // Closed to an AI to begin with, reads included. Letting an AI look at a
     // diff is a reasonable thing to want and a one-click decision to make; it
@@ -215,8 +218,10 @@ pub const CATALOG: &[Entry] = &[
     // to do ("put the build on the server"); rearranging and deleting are not,
     // because the far end has no undo and no second copy
     e("sftp_ls", Group::Files, true, true, false),
+    e("sftp_ls_here", Group::Files, true, true, false),
     e("sftp_stat", Group::Files, true, true, false),
     e("sftp_get", Group::Files, true, true, false),
+    e("sftp_read", Group::Files, true, true, false),
     e("sftp_put", Group::Files, true, true, false),
     e("sftp_mkdir", Group::Files, true, false, false),
     e("sftp_rename", Group::Files, true, false, false),
@@ -260,11 +265,13 @@ pub const CATALOG: &[Entry] = &[
     // -- Files and the network ------------------------------------------------
     // Through a registered gateway: the destination was chosen by a person
     e("read_file", Group::Files, true, true, false),
+    e("list_files", Group::Files, true, true, false),
     e("write_file", Group::Files, true, true, false),
     e("http", Group::Files, true, true, false),
     // Raw paths and raw URLs. The allowed folders and hosts are a person's own
     // escape hatch for their own scripts, and start out empty
     e("read_path", Group::Files, true, false, false),
+    e("list_path", Group::Files, true, false, false),
     e("write_path", Group::Files, true, false, false),
     e("http_raw", Group::Files, true, false, false),
     // Asking the assistant AI costs money and time, and an AI that can ask an
@@ -460,6 +467,7 @@ mod tests {
                 "github_pr_state",
                 "github_pr_merge",
                 "read_path",
+                "list_path",
                 "write_path",
                 "http_raw",
                 "ai_ask",
