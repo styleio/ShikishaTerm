@@ -34,9 +34,11 @@ jobs:
         run: ./tools/notices.ps1 -Check
 
   # The runtime with no window. If this stops passing, the Linux build rots quietly --
-  # the crates with a window cannot build on Linux, so this covers core / shared / serve
+  # the crates with a window cannot build on Linux, so this covers core / shared / serve.
+  # Named, not `ubuntu-latest`: this is the release a server is recommended to run, so the
+  # tests run where the recommendation says, and moving to the next one is a choice made here
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
 
