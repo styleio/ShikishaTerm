@@ -207,6 +207,9 @@ pub const CATALOG: &[Entry] = &[
     e("t", Group::Basics, true, true, false),
     e("tf", Group::Basics, true, true, false),
     e("list", Group::Basics, true, true, false),
+    // Two strings in, a diff out. It reaches nothing and changes nothing, so
+    // there is no one to keep it from
+    e("diff", Group::Basics, true, true, false),
     // -- git -------------------------------------------------------------------
     // Closed to an AI to begin with, reads included. Letting an AI look at a
     // diff is a reasonable thing to want and a one-click decision to make; it

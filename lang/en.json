@@ -2389,6 +2389,7 @@
   "grant.t": "Look up a translated word",
   "grant.tf": "Look up a translated word and fill a name into it",
   "grant.list": "List the commands that exist",
+  "grant.diff": "Compare two texts and say what changed",
   "grant.read_file": "Read a file through a registered gateway",
   "grant.write_file": "Write a file through a registered gateway",
   "grant.http": "Send a request through a registered gateway",
