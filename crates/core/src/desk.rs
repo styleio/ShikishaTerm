@@ -27,6 +27,7 @@ pub fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
                 // A git panel reports on a folder on this machine, and is not a
                 // place files can be sent to
                 remote: None,
+                remote_dir: String::new(),
                 protect: protect.clone(),
                 git: git.clone(),
             }),
@@ -37,16 +38,18 @@ pub fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
                 key: hooks::TabKey { id: Some(key.clone()) },
                 dir: d.clone(),
                 remote: None,
+                remote_dir: String::new(),
                 protect: Vec::new(),
                 git: Default::default(),
             }),
             // A file panel is. `sftp_put("that name", …)` reaches the same
             // server the screen is showing, which is the whole point of the
             // panel being a tab rather than a window of its own
-            Surface::Sftp { key, dir, at, .. } => Some(hooks::TabPlace {
+            Surface::Sftp { key, dir, at, remote_dir, .. } => Some(hooks::TabPlace {
                 key: hooks::TabKey { id: Some(key.clone()) },
                 dir: dir.clone().unwrap_or_default(),
                 remote: at.clone(),
+                remote_dir: remote_dir.clone(),
                 protect: Vec::new(),
                 git: Default::default(),
             }),

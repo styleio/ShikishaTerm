@@ -373,6 +373,12 @@ pub fn tab_places(tabs: &[Tab]) -> Vec<hooks::TabPlace> {
                     }
                     (None, None) => None,
                 },
+                // A terminal tab was given an address, not a folder over there
+                // -- a shell starts wherever signing in puts it. So there is
+                // nothing on that end for a path to be outside of, and the
+                // fence that does hold is this tab's own working folder. A
+                // file panel is the one that was given both (`panel_places`)
+                remote_dir: String::new(),
                 protect: t.protect().to_vec(),
                 git: t.git_use.clone(),
             }
@@ -7076,7 +7082,9 @@ pub fn sftp_answer(
         return fail(i18n::t("err.sftp.no_address"));
     };
 
-    // The name this act is asking permission under, and the job it becomes
+    // The job a pressed button becomes. Only the translation is here: what the
+    // job then means -- how far it may reach and who may ask for it -- is
+    // `transfer`, which is where a script's commands go through too
     let at = |given: &str| match given.trim() {
         "" => match remote_root.trim() {
             "" => ".".to_string(),
@@ -7084,48 +7092,29 @@ pub fn sftp_answer(
         },
         g => g.to_string(),
     };
-    let (name, job): (&str, ssh::FileJob) = match act {
-        "remote" => ("sftp_ls", ssh::FileJob::List { path: at(&str_of("at")) }),
-        "mkdir" => ("sftp_mkdir", ssh::FileJob::MakeDir { path: str_of("path") }),
-        "rename" => (
-            "sftp_rename",
-            ssh::FileJob::Rename { from: str_of("from"), to: str_of("to") },
-        ),
-        "rm" => ("sftp_rm", ssh::FileJob::Remove { path: str_of("path") }),
-        "put" => (
-            "sftp_put",
-            ssh::FileJob::Put {
-                from: std::path::PathBuf::from(str_of("from")),
-                to: str_of("to"),
-                overwrite: args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false),
-            },
-        ),
-        "get" => (
-            "sftp_get",
-            ssh::FileJob::Get {
-                from: str_of("from"),
-                to: std::path::PathBuf::from(str_of("to")),
-                overwrite: args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false),
-            },
-        ),
+    let job: ssh::FileJob = match act {
+        "remote" => ssh::FileJob::List { path: at(&str_of("at")) },
+        "mkdir" => ssh::FileJob::MakeDir { path: str_of("path") },
+        "rename" => ssh::FileJob::Rename { from: str_of("from"), to: str_of("to") },
+        "rm" => ssh::FileJob::Remove { path: str_of("path") },
+        "put" => ssh::FileJob::Put {
+            from: std::path::PathBuf::from(str_of("from")),
+            to: str_of("to"),
+            overwrite: args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false),
+        },
+        "get" => ssh::FileJob::Get {
+            from: str_of("from"),
+            to: std::path::PathBuf::from(str_of("to")),
+            overwrite: args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false),
+        },
         // Reaching the far end at all, to say so before anything is saved
-        "test" => ("sftp_ls", ssh::FileJob::List { path: at("") }),
+        "test" => ssh::FileJob::List { path: at("") },
         // Not a job of its own: the far side is read the way any read is read,
         // and what comes back is put beside the copy on this machine instead
         // of being written down
-        "diff" => ("sftp_read", ssh::FileJob::Read { path: str_of("there") }),
+        "diff" => ssh::FileJob::Read { path: str_of("there") },
         _ => return None,
     };
-    // A transfer names a file on this machine, and that file has to be inside
-    // the panel's own folder -- the same promise the far side gets
-    if let (Some(root), ssh::FileJob::Put { from, .. }) = (&local_root, &job)
-        && local_under(root, &from.display().to_string()).is_none() {
-            return fail(i18n::t("err.sftp.outside"));
-        }
-    if let (Some(root), ssh::FileJob::Get { to, .. }) = (&local_root, &job)
-        && local_under(root, &to.display().to_string()).is_none() {
-            return fail(i18n::t("err.sftp.outside"));
-        }
     // Read here rather than in the thread: it is this machine's own disk, and
     // a file that is missing or too big should say so before a connection is
     // spent on the other half of the comparison
@@ -7146,12 +7135,17 @@ pub fn sftp_answer(
             },
         }
     }
-    if !caps.allows(name, grants::Subject::Human) {
-        return fail(i18n::tp(
-            "err.hooks.not_permitted",
-            &[("name", name), ("who", &i18n::t("grant.who.human"))],
-        ));
-    }
+    // Inside the fences and allowed, settled here where the answer can still be
+    // handed straight back. What crosses to the thread is the settled job, so
+    // nothing reads a path a second time between the checking and the doing
+    let fences = crate::transfer::Fences {
+        here: local_root.clone(),
+        there: remote_root.clone(),
+    };
+    let job = match crate::transfer::ready(job, &fences, caps, grants::Subject::Human) {
+        Ok(job) => job,
+        Err(e) => return fail(format!("{e}")),
+    };
     // The folder that was asked about, sent back with the answer: by the time
     // it arrives the person may have moved on, and a listing that lands in the
     // wrong folder is worse than one that never lands

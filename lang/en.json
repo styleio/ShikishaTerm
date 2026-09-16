@@ -2769,7 +2769,7 @@
   "err.files.binary": "This one is not text, so there is nothing to show line by line.",
   "err.files.moved_on": "This file changed on disk since it was read here. Nothing was written. Reload it, or save what is here over it.",
   "err.sftp.no_folder": "This panel has no working folder, so there is nothing to show on this side",
-  "err.sftp.outside": "That is outside this panel's working folder",
+  "err.sftp.outside": "That is outside the folder this tab works in",
   "err.ssh.jump": "{jump} would not open a way through to {host}: {e}",
   "tui.state.sftp": "FILES",
   "settings.template.sftp": "Files on a server (SFTP)",
