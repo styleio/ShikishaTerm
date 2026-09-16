@@ -29,6 +29,16 @@ once it reaches its first tagged release.
   always said to send a folder by writing `ls` and `put` in a loop; going out,
   there was nothing to walk this side with.
 
+### Fixed
+- **A file command from a script is fenced the way the panel's always was.** The
+  panel kept a transfer inside the folder its tab works in; a script naming the
+  same tab could name any path on either machine, so `sftp_put` followed by
+  `sftp_read` handed back a file that `read_path` exists to keep an AI away
+  from. What a file command means -- how far it reaches and who may ask for it
+  -- now lives in one place that both come through. A tab that was given no
+  folder on the far end is reached as before: there is nothing there to be
+  outside of.
+
 ### Changed
 - **`shikisha.sftp_get` no longer replaces a file on this machine without being
   asked.** It takes `{ overwrite = true }`, the same word in the same place as

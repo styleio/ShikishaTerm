@@ -2757,7 +2757,7 @@
   "err.files.binary": "これは文字のファイルではないので、行として出せるものがありません。",
   "err.files.moved_on": "読み込んだ後にディスク側が変わっています。何も書いていません。読み直すか、ここの内容で上書きしてください。",
   "err.sftp.no_folder": "このパネルには作業フォルダがないので、こちら側に出すものがありません",
-  "err.sftp.outside": "このパネルの作業フォルダの外です",
+  "err.sftp.outside": "このタブの作業フォルダの外です",
   "err.ssh.jump": "{jump} が {host} への通り道を開けませんでした: {e}",
   "tui.state.sftp": "ファイル",
   "settings.template.sftp": "サーバーのファイル（SFTP）",

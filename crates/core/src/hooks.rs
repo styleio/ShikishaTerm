@@ -485,11 +485,15 @@ fn github_hub(
 /// so that `sftp_put("prod", ...)` and `git_commit("prod", ...)` read alike and
 /// neither needs a second thing to register. A tab that is not a remote one
 /// says so plainly, because "nothing happened" is the worst possible answer
-fn remote_of(
+/// The machine a tab reaches, and how far a command told that tab may go on
+/// either end. Answered together because they are one fact about the tab, and
+/// looking them up apart is how the fence comes to be read off one tab and
+/// applied to another
+fn reach_of(
     places: &RefCell<Vec<TabPlace>>,
     origin: &Cell<usize>,
     tab: &Value,
-) -> mlua::Result<crate::elsewhere::Elsewhere> {
+) -> mlua::Result<(crate::elsewhere::Elsewhere, crate::transfer::Fences)> {
     let list = places.borrow();
     let index = match tab {
         Value::Nil => origin.get(),
@@ -498,9 +502,17 @@ fn remote_of(
             tab_ref_of(other)?.resolve(&keys).unwrap_or(0)
         }
     };
-    list.get(index.wrapping_sub(1))
-        .and_then(|p| p.remote.clone())
-        .ok_or_else(|| mlua::Error::runtime(crate::i18n::t("err.hooks.not_remote")))
+    let place = list
+        .get(index.wrapping_sub(1))
+        .filter(|p| p.remote.is_some())
+        .ok_or_else(|| mlua::Error::runtime(crate::i18n::t("err.hooks.not_remote")))?;
+    Ok((
+        place.remote.clone().expect("filtered on being there"),
+        crate::transfer::Fences {
+            here: (!place.dir.as_os_str().is_empty()).then(|| place.dir.clone()),
+            there: place.remote_dir.clone(),
+        },
+    ))
 }
 
 /// The same folder, with the branches it will not take a direct commit onto.
@@ -1003,6 +1015,9 @@ pub struct TabPlace {
     /// The machine it is on, for a tab whose terminal is not on this one. The
     /// file commands are told a tab and reach this
     pub remote: Option<crate::elsewhere::Elsewhere>,
+    /// The folder on that machine this tab was given. Empty means it was given
+    /// none, and then there is nothing for a path to be outside of
+    pub remote_dir: String,
     /// The branches this folder guards, already settled by the settings
     pub protect: Vec<String>,
     /// The git account chosen for it: on a git tab, the tab's own; beside a
@@ -2875,9 +2890,15 @@ impl HookEngine {
                 row.set("modified", e.modified)?;
                 Ok(row)
             };
+            // Every file command, through the one place that decides what a
+            // file command means (`transfer::run`). The panel comes through
+            // the same door: written twice, the two drifted, and a script
+            // could name a path the panel would have refused
+            let c = Rc::clone(&caps);
+            let who = Rc::clone(&subject);
             let job = move |tab: &Value, job: crate::ssh::FileJob| {
-                let at = remote_of(&places, &origin, tab)?;
-                crate::elsewhere::files(&at, job, FILE_WAIT_MS)
+                let (at, fences) = reach_of(&places, &origin, tab)?;
+                crate::transfer::run(&at, job, &fences, &c, who.get(), FILE_WAIT_MS)
                     .map_err(|e| mlua::Error::runtime(e.to_string()))
             };
             let job = Rc::new(job);

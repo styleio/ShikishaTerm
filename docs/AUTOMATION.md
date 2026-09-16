@@ -959,6 +959,12 @@ The files where an SSH tab is connected. **Which machine is said by naming the
 tab that is connected to it**, the same way the git commands are told a tab. A
 path over there is the far end's; a path here is this machine's.
 
+**Both ends are fenced by what that tab was given.** A path on this machine has
+to be inside the tab's working folder, and a path over there inside the folder
+the tab was given on that machine, if it was given one. `..` does not get out of
+either. So a command told one tab cannot reach a file that tab was never handed
+-- which is the same promise `read_file` keeps, kept here too.
+
 | Command | Description |
 |---|---|
 | `shikisha.sftp_ls(tab, "public/")` | A listing: `{name, dir, size, modified}` each. Folders first, then by name |
