@@ -218,6 +218,7 @@ pub const CATALOG: &[Entry] = &[
     // to do ("put the build on the server"); rearranging and deleting are not,
     // because the far end has no undo and no second copy
     e("sftp_ls", Group::Files, true, true, false),
+    e("sftp_ls_here", Group::Files, true, true, false),
     e("sftp_stat", Group::Files, true, true, false),
     e("sftp_get", Group::Files, true, true, false),
     e("sftp_read", Group::Files, true, true, false),
