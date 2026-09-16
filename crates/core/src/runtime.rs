@@ -9377,6 +9377,19 @@ mod tests {
         let surfaces = vec![Surface::Session(0), Surface::Session(1)];
         let mut layout = crate::layout::Layout::single(1);
         let mut relay = PaneRelay::default();
+        // A prompt still arriving is a picture that really changed, and is
+        // rightly sent again; wait for both shells to go quiet so "nothing
+        // changed" below means it
+        let (start, mut quiet, mut last) = (Instant::now(), Instant::now(), 0u64);
+        while start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(100));
+            let n: u64 = tabs.iter().map(|t| t.output_count()).sum();
+            if n != last {
+                (last, quiet) = (n, Instant::now());
+            } else if quiet.elapsed() > Duration::from_millis(800) {
+                break;
+            }
+        }
 
         // Undivided: the division, and no other pane to picture
         let first = relay.changes(&layout, &surfaces, &tabs);
