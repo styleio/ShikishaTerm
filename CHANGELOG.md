@@ -30,6 +30,17 @@ once it reaches its first tagged release.
   there was nothing to walk this side with.
 
 ### Fixed
+- **A file command no longer stops the app while it runs.** `sftp_put` and the
+  rest waited where they stood, and the engine runs on the main loop -- so one
+  transfer froze every tab on screen, the keyboard and the phone relay for as
+  long as the far end took, up to two minutes. They now hand the work to a
+  thread and wait the way asking the AI already waited.
+- **Commands that wait can be called from the outside door too.** `sleep`,
+  `ai_ask` and the file commands are on the list the API hands out and used to
+  fail there at once, because Lua cannot stop outside a coroutine. That door
+  drives one now.
+
+### Fixed
 - **A file command from a script is fenced the way the panel's always was.** The
   panel kept a transfer inside the folder its tab works in; a script naming the
   same tab could name any path on either machine, so `sftp_put` followed by
