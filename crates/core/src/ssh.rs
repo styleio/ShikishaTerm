@@ -166,8 +166,9 @@ fn remember_host(addr: &str, fingerprint: &str) -> Result<()> {
     crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&all)?)
 }
 
-/// One thing in a folder on the far end
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One thing in a folder -- on the far end, or on this machine. The same shape
+/// either way, so a listing means one thing wherever it is read
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Entry {
     pub name: String,
     pub dir: bool,

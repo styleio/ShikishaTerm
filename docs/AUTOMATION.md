@@ -974,8 +974,8 @@ path over there is the far end's; a path here is this machine's.
 there, compare it with the one here, and a script can say what a send would
 change before anything is sent.
 
-**There is no "send the whole folder".** Write it as `sftp_ls` and `sftp_put` in
-a loop. One command for it could only ever be the first arrangement somebody
+**There is no "send the whole folder".** Write it as `list_files` and `sftp_put`
+in a loop going out, `sftp_ls` and `sftp_get` coming back. One command for it could only ever be the first arrangement somebody
 thought of -- the same reason `split_pane` and `show` stayed two.
 
 **Deleting, making and renaming are for people by default** (automation
@@ -1075,5 +1075,6 @@ Off unless you register a gateway — see section 6.
 | Command | Description |
 |---|---|
 | `shikisha.read_file(name, rel)` / `shikisha.write_file(name, rel, data)` | Through a registered file gateway |
+| `shikisha.list_files(name, rel)` | What is in that folder, one level: `{name, dir, size, modified}` each, folders first and then by name -- the shape `sftp_ls` answers in, so a walk written for one side reads the same on the other |
 | `shikisha.http(name, body)` | Through a registered HTTP gateway |
-| `shikisha.read_path(p)` / `shikisha.write_path(p, data)` / `shikisha.http_raw(url, body)` | Raw path / raw URL. Always fails unless `allow_dirs` / `allow_hosts` says otherwise |
+| `shikisha.read_path(p)` / `shikisha.write_path(p, data)` / `shikisha.list_path(p)` / `shikisha.http_raw(url, body)` | Raw path / raw URL. Always fails unless `allow_dirs` / `allow_hosts` says otherwise |

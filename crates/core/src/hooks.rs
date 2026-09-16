@@ -2423,6 +2423,45 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
+            // What is in a folder. The shape `sftp_ls` answers in, so that the
+            // two sides of a transfer are read the same way and a walk written
+            // for one reads the same written for the other
+            let rows = |lua: &mlua::Lua, list: Vec<crate::ssh::Entry>| -> mlua::Result<Table> {
+                let out = lua.create_table()?;
+                for (i, e) in list.into_iter().enumerate() {
+                    let row = lua.create_table()?;
+                    row.set("name", e.name)?;
+                    row.set("dir", e.dir)?;
+                    row.set("size", e.size)?;
+                    row.set("modified", e.modified)?;
+                    out.set(i + 1, row)?;
+                }
+                Ok(out)
+            };
+            let c = Rc::clone(&caps);
+            shikisha
+                .set(
+                    "list_files",
+                    lua.create_function(move |lua, (name, rel): (String, Option<String>)| {
+                        rows(lua, c.list(&name, rel.as_deref().unwrap_or(""))
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            let c = Rc::clone(&caps);
+            shikisha
+                .set(
+                    "list_path",
+                    lua.create_function(move |lua, p: String| {
+                        rows(lua, c.list_raw(&p)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
             let c = Caps::clone(&caps);
             shikisha
                 .set(
