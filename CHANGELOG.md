@@ -15,12 +15,15 @@ once it reaches its first tagged release.
   file and the folder was refused as holding uncommitted work, every time. A
   link nobody committed is not counted as work: it holds nothing, and removing
   the folder unhooks it and leaves what it points at alone.
-- **Two GitHub accounts stored on this PC are said as two, not as none.** A
-  project signing in with this PC's git settings asks git for its GitHub
-  credential with nobody there to answer a question. When the credential
-  manager holds more than one account it wants to ask which, fails, and the
-  Issue tab said no sign-in was stored at all. It now names the accounts it
-  found and asks for a git account to be chosen for the project.
+- **This PC's git can be told which of its GitHub accounts to use.** With two
+  accounts in the credential manager, git wants to ask which one, and with
+  nobody there to answer, the Issue tab said no sign-in was stored at all while
+  pull, push and fetch failed on a prompt that could not be shown. Each account
+  is now a choice of its own -- "This PC's git (GitHub: name)" -- in the git
+  column's menu, on the project's and the git tab's settings pages, and in the
+  worktree dialog, and the refusal names the accounts it found. Its "Open
+  settings" button lands on the project's git account card and marks it,
+  rather than at the top of the page.
 - **A link deeper than the top of a worktree is made, and unhooked before the
   folder goes.** `web/node_modules` was asked of `mklink` with the `/` still in
   it, which cmd read as a switch, so every nested link quietly came out as "not

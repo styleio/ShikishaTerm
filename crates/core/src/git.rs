@@ -99,6 +99,9 @@ pub enum Auth {
     /// its SSH keys. What a person typing git in a terminal gets
     #[default]
     Own,
+    /// The same, told which of the accounts this machine holds for `host` to
+    /// sign in as. With two held, git would otherwise ask which
+    PcAs { host: String, login: String },
     /// No credential at all. Every helper git has been given is set aside and
     /// SSH is not allowed to start, so nothing reaches a server as anybody
     Sealed,
@@ -147,6 +150,11 @@ impl As {
         let quote = |p: &Path| format!("'{}'", p.display().to_string().replace('\\', "/").replace('\'', "'\\''"));
         match &self.auth {
             Auth::Own => {}
+            // Only for that server: the name a helper is handed for any other
+            // one stays whatever git on this machine would hand it
+            Auth::PcAs { host, login } => {
+                cmd.arg("-c").arg(format!("credential.https://{host}.username={login}"));
+            }
             // An empty helper throws away every helper configured before it --
             // the machine's, the user's, a per-server one -- so what follows is
             // the whole list
@@ -268,12 +276,38 @@ pub fn run_as(dir: &Path, args: &[&str], input: &str, limit: Duration, who: &As)
     let stderr = err.and_then(|h| h.join().ok()).unwrap_or_default();
     if !status.success() {
         let said = String::from_utf8_lossy(&stderr).trim().to_string();
+        if let Some(why) = pc_sign_in_said(&who.auth, &said) {
+            bail!(why);
+        }
         bail!(crate::i18n::tp(
             "err.git.failed",
             &[("cmd", &args.join(" ")), ("said", &said)]
         ));
     }
     Ok(String::from_utf8_lossy(&stdout).to_string())
+}
+
+/// What to say when git on this PC wanted to ask somebody how to sign in.
+///
+/// Git's own words are about a prompt that could not be shown, which says
+/// nothing about what to do. The usual reason is a credential manager holding
+/// two GitHub accounts and wanting to ask which, or one told to use an account
+/// it does not hold -- and both are put right in the menu that chose it. None
+/// when it was something else
+fn pc_sign_in_said(auth: &Auth, said: &str) -> Option<String> {
+    if !said.contains("user interactivity has been disabled") {
+        return None;
+    }
+    match auth {
+        Auth::PcAs { login, .. } if !crate::pr::pc_accounts().iter().any(|a| a == login) => {
+            Some(crate::i18n::tp("err.git.pc_gone", &[("login", login)]))
+        }
+        Auth::Own => {
+            let held = crate::pr::pc_accounts();
+            (held.len() > 1).then(|| crate::i18n::tp("err.git.pc_many", &[("names", &held.join(", "))]))
+        }
+        _ => None,
+    }
 }
 
 /// The top of the working tree the folder belongs to, or an error saying it
@@ -731,7 +765,7 @@ fn fits(dir: &Path, who: &As) -> Result<()> {
     let wants_ssh = match &who.auth {
         Auth::Token { .. } => false,
         Auth::Ssh { .. } => true,
-        Auth::Own | Auth::Sealed => return Ok(()),
+        Auth::Own | Auth::PcAs { .. } | Auth::Sealed => return Ok(()),
     };
     let listed = run(dir, &["remote", "-v"]).unwrap_or_default();
     let urls: Vec<&str> = listed.lines().filter_map(|l| l.split_whitespace().nth(1)).collect();
@@ -1054,6 +1088,36 @@ mod tests {
             credential_for(&dir, "gitlab.example", &who).is_none_or(|s| !s.contains("tok$en")),
             "the token went to a server it is not for"
         );
+    }
+
+    /// The PC's git told which account to be: the name reaches the credential
+    /// helper for that server, and a helper asked about any other server is
+    /// handed whatever git on this machine would hand it
+    #[test]
+    fn the_pcs_git_is_told_its_account_for_that_server_only() {
+        let Some(dir) = scratch_repo("pcas") else { return };
+        let who = As {
+            auth: Auth::PcAs { host: "github.com".into(), login: "octo-cat".into() },
+            ..Default::default()
+        };
+        let named = |url: &str| {
+            run_as(&dir, &["config", "--get-urlmatch", "credential.username", url], "", LIMIT, &who)
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default()
+        };
+        assert_eq!(named("https://github.com/owner/repo.git"), "octo-cat");
+        assert_ne!(named("https://gitlab.example/owner/repo.git"), "octo-cat");
+    }
+
+    /// Git's words for a prompt it could not show are said as what to do only
+    /// when that is what they are about
+    #[test]
+    fn only_a_prompt_that_could_not_be_shown_is_said_again() {
+        let prompt = "fatal: Cannot prompt because user interactivity has been disabled.";
+        assert_eq!(pc_sign_in_said(&Auth::Own, "fatal: repository not found"), None);
+        assert_eq!(pc_sign_in_said(&Auth::Sealed, prompt), None);
+        let gone = Auth::PcAs { host: "github.com".into(), login: "nobody-has-this-name-here".into() };
+        assert!(pc_sign_in_said(&gone, prompt).is_some_and(|s| s.contains("nobody-has-this-name-here")));
     }
 
     #[test]

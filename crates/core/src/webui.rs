@@ -1394,6 +1394,12 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
+        // The GitHub accounts git on this PC holds. With two of them "this PC's
+        // git" cannot sign in until it is told which, so each is offered as a
+        // choice of its own. Read fresh: the page asks once when it opens
+        ("GET", "/api/pc-accounts") => {
+            req.respond(json_resp(serde_json::json!({ "accounts": crate::pr::pc_accounts() })))?;
+        }
         // A project's ignore file and what it makes git ignore, for the page
         // that decides how each line's files reach a new worktree. With `add`,
         // `remove` or `untrack` it changes something first; the answer is always
@@ -3901,6 +3907,18 @@ function showSelected(block) {
   }
   window.scrollTo(0, 0);
 }
+// Bring one card on the page into view and mark it for a moment. The card
+// may only be drawn once an answer it waits on arrives, so it is looked for
+// for a while rather than once
+function lookAtCard(id, tries) {
+  const at = document.getElementById(id);
+  if (!at) {
+    if (tries > 0) setTimeout(() => lookAtCard(id, tries - 1), 100);
+    return;
+  }
+  at.scrollIntoView({block:"center"});
+  at.classList.remove("lookhere"); void at.offsetWidth; at.classList.add("lookhere");
+}
 // One of a desk's settings on screen, by id
 function goDeskSection(id, block) {
   sel = {desk:sel.desk, grp:null, tab:null, global:false, dsection:id};
@@ -4768,6 +4786,22 @@ function projectMark(colour) {
 // main, cut}. Asked in one go (see /api/families) and kept for as long as the
 // page is open; a path not in here yet is asked for, and the tree drawn again
 let FAMILIES = {};
+
+// The GitHub accounts git on this PC holds (see /api/pc-accounts). Asked once
+// when the page opens; the menus that offer the PC's git are drawn again when
+// the answer comes. Settled either way, so a landing can wait for that redraw
+// rather than mark a card the redraw then replaces
+let PC_ACCOUNTS = [];
+const PC_ACCOUNTS_READ = fetch("/api/pc-accounts", {headers:{"X-Token":TOKEN}})
+  .then(r => r.json())
+  .then(j => {
+    PC_ACCOUNTS = (j && j.accounts) || [];
+    // Not under somebody typing: a page redrawn then takes the field away
+    const typing = document.activeElement && ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
+    // and not before the settings themselves have arrived to be drawn
+    if (PC_ACCOUNTS.length > 1 && !typing && desks.length) render();
+  })
+  .catch(() => {});
 const familiesAsked = new Set();
 let familiesWant = new Set(), familiesTimer = 0;
 function askFamilies(paths) {
@@ -8834,8 +8868,16 @@ function gitAccountSelect(desk, now, origin, pick) {
       a.name + " — " + gitAccountAbout(a) + (fits ? "  " + T["settings.gitacct.fits"] : "")));
   }
   s.append(el("option", {value:THIS_PC}, T["settings.gitacct.pc"]));
+  // With two GitHub accounts held, git cannot tell which to use: each is a
+  // choice. One chosen before and no longer held is still said
   const chosen = (now || "").trim();
-  if (chosen && chosen !== THIS_PC && !list.some(x => x.a.name === chosen)) {
+  const asPc = chosen.startsWith(THIS_PC + ":") ? chosen.slice(THIS_PC.length + 1) : "";
+  const held = PC_ACCOUNTS.length > 1 ? [...PC_ACCOUNTS] : [];
+  if (asPc && !held.includes(asPc)) held.push(asPc);
+  for (const login of held) {
+    s.append(el("option", {value: THIS_PC + ":" + login}, fill(T["settings.gitacct.pc_as"], {login})));
+  }
+  if (chosen && chosen !== THIS_PC && !asPc && !list.some(x => x.a.name === chosen)) {
     s.append(el("option", {value:chosen}, fill(T["settings.gitacct.gone"], {name: chosen})));
   }
   s.value = chosen;
@@ -9475,7 +9517,7 @@ function projectPane(desk, p) {
   if (p.family) {
     const origin = [p.at].concat(p.folders.map(gi => (desk.folders[gi] || {}).cwd))
       .map(x => (FAMILIES[(x || "").trim()] || {}).origin).find(Boolean);
-    box.append(card(T["settings.project.gitacct"],
+    const acctCard = card(T["settings.project.gitacct"],
       el("div", {class:"hint"}, T["settings.project.gitacct.hint"]),
       row(T["settings.gitacct.use"],
         gitAccountSelect(desk, (p.entry || {}).git_account, origin, v => {
@@ -9484,7 +9526,9 @@ function projectPane(desk, p) {
           sel.proj = "p:" + e.name;
           refreshSave(); render();
         })),
-      (desk.git_accounts || []).length ? null : el("div", {class:"hint"}, T["settings.gitacct.tab_none"])));
+      (desk.git_accounts || []).length || PC_ACCOUNTS.length > 1 ? null : el("div", {class:"hint"}, T["settings.gitacct.tab_none"]));
+    acctCard.id = "project-gitacct";
+    box.append(acctCard);
   }
 
   // What a new worktree of it is given beyond what git carries, then the
@@ -10866,7 +10910,7 @@ function kindPanel(t, cmdInput, rebuild, real) {
         if (v) t.git_account = v; else delete t.git_account;
         refreshSave();
       })));
-    box.append(el("div", {class:"hint"}, (desk.git_accounts || []).length
+    box.append(el("div", {class:"hint"}, (desk.git_accounts || []).length || PC_ACCOUNTS.length > 1
       ? T["settings.gitacct.tab_hint"] : T["settings.gitacct.tab_none"]));
     return box;
   } else if (isEditorPanel(t.command)) {
@@ -11679,7 +11723,9 @@ load().then(() => {
   // only be known once git has said which repository it is, so that answer is
   // waited for -- and only a folder git says is in no repository, or an answer
   // that never comes, settles for the folder's own page
-  if (sec === "project" && want && desks[cur]) {
+  // ...and ?section=project-gitacct lands on that page's git account card,
+  // for a refusal that is put right there
+  if ((sec === "project" || sec === "project-gitacct") && want && desks[cur]) {
     // Either slash: the settings write D:/work, a path said by Windows is D:\work
     const same = c => (c || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const gi = (desks[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
@@ -11695,6 +11741,7 @@ load().then(() => {
                    : {desk:cur, grp:gi, tab:null, global:false};
         render();
         showSelected("center");
+        if (home && sec === "project-gitacct") PC_ACCOUNTS_READ.then(() => lookAtCard("project-gitacct", 50));
       };
       land(100);
       return;
@@ -12394,10 +12441,20 @@ mod tests {
 
     #[test]
     fn the_issue_tabs_settings_button_opens_the_project() {
-        assert!(PAGE.contains(r#"if (sec === "project" && want && desks[cur]) {"#), "there is no link to a project's page");
         assert!(
-            crate::shell::page().contains(r#"openSettings("project", true, proj.dir)"#),
-            "the Issue tab sends people to the folder instead of its project"
+            PAGE.contains(r#"if ((sec === "project" || sec === "project-gitacct") && want && desks[cur]) {"#),
+            "there is no link to a project's page"
+        );
+        // A refusal about the account lands on the card that chooses it, not
+        // at the top of a long page with the card to be found somewhere below
+        assert!(PAGE.contains(r#"acctCard.id = "project-gitacct";"#), "the account card has no address");
+        assert!(
+            PAGE.contains(r#"PC_ACCOUNTS_READ.then(() => lookAtCard("project-gitacct", 50))"#),
+            "the link does not bring the card into view"
+        );
+        assert!(
+            crate::shell::page().contains(r#"openSettings("project-gitacct", true, proj.dir)"#),
+            "the Issue tab sends people to the folder instead of its project's account"
         );
     }
 

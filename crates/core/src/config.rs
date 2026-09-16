@@ -146,6 +146,28 @@ pub struct GitAccountSpec {
 /// can never be one
 pub const THIS_PC: &str = "@pc";
 
+/// The PC's own git, told which of the GitHub accounts it holds to sign in
+/// as: `@pc:octocat`. Needed as soon as it holds two, when git would ask which
+/// and nobody is there to answer
+pub fn this_pc_as(login: &str) -> String {
+    format!("{THIS_PC}:{login}")
+}
+
+/// What a written choice says about the PC's own git: `Some(None)` for
+/// [`THIS_PC`], `Some(Some(login))` for [`this_pc_as`], None for anything else.
+/// A login is a GitHub user name, so one with anything else in it is not one
+pub fn pc_choice(written: &str) -> Option<Option<&str>> {
+    let written = written.trim();
+    if written == THIS_PC {
+        return Some(None);
+    }
+    let login = written.strip_prefix(THIS_PC)?.strip_prefix(':')?;
+    let fine = !login.is_empty()
+        && login.len() <= 100
+        && login.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    fine.then_some(Some(login))
+}
+
 /// The GitHub server, which is what an account that names none signs in to
 pub const GITHUB_HOST: &str = "github.com";
 
@@ -212,8 +234,9 @@ pub enum GitUse {
     /// Nobody has chosen. Nothing that needs to sign in runs
     #[default]
     Unset,
-    /// The way git on this PC already signs in
-    Pc,
+    /// The way git on this PC already signs in, as the GitHub account named
+    /// when it holds more than one
+    Pc(Option<String>),
     /// One of the desk's accounts
     Account { desk: String, spec: GitAccountSpec },
     /// A name that no account in the desk answers to any more
@@ -225,7 +248,8 @@ impl GitUse {
     pub fn written(&self) -> String {
         match self {
             GitUse::Unset => String::new(),
-            GitUse::Pc => THIS_PC.to_string(),
+            GitUse::Pc(None) => THIS_PC.to_string(),
+            GitUse::Pc(Some(login)) => this_pc_as(login),
             GitUse::Account { spec, .. } => spec.name.clone(),
             GitUse::Missing(n) => n.clone(),
         }
@@ -247,7 +271,11 @@ impl GitUse {
         match self {
             GitUse::Unset if sign_in => Err(crate::i18n::t("err.git.account.unset")),
             GitUse::Unset => Ok(crate::git::As::sealed()),
-            GitUse::Pc => Ok(crate::git::As::default()),
+            GitUse::Pc(None) => Ok(crate::git::As::default()),
+            GitUse::Pc(Some(login)) => Ok(crate::git::As {
+                auth: crate::git::Auth::PcAs { host: GITHUB_HOST.to_string(), login: login.clone() },
+                ..Default::default()
+            }),
             GitUse::Missing(name) => {
                 Err(crate::i18n::tp("err.git.account.missing", &[("name", name)]))
             }
@@ -290,7 +318,7 @@ impl GitUse {
     /// [`THIS_PC`]. None where there is nothing to ask with
     pub fn pr_account(&self) -> Option<String> {
         match self {
-            GitUse::Pc => Some(THIS_PC.to_string()),
+            GitUse::Pc(_) => Some(self.written()),
             GitUse::Account { spec, .. } if spec.host() == GITHUB_HOST => Some(spec.name.clone()),
             _ => None,
         }
@@ -302,7 +330,9 @@ impl Desk {
     pub fn git_use(&self, chosen: Option<&str>) -> GitUse {
         match chosen.map(str::trim).filter(|c| !c.is_empty()) {
             None => GitUse::Unset,
-            Some(THIS_PC) => GitUse::Pc,
+            Some(written) if pc_choice(written).is_some() => {
+                GitUse::Pc(pc_choice(written).flatten().map(str::to_string))
+            }
             Some(name) => match self.git_accounts.iter().find(|a| a.name == name) {
                 Some(spec) => GitUse::Account { desk: self.id.clone(), spec: spec.clone() },
                 None => GitUse::Missing(name.to_string()),
@@ -4862,7 +4892,15 @@ mod tests {
         desk.git_accounts[3].key = Some("Z:/no/such/key".into());
         assert_eq!(desk.git_use(None), GitUse::Unset);
         assert_eq!(desk.git_use(Some("  ")), GitUse::Unset);
-        assert_eq!(desk.git_use(Some(super::THIS_PC)), GitUse::Pc);
+        assert_eq!(desk.git_use(Some(super::THIS_PC)), GitUse::Pc(None));
+        // One of the PC's GitHub accounts by name, written back the same way
+        let as_one = desk.git_use(Some("@pc:octo-cat"));
+        assert_eq!(as_one, GitUse::Pc(Some("octo-cat".into())));
+        assert_eq!(as_one.written(), "@pc:octo-cat");
+        // Not a user name GitHub could have: not a choice of the PC's git at all
+        assert_eq!(super::pc_choice("@pc:"), None);
+        assert_eq!(super::pc_choice("@pc:a b"), None);
+        assert_eq!(super::pc_choice("@pcx"), None);
         assert_eq!(desk.git_use(Some("gone")), GitUse::Missing("gone".into()));
         let home = desk.git_use(Some("home"));
         assert!(matches!(&home, GitUse::Account { desk, spec } if desk == "work" && spec.name == "home"));
@@ -4888,10 +4926,15 @@ mod tests {
         // A key file that is not there is said before git is started
         assert!(desk.git_use(Some("key")).to_git(true, &nothing).is_err());
         // The PC's own git is a choice like any other, and asks nothing of the store
-        assert!(matches!(GitUse::Pc.to_git(true, &nothing).map(|a| a.auth), Ok(crate::git::Auth::Own)));
+        assert!(matches!(GitUse::Pc(None).to_git(true, &nothing).map(|a| a.auth), Ok(crate::git::Auth::Own)));
+        match as_one.to_git(true, &nothing).map(|a| a.auth) {
+            Ok(crate::git::Auth::PcAs { host, login }) => assert_eq!((host.as_str(), login.as_str()), ("github.com", "octo-cat")),
+            _ => panic!("the PC's git was not told which account to sign in as"),
+        }
 
         // Pull request numbers are read as the same account, on GitHub only
-        assert_eq!(GitUse::Pc.pr_account().as_deref(), Some(super::THIS_PC));
+        assert_eq!(GitUse::Pc(None).pr_account().as_deref(), Some(super::THIS_PC));
+        assert_eq!(as_one.pr_account().as_deref(), Some("@pc:octo-cat"));
         assert_eq!(home.pr_account().as_deref(), Some("home"));
         assert_eq!(desk.git_use(Some("lab")).pr_account(), None);
         assert_eq!(GitUse::Unset.pr_account(), None);

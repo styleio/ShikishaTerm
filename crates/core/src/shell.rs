@@ -3364,7 +3364,8 @@ window.__issues = function (d) {
   }
   if (d.act === "projects") {
     I.projects = d.projects || [];
-    ghAccounts = d.accounts || [];
+    ghAccounts = (d.accounts || []).map(a => ({name: a.name, label: a.name}))
+      .concat(pcAcctChoices(d.pc, "").map(([name, label]) => ({name, label})));
     if (ghWaiting) { ghWaiting = false; ghSearch(ghText); }
     if (I.project && !issueProject(I.project)) I.project = "";
     if (!I.list) issuesList(1);
@@ -3525,7 +3526,7 @@ function drawIssueList(box) {
     const proj = issueProject(p.project);
     box.append(el("div", {class:"warn"},
       el("span", {}, p.project + ": " + p.error),
-      proj && p.settings ? el("button", {onclick:() => openSettings("project", true, proj.dir)}, T["issues.open_settings"] || "") : null));
+      proj && p.settings ? el("button", {onclick:() => openSettings("project-gitacct", true, proj.dir)}, T["issues.open_settings"] || "") : null));
   }
   const rows = el("div", {class:"irows"});
   if (I.list === null) rows.append(el("div", {class:"empty"}, T["issues.busy"] || "…"));
@@ -3679,7 +3680,7 @@ function drawIssueDetail(box) {
   const acct = proj && proj.account ? proj.account : "";
   box.append(el("h4", {}, T["issues.comment.label"] || ""));
   box.append(el("div", {class:"write field"}, write,
-    acct ? el("span", {class:"hint"}, (T["issues.as"] || "").replace("{account}", acct === "@pc" ? (T["git.acct.pc"] || "") : acct)) : null,
+    acct ? el("span", {class:"hint"}, (T["issues.as"] || "").replace("{account}", pcAcctLabel(acct))) : null,
     el("div", {class:"foot"},
       el("button", {onclick:() => {
         if (!write.value.trim()) return;
@@ -5855,7 +5856,7 @@ function drawBranchResults(b) {
           ghBusy = true;
           drawBranchTabs(b);
           setTimeout(() => { ghFresh = false; ghSearch(ghText); }, 800);
-        }}, (T["tui.branch.gh.use"] || "{name}").replace("{name}", a.name)));
+        }}, (T["tui.branch.gh.use"] || "{name}").replace("{name}", a.label)));
       }
       box.append(pick);
     }
@@ -12441,6 +12442,25 @@ function drawGit() {
   });
 }
 
+// The PC's own git as menu entries: as it is, and -- once it holds two GitHub
+// accounts, when git cannot tell which to use -- as each of them. A choice
+// already made of one it no longer lists is kept, so the menu still says it
+function pcAcctChoices(held, now) {
+  const out = [["@pc", T["git.acct.pc"] || ""]];
+  const names = (held || []).length > 1 ? [...held] : [];
+  const chosen = String(now || "").startsWith("@pc:") ? String(now).slice(4) : "";
+  if (chosen && !names.includes(chosen)) names.push(chosen);
+  for (const n of names) out.push(["@pc:" + n, pcAcctLabel("@pc:" + n)]);
+  return out;
+}
+// What a written choice of the PC's git is called on screen; the choice
+// itself for anything else
+function pcAcctLabel(v) {
+  if (v === "@pc") return T["git.acct.pc"] || "";
+  if (String(v || "").startsWith("@pc:")) return (T["git.acct.pc_as"] || "{login}").replace("{login}", String(v).slice(4));
+  return v;
+}
+
 // The account menu. Rebuilt only when what it offers has changed, and never
 // while it is open -- a list redrawn under the pointer loses the choice being made
 function drawGitAccount(u) {
@@ -12458,7 +12478,7 @@ function drawGitAccount(u) {
     s.append(el("option", {value:c.name},
       c.name + " \u2014 " + c.about + (c.fits ? "  " + (T["git.acct.fits"] || "") : "")));
   }
-  s.append(el("option", {value:"@pc"}, T["git.acct.pc"] || ""));
+  for (const [value, label] of pcAcctChoices(ga.pc, ga.now)) s.append(el("option", {value}, label));
   if (ga.missing) s.append(el("option", {value:ga.now}, (T["git.acct.gone"] || "").replace("{name}", ga.now)));
   s.value = ga.now || "";
   s.classList.toggle("unset", !ga.now || !!ga.missing);

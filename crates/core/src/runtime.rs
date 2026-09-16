@@ -3159,6 +3159,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 })
                 .unwrap_or_default(),
             git_accounts: desks.get(desk_index).map(|w| w.git_accounts.clone()).unwrap_or_default(),
+            pc_accounts: crate::pr::pc_accounts_known(),
             folder_items: desks
                 .get(desk_index)
                 .map(|w| w.folders.iter().filter_map(|f| f.cwd.clone().zip(f.work_item.clone())).collect())
@@ -3864,9 +3865,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for (panel, account) in shell.mail().take_git_accounts() {
             let Some(desk) = desks.get(desk_index) else { continue };
             let account = account.trim().to_string();
-            // Only a name this desk has, or the PC's own, or nothing
+            // Only a name this desk has, or the PC's own git (as one of its
+            // accounts or not), or nothing
             if !(account.is_empty()
-                || account == config::THIS_PC
+                || config::pc_choice(&account).is_some()
                 || desk.git_accounts.iter().any(|a| a.name == account))
             {
                 continue;
@@ -4333,7 +4335,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .iter()
                     .map(|a| serde_json::json!({"name": a.name, "gh": a.is_gh(), "host": a.host()}))
                     .collect();
-                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects, "accounts": accounts}).to_string();
+                // And the GitHub accounts git on this PC holds, each a choice
+                let pc = crate::pr::pc_accounts_known();
+                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects, "accounts": accounts, "pc": pc}).to_string();
                 shell.push_issues(&js);
                 if let Some(r) = remote_ui.as_ref() {
                     r.push_state(format!("{{\"issues\":{js}}}"));
