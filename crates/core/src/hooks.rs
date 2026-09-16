@@ -7812,3 +7812,320 @@ mod ending_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod live_sftp {
+    //! The file commands against a real SFTP server, not the in-process probe:
+    //! OpenSSH's own sftp-server, which is what a person's server runs.
+    //!
+    //! Ignored unless asked for, because it needs a server somebody has started.
+    //! `SHIKISHA_LIVE_SFTP` names it and the rest say who signs in and where:
+    //!
+    //! ```text
+    //! SHIKISHA_LIVE_SFTP=127.0.0.1:2222
+    //! SHIKISHA_LIVE_SFTP_USER=me
+    //! SHIKISHA_LIVE_SFTP_KEY=C:/path/to/private_key
+    //! SHIKISHA_LIVE_SFTP_ROOT=/home/me/serve
+    //! cargo test -p shikisha-core live_sftp -- --ignored --test-threads=1
+    //! ```
+    //!
+    //! The root is expected to hold `site/notes.txt` (the three lines "one",
+    //! "two", "three"), `site/assets/img/hero.png` holding `hero-on-the-server`,
+    //! and `outside/secret.txt`. Known servers are written to a folder of this
+    //! run's own, as every test build does, so nothing here is remembered by the
+    //! app a person uses.
+    use super::*;
+    use crate::ssh::{FileAnswer, FileJob, Spec};
+    use crate::transfer::Fences;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    struct Live {
+        spec: Spec,
+        root: String,
+    }
+
+    fn live() -> Option<Live> {
+        let at = std::env::var("SHIKISHA_LIVE_SFTP").ok()?;
+        let (host, port) = at.rsplit_once(':')?;
+        Some(Live {
+            spec: Spec {
+                host: host.into(),
+                port: port.parse().ok()?,
+                user: std::env::var("SHIKISHA_LIVE_SFTP_USER").ok()?,
+                key: std::env::var("SHIKISHA_LIVE_SFTP_KEY").ok(),
+                ..Default::default()
+            },
+            root: std::env::var("SHIKISHA_LIVE_SFTP_ROOT").ok()?,
+        })
+    }
+
+    /// The folder on the server a tab is given
+    fn site(l: &Live) -> String {
+        format!("{}/site", l.root.trim_end_matches('/'))
+    }
+
+    fn caps() -> Caps {
+        std::rc::Rc::new(crate::caps::Capabilities::new(
+            Default::default(),
+            PathBuf::from("."),
+            HashMap::new(),
+            HashMap::new(),
+            Default::default(),
+        ))
+    }
+
+    /// A folder on this machine of this run's own
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("shikisha-live-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn slashed(p: &std::path::Path) -> String {
+        p.display().to_string().replace('\\', "/")
+    }
+
+    /// `transfer`'s own door, with nothing in between: what a job means against
+    /// a server that will do whatever it is asked
+    #[test]
+    #[ignore = "needs an SFTP server (SHIKISHA_LIVE_SFTP)"]
+    fn a_real_server_is_listed_read_written_and_fenced() {
+        let Some(l) = live() else { return };
+        let at = crate::elsewhere::Elsewhere::Ssh(l.spec.clone());
+        let here = scratch("door");
+        let fences = Fences { here: Some(here.clone()), there: site(&l) };
+        let caps = caps();
+        let run = |job| {
+            crate::transfer::run(&at, job, &fences, &caps, crate::grants::Subject::Human, 30_000)
+        };
+
+        match run(FileJob::List { path: String::new() }).expect("the site folder lists") {
+            FileAnswer::Listing(rows) => {
+                assert!(rows.iter().any(|e| e.name == "notes.txt" && !e.dir), "{rows:?}");
+                assert!(rows.iter().any(|e| e.name == "assets" && e.dir), "{rows:?}");
+            }
+            other => panic!("a listing came back as {other:?}"),
+        }
+        match run(FileJob::Read { path: "notes.txt".into() }).expect("a file reads") {
+            FileAnswer::Bytes(b) => assert_eq!(b, b"one\ntwo\nthree\n"),
+            other => panic!("a read came back as {other:?}"),
+        }
+
+        // Out and back again, byte for byte
+        std::fs::write(here.join("round.txt"), "there and back").unwrap();
+        run(FileJob::Put { from: here.join("round.txt"), to: "round.txt".into(), overwrite: true })
+            .expect("a file goes out");
+        match run(FileJob::Read { path: "round.txt".into() }).expect("and reads back") {
+            FileAnswer::Bytes(b) => assert_eq!(b, b"there and back"),
+            other => panic!("{other:?}"),
+        }
+        // A shorter file sent over a longer one is the shorter file -- not the
+        // shorter file with the longer one's tail still hanging off the end
+        std::fs::write(here.join("round.txt"), "short").unwrap();
+        run(FileJob::Put { from: here.join("round.txt"), to: "round.txt".into(), overwrite: true })
+            .expect("a shorter file goes over it");
+        match run(FileJob::Read { path: "round.txt".into() }).expect("and reads back") {
+            FileAnswer::Bytes(b) => assert_eq!(
+                String::from_utf8_lossy(&b),
+                "short",
+                "the old file's tail was left behind"
+            ),
+            other => panic!("{other:?}"),
+        }
+
+        // Brought back over a file that is already here: refused unless asked
+        std::fs::write(here.join("notes.txt"), "mine").unwrap();
+        let refused = run(FileJob::Get {
+            from: "notes.txt".into(),
+            to: here.join("notes.txt"),
+            overwrite: false,
+        });
+        assert!(refused.is_err(), "a file here was replaced without being asked");
+        assert_eq!(std::fs::read_to_string(here.join("notes.txt")).unwrap(), "mine");
+        run(FileJob::Get { from: "notes.txt".into(), to: here.join("notes.txt"), overwrite: true })
+            .expect("asked, it is replaced");
+        assert_eq!(std::fs::read_to_string(here.join("notes.txt")).unwrap(), "one\ntwo\nthree\n");
+
+        // The fence, in front of a server that would hand the file straight over
+        for path in [
+            "../outside/secret.txt".to_string(),
+            format!("{}/outside/secret.txt", l.root.trim_end_matches('/')),
+        ] {
+            let out = run(FileJob::Read { path: path.clone() });
+            assert!(out.is_err(), "{path} was read from outside the tab's folder");
+        }
+        let _ = run(FileJob::Remove { path: "round.txt".into() });
+    }
+
+    fn engine_at(l: &Live, here: &std::path::Path) -> HookEngine {
+        let e = HookEngine::new().unwrap();
+        e.set_places(vec![TabPlace {
+            key: TabKey { id: Some("deploy".into()) },
+            dir: here.to_path_buf(),
+            remote: Some(crate::elsewhere::Elsewhere::Ssh(l.spec.clone())),
+            remote_dir: site(l),
+            protect: Vec::new(),
+            git: Default::default(),
+        }]);
+        e
+    }
+
+    /// Through Lua, told a tab by name: the tab resolves to the server and the
+    /// fence, and what comes back is what the file holds
+    #[test]
+    #[ignore = "needs an SFTP server (SHIKISHA_LIVE_SFTP)"]
+    fn a_script_reads_lists_and_is_fenced_on_a_real_server() {
+        let Some(l) = live() else { return };
+        let e = engine_at(&l, &scratch("lua"));
+        let read = e
+            .call_primitive("sftp_read", &[json!("deploy"), json!("notes.txt")])
+            .expect("sftp_read");
+        assert_eq!(read, json!("one\ntwo\nthree\n"));
+        let rows = e
+            .call_primitive("sftp_ls", &[json!("deploy"), json!("")])
+            .expect("sftp_ls");
+        assert!(
+            rows.as_array().unwrap().iter().any(|r| r["name"] == "notes.txt"),
+            "{rows}"
+        );
+        let out = e.call_primitive("sftp_read", &[json!("deploy"), json!("../outside/secret.txt")]);
+        assert!(out.is_err(), "a script read outside its tab's folder: {out:?}");
+    }
+
+    /// The panel's folder button: the template, fired the way the panel fires
+    /// it and driven the way the main loop drives it
+    fn run_template(e: &mut HookEngine, job: serde_json::Value) -> Vec<Command> {
+        let began = Instant::now();
+        e.fire_template(FOLDER_MOVE_LUA, &crate::runtime::panel_ctx(1, "deploy"), &job);
+        // Handed over rather than done: the loop is back before the far end has
+        // said anything, which is the whole point of the command stopping
+        assert!(
+            !e.pending.is_empty(),
+            "the template ran to its end without stopping for the network"
+        );
+        assert!(
+            began.elapsed() < Duration::from_millis(500),
+            "firing it waited for the transfer: {:?}",
+            began.elapsed()
+        );
+        let mut said = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while !e.pending.is_empty() && Instant::now() < deadline {
+            e.tick_pending(&|_| None);
+            said.extend(e.drain_commands());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        said.extend(e.drain_commands());
+        assert!(e.pending.is_empty(), "the template did not finish in time");
+        said
+    }
+
+    /// Finished cleanly, by the template's own account: the last report has no
+    /// amount and no word, and nothing was logged as a fault on the way
+    fn finished(said: &[Command]) -> std::result::Result<(), String> {
+        let faults: Vec<&String> = said
+            .iter()
+            .filter_map(|c| match c {
+                Command::Log(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        if !faults.is_empty() {
+            return Err(format!("{faults:?}"));
+        }
+        match said.iter().rev().find_map(|c| match c {
+            Command::SetProgress { value: None, label, .. } => Some(label.clone()),
+            _ => None,
+        }) {
+            Some(label) if label.is_empty() => Ok(()),
+            Some(why) => Err(why),
+            None => Err("it never said it had finished".into()),
+        }
+    }
+
+    #[test]
+    #[ignore = "needs an SFTP server (SHIKISHA_LIVE_SFTP)"]
+    fn a_folder_goes_out_and_comes_back_through_the_panels_template() {
+        let Some(l) = live() else { return };
+        let here = scratch("folder");
+        std::fs::create_dir_all(here.join("dist/a/b")).unwrap();
+        std::fs::write(here.join("dist/top.txt"), "top").unwrap();
+        std::fs::write(here.join("dist/a/b/deep.txt"), "deep").unwrap();
+        let mut e = engine_at(&l, &here);
+        let out = json!({
+            "tab": "deploy", "send": true,
+            "here": slashed(&here), "there": site(&l),
+            "names": ["dist"], "overwrite": true,
+        });
+
+        // Out: a tree the server has never seen, folders and all
+        let said = run_template(&mut e, out.clone());
+        finished(&said).expect("sending the folder");
+        assert!(
+            said.iter().any(|c| matches!(c, Command::SetProgress { value: Some(_), .. })),
+            "nothing was reported on the way"
+        );
+        for (path, holds) in [("dist/top.txt", "top"), ("dist/a/b/deep.txt", "deep")] {
+            let got = e.call_primitive("sftp_read", &[json!("deploy"), json!(path)]).unwrap();
+            assert_eq!(got, json!(holds), "{path} did not arrive as it left");
+        }
+
+        // The same folder a second time. Its folders are already there, which is
+        // the ordinary case rather than a fault
+        finished(&run_template(&mut e, out)).expect("sending the same folder again");
+
+        // Back: a folder from the server, landing in folders made on the way in
+        let said = run_template(&mut e, json!({
+            "tab": "deploy", "send": false,
+            "here": slashed(&here), "there": site(&l),
+            "names": ["assets"], "overwrite": true,
+        }));
+        finished(&said).expect("bringing the folder back");
+        assert_eq!(
+            std::fs::read_to_string(here.join("assets/img/hero.png")).unwrap(),
+            "hero-on-the-server"
+        );
+    }
+
+    /// The panel's Compare: both copies read where they are, and the answer is
+    /// the difference between them, the server's lines marked `-`
+    #[test]
+    #[ignore = "needs an SFTP server (SHIKISHA_LIVE_SFTP)"]
+    fn the_panel_compares_a_file_here_with_the_one_on_a_real_server() {
+        let Some(l) = live() else { return };
+        let here = scratch("diff");
+        std::fs::write(here.join("notes.txt"), "one\nTWO\nthree\n").unwrap();
+        let surfaces = vec![crate::view::Surface::Sftp {
+            key: "deploy".into(),
+            name: "deploy".into(),
+            dir: Some(here.clone()),
+            at: Some(crate::elsewhere::Elsewhere::Ssh(l.spec.clone())),
+            remote_dir: site(&l),
+        }];
+        let (tx, rx) = std::sync::mpsc::channel();
+        let now = crate::runtime::sftp_answer(
+            "deploy",
+            "diff",
+            &json!({
+                "name": "notes.txt",
+                "here": slashed(&here.join("notes.txt")),
+                "there": format!("{}/notes.txt", site(&l)),
+            }),
+            &surfaces,
+            &caps(),
+            &tx,
+        );
+        assert!(now.is_none(), "it answered before the server had been read: {now:?}");
+        let said: serde_json::Value = serde_json::from_str(
+            &rx.recv_timeout(Duration::from_secs(30)).expect("an answer from the server"),
+        )
+        .unwrap();
+        assert_eq!(said["ok"], json!(true), "{said}");
+        let text = said["text"].as_str().unwrap_or_default();
+        assert!(text.contains("-two"), "the server's line is not there: {text}");
+        assert!(text.contains("+TWO"), "this machine's line is not there: {text}");
+    }
+}
