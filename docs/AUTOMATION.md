@@ -987,7 +987,10 @@ there, compare it with the one here, and a script can say what a send would
 change before anything is sent.
 
 **There is no "send the whole folder".** Write it as `sftp_ls_here` and
-`sftp_put` in a loop going out, `sftp_ls` and `sftp_get` coming back. One command for it could only ever be the first arrangement somebody
+`sftp_put` in a loop going out, `sftp_ls` and `sftp_get` coming back. The
+panel's own folder button is that loop, written as a template rather than built
+in -- deepest first, biggest first, skip what matches, stop on the first refusal
+are all arrangements somebody might want, and a command would be one of them. One command for it could only ever be the first arrangement somebody
 thought of -- the same reason `split_pane` and `show` stayed two.
 
 **Deleting, making and renaming are for people by default** (automation

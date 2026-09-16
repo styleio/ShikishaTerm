@@ -2342,7 +2342,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .map(|t| t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents())
                     });
                 }
-                let cmds = eng.drain_commands();
+                // A report aimed at a file panel goes to that panel. Taken out
+                // here because `exec_commands` knows about tabs and a panel is
+                // not one -- and because this is where the panel's other news
+                // is already pushed from
+                let cmds = panel_progress_out(eng.drain_commands(), &surfaces, &sftp_tx);
                 if !cmds.is_empty() {
                     let now_ms = start.elapsed().as_millis() as u64;
                     exec_commands(
@@ -4402,6 +4406,38 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // because a folder listing over a network is a wait and this loop
         // draws the window
         for (panel, act, args) in shell.mail().take_sftps() {
+            // A folder is not one job. It is a walk and a series of them, and
+            // how to arrange that is a template's business rather than this
+            // loop's -- so the ask is handed to Lua with what it is about, and
+            // the loop goes back to drawing while it runs
+            if act == "move_folder" {
+                let at = surfaces
+                    .iter()
+                    .position(|s| matches!(s, Surface::Sftp { key, .. } if *key == panel));
+                match (at, engine.as_mut()) {
+                    (Some(at), Some(eng)) => {
+                        let mut folders = tab_places(&tabs);
+                        folders.extend(panel_places(&surfaces));
+                        eng.set_states(tab_states(&tabs));
+                        eng.set_places(folders);
+                        let mut job = args.clone();
+                        job["tab"] = serde_json::json!(panel);
+                        eng.fire_template(
+                            crate::hooks::FOLDER_MOVE_LUA,
+                            &panel_ctx(at + 1, &panel),
+                            &job,
+                        );
+                    }
+                    _ => {
+                        let js = serde_json::json!({
+                            "act": "progress", "panel": panel, "ok": false,
+                            "error": i18n::t("err.sftp.no_panel"),
+                        });
+                        let _ = sftp_tx.send(js.to_string());
+                    }
+                }
+                continue;
+            }
             let js = sftp_answer(&panel, &act, &args, &surfaces, &caps, &sftp_tx);
             if let Some(js) = js {
                 shell.push_sftp(&js);
@@ -7767,6 +7803,63 @@ pub fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
 /// A minimal context for a browser pane, so a quick action's Lua can run while a
 /// browser tab is active. `tab.name` is the browser's key, ready to hand to the
 /// browser_* functions (e.g. `shikisha.browser_go(tab.name, "to", url)`).
+/// A file panel, as the thing a template runs against. Named the way a page is
+/// named -- by its key, which is what `sftp_*` is told -- so the template does
+/// not have to be handed the tab twice
+/// Progress reports meant for a file panel, sent there and taken out of the
+/// list. Everything else goes on to `exec_commands` untouched.
+///
+/// A template says how far it has got with `set_progress`, the same command a
+/// hook uses for a tab. Which of the two it lands on is decided by what it was
+/// aimed at, not by two different commands
+fn panel_progress_out(
+    cmds: Vec<crate::hooks::Command>,
+    surfaces: &[Surface],
+    tx: &std::sync::mpsc::Sender<String>,
+) -> Vec<crate::hooks::Command> {
+    cmds.into_iter()
+        .filter(|cmd| {
+            let crate::hooks::Command::SetProgress { value, label, target, .. } = cmd else {
+                return true;
+            };
+            let Some(hooks::TabRef::Name(name)) = target else {
+                return true;
+            };
+            if !surfaces
+                .iter()
+                .any(|s| matches!(s, Surface::Sftp { key, .. } if key == name))
+            {
+                return true;
+            }
+            let _ = tx.send(
+                serde_json::json!({
+                    "act": "progress",
+                    "panel": name,
+                    "ok": true,
+                    "value": value,
+                    "label": label,
+                })
+                .to_string(),
+            );
+            false
+        })
+        .collect()
+}
+
+pub fn panel_ctx(index: usize, key: &str) -> TabCtx {
+    TabCtx {
+        index,
+        name: key.to_string(),
+        id: Some(key.to_string()),
+        state: "FILES".into(),
+        profile: String::new(),
+        output: String::new(),
+        chain_depth: 0,
+        locked: false,
+        is_model: false,
+        reply: None,
+    }
+}
 pub fn browser_ctx(index: usize, key: &str) -> TabCtx {
     TabCtx {
         index,

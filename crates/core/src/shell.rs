@@ -11935,6 +11935,23 @@ window.__sftp = msg => {
     showDiff(msg);
     return;
   }
+  // A folder being moved, reported by the template as it goes. An amount means
+  // it is still going; none means it has stopped, and a word beside that is
+  // why it stopped early
+  if (act === "progress") {
+    if (!msg.ok) {
+      F.said = msg.error || ""; F.bad = true;
+    } else if (msg.value != null) {
+      F.said = (T["sftp.folders.at"] || "").replace("{name}", msg.label || "");
+      F.bad = false;
+    } else {
+      F.said = msg.label || (T["sftp.folders.done"] || "");
+      F.bad = !!msg.label;
+      sftpRefresh();
+    }
+    drawSftp();
+    return;
+  }
   // A transfer, a new folder, a rename or a removal: the next one starts when
   // this one is answered, and a refusal stops the rest rather than plodding on
   if (msg.ok) {
@@ -11973,9 +11990,9 @@ function sftpNext() {
 // Line up a set of moves and start the first. Folders are left out and said
 // so: there is no command that copies one whole, by design -- a script writes
 // that loop when it wants it
-function sftpMove(act, jobs, skipped) {
+function sftpMove(act, jobs) {
   if (!jobs.length) {
-    F.said = skipped ? (T["sftp.folders_only"] || "") : (T["sftp.pick_first"] || "");
+    F.said = T["sftp.pick_first"] || "";
     F.bad = true;
     drawSftp();
     return;
@@ -11992,6 +12009,11 @@ function sftpSend(which) {
   const act = which === "local" ? "put" : "get";
   const picked = from.rows.filter(r => from.sel.has(r.name));
   const files = picked.filter(r => !r.dir);
+  // A folder is a walk and a series of moves, and the walking is not this
+  // page's to do. The names go to the template as they were ticked, and what
+  // is asked first is about the folders rather than the files inside them --
+  // naming those would mean walking the tree twice, once here and once there
+  if (picked.some(r => r.dir)) return askFolders(which, picked);
   // What is already standing where this one would land, if anything
   const there = name => to.rows.find(o => o.name === name && !o.dir);
   const clash = files.filter(r => there(r.name));
@@ -12003,8 +12025,51 @@ function sftpSend(which) {
   }));
   // Nothing is replaced, so nothing can be lost and there is nothing to ask.
   // A question whose only answer is yes is one people stop reading
-  if (!clash.length) return sftpMove(act, build(false), picked.length && !files.length);
-  askSend(which, files, there, () => sftpMove(act, build(true), false));
+  if (!clash.length) return sftpMove(act, build(false));
+  askSend(which, files, there, () => sftpMove(act, build(true)));
+}
+
+// What a folder gets asked instead: the folders by name, and one sentence
+// about what happens to everything under them.
+//
+// Not the itemised list a set of files gets. That list is made from what both
+// sides already show, and nothing shows what is inside a folder until somebody
+// walks it -- so an itemised question here would walk the tree once to ask and
+// once to do it
+function askFolders(which, picked) {
+  const dest = which === "local" ? "remote" : "local";
+  const folders = picked.filter(r => r.dir).length;
+  askQuestion({
+    title: T["sftp.folders.title"] || "",
+    say: (T["sftp.folders.say"] || "")
+      .replace("{n}", folders)
+      .replace("{all}", picked.length),
+    what: sftpWhere(dest, F[dest].at),
+    rows: picked.map(r => el("div", {class:"brow2"},
+      el("span", {class:"tag"}, r.dir ? (T["sftp.folders.one"] || "") : ""),
+      el("span", {class:"nm"}, r.name))),
+    label: which === "local" ? (T["sftp.send"] || "") : (T["sftp.fetch"] || ""),
+    danger: true,
+    go: () => sftpMoveFolder(which, picked.map(r => r.name)),
+  });
+}
+
+// Handed over, and then this page is out of it until the template says how far
+// it has got. Nothing is queued here: what to do in what order is the
+// template's, which is the whole reason it is a template
+function sftpMoveFolder(which, names) {
+  F.queue = []; F.moving = null; F.total = 0; F.done = 0;
+  F.said = T["sftp.folders.doing"] || "";
+  F.bad = false;
+  drawSftp();
+  sftpAsk("move_folder", {
+    send: which === "local",
+    here: F.local.at,
+    there: F.remote.at,
+    names,
+    // The question above said what happens to a name that is already there
+    overwrite: true,
+  });
 }
 
 // Every file this send would touch, and what it would do to each one. The file
@@ -12182,6 +12247,9 @@ function sftpRowMenu(anchor, which, row) {
   if (row.dir) {
     rows.push(item(T["sftp.open"] || "", false,
       () => sftpGo(which, which === "local" ? ljoin(side.at, row.name) : rjoin(side.at, row.name))));
+    rows.push(item(which === "local" ? (T["sftp.send"] || "") : (T["sftp.fetch"] || ""), false, () => {
+      side.sel.clear(); side.sel.add(row.name); sftpSend(which);
+    }));
   } else {
     rows.push(item(which === "local" ? (T["sftp.send"] || "") : (T["sftp.fetch"] || ""), false, () => {
       side.sel.clear(); side.sel.add(row.name); sftpSend(which);
@@ -15396,10 +15464,15 @@ mod tests {
         for act in ["\"local\"", "\"remote\"", "\"put\"", "\"get\"", "\"mkdir\"", "\"rename\"", "\"rm\""] {
             assert!(PAGE.contains(act), "{act}, which it should be able to ask for, is not on the screen");
         }
-        // A whole folder is not one of them: there is no command that copies
-        // one, by design, and a screen that quietly looped would be that
-        // command under another name
-        assert!(PAGE.contains("sftp.folders_only"), "it does not say that folders cannot be sent");
+        // A whole folder is still not one of them. The screen hands the walk
+        // over with the names that were ticked and goes back to drawing; a
+        // screen that quietly looped here would be that command under another
+        // name, and a walk written in Rust would be it under a third
+        assert!(PAGE.contains("\"move_folder\""), "the panel cannot hand a folder over");
+        assert!(
+            crate::hooks::FOLDER_MOVE_LUA.contains("shikisha.sftp_ls_here"),
+            "the walk is not written somewhere it can be read and replaced"
+        );
         // Grey buttons that answer, and the question before anything is replaced
         assert!(PAGE.contains("sftp.why.no_server"), "there is no reason given for being stopped");
         assert!(PAGE.contains("id=\"sask\" hidden"), "there is no dialog that asks before something that cannot be undone");
