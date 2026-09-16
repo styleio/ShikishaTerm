@@ -2342,6 +2342,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .map(|t| t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents())
                     });
                 }
+                // What a person started from a panel is not automation, and the
+                // brake on automation does not hold it: a folder sent from the
+                // file panel goes on with automation stopped, the way a single
+                // file always has
+                if !auto_enabled {
+                    eng.tick_panel_pending();
+                }
                 // A report aimed at a file panel goes to that panel. Taken out
                 // here because `exec_commands` knows about tabs and a panel is
                 // not one -- and because this is where the panel's other news
@@ -4411,31 +4418,42 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // loop's -- so the ask is handed to Lua with what it is about, and
             // the loop goes back to drawing while it runs
             if act == "move_folder" {
-                let at = surfaces
+                let refuse = |why: String| {
+                    let js = serde_json::json!({
+                        "act": "progress", "panel": panel, "ok": false, "error": why,
+                    });
+                    let _ = sftp_tx.send(js.to_string());
+                };
+                let Some(at) = surfaces
                     .iter()
-                    .position(|s| matches!(s, Surface::Sftp { key, .. } if *key == panel));
-                match (at, engine.as_mut()) {
-                    (Some(at), Some(eng)) => {
-                        let mut folders = tab_places(&tabs);
-                        folders.extend(panel_places(&surfaces));
-                        eng.set_states(tab_states(&tabs));
-                        eng.set_places(folders);
-                        let mut job = args.clone();
-                        job["tab"] = serde_json::json!(panel);
-                        eng.fire_template(
-                            crate::hooks::FOLDER_MOVE_LUA,
-                            &panel_ctx(at + 1, &panel),
-                            &job,
-                        );
-                    }
-                    _ => {
-                        let js = serde_json::json!({
-                            "act": "progress", "panel": panel, "ok": false,
-                            "error": i18n::t("err.sftp.no_panel"),
-                        });
-                        let _ = sftp_tx.send(js.to_string());
+                    .position(|s| matches!(s, Surface::Sftp { key, .. } if *key == panel))
+                else {
+                    refuse(i18n::t("err.sftp.no_panel"));
+                    continue;
+                };
+                // A desk with no Lua of its own has no engine until something
+                // asks for one, and this is something asking. Made here, the
+                // way the outside door makes one -- without it the folder was
+                // refused on every desk nobody had written automation for,
+                // which is nearly all of them, and refused as a panel that was
+                // no longer in the settings, which it was
+                if engine.is_none() {
+                    match crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)) {
+                        Ok(eng) => engine = Some(eng),
+                        Err(e) => {
+                            refuse(format!("{e:#}"));
+                            continue;
+                        }
                     }
                 }
+                let Some(eng) = engine.as_mut() else { continue };
+                let mut folders = tab_places(&tabs);
+                folders.extend(panel_places(&surfaces));
+                eng.set_states(tab_states(&tabs));
+                eng.set_places(folders);
+                let mut job = args.clone();
+                job["tab"] = serde_json::json!(panel);
+                eng.fire_template(crate::hooks::FOLDER_MOVE_LUA, &panel_ctx(at + 1, &panel), &job);
                 continue;
             }
             let js = sftp_answer(&panel, &act, &args, &surfaces, &caps, &sftp_tx);
