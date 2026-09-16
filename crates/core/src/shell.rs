@@ -13159,9 +13159,22 @@ function ensureBar() {
   castDock = el("div", {id:"castdock"}, modeEl, castPanelEl, castBar);
   document.getElementById("main").append(castDock);
   // Enter sends; Shift+Enter (or an active IME) inserts a newline instead.
+  // Backspace in an empty field has nothing here to delete, so it goes on to
+  // where Send goes, the same way the phone's ⌫ does. A held Backspace that
+  // began on text stops at the empty field: emptying the draft must not go on
+  // to eat the prompt behind it.
+  let bsBeganOnText = false;
   castInput.addEventListener("keydown", (e) => {
     if (typingIME(e)) return;
     if (e.key === "Enter" && !e.shiftKey) { sendBar(); e.preventDefault(); }
+    if (e.key === "Backspace") {
+      if (!e.repeat) bsBeganOnText = castInput.value !== "";
+      if (castInput.value === "" && !bsBeganOnText && !e.ctrlKey && !e.altKey && !e.metaKey
+          && backspaceGoesOn()) {
+        e.preventDefault();
+        sendCastKey("backspace");
+      }
+    }
   });
   // Grow the field with its content (up to the CSS max-height, then it scrolls).
   castInput.addEventListener("input", growCastInput);
@@ -13239,6 +13252,15 @@ function sendLine(text, tab) {
   // An empty Send is a bare Enter: meaningful at a prompt (accept a default,
   // insert a newline) and not a line at all, so it stays a keystroke.
   send({kind:"key", named:"enter"});
+}
+// Whether a Backspace in the empty composer has a keystroke to become, asked
+// in sendBar's own order. ▶ run mode's sheet and a 🎯 goal are documents, not
+// keystrokes, and a model pane has no line to take one from: there it deletes
+// nothing, as in any empty field.
+function backspaceGoesOn() {
+  if (castPanel === "lua" && luaMode === "run") return false;
+  if (drivingBrowser()) return true;
+  return !castTarget && !onModelTab();
 }
 function sendBar() {
   if (!castInput) return;
@@ -14372,6 +14394,27 @@ mod tests {
             p.contains(r#"const base = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions"] : ["actions"];"#),
             "the phone's special keys have dropped out of the basic panels"
         );
+    }
+
+    /// Backspace in the empty input bar deletes in the pane it sends to, and
+    /// nowhere else: not after a held key has emptied the draft, and not where
+    /// Send carries a document rather than keystrokes.
+    #[test]
+    fn backspace_in_an_empty_bar_goes_on_to_the_pane() {
+        let p = super::page();
+        assert!(
+            p.contains("if (!e.repeat) bsBeganOnText = castInput.value !== \"\";"),
+            "a held Backspace that emptied the draft goes on deleting in the pane"
+        );
+        assert!(
+            p.contains("&& backspaceGoesOn()) {\n        e.preventDefault();\n        sendCastKey(\"backspace\");"),
+            "Backspace in the empty input bar is not handed to the pane"
+        );
+        let at = p.find("function backspaceGoesOn() {").expect("nothing decides where Backspace goes");
+        let body = &p[at..at + p[at..].find("\n}").unwrap()];
+        for guard in ["luaMode === \"run\"", "drivingBrowser()", "!castTarget", "!onModelTab()"] {
+            assert!(body.contains(guard), "backspaceGoesOn has lost `{guard}`");
+        }
     }
 
     /// The ✏️ pen is decided by where we are now, not by where we were when
