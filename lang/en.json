@@ -2406,6 +2406,7 @@
   "grant.sftp_ls": "List a folder on the machine a tab is connected to",
   "grant.sftp_stat": "Ask about one file there",
   "grant.sftp_get": "Bring a file here from there",
+  "grant.sftp_read": "Read a file there without keeping a copy here",
   "grant.sftp_put": "Send a file there",
   "grant.sftp_mkdir": "Make a folder there",
   "grant.sftp_rename": "Rename or move a file there",

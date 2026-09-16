@@ -964,20 +964,25 @@ path over there is the far end's; a path here is this machine's.
 | `shikisha.sftp_ls(tab, "public/")` | A listing: `{name, dir, size, modified}` each. Folders first, then by name |
 | `shikisha.sftp_stat(tab, "public/index.html")` | One of them, or `nil` if it is not there |
 | `shikisha.sftp_get(tab, "there", "here")` | Bring a file here |
+| `shikisha.sftp_read(tab, "public/index.html")` | The file itself, as a string, without leaving a copy here |
 | `shikisha.sftp_put(tab, "here", "there", opts)` | Send one. `opts` is `{ overwrite = true }` (a file that is already there is not replaced otherwise) |
 | `shikisha.sftp_mkdir(tab, "public/img")` | Make a folder |
 | `shikisha.sftp_rename(tab, "a.txt", "b.txt")` | Rename or move |
 | `shikisha.sftp_rm(tab, "b.txt")` | Delete. **A file, or a folder with nothing in it** |
+
+`sftp_read` is what `shikisha.diff` is usually handed: read the copy over
+there, compare it with the one here, and a script can say what a send would
+change before anything is sent.
 
 **There is no "send the whole folder".** Write it as `sftp_ls` and `sftp_put` in
 a loop. One command for it could only ever be the first arrangement somebody
 thought of -- the same reason `split_pane` and `show` stayed two.
 
 **Deleting, making and renaming are for people by default** (automation
-permissions). Open the reading ones (`sftp_ls` / `sftp_get`) and `sftp_put` to
+permissions). Open the reading ones (`sftp_ls` / `sftp_get` / `sftp_read`) and `sftp_put` to
 an AI first, if any.
 
-**The same seven on a screen.** A tab whose command is
+**The same on a screen.** A tab whose command is
 `sftp://deploy@example.com:22` is the file panel: two lists of files, this
 tab's working folder on the left and that server on the right. It has no way of
 moving a file that is not one of the commands above, and it asks the same

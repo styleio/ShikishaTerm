@@ -2394,6 +2394,7 @@
   "grant.sftp_ls": "つないだ先のフォルダの中身を見る",
   "grant.sftp_stat": "つないだ先の1件について調べる",
   "grant.sftp_get": "つないだ先からファイルを持ってくる",
+  "grant.sftp_read": "つないだ先のファイルの中身を、こちらに残さず読む",
   "grant.sftp_put": "つないだ先へファイルを送る",
   "grant.sftp_mkdir": "つないだ先にフォルダを作る",
   "grant.sftp_rename": "つないだ先のファイルの名前を変える・移す",
