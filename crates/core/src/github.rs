@@ -100,8 +100,15 @@ pub fn target(
             "err.git.account.missing",
             &[("name", name)]
         ))),
-        GitUse::Pc => crate::pr::pc_token()
-            .ok_or_else(|| AccountTrouble(crate::i18n::t("err.github.pc_none")))?,
+        GitUse::Pc => crate::pr::pc_token().map_err(|why| {
+            AccountTrouble(match why {
+                crate::pr::PcSignIn::None => crate::i18n::t("err.github.pc_none"),
+                crate::pr::PcSignIn::Many(names) => crate::i18n::tp(
+                    "err.github.pc_many",
+                    &[("names", &names.join(", "))],
+                ),
+            })
+        })?,
         GitUse::Account { desk, spec } => {
             if spec.host() != crate::config::GITHUB_HOST {
                 bail!(AccountTrouble(crate::i18n::tp(
