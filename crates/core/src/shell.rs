@@ -136,15 +136,17 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #side[hidden] { display:none; }
   #side .sbar { flex:0 0 auto; display:flex; align-items:center; gap:var(--s1);
     padding:var(--s1) var(--s2); border-bottom:1px solid var(--line); }
-  #side .sbar .grow { flex:1 1 auto; }
-  #side .sbar button { padding:3px 10px; font-size:11.5px; border-radius:var(--r-chip);
+  #side .sbar .grow { flex:1 1 0; min-width:0; }
+  /* The strip keeps its buttons whole: a long folder name is what gives way,
+     never "Files" folding onto a second line and the strip growing under it */
+  #side .sbar button { flex:none; white-space:nowrap; padding:3px 10px; font-size:11.5px; border-radius:var(--r-chip);
     border:1px solid transparent; background:none; color:var(--dim); cursor:pointer; }
   #side .sbar button:hover { background:var(--hover); color:var(--text); }
   #side .sbar button.on { background:var(--raise); color:var(--text); }
   #side .sbar button.away { font-size:13px; line-height:1; padding:3px 8px; }
   /* Which folder the panel is reporting on. The same weight the tab rows give
      a folder name, because it is the same fact */
-  #side .sbar .swhere { font-size:11px; color:var(--dim); min-width:0; overflow:hidden;
+  #side .sbar .swhere { flex:0 1 auto; font-size:11px; color:var(--dim); min-width:0; overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
   #side .sbody { flex:1 1 auto; min-height:0; display:flex; position:relative; }
   /* In the column the panel is simply what fills it. Standing where a terminal
@@ -1423,8 +1425,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .bar button[disabled] { opacity:.45; cursor:default; }
   /* Which account the column signs in with. A question nobody has answered
      wears --warn: fetch, pull and push wait on it */
-  #gitpanel .bar .acct { display:flex; align-items:center; gap:var(--s2); min-width:0; }
-  #gitpanel .bar .acct > span { color:var(--dim); font-size:12px; }
+  #gitpanel .bar .acct { display:flex; align-items:center; gap:var(--s2); min-width:0; flex:1 1 auto; }
+  /* In a narrow column the label stays one word and the menu gives way */
+  #gitpanel .bar .acct > span { color:var(--dim); font-size:12px; flex:none; white-space:nowrap; }
+  #gitpanel .bar .acct > select { min-width:0; flex:0 1 auto; }
   #gitpanel .bar select { padding:4px 8px; font-size:12.5px; border-radius:var(--r-ctl);
     border:1px solid var(--edge); background:var(--panel); color:var(--text); max-width:240px;
     font-family:inherit; }
@@ -1512,7 +1516,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel h4 { margin:0; padding:6px 10px 4px; font-size:11px; letter-spacing:.06em;
     color:var(--muted); font-weight:600; text-transform:uppercase; flex:0 0 auto;
     display:flex; align-items:center; gap:var(--s2); }
-  #gitpanel h4 .grow { flex:1; }
+  /* A heading keeps to one line: its name gives way first, then nothing --
+     the count and the buttons stay whole */
+  #gitpanel h4 .grow { flex:1; min-width:0; display:flex; white-space:nowrap; }
+  #gitpanel h4 .grow .t { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  #gitpanel h4 .grow .n { flex:none; padding-left:var(--s2); }
+  #gitpanel h4 button { flex:none; white-space:nowrap; }
   #gitpanel h4 button { font-size:11px; padding:2px 8px; border-radius:var(--r-ctl);
     border:1px solid var(--line); background:none; color:var(--muted); cursor:pointer; }
   #gitpanel h4 button:hover { color:var(--text); background:var(--panel2); }
@@ -11649,10 +11658,10 @@ function gitBuild(box) {
   const stagePick = el("button", {onclick:() => gitAsk("stage", {paths: gitPicked("work")})},
     T["git.stage.picked"] || "");
   const stagedSec = el("div", {class:"sec"},
-    el("h4", {}, el("span", {class:"grow"}, T["git.group.staged"] || "", stagedN), unstageAll, unstagePick),
+    el("h4", {}, el("span", {class:"grow"}, el("span", {class:"t"}, T["git.group.staged"] || ""), stagedN), unstageAll, unstagePick),
     staged);
   const workSec = el("div", {class:"sec"},
-    el("h4", {}, el("span", {class:"grow"}, T["git.group.unstaged"] || "", workN), stageAll, stagePick),
+    el("h4", {}, el("span", {class:"grow"}, el("span", {class:"t"}, T["git.group.unstaged"] || ""), workN), stageAll, stagePick),
     work);
   const mid = el("div", {class:"mid"}, commitBox, stagedSec, workSec);
   const diff = el("pre", {class:"diff"});
@@ -12883,8 +12892,8 @@ function drawGit() {
   // one below says the folder is clean
   u.stagedSec.style.display = staged.length ? "flex" : "none";
   u.workSec.style.display = work.length || conflicts.length || !staged.length ? "flex" : "none";
-  u.stagedN.textContent = staged.length ? "  " + staged.length : "";
-  u.workN.textContent = work.length + conflicts.length ? "  " + (work.length + conflicts.length) : "";
+  u.stagedN.textContent = staged.length ? String(staged.length) : "";
+  u.workN.textContent = work.length + conflicts.length ? String(work.length + conflicts.length) : "";
   u.staged.textContent = "";
   staged.forEach(r => u.staged.append(gitFileRow(r, "staged")));
   u.work.textContent = "";

@@ -23,6 +23,14 @@ once it reaches its first tagged release.
 - **`shikisha.git_branch` also says what the branch follows.** `upstream`,
   `ahead` and `behind`, as of the last fetch, and absent when it follows nothing.
 
+### Fixed
+- **A long worktree name no longer breaks the top of the right-hand column.** The
+  Files and Changes buttons were allowed to shrink, so a name like
+  `issue-3-feature-request-tell-product` folded them onto two lines and the strip
+  grew under them. The buttons stay whole and the name is cut with an ellipsis. In
+  the same narrow column the account label and the list headings stay on one line,
+  and a cut heading keeps its count.
+
 ## [0.15.0] - 2026-09-16
 
 The file panel sends and brings back whole folders, says what a send would
