@@ -10245,8 +10245,11 @@ mod tests {
     #[test]
     fn a_prompt_is_typed_first_and_submitted_after() {
         let argv = vec![crate::test_shell()];
+        // Wide, because the prompt is the folder the tests run in: a long one
+        // wrapped `echo shikisha-ok` onto two rows at 60 columns, and the text
+        // was never found on the screen it had been typed into
         let mut t =
-            Tab::spawn("shell".into(), &argv, None, 20, 60, tab::TabOptions::default()).unwrap();
+            Tab::spawn("shell".into(), &argv, None, 20, 250, tab::TabOptions::default()).unwrap();
 
         let screen = |t: &Tab| tab::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen());
         let has_line = |t: &Tab, want: &str| {
