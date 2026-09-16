@@ -1394,6 +1394,12 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
+        // The GitHub accounts git on this PC holds. With two of them "this PC's
+        // git" cannot sign in until it is told which, so each is offered as a
+        // choice of its own. Read fresh: the page asks once when it opens
+        ("GET", "/api/pc-accounts") => {
+            req.respond(json_resp(serde_json::json!({ "accounts": crate::pr::pc_accounts() })))?;
+        }
         // A project's ignore file and what it makes git ignore, for the page
         // that decides how each line's files reach a new worktree. With `add`,
         // `remove` or `untrack` it changes something first; the answer is always
@@ -3385,6 +3391,30 @@ const PAGE: &str = r##"<!doctype html>
  /* The lines of a list that is not pressed as a whole -- an ignore file's lines,
     each with its own controls -- keep off the box's edge the same distance */
  #project-bring .rows > *, #project-extra .rows > * { padding-left:var(--s3); padding-right:var(--s3); }
+ /* An ignore file, in the groups its own comments make. A comment is the name
+    of the lines under it, so it is set as a name above their box rather than
+    as one more line inside it: read as a line, every comment was a gap in the
+    list. More comment lines are the description under that name */
+ .igbox { display:flex; flex-direction:column; gap:var(--s4); }
+ .iggroups { display:flex; flex-direction:column; gap:var(--s5); }
+ .iggroup { display:flex; flex-direction:column; gap:var(--s2); }
+ .ighead { display:flex; flex-direction:column; gap:var(--s1); }
+ .igname { font-size:12px; font-weight:500; color:var(--text); }
+ /* One line of the file, and what hangs off it, as one item. The parts are
+    columns, so the choices stand in one line down the box whatever each line
+    matches */
+ #project-bring .rows > .igitem { padding-top:var(--s2); padding-bottom:var(--s2); }
+ .igrow { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) 132px 32px;
+   align-items:center; gap:var(--s3); }
+ .igpat { display:flex; flex-direction:column; min-width:0; }
+ .igpat > .mono { color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .igmatch { justify-self:end; min-width:0; max-width:100%; }
+ .igmatch > button { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .igrow > select { width:100%; }
+ .igneg > .hint { grid-column:2 / 4; }
+ .ignote { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s2); margin-top:var(--s1); }
+ .igbox .caution { color:var(--warn); }
+ .igpaths { white-space:pre-wrap; margin-top:var(--s1); }
  /* One secret. Reads across on a window, and stacks into a card on a phone. */
  .secretrow { cursor:pointer; padding:10px var(--s3); gap:var(--s3); }
  .secretrow:hover { background:var(--panel2); }
@@ -3706,6 +3736,14 @@ const PAGE: &str = r##"<!doctype html>
    /* A row of facts becomes a small card: the name on its own line, the rest
       under it, and the way in still a whole-row press. */
    .secretrow { align-items:flex-start; padding:10px 0; row-gap:var(--s1); }
+   /* An ignore line: its name and its choice on the first line, what it
+      matches under them */
+   .igrow { grid-template-columns:minmax(0,1fr) 132px 32px; row-gap:var(--s1); }
+   .igmatch { grid-column:1 / -1; grid-row:2; justify-self:start; }
+   /* Its words start under the name; the button's padding hangs out to the left */
+   .igmatch > button { margin-left:calc(-1 * var(--s3)); }
+   .igneg > .hint { grid-column:1 / -1; grid-row:2; }
+   .igneg > :last-child { grid-column:3; grid-row:1; }
    .secretname { flex-basis:100%; font-size:13px; }
    .secretdesc { flex:1 1 auto; }
    /* The last line: where it may go, and the way in at the end of it */
@@ -3900,6 +3938,18 @@ function showSelected(block) {
     else if (r.bottom > n.bottom) nav.scrollTop += r.bottom - n.bottom;
   }
   window.scrollTo(0, 0);
+}
+// Bring one card on the page into view and mark it for a moment. The card
+// may only be drawn once an answer it waits on arrives, so it is looked for
+// for a while rather than once
+function lookAtCard(id, tries) {
+  const at = document.getElementById(id);
+  if (!at) {
+    if (tries > 0) setTimeout(() => lookAtCard(id, tries - 1), 100);
+    return;
+  }
+  at.scrollIntoView({block:"center"});
+  at.classList.remove("lookhere"); void at.offsetWidth; at.classList.add("lookhere");
 }
 // One of a desk's settings on screen, by id
 function goDeskSection(id, block) {
@@ -4768,6 +4818,22 @@ function projectMark(colour) {
 // main, cut}. Asked in one go (see /api/families) and kept for as long as the
 // page is open; a path not in here yet is asked for, and the tree drawn again
 let FAMILIES = {};
+
+// The GitHub accounts git on this PC holds (see /api/pc-accounts). Asked once
+// when the page opens; the menus that offer the PC's git are drawn again when
+// the answer comes. Settled either way, so a landing can wait for that redraw
+// rather than mark a card the redraw then replaces
+let PC_ACCOUNTS = [];
+const PC_ACCOUNTS_READ = fetch("/api/pc-accounts", {headers:{"X-Token":TOKEN}})
+  .then(r => r.json())
+  .then(j => {
+    PC_ACCOUNTS = (j && j.accounts) || [];
+    // Not under somebody typing: a page redrawn then takes the field away
+    const typing = document.activeElement && ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
+    // and not before the settings themselves have arrived to be drawn
+    if (PC_ACCOUNTS.length > 1 && !typing && desks.length) render();
+  })
+  .catch(() => {});
 const familiesAsked = new Set();
 let familiesWant = new Set(), familiesTimer = 0;
 function askFamilies(paths) {
@@ -5549,6 +5615,8 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.auto_switch.hint"])),
     row(T["settings.restore_ws"], checkDefaultOn(current, "restore_desk", T["settings.restore_ws.label"]),
         el("span", {class:"hint"}, T["settings.restore_ws.hint"])),
+    row(T["settings.confirm_worktree_delete"], checkDefaultOn(current, "confirm_worktree_delete", T["settings.confirm_worktree_delete.label"]),
+        el("span", {class:"hint"}, T["settings.confirm_worktree_delete.hint"])),
     row(T["settings.resident"], checkDefaultOn(current, "resident", T["settings.resident.label"]),
         el("span", {class:"hint"}, T["settings.resident.hint"])),
     row(T["settings.tui_clipboard"], checkDefaultOn(current, "tui_clipboard", T["settings.tui_clipboard.label"]),
@@ -8834,8 +8902,16 @@ function gitAccountSelect(desk, now, origin, pick) {
       a.name + " — " + gitAccountAbout(a) + (fits ? "  " + T["settings.gitacct.fits"] : "")));
   }
   s.append(el("option", {value:THIS_PC}, T["settings.gitacct.pc"]));
+  // With two GitHub accounts held, git cannot tell which to use: each is a
+  // choice. One chosen before and no longer held is still said
   const chosen = (now || "").trim();
-  if (chosen && chosen !== THIS_PC && !list.some(x => x.a.name === chosen)) {
+  const asPc = chosen.startsWith(THIS_PC + ":") ? chosen.slice(THIS_PC.length + 1) : "";
+  const held = PC_ACCOUNTS.length > 1 ? [...PC_ACCOUNTS] : [];
+  if (asPc && !held.includes(asPc)) held.push(asPc);
+  for (const login of held) {
+    s.append(el("option", {value: THIS_PC + ":" + login}, fill(T["settings.gitacct.pc_as"], {login})));
+  }
+  if (chosen && chosen !== THIS_PC && !asPc && !list.some(x => x.a.name === chosen)) {
     s.append(el("option", {value:chosen}, fill(T["settings.gitacct.gone"], {name: chosen})));
   }
   s.value = chosen;
@@ -9259,7 +9335,7 @@ function replaceDialog(rule, done) {
 // The project's .gitignore, line by line, each with how its files come along
 function ignoreCard(desk, p) {
   const root = (p.at || "").trim();
-  const box = el("div");
+  const box = el("div", {class:"igbox"});
   const known = IGNORES[root];
   if (!known) {
     box.append(el("div", {class:"hint"}, T["settings.bring.reading"]));
@@ -9270,6 +9346,10 @@ function ignoreCard(desk, p) {
   const matchesOf = (source, pattern) => j.ignored.filter(i => i.source === source && i.pattern === pattern);
   const defaultOf = (source, pattern) => (j.defaults.find(d => d.source === source && d.pattern === pattern) || {}).how || "skip";
   const opened = (ignoreCard.open = ignoreCard.open || new Set());
+
+  // How many lines are set to link: what that does is said once for all of
+  // them, above the lists, rather than the same sentence under every one
+  let linked = 0;
 
   // One line that decides something, with its picker, what it matches, and
   // (for the project's own file) a way to take it out
@@ -9289,14 +9369,14 @@ function ignoreCard(desk, p) {
           render();
         })}, fill(T["settings.bring.replace.n"], {n: ((rule || {}).replace || []).length}))
       : null;
-    const row = el("div", {class:"listrow"},
-      el("span", {class:"mono secretname", title: pattern}, pattern),
-      source === ".gitignore" ? null : el("span", {class:"hint"}, fill(T["settings.bring.from_file"], {file: source})),
-      el("span", {class:"grow"}),
-      count,
+    // Every cell is there on every line, empty or not, so the columns hold
+    const row = el("div", {class:"igrow"},
+      el("div", {class:"igpat"},
+        el("span", {class:"mono", title: pattern}, pattern),
+        source === ".gitignore" ? null : el("span", {class:"hint"}, fill(T["settings.bring.from_file"], {file: source}))),
+      el("div", {class:"igmatch"}, count),
       howSelect(how, files, v => { setBringRule(desk, p, source, pattern, r => { r.how = v; }); render(); }),
-      replaceBtn,
-      n ? el("button", {class:"quiet icon", title: T["settings.bring.remove"], onclick: async () => {
+      !n ? el("span") : el("button", {class:"quiet icon", title: T["settings.bring.remove"], onclick: async () => {
         if (!await confirmAction(fill(T["settings.bring.remove_confirm"], {line: pattern}), T["settings.bring.remove"])) return;
         const r = await askIgnore(root, {remove: {n, text: pattern}});
         if (r.ok && p.entry && p.entry.bring) {
@@ -9304,35 +9384,63 @@ function ignoreCard(desk, p) {
           refreshSave();
         }
         redraw(r);
-      }}, "✕") : null);
+      }}, "✕"));
+    // What hangs off the line stays inside its item: the replacements of a
+    // copy that is rewritten, and what a choice will do that is worth a word
     const under = [];
-    if (how === "link") under.push(el("div", {class:"hint warn"}, T["settings.bring.link_warn"]));
-    if (how === "replace" && !((rule || {}).replace || []).length) under.push(el("div", {class:"hint warn"}, T["settings.bring.replace.none"]));
-    if (opened.has(key) && matched.length > 1) {
-      under.push(el("div", {class:"hint mono"}, matched.map(m => m.path).join("\n")));
-      under[under.length - 1].style.whiteSpace = "pre-wrap";
-    }
-    return [row, ...under];
+    const swaps = ((rule || {}).replace || []).length;
+    if (how === "link") linked++;
+    if (replaceBtn) under.push(el("div", {class:"hint ignote" + (swaps ? "" : " caution")},
+      replaceBtn, swaps ? null : el("span", {}, T["settings.bring.replace.none"])));
+    if (opened.has(key) && matched.length > 1) under.push(el("div", {class:"hint mono igpaths"}, matched.map(m => m.path).join("\n")));
+    return el("div", {class:"igitem"}, row, ...under);
   };
 
-  const rows = el("div");
+  // A line that takes files back out of what is ignored: nothing to choose
+  const negateRow = (line, n) => el("div", {class:"igitem"},
+    el("div", {class:"igrow igneg"},
+      el("div", {class:"igpat"}, el("span", {class:"mono", title: line}, line)),
+      el("span", {class:"hint"}, T["settings.bring.negate"]),
+      el("button", {class:"quiet icon", title: T["settings.bring.remove"], onclick: async () => {
+        if (!await confirmAction(fill(T["settings.bring.remove_confirm"], {line}), T["settings.bring.remove"])) return;
+        redraw(await askIgnore(root, {remove: {n, text: line}}));
+      }}, "✕")));
+
+  // The file as its author laid it out. A run of comments opens a group and
+  // names the lines that follow, up to the next comment. A comment with
+  // nothing under it before a blank line (the note at the top of a file)
+  // stands alone. A line of nothing but marks is a ruler drawn in the file,
+  // and the grouping already draws it
+  const groups = [];
+  let group = null;
   j.lines.forEach((text, i) => {
     const line = text.trim();
-    if (!line) return;
-    if (line.startsWith("#")) { rows.append(el("div", {class:"listrow hint mono"}, text)); return; }
-    if (line.startsWith("!")) {
-      rows.append(el("div", {class:"listrow"},
-        el("span", {class:"mono secretname"}, line),
-        el("span", {class:"hint grow"}, T["settings.bring.negate"]),
-        el("button", {class:"quiet icon", title: T["settings.bring.remove"], onclick: async () => {
-          if (!await confirmAction(fill(T["settings.bring.remove_confirm"], {line}), T["settings.bring.remove"])) return;
-          redraw(await askIgnore(root, {remove: {n: i + 1, text: line}}));
-        }}, "✕")));
+    if (!line) { if (group && !group.lines.length) group = null; return; }
+    if (line.startsWith("#")) {
+      if (/^#[#=*_~+\-\s]*$/.test(line)) return;
+      if (!group || group.lines.length) groups.push(group = {notes: [], lines: []});
+      group.notes.push(line);
       return;
     }
-    rows.append(...ruleRow(".gitignore", line, i + 1));
+    if (!group) groups.push(group = {notes: [], lines: []});
+    group.lines.push(line.startsWith("!") ? negateRow(line, i + 1) : ruleRow(".gitignore", line, i + 1));
   });
-  if (known && !j.lines.some(l => l.trim())) rows.append(el("div", {class:"hint"}, T["settings.bring.no_lines"]));
+  // Written as a sentence ("# Build output") a comment is the name, without
+  // its mark. Written as a line switched off ("#.idea/") it is quoted as it
+  // is, under the name when there is one
+  const sentence = c => /^#+\s/.test(c);
+  const heading = notes => {
+    const name = notes.findIndex(sentence);
+    return el("div", {class:"ighead"},
+      name < 0 ? null : el("div", {class:"igname"}, notes[name].replace(/^#+\s+/, "")),
+      ...notes.filter((_, k) => k !== name).map(c => sentence(c)
+        ? el("div", {class:"hint"}, c.replace(/^#+\s+/, ""))
+        : el("div", {class:"hint mono"}, c)));
+  };
+  const lists = el("div", {class:"iggroups"}, ...groups.map(g => el("div", {class:"iggroup"},
+    ...[g.notes.length ? heading(g.notes) : null,
+        g.lines.length ? el("div", {class:"rows"}, ...g.lines) : null].filter(Boolean))));
+  if (known && !j.lines.some(l => l.trim())) lists.append(el("div", {class:"hint"}, T["settings.bring.no_lines"]));
 
   // Adding a line
   const addIn = el("input", {type:"text", class:"mono grow", placeholder: T["settings.bring.add_ph"]});
@@ -9358,13 +9466,14 @@ function ignoreCard(desk, p) {
   // Lines from somewhere other than the project's own file: chosen here,
   // changed where they are written
   const others = [];
-  for (const d of j.defaults.filter(d => d.source !== ".gitignore")) others.push(...ruleRow(d.source, d.pattern, 0));
+  for (const d of j.defaults.filter(d => d.source !== ".gitignore")) others.push(ruleRow(d.source, d.pattern, 0));
 
   // Native append writes an absent part as the word "null", so the parts that
   // may be absent are left out first
   box.append(...[
     el("div", {class:"hint"}, fill(T["settings.bring.hint"], {root: j.root || root, branch: j.branch || "-"})),
-    el("div", {class:"rows"}, rows),
+    linked ? el("div", {class:"hint caution"}, T["settings.bring.link_warn_lines"]) : null,
+    lists,
     el("div", {class:"row"}, addIn, el("button", {onclick: add}, T["settings.bring.add"])),
     trackedBox,
     others.length ? el("div", {class:"hint"}, T["settings.bring.others"]) : null,
@@ -9475,7 +9584,7 @@ function projectPane(desk, p) {
   if (p.family) {
     const origin = [p.at].concat(p.folders.map(gi => (desk.folders[gi] || {}).cwd))
       .map(x => (FAMILIES[(x || "").trim()] || {}).origin).find(Boolean);
-    box.append(card(T["settings.project.gitacct"],
+    const acctCard = card(T["settings.project.gitacct"],
       el("div", {class:"hint"}, T["settings.project.gitacct.hint"]),
       row(T["settings.gitacct.use"],
         gitAccountSelect(desk, (p.entry || {}).git_account, origin, v => {
@@ -9484,7 +9593,9 @@ function projectPane(desk, p) {
           sel.proj = "p:" + e.name;
           refreshSave(); render();
         })),
-      (desk.git_accounts || []).length ? null : el("div", {class:"hint"}, T["settings.gitacct.tab_none"])));
+      (desk.git_accounts || []).length || PC_ACCOUNTS.length > 1 ? null : el("div", {class:"hint"}, T["settings.gitacct.tab_none"]));
+    acctCard.id = "project-gitacct";
+    box.append(acctCard);
   }
 
   // What a new worktree of it is given beyond what git carries, then the
@@ -10866,7 +10977,7 @@ function kindPanel(t, cmdInput, rebuild, real) {
         if (v) t.git_account = v; else delete t.git_account;
         refreshSave();
       })));
-    box.append(el("div", {class:"hint"}, (desk.git_accounts || []).length
+    box.append(el("div", {class:"hint"}, (desk.git_accounts || []).length || PC_ACCOUNTS.length > 1
       ? T["settings.gitacct.tab_hint"] : T["settings.gitacct.tab_none"]));
     return box;
   } else if (isEditorPanel(t.command)) {
@@ -11679,7 +11790,9 @@ load().then(() => {
   // only be known once git has said which repository it is, so that answer is
   // waited for -- and only a folder git says is in no repository, or an answer
   // that never comes, settles for the folder's own page
-  if (sec === "project" && want && desks[cur]) {
+  // ...and ?section=project-gitacct lands on that page's git account card,
+  // for a refusal that is put right there
+  if ((sec === "project" || sec === "project-gitacct") && want && desks[cur]) {
     // Either slash: the settings write D:/work, a path said by Windows is D:\work
     const same = c => (c || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const gi = (desks[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
@@ -11695,6 +11808,7 @@ load().then(() => {
                    : {desk:cur, grp:gi, tab:null, global:false};
         render();
         showSelected("center");
+        if (home && sec === "project-gitacct") PC_ACCOUNTS_READ.then(() => lookAtCard("project-gitacct", 50));
       };
       land(100);
       return;
@@ -12394,10 +12508,20 @@ mod tests {
 
     #[test]
     fn the_issue_tabs_settings_button_opens_the_project() {
-        assert!(PAGE.contains(r#"if (sec === "project" && want && desks[cur]) {"#), "there is no link to a project's page");
         assert!(
-            crate::shell::page().contains(r#"openSettings("project", true, proj.dir)"#),
-            "the Issue tab sends people to the folder instead of its project"
+            PAGE.contains(r#"if ((sec === "project" || sec === "project-gitacct") && want && desks[cur]) {"#),
+            "there is no link to a project's page"
+        );
+        // A refusal about the account lands on the card that chooses it, not
+        // at the top of a long page with the card to be found somewhere below
+        assert!(PAGE.contains(r#"acctCard.id = "project-gitacct";"#), "the account card has no address");
+        assert!(
+            PAGE.contains(r#"PC_ACCOUNTS_READ.then(() => lookAtCard("project-gitacct", 50))"#),
+            "the link does not bring the card into view"
+        );
+        assert!(
+            crate::shell::page().contains(r#"openSettings("project-gitacct", true, proj.dir)"#),
+            "the Issue tab sends people to the folder instead of its project's account"
         );
     }
 

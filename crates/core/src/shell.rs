@@ -590,19 +590,17 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .axis .ax.on { background:var(--raise); color:var(--text); }
   .gset { padding:6px 10px 2px; color:var(--muted); font-size:11.5px;
     text-transform:uppercase; letter-spacing:.04em; }
-  /* 29px, not a number of its own: a tab under a folder sits at 26px of
-     padding behind a 3px border, and this heading stands where those rows do */
-  .bundle { display:flex; align-items:center; gap:var(--s2); padding:1px 0 1px 29px;
-    color:var(--dim); font-size:12px; cursor:pointer; }
-  .bundle .caret { flex:none; }
-  /* Put away, the set is one box and the whole box is the button: the pills,
-     then a › at the right end saying it opens. Its left edge at 22px so the
+  /* The set is one box either way and the whole box is the button: put away,
+     the pills and a › at the right end saying it opens; brought out, the count
+     and a ▾ in that same place saying it shuts. Its left edge at 22px so the
      first dot, inside the box's 1px border and the pill's 6px, lands in the
      column every status dot above it stands in */
-  .bundle.away { margin:1px 8px 3px 22px; padding:2px 6px 2px 0; min-height:26px;
-    border:1px solid var(--line); border-radius:var(--r-ctl); gap:var(--s1); }
-  .bundle.away:hover { background:var(--hover); }
-  .bundle.away .caret { font-size:14px; line-height:1; color:var(--muted); }
+  .bundle { display:flex; align-items:center; gap:var(--s1); margin:1px 8px 3px 22px;
+    padding:2px 6px 2px 0; min-height:26px; border:1px solid var(--line);
+    border-radius:var(--r-ctl); color:var(--dim); font-size:12px; cursor:pointer; }
+  .bundle:hover { background:var(--hover); }
+  .bundle .word { flex:1; min-width:0; padding-left:6px; }
+  .bundle .caret { flex:none; font-size:14px; line-height:1; color:var(--muted); }
   .tab.folder.front .nm { opacity:1; color:var(--text); }
   /* What a put-away set says instead of its rows. One pill per state, each
      wearing that state's dot and a chip for every tab in it -- so the row
@@ -891,8 +889,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      Skip it, and the chosen font only ever applies to the terminal contents */
   /* --cw is the width of a single cell, measured and set by the page
      (so the content and the cursor are placed using the same number) */
+  /* It stops above the composer rather than running on under it. What a
+     terminal program keeps at its foot -- an AI's prompt, the line under it
+     saying which mode it is in -- is exactly what a person types at and reads,
+     and a bar laid over it hid both */
   #screen { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
-    bottom:var(--fb); margin:0; padding:8px; white-space:pre;
+    bottom:calc(var(--fb) + var(--dock, 0px)); margin:0; padding:8px; white-space:pre;
     overflow:auto; line-height:1.25; font-family:var(--mono); --cw:1ch; }
   /* One element per terminal row, so a screen that changed in one place can
      be repaired in one place. A row with nothing on it still has to stand its
@@ -1085,13 +1087,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      a file list feel like a database, and the eye follows a row perfectly well
      from the highlight it gets when it is pointed at */
   #sftppanel[hidden] { display:none; }
-  /* The sub-input bar floats over the pane rather than taking room from it,
-     which is right for a terminal -- its contents scroll under and come back.
-     This panel's last line does not scroll: it says what is happening and what
-     this connection is, and a line hidden behind a bar is a line nobody reads.
-     So the panel stops above the bar, by however tall the bar is now */
+  /* The last line says what is happening and what this connection is, and a
+     line hidden behind the sub-input bar is a line nobody reads. So the panel
+     stops above the bar, by however tall the bar is now, like every surface */
   #sftppanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
-    bottom:calc(var(--fb) + var(--sdock, 0px)); display:flex; flex-direction:column;
+    bottom:calc(var(--fb) + var(--dock, 0px)); display:flex; flex-direction:column;
     overflow:hidden; font-size:13px; user-select:text; }
   /* The connection, and the way to make another. One row, because which server
      this is pointed at is the first thing anyone needs to know about it */
@@ -1418,7 +1418,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      not, and the change itself. Same place as a terminal, same edges */
   #gitpanel[hidden] { display:none; }
   #gitpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
-    bottom:var(--fb); display:flex; flex-direction:column; overflow:hidden;
+    bottom:calc(var(--fb) + var(--dock, 0px)); display:flex; flex-direction:column; overflow:hidden;
     font-size:13px; user-select:text; }
   #gitpanel .bar { display:flex; align-items:center; gap:var(--s2); padding:6px 10px;
     border-bottom:1px solid var(--line); flex:0 0 auto; flex-wrap:wrap; }
@@ -1965,7 +1965,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #browse .vsay, #sask .vsay { color:var(--dim); font-size:12px; line-height:1.5; }
   /* The thing the question is about -- a path -- quoted as it is: the mono
      well (5), quiet, broken anywhere so a long path never widens the dialog */
-  #sask .bwhere { font-family:var(--mono); font-size:11.5px; color:var(--dim); background:var(--sunk);
+  #sask .bwhere, #branch .bcmd { font-family:var(--mono); font-size:11.5px; color:var(--dim); background:var(--sunk);
     border:1px solid var(--line); border-radius:var(--r-ctl); padding:var(--s2) var(--s3);
     overflow-wrap:anywhere; line-height:1.5; }
   #sask .bwhere[hidden] { display:none; }
@@ -1993,6 +1993,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     font-variant-numeric:tabular-nums; font-size:11.5px; color:var(--text); }
   #sask .blist .cell .at { display:block; font-size:10px; color:var(--dim); }
   #sask .blist .cell.none { color:var(--faint); }
+  /* "Don't show this again": a checkbox the size of the one in the setup,
+     in the dialog's quiet text colour, under what the question is about */
+  #sask .snever { display:flex; align-items:center; gap:var(--s2); font-size:12px; color:var(--dim);
+    cursor:pointer; user-select:none; }
+  #sask .snever[hidden] { display:none; }
+  #sask .snever input { width:15px; height:15px; margin:0; }
+  #branch .bcmd { white-space:pre-wrap; }
+  #branch .bcmd:empty { display:none; }
   #sask .vbox, #branch .vbox { width:min(560px,92vw); }
   /* Wider than a question, because what is in it is somebody's file and a
      line broken in three is not the line they wrote */
@@ -2172,17 +2180,41 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bmore:hover { color:var(--text); }
   #branch .bmore .caret { font-size:9px; display:inline-block; }
   #branch .bmore[aria-expanded="true"] .caret { transform:rotate(90deg); }
-  #branch .bextra { display:flex; flex-direction:column; gap:var(--s2); }
+  #branch .bextra { display:flex; flex-direction:column; gap:var(--s5); }
   #branch .bextra[hidden] { display:none; }
-  /* What the new folder cannot get from git. Set as it will happen -- the
-     project's own answer -- so nobody has to read it unless they disagree */
-  #branch .bcarry { display:flex; flex-wrap:wrap; gap:var(--s2) var(--s4); align-items:center; }
-  #branch .bcarry .say { color:var(--dim); font-size:11.5px; }
-  #branch .bcarry label { display:flex; align-items:center; gap:var(--s2); font-size:12px;
-    color:var(--text); }
-  #branch .bcarry select { font:inherit; font-size:12px; padding:2px 6px; border-radius:var(--r-ctl);
-    border:1px solid var(--edge); background:var(--panel); color:var(--text); }
+  /* A field whose every part is put away takes no step of the gap either */
+  #branch .bextra > .bfield:not(:has(> :not([hidden]))) { display:none; }
+  /* Everything between the title and the button. However much a project
+     brings along, this is the part that scrolls: the head says what the dialog
+     is and the foot holds the button, so neither may leave the window. The
+     padding is the width of a focus ring, which the scrolling edge would
+     otherwise cut off */
+  #branch .bbody { flex:1 1 auto; min-height:0; overflow-y:auto; display:flex; flex-direction:column;
+    gap:var(--s5); padding:3px; margin:-3px; }
+  /* A tick box and its words, beside each other (5.1) */
+  #branch .bsetup, #branch .bfan, #branch .bais label { display:flex; align-items:center; gap:var(--s2);
+    font-size:14px; color:var(--text); cursor:pointer; }
+  #branch .bsetup input, #branch .bfan input, #branch .bais input { width:15px; height:15px; margin:0; flex:none; }
+  #branch .bsetupsay { font-size:11.5px; color:var(--faint); }
+  /* One per AI, under the box that asks for them: across, and wrapping */
+  #branch .bais { display:flex; flex-wrap:wrap; gap:var(--s2) var(--s5); padding-left:var(--s6); }
+  /* What the new folder cannot get from git, one line each, the choices in
+     one column so the list is read down rather than hunted across. Set as it
+     will happen -- the project's own answer -- so nobody has to read it unless
+     they disagree. However long, it scrolls with the rest of the dialog: a
+     frame scrolling inside the scrolling part is two hands on one wheel */
+  #branch .bcarryf:has(> .bcarry:empty) { display:none; }
+  #branch .bcarry { border:1px solid var(--line); border-radius:var(--r-ctl); }
+  #branch .bcarry > div { display:flex; align-items:center; gap:var(--s3); padding:var(--s1) var(--s3); }
+  #branch .bcarry > div + div { border-top:1px solid var(--line); }
+  /* A path is cut at its front: the end is the file's own name */
+  #branch .bcarry .nm { flex:1; min-width:0; font-family:var(--mono); font-size:12px; color:var(--text);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
+  #branch .bcarry select { flex:none; width:132px; height:32px; box-sizing:border-box; font:inherit; font-size:12px;
+    padding:0 var(--s2); border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--bg); color:var(--text); }
   #branch .bcarry select:hover { border-color:var(--edge-hi); }
+  #branch .bcarry select:focus { outline:none; border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
   #branch .berr, #browse .berr { color:var(--stop); font-size:12px; white-space:pre-wrap; }
   /* Why the button did nothing is a person being needed, not a failure (5.4) */
   #branch .berr.need { color:var(--warn); font-size:11.5px; }
@@ -2615,7 +2647,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #app.drawer #tabs { transform:none; }
     /* On a phone this box is how a folder's tabs are reached at all, so it is
        as tall as the rows a finger already presses, not a strip under them */
-    #tabs .bundle.away { min-height:40px; }
+    #tabs .bundle { min-height:40px; }
     #app.drawer #backdrop { display:block; position:fixed; inset:0; z-index:20;
       background:rgba(0,0,0,.45); }
 
@@ -2687,6 +2719,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <div class="vsay"></div>
         <div class="bwhere"></div>
         <div class="blist" hidden></div>
+        <label class="snever" hidden><input type="checkbox"><span></span></label>
         <input id="sq" type="text" autocomplete="off" spellcheck="false" hidden>
         <div class="brow"><button class="quiet"></button><button class="go"></button></div>
       </div>
@@ -2769,6 +2802,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <div id="branch" hidden>
     <div class="vbox">
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
+      <div class="bbody">
       <div class="bsay"></div>
       <div class="bfield">
         <div class="blabelrow"><span class="blabel"></span><button class="bicon badd" type="button"></button></div>
@@ -2798,15 +2832,23 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
           <label class="blabel" for="bat"></label>
           <input id="bat" type="text" autocomplete="off" spellcheck="false">
         </div>
-        <label class="bsetup" hidden><input type="checkbox" id="bsetupon" checked><span></span></label>
-        <div class="bsetupsay hint" hidden></div>
-        <label class="bfan" hidden><input type="checkbox" id="bfanon"><span></span></label>
-        <div class="bais" hidden></div>
-        <div class="bcarry"></div>
+        <div class="bfield">
+          <label class="bsetup" hidden><input type="checkbox" id="bsetupon" checked><span></span></label>
+          <div class="bsetupsay" hidden></div>
+        </div>
+        <div class="bfield">
+          <label class="bfan" hidden><input type="checkbox" id="bfanon"><span></span></label>
+          <div class="bais" hidden></div>
+        </div>
+        <div class="bfield bcarryf">
+          <span class="blabel bcarrysay"></span>
+          <div class="bcarry"></div>
+        </div>
         <div class="bfield">
           <span class="blabel"></span>
           <div class="bcmd"></div>
         </div>
+      </div>
       </div>
       <div class="berr"></div>
       <div class="binuse" hidden>
@@ -3263,8 +3305,8 @@ function drawTabs() {
       // Not asked whether the folder itself was put away: a card has no fold,
       // and a fold kept from before would hide its tabs with nothing to open
       const mine = inside[gi];
-      if (mine.length >= 2) {
-        const away = !opened.has("tabs:" + g.folder);
+      if (mine.length) {
+        const away = tabsPutAway(g, mine);
         const bundle = bundleRow(g, mine, away, false);
         bundle.classList.add("wcard");
         nav.append(bundle);
@@ -3284,11 +3326,11 @@ function drawTabs() {
     // Its tabs are hidden while it is folded, and the heading says so
     if (folded.has(g.folder)) continue;
     const mine = inside[gi];
-    // A folder running one thing needs no heading over it -- the row above
-    // already is that heading. Two or more get one, so the set can be put
-    // away together and counted without counting rows
-    if (mine.length >= 2) {
-      const away = !opened.has("tabs:" + g.folder);
+    // Every folder with tabs gets the box that puts them away, one tab or
+    // several: without it a folder running one thing had no way to be made
+    // smaller at all
+    if (mine.length) {
+      const away = tabsPutAway(g, mine);
       nav.append(bundleRow(g, mine, away, false));
       if (away) continue;
     }
@@ -3430,7 +3472,8 @@ window.__issues = function (d) {
   }
   if (d.act === "projects") {
     I.projects = d.projects || [];
-    ghAccounts = d.accounts || [];
+    ghAccounts = (d.accounts || []).map(a => ({name: a.name, label: a.name}))
+      .concat(pcAcctChoices(d.pc, "").map(([name, label]) => ({name, label})));
     if (ghWaiting) { ghWaiting = false; ghSearch(ghText); }
     if (I.project && !issueProject(I.project)) I.project = "";
     if (!I.list) issuesList(1);
@@ -3591,7 +3634,7 @@ function drawIssueList(box) {
     const proj = issueProject(p.project);
     box.append(el("div", {class:"warn"},
       el("span", {}, p.project + ": " + p.error),
-      proj && p.settings ? el("button", {onclick:() => openSettings("project", true, proj.dir)}, T["issues.open_settings"] || "") : null));
+      proj && p.settings ? el("button", {onclick:() => openSettings("project-gitacct", true, proj.dir)}, T["issues.open_settings"] || "") : null));
   }
   const rows = el("div", {class:"irows"});
   if (I.list === null) rows.append(el("div", {class:"empty"}, T["issues.busy"] || "…"));
@@ -3745,7 +3788,7 @@ function drawIssueDetail(box) {
   const acct = proj && proj.account ? proj.account : "";
   box.append(el("h4", {}, T["issues.comment.label"] || ""));
   box.append(el("div", {class:"write field"}, write,
-    acct ? el("span", {class:"hint"}, (T["issues.as"] || "").replace("{account}", acct === "@pc" ? (T["git.acct.pc"] || "") : acct)) : null,
+    acct ? el("span", {class:"hint"}, (T["issues.as"] || "").replace("{account}", pcAcctLabel(acct))) : null,
     el("div", {class:"foot"},
       el("button", {onclick:() => {
         if (!write.value.trim()) return;
@@ -5006,19 +5049,24 @@ setInterval(() => {
 // how much of a list is on screen is this screen's business, and the phone and
 // the window are each looking at their own
 const folded = new Set();
-// Folders whose set of tabs has been brought out. The other way round from the
-// rest: a set of tabs starts put away, as its pills, so a folder running five
-// things is one line until somebody asks to see them one by one -- the list is
-// for finding the folder, and the pills already say which of its tabs wants you
-const opened = new Set();
+// Folders whose tabs somebody put away or brought out, and which of the two.
+// Until then a set of several starts put away, as its pills, so a folder
+// running five things is one line until somebody asks to see them one by one
+// -- the list is for finding the folder, and the pills already say which of its
+// tabs wants you. A single tab starts out: one row is no longer than its box
+const tabsAway = new Map();
+const tabsPutAway = (g, mine) => tabsAway.has(g.folder) ? tabsAway.get(g.folder) : mine.length >= 2;
 // Redraws the list it just changed. Asking for the address bar instead left
 // the fold recorded and the screen untouched until the next state push
 // happened to arrive -- and the app only pushes when something has actually
 // changed, so on a quiet board that was seconds away and the press read as dead
 function fold(folder) {
   if (!folder) return;
-  const set = folder.startsWith("tabs:") ? opened : folded;
-  set.has(folder) ? set.delete(folder) : set.add(folder);
+  folded.has(folder) ? folded.delete(folder) : folded.add(folder);
+  drawTabs();
+}
+function putTabsAway(folder, away) {
+  tabsAway.set(folder, away);
   drawTabs();
 }
 
@@ -5223,7 +5271,27 @@ function folderMenu(e, g) {
     // Everything else about it -- the colour, where it is, taking it off the
     // list -- is on its own page in the settings
     item(T["tui.menu.edit"] || "", () => openSettings(null, false, g.folder)),
+    // Last and in red, the one entry that cannot be taken back. Only a
+    // worktree: a project's own checkout is the repository itself
+    g.linked && !g.host
+      ? el("div", {class:"warn", onclick:() => { closeFolderMenu(); discardFolder(g); }}, T["tui.menu.discard"] || "")
+      : null,
   ], false, e);
+}
+// A worktree deleted for good, folder and all. Asked first unless the person
+// said not to ask again -- here, or under Basic
+function discardFolder(g) {
+  const go = unasked => send({kind:"folderdiscard", folder:g.folder, unasked});
+  if (S && S.discard_unasked) { go(false); return; }
+  askQuestion({
+    title: T["tui.discard.title"] || "",
+    say: T["tui.discard.say"] || "",
+    what: g.folder,
+    label: T["tui.menu.discard"] || "",
+    danger: true,
+    never: T["tui.discard.never"] || "",
+    go: (_, unasked) => go(unasked),
+  });
 }
 let folderMenuAway = null;
 function closeFolderMenu() {
@@ -5921,7 +5989,7 @@ function drawBranchResults(b) {
           ghBusy = true;
           drawBranchTabs(b);
           setTimeout(() => { ghFresh = false; ghSearch(ghText); }, 800);
-        }}, (T["tui.branch.gh.use"] || "{name}").replace("{name}", a.name)));
+        }}, (T["tui.branch.gh.use"] || "{name}").replace("{name}", a.label)));
       }
       box.append(pick);
     }
@@ -6358,7 +6426,7 @@ function drawCarry(b, items) {
   box.dataset.key = key;
   box.textContent = "";
   if (!items.length) return;
-  box.append(el("span", {class:"say"}, T["tui.branch.carry"] || "Bring along:"));
+  b.querySelector(".bcarrysay").textContent = T["tui.branch.carry"] || "Brought along";
   for (const it of items) {
     const pick = el("select", {"data-name": it.name});
     for (const how of ["copy", "replace", "link", "skip"]) {
@@ -6368,7 +6436,10 @@ function drawCarry(b, items) {
     }
     pick.value = it.how || "skip";
     pick.onchange = () => { showMore(b, !b.querySelector(".bextra").hidden); askBranch(); };
-    box.append(el("label", {}, el("span", {class:"mono"}, it.name), pick));
+    // Held left to right inside the marks: the box runs right to left so a
+    // long path is cut at the front, and a folder ends in the / that says so
+    const name = it.name + (it.folder ? "/" : "");
+    box.append(el("div", {}, el("span", {class:"nm", title:name}, "‎" + name + "‎"), pick));
   }
 }
 
@@ -6847,19 +6918,21 @@ const rankOf = st => { const i = STATE_RANK.indexOf(st); return i < 0 ? STATE_RA
 const worstOf = ts => (ts || []).map(t => t.state)
     .sort((a, b) => rankOf(a) - rankOf(b))[0] || "";
 
-// A folder's set of tabs, when it has more than one.
+// A folder's set of tabs.
 //
 // Put away, it is one box: a pill per state, and a › at its right end. The
 // whole box is the button, and it brings the tabs out row by row -- a pill
 // that went to a tab instead left a finger on a phone choosing between two
 // meanings in a strip a few millimetres tall. Going somewhere is the folder's
-// name's job (it goes to the tab last looked at). Brought out, it is the
-// heading over the rows, with the count, and pressing it puts them away.
+// name's job (it goes to the tab last looked at). Brought out, it is the same
+// box in the same place, with the count and a ▾ where the › was, and pressing
+// it puts them away. It used to become a line of small grey words over the
+// rows, which nobody took for the way to shut what they had just opened.
 function bundleRow(g, mine, away, deep) {
   const word = mine.length === 1
       ? (T["tui.folder.tabs.one"] || "1 tab")
       : (T["tui.folder.tabs"] || "{n} tabs").replace("{n}", mine.length);
-  const toggle = e => { e.stopPropagation(); fold("tabs:" + g.folder); };
+  const toggle = e => { e.stopPropagation(); putTabsAway(g.folder, !away); };
   if (away) {
     // The words for what the pills can only show in colour, for the eye that
     // does not know the colours yet: the state of whatever wants somebody first
@@ -6872,8 +6945,7 @@ function bundleRow(g, mine, away, deep) {
   }
   return el("div", {class:"bundle" + (deep ? " deep" : ""),
       title:T["tui.folder.tabs.title"] || "", onclick:toggle},
-    el("span", {}, word),
-    // Last, the way the branch count above it wears its own
+    el("span", {class:"word"}, word),
     el("span", {class:"caret"}, "▾"));
 }
 
@@ -7600,9 +7672,15 @@ window.__state = function (json) {
   // A pane holds the panel only for a git tab. Anywhere else it stands in the
   // column on the right, which takes it and turns it back on if that is where
   // it belongs -- so the panel is put out here and claimed there, and never
-  // left over a terminal it no longer covers
+  // left over a terminal it no longer covers.
+  //
+  // Standing in the column, it is the column's to show or hide, and nothing
+  // here touches it. Hiding it on every state for drawSide to show it again a
+  // moment later was invisible, but the column measures itself in between --
+  // and a panel measured while hidden loses the keyboard, which shut the
+  // account list the instant it dropped open
   if (panel && git && panel.parentNode !== main) main.append(panel);
-  if (panel) panel.hidden = cover || !git;
+  if (panel && panel.parentNode === main) panel.hidden = cover || !git;
   drawSide();
   // Ask the moment it comes into view, and whenever the panel being looked at
   // changes -- a list that was true a desk ago is not worth drawing
@@ -8983,9 +9061,19 @@ function report() {
   // only not being shown -- so keep the last measurement taken while it was.
   const laid = boxes.length > 0
     && boxes.every((el) => el.querySelector(".pbody").getClientRects().length > 0);
+  // The composer stands on the foot of the focused pane, and the terminal
+  // there stops above it (#screen). The program is told the rows it can
+  // actually be seen in: told the whole pane, it drew its prompt on rows the
+  // bar was covering, and a person typing at it saw nothing arrive
+  const dockH = parseFloat(main.style.getPropertyValue("--dock")) || 0;
+  const body = (el) => {
+    const b = el.querySelector(".pbody").getBoundingClientRect();
+    return el.classList.contains("focused")
+      ? {width: b.width, height: Math.max(0, b.height - dockH)} : b;
+  };
   if (laid) lastPanes = boxes.map((el) => {
     const b = el.querySelector(".pbody").getBoundingClientRect();
-    const d = fit(b);
+    const d = fit(body(el));
     // Where a browser placed in this pane sits. Even if the shell's CSS
     // changes, only the page itself knows this — never let Rust guess the
     // coordinates. In the focused pane that rectangle is #page, which already
@@ -9014,8 +9102,7 @@ function report() {
   // The focused pane's numbers are the ones the rest of the app still speaks in
   if (laid) {
     const box = boxes.find((el) => el.classList.contains("focused"));
-    lastFit = fit(box ? box.querySelector(".pbody").getBoundingClientRect()
-                      : main.getBoundingClientRect());
+    lastFit = fit(box ? body(box) : main.getBoundingClientRect());
   }
   const panes = lastPanes || [];
   // Before any pane has ever been laid out -- a cold start onto INDEX -- there
@@ -10773,11 +10860,15 @@ function insertIntoComposer(path) {
 function growCastInput() {
   if (!castInput) return;
   castInput.style.height = "auto";
-  castInput.style.height = Math.min(castInput.scrollHeight, Math.round(window.innerHeight * 0.4)) + "px";
+  // scrollHeight stops inside the border and the height set here includes it,
+  // so a field grown to scrollHeight alone came out two pixels short of its
+  // text and hung a scroll bar beside a single line
+  const edge = castInput.offsetHeight - castInput.clientHeight;
+  castInput.style.height = Math.min(castInput.scrollHeight + edge, Math.round(window.innerHeight * 0.4)) + "px";
   // Over a browser tab the dock's height decides how much of #page the native
   // browser may cover — a grown textarea must push that reserve up too, or the
   // panel row slides in under the browser layer and can't be clicked.
-  if (typeof syncBrowserReserve === "function") syncBrowserReserve();
+  if (typeof syncDockReserve === "function") syncDockReserve();
 }
 // The window has no remote HTTP server, so it saves over the ipc bridge: post the
 // bytes, and Rust replies by eval-ing window.__attachDone(id, result). Correlate
@@ -11081,8 +11172,8 @@ let lastPanelSig = "";
 function syncBrowserDock() {
   // The phone builds its dock elsewhere; only the reserve is wanted here, so
   // the bar asking the person something (#ask) knows to sit above the dock
-  if (typeof REMOTE !== "undefined" && REMOTE) { syncBrowserReserve(); return; }
-  if (!onBrowserTab()) { lastPanelSig = ""; syncBrowserReserve(); return; }
+  if (typeof REMOTE !== "undefined" && REMOTE) { syncDockReserve(); return; }
+  if (!onBrowserTab()) { lastPanelSig = ""; syncDockReserve(); return; }
   ensureBar();
   const sig = panelOptions().join();
   if (sig !== lastPanelSig) {
@@ -11090,12 +11181,13 @@ function syncBrowserDock() {
     if (panelOptions().indexOf(castPanel) < 0) castPanel = panelOptions()[0];
     renderPanel();
   }
-  syncBrowserReserve();
+  syncDockReserve();
 }
-// Just the reserve: how much of #page the native browser must leave to the
-// dock. Split out because the dock's height also changes when the composer
-// textarea grows (a recorded line landing, a long paste) — that path needs the
-// reserve refreshed without rebuilding the panel on every keystroke.
+// Just the reserve: how much of the pane the composer stands on, which every
+// surface there leaves to it. Split out because the dock's height also changes
+// when the composer textarea grows (a recorded line landing, a long paste) —
+// that path needs the reserve refreshed without rebuilding the panel on every
+// keystroke.
 // Whether a page placed in the window should be drawing the pen: only when the
 // composer is closed. WHICH page is the app's to work out -- it is the one in
 // the focused pane -- so only this much travels. Sent on change, because it is
@@ -11108,23 +11200,16 @@ function syncBrowserPen() {
   lastPen = want;
   send({kind:"pen", on: want});
 }
-function syncBrowserReserve() {
+function syncDockReserve() {
   syncBrowserPen();
-  // On #main rather than on #page: the bar that asks the person something
-  // (#ask) sits above the dock and has to know its height too. On the phone
-  // the relay picture is not held back by it (the dock lies over the black
-  // band under the picture), but the bar still has to clear it
+  // On #main rather than on #page: everything that stands in the pane stops
+  // above the dock -- the page placed there, the bar asking the person
+  // something (#ask), a file being edited, and the terminal, whose foot is
+  // where an AI keeps its prompt. Laid over any of them, the bar hid the one
+  // line a person had come to type at or read. On the phone the relay picture
+  // is not held back by it (the dock lies over the black band under the
+  // picture), but everything else is
   const page = document.getElementById("main");
-  // A file being edited is held up by it too. Its last line is where the
-  // editor says the file changed underneath and offers the two ways out, and
-  // under the composer that line could not be read or pressed
-  if (!onBrowserTab() && !editorTab()) {
-    if (page.style.getPropertyValue("--dock")) {
-      page.style.removeProperty("--dock");
-      scheduleReport();
-    }
-    return;
-  }
   // Only the composer takes room. The pen used to take some too -- the page
   // was held up by the height of a button so that a button could be drawn
   // beside it, which left a band of nothing under every browser. The pen is
@@ -12200,7 +12285,9 @@ function showDiff(msg) {
 // `back` is told when the question is put away without its button: the close
 // mark, Esc, a press outside, Cancel
 let sAskGo = null, sAskBack = null;
-function askQuestion({title, say, what, rows, field, label, danger, go, back}) {
+// `never` is the words of a "don't show this again" box. Its answer is handed
+// to `go` after the field's
+function askQuestion({title, say, what, rows, field, label, danger, never, go, back}) {
   const box = document.getElementById("sask");
   box.hidden = false;
   box.querySelector(".vtitle").textContent = title;
@@ -12217,6 +12304,11 @@ function askQuestion({title, say, what, rows, field, label, danger, go, back}) {
   const input = box.querySelector("#sq");
   input.hidden = !field;
   input.value = field || "";
+  const again = box.querySelector(".snever");
+  again.hidden = !never;
+  again.querySelector("span").textContent = never || "";
+  const unasked = again.querySelector("input");
+  unasked.checked = false;
   const cancel = box.querySelector(".quiet");
   cancel.textContent = T["common.cancel"] || "";
   cancel.onclick = () => closeAsk();
@@ -12227,7 +12319,7 @@ function askQuestion({title, say, what, rows, field, label, danger, go, back}) {
   // not answered
   if (sAskBack) { const was = sAskBack; sAskBack = null; was(); }
   sAskBack = back || null;
-  sAskGo = () => { sAskBack = null; closeAsk(); go(input.value.trim()); };
+  sAskGo = () => { sAskBack = null; closeAsk(); go(input.value.trim(), !!never && unasked.checked); };
   btn.onclick = sAskGo;
   setTimeout(() => (field ? input : btn).focus(), 0);
 }
@@ -12439,13 +12531,6 @@ function drawSftp() {
   const u = sftpUi;
   const narrow = box.clientWidth > 0 && box.clientWidth < SFTP_NARROW;
   box.classList.toggle("narrow", narrow);
-  // How much of the bottom the sub-input bar is standing on right now. Read
-  // every draw because it grows and shrinks: a pasted line makes the composer
-  // taller, and the panel has to give up exactly that much
-  const dock = document.getElementById("castdock");
-  const over = dock && getComputedStyle(dock).display !== "none"
-    ? Math.round(dock.getBoundingClientRect().height) : 0;
-  box.style.setProperty("--sdock", over + "px");
 
   // Which connection, and the two chips that stand in for the two columns when
   // there is only room for one
@@ -12731,6 +12816,25 @@ function drawGit() {
   });
 }
 
+// The PC's own git as menu entries: as it is, and -- once it holds two GitHub
+// accounts, when git cannot tell which to use -- as each of them. A choice
+// already made of one it no longer lists is kept, so the menu still says it
+function pcAcctChoices(held, now) {
+  const out = [["@pc", T["git.acct.pc"] || ""]];
+  const names = (held || []).length > 1 ? [...held] : [];
+  const chosen = String(now || "").startsWith("@pc:") ? String(now).slice(4) : "";
+  if (chosen && !names.includes(chosen)) names.push(chosen);
+  for (const n of names) out.push(["@pc:" + n, pcAcctLabel("@pc:" + n)]);
+  return out;
+}
+// What a written choice of the PC's git is called on screen; the choice
+// itself for anything else
+function pcAcctLabel(v) {
+  if (v === "@pc") return T["git.acct.pc"] || "";
+  if (String(v || "").startsWith("@pc:")) return (T["git.acct.pc_as"] || "{login}").replace("{login}", String(v).slice(4));
+  return v;
+}
+
 // The account menu. Rebuilt only when what it offers has changed, and never
 // while it is open -- a list redrawn under the pointer loses the choice being made
 function drawGitAccount(u) {
@@ -12748,7 +12852,7 @@ function drawGitAccount(u) {
     s.append(el("option", {value:c.name},
       c.name + " \u2014 " + c.about + (c.fits ? "  " + (T["git.acct.fits"] || "") : "")));
   }
-  s.append(el("option", {value:"@pc"}, T["git.acct.pc"] || ""));
+  for (const [value, label] of pcAcctChoices(ga.pc, ga.now)) s.append(el("option", {value}, label));
   if (ga.missing) s.append(el("option", {value:ga.now}, (T["git.acct.gone"] || "").replace("{name}", ga.now)));
   s.value = ga.now || "";
   s.classList.toggle("unset", !ga.now || !!ga.missing);
@@ -13875,8 +13979,12 @@ mod tests {
     fn the_tab_list_redraws_itself_when_it_folds() {
         let p = super::page();
         assert!(
-            p.contains("set.has(folder) ? set.delete(folder) : set.add(folder);\n  drawTabs();"),
+            p.contains("folded.has(folder) ? folded.delete(folder) : folded.add(folder);\n  drawTabs();"),
             "folding does not redraw the list (the screen does not change until the next state arrives)"
+        );
+        assert!(
+            p.contains("tabsAway.set(folder, away);\n  drawTabs();"),
+            "putting a folder's tabs away does not redraw the list"
         );
         assert!(
             p.contains("troubleOpen = !troubleOpen; drawTabs();"),
@@ -13975,6 +14083,36 @@ mod tests {
             !p.contains("page.style.bottom"),
             "the space for the dock overrides the pane's position"
         );
+    }
+
+    /// The composer never covers the foot of a terminal.
+    ///
+    /// It was laid over the pane on a terminal, on the reasoning that a
+    /// terminal's contents scroll under and come back. An AI's prompt does not
+    /// scroll: it is drawn on the last rows, with the line saying which mode it
+    /// is in under it, so the bar hid both, and typing straight at the AI looked
+    /// like typing into nothing. The terminal stops above the bar, and the
+    /// program is told the rows that are left rather than the whole pane.
+    #[test]
+    fn the_composer_does_not_cover_the_prompt_at_the_foot_of_a_terminal() {
+        let p = super::page();
+        assert!(
+            p.contains("#screen { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+    bottom:calc(var(--fb) + var(--dock, 0px));")
+                || p.contains("#screen { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+    bottom:calc(var(--fb) + var(--dock, 0px));"),
+            "the terminal still runs on under the composer"
+        );
+        // The room is held back on every surface, not only over a page or a file
+        assert!(
+            !p.contains("if (!onBrowserTab() && !editorTab())"),
+            "the dock's room is held back only over some kinds of pane"
+        );
+        assert!(
+            p.contains("? {width: b.width, height: Math.max(0, b.height - dockH)} : b;"),
+            "the program is told rows the composer is covering"
+        );
+        assert!(!p.contains("--sdock"), "a second name for the dock's room is back");
     }
 
 
@@ -14842,16 +14980,30 @@ mod tests {
         assert_eq!(ranked[0], TabState::Question.label(), "the state that keeps a person waiting is not first");
     }
 
+    /// A list in the changes panel stays open when it is pressed. The panel in
+    /// the column was hidden and shown again on every state, and a focused
+    /// dropdown measured while hidden loses the keyboard and shuts.
+    #[test]
+    fn the_changes_panel_in_the_column_is_not_hidden_on_every_state() {
+        assert!(!PAGE.contains("if (panel) panel.hidden = cover || !git;"), "the pane hides the panel the column is showing");
+        assert!(PAGE.contains("if (panel && panel.parentNode === main) panel.hidden = cover || !git;"),
+            "the pane no longer puts away a git tab's panel");
+    }
+
     /// Several tabs in one folder get a heading, and a folded folder speaks
     /// for them. Both are what stop a sidebar of six agents from being six
     /// rows that have to be read one at a time.
     #[test]
     fn a_folder_with_several_tabs_can_be_put_away_as_one() {
-        assert!(PAGE.contains("if (mine.length >= 2) {"), "the bundle heading shows (or does not) for a single tab");
-        assert!(PAGE.contains(r#"fold("tabs:" + g.folder)"#), "there is no tab to fold the bundle");
-        // A set of tabs starts put away: only a set somebody opened is shown row by row
-        assert!(PAGE.contains(r#"const away = !opened.has("tabs:" + g.folder);"#), "a bundle of tabs starts out open");
-        assert!(PAGE.contains(r#"const set = folder.startsWith("tabs:") ? opened : folded;"#), "opening a bundle is mixed up with the record of what is folded");
+        // One tab can be put away too, and nothing else stands in for the box
+        assert!(!PAGE.contains("if (mine.length >= 2) {"), "a folder running one tab has no box to put it away");
+        assert!(PAGE.contains("putTabsAway(g.folder, !away)"), "there is no press that folds the bundle");
+        // Several start put away, one starts out, and a press is remembered either way
+        assert!(PAGE.contains("const tabsPutAway = (g, mine) => tabsAway.has(g.folder) ? tabsAway.get(g.folder) : mine.length >= 2;"),
+            "a bundle does not start the way its size says");
+        assert!(PAGE.contains("const away = tabsPutAway(g, mine);"), "a bundle ignores what somebody chose");
+        // Brought out, it is still the box, so the way to shut it is where the way to open it was
+        assert!(!PAGE.contains(".bundle.away { margin"), "only a folded bundle is drawn as a box");
         assert!(PAGE.contains("function pillsRow(mine)"), "there is nothing shown when folded");
         // Put away, the set is one box that opens from anywhere on it, with a ›
         // at its end -- the pills inside are not buttons of their own
@@ -15183,6 +15335,21 @@ mod tests {
         assert!(PAGE.contains(r#"send({kind:"tabname", tab:t.index, name:v})"#), "a tab's new name is not sent");
         assert!(PAGE.contains(r#"if (heldDown("tabs") || renameHeld("tabs")) return;"#), "the list is redrawn over the field being typed in");
         assert!(PAGE.contains(r#"if (inBar(e) || e.defaultPrevented) return;"#), "a right-click that opened a menu also pastes");
+    }
+
+    /// A worktree is deleted for good from the last, red entry of its
+    /// right-click menu. It asks first, with a box that stops it asking again,
+    /// and the answer is kept in the settings (Basic) rather than in this page
+    #[test]
+    fn a_worktree_is_deleted_from_its_right_click_asking_first_unless_told_not_to() {
+        assert!(PAGE.contains(r#"g.linked && !g.host
+      ? el("div", {class:"warn", onclick:() => { closeFolderMenu(); discardFolder(g); }}, T["tui.menu.discard"] || "")"#),
+            "the menu has no red delete, or offers it on a project's own checkout");
+        assert!(PAGE.contains("if (S && S.discard_unasked) { go(false); return; }"), "turned off, it still asks");
+        assert!(PAGE.contains(r#"never: T["tui.discard.never"] || "","#), "the question has no box to stop it asking");
+        assert!(PAGE.contains("go(input.value.trim(), !!never && unasked.checked)"), "the box's answer is not handed on");
+        assert!(PAGE.contains(r#"send({kind:"folderdiscard", folder:g.folder, unasked})"#), "the answer does not reach the app");
+        assert!(PAGE.contains("unasked.checked = false;"), "a box ticked once stays ticked in the next question");
     }
 
     #[test]

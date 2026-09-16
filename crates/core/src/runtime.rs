@@ -2794,8 +2794,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderClose { folder }) => {
                         shell.mail().folder_closes.push(folder);
                     }
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderDiscard { folder }) => {
-                        shell.mail().folder_discards.push(folder);
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderDiscard { folder, unasked }) => {
+                        shell.mail().folder_discards.push((folder, unasked));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderColor { folder, color }) => {
                         shell.mail().folder_colors.push((folder, color));
@@ -3070,6 +3070,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // The pointer waits behind the setup: it points at the list, and
             // the setup is in front of the list
             coach: coach.filter(|_| setup_view.is_none()),
+            discard_unasked: cfg.as_ref().is_some_and(|c| c.confirm_worktree_delete == Some(false)),
             setup: setup_view.clone(),
             add_project: add_view.clone(),
             worktrees_kept: worktrees_kept.clone(),
@@ -3176,6 +3177,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 })
                 .unwrap_or_default(),
             git_accounts: desks.get(desk_index).map(|w| w.git_accounts.clone()).unwrap_or_default(),
+            pc_accounts: crate::pr::pc_accounts_known(),
             folder_items: desks
                 .get(desk_index)
                 .map(|w| w.folders.iter().filter_map(|f| f.cwd.clone().zip(f.work_item.clone())).collect())
@@ -3881,9 +3883,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for (panel, account) in shell.mail().take_git_accounts() {
             let Some(desk) = desks.get(desk_index) else { continue };
             let account = account.trim().to_string();
-            // Only a name this desk has, or the PC's own, or nothing
+            // Only a name this desk has, or the PC's own git (as one of its
+            // accounts or not), or nothing
             if !(account.is_empty()
-                || account == config::THIS_PC
+                || config::pc_choice(&account).is_some()
                 || desk.git_accounts.iter().any(|a| a.name == account))
             {
                 continue;
@@ -4350,7 +4353,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .iter()
                     .map(|a| serde_json::json!({"name": a.name, "gh": a.is_gh(), "host": a.host()}))
                     .collect();
-                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects, "accounts": accounts}).to_string();
+                // And the GitHub accounts git on this PC holds, each a choice
+                let pc = crate::pr::pc_accounts_known();
+                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects, "accounts": accounts, "pc": pc}).to_string();
                 shell.push_issues(&js);
                 if let Some(r) = remote_ui.as_ref() {
                     r.push_state(format!("{{\"issues\":{js}}}"));
@@ -4634,7 +4639,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Then the tabs are ended by taking the folder out of the settings --
         // git will not remove a folder something is still standing in -- and
         // the removal itself waits for them to actually be gone
-        for folder in shell.mail().take_folder_discards() {
+        for (folder, unasked) in shell.mail().take_folder_discards() {
+            // Written before the folder is tried: the person asked not to be
+            // asked again, whatever becomes of this one
+            if unasked {
+                config::save_setting(&["confirm_worktree_delete"], serde_json::json!(false));
+            }
             let at = std::path::PathBuf::from(&folder);
             if let Err(e) = crate::worktree::ready_to_discard(&at) {
                 flash = Some(format!("{e:#}"));
@@ -9552,6 +9562,19 @@ mod tests {
         let surfaces = vec![Surface::Session(0), Surface::Session(1)];
         let mut layout = crate::layout::Layout::single(1);
         let mut relay = PaneRelay::default();
+        // A prompt still arriving is a picture that really changed, and is
+        // rightly sent again; wait for both shells to go quiet so "nothing
+        // changed" below means it
+        let (start, mut quiet, mut last) = (Instant::now(), Instant::now(), 0u64);
+        while start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(100));
+            let n: u64 = tabs.iter().map(|t| t.output_count()).sum();
+            if n != last {
+                (last, quiet) = (n, Instant::now());
+            } else if quiet.elapsed() > Duration::from_millis(800) {
+                break;
+            }
+        }
 
         // Undivided: the division, and no other pane to picture
         let first = relay.changes(&layout, &surfaces, &tabs);

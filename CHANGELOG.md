@@ -38,6 +38,13 @@ once it reaches its first tagged release.
   of a transfer, told the same tab and stopping at the same folder -- so a walk
   written for one side reads the same written for the other.
 
+- **A worktree is deleted from its right-click menu in the left bar.** The last
+  entry, in red, is "Delete completely": the whole folder goes, links are
+  unhooked first so what they point to stays, and files copied in that git does
+  not track go too. It still refuses while there are uncommitted changes. The
+  question it asks has "Don't show this again", and Settings > Basic > "Ask
+  before deleting a worktree" is where that answer is kept and turned back on.
+
 ### Fixed
 - **A folder sent from the file panel never started on a desk with no
   automation of its own** -- which is nearly every desk. The walk runs as Lua,
@@ -76,12 +83,50 @@ once it reaches its first tagged release.
   -- now lives in one place that both come through. A tab that was given no
   folder on the far end is reached as before: there is nothing there to be
   outside of.
-- **Two GitHub accounts stored on this PC are said as two, not as none.** A
-  project signing in with this PC's git settings asks git for its GitHub
-  credential with nobody there to answer a question. When the credential
-  manager holds more than one account it wants to ask which, fails, and the
-  Issue tab said no sign-in was stored at all. It now names the accounts it
-  found and asks for a git account to be chosen for the project.
+- **A folder's tabs in the left bar can be shut again after being opened, and
+  one tab can be put away too.** Opened, the box that brought the tabs out
+  turned into a line of small grey words, which did not read as the way to shut
+  them, and a folder running a single tab had no box at all. The box now stays
+  where it is either way, with the count and a ▾ while the tabs are out, and
+  every folder with tabs has one. A single tab starts out; several start put away.
+- **The input bar no longer covers the bottom of a terminal.** An AI keeps its
+  prompt on the last rows of the screen, with the line saying which mode it is
+  in (`bypass permissions on`) under it, and the input bar was laid over both.
+  Typing straight into the terminal still reached the AI, but nothing could be
+  seen arriving, so it looked as if only the input bar could be typed into. The
+  terminal now stops above the bar and the program is given the rows that are
+  left, so both ways of typing work side by side. The git and file panels stop
+  above it the same way.
+- **A folder renamed in the left bar keeps its new name.** While its tabs were
+  running, the new name showed for a few seconds and then went back to the old
+  one. The name is saved, and the tabs already running now take it too.
+- **The worktree dialog keeps its button in the window however much a project
+  brings along.** Opening "More" on a project with many ignored files pushed the
+  list and the create button out past the bottom of the dialog. The middle now
+  scrolls between the title and the button, what comes along is one boxed list
+  with its choices in a single column, and the command that runs sits in its
+  own well.
+- **Comments in a .gitignore name the lines under them in the project
+  settings.** Each comment used to be a faint row of its own in the list, which
+  read as gaps. A comment is now the heading of its group, further comment lines
+  the description under it, rulers like `####` are left out, and every line's
+  choice stands in one column. What Link does is said once above the lists
+  instead of under every line set to it.
+- **A worktree with a folder carried in as a link can be thrown away on Linux
+  and macOS.** There the link is a symbolic link, and an ignore line written
+  for folders (`node_modules/`) does not match one, so git counted it as a new
+  file and the folder was refused as holding uncommitted work, every time. A
+  link nobody committed is not counted as work: it holds nothing, and removing
+  the folder unhooks it and leaves what it points at alone.
+- **This PC's git can be told which of its GitHub accounts to use.** With two
+  accounts in the credential manager, git wants to ask which one, and with
+  nobody there to answer, the Issue tab said no sign-in was stored at all while
+  pull, push and fetch failed on a prompt that could not be shown. Each account
+  is now a choice of its own -- "This PC's git (GitHub: name)" -- in the git
+  column's menu, on the project's and the git tab's settings pages, and in the
+  worktree dialog, and the refusal names the accounts it found. Its "Open
+  settings" button lands on the project's git account card and marks it,
+  rather than at the top of the page.
 - **A link deeper than the top of a worktree is made, and unhooked before the
   folder goes.** `web/node_modules` was asked of `mklink` with the `/` still in
   it, which cmd read as a switch, so every nested link quietly came out as "not

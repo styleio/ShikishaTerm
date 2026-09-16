@@ -100,13 +100,16 @@ pub fn target(
             "err.git.account.missing",
             &[("name", name)]
         ))),
-        GitUse::Pc => crate::pr::pc_token().map_err(|why| {
+        GitUse::Pc(login) => crate::pr::pc_token(login.as_deref()).map_err(|why| {
             AccountTrouble(match why {
                 crate::pr::PcSignIn::None => crate::i18n::t("err.github.pc_none"),
                 crate::pr::PcSignIn::Many(names) => crate::i18n::tp(
                     "err.github.pc_many",
                     &[("names", &names.join(", "))],
                 ),
+                crate::pr::PcSignIn::Gone(login) => {
+                    crate::i18n::tp("err.github.pc_gone", &[("login", &login)])
+                }
             })
         })?,
         GitUse::Account { desk, spec } => {
