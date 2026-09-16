@@ -3202,6 +3202,15 @@ impl HookEngine {
                                 let row = lua.create_table()?;
                                 row.set("protected", crate::git::is_protected(&n, &protect))?;
                                 row.set("name", n)?;
+                                // Only when it follows something: a count
+                                // against nothing is not zero, it is no answer
+                                if let Some((up, ahead, behind)) = crate::git::upstream(&dir)
+                                    .map_err(|e| mlua::Error::runtime(e.to_string()))?
+                                {
+                                    row.set("upstream", up)?;
+                                    row.set("ahead", ahead)?;
+                                    row.set("behind", behind)?;
+                                }
                                 Ok(Value::Table(row))
                             }
                             None => Ok(Value::Nil),

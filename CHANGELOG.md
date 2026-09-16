@@ -8,6 +8,21 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Changed
+- **The commit message is written in the git panel, and one button does the next
+  thing.** The message used to be the line in the input bar under the terminal,
+  and the Commit button in the Changes column took whatever was typed there --
+  beside Claude, a line meant for Claude. The panel now has a message box of its
+  own, with a button in its corner that has the AI write one, and under it a
+  single button that follows the work: settle a conflict, add everything, commit,
+  publish the branch, push, pull, fetch. Commit and push, amending the last commit,
+  a new branch and merge are under the arrow beside it, and what cannot be done
+  yet stays in that list with what it is waiting for. The branch line says how
+  far it is from the branch it follows ("2 to push"). The input bar no longer has
+  a commit row, and Send on a git tab no longer commits.
+- **`shikisha.git_branch` also says what the branch follows.** `upstream`,
+  `ahead` and `behind`, as of the last fetch, and absent when it follows nothing.
+
 ## [0.15.0] - 2026-09-16
 
 The file panel sends and brings back whole folders, says what a send would

@@ -1051,12 +1051,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #casttarget { display:flex; align-items:center; gap:var(--s2); flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
   #casttarget::-webkit-scrollbar { display:none; }
-  /* 🌿 commit: a chip and two ticks, the same row shape as 📼 and 🎯. The
-     panels share one shape on purpose -- the bar is one bar, whichever panel
-     is in front of it */
-  #castgit { display:flex; align-items:center; gap:var(--s3); flex:1 1 0; min-width:0;
-    padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
-  #castgit::-webkit-scrollbar { display:none; }
   /* 📼 record/run: two radios + a hint, same row shape as 🎯. */
   #castlua { display:flex; align-items:center; gap:var(--s3); flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
@@ -1439,6 +1433,67 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .said { color:var(--muted); font-size:12px; min-width:0; overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
   #gitpanel .said.bad { color:var(--danger); }
+  /* The commit, at the top of the changes: the branch and how far it is from
+     the one it follows, the message with the AI's button inside its corner,
+     and one button that is always the next thing to do -- the rest of what
+     git can be asked for under the arrow joined to it */
+  #gitpanel .gcommit { display:flex; flex-direction:column; gap:var(--s2); padding:var(--s3);
+    border-bottom:1px solid var(--line); flex:0 0 auto; }
+  #gitpanel .ghead { display:flex; align-items:center; gap:var(--s2); min-width:0; font-size:12px; color:var(--dim); }
+  #gitpanel .ghead .ico { display:flex; flex:none; }
+  #gitpanel .ghead .nm { font-family:var(--mono); color:var(--text); min-width:0; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  #gitpanel .ghead .up { margin-left:auto; flex:none; font-size:11px; color:var(--dim);
+    font-variant-numeric:tabular-nums; white-space:nowrap; }
+  #gitpanel .gmsg { position:relative; }
+  #gitpanel .gmsg textarea { display:block; width:100%; box-sizing:border-box; min-height:64px; max-height:40vh;
+    resize:vertical; padding:var(--s2) 36px var(--s2) var(--s3); font:inherit; font-size:13px; line-height:1.45;
+    background:var(--bg); color:var(--text); border:1px solid var(--edge); border-radius:var(--r-ctl); outline:none; }
+  #gitpanel .gmsg textarea:hover { border-color:var(--edge-hi); }
+  #gitpanel .gmsg textarea:focus { border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #gitpanel .gmsg textarea:disabled { color:var(--dim); background:var(--panel2); }
+  #gitpanel .gmsg textarea.ring { animation:apring .9s 2; }
+  #gitpanel .gmsg .gai { position:absolute; top:var(--s1); right:var(--s1); width:28px; height:28px; padding:0;
+    display:flex; align-items:center; justify-content:center; border:0; border-radius:var(--r-ctl);
+    background:transparent; color:var(--dim); cursor:pointer; }
+  #gitpanel .gmsg .gai:hover { color:var(--text); background:var(--hover); }
+  #gitpanel .gmsg .gai[disabled] { color:var(--faint); background:transparent; cursor:default; }
+  #gitpanel .gsplit { display:flex; }
+  #gitpanel .gsplit button { height:32px; box-sizing:border-box; font:inherit; font-size:12.5px; cursor:pointer;
+    border:1px solid var(--brand); background:var(--brand); color:var(--bg); }
+  #gitpanel .gsplit button:hover { filter:brightness(1.08); }
+  #gitpanel .gsplit .gmain { flex:1; min-width:0; display:flex; align-items:center; justify-content:center;
+    gap:var(--s2); padding:0 var(--s3); border-radius:var(--r-ctl) 0 0 var(--r-ctl); font-weight:600; }
+  #gitpanel .gsplit .gmain .ico { display:flex; flex:none; }
+  #gitpanel .gsplit .gmain .gl { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #gitpanel .gsplit .gmore { flex:0 0 32px; padding:0; font-size:9px; border-radius:0 var(--r-ctl) var(--r-ctl) 0;
+    border-left-color:color-mix(in srgb, var(--bg) 30%, var(--brand)); }
+  /* Waiting for something (5.4): grey, the press still answered */
+  #gitpanel .gsplit.held button, #gitpanel .gsplit button[disabled] { background:var(--panel2);
+    border-color:var(--line); color:var(--faint); filter:none; font-weight:500; }
+  #gitpanel .gsplit.held .gmain { cursor:not-allowed; }
+  #gitpanel .gsplit button[disabled] { cursor:default; }
+  #gitpanel .gname { display:flex; gap:var(--s2); }
+  #gitpanel .gname[hidden] { display:none; }
+  #gitpanel .gname input { flex:1; min-width:0; height:32px; box-sizing:border-box; padding:0 var(--s3);
+    font:inherit; font-size:13px; background:var(--bg); color:var(--text); border:1px solid var(--edge);
+    border-radius:var(--r-ctl); outline:none; }
+  #gitpanel .gname input:focus { border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #gitpanel .gname button { height:32px; padding:0 var(--s3); font:inherit; font-size:12.5px; cursor:pointer;
+    border:1px solid var(--edge); background:var(--panel2); color:var(--text); border-radius:var(--r-ctl); }
+  #gitpanel .gcommit .said { white-space:normal; font-size:11.5px; }
+  #gitpanel .gcommit .said:empty { display:none; }
+  #gitpanel .gcommit .said.need { color:var(--warn); }
+  #gitpanel h4 .n { font-variant-numeric:tabular-nums; }
+  /* The commit's menu: rules between the kinds of thing, and what cannot be
+     done yet left in the list, grey, with what it waits for under it */
+  .fmenu div.gsep { padding:0; height:1px; margin:var(--s1) 0; background:var(--line); cursor:default; }
+  .fmenu div.gsep:hover { background:var(--line); }
+  .fmenu div.gdis { color:var(--faint); cursor:not-allowed; }
+  .fmenu div.gdis:hover { background:transparent; }
+  .fmenu div.gdis .why { display:block; font-size:11px; }
   #gitpanel .cols { display:flex; flex:1 1 auto; min-height:0; }
   #gitpanel .branches { flex:0 0 170px; overflow:auto; min-width:0; }
   #gitpanel .mid { flex:0 0 38%; min-width:0; display:flex;
@@ -5313,6 +5368,8 @@ const PICK_ICON = {
   search: '<circle cx="6" cy="6" r="4.2"/><path d="M9.2 9.2 12.5 12.5"/>',
   folder: '<path d="M1.5 3.5h4l1.3 1.5h5.7v6.5h-11z"/>',
   up: '<path d="M7 11.5V3M3.5 6.5 7 3l3.5 3.5"/>',
+  down: '<path d="M7 2.5V11M3.5 7.5 7 11l3.5-3.5"/>',
+  check: '<path d="M2.5 7.5 5.5 10.5 11.5 3.5"/>',
   home: '<path d="M2 6.5 7 2.5l5 4V12H2z"/><path d="M5.6 12V8.6h2.8V12"/>',
   desktop: '<rect x="1.5" y="2.5" width="11" height="7.5" rx="1"/><path d="M5 12.5h4M7 10v2.5"/>',
   project: '<rect x="2.5" y="2.5" width="9" height="9" rx="1.5"/>',
@@ -7688,11 +7745,6 @@ window.__state = function (json) {
     const t = gitTab();
     if (!wasGit || G.panel !== ((t && (t.id || t.name)) || null)) {
       gitRefresh(false);
-      // The bar follows the surface: on a git panel the line being written is
-      // a commit message. Picking another panel from the switcher still works
-      castPanel = "git";
-      userPanel = null;
-      if (castPanelEl) renderPanel();
     }
     else drawGit();
   }
@@ -11123,23 +11175,14 @@ function targetNote() {
 // Panels available on this surface. "target" (operate a tab) shows a placeholder
 // until that feature lands, but it's listed now so the switcher is present on both
 // the phone (keys/actions/target) and the desktop (actions/target).
-// The changes standing in the column beside a terminal. The commit bar belongs
-// in the switcher then, but not in front of it: the line being typed is still
-// for the tab being looked at, and a panel that moves the bar out from under
-// somebody mid-sentence is the bar taken away
-function sideGitUp() {
-  return sideWidth() > 0 && sidePanel === "git" && !gitSurfaceTab() && !!repoTab();
-}
 function panelOptions() {
-  const opts = panelOptionsHere();
-  return sideGitUp() && opts.indexOf("git") < 0 ? opts.concat("git") : opts;
+  return panelOptionsHere();
 }
 function panelOptionsHere() {
   const base = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions"] : ["actions"];
-  // On a git panel the line being written is a commit message, so that panel
-  // comes first and Send means commit. The others are still in the switcher --
-  // the bar is not taken away, it is pointed somewhere else
-  if (gitSurfaceTab()) return ["git"].concat(base);
+  // A git panel writes its commit message in a box of its own, so the bar
+  // over it is the bar over any other panel
+  if (gitSurfaceTab()) return base;
   // A browser tab is operated, not an operator, so it has no 🎯 target panel —
   // instead it gains 📼 (record page actions as Lua / run composer Lua on the
   // page). Otherwise it's the same sub-input bar as an AI tab.
@@ -11226,8 +11269,7 @@ function syncDockReserve() {
 }
 // Full name (for the switcher's hover title / accessibility).
 function panelName(p) {
-  return p === "git" ? (T["tui.cast.panel.git"] || "Commit")
-    : p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
+  return p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
     : p === "actions" ? (T["tui.cast.panel.actions"] || "Actions")
     : p === "lua" ? (T["tui.cast.panel.lua"] || "Lua record / run")
     : p === "suggest" ? (T["tui.cast.panel.suggest"] || "AI command suggest")
@@ -11240,12 +11282,10 @@ function gearTo(section, title) {
 }
 // A compact emoji for the switcher itself — text labels ate horizontal width.
 function panelLabel(p) {
-  return p === "git" ? "🌿"
-    : p === "keys" ? "⌨️" : p === "actions" ? "⚡" : p === "lua" ? "📼"
+  return p === "keys" ? "⌨️" : p === "actions" ? "⚡" : p === "lua" ? "📼"
     : p === "suggest" ? "🤖" : "🎯";
 }
 function panelContent(p) {
-  if (p === "git") { return buildGitPanel(); }
   if (p === "keys") { castKeysEl = buildCastKeys(); return castKeysEl; }
   if (p === "actions") { return buildActions() || el("div", {class:"castpanelhint"}, T["settings.actions.empty"] || ""); }
   if (p === "target") { return buildTargetPanel(); }
@@ -11390,10 +11430,18 @@ window.__recorded = function (line) {
 // Every button here is one message asking the app to run one automation
 // command and hand back what it answered. The panel keeps no truth of its own:
 // after anything that changes something, it asks for the list again.
-let G = { panel:null, branch:null, branches:[], rows:null, sel:null, staged:false,
-          diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null,
-          view:"changes", log:[], commit:null, about:null, remotes:false };
+// Everything the panel holds about one folder. One shape, made in one place:
+// a second copy of this list is a list that forgets a field
+function gitFresh(name) {
+  return { panel:name, branch:null, branches:[], rows:null, sel:null, staged:false,
+           diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null,
+           view:"changes", log:[], commit:null, about:null, remotes:false, then:"", need:false };
+}
+let G = gitFresh(null);
 let gitUi = null;
+// The commit message being written, by folder. Kept apart from G so moving to
+// another folder and back does not throw away half a sentence
+const gitMsgs = {};
 
 // A git panel launched as a tab of its own: the folder it reports on is its
 // own, written down beside it in the settings
@@ -11431,17 +11479,12 @@ function gitPicked(where) {
 // Everything the panel learns comes back through here
 window.__git = function (d) {
   if (!d || !d.act) return;
-  // The panel and the sub-input bar are drawn by different hands. Whatever
-  // changes "is something running", both of them have to hear about it
-  const bar = () => {
-    gitLockBar(G.busy === "message");
-    if (castPanel === "git" && castPanelEl) renderPanel();
-  };
-  if (d.busy) { G.busy = d.act; G.said = ""; drawGit(); bar(); return; }
-  const was = G.busy;
+  if (d.busy) { G.busy = d.act; G.said = ""; G.need = false; drawGit(); return; }
   G.busy = "";
-  if (was) bar();
+  G.need = false;
   if (!d.ok) {
+    // What was to follow a commit does not follow a commit that did not happen
+    if (d.act === "commit") G.then = "";
     // A commit refused because the branch is shared is not a failure, it is a
     // question with an answer -- asked here in the panel's own words, with the
     // way out under it. Anything else is reported as it came
@@ -11494,7 +11537,11 @@ window.__git = function (d) {
       G.said = (T["git.committed"] || "").replace("{hash}", d.data || "");
       gitSetMessage("");
       G.offer = false; G.pick = {}; G.sel = null; G.diff = "";
-      if (gitWantsPush()) gitAsk("push");
+      // "Commit and push" is two asks, the second made only once the first
+      // has answered yes
+      const then = G.then;
+      G.then = "";
+      if (then === "push") gitAsk("push");
     } else if (d.act === "checkout" || d.act === "branch_new") {
       // The refusal that led here is answered now -- leaving "main is a
       // protected branch" on screen after moving off main says something that
@@ -11520,9 +11567,7 @@ function gitRefresh(keep) {
   if (!t) return;
   const name = t.id || t.name;
   if (G.panel !== name) {
-    G = { panel:name, branch:null, branches:[], rows:null, sel:null, staged:false,
-          diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null,
-          view:"changes", log:[], commit:null, about:null, remotes:false };
+    G = gitFresh(name);
     gitUi = null;
   } else if (!keep) {
     G.pick = {};
@@ -11532,14 +11577,10 @@ function gitRefresh(keep) {
 
 function gitBuild(box) {
   box.textContent = "";
+  // The account: it is what pull, push and fetch sign in as, and a choice made
+  // for a whole project is worth seeing before pressing either. The row is
+  // there only while there is a choice to show
   const bar = el("div", {class:"bar"});
-  const mk = (label, cls, fn) => {
-    const b = el("button", cls ? {class:cls, onclick:fn} : {onclick:fn}, label);
-    bar.append(b);
-    return b;
-  };
-  // The account first: it is what pull, push and fetch sign in as, and a
-  // choice made for a whole project is worth seeing before pressing either
   const acctPick = el("select", {title: T["git.acct.title"] || ""});
   acctPick.addEventListener("change", () => {
     const t = gitTab();
@@ -11548,47 +11589,57 @@ function gitBuild(box) {
   const acctWhose = el("span");
   const acct = el("span", {class:"acct"}, acctWhose, acctPick);
   bar.append(acct);
-  const commit = mk("\u25cf " + (T["git.commit"] || ""), "go", () => gitCommit());
-  const pull = mk(T["git.pull"] || "", null, () => gitAsk("pull"));
-  const push = mk(T["git.push"] || "", null, () => gitAsk("push"));
-  const fetch = mk(T["git.fetch"] || "", null, () => gitAsk("fetch"));
-  const branch = mk(T["git.branch.new"] || "", null, () => gitNewBranch());
-  const merge = mk(T["git.merge"] || "", null, () => {
-    if (G.pickBranch) { gitAsk("merge", {text: G.pickBranch}); return; }
-    // Nothing picked: say what the button needs, and point at where to say it
-    // rather than leaving a sentence to be found somewhere else on the screen
-    gitSay(T["git.merge.pick"] || "", true);
-    if (gitUi) {
-      gitUi.branches.classList.add("asking");
-      setTimeout(() => gitUi && gitUi.branches.classList.remove("asking"), 1600);
-    }
+  box.append(bar);
+
+  // The commit, where the changes are: the branch and how far it is from the
+  // one it follows, the message, and one button that is always the next thing
+  // to do. Everything else git can be asked for is under the arrow beside it
+  const branchName = el("span", {class:"nm"});
+  const sync = el("span", {class:"up"});
+  const head = el("div", {class:"ghead"}, pickIcon("branch"), branchName, sync);
+  const msg = el("textarea", {rows:"3", spellcheck:"false", placeholder: T["git.message.ph"] || ""});
+  msg.addEventListener("input", () => { gitMsgs[G.panel] = msg.value; drawGitCommit(); });
+  // Ctrl+Enter is the button, from inside the box that feeds it
+  msg.addEventListener("keydown", e => {
+    if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey) || typingIME(e)) return;
+    e.preventDefault();
+    gitUi && gitUi.main.click();
   });
-  // Only there when git has left something marked. A button for a thing that
-  // is not happening is a button people learn to read past
-  const untangle = mk("\ud83e\udd16 " + (T["git.resolve"] || ""), "go", () => {
-    if (G.busy !== "resolve") gitAsk("resolve");
-  });
-  untangle.hidden = true;
-  const said = el("span", {class:"said"});
-  bar.append(said);
-  // Making a branch asks for a name here rather than in a dialog: this window
-  // has no dialogs to open, and the answer belongs next to the button anyway
-  const name = el("input", {type:"text", placeholder:T["git.branch.name"] || "",
-    style:"padding:3px 8px;font-size:12.5px;border-radius:var(--r-ctl);border:1px solid var(--line);background:var(--bg);color:var(--text)"});
+  const ai = el("button", {class:"gai", type:"button", title: T["git.message.ai"] || "",
+    onclick:() => {
+      if (G.busy) return;
+      // Said before anything is sent: the answer is half a minute away, and a
+      // button that looks untouched gets pressed again
+      G.busy = "message";
+      drawGit();
+      gitAsk("message");
+    }}, pickIcon("sparkles"));
+  const main = el("button", {class:"gmain", type:"button", onclick:() => {
+    const next = gitNext();
+    if (next) next.run();
+  }});
+  const more = el("button", {class:"gmore", type:"button", title: T["git.more"] || "",
+    onclick:e => { e.stopPropagation(); gitMenu(more); }}, "▾");
+  // A new branch is named here rather than in a dialog: the answer belongs
+  // next to the button that asked for it
+  const name = el("input", {type:"text", placeholder:T["git.branch.name"] || ""});
+  const makeBranch = () => { if (name.value.trim()) gitAsk("branch_new", {text: name.value.trim()}); };
   name.addEventListener("keydown", e => {
     if (typingIME(e)) return;
-    if (e.key === "Enter" && name.value.trim()) gitAsk("branch_new", {text: name.value.trim()});
+    if (e.key === "Enter") makeBranch();
+    if (e.key === "Escape") { G.offer = false; drawGit(); }
   });
-  const makeIt = el("button", {onclick:() => {
-    if (name.value.trim()) gitAsk("branch_new", {text: name.value.trim()});
-  }}, T["git.branch.make"] || "");
-  const naming = el("span", {style:"display:none;gap:6px;align-items:center"}, name, makeIt);
-  bar.append(naming);
-  box.append(bar);
+  const naming = el("div", {class:"gname"}, name,
+    el("button", {type:"button", onclick: makeBranch}, T["git.branch.make"] || ""));
+  const said = el("div", {class:"said"});
+  const split = el("div", {class:"gsplit"}, main, more);
+  const commitBox = el("div", {class:"gcommit"}, head, el("div", {class:"gmsg"}, msg, ai), split, naming, said);
 
   const branches = el("div", {class:"branches"});
   const staged = el("div", {class:"list"});
   const work = el("div", {class:"list"});
+  const stagedN = el("span", {class:"n"});
+  const workN = el("span", {class:"n"});
   const unstageAll = el("button", {onclick:() => gitAsk("unstage", {paths: gitAllPaths(true)})},
     T["git.unstage.all"] || "");
   const unstagePick = el("button", {onclick:() => gitAsk("unstage", {paths: gitPicked("staged")})},
@@ -11597,13 +11648,13 @@ function gitBuild(box) {
     T["git.stage.all"] || "");
   const stagePick = el("button", {onclick:() => gitAsk("stage", {paths: gitPicked("work")})},
     T["git.stage.picked"] || "");
-  const mid = el("div", {class:"mid"},
-    el("div", {class:"sec"},
-      el("h4", {}, el("span", {class:"grow"}, T["git.group.staged"] || ""), unstageAll, unstagePick),
-      staged),
-    el("div", {class:"sec"},
-      el("h4", {}, el("span", {class:"grow"}, T["git.group.unstaged"] || ""), stageAll, stagePick),
-      work));
+  const stagedSec = el("div", {class:"sec"},
+    el("h4", {}, el("span", {class:"grow"}, T["git.group.staged"] || "", stagedN), unstageAll, unstagePick),
+    staged);
+  const workSec = el("div", {class:"sec"},
+    el("h4", {}, el("span", {class:"grow"}, T["git.group.unstaged"] || "", workN), stageAll, stagePick),
+    work);
+  const mid = el("div", {class:"mid"}, commitBox, stagedSec, workSec);
   const diff = el("pre", {class:"diff"});
   const remotes = el("input", {type:"checkbox"});
   remotes.addEventListener("change", () => {
@@ -11646,7 +11697,7 @@ function gitBuild(box) {
     diff, hist));
   gitUi = { bar, said, naming, name, branches, branchCol, staged, work, diff,
             hist, mid, log, about, commitDiff, remotes, chips, which, acct, acctPick, acctWhose, acctSig: "",
-            btn: {commit, pull, push, fetch, branch, merge, untangle},
+            branchName, sync, msg, ai, main, more, split, stagedSec, workSec, stagedN, workN,
             pick: {unstageAll, unstagePick, stageAll, stagePick} };
 }
 
@@ -11717,7 +11768,7 @@ function gitAllPaths(staged) {
     .filter(r => (staged ? r.staged : r.unstaged) && !r.conflict)
     .map(r => r.path);
 }
-function gitSay(text, bad) { G.said = text; G.bad = !!bad; drawGit(); }
+function gitSay(text, bad) { G.said = text; G.bad = !!bad; G.need = false; drawGit(); }
 
 // One row of a file list. A click picks it and shows what changed in it;
 // ctrl-click adds to what is picked, which is what the "picked" buttons act on
@@ -11832,30 +11883,142 @@ function drawHistory(u) {
   });
 }
 
-// The message lives in the sub-input bar, not in a box of the panel's own:
-// there is one place a person writes a line in this app, and this is a line.
-let gitPush = false, gitAmend = false;
-function gitWantsPush() { return gitPush; }
-// The answer lands in the sub-input bar by replacing what is in it. Anything
-// typed while waiting would be thrown away without a word, so the box is held
-// shut for the half minute it takes -- and says why, where the caret was
-function gitLockBar(on) {
-  if (!castInput) return;
-  castInput.disabled = !!on;
-  if (castBar) castBar.classList.toggle("locked", !!on);
-  // What it says while shut is decided where every other prompt is decided
-  syncComposerSlot();
-}
+// The message box and what fills it. The AI's answer lands in the same box a
+// person types in, replacing it, and is read before anything is committed
+function gitMessage() { return gitMsgs[G.panel] || ""; }
 function gitSetMessage(text) {
-  if (!castInput) return;
-  castInput.value = text;
-  castInput.dispatchEvent(new Event("input"));
+  gitMsgs[G.panel] = text;
+  if (gitUi) gitUi.msg.value = text;
 }
-function gitCommit() {
-  if (G.busy === "message") { gitSay(T["git.busy.message"] || "", false); return; }
-  const text = castInput ? castInput.value.trim() : "";
-  if (!text) { gitSay(T["git.need.message"] || "", true); return; }
-  gitAsk("commit", {text: text, amend: gitAmend});
+// The files that go in when everything goes in: what changed, and a conflict
+// once it has been sorted out -- adding it is what tells git it is settled
+function gitStageable() {
+  return (G.rows || []).filter(r => (r.unstaged && !r.conflict) || (r.conflict && !r.tangled)).map(r => r.path);
+}
+function gitCommit(then, amend) {
+  if (G.busy) return;
+  const text = gitMessage().trim();
+  if (!text) {
+    // A person being needed, not a failure (5.4): said in --warn, and gone
+    // the moment there is a message
+    G.said = T["git.need.message"] || "";
+    G.bad = false;
+    G.need = true;
+    drawGit();
+    if (gitUi) {
+      const m = gitUi.msg;
+      m.classList.remove("ring");
+      void m.offsetWidth;
+      m.classList.add("ring");
+      m.focus();
+    }
+    return;
+  }
+  G.then = then || "";
+  gitAsk("commit", {text: text, amend: !!amend});
+}
+// The one thing to do next, read off what the folder is like right now. In the
+// order a piece of work goes through them: a conflict is settled before
+// anything is added, added before it is committed, committed before it is
+// sent. With nothing left to do here, it asks the server what is new
+function gitNext() {
+  const rows = G.rows || [];
+  const b = G.branch || {};
+  if (rows.some(r => r.conflict && r.tangled)) {
+    return {icon:"sparkles", label: T["git.resolve"] || "", run:() => gitAsk("resolve")};
+  }
+  if (rows.some(r => r.staged && !r.conflict)) {
+    return {icon:"check", label: T["git.commit"] || "", held: !gitMessage().trim(), run:() => gitCommit()};
+  }
+  const add = gitStageable();
+  if (add.length) {
+    return {icon:"plus", label: T["git.stage.all"] || "", run:() => gitAsk("stage", {paths: add})};
+  }
+  if (b.name && !b.upstream) {
+    return {icon:"up", label: T["git.publish"] || "", run:() => gitAsk("push")};
+  }
+  if (b.ahead) {
+    return {icon:"up", label: (T["git.push.n"] || "{n}").replace("{n}", b.ahead), run:() => gitAsk("push")};
+  }
+  if (b.behind) {
+    return {icon:"down", label: (T["git.pull.n"] || "{n}").replace("{n}", b.behind), run:() => gitAsk("pull")};
+  }
+  return {icon:"refresh", label: T["git.fetch"] || "", run:() => gitAsk("fetch")};
+}
+// Everything else git is asked for from here. What cannot be done yet stays in
+// the list, grey, with what it is waiting for written under it
+function gitMenu(anchor) {
+  if (G.busy) return;
+  const staged = (G.rows || []).some(r => r.staged && !r.conflict);
+  const worded = !!gitMessage().trim();
+  const item = (label, run, why) => why
+    ? el("div", {class:"gdis"}, label, el("span", {class:"why"}, why))
+    : el("div", {onclick:() => { closeFolderMenu(); run(); }}, label);
+  const sep = () => el("div", {class:"gsep"});
+  const needStage = staged ? "" : (T["git.why.stage"] || "");
+  const needWords = worded ? "" : (T["git.why.message"] || "");
+  openList(anchor, [
+    item(T["git.commit"] || "", () => gitCommit(), needStage || needWords),
+    item(T["git.commit.push"] || "", () => gitCommit("push"), needStage || needWords),
+    item(T["git.commit.amend"] || "", () => gitCommit("", true), needWords),
+    sep(),
+    item(T["git.push"] || "", () => gitAsk("push")),
+    item(T["git.pull"] || "", () => gitAsk("pull")),
+    item(T["git.fetch"] || "", () => gitAsk("fetch")),
+    sep(),
+    item(T["git.branch.new"] || "", () => gitNewBranch()),
+    item(G.pickBranch ? (T["git.merge"] || "") + " ← " + G.pickBranch : (T["git.merge"] || ""),
+      () => gitAsk("merge", {text: G.pickBranch}), G.pickBranch ? "" : (T["git.merge.pick"] || "")),
+  ]);
+}
+// The top of the changes: redrawn on every answer, touching only what changed
+// so the box being typed in is never written over under the caret
+function drawGitCommit() {
+  const u = gitUi;
+  if (!u) return;
+  const b = G.branch;
+  const nm = b && b.name ? b.name : (G.branch === null && G.rows ? (T["git.detached"] || "") : "");
+  if (u.branchName.textContent !== nm) u.branchName.textContent = nm;
+  // How far this branch is from the one it follows, in words: a bare arrow and
+  // a number is a puzzle
+  let up = "";
+  if (b && b.name) {
+    if (!b.upstream) up = T["git.sync.none"] || "";
+    else if (!b.ahead && !b.behind) up = (T["git.sync.even"] || "{upstream}").replace("{upstream}", b.upstream);
+    else up = [b.ahead ? (T["git.sync.ahead"] || "{n}").replace("{n}", b.ahead) : "",
+               b.behind ? (T["git.sync.behind"] || "{n}").replace("{n}", b.behind) : ""]
+      .filter(Boolean).join(" · ");
+  }
+  if (u.sync.textContent !== up) u.sync.textContent = up;
+  u.sync.title = b && b.upstream ? (T["git.sync.title"] || "").replace("{upstream}", b.upstream) : "";
+
+  const writing = G.busy === "message";
+  u.msg.disabled = writing;
+  u.msg.placeholder = writing ? (T["git.writing.here"] || "") : (T["git.message.ph"] || "");
+  if (document.activeElement !== u.msg && u.msg.value !== gitMessage()) u.msg.value = gitMessage();
+  u.ai.disabled = !!G.busy;
+
+  const next = gitNext();
+  const label = G.busy ? (T["git.busy." + G.busy] || T["git.busy"] || "") : next.label;
+  const key = (G.busy ? "busy" : next.icon) + " " + label;
+  if (u.main.dataset.key !== key) {
+    u.main.dataset.key = key;
+    u.main.textContent = "";
+    if (!G.busy) u.main.append(pickIcon(next.icon));
+    u.main.append(el("span", {class:"gl"}, label));
+  }
+  u.main.disabled = !!G.busy;
+  u.more.disabled = !!G.busy;
+  // Grey while it waits for the message, and still answering when pressed (5.4)
+  u.split.classList.toggle("held", !G.busy && !!next.held);
+
+  u.naming.hidden = !G.offer;
+  if (G.offer && document.activeElement !== u.name) u.name.focus();
+  if (G.need && gitMessage().trim()) { G.need = false; G.said = ""; }
+  u.said.textContent = G.busy ? "" : (G.said || "");
+  // A refusal with a way out under it is a person being needed, like a missing
+  // message; only a failure is said as one
+  u.said.className = "said" + (G.offer || G.need ? " need" : G.bad ? " bad" : "");
 }
 function gitNewBranch() {
   G.offer = !G.offer;
@@ -11871,37 +12034,6 @@ function gitHistory(back) {
   G.said = "";
   if (!back) gitAsk("graph", {all:!G.pickBranch, remotes:G.remotes, branch:G.pickBranch || ""});
   drawGit();
-}
-// The panel's own row in the sub-input bar: have the AI write the message, and
-// the two things a commit can be asked to do beyond being a commit
-function buildGitPanel() {
-  const wrap = el("div", {id:"castgit"});
-  const writing = G.busy === "message";
-  // The same chip a quick action is: this row is one of them in everything but
-  // where it lives
-  const write = el("button", {class:"castaction",
-    onclick:() => {
-      if (G.busy) return;
-      // Say it started before anything is sent: the answer is half a minute
-      // away, and a button that looks untouched gets pressed again
-      G.busy = "message";
-      gitLockBar(true);
-      renderPanel();
-      drawGit();
-      gitAsk("message");
-    }},
-    writing ? ("\u23f3 " + (T["git.writing"] || "")) : ("\ud83e\udd16 " + (T["git.write"] || "")));
-  write.disabled = !!G.busy;
-  wrap.append(write);
-  const tick = (on, label, set) => {
-    const box = el("input", {type:"checkbox"});
-    box.checked = on;
-    box.addEventListener("change", () => { set(box.checked); renderPanel(); });
-    return el("label", {class:"castradio"}, box, el("span", {}, label));
-  };
-  wrap.append(tick(gitPush, T["git.then.push"] || "", v => { gitPush = v; }));
-  wrap.append(tick(gitAmend, T["git.then.amend"] || "", v => { gitAmend = v; }));
-  return wrap;
 }
 
 // ── The file panel ────────────────────────────────────────────────────────
@@ -12675,28 +12807,8 @@ function drawGit() {
   if (!gitUi || !box.firstChild) gitBuild(box);
   const u = gitUi;
   drawGitAccount(u);
-  u.said.textContent = G.busy
-    ? (T["git.busy." + G.busy] || T["git.busy"] || "")
-    : (G.said || "");
-  u.said.className = "said" + (G.bad && !G.busy ? " bad" : "");
-  // `hidden` loses to an inline display, so the display is what gets set
-  u.naming.style.display = G.offer ? "flex" : "none";
-  if (G.offer && document.activeElement !== u.name) u.name.focus();
-  for (const k in u.btn) u.btn[k].disabled = !!G.busy;
-  // The untangle button appears with the conflicts and leaves with them
-  // The button names what it would bring in: a merge with nothing named is the
-  // question people were left holding
-  u.btn.merge.textContent = G.pickBranch
-    ? (T["git.merge"] || "") + " \u2190 " + G.pickBranch
-    : (T["git.merge"] || "");
-  u.btn.merge.title = G.pickBranch ? "" : (T["git.merge.pick"] || "");
-  // Only while something still holds both sides. A file git calls unmerged
-  // because it has not been staged yet has nothing left to untangle
-  const marked = (G.rows || []).some(r => r.conflict && r.tangled);
-  u.btn.untangle.hidden = !marked;
-  u.btn.untangle.textContent = G.busy === "resolve"
-    ? "\u2026"
-    : "\ud83e\udd16 " + (T["git.resolve"] || "");
+  u.bar.style.display = u.acct.style.display === "none" ? "none" : "flex";
+  drawGitCommit();
 
   u.branches.textContent = "";
   // The first row is every branch at once -- the same question the rows below
@@ -12758,7 +12870,6 @@ function drawGit() {
   }
   // The toolbar stays whole in either view: where you are does not change what
   // you can do, and a button that comes and goes is a button people stop trusting
-  u.btn.branch.classList.toggle("go", history);
   if (history) { drawHistory(u); return; }
 
   const rows = G.rows || [];
@@ -12768,9 +12879,14 @@ function drawGit() {
   // hunks can be staged separately. Listing it only above would say the opposite
   const staged = rows.filter(r => r.staged && !r.conflict);
   const work = rows.filter(r => r.unstaged && !r.conflict);
+  // A list with nothing in it is put away, unless both are empty -- then the
+  // one below says the folder is clean
+  u.stagedSec.style.display = staged.length ? "flex" : "none";
+  u.workSec.style.display = work.length || conflicts.length || !staged.length ? "flex" : "none";
+  u.stagedN.textContent = staged.length ? "  " + staged.length : "";
+  u.workN.textContent = work.length + conflicts.length ? "  " + (work.length + conflicts.length) : "";
   u.staged.textContent = "";
   staged.forEach(r => u.staged.append(gitFileRow(r, "staged")));
-  if (!staged.length) u.staged.append(el("div", {class:"empty"}, T["git.staged.empty"] || ""));
   u.work.textContent = "";
   conflicts.forEach(r => u.work.append(gitFileRow(r, "work")));
   work.forEach(r => u.work.append(gitFileRow(r, "work")));
@@ -12893,12 +13009,7 @@ function syncComposerSlot() {
   // walking from a terminal to a model pane swaps where a Send goes without
   // swapping the document, and a field that still said "type here to send"
   // would be describing the tab we just left.
-  // One owner for what the box says. The git panel's writing state is asked
-  // about here too, rather than being written on top and lost at the next
-  // render -- which is what happened the first time
-  castInput.placeholder = (typeof G !== "undefined" && G.busy === "message")
-    ? (T["git.writing.here"] || "")
-    : want === "lua"
+  castInput.placeholder = want === "lua"
     ? (T["tui.cast.lua.ph"] || "Recorded Lua appears here — edit, Run, or write your own")
     : onModelTab()
       ? (T["tui.chat.ph"] || "Message {model}\u2026").split("{model}").join((activeTab() || {}).name || "model")
@@ -12967,11 +13078,6 @@ function renderPanel() {
   // scroll under it, mirroring the switcher on the left.
   if (castPanel === "actions") {
     castPanelEl.append(gearTo("actions", T["tui.cast.actions.edit"] || "Edit quick actions"));
-  }
-  // The commit row is configured too, and by the same gesture: the gear at the
-  // end of the bar, in the one shape the bar has for gears
-  if (castPanel === "git") {
-    castPanelEl.append(gearTo("git", T["settings.sec.git"] || ""));
   }
   // A 🎯 that can't aim (the operator still asks for confirmation) gets the
   // same gear: no section, so it opens THIS tab's own card -- where that is
@@ -13127,13 +13233,6 @@ function sendLine(text, tab) {
 }
 function sendBar() {
   if (!castInput) return;
-  // On a git panel there is nothing else Send could mean: the surface has no
-  // command line to type at, and the line in the bar is the commit message.
-  // Only the panel standing as a tab of its own, not gitTab(): that one also
-  // answers for any tab whose folder is a repository (the column's reach),
-  // which turned every Send from a phone -- to Claude, to a shell -- into a
-  // commit of whatever was typed
-  if (gitSurfaceTab()) { gitCommit(); return; }
   const t = castInput.value;
   // 📼's ▶ run mode owns the button: Run the sheet on the shown page. The
   // text stays put — it's a document being iterated, not a message. In ⏺
@@ -14790,22 +14889,40 @@ mod tests {
         assert!(!PAGE.contains("pageBy(d > 0 ? 1 : -1)"), "a swipe is back to turning one page");
     }
 
-    /// Send from the composer goes to the pane in front, and only a git panel
-    /// standing as its own tab turns it into a commit.
+    /// Send from the composer goes to the pane in front, and never makes a
+    /// commit. The commit message is written in the git panel's own box.
     ///
-    /// gitTab() answers for any tab whose folder is a repository -- the right
-    /// reach for the changes column, the wrong one here: asked it, every Send
-    /// from a phone to Claude or a shell in a repository became a commit of
-    /// the typed words, refused on main and so, to the person, simply dead.
+    /// The message used to be the composer's line, and the git column's
+    /// Commit button took whatever was typed there -- a line that, beside
+    /// Claude, was meant for Claude. One box with two destinations, and
+    /// nothing on screen saying which one a press would use.
     #[test]
-    fn send_reaches_the_pane_and_commits_only_on_a_git_panel() {
+    fn send_never_commits_and_the_message_has_a_box_of_its_own() {
         let at = PAGE.find("function sendBar() {").expect("there is no sendBar");
         let body = &PAGE[at..at + PAGE[at..].find("\n}\n").expect("sendBar has no end")];
-        assert!(
-            body.contains("if (gitSurfaceTab()) { gitCommit(); return; }"),
-            "sending commits even on a tab that is not the git panel"
-        );
-        assert!(!body.contains("if (gitTab())"), "sending treats every tab in the repository as the git panel");
+        assert!(!body.contains("gitCommit"), "sending from the composer makes a commit");
+        assert!(!PAGE.contains("buildGitPanel"), "the composer still has a commit row");
+        assert!(!PAGE.contains("castInput.value.trim() : \"\";\n  if (!text) { gitSay"), "the commit still reads the composer");
+        let build = PAGE.split("function gitBuild(box) {").nth(1).unwrap_or_default();
+        assert!(build.contains("el(\"textarea\""), "the git panel has no message box of its own");
+    }
+
+    /// The commit's one button is always the next thing to do, in the order a
+    /// piece of work goes through git -- and every step is an ask for a
+    /// primitive the automation has too, never a mode of its own.
+    #[test]
+    fn the_commit_button_follows_the_work_through_git() {
+        let next = PAGE.split("function gitNext() {").nth(1)
+            .and_then(|r| r.split("\n}\n").next()).expect("there is no gitNext");
+        let order = ["gitAsk(\"resolve\")", "gitCommit()", "gitAsk(\"stage\"", "T[\"git.publish\"]",
+                     "T[\"git.push.n\"]", "T[\"git.pull.n\"]", "gitAsk(\"fetch\")"];
+        let mut last = 0;
+        for step in order {
+            let at = next.find(step).unwrap_or_else(|| panic!("the next thing to do never becomes {step}"));
+            assert!(at >= last, "{step} comes before the step it follows");
+            last = at;
+        }
+        assert!(!next.contains("send("), "a step talks to the app other than through gitAsk");
     }
 
     /// The folder picker is a framed dialog, drawn in this app's own marks.

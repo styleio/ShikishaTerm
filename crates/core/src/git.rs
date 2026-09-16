@@ -596,6 +596,27 @@ pub fn show(dir: &Path, hash: &str, path: &str) -> Result<String> {
     run(dir, &args)
 }
 
+/// Where the branch checked out sends its commits, and how far apart the two
+/// are: commits here that are not there yet, and commits there that are not
+/// here. As of the last fetch -- asking the server is what fetch is for, and a
+/// count that talked to it would make every look at the panel a network wait.
+/// `None` when the branch follows nothing (never pushed) or the head is detached
+pub fn upstream(dir: &Path) -> Result<Option<(String, u32, u32)>> {
+    let Ok(name) = run(dir, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]) else {
+        return Ok(None);
+    };
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    // "behind<TAB>ahead": the left side is the upstream's own commits
+    let counts = run(dir, &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])?;
+    let mut parts = counts.split_whitespace().map(|n| n.parse::<u32>().unwrap_or(0));
+    let behind = parts.next().unwrap_or(0);
+    let ahead = parts.next().unwrap_or(0);
+    Ok(Some((name, ahead, behind)))
+}
+
 pub fn branch(dir: &Path) -> Result<Option<String>> {
     match run(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
         Ok(out) => {
@@ -1067,6 +1088,39 @@ mod tests {
         assert!(is_not_installed(&err));
         assert!(!is_not_installed(&anyhow::anyhow!("anything else")));
         assert!(!err.to_string().is_empty());
+    }
+
+    /// A branch that follows another says how many commits each side has that
+    /// the other does not; one that follows nothing says nothing at all
+    #[test]
+    fn a_branch_counts_what_it_has_to_send_and_to_take() {
+        let Some(far) = scratch_repo("upstream-far") else { return };
+        std::fs::write(far.join("a.txt"), "one").unwrap();
+        run(&far, &["add", "."]).unwrap();
+        run(&far, &["commit", "-m", "one"]).unwrap();
+        let near = std::env::temp_dir().join(format!("shikisha-git-{}-upstream-near", std::process::id()));
+        let _ = std::fs::remove_dir_all(&near);
+        run(&far, &["clone", "-q", &far.display().to_string(), &near.display().to_string()]).unwrap();
+        run(&near, &["config", "user.email", "test@example.invalid"]).unwrap();
+        run(&near, &["config", "user.name", "test"]).unwrap();
+        assert_eq!(upstream(&near).unwrap(), Some(("origin/main".to_string(), 0, 0)));
+
+        // Two commits here, one there
+        for n in ["two", "three"] {
+            std::fs::write(near.join("a.txt"), n).unwrap();
+            run(&near, &["commit", "-am", n]).unwrap();
+        }
+        std::fs::write(far.join("b.txt"), "far").unwrap();
+        run(&far, &["add", "."]).unwrap();
+        run(&far, &["commit", "-m", "far"]).unwrap();
+        assert_eq!(upstream(&near).unwrap(), Some(("origin/main".to_string(), 2, 0)), "not fetched yet");
+        run(&near, &["fetch", "-q"]).unwrap();
+        assert_eq!(upstream(&near).unwrap(), Some(("origin/main".to_string(), 2, 1)));
+
+        run(&near, &["checkout", "-q", "-b", "alone"]).unwrap();
+        assert_eq!(upstream(&near).unwrap(), None, "a branch never pushed follows nothing");
+        let _ = std::fs::remove_dir_all(&near);
+        let _ = std::fs::remove_dir_all(&far);
     }
 
     #[test]
