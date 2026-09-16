@@ -8,6 +8,18 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **A link deeper than the top of a worktree is made, and unhooked before the
+  folder goes.** `web/node_modules` was asked of `mklink` with the `/` still in
+  it, which cmd read as a switch, so every nested link quietly came out as "not
+  brought". And the unhooking before a folder was removed looked only at the
+  top of it: a junction any deeper was walked into by the removal, which takes
+  the original's contents rather than the second name for them. Both the
+  discarding of a folder and the taking back of a half-made one now walk the
+  whole folder first, asking what is really there rather than what the settings
+  say today -- a line set to Link when the folder was made can say Copy by the
+  time it goes.
+
 ## [0.14.0] - 2026-09-15
 
 Projects get a heading of their own in the left bar, a worktree is made from

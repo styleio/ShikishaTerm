@@ -493,6 +493,11 @@ fn take_back(plan: &Plan) {
     }
     let folder = plan.folder.display().to_string();
     let main = plan.main.display().to_string();
+    // Whatever was already linked in when the making stopped is unhooked
+    // before git or the filesystem is asked to take the folder away
+    if plan.host.is_none() {
+        unhook_links(&plan.folder);
+    }
     let _ = run_for(plan, &["git".into(), "-C".into(), main.clone(), "worktree".into(), "remove".into(), "--force".into(), folder]);
     if plan.host.is_some() {
         return;
@@ -1030,10 +1035,14 @@ pub fn untrack(main: &Path, paths: &[String]) -> Result<()> {
 fn link_folder(from: &Path, to: &Path) -> bool {
     #[cfg(windows)]
     {
+        // Every part written with a `/` is made a `\` first: cmd reads a
+        // forward slash as the start of a switch, and a name like
+        // `web/node_modules` would be a folder it refuses rather than a path
+        let told = |p: &Path| p.display().to_string().replace('/', "\\");
         let mut link = std::process::Command::new("cmd");
         link.args(["/c", "mklink", "/J"])
-            .arg(to)
-            .arg(from)
+            .arg(told(to))
+            .arg(told(from))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         crate::detach_console(&mut link)
@@ -1044,6 +1053,38 @@ fn link_folder(from: &Path, to: &Path) -> bool {
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(from, to).is_ok()
+    }
+}
+
+/// Unhooks every link inside a folder, however deep, before anything removes
+/// the folder itself.
+///
+/// A junction left in place is walked into by whatever deletes the tree, and
+/// what it takes is the original's contents rather than the second name for
+/// them. One `.env` linked in and forgotten is the whole checkout's `.env`.
+///
+/// What is asked is the folder, never the settings. A line set to Link when
+/// the folder was made can say Copy by the time it goes, and a junction from
+/// a version of this app that no longer exists answers to no line at all: the
+/// only account of what is really there is the folder itself. For the same
+/// reason a link is unhooked and not descended into -- walking through one is
+/// the very thing this is here to stop.
+pub fn unhook_links(folder: &Path) {
+    let Ok(here) = std::fs::read_dir(folder) else { return };
+    for e in here.flatten() {
+        let at = e.path();
+        let Ok(kind) = std::fs::symlink_metadata(&at).map(|m| m.file_type()) else { continue };
+        if kind.is_symlink() {
+            // Asked of the link rather than of what it points at, which may be
+            // a folder, a file, or gone: a junction and a folder symlink go
+            // with the first call, a file symlink with the second, and neither
+            // call opens the other side
+            if std::fs::remove_dir(&at).is_err() {
+                let _ = std::fs::remove_file(&at);
+            }
+        } else if kind.is_dir() {
+            unhook_links(&at);
+        }
     }
 }
 
@@ -1075,15 +1116,7 @@ pub fn discard(folder: &Path) -> Result<()> {
     // Git's own removal, so the repository stops listing it too. Anything
     // linked into the folder is unhooked first: removing the folder with a
     // junction still in it walks through and takes what is on the other side
-    for e in std::fs::read_dir(folder)?.flatten() {
-        let at = e.path();
-        let linked = std::fs::symlink_metadata(&at)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false);
-        if linked && at.is_dir() {
-            let _ = std::fs::remove_dir(&at);
-        }
-    }
+    unhook_links(folder);
     run(&[
         "git".into(),
         "-C".into(),
@@ -2410,6 +2443,55 @@ tools/conpty.ps1"));
         let mut unhook = std::process::Command::new("cmd");
         unhook.args(["/c", "rmdir"]).arg(cut.folder.join("node_modules"));
         let _ = crate::detach_console(&mut unhook).status();
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A link deeper in the tree is unhooked before the folder goes, whatever
+    /// the settings say by then.
+    #[test]
+    fn links_are_unhooked_wherever_they_are() {
+        let main = scratch("unhook").join("proj-unhook");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+        let _ = std::fs::remove_dir_all(branches_root().join("proj-unhook"));
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |args: &[&str]| {
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(&main).args(args);
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        // The one that matters: ignored, and not at the top of the tree
+        std::fs::write(main.join(".gitignore"), "node_modules/
+").unwrap();
+        let keep = main.join("web").join("node_modules").join("left-pad");
+        std::fs::create_dir_all(&keep).unwrap();
+        std::fs::write(keep.join("index.js"), "x").unwrap();
+        std::fs::write(main.join("readme.md"), "hi
+").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "first"]);
+
+        let offered = carryables(&main, &[]);
+        assert_eq!(
+            offered.iter().find(|c| c.name == "web/node_modules").map(|c| c.how.clone()),
+            Some("link".into()),
+            "{offered:?}"
+        );
+        let cut = plan(&main, "feature/deep", None).unwrap();
+        create(&cut).unwrap();
+        let brought = carry_into(&cut, &offered);
+        assert!(brought.missed.is_empty(), "{brought:?}");
+        let linked = cut.folder.join("web").join("node_modules");
+        assert!(linked.join("left-pad").join("index.js").exists(), "the link was not made");
+
+        // Set to Copy since, so nothing but the folder itself can say a link
+        // is standing there
+        let _ = crate::worktree::discard(&cut.folder);
+        assert!(!cut.folder.exists(), "the folder is still there: {:?}", cut.folder);
+        assert!(keep.join("index.js").exists(), "removing the folder took the original's contents");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
