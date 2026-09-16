@@ -1552,6 +1552,9 @@ pub struct UiState {
     /// The first-run pointer that is up: 1 = add a folder, 2 = press its +
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coach: Option<u8>,
+    /// A worktree is deleted from the list without asking first
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub discard_unasked: bool,
     /// The first-start setup, while it has not been answered
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<SetupState>,

@@ -24,6 +24,11 @@ letters. `Ctrl+B 0` brings it back from anywhere.
   pill, and the worktrees stand under it. The tabs working in a folder are listed
   under its card. Right-click a folder card or a tab: **Rename** turns its name into a field
   right there (leaving the field saves it), and **Edit** opens its settings page.
+  A worktree's card has a red **Delete completely** at the bottom. It deletes the
+  whole folder; links are unhooked first, so what they point to stays, and files
+  copied in that git does not track go with it. It does not delete while there are
+  uncommitted changes. Tick "Don't show this again" in the question and it deletes
+  at once from then on (turn the question back on under Settings > Basic > Deleting a worktree).
 - **A tab** — its number, its name, and a dot: **green** while it works, **blue**
   when it has answered, **amber** when it is waiting for you to answer. Under the name, the
   branch it is on, its pull request, and any ports it is listening on; under that,

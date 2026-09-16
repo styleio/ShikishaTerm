@@ -2777,8 +2777,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderClose { folder }) => {
                         shell.mail().folder_closes.push(folder);
                     }
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderDiscard { folder }) => {
-                        shell.mail().folder_discards.push(folder);
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderDiscard { folder, unasked }) => {
+                        shell.mail().folder_discards.push((folder, unasked));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderColor { folder, color }) => {
                         shell.mail().folder_colors.push((folder, color));
@@ -3053,6 +3053,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // The pointer waits behind the setup: it points at the list, and
             // the setup is in front of the list
             coach: coach.filter(|_| setup_view.is_none()),
+            discard_unasked: cfg.as_ref().is_some_and(|c| c.confirm_worktree_delete == Some(false)),
             setup: setup_view.clone(),
             add_project: add_view.clone(),
             worktrees_kept: worktrees_kept.clone(),
@@ -4578,7 +4579,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Then the tabs are ended by taking the folder out of the settings --
         // git will not remove a folder something is still standing in -- and
         // the removal itself waits for them to actually be gone
-        for folder in shell.mail().take_folder_discards() {
+        for (folder, unasked) in shell.mail().take_folder_discards() {
+            // Written before the folder is tried: the person asked not to be
+            // asked again, whatever becomes of this one
+            if unasked {
+                config::save_setting(&["confirm_worktree_delete"], serde_json::json!(false));
+            }
             let at = std::path::PathBuf::from(&folder);
             if let Err(e) = crate::worktree::ready_to_discard(&at) {
                 flash = Some(format!("{e:#}"));

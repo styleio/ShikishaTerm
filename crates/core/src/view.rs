@@ -361,6 +361,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         push_wanted: ui.push_wanted,
         ais: ui.ais.clone(),
         coach: ui.coach,
+        discard_unasked: ui.discard_unasked,
         setup: ui.setup.clone(),
         add_project: ui.add_project.clone(),
         discovered,
@@ -1034,6 +1035,9 @@ pub struct Ui {
     pub ais: Vec<crate::uistate::AiChoice>,
     /// Which first-run pointer is up, if one is (see `coach_step`)
     pub coach: Option<u8>,
+    /// A worktree is deleted from the list without asking first (Basic >
+    /// Ask before deleting a worktree, turned off)
+    pub discard_unasked: bool,
     /// The first-start setup, while it has not been answered
     pub setup: Option<crate::uistate::SetupState>,
     /// A project being cloned or made new
