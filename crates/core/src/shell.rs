@@ -891,8 +891,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      Skip it, and the chosen font only ever applies to the terminal contents */
   /* --cw is the width of a single cell, measured and set by the page
      (so the content and the cursor are placed using the same number) */
+  /* It stops above the composer rather than running on under it. What a
+     terminal program keeps at its foot -- an AI's prompt, the line under it
+     saying which mode it is in -- is exactly what a person types at and reads,
+     and a bar laid over it hid both */
   #screen { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
-    bottom:var(--fb); margin:0; padding:8px; white-space:pre;
+    bottom:calc(var(--fb) + var(--dock, 0px)); margin:0; padding:8px; white-space:pre;
     overflow:auto; line-height:1.25; font-family:var(--mono); --cw:1ch; }
   /* One element per terminal row, so a screen that changed in one place can
      be repaired in one place. A row with nothing on it still has to stand its
@@ -1085,13 +1089,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      a file list feel like a database, and the eye follows a row perfectly well
      from the highlight it gets when it is pointed at */
   #sftppanel[hidden] { display:none; }
-  /* The sub-input bar floats over the pane rather than taking room from it,
-     which is right for a terminal -- its contents scroll under and come back.
-     This panel's last line does not scroll: it says what is happening and what
-     this connection is, and a line hidden behind a bar is a line nobody reads.
-     So the panel stops above the bar, by however tall the bar is now */
+  /* The last line says what is happening and what this connection is, and a
+     line hidden behind the sub-input bar is a line nobody reads. So the panel
+     stops above the bar, by however tall the bar is now, like every surface */
   #sftppanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
-    bottom:calc(var(--fb) + var(--sdock, 0px)); display:flex; flex-direction:column;
+    bottom:calc(var(--fb) + var(--dock, 0px)); display:flex; flex-direction:column;
     overflow:hidden; font-size:13px; user-select:text; }
   /* The connection, and the way to make another. One row, because which server
      this is pointed at is the first thing anyone needs to know about it */
@@ -1418,7 +1420,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      not, and the change itself. Same place as a terminal, same edges */
   #gitpanel[hidden] { display:none; }
   #gitpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
-    bottom:var(--fb); display:flex; flex-direction:column; overflow:hidden;
+    bottom:calc(var(--fb) + var(--dock, 0px)); display:flex; flex-direction:column; overflow:hidden;
     font-size:13px; user-select:text; }
   #gitpanel .bar { display:flex; align-items:center; gap:var(--s2); padding:6px 10px;
     border-bottom:1px solid var(--line); flex:0 0 auto; flex-wrap:wrap; }
@@ -8904,9 +8906,19 @@ function report() {
   // only not being shown -- so keep the last measurement taken while it was.
   const laid = boxes.length > 0
     && boxes.every((el) => el.querySelector(".pbody").getClientRects().length > 0);
+  // The composer stands on the foot of the focused pane, and the terminal
+  // there stops above it (#screen). The program is told the rows it can
+  // actually be seen in: told the whole pane, it drew its prompt on rows the
+  // bar was covering, and a person typing at it saw nothing arrive
+  const dockH = parseFloat(main.style.getPropertyValue("--dock")) || 0;
+  const body = (el) => {
+    const b = el.querySelector(".pbody").getBoundingClientRect();
+    return el.classList.contains("focused")
+      ? {width: b.width, height: Math.max(0, b.height - dockH)} : b;
+  };
   if (laid) lastPanes = boxes.map((el) => {
     const b = el.querySelector(".pbody").getBoundingClientRect();
-    const d = fit(b);
+    const d = fit(body(el));
     // Where a browser placed in this pane sits. Even if the shell's CSS
     // changes, only the page itself knows this — never let Rust guess the
     // coordinates. In the focused pane that rectangle is #page, which already
@@ -8935,8 +8947,7 @@ function report() {
   // The focused pane's numbers are the ones the rest of the app still speaks in
   if (laid) {
     const box = boxes.find((el) => el.classList.contains("focused"));
-    lastFit = fit(box ? box.querySelector(".pbody").getBoundingClientRect()
-                      : main.getBoundingClientRect());
+    lastFit = fit(box ? body(box) : main.getBoundingClientRect());
   }
   const panes = lastPanes || [];
   // Before any pane has ever been laid out -- a cold start onto INDEX -- there
@@ -10694,11 +10705,15 @@ function insertIntoComposer(path) {
 function growCastInput() {
   if (!castInput) return;
   castInput.style.height = "auto";
-  castInput.style.height = Math.min(castInput.scrollHeight, Math.round(window.innerHeight * 0.4)) + "px";
+  // scrollHeight stops inside the border and the height set here includes it,
+  // so a field grown to scrollHeight alone came out two pixels short of its
+  // text and hung a scroll bar beside a single line
+  const edge = castInput.offsetHeight - castInput.clientHeight;
+  castInput.style.height = Math.min(castInput.scrollHeight + edge, Math.round(window.innerHeight * 0.4)) + "px";
   // Over a browser tab the dock's height decides how much of #page the native
   // browser may cover — a grown textarea must push that reserve up too, or the
   // panel row slides in under the browser layer and can't be clicked.
-  if (typeof syncBrowserReserve === "function") syncBrowserReserve();
+  if (typeof syncDockReserve === "function") syncDockReserve();
 }
 // The window has no remote HTTP server, so it saves over the ipc bridge: post the
 // bytes, and Rust replies by eval-ing window.__attachDone(id, result). Correlate
@@ -11002,8 +11017,8 @@ let lastPanelSig = "";
 function syncBrowserDock() {
   // The phone builds its dock elsewhere; only the reserve is wanted here, so
   // the bar asking the person something (#ask) knows to sit above the dock
-  if (typeof REMOTE !== "undefined" && REMOTE) { syncBrowserReserve(); return; }
-  if (!onBrowserTab()) { lastPanelSig = ""; syncBrowserReserve(); return; }
+  if (typeof REMOTE !== "undefined" && REMOTE) { syncDockReserve(); return; }
+  if (!onBrowserTab()) { lastPanelSig = ""; syncDockReserve(); return; }
   ensureBar();
   const sig = panelOptions().join();
   if (sig !== lastPanelSig) {
@@ -11011,12 +11026,13 @@ function syncBrowserDock() {
     if (panelOptions().indexOf(castPanel) < 0) castPanel = panelOptions()[0];
     renderPanel();
   }
-  syncBrowserReserve();
+  syncDockReserve();
 }
-// Just the reserve: how much of #page the native browser must leave to the
-// dock. Split out because the dock's height also changes when the composer
-// textarea grows (a recorded line landing, a long paste) — that path needs the
-// reserve refreshed without rebuilding the panel on every keystroke.
+// Just the reserve: how much of the pane the composer stands on, which every
+// surface there leaves to it. Split out because the dock's height also changes
+// when the composer textarea grows (a recorded line landing, a long paste) —
+// that path needs the reserve refreshed without rebuilding the panel on every
+// keystroke.
 // Whether a page placed in the window should be drawing the pen: only when the
 // composer is closed. WHICH page is the app's to work out -- it is the one in
 // the focused pane -- so only this much travels. Sent on change, because it is
@@ -11029,23 +11045,16 @@ function syncBrowserPen() {
   lastPen = want;
   send({kind:"pen", on: want});
 }
-function syncBrowserReserve() {
+function syncDockReserve() {
   syncBrowserPen();
-  // On #main rather than on #page: the bar that asks the person something
-  // (#ask) sits above the dock and has to know its height too. On the phone
-  // the relay picture is not held back by it (the dock lies over the black
-  // band under the picture), but the bar still has to clear it
+  // On #main rather than on #page: everything that stands in the pane stops
+  // above the dock -- the page placed there, the bar asking the person
+  // something (#ask), a file being edited, and the terminal, whose foot is
+  // where an AI keeps its prompt. Laid over any of them, the bar hid the one
+  // line a person had come to type at or read. On the phone the relay picture
+  // is not held back by it (the dock lies over the black band under the
+  // picture), but everything else is
   const page = document.getElementById("main");
-  // A file being edited is held up by it too. Its last line is where the
-  // editor says the file changed underneath and offers the two ways out, and
-  // under the composer that line could not be read or pressed
-  if (!onBrowserTab() && !editorTab()) {
-    if (page.style.getPropertyValue("--dock")) {
-      page.style.removeProperty("--dock");
-      scheduleReport();
-    }
-    return;
-  }
   // Only the composer takes room. The pen used to take some too -- the page
   // was held up by the height of a button so that a button could be drawn
   // beside it, which left a band of nothing under every browser. The pen is
@@ -12156,13 +12165,6 @@ function drawSftp() {
   const u = sftpUi;
   const narrow = box.clientWidth > 0 && box.clientWidth < SFTP_NARROW;
   box.classList.toggle("narrow", narrow);
-  // How much of the bottom the sub-input bar is standing on right now. Read
-  // every draw because it grows and shrinks: a pasted line makes the composer
-  // taller, and the panel has to give up exactly that much
-  const dock = document.getElementById("castdock");
-  const over = dock && getComputedStyle(dock).display !== "none"
-    ? Math.round(dock.getBoundingClientRect().height) : 0;
-  box.style.setProperty("--sdock", over + "px");
 
   // Which connection, and the two chips that stand in for the two columns when
   // there is only room for one
@@ -13705,6 +13707,36 @@ mod tests {
             !p.contains("page.style.bottom"),
             "the space for the dock overrides the pane's position"
         );
+    }
+
+    /// The composer never covers the foot of a terminal.
+    ///
+    /// It was laid over the pane on a terminal, on the reasoning that a
+    /// terminal's contents scroll under and come back. An AI's prompt does not
+    /// scroll: it is drawn on the last rows, with the line saying which mode it
+    /// is in under it, so the bar hid both, and typing straight at the AI looked
+    /// like typing into nothing. The terminal stops above the bar, and the
+    /// program is told the rows that are left rather than the whole pane.
+    #[test]
+    fn the_composer_does_not_cover_the_prompt_at_the_foot_of_a_terminal() {
+        let p = super::page();
+        assert!(
+            p.contains("#screen { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+    bottom:calc(var(--fb) + var(--dock, 0px));")
+                || p.contains("#screen { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+    bottom:calc(var(--fb) + var(--dock, 0px));"),
+            "the terminal still runs on under the composer"
+        );
+        // The room is held back on every surface, not only over a page or a file
+        assert!(
+            !p.contains("if (!onBrowserTab() && !editorTab())"),
+            "the dock's room is held back only over some kinds of pane"
+        );
+        assert!(
+            p.contains("? {width: b.width, height: Math.max(0, b.height - dockH)} : b;"),
+            "the program is told rows the composer is covering"
+        );
+        assert!(!p.contains("--sdock"), "a second name for the dock's room is back");
     }
 
 

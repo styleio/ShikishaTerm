@@ -332,7 +332,7 @@ pub fn apply_ws_config(
                     ft.cfg.auto_restart,
                     ft.depth,
                     ft.cfg.notify_on_done.clone(),
-                    opts.protect.clone(),
+                    &opts,
                 );
                 // Changes to command, encoding, or line count require a rebuild
                 if t.signature() != tab::signature_of(&argv, &opts) {
@@ -883,6 +883,37 @@ mod calling_home_tests {
         // ...is the one a call is looked up by
         let key = hooks::TabKey { id: opts.id.clone() };
         assert!(key.matches(opts.called("Gemini")), "it cannot be looked up by the name it was made under");
+    }
+
+    /// A folder renamed while its tabs run shows the new name for good.
+    ///
+    /// The heading over a folder is read off its running tabs, and the reload
+    /// that follows a rename kept each of them with the name it launched under.
+    /// The list held the new name for its few seconds and then went back to the
+    /// old one, for as long as the tabs ran. Nor is a tab restarted for it: a
+    /// heading is not a launch condition
+    #[test]
+    fn a_folder_renamed_while_its_tabs_run_keeps_the_new_name() {
+        let desk_named = |name: &str| {
+            let json = serde_json::json!({"desks": [{"name":"w", "id":"w",
+                "folders": [{"name": name, "cwd": std::env::temp_dir().display().to_string(),
+                    "tabs": [{"name":"sh", "command": crate::test_shell()}]}]}]});
+            let cfg: config::Config = serde_json::from_value(json).expect("the settings cannot be read");
+            let (mut desks, errs) = cfg.resolve_desks();
+            assert!(errs.is_empty(), "{errs:?}");
+            desks.remove(0)
+        };
+        let (mut tabs, mut errors, mut resume) = (Vec::new(), Vec::new(), Default::default());
+        apply_ws_config(&mut tabs, &desk_named("before"), 10, 40, &mut errors, &mut resume);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(tabs[0].group_name(), Some("before"));
+
+        apply_ws_config(&mut tabs, &desk_named("作業フォルダ"), 10, 40, &mut errors, &mut resume);
+        assert_eq!(tabs[0].group_name(), Some("作業フォルダ"), "the running tab kept the name it launched under");
+        assert!(!tabs[0].needs_restart, "a new heading restarts the tab");
+        for t in &mut tabs {
+            t.kill();
+        }
     }
 
     /// A tab nobody named is known by what it says on it, and that still has

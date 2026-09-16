@@ -9,6 +9,17 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **The input bar no longer covers the bottom of a terminal.** An AI keeps its
+  prompt on the last rows of the screen, with the line saying which mode it is
+  in (`bypass permissions on`) under it, and the input bar was laid over both.
+  Typing straight into the terminal still reached the AI, but nothing could be
+  seen arriving, so it looked as if only the input bar could be typed into. The
+  terminal now stops above the bar and the program is given the rows that are
+  left, so both ways of typing work side by side. The git and file panels stop
+  above it the same way.
+- **A folder renamed in the left bar keeps its new name.** While its tabs were
+  running, the new name showed for a few seconds and then went back to the old
+  one. The name is saved, and the tabs already running now take it too.
 - **A worktree with a folder carried in as a link can be thrown away on Linux
   and macOS.** There the link is a symbolic link, and an ignore line written
   for folders (`node_modules/`) does not match one, so git counted it as a new
