@@ -2533,7 +2533,7 @@ mod tests {
             Ev::FolderName { folder: "a".into(), name: "b".into() },
             Ev::FolderView { folder: "a".into() },
             Ev::FolderClose { folder: "a".into() },
-            Ev::FolderDiscard { folder: "a".into() },
+            Ev::FolderDiscard { folder: "a".into(), unasked: false },
             Ev::FolderColor { folder: "a".into(), color: "blue".into() },
             Ev::FontSize { px: 14 },
             Ev::TabWidth { px: 200 },
@@ -2548,6 +2548,17 @@ mod tests {
             !super::allowed_from_afar(&Ev::RemoteCut),
             "cutting everyone from afar cuts yourself too"
         );
+    }
+
+    /// "Don't show this again", ticked on a phone, reaches the app with the
+    /// worktree it was asked about; left out, it is not ticked
+    #[test]
+    fn a_worktree_deleted_from_afar_carries_the_answer_to_asking_again() {
+        let v = serde_json::json!({"kind": "folderdiscard", "folder": "D:/w", "unasked": true});
+        assert!(matches!(shikisha_shared::parse_intent(&v),
+            Some(shikisha_shared::Ev::FolderDiscard { ref folder, unasked: true }) if folder == "D:/w"));
+        let v = serde_json::json!({"kind": "folderdiscard", "folder": "D:/w"});
+        assert!(matches!(shikisha_shared::parse_intent(&v), Some(shikisha_shared::Ev::FolderDiscard { unasked: false, .. })));
     }
 
     /// Every intent the gate lets through has somewhere to go.

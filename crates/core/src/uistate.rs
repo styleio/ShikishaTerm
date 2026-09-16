@@ -203,6 +203,9 @@ pub struct GitAcctState {
     pub missing: bool,
     /// The desk's accounts, the ones meant for this repository's owner first
     pub choices: Vec<GitAcctChoice>,
+    /// The GitHub accounts git on this PC holds, each a choice of its own
+    /// (`@pc:<name>`) beside the PC's git as it is
+    pub pc: Vec<String>,
     /// `tab` when the choice is this git tab's, `project` when it is the
     /// folder's project's
     pub scope: String,
@@ -221,10 +224,12 @@ pub struct GitAcctChoice {
 }
 
 impl GitAcctState {
-    /// The menu for a choice among a desk's `accounts`, about a repository at
-    /// `repo` (`owner/name` on GitHub, when known)
+    /// The menu for a choice among a desk's `accounts` and the PC's own `pc`
+    /// GitHub accounts, about a repository at `repo` (`owner/name` on GitHub,
+    /// when known)
     pub fn of(
         accounts: &[crate::config::GitAccountSpec],
+        pc: &[String],
         git: &crate::config::GitUse,
         repo: Option<&str>,
         scope: &str,
@@ -246,6 +251,7 @@ impl GitAcctState {
                     fits,
                 })
                 .collect(),
+            pc: pc.to_vec(),
             scope: scope.to_string(),
             project,
         }
@@ -1546,6 +1552,9 @@ pub struct UiState {
     /// The first-run pointer that is up: 1 = add a folder, 2 = press its +
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coach: Option<u8>,
+    /// A worktree is deleted from the list without asking first
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub discard_unasked: bool,
     /// The first-start setup, while it has not been answered
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<SetupState>,

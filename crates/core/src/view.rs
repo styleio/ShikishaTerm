@@ -361,6 +361,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         push_wanted: ui.push_wanted,
         ais: ui.ais.clone(),
         coach: ui.coach,
+        discard_unasked: ui.discard_unasked,
         setup: ui.setup.clone(),
         add_project: ui.add_project.clone(),
         discovered,
@@ -396,6 +397,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     ts.git_acct = t.place.family.is_some().then(|| {
                         crate::uistate::GitAcctState::of(
                             &ui.git_accounts,
+                            &ui.pc_accounts,
                             &t.git_use,
                             t.place.repo.as_deref(),
                             "project",
@@ -466,7 +468,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                             .map(|(_, r)| r.as_str())
                     });
                     t.git_acct =
-                        Some(crate::uistate::GitAcctState::of(&ui.git_accounts, git, repo, "tab", None));
+                        Some(crate::uistate::GitAcctState::of(&ui.git_accounts, &ui.pc_accounts, git, repo, "tab", None));
                     Some(t)
                 }
             }?)))
@@ -1033,6 +1035,9 @@ pub struct Ui {
     pub ais: Vec<crate::uistate::AiChoice>,
     /// Which first-run pointer is up, if one is (see `coach_step`)
     pub coach: Option<u8>,
+    /// A worktree is deleted from the list without asking first (Basic >
+    /// Ask before deleting a worktree, turned off)
+    pub discard_unasked: bool,
     /// The first-start setup, while it has not been answered
     pub setup: Option<crate::uistate::SetupState>,
     /// A project being cloned or made new
@@ -1060,6 +1065,9 @@ pub struct Ui {
     pub update: Option<crate::update::Offer>,
     /// The current desk's git accounts, for the account menu on the git column
     pub git_accounts: Vec<config::GitAccountSpec>,
+    /// The GitHub accounts git on this PC holds, for the same menu: with two,
+    /// "this PC's git" has to be told which
+    pub pc_accounts: Vec<String>,
     /// Where each git tab's folder pushes to on GitHub (`owner/name`), looked
     /// up every couple of seconds with the tabs' places rather than per frame
     pub git_repos: Vec<(std::path::PathBuf, String)>,

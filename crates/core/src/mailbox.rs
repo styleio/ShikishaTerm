@@ -211,8 +211,9 @@ pub struct Mailbox {
     pub tab_names: Vec<(usize, String)>,
     /// Folders taken out of the list. The files stay where they are
     pub folder_closes: Vec<String>,
-    /// Branch folders thrown away for good
-    pub folder_discards: Vec<String>,
+    /// Branch folders thrown away for good: (folder, and whether the person
+    /// asked not to be asked about it again)
+    pub folder_discards: Vec<(String, bool)>,
 }
 
 impl Mailbox {
@@ -459,7 +460,7 @@ impl Mailbox {
     pub fn take_folder_closes(&mut self) -> Vec<String> {
         std::mem::take(&mut self.folder_closes)
     }
-    pub fn take_folder_discards(&mut self) -> Vec<String> {
+    pub fn take_folder_discards(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.folder_discards)
     }
     pub fn take_suggests(&mut self) -> Vec<String> {
