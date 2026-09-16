@@ -7554,9 +7554,15 @@ window.__state = function (json) {
   // A pane holds the panel only for a git tab. Anywhere else it stands in the
   // column on the right, which takes it and turns it back on if that is where
   // it belongs -- so the panel is put out here and claimed there, and never
-  // left over a terminal it no longer covers
+  // left over a terminal it no longer covers.
+  //
+  // Standing in the column, it is the column's to show or hide, and nothing
+  // here touches it. Hiding it on every state for drawSide to show it again a
+  // moment later was invisible, but the column measures itself in between --
+  // and a panel measured while hidden loses the keyboard, which shut the
+  // account list the instant it dropped open
   if (panel && git && panel.parentNode !== main) main.append(panel);
-  if (panel) panel.hidden = cover || !git;
+  if (panel && panel.parentNode === main) panel.hidden = cover || !git;
   drawSide();
   // Ask the moment it comes into view, and whenever the panel being looked at
   // changes -- a list that was true a desk ago is not worth drawing
@@ -14644,6 +14650,16 @@ mod tests {
         assert_eq!(ranked.len(), EVERY.len(), "something extra is mixed into the order: {ranked:?}");
         // And the one that must come first does
         assert_eq!(ranked[0], TabState::Question.label(), "the state that keeps a person waiting is not first");
+    }
+
+    /// A list in the changes panel stays open when it is pressed. The panel in
+    /// the column was hidden and shown again on every state, and a focused
+    /// dropdown measured while hidden loses the keyboard and shuts.
+    #[test]
+    fn the_changes_panel_in_the_column_is_not_hidden_on_every_state() {
+        assert!(!PAGE.contains("if (panel) panel.hidden = cover || !git;"), "the pane hides the panel the column is showing");
+        assert!(PAGE.contains("if (panel && panel.parentNode === main) panel.hidden = cover || !git;"),
+            "the pane no longer puts away a git tab's panel");
     }
 
     /// Several tabs in one folder get a heading, and a folded folder speaks
