@@ -466,6 +466,20 @@ impl Capabilities {
         Ok(())
     }
 
+    /// What is in a folder, one level down and no further.
+    ///
+    /// Answered by the one function the panels ask, so a listing means the same
+    /// thing and comes in the same order wherever it is read. One level because
+    /// walking is the caller's to write: a command that went all the way down
+    /// would be one arrangement of a walk, and there are several
+    pub fn list(&self, name: &str, rel: &str) -> Result<Vec<crate::ssh::Entry>> {
+        crate::runtime::local_rows(&self.named_path(name, rel, false)?)
+    }
+
+    pub fn list_raw(&self, p: &str) -> Result<Vec<crate::ssh::Entry>> {
+        crate::runtime::local_rows(&self.raw_path(p)?)
+    }
+
     pub fn read_raw(&self, p: &str) -> Result<String> {
         Ok(std::fs::read_to_string(self.raw_path(p)?)?)
     }

@@ -6874,7 +6874,7 @@ pub fn files_answer(
                     "at": rel_of(&root, &at),
                     "rows": rows
                         .into_iter()
-                        .filter(|r| r.get("name").and_then(|n| n.as_str()) != Some(".git"))
+                        .filter(|r| r.name != ".git")
                         .collect::<Vec<_>>(),
                 })
                 .to_string(),
@@ -7169,12 +7169,7 @@ pub fn sftp_answer(
                 "panel": panel,
                 "ok": true,
                 "at": asked,
-                "rows": rows.iter().map(|e| serde_json::json!({
-                    "name": e.name,
-                    "dir": e.dir,
-                    "size": e.size,
-                    "modified": e.modified,
-                })).collect::<Vec<_>>(),
+                "rows": rows,
             }),
             // The far side, put beside the one here. `-` is the server's and
             // `+` is this machine's, whichever way the person was going to
@@ -7205,27 +7200,25 @@ pub fn sftp_answer(
 }
 /// What is in a folder on this machine, in the same shape the far end answers
 /// in -- folders first and then by name, so the two lists read alike
-pub fn local_rows(at: &std::path::Path) -> Result<Vec<serde_json::Value>> {
-    let mut rows: Vec<(bool, String, u64, u64)> = Vec::new();
+pub fn local_rows(at: &std::path::Path) -> Result<Vec<ssh::Entry>> {
+    let mut rows: Vec<ssh::Entry> = Vec::new();
     for e in std::fs::read_dir(at)? {
         let Ok(e) = e else { continue };
-        let name = e.file_name().to_string_lossy().to_string();
         let Ok(m) = e.metadata() else { continue };
-        let modified = m
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        rows.push((m.is_dir(), name, m.len(), modified));
+        rows.push(ssh::Entry {
+            name: e.file_name().to_string_lossy().to_string(),
+            dir: m.is_dir(),
+            size: m.len(),
+            modified: m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        });
     }
-    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    Ok(rows
-        .into_iter()
-        .map(|(dir, name, size, modified)| {
-            serde_json::json!({"name": name, "dir": dir, "size": size, "modified": modified})
-        })
-        .collect())
+    rows.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.name.cmp(&b.name)));
+    Ok(rows)
 }
 /// The same path, refused if it is not inside the folder this panel works in.
 ///
@@ -10296,6 +10289,29 @@ mod tests {
     /// Writing it all in one go means Enter arrives before the AI CLI's input
     /// box has finished processing the paste, leaving the text typed but never
     /// submitted (this actually happened with sends from a phone).
+    /// The order a listing comes in, and the fields it carries. Promised to
+    /// three callers now -- the file panel, the transfer panel, and a script
+    /// walking a folder -- so it is checked once here rather than assumed
+    /// three times
+    #[test]
+    fn a_folder_is_listed_with_its_folders_first_and_then_by_name() {
+        let dir = std::env::temp_dir().join(format!("shikisha-rows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("zeta")).unwrap();
+        std::fs::create_dir_all(dir.join("alpha")).unwrap();
+        std::fs::write(dir.join("b.txt"), "hello").unwrap();
+        std::fs::write(dir.join("a.txt"), "").unwrap();
+
+        let rows = local_rows(&dir).unwrap();
+        let names: Vec<&str> = rows.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["alpha", "zeta", "a.txt", "b.txt"], "folders first, then by name");
+        assert!(rows[0].dir && !rows[2].dir);
+        let b = rows.iter().find(|e| e.name == "b.txt").unwrap();
+        assert_eq!(b.size, 5);
+        assert!(b.modified > 0, "a file that exists has a time on it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// What the panel will and will not hold up against another file. Checked
     /// here because both refusals happen before anything is asked of a server,
     /// and a refusal that arrives after a megabyte has crossed the wire is not

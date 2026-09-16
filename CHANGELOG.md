@@ -24,6 +24,10 @@ once it reaches its first tagged release.
   two texts, written the way git writes a diff.
 - **`shikisha.sftp_read(tab, path)`**: a file on the far end, as a string,
   without a copy of it being left here.
+- **`shikisha.list_files(name, rel)`** and **`shikisha.list_path(p)`**: what is
+  in a folder on this machine, in the shape `sftp_ls` answers in. The manual has
+  always said to send a folder by writing `ls` and `put` in a loop; going out,
+  there was nothing to walk this side with.
 
 ### Changed
 - **`shikisha.sftp_get` no longer replaces a file on this machine without being

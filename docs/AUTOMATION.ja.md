@@ -994,7 +994,7 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 `sftp_read` は `shikisha.diff` に渡すためにあります。向こうの1枚を読んでこちらの1枚と比べれば、
 送る前に何が変わるかを出せます。
 
-**フォルダごと送る命令はありません。** `sftp_ls` と `sftp_put` を繰り返して書きます。1つの命令にすると、
+**フォルダごと送る命令はありません。** 送るときは `list_files` と `sftp_put`、取り寄せるときは `sftp_ls` と `sftp_get` を繰り返して書きます。1つの命令にすると、
 最初に思いついた1通りのやり方しか選べなくなるからです（`split_pane` と `show` と同じ理由）。
 
 **既定では、消す・作る・名前を変えるは人間だけです**（自動化の権限）。AIに開くなら、まず読む
@@ -1088,5 +1088,6 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | 命令 | 説明 |
 |---|---|
 | `shikisha.read_file(名前, 相対パス)` / `shikisha.write_file(名前, 相対パス, データ)` | 登録済みのファイル窓口を通して |
+| `shikisha.list_files(名前, 相対パス)` | そのフォルダの中身を1段ぶん。1件ずつ `{name, dir, size, modified}`、フォルダが先で次に名前順。`sftp_ls` と同じ形なので、片側で書いた歩き方がもう片側でもそのまま読めます |
 | `shikisha.http(名前, 本文)` | 登録済みのHTTP窓口を通して |
-| `shikisha.read_path(パス)` / `shikisha.write_path(パス, データ)` / `shikisha.http_raw(url, 本文)` | 生のパス・生のURL。`allow_dirs` / `allow_hosts` が空のあいだは必ず失敗します |
+| `shikisha.read_path(パス)` / `shikisha.write_path(パス, データ)` / `shikisha.list_path(パス)` / `shikisha.http_raw(url, 本文)` | 生のパス・生のURL。`allow_dirs` / `allow_hosts` が空のあいだは必ず失敗します |

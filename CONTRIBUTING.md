@@ -31,6 +31,8 @@ you ran, the terminal output, and what you expected is valuable even without a f
 Dev.cmd                # build, stage into run\, and launch from there
 Dev.cmd release        # same, from the release build
 cargo test             # all offline, no PTY-less environment needed
+
+node tools/shoot.mjs tools/scenes/files.mjs    # photograph the screen
 ```
 
 Rust with the MSVC toolchain on Windows. There is nothing else to install — Lua is vendored
@@ -41,6 +43,13 @@ scripts live beside the executable, so the two build outputs each end up with th
 settings — an automation deleted in one is still live in the other, which is confusing to
 diagnose. `Dev.cmd` keeps a single `run\` folder (gitignored) and refreshes only the
 application files into it, so your config, scripts and secrets are never overwritten.
+
+**A change to the screen is judged from a photograph of it** — see section 9 of
+[the screen rules](docs/design/STYLEGUIDE.md). `tools/shoot.mjs` takes them: it writes the
+board page out as the app serves it, opens it in a headless Chrome, and photographs it in
+both languages, both schemes and at both widths, into `target\shots`. Which screens to put
+up is a line each in a scene file; `tools/scenes/files.mjs` is the one there is. Nothing
+has to be running, so the state being judged is never the state on the way to it.
 
 ## Layout
 
