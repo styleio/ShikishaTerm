@@ -1243,6 +1243,11 @@ local function file(act, tab, a, b, opts)
   return got
 end
 function shikisha.sftp_ls(tab, path) return file("ls", tab, path) end
+-- ...and this machine's side of the same transfer. Told the same tab and fenced
+-- by the same folder, so a walk written for one side reads the same written for
+-- the other. It touches no network, but it is answered here so that "which
+-- folder may I see" has one answer for both ends of a transfer
+function shikisha.sftp_ls_here(tab, rel) return file("ls_here", tab, rel) end
 function shikisha.sftp_stat(tab, path) return file("stat", tab, path) end
 function shikisha.sftp_read(tab, path) return file("read", tab, path) end
 function shikisha.sftp_mkdir(tab, path) return file("mkdir", tab, path) end
@@ -5373,6 +5378,30 @@ end
                 };
                 let (a, b) = (one("a"), one("b"));
                 let over = t.get::<Option<bool>>("overwrite").ok().flatten().unwrap_or(false);
+                // This machine's own folder. Read where we stand rather than on
+                // a thread, because there is no far end to wait for -- but
+                // through the same fence, and answered in the same shape
+                if act == "ls_here" {
+                    let (_, fences) = reach_of(&self.places, &self.current_origin, &tab)
+                        .map_err(|e| anyhow::anyhow!(format!("{e}")))?;
+                    let Some(root) = fences.here.clone() else {
+                        anyhow::bail!(crate::i18n::t("err.sftp.no_folder"));
+                    };
+                    let Some(at) = crate::runtime::local_under(&root, &a) else {
+                        anyhow::bail!(crate::i18n::t("err.sftp.outside"));
+                    };
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let _ = tx.send(
+                        crate::runtime::local_rows(&at)
+                            .map(crate::ssh::FileAnswer::Listing)
+                            .map_err(|e| format!("{e:#}")),
+                    );
+                    return Ok(WaitKind::File {
+                        act,
+                        rx,
+                        deadline: Instant::now() + Duration::from_millis(1_000),
+                    });
+                }
                 let job = match act.as_str() {
                     "ls" => crate::ssh::FileJob::List { path: a },
                     "stat" => crate::ssh::FileJob::Stat { path: a },
@@ -6794,6 +6823,40 @@ mod tests {
         // something rather than writing a name that is one letter
         let plain = out("return shikisha.diff('one', 'two')");
         assert!(plain.contains("a/text"), "{plain}");
+    }
+
+    /// This machine's side of a transfer, walked from a script -- and stopping
+    /// at the folder the tab was given, which is what makes it safe to hand a
+    /// walk to code somebody else wrote
+    #[test]
+    fn a_walk_can_start_on_this_machines_side_of_a_tab() {
+        let dir = std::env::temp_dir().join(format!("shikisha-here-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("dist")).unwrap();
+        std::fs::write(dir.join("dist/a.txt"), "x").unwrap();
+
+        let e = HookEngine::new().unwrap();
+        e.set_places(vec![TabPlace {
+            key: TabKey { id: Some("deploy".into()) },
+            dir: dir.clone(),
+            remote: Some(crate::elsewhere::Elsewhere::Ssh(Default::default())),
+            remote_dir: String::new(),
+            protect: Vec::new(),
+            git: Default::default(),
+        }]);
+
+        let rows = e
+            .call_primitive("sftp_ls_here", &[serde_json::json!("deploy"), serde_json::json!("dist")])
+            .unwrap();
+        assert_eq!(rows[0]["name"], serde_json::json!("a.txt"), "{rows:?}");
+        assert_eq!(rows[0]["dir"], serde_json::json!(false), "{rows:?}");
+
+        let out = e.call_primitive(
+            "sftp_ls_here",
+            &[serde_json::json!("deploy"), serde_json::json!("../..")],
+        );
+        assert!(out.is_err(), "it cannot walk out of the tab's folder: {out:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A command that has to stop and wait can be asked for from the outside

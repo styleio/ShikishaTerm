@@ -973,6 +973,7 @@ can watch.
 | Command | Description |
 |---|---|
 | `shikisha.sftp_ls(tab, "public/")` | A listing: `{name, dir, size, modified}` each. Folders first, then by name |
+| `shikisha.sftp_ls_here(tab, "dist/")` | The same, on this machine's side of that tab -- so a walk written for one side reads the same written for the other |
 | `shikisha.sftp_stat(tab, "public/index.html")` | One of them, or `nil` if it is not there |
 | `shikisha.sftp_get(tab, "there", "here", opts)` | Bring a file here. `opts` is `{ overwrite = true }` (a file that is already here is not replaced otherwise) |
 | `shikisha.sftp_read(tab, "public/index.html")` | The file itself, as a string, without leaving a copy here |
@@ -985,8 +986,8 @@ can watch.
 there, compare it with the one here, and a script can say what a send would
 change before anything is sent.
 
-**There is no "send the whole folder".** Write it as `list_files` and `sftp_put`
-in a loop going out, `sftp_ls` and `sftp_get` coming back. One command for it could only ever be the first arrangement somebody
+**There is no "send the whole folder".** Write it as `sftp_ls_here` and
+`sftp_put` in a loop going out, `sftp_ls` and `sftp_get` coming back. One command for it could only ever be the first arrangement somebody
 thought of -- the same reason `split_pane` and `show` stayed two.
 
 **Deleting, making and renaming are for people by default** (automation

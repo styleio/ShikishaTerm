@@ -2397,6 +2397,7 @@
   "err.hooks.snippet_empty": "この処理は文字列を返しませんでした",
   "grant.group.git": "git",
   "grant.sftp_ls": "つないだ先のフォルダの中身を見る",
+  "grant.sftp_ls_here": "そのタブのこちら側のフォルダの中身を見る",
   "grant.sftp_stat": "つないだ先の1件について調べる",
   "grant.sftp_get": "つないだ先からファイルを持ってくる",
   "grant.sftp_read": "つないだ先のファイルの中身を、こちらに残さず読む",

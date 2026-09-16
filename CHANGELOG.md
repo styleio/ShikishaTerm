@@ -28,6 +28,9 @@ once it reaches its first tagged release.
   in a folder on this machine, in the shape `sftp_ls` answers in. The manual has
   always said to send a folder by writing `ls` and `put` in a loop; going out,
   there was nothing to walk this side with.
+- **`shikisha.sftp_ls_here(tab, rel)`**: the same listing on this machine's side
+  of a transfer, told the same tab and stopping at the same folder -- so a walk
+  written for one side reads the same written for the other.
 
 ### Fixed
 - **A file command no longer stops the app while it runs.** `sftp_put` and the
