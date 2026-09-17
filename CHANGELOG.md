@@ -9,6 +9,17 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **CI is shown in the git column, and a failure is handed to an AI.** Under a
+  branch's pull requests, one line counts its checks as passed, failed and
+  running -- once for the branch, since they run on the commit whichever base it
+  went to -- and opens to list each with a link to its page. While one is still
+  running the column asks again every 30 seconds. A project with no CI shows
+  nothing. When a check has failed, the button becomes Have the AI fix the failed
+  CI: the failed checks and the end of each GitHub Actions log are read, and an AI
+  tab opens in the middle in the branch's folder, told to fix only what the
+  branch broke, ask about the rest, commit, and say to press Push. What it is told
+  is in Settings > desk > git, with `{pr}`, `{title}`, `{url}`, `{branch}`,
+  `{folder}`, `{checks}` and `{language}`.
 - **A branch goes all the way in from the git column: commit, push, pull request,
   merge.** A row of steps at the top of the column says which one the branch is
   on. Once it is pushed and has no pull request, the column is the new one's form:

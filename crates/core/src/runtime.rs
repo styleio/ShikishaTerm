@@ -832,6 +832,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // A pull request's base brought into its folder: the merge on a thread, and
     // a conflict handed to an AI tab back here, where the tabs are
     let (pr_tx, pr_rx) = std::sync::mpsc::channel::<PrCatchUp>();
+    // A failed CI run's checks and logs, read from GitHub on a thread, and the
+    // tab that fixes them opened back here
+    let (ci_tx, ci_rx) = std::sync::mpsc::channel::<CiFix>();
     // Everything the file panel asks of a server, which is all of it: a folder
     // on the far end is a network round trip and the window cannot wait for one
     let (sftp_tx, sftp_rx) = std::sync::mpsc::channel::<String>();
@@ -4379,6 +4382,55 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 r.push_state(format!("{{\"git\":{js}}}"));
             }
         }
+        // The failed checks of a pull request's commit, read: handed to an AI tab
+        // in the folder its branch is in, told what the desk's CI prompt says
+        while let Ok(done) = ci_rx.try_recv() {
+            let CiFix { project, number, seq, title, url, head, dir, result } = done;
+            let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
+            let mut js = match (result, desks.get(desk_index), quick_ai_choice(&ai, &ai_choices)) {
+                (Err(e), ..) => serde_json::json!({"ok": false, "error": plain_error(&format!("{e:#}"))}),
+                (Ok(failed), ..) if failed.as_array().is_none_or(|a| a.is_empty()) => {
+                    serde_json::json!({"ok": false, "error": i18n::t("git.ci.none")})
+                }
+                (Ok(_), None, _) => serde_json::json!({"ok": false, "error": i18n::t("err.github.no_project")}),
+                (Ok(_), _, None) => serde_json::json!({"ok": false, "error": i18n::t("msg.quick.no_ai")}),
+                (Ok(failed), Some(desk), Some(choice)) => {
+                    let label = i18n::t("git.ci.tab");
+                    let opened = hand_to_ai_tab(desk, &dir, &label, choice, &tabs, &mut pending_quicks, &mut reveal, || {
+                        // What came from GitHub -- the title, the logs -- goes in last,
+                        // so nothing in it is taken for a word to fill in
+                        desk.git
+                            .ci_prompt()
+                            .replace("{pr}", &number.to_string())
+                            .replace("{branch}", &head)
+                            .replace("{folder}", &dir.display().to_string())
+                            .replace("{language}", &i18n::t("lang.self"))
+                            .replace("{url}", &url)
+                            .replace("{title}", &title)
+                            .replace("{checks}", &serde_json::to_string_pretty(&failed).unwrap_or_default())
+                    });
+                    match opened {
+                        Ok(tab) => {
+                            if tab["already"] == false {
+                                watcher.poke();
+                            }
+                            serde_json::json!({"ok": true, "data": tab})
+                        }
+                        Err(why) => serde_json::json!({"ok": false, "error": why}),
+                    }
+                }
+            };
+            js["act"] = serde_json::json!("ci_fix");
+            js["project"] = serde_json::json!(project);
+            js["number"] = serde_json::json!(number);
+            js["seq"] = seq;
+            let js = js.to_string();
+            append_hook_log(&format!("issues: {}", log_excerpt(&js, 200)));
+            shell.push_issues(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"issues\":{js}}}"));
+            }
+        }
         // A pull request's base, brought into its folder. A conflict goes to an
         // AI tab from here; anything else is said on the pull request's page
         while let Ok(done) = pr_rx.try_recv() {
@@ -4731,6 +4783,32 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     _ => None,
                 })
                 .collect();
+            // CI that failed on a pull request's commit, handed to an AI tab in
+            // the folder its branch is checked out in
+            if act == "ci_fix" {
+                let text = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+                let (project, head, sha, title, url) = (text("project"), text("head"), text("sha"), text("title"), text("url"));
+                let number = args.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+                let seq = args.get("seq").cloned().unwrap_or(serde_json::Value::Null);
+                match sources.iter().find(|s| s.name == project).and_then(|s| crate::github::head_folder(&s.dir, &head)) {
+                    None => {
+                        let js = serde_json::json!({"act": act, "ok": false, "seq": seq, "project": project, "number": number,
+                            "error": i18n::tp("err.github.pr.no_folder", &[("branch", &head)])}).to_string();
+                        shell.push_issues(&js);
+                        if let Some(r) = remote_ui.as_ref() {
+                            r.push_state(format!("{{\"issues\":{js}}}"));
+                        }
+                    }
+                    Some(dir) => {
+                        let tx = ci_tx.clone();
+                        std::thread::spawn(move || {
+                            let result = crate::github::ci_failures(&sources, &project, &sha, &|k| tokens.get(k).cloned());
+                            let _ = tx.send(CiFix { project, number, seq, title, url, head, dir, result });
+                        });
+                    }
+                }
+                continue;
+            }
             let tx = issues_tx.clone();
             std::thread::spawn(move || {
                 let js = crate::github::answer(&act, &args, &sources, &|k| tokens.get(k).cloned());
@@ -8535,27 +8613,56 @@ fn resolve_in_tab(
     pending: &mut Vec<PendingQuick>,
     reveal: &mut Option<(String, Instant)>,
 ) -> Result<serde_json::Value, String> {
-    let label = i18n::t("git.catch_up.tab");
-    if let Some((title, name)) = opened_for(&label, dir, tabs, pending) {
+    hand_to_ai_tab(desk, dir, &i18n::t("git.catch_up.tab"), choice, tabs, pending, reveal, || {
+        let branch = crate::git::branch(dir).ok().flatten().unwrap_or_default();
+        let files = crate::git::conflicts(dir).unwrap_or_default();
+        desk.git
+            .merge_prompt()
+            .replace("{folder}", &dir.display().to_string())
+            .replace("{branch}", &branch)
+            .replace("{base}", base)
+            // The language the screen is in, named in itself: what the AI is asked
+            // to answer in, and to say the next step in
+            .replace("{language}", &i18n::t("lang.self"))
+            .replace("{files}", &files.iter().map(|f| format!("  - {f}")).collect::<Vec<_>>().join("\n"))
+    })
+}
+
+/// Work handed to a new tab of `choice` in `dir`, under `label`, with `prompt`
+/// as its first message. A tab already at the same work there is brought
+/// forward instead, and the prompt is not written: one AI on it at a time
+#[allow(clippy::too_many_arguments)]
+fn hand_to_ai_tab(
+    desk: &config::Desk,
+    dir: &std::path::Path,
+    label: &str,
+    choice: &crate::uistate::AiChoice,
+    tabs: &[Tab],
+    pending: &mut Vec<PendingQuick>,
+    reveal: &mut Option<(String, Instant)>,
+    prompt: impl FnOnce() -> String,
+) -> Result<serde_json::Value, String> {
+    if let Some((title, name)) = opened_for(label, dir, tabs, pending) {
         *reveal = Some((name, Instant::now() + Duration::from_secs(20)));
         return Ok(serde_json::json!({"title": title, "already": true}));
     }
-    let branch = crate::git::branch(dir).ok().flatten().unwrap_or_default();
-    let files = crate::git::conflicts(dir).unwrap_or_default();
-    let prompt = desk
-        .git
-        .merge_prompt()
-        .replace("{folder}", &dir.display().to_string())
-        .replace("{branch}", &branch)
-        .replace("{base}", base)
-        // The language the screen is in, named in itself: what the AI is asked
-        // to answer in, and to say the next step in
-        .replace("{language}", &i18n::t("lang.self"))
-        .replace("{files}", &files.iter().map(|f| format!("  - {f}")).collect::<Vec<_>>().join("\n"));
-    match open_and_say(&desk.name, dir, &choice.key, &choice.name, &label, prompt, true, tabs, pending, reveal) {
+    match open_and_say(&desk.name, dir, &choice.key, &choice.name, label, prompt(), true, tabs, pending, reveal) {
         Some(title) => Ok(serde_json::json!({"title": title, "already": false})),
-        None => Err(i18n::tp("msg.quick.open_failed", &[("label", &label)])),
+        None => Err(i18n::tp("msg.quick.open_failed", &[("label", label)])),
     }
+}
+
+/// What the failed checks of a pull request's commit were, as a thread read
+/// them from GitHub, for the tab that is to fix them
+struct CiFix {
+    project: String,
+    number: u64,
+    seq: serde_json::Value,
+    title: String,
+    url: String,
+    head: String,
+    dir: std::path::PathBuf,
+    result: anyhow::Result<serde_json::Value>,
 }
 
 /// A tab opened under `label` in `dir` that is still running, or one on its

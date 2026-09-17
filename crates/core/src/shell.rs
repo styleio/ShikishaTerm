@@ -1617,6 +1617,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .gpr .st.ok { color:var(--text); }
   #gitpanel .gpr button:not(.link) { flex:0 0 auto; padding:2px var(--s2); font-size:12px; }
   #gitpanel .gpr button.armed { border-color:var(--stop); color:var(--stop); }
+  /* CI: a count for each verdict in its colour, and the checks under it */
+  #gitpanel button.gci { display:flex; align-items:center; justify-content:flex-start; align-self:flex-start;
+    gap:var(--s2); border:none; background:none; padding:0;
+    min-height:28px; font-size:12px; color:var(--text); cursor:pointer; text-align:left; }
+  #gitpanel button.gci .car { color:var(--dim); width:10px; }
+  #gitpanel .gci .ci, #gitpanel .gcheck { display:inline-flex; align-items:center; gap:var(--s1); }
+  #gitpanel .gci .dot, #gitpanel .gcheck .dot { width:7px; height:7px; border-radius:50%; flex:0 0 auto;
+    box-shadow:inset 0 0 0 1.5px var(--dim); }
+  #gitpanel .v-passed .dot { background:var(--brand); box-shadow:none; }
+  #gitpanel .v-failed .dot { background:var(--stop); box-shadow:none; }
+  #gitpanel .v-pending .dot { background:var(--live); box-shadow:none; }
+  #gitpanel .gcheck { display:flex; gap:var(--s2); padding-left:var(--s4); font-size:12px; min-height:24px; }
+  #gitpanel .gcheck .nm { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #gitpanel .gcheck .st { color:var(--dim); }
+  #gitpanel .gcheck.v-failed .st { color:var(--stop); }
+  #gitpanel .gcheck a { color:var(--dim); text-decoration:none; }
   #gitpanel .gbasesay, #gitpanel .gconflictsay { font-size:11.5px; color:var(--text); }
   #gitpanel .gbase select { height:32px; font:inherit; font-size:12.5px; background:var(--bg); color:var(--text);
     border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 var(--s2); }
@@ -12682,7 +12698,10 @@ function gitFresh(name) {
            // why they could not be read, the new one's form opened by hand,
            // the one a first press of Merge armed, and how many more times to
            // ask while GitHub is still working out whether it can merge
-           prs:null, prsWhy:"", prForm:false, armed:0, prsTries:0, prsWatch:false };
+           prs:null, prsWhy:"", prForm:false, armed:0, prsTries:0, prsWatch:false,
+           // What CI says of the commit they are at (null: none, or not known), and
+           // whether its checks are listed
+           checks:null, ciOpen:false };
 }
 let G = gitFresh(null);
 let gitUi = null;
@@ -13484,6 +13503,10 @@ function gitNext() {
     return {icon:"pr", label: T["git.pr.create"] || "", held: !(p.title || "").trim() || !p.base,
             run:() => gitPrCreate(false)};
   }
+  // CI that failed on the commit they are at: fixed before anything is merged
+  if (open.length && G.checks && G.checks.failed) {
+    return {icon:"sparkles", label: T["git.ci.fix"] || "", edit:"git-ci", run: gitCiFix};
+  }
   const ready = open.find(p => gitPrAction(p));
   if (ready) return Object.assign({icon:"check", pr: ready.number}, gitPrAction(ready),
     G.armed === ready.number ? {} : {label: (T["git.prs.merge"] || "").replace("{base}", ready.base || "")});
@@ -13628,6 +13651,17 @@ function gitPrMerge(p) {
   drawGit();
   gitIssuesAsk("merge", {project: g.project, number: p.number, method: gitMergeMethod()});
 }
+// The failed checks and the ends of their logs, handed to an AI tab in the
+// middle, for the newest open pull request
+function gitCiFix() {
+  const g = gitGroup();
+  const p = gitPrsOpen()[0];
+  if (!g || !p || !G.checks || G.busy || !G.branch) return;
+  G.busy = "ci_fix"; G.said = ""; G.armed = 0;
+  drawGit();
+  gitIssuesAsk("ci_fix", {project: g.project, number: p.number, head: G.branch.name, sha: G.checks.sha || p.sha || "",
+    title: p.title || "", url: p.url || ""});
+}
 // Its base brought into this folder; a conflict opens an AI tab in the middle
 function gitPrResolve(p) {
   const g = gitGroup();
@@ -13656,10 +13690,19 @@ function gitOpenPr() {
 // What GitHub answered the column
 function gitIssues(d) {
   if (d.act === "branch_prs") {
-    if (!d.ok) { G.prs = null; G.prsWhy = d.error || ""; drawGit(); return; }
+    if (!d.ok) { G.prs = null; G.checks = null; G.prsWhy = d.error || ""; drawGit(); return; }
     G.prsWhy = "";
+    const got = d.data || {};
     // One closed without being merged is not on its way anywhere
-    G.prs = (Array.isArray(d.data) ? d.data : []).filter(p => p.state !== "closed");
+    G.prs = (got.prs || []).filter(p => p.state !== "closed");
+    // A project with no CI has no checks, and nothing is said about CI
+    G.checks = got.checks && got.checks.total ? got.checks : null;
+    // While a check is still running, asked again now and then -- only for the
+    // folder that asked, and only one wait at a time
+    if (G.checks && G.checks.pending && !G.ciWait) {
+      const where = G.where;
+      G.ciWait = setTimeout(() => { G.ciWait = 0; if (G.where === where) gitAskPrs(); }, 30000);
+    }
     if (G.prsTries > 0 && G.prs.some(gitPrChecking)) {
       G.prsTries--;
       setTimeout(gitAskPrs, 3000);
@@ -13701,6 +13744,10 @@ function gitIssues(d) {
     // What it merged into moved on the server
     G.quietFetch = true;
     gitAsk("fetch");
+  } else if (d.act === "ci_fix") {
+    const tab = d.data || {};
+    G.said = (T[tab.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "").replace("{title}", tab.title || "")
+      + " " + (T["git.prs.push"] || "");
   } else if (d.act === "pr_resolve") {
     const r = d.data || {};
     G.said = r.state === "tab"
@@ -13942,7 +13989,7 @@ function drawGitPrs(u, next) {
   const b = G.branch || {};
   const prs = Array.isArray(G.prs) ? G.prs : [];
   const another = prs.length > 0 && !gitPrsDone() && !gitPrFormShown() && !!b.name && !b.protected && !!b.upstream && !b.ahead;
-  const sig = JSON.stringify([prs, G.prsWhy, G.armed, G.prsWatch, !!G.busy, next.pr || 0, another]);
+  const sig = JSON.stringify([prs, G.prsWhy, G.armed, G.prsWatch, !!G.busy, next.pr || 0, another, G.checks, G.ciOpen]);
   if (u.prs.dataset.sig === sig) return;
   u.prs.dataset.sig = sig;
   u.prs.textContent = "";
@@ -13965,6 +14012,26 @@ function drawGitPrs(u, next) {
       row.append(go);
     }
     u.prs.append(row);
+  }
+  // CI, once for the branch: the checks run on the commit, whichever base it
+  // was sent to. Counted on one line, listed when opened, each one's page a
+  // press away
+  const c = gitPrsOpen().length ? G.checks : null;
+  if (c) {
+    const count = (n, verdict) => n ? el("span", {class:"ci v-" + verdict}, el("span", {class:"dot"}), String(n)) : null;
+    u.prs.append(el("button", {type:"button", class:"gci", onclick:() => { G.ciOpen = !G.ciOpen; drawGit(); }},
+      el("span", {class:"car"}, G.ciOpen ? "▾" : "▸"),
+      el("span", {class:"nm"}, T["git.ci"] || ""),
+      count(c.passed, "passed"), count(c.failed, "failed"), count(c.pending, "pending")));
+    if (G.ciOpen) {
+      for (const item of c.items || []) {
+        u.prs.append(el("div", {class:"gcheck v-" + item.verdict},
+          el("span", {class:"dot"}),
+          el("span", {class:"nm", title: item.name || ""}, item.name || ""),
+          el("span", {class:"st"}, T["issues.verdict." + item.verdict] || item.verdict || ""),
+          item.url ? mdLink(item.url, "↗") : null));
+      }
+    }
   }
   if (another) {
     u.prs.append(el("button", {type:"button", class:"link", onclick:() => { G.prForm = true; gitPrFormFit(); drawGit(); }},

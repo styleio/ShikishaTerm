@@ -2826,6 +2826,11 @@ pub struct GitSpec {
     /// and `{files}`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_prompt: Option<String>,
+    /// What an AI tab opened to fix a failed CI run is told first, in the same
+    /// three states. Its words to fill in are `{pr}`, `{title}`, `{url}`,
+    /// `{branch}`, `{folder}`, `{checks}` and `{language}`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci_prompt: Option<String>,
     /// Lua that produces the message itself. When set, the built-in template is
     /// not used at all -- this is the whole of it
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2862,6 +2867,11 @@ impl GitSpec {
     /// else the default
     pub fn merge_prompt(&self) -> String {
         self.merge_prompt.clone().unwrap_or_else(|| crate::i18n::t("ai.merge.default_prompt"))
+    }
+    /// What an AI tab opened to fix a failed CI run is told: the one written,
+    /// else the default
+    pub fn ci_prompt(&self) -> String {
+        self.ci_prompt.clone().unwrap_or_else(|| crate::i18n::t("ai.ci.default_prompt"))
     }
     /// The prompt an issue is drafted with: the one written, else the default
     pub fn issue_prompt(&self) -> String {
