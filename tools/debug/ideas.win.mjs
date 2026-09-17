@@ -229,7 +229,7 @@ try {
     }
   };
   await rightClick('消すメモ');
-  check((await run(`[...document.querySelectorAll('.fmenu div')].map(d => d.textContent).join('|')`)) === 'コピー|完了にする|削除', 'the menu says copy, done and delete, in that order');
+  check((await run(`[...document.querySelectorAll('.fmenu div')].map(d => d.textContent).join('|')`)) === 'コピー|Issue に送る|完了にする|削除', 'the menu says copy, send to Issue, done and delete, in that order');
   check(await run(`document.querySelector('.fmenu div:last-child').classList.contains('warn')`), 'delete is the red last line');
   await pick('tui.ideas.delete');
   await disk((it) => !it.some((i) => i.text === '消すメモ'), 'the deleted card gone from the file');
@@ -241,7 +241,7 @@ try {
   check(await run(`[...document.querySelectorAll('#ideas .icard.done .itext')].some(t => t.value === 'しまうメモ')`), 'done, it comes back with the done ones');
   check(!(await run(`[...document.querySelectorAll('#ideas .icard .itext')].some(t => t.value === '消すメモ')`)), 'deleted, it does not come back with them');
   await rightClick('しまうメモ');
-  check((await run(`[...document.querySelectorAll('.fmenu div')].map(d => d.textContent).join('|')`)) === 'コピー|未完了に戻す|削除', 'a done card offers to be not done');
+  check((await run(`[...document.querySelectorAll('.fmenu div')].map(d => d.textContent).join('|')`)) === 'コピー|Issue に送る|未完了に戻す|削除', 'a done card offers to be not done');
   await key('Escape');
   check(await run(`!document.querySelector('.fmenu') && !document.getElementById('ideas').hidden`), 'Esc puts the menu away and leaves the ideas up');
   await click('#ideas .idone');
@@ -268,7 +268,18 @@ try {
   check((await run(`IDEAS.projects.length`)) === 1, 'the removed project is no longer offered');
   check(onDisk().some((i) => i.text === '最初のアイデア（直した）' && same(i.project, APPDIR)), "app's cards stayed with app");
   shot('3-project-removed');
-  await key('Escape');
+
+  console.log('9. sent to an Issue: the Issue tab comes to the front with the idea as the new issue\'s description');
+  await until(() => run(`document.querySelectorAll('#ideas .ilist .icard').length > 0`), 'app\'s cards');
+  const sent = await run(`document.querySelector('#ideas .ilist .icard .itext').value`);
+  await click('#ideas .ilist .icard .itool:last-child');
+  await until(() => run(`document.getElementById('ideas').hidden && !document.getElementById('issuespanel').hidden`), 'the Issue tab in front', 30000);
+  check(true, 'the ideas closed and the Issue tab came to the front');
+  await until(() => run(`I.projects !== null && I.view === 'create' && !!document.querySelector('#issuespanel textarea')`), 'the new issue form');
+  check((await run(`document.querySelector('#issuespanel textarea').value`)) === sent, 'the description holds the idea');
+  check((await run(`I.create.project`)) === 'app', 'the idea\'s project is chosen: ' + (await run(`I.create.project`)));
+  check(await run(`!!document.querySelector('#issuespanel .iai')`), 'the ✨ that writes the rest from it is there');
+  shot('4-sent-to-issue');
 } catch (e) {
   check(false, e.message);
 } finally {
