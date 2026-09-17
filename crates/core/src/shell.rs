@@ -11698,6 +11698,13 @@ function gitBuild(box) {
       drawGit();
       gitAsk("message");
     }}, pickIcon("sparkles"));
+  // What the AI is told is written in the desk's settings. Asked for where the
+  // AI is asked: a right-click (a long press on a phone) on the same button
+  ai.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    openList(ai, [el("div", {onclick:() => { closeFolderMenu(); openSettings("git-message", true); }},
+      T["git.message.ai.edit"] || "")], false, e);
+  });
   const main = el("button", {class:"gmain", type:"button", onclick:() => {
     const next = gitNext();
     if (next) next.run();

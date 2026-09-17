@@ -9,6 +9,18 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Changed
+- **The commit message prompt is written out whole in the settings, and can be
+  changed or emptied.** The AI used to be given a prompt nobody could see, with
+  the settings only adding a line to it. Settings > desk > git now shows the whole
+  prompt: a summary line, a short body on why, and a last line naming the AI that
+  wrote the message (`Assisted-by: {ai}`, which can be taken out). `{diff}` is
+  where the change goes and `{ai}` becomes the AI's name; both can be put in with
+  a press. Not written, the default is used and said to be; written empty, the
+  AI is given the change alone; "Back to the default" returns to it. An
+  instruction written in an earlier version is shown on the end of the default.
+  A prompt for a pull request's title and description is there in the same form,
+  for when the git panel makes pull requests. Right-clicking the AI button in the
+  git panel offers Edit, which opens that prompt.
 - **The commit message is written in the git panel, and one button does the next
   thing.** The message used to be the line in the input bar under the terminal,
   and the Commit button in the Changes column took whatever was typed there --

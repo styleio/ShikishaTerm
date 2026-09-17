@@ -1477,8 +1477,9 @@ shikisha.set_progress(nil, "", at)
 /// do is return the message as a string; where that string goes is the panel's
 /// business, not this template's.
 pub const COMMIT_MESSAGE_LUA: &str = r#"
-local tab  = shikisha.get_var("git_tab")
-local hint = shikisha.get_var("git_hint") or ""
+local tab    = shikisha.get_var("git_tab")
+-- The whole prompt, as written in the settings
+local prompt = shikisha.get_var("git_prompt") or ""
 -- What is staged is what is about to be committed. With nothing staged there
 -- is still a change to talk about: the one in front of them
 local diff = shikisha.git_diff(tab, { staged = true })
@@ -1486,9 +1487,16 @@ if diff == "" then diff = shikisha.git_diff(tab, { staged = false }) end
 if diff == "" then error(shikisha.t("err.git.nothing_to_describe")) end
 -- A diff can be a megabyte. The shape of the change is in the first pages
 if #diff > 12000 then diff = diff:sub(1, 12000) .. "\n...\n" end
-local extra = ""
-if hint ~= "" then extra = shikisha.t("ai.commit.extra") .. "\n" .. hint .. "\n" end
-local said, why = shikisha.ai_ask(shikisha.tf("ai.commit.prompt", { extra = extra, diff = diff }))
+-- The change goes where the prompt says {diff}, or after it
+local at = prompt:find("{diff}", 1, true)
+if at then
+  prompt = prompt:sub(1, at - 1) .. diff .. prompt:sub(at + #"{diff}")
+elseif prompt == "" then
+  prompt = diff
+else
+  prompt = prompt .. "\n\n" .. diff
+end
+local said, why = shikisha.ai_ask(prompt)
 if not said then error(why) end
 return said
 "#;

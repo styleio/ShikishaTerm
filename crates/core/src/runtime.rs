@@ -3957,6 +3957,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let spec = desks.get(desk_index).map(|w| w.git.clone()).unwrap_or_default();
                 let code = spec
                     .message_lua
+                    .clone()
                     .filter(|l| !l.trim().is_empty())
                     .unwrap_or_else(|| crate::hooks::COMMIT_MESSAGE_LUA.to_string());
                 let _ = eng.call_primitive_as(
@@ -3965,14 +3966,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     "set_var",
                     &[serde_json::json!("git_tab"), serde_json::json!(panel)],
                 );
+                // The whole prompt, as written in the settings (or the default
+                // shown there). The name of the AI that will answer goes in
+                // where the prompt asks for it; the change goes in inside the Lua
+                let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).filter(|s| !s.is_empty());
+                let prompt = spec
+                    .commit_prompt()
+                    .replace("{ai}", crate::webui::local_ai_label(ai.as_deref()).unwrap_or("an AI"));
                 let _ = eng.call_primitive_as(
                     None,
                     grants::Subject::Human,
                     "set_var",
-                    &[
-                        serde_json::json!("git_hint"),
-                        serde_json::json!(spec.message_hint.unwrap_or_default()),
-                    ],
+                    &[serde_json::json!("git_prompt"), serde_json::json!(prompt)],
                 );
                 shell.push_git(&serde_json::json!({"act": "message", "busy": true}).to_string());
                 eng.start_snippet("message", &code);
