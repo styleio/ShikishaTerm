@@ -3570,21 +3570,61 @@ pub fn set_folder_source_at(
 /// somebody's work are different acts, and only one of them can be undone by
 /// opening it again.
 pub fn remove_folder(desk_name: &str, cwd: &Path) -> Result<()> {
-    with_folders(&config_file_path(), desk_name, |folders| {
+    take_folder(desk_name, cwd).map(|_| ())
+}
+
+/// A folder taken out of the list: where it stood, and everything it said
+/// there, its tabs included
+pub type TakenFolder = (usize, serde_json::Value);
+
+/// [`remove_folder`], keeping what was taken so it can be put back
+/// ([`put_folder_back`]). A worktree whose folder would not delete is offered
+/// back to the list as it was, not as a new folder with no tabs
+pub fn take_folder(desk_name: &str, cwd: &Path) -> Result<Option<TakenFolder>> {
+    take_folder_at(&config_file_path(), desk_name, cwd)
+}
+
+/// The same, told which settings file to edit
+fn take_folder_at(path: &Path, desk_name: &str, cwd: &Path) -> Result<Option<TakenFolder>> {
+    let mut taken = None;
+    with_folders(path, desk_name, |folders| {
         if folders.len() <= 1 {
             anyhow::bail!(crate::i18n::t("err.worktree.last_folder"));
         }
-        let at = folders.iter().position(|g| {
-            g.get("cwd")
-                .and_then(|c| c.as_str())
-                .map(resolve_folder_cwd)
-                .is_some_and(|c| c == cwd)
-        });
+        let at = folders.iter().position(|g| folder_is(g, cwd));
         if let Some(i) = at {
-            folders.remove(i);
+            taken = Some((i, folders.remove(i)));
         }
         Ok(())
+    })?;
+    Ok(taken)
+}
+
+/// Puts a folder [`take_folder`] took back where it stood. A list that has
+/// since grown shorter gets it at the end, and a list that has the folder
+/// again is left as it is
+pub fn put_folder_back(desk_name: &str, taken: &TakenFolder) -> Result<()> {
+    put_folder_back_at(&config_file_path(), desk_name, taken)
+}
+
+/// The same, told which settings file to edit
+fn put_folder_back_at(path: &Path, desk_name: &str, (at, entry): &TakenFolder) -> Result<()> {
+    with_folders(path, desk_name, |folders| {
+        let cwd = entry.get("cwd").and_then(|c| c.as_str()).map(resolve_folder_cwd);
+        if cwd.is_some_and(|cwd| folders.iter().any(|g| folder_is(g, &cwd))) {
+            return Ok(());
+        }
+        folders.insert((*at).min(folders.len()), entry.clone());
+        Ok(())
     })
+}
+
+/// Whether a folder of the list works in `cwd`
+fn folder_is(g: &serde_json::Value, cwd: &Path) -> bool {
+    g.get("cwd")
+        .and_then(|c| c.as_str())
+        .map(resolve_folder_cwd)
+        .is_some_and(|c| c == cwd)
 }
 
 /// The group working in this folder, if it is in the list.
@@ -5949,6 +5989,41 @@ mod tests {
         assert!(in_folder(2).is_empty(), "it should start nothing, but there are tabs");
         let opts = crate::desk::tab_options(&one[0].cfg, Some(there));
         assert!(opts.remote.is_some(), "a tab in the far folder starts on this machine");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A worktree whose folder would not delete can be put back in the list
+    /// as it was, where it was, tabs and all -- and only once
+    #[test]
+    fn a_folder_taken_off_the_list_goes_back_where_it_was() {
+        let dir = std::env::temp_dir().join(format!("shikisha-putback-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        std::fs::write(
+            &file,
+            r#"{"desks": [{"name": "Demo", "folders": [
+                {"cwd": "D:/work/proj", "tabs": [{"name": "a", "command": "claude"}]},
+                {"cwd": "D:/work/proj.branches/login", "name": "login", "tabs": [{"name": "b", "command": "codex"}]},
+                {"cwd": "D:/work/other", "tabs": []}]}]}"#,
+        )
+        .unwrap();
+        let before: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let taken = take_folder_at(&file, "Demo", Path::new("D:/work/proj.branches/login"))
+            .unwrap()
+            .expect("the folder is in the list");
+        assert_eq!(taken.0, 1);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(!text.contains("login"), "it is still in the list: {text}");
+
+        put_folder_back_at(&file, "Demo", &taken).unwrap();
+        let after: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(after, before, "it did not come back as it was, where it was");
+        // Twice is still once
+        put_folder_back_at(&file, "Demo", &taken).unwrap();
+        let again: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(again, before, "put back twice, it is in the list twice");
+        // A folder that is not in the list takes nothing
+        assert!(take_folder_at(&file, "Demo", Path::new("D:/nowhere")).unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

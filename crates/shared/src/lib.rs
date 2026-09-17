@@ -392,9 +392,12 @@ pub enum Ev {
     /// `show` (put them on the desk), `keep` (keep them hidden, the row goes)
     /// or `offer` (take back a keep, the row returns)
     Found { family: String, act: String },
-    /// A worktree being made, answered from its row in the sidebar. `id` is
-    /// the making's own number; `act` is `stop` (take it back), `retry` (make
-    /// it again after it failed) or `dismiss` (put a failed one away)
+    /// A worktree being made or deleted, answered from its row in the sidebar.
+    /// `id` is the row's own number. For one being made, `act` is `stop` (take
+    /// it back), `retry` (make it again after it failed) or `dismiss` (put a
+    /// failed one away). For one whose folder would not delete, it is `retry`
+    /// (delete again), `restore` (put it back in the list) or `forget` (keep it
+    /// off the list and leave the folder on disk)
     Making { id: u64, act: String },
     /// A tool from the left bar's scissors: wait `delay` seconds, take the
     /// screen the pointer is on, and open `tool` over the picture.

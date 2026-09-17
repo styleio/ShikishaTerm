@@ -1469,7 +1469,9 @@ fn handle(
         }
         // Throw a branch's folder away for good. Refused while anything in it
         // is uncommitted -- said before the settings let go of it, so a no
-        // costs nothing. The removal itself waits for the tabs to leave
+        // costs nothing. The answer waits for the folder to be gone, on a
+        // thread of its own so the rest of the page is not held up. `left`
+        // says the folder is still on disk, which the page asks about
         ("POST", "/api/folder/discard") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
@@ -1480,14 +1482,20 @@ fn handle(
             let at = std::path::PathBuf::from(
                 p.get("path").and_then(|v| v.as_str()).unwrap_or_default().trim(),
             );
-            let resp = match crate::worktree::ready_to_discard(&at) {
-                Ok(()) => {
-                    crate::worktree::discard_soon(at);
-                    serde_json::json!({ "ok": true })
-                }
-                Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
-            };
-            req.respond(json_resp(resp))?;
+            if let Err(e) = crate::worktree::ready_to_discard(&at) {
+                req.respond(json_resp(serde_json::json!({ "ok": false, "error": format!("{e:#}") })))?;
+                return Ok(());
+            }
+            std::thread::spawn(move || {
+                let resp = match crate::worktree::discard_waiting(&at) {
+                    Ok(()) => serde_json::json!({ "ok": true }),
+                    Err(e) => {
+                        crate::append_hook_log(&format!("could not remove {}: {e:#}", at.display()));
+                        serde_json::json!({ "ok": false, "left": true, "error": format!("{e:#}") })
+                    }
+                };
+                let _ = req.respond(json_resp(resp));
+            });
         }
         // Call a branch's folder's branch something else. Asked twice: once
         // with `go` unset, to put the line that would run in front of the
@@ -9261,9 +9269,17 @@ function folderPane(desk, g, gi) {
     buttons.append(el("button", {class:"danger", onclick: async () => {
       if (!guard()) return;
       if (!await confirmAction(fill(T["settings.group.discard.sure"], {name: folderLabel(g, gi)}), T["settings.group.discard"])) return;
+      toast(T["tui.making.stage.removing"]);
       const r = await fetch("/api/folder/discard",
         {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: g.cwd})})
         .then(r => r.json()).catch(() => ({ok:false, error:""}));
+      // The folder would not go. Asked whether to take it off the list anyway,
+      // since the files stay on disk either way
+      if (!r.ok && r.left) {
+        if (!await confirmAction(fill(T["worktree.left.say"], {why: r.error || ""}), T["worktree.left.forget"])) return;
+        drop();
+        return;
+      }
       if (!r.ok) { toast(r.error || T["settings.group.discard.failed"], true); return; }
       drop();
       toast(T["settings.group.discard.done"]);

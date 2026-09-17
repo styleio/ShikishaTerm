@@ -172,6 +172,45 @@ impl Pending {
     }
 }
 
+/// A worktree deleted from its right-click, from the press until its folder is
+/// gone. When the folder will not go, it stays until the person says what to do
+/// with what is left. It is drawn as the same row as a worktree being made, and
+/// it answers through the same numbers
+struct Leaving {
+    id: u64,
+    removal: crate::worktree::Removal,
+    desk: String,
+    /// The project's shared git folder, which puts its row under its heading
+    family: String,
+    /// What its row calls it: its branch, or its folder's name
+    name: String,
+    /// The project's own checkout, told to forget a worktree left behind
+    main: Option<std::path::PathBuf>,
+    /// Where it stood in the list and what it said there, to put it back
+    taken: Option<config::TakenFolder>,
+    /// Why the folder is still there, once it is known to be
+    error: Option<String>,
+    /// Put back in the list: the row waits for the card, as a made one does
+    restored: Option<Instant>,
+    gone: bool,
+}
+
+impl Leaving {
+    fn state(&self) -> crate::uistate::MakingState {
+        crate::uistate::MakingState {
+            id: self.id,
+            family: self.family.clone(),
+            name: self.name.clone(),
+            folder: self.removal.folder.display().to_string(),
+            stage: match self.error {
+                Some(_) => "unremoved".into(),
+                None => "removing".into(),
+            },
+            error: self.error.clone().unwrap_or_default(),
+        }
+    }
+}
+
 /// How long a written-down worktree's row waits for the desk to list it
 /// before it goes anyway. A reload that never comes must not leave it forever
 const MAKING_CARD_WAIT: Duration = Duration::from_secs(10);
@@ -1055,6 +1094,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut worktrees_kept = load_kept();
     // Worktrees being made, each a row under its project's heading
     let mut makings: Vec<Pending> = Vec::new();
+    let mut leavings: Vec<Leaving> = Vec::new();
     let mut making_seq: u64 = 0;
     let mut thanks_show = false;
     // Where thanks would go: the Store's review page for the Store's copy, the
@@ -3089,7 +3129,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             setup: setup_view.clone(),
             add_project: add_view.clone(),
             worktrees_kept: worktrees_kept.clone(),
-            making: makings.iter().map(Pending::state).collect(),
+            making: makings.iter().map(Pending::state).chain(leavings.iter().map(Leaving::state)).collect(),
             hosts: cfg
                 .as_ref()
                 .map(|c| {
@@ -5079,13 +5119,30 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             }
             let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
-            match config::remove_folder(&desk, &at) {
-                Ok(()) => {
-                    flash = Some(i18n::tp(
-                        "msg.folder.discarded",
-                        &[("path", &at.display().to_string())],
-                    ));
-                    crate::worktree::discard_soon(at);
+            // Read while the folder is still a worktree: once it is going, git
+            // can no longer say whose it is or what branch it was on
+            let family = crate::repo::family_of(&at).map(|f| f.display().to_string()).unwrap_or_default();
+            let main = crate::repo::main_checkout(&at);
+            let name = crate::repo::branch_of(&at)
+                .or_else(|| at.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_default();
+            match config::take_folder(&desk, &at) {
+                // Said once the folder is really gone, not when it was asked
+                // to go: the row says it is going until then
+                Ok(taken) => {
+                    making_seq += 1;
+                    leavings.push(Leaving {
+                        id: making_seq,
+                        removal: crate::worktree::Removal::start(at),
+                        desk,
+                        family,
+                        name,
+                        main,
+                        taken,
+                        error: None,
+                        restored: None,
+                        gone: false,
+                    });
                 }
                 Err(e) => flash = Some(format!("{e:#}")),
             }
@@ -5195,6 +5252,37 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         // The rows of worktrees being made: stopped, tried again, put away
         for (id, act) in shell.mail().take_makings() {
+            // A worktree on its way out answers through the same row. Its
+            // folder would not go, and what is left of it is kept on disk, put
+            // back in the list, or tried again
+            if let Some(l) = leavings.iter_mut().find(|l| l.id == id && l.error.is_some()) {
+                match act.as_str() {
+                    "retry" => {
+                        l.error = None;
+                        l.removal = crate::worktree::Removal::start(l.removal.folder.clone());
+                    }
+                    "restore" => match &l.taken {
+                        Some(taken) => match config::put_folder_back(&l.desk, taken) {
+                            Ok(()) => l.restored = Some(Instant::now()),
+                            Err(e) => flash = Some(format!("{e:#}")),
+                        },
+                        None => l.gone = true,
+                    },
+                    "forget" => {
+                        // Git may still list a worktree it refused to remove.
+                        // Forgetting one whose folder is gone is all prune does
+                        if let Some(main) = &l.main {
+                            let mut prune = std::process::Command::new("git");
+                            prune.arg("-C").arg(main).args(["worktree", "prune"]);
+                            let _ = crate::detach_console(&mut prune).output();
+                        }
+                        flash = Some(i18n::tp("msg.folder.left", &[("path", &l.removal.folder.display().to_string())]));
+                        l.gone = true;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             let Some(p) = makings.iter_mut().find(|p| p.id == id) else { continue };
             match act.as_str() {
                 "stop" if p.error.is_none() && !p.made && p.written.is_none() => p.making.stop(),
@@ -5250,6 +5338,28 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 })
             };
             !p.gone && !p.written.is_some_and(|at| at.elapsed() > MAKING_CARD_WAIT || listed())
+        });
+        // The worktrees being deleted. Gone is said then and not before; a
+        // folder that stayed keeps its row and asks
+        for l in leavings.iter_mut().filter(|l| l.error.is_none() && l.restored.is_none() && !l.gone) {
+            match l.removal.outcome() {
+                None => {}
+                Some(Ok(())) => {
+                    flash = Some(i18n::tp("msg.folder.discarded", &[("path", &l.removal.folder.display().to_string())]));
+                    l.gone = true;
+                }
+                Some(Err(why)) => l.error = Some(why),
+            }
+        }
+        leavings.retain(|l| {
+            let listed = || {
+                desks.iter().filter(|d| d.name == l.desk).any(|d| {
+                    d.folders
+                        .iter()
+                        .any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &l.removal.folder)))
+                })
+            };
+            !l.gone && !l.restored.is_some_and(|at| at.elapsed() > MAKING_CARD_WAIT || listed())
         });
         // A project from a URL, or made new. Cloning takes as long as the
         // network does, so it runs on its own and is looked at every turn; a
