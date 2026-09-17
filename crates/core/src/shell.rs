@@ -4095,6 +4095,16 @@ function drawIssueDetail(box) {
 
 function drawIssueCreate(box) {
   const c = I.create;
+  // Sent from an idea: its project, by where the checkout is, once the
+  // projects are known. Asked once, and whatever is chosen after is the person's
+  if (c.at && I.projects) {
+    const p = I.projects.find(p => sameFolder(p.dir, c.at));
+    if (p) {
+      c.project = p.name;
+      if (!I.options[p.name]) send({kind:"issues", act:"options", args:{kind: I.kind, project: p.name}});
+    }
+    c.at = "";
+  }
   // However the form was reached, it names a project that is there
   if (!issueProject(c.project) && I.projects && I.projects.length) {
     c.project = issueProject(I.project) ? I.project : I.projects[0].name;
@@ -11314,9 +11324,8 @@ function ideaCard(it) {
     grip, check, text,
     el("button", {type:"button", class:"itool", title:T["tui.ideas.copy"] || "",
       onclick:() => ideasCopy(text.value)}, pickIcon("copy")),
-    // What sending an idea to an Issue does is still to be decided: the
-    // button stands where it will be, and a press does nothing yet
-    el("button", {type:"button", class:"itool", title:T["tui.ideas.issue"] || ""}, pickIcon("issue")));
+    el("button", {type:"button", class:"itool", title:T["tui.ideas.issue"] || "",
+      onclick:() => ideaToIssue(card)}, pickIcon("issue")));
   text.oninput = () => { ideasGrow(text); ideasEdit(id, text.value, false); };
   text.onkeydown = e => ideasKey(e, card);
   text.onblur = () => { if (IDEAS.timers[id]) ideasEdit(id, text.value, true); };
@@ -11354,6 +11363,25 @@ function ideasDelete(card) {
   drawIdeas(false);
   if (had) ideasFocus(null, true);
 }
+// The Issue tab's new issue, with the idea as its description and the idea's
+// project chosen: the ✨ there turns the description into a title, a body and
+// labels. The project is matched by where its checkout is once the Issue tab
+// knows its projects (drawIssueCreate); an idea with no project, or one of
+// another desk, opens on the form's own choice, which is on screen to change
+function ideaToIssue(card) {
+  const id = Number(card.dataset.id);
+  const it = IDEAS.items.find(i => i.id === id);
+  const text = card.querySelector(".itext").value;
+  if (IDEAS.timers[id]) ideasEdit(id, text, true);
+  closeIdeas();
+  I.kind = "issue";
+  I.view = "create";
+  I.said = ""; I.bad = false;
+  I.create = {project:"", title:"", body:text, labels:[], assignee:"", kept:"", at:(it && it.project) || ""};
+  issuesSig = "";
+  send({kind:"openissues"});
+  drawIssues();
+}
 function ideaMenu(card, point) {
   const id = Number(card.dataset.id);
   const it = IDEAS.items.find(i => i.id === id);
@@ -11361,6 +11389,7 @@ function ideaMenu(card, point) {
   const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
   openList(card, [
     item(T["tui.ideas.copy"] || "", () => ideasCopy(card.querySelector(".itext").value)),
+    item(T["tui.ideas.issue"] || "", () => ideaToIssue(card)),
     item(it.done ? (T["tui.ideas.undone"] || "") : (T["tui.ideas.markdone"] || ""),
       () => ideasSetDone(card, !it.done)),
     // Last and in red, the one entry that cannot be taken back
@@ -15461,6 +15490,15 @@ mod tests {
         assert!(p.contains("const touch = e.pointerType === \"touch\";"), "a phone has no way to a card's menu");
         assert!(p.contains(r#"el("div", {class:"warn", onclick:() => { closeFolderMenu(); ideasDelete(card); }}, T["tui.ideas.delete"] || ""),"#), "delete is not the red last line of the menu");
         assert!(p.contains(r#"  ideasDrop(Number(card.dataset.id));"#), "delete does not take the card out of the file");
+        // Sent to an Issue: the new issue form, in front, the idea as its
+        // description and its project found by where the checkout is
+        let to_issue = p.split("function ideaToIssue(card) {").nth(1).expect("an idea cannot be sent to an Issue");
+        let to_issue = &to_issue[..to_issue.find("
+}").unwrap()];
+        for want in [r#"I.view = "create";"#, "body:text", r#"send({kind:"openissues"});"#] {
+            assert!(to_issue.contains(want), "sending an idea to an Issue lost {want}");
+        }
+        assert!(p.contains("const p = I.projects.find(p => sameFolder(p.dir, c.at));"), "the idea's project is not chosen on the new issue");
     }
 
     /// Backspace in the empty input bar deletes in the pane it sends to, and

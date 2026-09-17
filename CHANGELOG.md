@@ -51,8 +51,10 @@ once it reaches its first tagged release.
   are kept in `config/ideas.json`, and a card whose project is taken out of
   every desk goes to "No project". The same cards open from a phone. A
   right-click on a card, or holding its grip on a phone, opens a menu to copy
-  it, mark it done or not, or delete it: done keeps it for "Show done ideas",
-  deleted takes it out of the file for good.
+  it, send it to an Issue, mark it done or not, or delete it: done keeps it for
+  "Show done ideas", deleted takes it out of the file for good. Sending to an
+  Issue brings the Issue tab to the front on a new issue whose description is
+  the idea, in the idea's project; its ✨ writes the title and labels from it.
 
 ### Changed
 - **Waiting in the Issue tab is shown plainly.** While GitHub or the AI is being
