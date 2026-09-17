@@ -39,6 +39,10 @@ pub struct Saved {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedWs {
     pub name: String,
+    /// The desk's id, which renaming leaves alone. Absent in files written
+    /// before it was kept, and those are found by name
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     /// How the content area was divided. Absent when it was not
     #[serde(default)]
     pub panes: Option<crate::layout::Layout>,
@@ -94,7 +98,7 @@ impl Saved {
 
     /// The conversation this tab was having last time, if this is recognisably
     /// the same tab.
-    pub fn conversation_for(&self, desk: &str, t: &Tab) -> Option<Session> {
+    pub fn conversation_for(&self, desk: &crate::config::Desk, t: &Tab) -> Option<Session> {
         self.conversation_of(
             desk,
             t.program(),
@@ -112,13 +116,13 @@ impl Saved {
     /// a live one. `conversation_for` is the same test, asked later
     pub fn conversation_of(
         &self,
-        desk: &str,
+        desk: &crate::config::Desk,
         program: &str,
         cwd: Option<&str>,
         id: Option<&str>,
         title: &str,
     ) -> Option<Session> {
-        let desk = self.desks.iter().find(|w| w.name == desk)?;
+        let desk = self.desk(desk)?;
         let saved = desk.tabs.iter().find(|s| {
             s.program == program
                 && s.cwd.as_deref() == cwd
@@ -140,12 +144,25 @@ impl Saved {
     }
 
     /// The division of the screen this desk had last time.
-    pub fn panes_for(&self, desk: &str) -> Option<crate::layout::Layout> {
-        self.desks
+    pub fn panes_for(&self, desk: &crate::config::Desk) -> Option<crate::layout::Layout> {
+        self.desk(desk)?.panes.clone()
+    }
+
+    /// What was remembered about this desk.
+    ///
+    /// By its id when one was written down, because a desk renamed since the
+    /// app closed is still that desk: found by name, its AI tabs came back as
+    /// new conversations, and what they had been saying was left behind under
+    /// a name nothing is called any more. A remembered id that is not this
+    /// one is another desk, whatever it was called -- a new desk given a
+    /// deleted one's name does not inherit its conversations. Only a file
+    /// written before ids were kept is read by name
+    fn desk(&self, desk: &crate::config::Desk) -> Option<&SavedWs> {
+        let by_id = self
+            .desks
             .iter()
-            .find(|w| w.name == desk)?
-            .panes
-            .clone()
+            .find(|w| !desk.id.is_empty() && w.id.as_deref() == Some(desk.id.as_str()));
+        by_id.or_else(|| self.desks.iter().find(|w| w.id.is_none() && w.name == desk.name))
     }
 
     /// Replace what is remembered about one desk, leaving the others.
@@ -155,7 +172,7 @@ impl Saved {
     /// has not been opened this run has nothing newer to say about itself
     pub fn remember(
         &mut self,
-        desk: &str,
+        desk: &crate::config::Desk,
         tabs: &[Tab],
         panes: Option<&crate::layout::Layout>,
     ) {
@@ -178,15 +195,22 @@ impl Saved {
                 })
             })
             .collect();
+        let id = (!desk.id.is_empty()).then(|| desk.id.clone());
         let entry = SavedWs {
-            name: desk.to_string(),
+            name: desk.name.clone(),
+            id: id.clone(),
             panes: panes.cloned(),
             tabs: saved,
         };
-        match self.desks.iter_mut().find(|w| w.name == desk) {
-            Some(w) => *w = entry,
-            None => self.desks.push(entry),
-        }
+        // Filed under the id. What this desk left under its name before ids
+        // were kept goes: it is the same desk, and left behind it would be
+        // found again by a new desk that takes the name
+        self.desks.retain(|w| match (&w.id, &id) {
+            (Some(saved), Some(now)) => saved != now,
+            (Some(_), None) => true,
+            (None, _) => w.name != desk.name,
+        });
+        self.desks.push(entry);
     }
 
     pub fn write(&self) {
@@ -206,12 +230,19 @@ impl Saved {
 mod tests {
     use super::*;
 
+    /// A desk as the settings would give it: its name, and an id it was never
+    /// remembered under
+    fn named(name: &str) -> crate::config::Desk {
+        crate::config::Desk { name: name.into(), id: format!("{name}-id"), ..Default::default() }
+    }
+
     #[test]
     fn a_tab_is_recognised_by_what_it_is_not_only_by_its_name() {
         let saved = Saved {
             version: VERSION,
             desks: vec![SavedWs {
                 name: "work".into(),
+                id: None,
                 panes: None,
                 tabs: vec![SavedTab {
                     title: "AGENT".into(),
@@ -225,7 +256,7 @@ mod tests {
         };
         let found = |program, cwd, id, title| {
             saved
-                .conversation_of("work", program, Some(cwd), id, title)
+                .conversation_of(&named("work"), program, Some(cwd), id, title)
                 .map(|s| s.id)
         };
         // The automation name is the handle that survives renaming
@@ -240,10 +271,49 @@ mod tests {
         assert_eq!(found("claude", "D:\\Other", Some("coder"), "AGENT"), None);
         // And a desk that was never remembered has nothing to say
         assert!(saved
-            .conversation_of("elsewhere", "claude", Some("D:\\Test"), Some("coder"), "AGENT")
+            .conversation_of(&named("elsewhere"), "claude", Some("D:\\Test"), Some("coder"), "AGENT")
             .is_none());
-        assert!(saved.panes_for("work").is_none());
-        assert!(saved.panes_for("elsewhere").is_none());
+        assert!(saved.panes_for(&named("work")).is_none());
+        assert!(saved.panes_for(&named("elsewhere")).is_none());
+    }
+
+    /// A desk renamed since the app closed brings its conversations back.
+    ///
+    /// Remembered by name, a renamed desk's AI tabs came back as new
+    /// conversations. Remembered by id, it is still that desk -- and a new desk
+    /// that took a deleted desk's name does not inherit what that one said
+    #[test]
+    fn a_renamed_desk_is_still_remembered_and_a_new_one_of_the_same_name_is_not() {
+        let tab = |session: &str| SavedTab {
+            title: "claude".into(),
+            id: Some("claude".into()),
+            cwd: Some("D:/Work".into()),
+            program: "claude".into(),
+            session: session.into(),
+            source: "Minted".into(),
+        };
+        let entry = |id: Option<&str>, name: &str, session: &str| SavedWs {
+            name: name.into(),
+            id: id.map(str::to_string),
+            panes: None,
+            tabs: vec![tab(session)],
+        };
+        let desk = |id: &str, name: &str| crate::config::Desk { id: id.into(), name: name.into(), ..Default::default() };
+        let said = |saved: &Saved, d: &crate::config::Desk| {
+            saved.conversation_of(d, "claude", Some("D:/Work"), Some("claude"), "claude").map(|s| s.id)
+        };
+
+        let saved = Saved { version: VERSION, desks: vec![entry(Some("default"), "DEFAULT", "abc")] };
+        assert_eq!(said(&saved, &desk("default", "ワイアード＆エコ")), Some("abc".into()), "renaming lost the conversation");
+        assert_eq!(said(&saved, &desk("other", "DEFAULT")), None, "another desk of the same name took it");
+
+        // A file from before ids were kept is read by name, and the entry
+        // written from then on replaces it rather than standing beside it
+        let mut saved = Saved { version: VERSION, desks: vec![entry(None, "DEFAULT", "old")] };
+        assert_eq!(said(&saved, &desk("default", "DEFAULT")), Some("old".into()), "an older file is not read");
+        saved.remember(&desk("default", "DEFAULT"), &[], None);
+        assert_eq!(saved.desks.len(), 1, "the desk is remembered twice");
+        assert_eq!(saved.desks[0].id.as_deref(), Some("default"));
     }
 
     /// Frozen on purpose: this is the file as the released 0.5.1 wrote it, and
@@ -277,7 +347,7 @@ mod tests {
         assert!(saved.version <= VERSION, "load() would refuse anything above");
         assert_eq!(
             saved
-                .conversation_of("work", "claude", Some("D:\\Test"), Some("coder"), "AGENT")
+                .conversation_of(&named("work"), "claude", Some("D:\\Test"), Some("coder"), "AGENT")
                 .map(|s| s.id),
             Some("abc".into()),
             "the conversation that tab was having comes back"

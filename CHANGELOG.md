@@ -57,6 +57,15 @@ once it reaches its first tagged release.
 - **The Issue tab is called Issues & PRs.**
 
 ### Fixed
+- **An AI at work keeps working while other worktrees and desks are changed.**
+  Deleting one worktree stopped the AI tab of the same name in another worktree
+  of that project, and started it again there as a new conversation: after a
+  settings change, running tabs were matched to the settings by name alone. They
+  are now matched by name and folder. Deleting the desk on screen, or renaming a
+  desk, also stopped the tabs of a desk still in the settings: desks were matched
+  by name, so a renamed one was taken for a deleted one. They are now matched by
+  their id. The id is also what the app remembers when it closes, so a desk
+  renamed since then still opens with its conversations.
 - **A project's + opens the worktree dialog again after a worktree was made
   without a name.** The answer about that worktree stayed with the app, and the
   dialog took it for one just made and closed as it opened, so the + seemed dead.

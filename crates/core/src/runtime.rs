@@ -17,7 +17,7 @@ use crate::view::{
     surface_moves, surfaces_of, surfaces_written, terminal_size, title_of,
 };
 use crate::desk::{
-    apply_ws_config, build_engine, extract_env_block, open_declared_browsers, panel_places,
+    apply_ws_config, build_engine, extract_env_block, open_declared_browsers, panel_places, reseat_desks,
     spawn_desk, surface_of_id, switch_desk,
 };
 use crate::{
@@ -652,7 +652,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut desk_index = starting_desk(
         cfg.as_ref().and_then(|c| c.restore_desk).unwrap_or(true),
         remembered.as_deref(),
-        &desks.iter().map(|w| w.name.clone()).collect::<Vec<_>>(),
+        &desks,
     );
     if let Some(w) = desks.get(desk_index) {
         // Knowing where we started is a handy clue later, when tracking down "why is
@@ -661,7 +661,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             "Startup: desk \"{}\" ({})",
             w.name,
             match remembered.as_deref() {
-                Some(r) if r == w.name => "resuming last session",
+                Some(r) if r == w.id || r == w.name => "resuming last session",
                 _ => "first desk",
             }
         ));
@@ -998,9 +998,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // for you
     if let Some(desk) = desks.get(desk_index) {
         for t in tabs.iter_mut() {
-            t.previous = last_session.conversation_for(&desk.name, t);
+            t.previous = last_session.conversation_for(desk, t);
         }
-        if let Some(saved) = last_session.panes_for(&desk.name) {
+        if let Some(saved) = last_session.panes_for(desk) {
             // Whether those panes still point at surfaces that exist is not
             // decided here: the loop clamps the tree to what is on screen every
             // frame, which is the one place that knows
@@ -1540,20 +1540,39 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // (the settings GUI's alert doesn't show inside the in-app WebView,
                 // so we convey it here instead)
                 let lang_restart = i18n::would_change(newcfg.language.as_deref());
+                // Every desk's running tabs, carried over to the settings just
+                // read (see `reseat_desks`). `None` is the desk on screen gone
+                let viewed = reseat_desks(&desks, &new_ws, prev_ws_index, &mut tabs, &mut desk_tabs);
                 // Apply immediately to the desk being viewed; others get it on switch
-                let target = new_ws
-                    .iter()
-                    .position(|w| Some(&w.name) == desks.get(desk_index).map(|w| &w.name))
-                    .unwrap_or(0);
+                let target = viewed.unwrap_or(0);
                 let mut msg = i18n::t("msg.config_reloaded");
+                if viewed.is_none() {
+                    // What is on screen now is the desk that took its place,
+                    // shown the way a switch shows one: its own running tabs,
+                    // or its first launch when it has none yet
+                    if let Some(w) = new_ws.get(target) {
+                        if tabs.is_empty() {
+                            spawn_desk(w, rows, cols, &mut tabs, &mut startup_errors, Some(&last_session));
+                            for t in tabs.iter_mut() {
+                                t.previous = last_session.conversation_for(w, t);
+                            }
+                        }
+                        caps.set_desk(target);
+                        config::save_last_desk(&w.id);
+                    }
+                    active = if tabs.is_empty() { 0 } else { 1 };
+                    pane_layout = crate::layout::Layout::single(active);
+                }
                 if let Some(w) = new_ws.get(target) {
-                    let before = startup_errors.len();
-                    msg = apply_ws_config(&mut tabs, w, rows, cols, &mut startup_errors, &mut resume_for);
-                    // A tab that the save asked for and could not start is what
-                    // there is to say, not that the settings were read. The tab
-                    // itself stays on screen saying the same (Surface::Failed)
-                    if let Some(why) = startup_errors.get(before) {
-                        msg = why.clone();
+                    if viewed.is_some() {
+                        let before = startup_errors.len();
+                        msg = apply_ws_config(&mut tabs, w, rows, cols, &mut startup_errors, &mut resume_for);
+                        // A tab that the save asked for and could not start is what
+                        // there is to say, not that the settings were read. The tab
+                        // itself stays on screen saying the same (Surface::Failed)
+                        if let Some(why) = startup_errors.get(before) {
+                            msg = why.clone();
+                        }
                     }
                     desk_index = target;
                     // Bring browsers in line with config too: open added ones, close
@@ -1561,36 +1580,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // to take effect, editing settings would be pointless
                     // (pages already open are left untouched).
                     open_declared_browsers(w, &caps, &mut startup_errors);
-                }
-                // Re-key the cached background tabs by desk NAME, not by
-                // position. A reload can reorder desks (adding/moving one),
-                // and a position-indexed cache would then hand a desk another
-                // one's tabs — the bug where switching to a freshly added desk
-                // showed a different one's tabs. Tabs whose desk survives move
-                // with it; a removed desk's background tabs are killed; the
-                // active desk's tabs live in `tabs`, so its slot stays empty.
-                let mut cached_by_name: std::collections::HashMap<String, Vec<Tab>> =
-                    std::collections::HashMap::new();
-                for (i, w) in desks.iter().enumerate() {
-                    if i == prev_ws_index {
-                        continue;
-                    }
-                    if let Some(slot) = desk_tabs.get_mut(i) {
-                        let cached = std::mem::take(slot);
-                        if !cached.is_empty() {
-                            cached_by_name.insert(w.name.clone(), cached);
-                        }
-                    }
-                }
-                desk_tabs = new_ws
-                    .iter()
-                    .map(|w| cached_by_name.remove(&w.name).unwrap_or_default())
-                    .collect();
-                // Desks that vanished from config: their background tabs are done.
-                for mut orphaned in cached_by_name.into_values() {
-                    for t in orphaned.iter_mut() {
-                        t.kill();
-                    }
                 }
                 // The per-desk Lua engine cache is indexed by position, and that
                 // position shifts whenever desks are added/removed here. Reset it
@@ -2131,7 +2120,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 );
                 if Some(&mark) != last_saved.as_ref() {
                     if let Some(desk) = desks.get(desk_index) {
-                        last_session.remember(&desk.name, &tabs, Some(&pane_layout));
+                        last_session.remember(desk, &tabs, Some(&pane_layout));
                         last_session.write();
                     }
                     last_saved = Some(mark);
@@ -7089,7 +7078,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The last word on what was on screen. The periodic write above may be up
     // to a few seconds stale, and quitting is exactly when that matters
     if let Some(desk) = desks.get(desk_index) {
-        last_session.remember(&desk.name, &tabs, Some(&pane_layout));
+        last_session.remember(desk, &tabs, Some(&pane_layout));
         last_session.write();
     }
     for t in tabs.iter_mut() {
@@ -8824,16 +8813,25 @@ pub struct PendingQuick {
 /// mid-read is the worst outcome, so once someone touches it, stay quiet for a while.
 /// Which desk to start from.
 ///
-/// What's remembered is the name, not the number. Numbers shift with
-/// reordering or additions, which would turn "resume where I left off
-/// yesterday" into something else entirely.
-/// Falls back to the first one if not found (e.g. it was deleted or renamed).
-pub fn starting_desk(enabled: bool, last: Option<&str>, names: &[String]) -> usize {
+/// What's remembered is the desk's id, not its number and not its name.
+/// Numbers shift with reordering or additions, which would turn "resume where
+/// I left off yesterday" into something else entirely; a name changes the
+/// moment somebody renames the desk, and the app then opened the first desk
+/// instead and brought none of that desk's conversations back. A file written
+/// before ids were kept holds the name, so a name is still understood when no
+/// id answers to it.
+/// Falls back to the first one if not found (e.g. it was deleted).
+pub fn starting_desk(enabled: bool, last: Option<&str>, desks: &[config::Desk]) -> usize {
     if !enabled {
         return 0;
     }
-    last.and_then(|want| names.iter().position(|n| n == want))
-        .unwrap_or(0)
+    last.and_then(|want| {
+        desks
+            .iter()
+            .position(|d| !d.id.is_empty() && d.id == want)
+            .or_else(|| desks.iter().position(|d| d.name == want))
+    })
+    .unwrap_or(0)
 }
 /// When automation may move what the person is looking at.
 ///
@@ -10529,6 +10527,7 @@ mod tests {
             version: 1,
             desks: vec![crate::lastsession::SavedWs {
                 name: "W".into(),
+                id: None,
                 panes: None,
                 tabs: vec![crate::lastsession::SavedTab {
                     title: "AGENT".into(),
@@ -11624,37 +11623,38 @@ mod tests {
     /// debugging, that gets repeated dozens of times.
     #[test]
     fn it_opens_where_you_left_off() {
-        let names: Vec<String> = ["指揮者", "たまごカート編集部", "検証"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let list = |pairs: &[(&str, &str)]| -> Vec<config::Desk> {
+            pairs
+                .iter()
+                .map(|(id, name)| config::Desk { id: id.to_string(), name: name.to_string(), ..Default::default() })
+                .collect()
+        };
+        let desks = list(&[("conductor", "指揮者"), ("tamago", "たまごカート編集部"), ("check", "検証")]);
 
         assert_eq!(
-            starting_desk(true, Some("たまごカート編集部"), &names),
+            starting_desk(true, Some("tamago"), &desks),
             1,
             "it does not go back to what was open before"
         );
 
-        // What's remembered is the name, not the number, so it still tracks after reordering
-        let reordered: Vec<String> = ["検証", "たまごカート編集部", "指揮者"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(
-            starting_desk(true, Some("たまごカート編集部"), &reordered),
-            1
-        );
-        assert_eq!(
-            starting_desk(true, Some("指揮者"), &reordered),
-            2,
-            "reordering opens a different desk"
-        );
+        // What's remembered is the id, not the number, so it still tracks after reordering
+        let reordered = list(&[("check", "検証"), ("tamago", "たまごカート編集部"), ("conductor", "指揮者")]);
+        assert_eq!(starting_desk(true, Some("tamago"), &reordered), 1);
+        assert_eq!(starting_desk(true, Some("conductor"), &reordered), 2, "reordering opens a different desk");
 
-        // Deleted, renamed, no memory of it, or disabled -> falls back to the first one
-        assert_eq!(starting_desk(true, Some("消えた"), &names), 0);
-        assert_eq!(starting_desk(true, None, &names), 0);
-        assert_eq!(starting_desk(false, Some("検証"), &names), 0, "it is turned off");
-        assert_eq!(starting_desk(true, Some("指揮者"), &[]), 0, "it does not crash on an empty list");
+        // ...and after renaming: the desk renamed while the app was closed is
+        // still the one that opens
+        let renamed = list(&[("conductor", "指揮者"), ("tamago", "ワイアード＆エコ"), ("check", "検証")]);
+        assert_eq!(starting_desk(true, Some("tamago"), &renamed), 1, "a renamed desk is taken for a deleted one");
+
+        // A file from before ids were kept holds the name
+        assert_eq!(starting_desk(true, Some("検証"), &desks), 2, "the name an older version wrote is not read");
+
+        // Deleted, no memory of it, or disabled -> falls back to the first one
+        assert_eq!(starting_desk(true, Some("消えた"), &desks), 0);
+        assert_eq!(starting_desk(true, None, &desks), 0);
+        assert_eq!(starting_desk(false, Some("check"), &desks), 0, "it is turned off");
+        assert_eq!(starting_desk(true, Some("conductor"), &[]), 0, "it does not crash on an empty list");
     }
 
 

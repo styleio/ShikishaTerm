@@ -297,38 +297,38 @@ pub fn apply_ws_config(
         .collect();
     // A tab taken out of the settings takes its failure with it
     failures().retain(|f| f.desk != desk.name || wanted.contains(&f.title));
-    tabs.retain_mut(|t| {
-        if wanted.contains(&t.title) {
-            true
-        } else {
-            t.kill();
-            removed += 1;
-            false
-        }
-    });
+
+    // Every line of the settings that launches a process, worked out once:
+    // matching needs where each one stands before anything is started
+    let launches: Vec<_> = desk
+        .tabs
+        .iter()
+        .filter_map(|ft| {
+            let argv = ft.cfg.command.argv();
+            // Browsers aren't child processes, so don't launch them here
+            // (open_declared_browsers opens the window)
+            if argv.is_empty() || config::is_app_panel(&argv) {
+                return None;
+            }
+            let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
+            let mut opts = tab_options(&ft.cfg, desk.folder_of(ft));
+            let argv = resolve_launch(argv, &mut opts, Some(desk), &ft.cfg);
+            Some((ft, title, argv, opts))
+        })
+        .collect();
+    let places: Vec<(&String, &tab::TabOptions)> = launches.iter().map(|(_, title, _, opts)| (title, opts)).collect();
+    let claims = claim_running(tabs, &places);
 
     // Update existing tabs and add new ones
-    let mut ordered: Vec<Tab> = Vec::with_capacity(desk.tabs.len());
-    for ft in &desk.tabs {
-        let argv = ft.cfg.command.argv();
-        if argv.is_empty() {
-            continue;
-        }
-        // Browsers aren't child processes, so don't launch them here
-        // (open_declared_browsers opens the window)
-        if config::is_app_panel(&argv) {
-            continue;
-        }
-        let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-        let mut opts = tab_options(&ft.cfg, desk.folder_of(ft));
-        let argv = resolve_launch(argv, &mut opts, Some(desk), &ft.cfg);
+    let mut running: Vec<Option<Tab>> = std::mem::take(tabs).into_iter().map(Some).collect();
+    let mut ordered: Vec<Tab> = Vec::with_capacity(launches.len());
+    for ((ft, title, argv, opts), claim) in launches.into_iter().zip(claims) {
         // Kept for the message, because the options themselves are moved into
         // the tab and the message is only wanted when that did not happen
         let said = opts.clone();
-        match tabs.iter().position(|t| t.title == title) {
-            Some(i) => {
+        match claim.and_then(|i| running[i].take()) {
+            Some(mut t) => {
                 forget_failure(&desk.name, &title);
-                let mut t = tabs.remove(i);
                 t.apply_live_config(
                     ft.cfg.profile.clone(),
                     ft.cfg.locked,
@@ -377,7 +377,7 @@ pub fn apply_ws_config(
         }
     }
     // Close whatever's left that isn't in config
-    for mut t in tabs.drain(..) {
+    for mut t in running.into_iter().flatten() {
         t.kill();
         removed += 1;
     }
@@ -394,6 +394,50 @@ pub fn apply_ws_config(
         parts.push(i18n::tp("msg.config_needs_restart", &[("n", &staged.to_string())]));
     }
     parts.join(" / ")
+}
+
+/// Which running tab each line of the settings is, by position in `tabs`.
+///
+/// `wanted` is each line's title and where it would launch, in the order of
+/// the settings. A running tab is only ever one line's, and a line takes the
+/// tab that is plainly the same one: the same title in the same place. Two
+/// tabs of one name in one folder are told apart by their order.
+///
+/// Only then may a line reach for a tab of its name in another place, and
+/// only for a tab whose place no line stands in any more -- a folder moved to
+/// a new path in the settings. That tab is kept and restarted into the new
+/// place once it is idle, which is what a changed launch has always done. A
+/// tab whose folder is still listed is never taken this way: it belongs to that
+/// folder's line. Taking it anyway is how deleting one worktree stopped the AI
+/// at work in another, and started that one again in a conversation of nobody's
+fn claim_running(tabs: &[Tab], wanted: &[(&String, &tab::TabOptions)]) -> Vec<Option<usize>> {
+    let mut taken = vec![false; tabs.len()];
+    let mut claims: Vec<Option<usize>> = vec![None; wanted.len()];
+    for (j, (title, opts)) in wanted.iter().enumerate() {
+        let found = tabs
+            .iter()
+            .enumerate()
+            .position(|(i, t)| !taken[i] && &t.title == *title && t.stands_at(opts));
+        if let Some(i) = found {
+            taken[i] = true;
+            claims[j] = Some(i);
+        }
+    }
+    for (j, (title, _)) in wanted.iter().enumerate() {
+        if claims[j].is_some() {
+            continue;
+        }
+        let found = tabs.iter().enumerate().position(|(i, t)| {
+            !taken[i]
+                && &t.title == *title
+                && !wanted.iter().any(|(_, o)| t.stands_at(o))
+        });
+        if let Some(i) = found {
+            taken[i] = true;
+            claims[j] = Some(i);
+        }
+    }
+    claims
 }
 
 /// Redraws a page's top bar and bottom band to match config.
@@ -667,7 +711,7 @@ pub fn switch_desk(
     // before its tabs are launched below: a tab opening for the first time is
     // held to the same answers as one that was already running
     hand_over(&desks[to], caps, notifier, prs);
-    config::save_last_desk(&desks[to].name);
+    config::save_last_desk(&desks[to].id);
     *tabs = std::mem::take(&mut desk_tabs[to]);
     if tabs.is_empty() {
         // First visit this run, so these tabs are being launched for the first
@@ -677,7 +721,7 @@ pub fn switch_desk(
         // Whether or not it was carried, the way back is worth holding on to:
         // this is what Ctrl+B r reaches for on a tab nobody has spoken to yet
         for t in tabs.iter_mut() {
-            t.previous = last.conversation_for(&desks[to].name, t);
+            t.previous = last.conversation_for(&desks[to], t);
         }
         open_declared_browsers(&desks[to], caps, errors);
     }
@@ -690,6 +734,53 @@ pub fn switch_desk(
     *active = if tabs.is_empty() { 0 } else { 1 };
     *panes = std::mem::replace(&mut desk_panes[to], crate::layout::Layout::single(*active));
     panes.show(*active);
+}
+
+/// Carries every desk's running tabs over to the settings just read.
+///
+/// `tabs` are the tabs of the desk on screen (`viewing` in `before`), and
+/// `parked` the others', by position in `before`; afterwards `parked` is by
+/// position in `after`. Each desk is found again by `config::pair_desks` --
+/// its id, which renaming leaves alone -- and its tabs go with it, whatever it
+/// is called now and wherever it stands. A desk deleted in the settings takes
+/// its tabs with it.
+///
+/// Returns where the desk on screen stands now. `None` means it was deleted:
+/// its tabs are stopped, and `tabs` holds the running tabs of the first desk,
+/// which takes the screen (empty when it has not been opened yet). Those tabs
+/// are that desk's own. Handing the deleted desk's tabs to the first desk's
+/// settings instead took whichever of them shared a name, started the rest
+/// from nothing, and left the first desk's real tabs parked, to be thrown away
+/// on the next switch: an AI at work there stopped mid-task and came back as a
+/// new conversation. A desk only renamed used to be taken for a deleted one,
+/// with the same result
+pub fn reseat_desks(
+    before: &[config::Desk],
+    after: &[config::Desk],
+    viewing: usize,
+    tabs: &mut Vec<Tab>,
+    parked: &mut Vec<Vec<Tab>>,
+) -> Option<usize> {
+    let paired = config::pair_desks(before, after);
+    let mut reseated: Vec<Vec<Tab>> = after.iter().map(|_| Vec::new()).collect();
+    for (i, slot) in parked.iter_mut().enumerate() {
+        // The viewed desk's tabs live in `tabs`, so its slot stays empty
+        if i == viewing {
+            continue;
+        }
+        let mut cached = std::mem::take(slot);
+        match paired.get(i).copied().flatten().and_then(|j| reseated.get_mut(j)) {
+            Some(home) => *home = cached,
+            None => cached.iter_mut().for_each(Tab::kill),
+        }
+    }
+    *parked = reseated;
+    let viewed = paired.get(viewing).copied().flatten();
+    if viewed.is_none() {
+        tabs.iter_mut().for_each(Tab::kill);
+        *tabs = parked.first_mut().map(std::mem::take).unwrap_or_default();
+    }
+    viewed
 }
 
 /// Pull the survey's output block off a screen. The drafted command itself
@@ -1120,7 +1211,7 @@ pub fn carried_conversation(
     };
     let cwd = cwd.as_ref().map(|c| c.display().to_string());
     let Some(session) = saved.conversation_of(
-        &desk.name,
+        desk,
         argv.first().map(String::as_str).unwrap_or_default(),
         cwd.as_deref(),
         cfg.id.as_deref(),
@@ -1131,5 +1222,165 @@ pub fn carried_conversation(
     match tab::resumable(argv, &cfg.profile, &session.id) {
         true => tab::Resume::Id(session),
         false => tab::Resume::Fresh,
+    }
+}
+
+#[cfg(test)]
+mod keeping_running_tabs_tests {
+    use super::*;
+
+    /// Folders that exist, so that nothing is held back for being missing
+    fn folders(test: &str, names: &[&str]) -> Vec<std::path::PathBuf> {
+        names
+            .iter()
+            .map(|n| {
+                let p = std::env::temp_dir().join(format!("shikisha-{test}-{}", std::process::id())).join(n);
+                std::fs::create_dir_all(&p).expect("the folder could not be made");
+                p
+            })
+            .collect()
+    }
+
+    /// One desk, with a tab called "claude" in each of these folders -- what
+    /// cutting worktrees from a folder makes
+    fn desk_of(id: &str, name: &str, dirs: &[&std::path::PathBuf]) -> config::Desk {
+        let folders: Vec<_> = dirs
+            .iter()
+            .map(|d| {
+                serde_json::json!({"cwd": d.display().to_string(),
+                    "tabs": [{"name": "claude", "command": crate::test_shell()}]})
+            })
+            .collect();
+        let json = serde_json::json!({"desks": [{"name": name, "id": id, "folders": folders}]});
+        let cfg: config::Config = serde_json::from_value(json).expect("the settings cannot be read");
+        let (mut desks, errs) = cfg.resolve_desks();
+        assert!(errs.is_empty(), "{errs:?}");
+        desks.remove(0)
+    }
+
+    fn start(desk: &config::Desk) -> Vec<Tab> {
+        let (mut tabs, mut errors) = (Vec::new(), Vec::new());
+        apply_ws_config(&mut tabs, desk, 10, 40, &mut errors, &mut Default::default());
+        assert!(errors.is_empty(), "{errors:?}");
+        tabs
+    }
+
+    fn same_process(a: &Tab, b: &tab::SharedParser) -> bool {
+        std::sync::Arc::ptr_eq(&a.parser, b)
+    }
+
+    fn stop_all(tabs: &mut [Tab]) {
+        tabs.iter_mut().for_each(Tab::kill);
+    }
+
+    /// Deleting one worktree does not stop the AI at work in another.
+    ///
+    /// Every worktree copies its folder's tabs, so one desk had a "claude" in
+    /// each. The reload that follows the deletion matched running tabs to the
+    /// settings by name alone: the deleted folder's tab, first in the list,
+    /// was taken as the other folder's, restarted there once idle as a new
+    /// conversation, and the tab that was actually at work was stopped
+    #[test]
+    fn deleting_one_worktree_leaves_the_ai_in_another_running() {
+        let dirs = folders("keep-worktree", &["gone", "busy"]);
+        for gone_first in [true, false] {
+            let (gone, busy) = (&dirs[0], &dirs[1]);
+            let listed = match gone_first {
+                true => vec![gone, busy],
+                false => vec![busy, gone],
+            };
+            let mut tabs = start(&desk_of("w", "w", &listed));
+            assert_eq!(tabs.len(), 2);
+            let at_work = tabs
+                .iter()
+                .find(|t| t.cwd().is_some_and(|c| crate::uistate::same_folder(c, busy)))
+                .map(|t| t.parser.clone())
+                .expect("no tab works in the folder that stays");
+
+            let (mut errors, mut resume) = (Vec::new(), Default::default());
+            let msg = apply_ws_config(&mut tabs, &desk_of("w", "w", &[busy]), 10, 40, &mut errors, &mut resume);
+
+            assert_eq!(tabs.len(), 1, "{msg}");
+            assert!(same_process(&tabs[0], &at_work), "the AI at work was stopped (deleted folder listed first: {gone_first})");
+            assert!(!tabs[0].needs_restart, "it is set to start again as a new conversation");
+            assert!(!tabs[0].exited());
+            assert!(msg.contains("stopped 1"), "the deleted folder's tab is not stopped: {msg}");
+            stop_all(&mut tabs);
+        }
+    }
+
+    /// A folder given a new path in the settings keeps its tab, and moves it
+    /// once it is idle -- the one case a tab is taken across places, and only
+    /// because no line stands where it was any more
+    #[test]
+    fn a_folder_moved_in_the_settings_keeps_its_tab_until_it_can_restart() {
+        let dirs = folders("keep-moved", &["old", "new", "other"]);
+        let mut tabs = start(&desk_of("w", "w", &[&dirs[0], &dirs[2]]));
+        let moved = tabs[0].parser.clone();
+        let other = tabs[1].parser.clone();
+
+        let (mut errors, mut resume) = (Vec::new(), Default::default());
+        apply_ws_config(&mut tabs, &desk_of("w", "w", &[&dirs[1], &dirs[2]]), 10, 40, &mut errors, &mut resume);
+
+        assert_eq!(tabs.len(), 2);
+        assert!(same_process(&tabs[0], &moved), "the moved folder's tab was replaced at once");
+        assert!(tabs[0].needs_restart, "it never moves to the new folder");
+        assert!(same_process(&tabs[1], &other) && !tabs[1].needs_restart, "the folder left alone was touched");
+        stop_all(&mut tabs);
+    }
+
+    /// Deleting the desk on screen does not hand its tabs to the next desk,
+    /// and does not stop that desk's own.
+    ///
+    /// What happened: the desk that had the AI at work was in the background,
+    /// renamed in the same save that deleted the desk on screen. The renamed
+    /// desk was taken for a deleted one (it was looked up by name) and its AI
+    /// was stopped; the desk that took the screen was read onto the deleted
+    /// desk's tabs and started again from nothing
+    #[test]
+    fn deleting_the_desk_on_screen_while_another_is_renamed_keeps_that_ones_ai() {
+        let dirs = folders("keep-desks", &["work", "scratch"]);
+        let before = vec![desk_of("default", "DEFAULT", &[&dirs[0]]), desk_of("space", "ワークスペース", &[&dirs[1]])];
+        let mut parked = vec![start(&before[0]), Vec::new()];
+        let at_work = parked[0][0].parser.clone();
+        // On screen: the second desk
+        let mut tabs = start(&before[1]);
+
+        let after = vec![desk_of("default", "ワイアード＆エコ", &[&dirs[0]])];
+        let viewed = reseat_desks(&before, &after, 1, &mut tabs, &mut parked);
+
+        assert_eq!(viewed, None, "the deleted desk is still found");
+        assert_eq!(tabs.len(), 1);
+        assert!(same_process(&tabs[0], &at_work), "the renamed desk's AI was stopped or replaced");
+        assert!(!tabs[0].exited());
+        assert_eq!(parked.len(), 1);
+        assert!(parked[0].is_empty(), "the tabs on screen are also left parked");
+        stop_all(&mut tabs);
+    }
+
+    /// A background desk renamed, or moved in the list, keeps running
+    #[test]
+    fn a_background_desk_renamed_or_moved_keeps_its_tabs() {
+        let dirs = folders("keep-renamed", &["a", "b"]);
+        let before = vec![desk_of("a", "A", &[&dirs[0]]), desk_of("b", "B", &[&dirs[1]])];
+        let mut tabs = start(&before[0]);
+        let mut parked = vec![Vec::new(), start(&before[1])];
+        let at_work = parked[1][0].parser.clone();
+
+        // B renamed and moved to the front, a new desk named like nothing
+        let after = vec![
+            desk_of("b", "B renamed", &[&dirs[1]]),
+            desk_of("c", "C", &[&dirs[1]]),
+            desk_of("a", "A", &[&dirs[0]]),
+        ];
+        let viewed = reseat_desks(&before, &after, 0, &mut tabs, &mut parked);
+
+        assert_eq!(viewed, Some(2), "the desk on screen is not found where it went");
+        assert_eq!(parked.len(), 3);
+        assert!(parked[0].first().is_some_and(|t| same_process(t, &at_work)), "the renamed desk lost its tabs");
+        assert!(parked[1].is_empty() && parked[2].is_empty());
+        assert!(!parked[0][0].exited());
+        stop_all(&mut tabs);
+        parked.iter_mut().for_each(|p| stop_all(p));
     }
 }
