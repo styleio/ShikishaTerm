@@ -6495,7 +6495,12 @@ function openBranch(g, preset) {
   // "Create more" starts off every time: it is a mode for one sitting, and
   // one left on from last week would keep a dialog open that was meant to close
   if (!preset.keepAgain) document.getElementById("bagain").checked = false;
-  branchDone = "";
+  // The last worktree made is still the app's answer until a new question
+  // replaces it, and that answer says "done". Taken as already seen: only a
+  // worktree made after this opening closes the dialog. Left unseen, a
+  // project whose last worktree was made without a name closed the dialog
+  // the moment its + opened it
+  branchDone = (S && S.branch && S.branch.done && S.branch.folder) || "";
   branchHost = "";
   const dest = document.getElementById("bdest");
   if (dest) { dest.dataset.said = ""; dest.textContent = ""; }
@@ -17523,6 +17528,9 @@ mod tests {
         assert!(PAGE.contains("if (e.key !== \"Enter\" || !(e.ctrlKey || e.metaKey) || typingIME(e)) return;"), "Ctrl+Enter does not make it");
         assert!(PAGE.contains("if (!preset.keepStart) branchStart = firstStart();"), "a new worktree does not start with the Assistant AI");
         assert!(PAGE.contains(r#"if (!document.getElementById("bagain").checked) { closeBranch(); return; }"#), "create-more closes the dialog anyway");
+        // The worktree made last time is not taken for one made just now
+        assert!(PAGE.contains(r#"branchDone = (S && S.branch && S.branch.done && S.branch.folder) || "";"#),
+            "the dialog closes as it opens, on the answer about the last worktree made");
         assert!(PAGE.contains(r#"onclick:() => openNewWorktree()}, pickIcon("plus")"#), "the PROJECT heading has no new worktree");
         // The dialogs stack in the order they open over each other
         let (branch, add, browse) = (PAGE.find(r#"<div id="branch" hidden>"#), PAGE.find(r#"<div id="addproj" hidden>"#), PAGE.find(r#"<div id="browse" hidden>"#));
