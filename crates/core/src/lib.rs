@@ -38,6 +38,7 @@ pub mod git;
 pub mod github;
 pub mod grants;
 pub mod hooks;
+pub mod ideas;
 pub mod host;
 pub mod i18n;
 pub mod instance;

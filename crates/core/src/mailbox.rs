@@ -141,8 +141,9 @@ pub struct Mailbox {
     /// Quick commands pressed, by id, each with the tab it is for (0 = the one
     /// in view). Filled from both surfaces, like `says`
     pub quicks: Vec<(String, usize)>,
-    /// The window's quick-command launcher went up (true) or came down
-    pub quick_shown: Option<bool>,
+    /// Something the page draws over everything -- the quick commands, the
+    /// ideas -- went up (true) or came down
+    pub covered: Option<bool>,
     /// Quick-action chips (Lua) fired from the bar, by index into config.actions.
     /// The loop looks up the code and runs it against the active tab.
     pub run_actions: Vec<usize>,
@@ -168,9 +169,12 @@ pub struct Mailbox {
     pub issues: Vec<(String, serde_json::Value)>,
     /// The Issue row in the list was pressed
     pub open_issues: bool,
-    /// Files pressed in that list since the last drain: (panel, relative path).
-    /// An empty path means "put this editor's file away"
-    pub edits: Vec<(String, String)>,
+    /// What the ideas window has asked for since the last drain: (act, args)
+    pub ideas: Vec<(String, serde_json::Value)>,
+    /// Files pressed in that list since the last drain: (panel, relative path,
+    /// which change of it to show -- empty for the file itself). An empty path
+    /// means "put this editor's file away"
+    pub edits: Vec<(String, String, String)>,
     /// Recorded steps reported by pages. The loop turns each into one Lua
     /// line for the composer.
     pub recorded: Vec<RecordedStep>,
@@ -384,8 +388,11 @@ impl Mailbox {
     pub fn take_quicks(&mut self) -> Vec<(String, usize)> {
         std::mem::take(&mut self.quicks)
     }
-    pub fn take_quick_shown(&mut self) -> Option<bool> {
-        self.quick_shown.take()
+    pub fn take_covered(&mut self) -> Option<bool> {
+        self.covered.take()
+    }
+    pub fn take_ideas(&mut self) -> Vec<(String, serde_json::Value)> {
+        std::mem::take(&mut self.ideas)
     }
     /// Takes the indices of Lua quick-actions fired since the last drain.
     pub fn take_run_actions(&mut self) -> Vec<usize> {
@@ -416,7 +423,7 @@ impl Mailbox {
     pub fn take_files(&mut self) -> Vec<(String, String, serde_json::Value)> {
         std::mem::take(&mut self.files)
     }
-    pub fn take_edits(&mut self) -> Vec<(String, String)> {
+    pub fn take_edits(&mut self) -> Vec<(String, String, String)> {
         std::mem::take(&mut self.edits)
     }
     /// Takes what the file panel has asked for since the last drain

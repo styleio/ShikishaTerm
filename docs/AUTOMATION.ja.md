@@ -889,6 +889,8 @@ shikisha.show("br")            -- そこにブラウザが入る
 | `shikisha.now("%Y-%m-%d")` | 現地の日時を整形して返す。既定は時系列に並ぶ形なので、ファイル名向き |
 | `shikisha.epoch_ms()` | エポックからのミリ秒（数値）。経過時間の計測用 |
 | `shikisha.diff(前, 後, 設定)` | 2つの文章の差分を、git と同じ書き方で返す。同じなら `""`。`設定` は `{ name = "plan.md", context = 3 }` で、name は見出し行に出る名前、context は変更の前後に残す行数 |
+| `shikisha.json_decode(文字列)` | JSON の文字列を Lua の値にする（オブジェクトはテーブル、配列は1から始まる番号付き）。JSON でなければ `nil, 理由`。AI に JSON で答えさせたときの読み取りに使う |
+| `shikisha.json_encode(値)` | Lua の値を JSON の文字列にする。1..n の番号だけのテーブルは配列、それ以外はオブジェクトになる |
 
 渡すのは文章そのもので、どこから持ってきたかは問いません。返事でも、ページでも、
 ファイルでも、記録でも、同じ命令で比べられます。
@@ -1054,12 +1056,15 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | `shikisha.git_diff(タブ, {path=…, staged=…})` | 差分をそのまま文字列で。`staged=true` でステージ済みの側、`path` で1ファイルに絞る |
 | `shikisha.git_log(タブ, 件数)` | 最近のコミット。`{hash, short, author, date, subject}`。既定20件 |
 | `shikisha.git_conflicts(タブ)` | 衝突しているファイルのパスだけ |
-| `shikisha.git_branch(タブ)` | 今のブランチ `{name, protected}`。`protected` は「このフォルダが守っているので直接コミットしない方がよい」の印。detached なら `nil` |
+| `shikisha.git_branch(タブ)` | 今のブランチ `{name, protected, upstream, ahead, behind, base, base_behind, catch_up, catching_up}`。`protected` は「このフォルダが守っているので直接コミットしない方がよい」の印。`upstream` は追いかけているブランチ（`origin/main`）、`ahead` はここにあって向こうにまだ無いコミットの数、`behind` はその逆で、どちらも最後にフェッチした時点の数。何も追いかけていなければ3つとも無い。`base` は書き留めてある起点、`base_behind` は最後にフェッチした時点で起点より遅れているコミット数、`catch_up` はその最新を取り込むときに実行するコマンド、`catching_up` はその起点のマージが途中で止まっているときの起点名。detached なら `nil` |
 | `shikisha.git_graph(タブ, {all=…, remotes=…, count=…})` | 履歴。`{graph, hash, short, author, date, subject}`。`graph` は git が描いた枝の絵で、コミットの無い行（マージの合流）もそのまま入る |
 | `shikisha.git_detail(タブ, ハッシュ)` | そのコミットの全部。`{hash, parents, author, author_date, committer, commit_date, subject, body, files}` |
 | `shikisha.git_branches(タブ)` | ブランチの一覧。`{name, current, protected}` |
 | `shikisha.git_checkout(タブ, "名前")` | そのブランチへ移る |
 | `shikisha.git_merge(タブ, "名前")` | そのブランチを取り込む。衝突したら止まり、`git_conflicts` に出る |
+| `shikisha.git_catch_up(タブ, "origin/main")` | 起点の最新を取り込む。その枝だけをサーバからフェッチし、フェッチしたものをマージする（手元の起点は使わない）。追跡中のファイルに未コミットの変更があれば断る。衝突したらマージの途中で止まり、ファイルは `git_conflicts` に出る。`{taken}`（取り込んだコミット数。新しいものが無ければ 0）を返す。3つ目の引数にプッシュ済みの枝の名前を渡すと（`git_catch_up(タブ, "origin/main", "feature")`）、それを先にフェッチし、フォルダがそれより遅れていればマージする前に断る。プルリクエストの衝突を解くときの手順 |
+| `shikisha.git_set_base(タブ, "origin/develop")` | 手前の枝の起点を書き留める。最新を取り込むときの取り込み元になる。アプリで作ったワークツリーには最初から書かれている |
+| `shikisha.git_remote_branches(タブ)` | サーバにある枝（最後にフェッチした時点）。`{name, catch_up}` で、`catch_up` はその枝を起点にしたとき `git_catch_up` が実行するコマンド |
 | `shikisha.git_fetch(タブ)` / `shikisha.git_pull(タブ)` / `shikisha.git_push(タブ)` | サーバと話す。**返るまで他のことは止まります**（最大3分）。押しっぱなしにできる画面が要るなら、待ちは呼ぶ側で組むこと。`git_push` は一度も送っていないブランチなら upstream を付けて送り直し、その旨を返す。そのタブに選ばれた git アカウント（下記）でサインインし、選ばれていなければ動かない |
 | `shikisha.git_hunks(タブ, {path=…, staged=…})` | 差分をまとまり（hunk）に切って返す。`{file, header, start, end, patch}`。`patch` はそれ自体が完結したパッチ |
 | `shikisha.git_apply(タブ, パッチ, {cached=…, reverse=…})` | パッチを当てる。`cached` で次のコミット側へ、`reverse` で逆向き（取り消し）。**hunk 単位のステージはこの2つの組み合わせ** |
@@ -1087,6 +1092,7 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | `shikisha.github_pr(タブ, 番号)` | プルリクエストを1件、全部: 上に加えて `head`・`base`・`fork`・`merged`・`mergeable`・`merge_state`・`additions`・`deletions`・`changed_files`・`reviewers`・`review`（`approved` / `changes_requested` / 空）・`checks`（`{failed, pending, passed, total, items}`） |
 | `shikisha.github_labels(タブ)` / `shikisha.github_assignees(タブ)` | Issue に付けられるラベルと、担当にできる人のログイン名 |
 | `shikisha.github_issue_create(タブ, {title=…, body=…, labels=…, assignees=…})` | Issue を作る。`{number, url}` を返す |
+| `shikisha.github_pr_create(タブ, {title=…, body=…, head=…, base=…, draft=…})` | ブランチ `head` から `base` へのプルリクエストを作る。`draft = true` なら下書き。`{number, url}` を返す |
 | `shikisha.github_comment(タブ, 番号, "本文")` | Issue やプルリクエストにコメントする。`{id, url}` を返す |
 | `shikisha.github_issue_state(タブ, 番号, 状態, {duplicate_of=…})` | `open`・`completed`・`not_planned`・`duplicate`（`duplicate_of` と一緒に。「Duplicate of #番号」のコメントも付く） |
 | `shikisha.github_pr_state(タブ, 番号, "open" か "closed")` | プルリクエストをマージせずに閉じる、または開き直す |

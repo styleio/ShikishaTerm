@@ -757,6 +757,17 @@ fn extract_lua(text: &str) -> Result<String> {
 }
 
 /// Decides which AI CLI to use. If none is specified, the first one found in order claude → codex → gemini
+/// What the AI that would answer is called, as a person would name it --
+/// "Claude Code" -- found the same way as the program itself. None when there
+/// is none to run
+pub fn local_ai_label(want: Option<&str>) -> Option<&'static str> {
+    AI_ENGINES
+        .iter()
+        .filter(|(name, _, _)| want.is_none_or(|w| w == *name))
+        .find(|(name, _, _)| crate::tab::resolve_command(name).is_some())
+        .map(|(_, _, label)| *label)
+}
+
 fn pick_local_ai(want: Option<&str>) -> Result<(String, Vec<String>)> {
     for (name, args, _) in AI_ENGINES {
         if want.is_some_and(|w| w != name) {
@@ -3477,6 +3488,15 @@ const PAGE: &str = r##"<!doctype html>
    color:var(--dim); background:var(--panel2); border:1px solid var(--edge);
    border-radius:var(--r-chip); white-space:nowrap; }
  /* Nothing may use it yet: somebody has to say who before it does anything */
+ /* What is always added after a prompt, read-only */
+ .promptshape { white-space:pre-wrap; font-size:12px; color:var(--dim); background:var(--sunk, var(--panel2));
+   border:1px solid var(--line); border-radius:var(--r-ctl); padding:var(--s2) var(--s3); margin:var(--s2) 0 var(--s4); }
+ /* The words a prompt can use, pressed to put one in */
+ .promptvars { gap:var(--s2); margin-top:var(--s2); flex-wrap:wrap; align-items:center; }
+ /* The label stays at the start of the row, not a line of its own */
+ .promptvars > .hint { flex-basis:auto; margin-top:0; }
+ .promptvars .chip { cursor:pointer; min-height:0; }
+ .promptvars .chip:hover { color:var(--text); border-color:var(--edge-hi); }
  .chip.none { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 45%, transparent);
    background:color-mix(in srgb, var(--warn) 12%, transparent); }
  /* One thing to fill in: its name above it, what it does under it. */
@@ -5901,6 +5921,23 @@ function hotkeysCard() {
   return box;
 }
 
+// A combination held down, written the way the keys list writes it
+// ("Ctrl+Shift+M", "Alt+F4", "F5"), or null for a press that is typing
+function pressedCombo(e) {
+  if (e.isComposing || ["Control", "Shift", "Alt", "Meta"].includes(e.key)) return null;
+  const letter = /^Key([A-Z])$/.exec(e.code || "");
+  const digit = /^Digit([0-9])$/.exec(e.code || "");
+  const names = {ArrowUp:"Up", ArrowDown:"Down", ArrowLeft:"Left", ArrowRight:"Right", PageUp:"PageUp",
+    PageDown:"PageDown", Home:"Home", End:"End", Insert:"Insert", Delete:"Delete", Enter:"Enter",
+    Escape:"Esc", Tab:"Tab", Backspace:"Backspace", " ":"Space"};
+  const fkey = /^F([1-9]|1[0-2])$/.test(e.key) ? e.key : "";
+  const held = e.ctrlKey || e.altKey;
+  // Nothing held and not a function key: typing, or walking between boxes
+  if (!held && !fkey) return null;
+  const key = letter ? letter[1] : digit ? digit[1] : fkey || names[e.key] || (e.key.length === 1 ? e.key : "");
+  if (!key) return null;
+  return (e.ctrlKey ? "Ctrl+" : "") + (e.altKey ? "Alt+" : "") + (e.shiftKey ? "Shift+" : "") + key;
+}
 function keysCard() {
   // Read without writing, like the card above: an empty section put in just by
   // opening the page marked every visit unsaved
@@ -5938,6 +5975,16 @@ function keysCard() {
         const v = inp.value.trim();
         if (v) k[r.name] = v; else delete k[r.name];
         attach();
+      });
+      // Pressed rather than spelled: a combination held down while the box
+      // has the caret is written into it the way the list shows keys. A bare
+      // character is still typed, since on its own it means "after the prefix"
+      inp.addEventListener("keydown", e => {
+        const combo = pressedCombo(e);
+        if (!combo) return;
+        e.preventDefault();
+        inp.value = combo;
+        inp.dispatchEvent(new Event("input"));
       });
       list.append(el("div", {class:"row pair"},
         el("label", {}, r.desc),
@@ -6731,7 +6778,7 @@ function globalSections() {
 // Links that name one of a desk's settings (the git panel's gear asks for
 // "git"): the desk in view, at that entry, since there is no copy of the
 // program's to land on. Older names for the same places are kept here
-const DESK_LINKS = {git:"git", protect:"git", gitaccounts:"gitaccounts", providers:"providers",
+const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", "git-pr":"git", "git-merge":"git", protect:"git", gitaccounts:"gitaccounts", providers:"providers",
                     permissions:"permissions", caps:"caps", tools:"tools"};
 
 // ── Update ─────────────────────────────────────────────────────
@@ -7684,19 +7731,68 @@ function protectField(owner) {
   return box;
 }
 
-// The commit-message button, in two levels. The instruction is ADDED to the
-// built-in prompt -- the rules and the diff still go, and this is the extra
-// thing to obey. Replacing the prompt outright would leave the AI describing a
-// change nobody showed it, so the field that replaces things is the Lua one.
-function gitFields(owner) {
-  const g = owner.git = owner.git || {};
-  const hint = el("textarea", {rows:"3", class:"mono", style:"width:100%",
-    placeholder:T["settings.git.hint.ph"]});
-  hint.value = g.message_hint || "";
-  hint.addEventListener("input", () => {
-    if (hint.value.trim()) g.message_hint = hint.value; else delete g.message_hint;
+// A prompt the AI is given, whole, in a box: nothing is added out of sight.
+// Three states, told apart by whether the key is in the settings at all:
+//   absent  -> the default prompt, shown in the box and used
+//   written -> what is written
+//   ""      -> nothing: the AI is given the change alone
+// Written back to exactly the default is absent again, so a later, better
+// default still reaches it. `legacy` is an instruction an earlier version kept
+// apart from a prompt nobody could see; it is shown on the end of the default,
+// which is how it was used, until the box is changed
+function promptField(g, key, standardKey, id, vars, legacy) {
+  const standard = T[standardKey] || "";
+  const old = () => legacy && typeof g[legacy] === "string" && g[legacy].trim() !== "" ? g[legacy].trim() : "";
+  const shown = () => typeof g[key] === "string" ? g[key] : old() ? standard + "\n\n" + old() : standard;
+  const box = el("textarea", {rows:"14", class:"mono", style:"width:100%"});
+  box.value = shown();
+  const state = el("span", {class:"chip"});
+  const back = el("button", {class:"quiet"}, T["settings.git.prompt.default"]);
+  const tell = () => {
+    const mine = typeof g[key] === "string" || !!old();
+    state.textContent = !mine ? T["settings.git.prompt.standard"]
+      : g[key] === "" ? T["settings.git.prompt.empty"] : T["settings.git.prompt.edited"];
+    back.hidden = !mine;
+  };
+  back.onclick = () => {
+    delete g[key];
+    if (legacy) delete g[legacy];
+    box.value = standard;
+    tell();
+    refreshSave();
+  };
+  box.addEventListener("input", () => {
+    if (legacy) delete g[legacy];
+    if (box.value === standard) delete g[key]; else g[key] = box.value;
+    tell();
     refreshSave();
   });
+  tell();
+  // The words the app fills in, under the box: pressed, one goes in where the
+  // caret is, so nobody has to remember how it is spelled
+  const insert = word => {
+    const from = box.selectionStart ?? box.value.length;
+    const to = box.selectionEnd ?? from;
+    box.setRangeText(word, from, to, "end");
+    box.focus();
+    box.dispatchEvent(new Event("input"));
+  };
+  const chips = el("div", {class:"row promptvars"},
+    el("span", {class:"hint"}, T["settings.git.prompt.vars"]),
+    ...vars.map(v => el("button", {type:"button", class:"chip mono", title:T["settings.git.var." + v],
+      onclick:() => insert("{" + v + "}")}, "{" + v + "}")));
+  return el("div", {id, style:"margin:var(--s2) 0 var(--s4)"},
+    el("div", {class:"row", style:"margin-bottom:var(--s1)"}, state, back),
+    box, chips);
+}
+
+// How the git panel's AI writes: the commit message, and a pull request's title
+// and description. Each prompt is written out whole in its box; for more than
+// words, the commit message can be built by Lua instead
+function gitFields(owner) {
+  const g = owner.git = owner.git || {};
+  const hint = promptField(g, "message_prompt", "ai.commit.default_prompt", "desk-git-message",
+    ["diff", "ai"], "message_hint");
 
   const useLua = el("input", {type:"checkbox"});
   useLua.checked = typeof g.message_lua === "string";
@@ -7730,10 +7826,30 @@ function gitFields(owner) {
 
   return [
     el("div", {class:"hint"}, T["settings.git.hint.about"]),
-    el("div", {style:"margin:var(--s2) 0 var(--s4)"}, hint),
+    hint,
     el("label", {class:"row", style:"cursor:pointer;gap:var(--s2)"}, useLua,
       el("span", {}, T["settings.git.lua.label"])),
     luaBox,
+    el("h3", {}, T["settings.git.pr.title"]),
+    el("div", {class:"hint"}, T["settings.git.pr.about"]),
+    promptField(g, "pr_prompt", "ai.pr.default_prompt", "desk-git-pr", ["branch", "base", "commits", "diff", "ai"]),
+    el("details", {class:"promptmore"},
+      el("summary", {}, T["settings.git.prompt.more"]),
+      el("div", {class:"hint"}, T["settings.git.pr.shape"]),
+      el("pre", {class:"mono promptshape"}, T["ai.pr.shape"] || "")),
+    el("h3", {}, T["settings.git.merge.title"]),
+    el("div", {class:"hint"}, T["settings.git.merge.about"]),
+    promptField(g, "merge_prompt", "ai.merge.default_prompt", "desk-git-merge", ["folder", "branch", "base", "files"]),
+    el("h3", {}, T["settings.git.issue.title"]),
+    el("div", {class:"hint"}, T["settings.git.issue.about"]),
+    promptField(g, "issue_prompt", "ai.issue.default_prompt", "desk-git-issue", ["text", "ai"]),
+    // What is always added after it, shown rather than kept out of sight
+    // What is always added after it: shown, but folded -- it is there to be
+    // looked up, not read every time the page is opened
+    el("details", {class:"promptmore"},
+      el("summary", {}, T["settings.git.prompt.more"]),
+      el("div", {class:"hint"}, T["settings.git.issue.shape"]),
+      el("pre", {class:"mono promptshape"}, T["ai.issue.shape"] || "")),
   ];
 }
 
@@ -12017,6 +12133,11 @@ load().then(() => {
     const at = idx("desk");
     sel = {desk:(desks[at] ? at : sel.desk), grp:null, tab:null, global:false};
     goDeskSection(DESK_LINKS[sec], "center");
+    // Asked for one field, not the card: that field, marked
+    if (sec === "git-message") lookAtCard("desk-git-message", 50);
+    if (sec === "git-issue") lookAtCard("desk-git-issue", 50);
+    if (sec === "git-pr") lookAtCard("desk-git-pr", 50);
+    if (sec === "git-merge") lookAtCard("desk-git-merge", 50);
     return;
   }
   const wi = idx("addtab");

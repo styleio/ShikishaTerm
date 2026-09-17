@@ -136,15 +136,17 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #side[hidden] { display:none; }
   #side .sbar { flex:0 0 auto; display:flex; align-items:center; gap:var(--s1);
     padding:var(--s1) var(--s2); border-bottom:1px solid var(--line); }
-  #side .sbar .grow { flex:1 1 auto; }
-  #side .sbar button { padding:3px 10px; font-size:11.5px; border-radius:var(--r-chip);
+  #side .sbar .grow { flex:1 1 0; min-width:0; }
+  /* The strip keeps its buttons whole: a long folder name is what gives way,
+     never "Files" folding onto a second line and the strip growing under it */
+  #side .sbar button { flex:none; white-space:nowrap; padding:3px 10px; font-size:11.5px; border-radius:var(--r-chip);
     border:1px solid transparent; background:none; color:var(--dim); cursor:pointer; }
   #side .sbar button:hover { background:var(--hover); color:var(--text); }
   #side .sbar button.on { background:var(--raise); color:var(--text); }
   #side .sbar button.away { font-size:13px; line-height:1; padding:3px 8px; }
   /* Which folder the panel is reporting on. The same weight the tab rows give
      a folder name, because it is the same fact */
-  #side .sbar .swhere { font-size:11px; color:var(--dim); min-width:0; overflow:hidden;
+  #side .sbar .swhere { flex:0 1 auto; font-size:11px; color:var(--dim); min-width:0; overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
   #side .sbody { flex:1 1 auto; min-height:0; display:flex; position:relative; }
   /* In the column the panel is simply what fills it. Standing where a terminal
@@ -212,7 +214,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .gearrow .sidebtn:hover { background:var(--hover); color:var(--text); }
   .gearrow .sidebtn.sel { background:var(--raise); color:var(--text); }
   .gearrow .gear { font-size:17px; }
-  .gearrow .snipbtn, .gearrow .quickbtn { font-size:16px; }
+  .gearrow .snipbtn, .gearrow .quickbtn, .gearrow .ideabtn { font-size:16px; }
   .gearrow .help > span { font-size:13px; width:20px; height:20px; border:1px solid var(--line);
     border-radius:50%; display:inline-flex; align-items:center; justify-content:center; }
   .gearrow .help:hover > span { border-color:var(--text); }
@@ -1085,12 +1087,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #casttarget { display:flex; align-items:center; gap:var(--s2); flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
   #casttarget::-webkit-scrollbar { display:none; }
-  /* 🌿 commit: a chip and two ticks, the same row shape as 📼 and 🎯. The
-     panels share one shape on purpose -- the bar is one bar, whichever panel
-     is in front of it */
-  #castgit { display:flex; align-items:center; gap:var(--s3); flex:1 1 0; min-width:0;
-    padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
-  #castgit::-webkit-scrollbar { display:none; }
   /* 📼 record/run: two radios + a hint, same row shape as 🎯. */
   #castlua { display:flex; align-items:center; gap:var(--s3); flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
@@ -1329,6 +1325,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #issuespanel .acts { display:flex; flex-wrap:wrap; gap:var(--s2); align-items:center;
     padding:var(--s3); border-top:1px solid var(--line); }
   #issuespanel .acts .lbl { color:var(--dim); font-size:12px; margin-right:var(--s1); }
+  /* A pull request GitHub cannot merge: in the colour for a person being needed */
+  #issuespanel .conflict { display:flex; flex-direction:column; gap:var(--s2); margin:0 var(--s3) var(--s3);
+    padding:var(--s2) var(--s3); border-radius:var(--r-ctl); background:color-mix(in srgb, var(--warn) 9%, transparent);
+    border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+  #issuespanel .conflict .dim { color:var(--dim); font-size:12px; overflow-wrap:anywhere; }
+  #issuespanel .conflict .runs { margin:0; font-family:var(--mono); font-size:11px; color:var(--dim);
+    white-space:pre-wrap; overflow-wrap:anywhere; }
+  #issuespanel .conflict .row { display:flex; flex-wrap:wrap; gap:var(--s2); }
   #issuespanel .acts input { width:180px; }
   #issuespanel button.link { min-height:0; border:none; background:none; padding:0; color:var(--dim); font-size:12px; }
   #issuespanel button.link:hover { color:var(--text); background:none; }
@@ -1382,6 +1386,64 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #issuespanel .field { display:flex; flex-direction:column; gap:var(--s2); }
   #issuespanel .field > .name { font-size:12px; font-weight:500; color:var(--text); }
   #issuespanel .field > .hint { font-size:11.5px; color:var(--faint); }
+  /* The description's name, with its AI button at the right end of the same line */
+  #issuespanel .namerow { display:flex; align-items:center; justify-content:space-between; gap:var(--s2); }
+  #issuespanel .namerow .name { font-size:12px; font-weight:500; color:var(--text); }
+  #issuespanel .iai { width:28px; height:28px; padding:0;
+    display:flex; align-items:center; justify-content:center; border:0; border-radius:var(--r-ctl);
+    background:transparent; color:var(--dim); cursor:pointer; }
+  #issuespanel .iai:hover { color:var(--text); background:var(--hover); }
+  #issuespanel .iai[disabled] { color:var(--faint); background:transparent; cursor:default; }
+  /* The words written before the AI rewrote them */
+  #issuespanel .kept { border:1px solid var(--line); border-radius:var(--r-ctl); background:var(--sunk, var(--panel));
+    padding:var(--s2) var(--s3); display:flex; flex-direction:column; gap:var(--s2); }
+  #issuespanel .keptbar { display:flex; align-items:center; gap:var(--s2); }
+  #issuespanel .keptbar .name { font-size:12px; font-weight:500; color:var(--text); }
+  #issuespanel .keptbar .grow { flex:1; }
+  #issuespanel .kepttext { white-space:pre-wrap; font-size:12.5px; color:var(--dim); max-height:12em; overflow:auto; }
+  /* Labels: chosen with a ✕, offered to press */
+  #issuespanel .lpick { display:flex; flex-direction:column; gap:var(--s2); }
+  #issuespanel .chips { display:flex; flex-wrap:wrap; gap:var(--s2); }
+  #issuespanel .lchip { display:inline-flex; align-items:center; gap:var(--s1); height:24px; padding:0 var(--s2);
+    font:inherit; font-size:12px; border:1px solid var(--edge); border-radius:var(--r-chip); background:transparent;
+    color:var(--dim); cursor:pointer; }
+  #issuespanel .lchip:hover { color:var(--text); border-color:var(--edge-hi); }
+  #issuespanel .lchip.on { color:var(--text); background:var(--raise); cursor:default; }
+  #issuespanel .lchip.on button { border:0; background:transparent; color:var(--dim); cursor:pointer; padding:0 2px; font-size:11px; }
+  #issuespanel .lchip.on button:hover { color:var(--text); }
+  /* Waiting on GitHub or the AI: the working dot, what is happening, the seconds */
+  #issuespanel .busyband { display:flex; align-items:center; gap:var(--s2); margin:var(--s2) var(--s3) 0;
+    padding:var(--s2) var(--s3); border:1px solid var(--line); border-radius:var(--r-ctl); background:var(--raise);
+    font-size:12.5px; color:var(--text); }
+  #issuespanel .busyband .dot { width:8px; height:8px; border-radius:50%; flex:none; }
+  #issuespanel .busyband .bt { flex:1; min-width:0; }
+  #issuespanel .busyband .bs { flex:none; color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; }
+  /* What a pull request carries: one line per file, opened in place */
+  #issuespanel .prfiles { display:flex; flex-direction:column; border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; }
+  #issuespanel .prfiles > .empty { padding:var(--s2) var(--s3); font-size:12px; color:var(--faint); }
+  #issuespanel .prfile { display:flex; align-items:center; gap:var(--s2); width:100%; min-height:32px; padding:0 var(--s3);
+    font:inherit; font-size:12px; text-align:left; border:0; border-top:1px solid var(--line); background:transparent;
+    color:var(--text); cursor:pointer; }
+  #issuespanel .prfile:first-child { border-top:0; }
+  #issuespanel .prfile:hover { background:var(--hover); }
+  #issuespanel .prfile.on { background:var(--raise); }
+  #issuespanel .prfile .car { flex:none; width:12px; font-size:9px; color:var(--dim); }
+  #issuespanel .prfile .fp { flex:1; min-width:0; font-family:var(--mono); overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; direction:rtl; }
+  #issuespanel .prfile .fn { flex:none; font-family:var(--mono); font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  #issuespanel .prfile .fn .a { color:var(--live); }
+  #issuespanel .prfile .fn .d { color:var(--stop); }
+  #issuespanel .prchange { border-top:1px solid var(--line); max-height:420px; overflow:auto; }
+  #issuespanel .prchange .empty { padding:var(--s2) var(--s3); font-size:12px; color:var(--faint); }
+  #issuespanel .prmore { border-top:1px solid var(--line); border-radius:0; height:32px; font-size:12px; }
+  #issuespanel .hunk { border-bottom:1px solid var(--line); }
+  #issuespanel .hunkhead { display:flex; align-items:center; gap:var(--s2); padding:4px 10px; background:var(--panel);
+    font-size:11.5px; color:var(--muted); position:sticky; top:0; }
+  #issuespanel .hunkhead .grow { flex:1; }
+  #issuespanel .hunk .lines { padding:4px 12px; }
+  /* A tick box and its words, beside each other (5.1) */
+  #issuespanel .tick { display:flex; align-items:center; gap:var(--s2); font-size:13px; color:var(--text); cursor:pointer; }
+  #issuespanel .tick input { width:15px; height:15px; margin:0; flex:none; }
   #issuespanel .write { padding:0 var(--s3) var(--s3); max-width:760px; }
   #issuespanel .foot { display:flex; align-items:center; gap:var(--s2); justify-content:flex-end; }
   /* A narrow pane or a phone: the title keeps the whole first line, and the
@@ -1463,8 +1525,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .bar button[disabled] { opacity:.45; cursor:default; }
   /* Which account the column signs in with. A question nobody has answered
      wears --warn: fetch, pull and push wait on it */
-  #gitpanel .bar .acct { display:flex; align-items:center; gap:var(--s2); min-width:0; }
-  #gitpanel .bar .acct > span { color:var(--dim); font-size:12px; }
+  #gitpanel .bar .acct { display:flex; align-items:center; gap:var(--s2); min-width:0; flex:1 1 auto; }
+  /* In a narrow column the label stays one word and the menu gives way */
+  #gitpanel .bar .acct > span { color:var(--dim); font-size:12px; flex:none; white-space:nowrap; }
+  #gitpanel .bar .acct > select { min-width:0; flex:0 1 auto; }
   #gitpanel .bar select { padding:4px 8px; font-size:12.5px; border-radius:var(--r-ctl);
     border:1px solid var(--edge); background:var(--panel); color:var(--text); max-width:240px;
     font-family:inherit; }
@@ -1473,11 +1537,97 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .said { color:var(--muted); font-size:12px; min-width:0; overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
   #gitpanel .said.bad { color:var(--danger); }
+  /* The commit, at the top of the changes: the branch and how far it is from
+     the one it follows, the message with the AI's button inside its corner,
+     and one button that is always the next thing to do -- the rest of what
+     git can be asked for under the arrow joined to it */
+  #gitpanel .gcommit { display:flex; flex-direction:column; gap:var(--s2); padding:var(--s3);
+    border-bottom:1px solid var(--line); flex:0 0 auto; }
+  #gitpanel .ghead { display:flex; align-items:center; gap:var(--s2); min-width:0; font-size:12px; color:var(--dim); }
+  #gitpanel .ghead .ico { display:flex; flex:none; }
+  #gitpanel .ghead .nm { font-family:var(--mono); color:var(--text); min-width:0; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  #gitpanel .ghead .up { margin-left:auto; flex:none; font-size:11px; color:var(--dim);
+    font-variant-numeric:tabular-nums; white-space:nowrap; }
+  #gitpanel .gmsg { position:relative; }
+  #gitpanel .gmsg textarea { display:block; width:100%; box-sizing:border-box; min-height:64px; max-height:40vh;
+    resize:vertical; padding:var(--s2) 36px var(--s2) var(--s3); font:inherit; font-size:13px; line-height:1.45;
+    background:var(--bg); color:var(--text); border:1px solid var(--edge); border-radius:var(--r-ctl); outline:none; }
+  #gitpanel .gmsg textarea:hover { border-color:var(--edge-hi); }
+  #gitpanel .gmsg textarea:focus { border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #gitpanel .gmsg textarea:disabled { color:var(--dim); background:var(--panel2); }
+  #gitpanel .gmsg textarea.ring { animation:apring .9s 2; }
+  #gitpanel .gmsg .gai { position:absolute; top:var(--s1); right:var(--s1); width:28px; height:28px; padding:0;
+    display:flex; align-items:center; justify-content:center; border:0; border-radius:var(--r-ctl);
+    background:transparent; color:var(--dim); cursor:pointer; }
+  #gitpanel .gmsg .gai:hover { color:var(--text); background:var(--hover); }
+  #gitpanel .gmsg .gai[disabled] { color:var(--faint); background:transparent; cursor:default; }
+  #gitpanel .gsplit { display:flex; }
+  #gitpanel .gsplit button { height:32px; box-sizing:border-box; font:inherit; font-size:12.5px; cursor:pointer;
+    border:1px solid var(--brand); background:var(--brand); color:var(--bg); }
+  #gitpanel .gsplit button:hover { filter:brightness(1.08); }
+  #gitpanel .gsplit .gmain { flex:1; min-width:0; display:flex; align-items:center; justify-content:center;
+    gap:var(--s2); padding:0 var(--s3); border-radius:var(--r-ctl) 0 0 var(--r-ctl); font-weight:600; }
+  #gitpanel .gsplit .gmain .ico { display:flex; flex:none; }
+  #gitpanel .gsplit .gmain .gl { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #gitpanel .gsplit .gmore { flex:0 0 32px; padding:0; font-size:9px; border-radius:0 var(--r-ctl) var(--r-ctl) 0;
+    border-left-color:color-mix(in srgb, var(--bg) 30%, var(--brand)); }
+  /* Waiting for something (5.4): grey, the press still answered */
+  #gitpanel .gsplit.held button, #gitpanel .gsplit button[disabled] { background:var(--panel2);
+    border-color:var(--line); color:var(--faint); filter:none; font-weight:500; }
+  #gitpanel .gsplit.held .gmain { cursor:not-allowed; }
+  #gitpanel .gsplit button[disabled] { cursor:default; }
+  #gitpanel .gname { display:flex; gap:var(--s2); }
+  /* Choosing the base, and a merge that stopped: boxed, said in --warn where a
+     person is needed, with what will run quoted as it is */
+  #gitpanel .gbase, #gitpanel .gconflict { display:flex; flex-direction:column; gap:var(--s2); padding:var(--s2) var(--s3);
+    border-radius:var(--r-ctl); background:color-mix(in srgb, var(--warn) 9%, transparent);
+    border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+  #gitpanel .gbase[hidden], #gitpanel .gconflict[hidden] { display:none; }
+  #gitpanel .gbasesay, #gitpanel .gconflictsay { font-size:11.5px; color:var(--text); }
+  #gitpanel .gbase select { height:32px; font:inherit; font-size:12.5px; background:var(--bg); color:var(--text);
+    border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 var(--s2); }
+  #gitpanel .gruns, #gitpanel .gconflictfiles { margin:0; font-family:var(--mono); font-size:11px; color:var(--dim);
+    white-space:pre-wrap; overflow-wrap:anywhere; background:var(--sunk, var(--bg)); border:1px solid var(--line);
+    border-radius:var(--r-ctl); padding:var(--s1) var(--s2); }
+  #gitpanel .gbaserow { display:flex; justify-content:flex-end; gap:var(--s2); }
+  #gitpanel .gbaserow button { height:32px; padding:0 var(--s3); font:inherit; font-size:12.5px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:var(--s1); border:1px solid var(--edge); background:var(--panel2);
+    color:var(--text); border-radius:var(--r-ctl); }
+  #gitpanel .gbaserow button.quiet { border-color:transparent; background:transparent; color:var(--dim); }
+  #gitpanel .gbaserow button .ico { display:flex; }
+  #gitpanel .gname[hidden] { display:none; }
+  #gitpanel .gname input { flex:1; min-width:0; height:32px; box-sizing:border-box; padding:0 var(--s3);
+    font:inherit; font-size:13px; background:var(--bg); color:var(--text); border:1px solid var(--edge);
+    border-radius:var(--r-ctl); outline:none; }
+  #gitpanel .gname input:focus { border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #gitpanel .gname button { height:32px; padding:0 var(--s3); font:inherit; font-size:12.5px; cursor:pointer;
+    border:1px solid var(--edge); background:var(--panel2); color:var(--text); border-radius:var(--r-ctl); }
+  #gitpanel .gcommit .said { white-space:normal; font-size:11.5px; }
+  #gitpanel .gcommit .said:empty { display:none; }
+  #gitpanel .gcommit .said.need { color:var(--warn); }
+  #gitpanel h4 .n { font-variant-numeric:tabular-nums; }
+  /* The commit's menu: rules between the kinds of thing, and what cannot be
+     done yet left in the list, grey, with what it waits for under it */
+  .fmenu div.gsep { padding:0; height:1px; margin:var(--s1) 0; background:var(--line); cursor:default; }
+  .fmenu div.gsep:hover { background:var(--line); }
+  .fmenu div.gdis { color:var(--faint); cursor:not-allowed; }
+  .fmenu div.gdis:hover { background:transparent; }
+  .fmenu div.gdis .why { display:block; font-size:11px; }
+  /* What an entry will run, quoted under it */
+  .fmenu div .note { display:block; font-size:11px; color:var(--dim); }
+  .fmenu div .runs { display:block; font-family:var(--mono); font-size:10.5px; color:var(--dim);
+    white-space:pre-wrap; overflow-wrap:anywhere; max-width:300px; }
   #gitpanel .cols { display:flex; flex:1 1 auto; min-height:0; }
   #gitpanel .branches { flex:0 0 170px; overflow:auto; min-width:0; }
   #gitpanel .mid { flex:0 0 38%; min-width:0; display:flex;
     flex-direction:column; min-height:0; }
-  #gitpanel .sec { flex:1 1 0; display:flex; flex-direction:column; min-height:0; }
+  /* Each list is as tall as what is in it, and scrolls only once the two
+     together outgrow the column: split evenly, one file staged took half the
+     height while twenty not yet added scrolled in the other half */
+  #gitpanel .sec { flex:0 1 auto; display:flex; flex-direction:column; min-height:0; }
   /* The border between two panes is the thing you drag. Wider than it looks:
      a one-pixel line is a one-pixel target, and nobody hits it twice */
   #gitpanel .grip { flex:0 0 5px; background:var(--line); position:relative;
@@ -1491,7 +1641,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel h4 { margin:0; padding:6px 10px 4px; font-size:11px; letter-spacing:.06em;
     color:var(--muted); font-weight:600; text-transform:uppercase; flex:0 0 auto;
     display:flex; align-items:center; gap:var(--s2); }
-  #gitpanel h4 .grow { flex:1; }
+  /* A heading keeps to one line: its name gives way first, then nothing --
+     the count and the buttons stay whole */
+  #gitpanel h4 .grow { flex:1; min-width:0; display:flex; white-space:nowrap; }
+  #gitpanel h4 .grow .t { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  #gitpanel h4 .grow .n { flex:none; padding-left:var(--s2); }
+  #gitpanel h4 button { flex:none; white-space:nowrap; }
   #gitpanel h4 button { font-size:11px; padding:2px 8px; border-radius:var(--r-ctl);
     border:1px solid var(--line); background:none; color:var(--muted); cursor:pointer; }
   #gitpanel h4 button:hover { color:var(--text); background:var(--panel2); }
@@ -1518,17 +1673,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .diff { flex:1 1 auto; overflow:auto; padding:0; margin:0;
     white-space:pre; font-family:var(--mono); font-size:12px; line-height:1.35; }
   /* One hunk: what it covers, what can be done with it, and then the lines */
-  #gitpanel .hunk { border-bottom:1px solid var(--line); }
-  #gitpanel .hunkhead { display:flex; align-items:center; gap:var(--s2); padding:4px 10px;
+  #gitpanel .hunk, #editpanel .hunk { border-bottom:1px solid var(--line); }
+  #gitpanel .hunkhead, #editpanel .hunkhead { display:flex; align-items:center; gap:var(--s2); padding:4px 10px;
     background:var(--panel); font-size:11.5px; color:var(--muted);
     position:sticky; top:0; }
-  #gitpanel .hunkhead .grow { flex:1; }
-  #gitpanel .hunkhead button { font-size:11px; padding:2px 8px; border-radius:var(--r-ctl);
+  #gitpanel .hunkhead .grow, #editpanel .hunkhead .grow { flex:1; }
+  #gitpanel .hunkhead button, #editpanel .hunkhead button { font-size:11px; padding:2px 8px; border-radius:var(--r-ctl);
     border:1px solid var(--line); background:none; color:var(--muted); cursor:pointer; }
-  #gitpanel .hunkhead button:hover { color:var(--text); background:var(--panel2); }
-  #gitpanel .hunk .lines { padding:4px 12px; }
+  #gitpanel .hunkhead button:hover, #editpanel .hunkhead button:hover { color:var(--text); background:var(--panel2); }
+  #gitpanel .hunk .lines, #editpanel .hunk .lines { padding:4px 12px; }
   #gitpanel .filehead { padding:5px 12px; font-size:12px;
     border-bottom:1px solid var(--line); color:var(--text); background:var(--panel); }
+  /* An editor tab showing a change: the pieces fill it and scroll */
+  #editpanel .ediff { flex:1 1 auto; min-height:0; overflow:auto; }
+  #editpanel .ediff .empty { color:var(--muted); padding:12px 10px; font-size:12px; }
+  #editpanel .ekind { flex:0 0 auto; font-size:11px; color:var(--dim); padding:0 var(--s2);
+    border:1px solid var(--line); border-radius:var(--r-chip); white-space:nowrap; }
   /* A diff's lines, wherever one is shown: the git panel's hunks and the file
      panel's comparison. Written once, because two copies of "what green means"
      drift apart the first time either is touched */
@@ -1976,6 +2136,88 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   @keyframes qfade { from { opacity:0; } to { opacity:1; } }
   @keyframes qin { from { opacity:0; transform:translateY(8px) scale(.94); } to { opacity:1; transform:none; } }
   @media (prefers-reduced-motion: reduce) { #quick, #quick .qbtn, #quick .qempty { animation:none; } }
+
+  /* The ideas: cards written in, on the same dimming as the quick commands but
+     in a box of their own, placed the way a dialog is (5.2). Nothing moves as it
+     opens: the quick commands' entrance is theirs alone (6) */
+  #ideas[hidden] { display:none !important; }
+  #ideas { position:fixed; inset:var(--titleh) 0 0 0; z-index:52; background:#00000099; display:flex;
+    justify-content:center; align-items:flex-start; box-sizing:border-box; padding:56px var(--s4) var(--s4); }
+  #ideas.noframe { top:0; padding-top:calc(var(--s4) + env(safe-area-inset-top, 0px));
+    padding-bottom:calc(var(--s4) + env(safe-area-inset-bottom, 0px)); }
+  #ideas .ibox { width:min(640px, 100%); max-height:100%; min-height:0; display:flex; flex-direction:column;
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card); box-shadow:0 8px 24px #0007; }
+  #ideas .ihead { flex:none; display:flex; align-items:center; flex-wrap:wrap; gap:var(--s3);
+    padding:var(--s4) var(--s5); border-bottom:1px solid var(--line); }
+  #ideas .ititle { font-size:13.5px; font-weight:600; color:var(--text); }
+  #ideas .grow { flex:1; }
+  #ideas select { height:36px; min-width:0; max-width:100%; font:inherit; font-size:13px; color:var(--text);
+    background:var(--bg); border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 var(--s3); cursor:pointer; }
+  #ideas select:hover { border-color:var(--edge-hi); }
+  #ideas select:focus-visible, #ideas .idone:focus-visible, #ideas .iclose:focus-visible, #ideas .itool:focus-visible {
+    outline:none; border-color:var(--brand); box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #ideas .idone { height:32px; display:inline-flex; align-items:center; gap:var(--s1); font:inherit; font-size:12.5px;
+    padding:0 var(--s3); border:1px solid var(--edge); border-radius:var(--r-ctl); background:var(--panel2);
+    color:var(--dim); cursor:pointer; }
+  #ideas .idone:hover { border-color:var(--edge-hi); color:var(--text); }
+  #ideas .idone .ico { display:none; }
+  #ideas .idone.on { background:var(--raise); color:var(--text); }
+  #ideas .idone.on .ico { display:inline-flex; }
+  #ideas .iclose { width:32px; height:32px; flex:none; border:1px solid transparent; background:transparent; color:var(--dim);
+    border-radius:var(--r-ctl); cursor:pointer; font:inherit; font-size:14px; }
+  #ideas .iclose:hover { background:var(--hover); color:var(--text); }
+  #ideas .isaid { flex:none; margin:var(--s3) var(--s5) 0; padding:var(--s2) var(--s3); border-radius:var(--r-ctl);
+    font-size:11.5px; line-height:1.5; color:var(--warn); overflow-wrap:anywhere;
+    background:color-mix(in srgb, var(--warn) 9%, transparent); border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+  #ideas .isaid[hidden] { display:none; }
+  #ideas .ibody { flex:1 1 auto; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:var(--s2);
+    padding:var(--s4) var(--s5); }
+  #ideas .ilist { display:flex; flex-direction:column; gap:var(--s2); }
+  #ideas .iempty { font-size:12px; color:var(--dim); padding:var(--s1) 0; }
+  #ideas .iempty[hidden] { display:none; }
+  /* A card is a thing typed into, so it wears the edge of one, and the ring
+     of one when the caret is in it (5.1) */
+  #ideas .icard { display:flex; align-items:flex-start; gap:var(--s2); padding:var(--s2) var(--s2) var(--s2) var(--s1);
+    background:var(--bg); border:1px solid var(--edge); border-radius:var(--r-ctl); }
+  #ideas .icard:hover { border-color:var(--edge-hi); }
+  #ideas .icard:focus-within { border-color:var(--brand); box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  /* Lifted off the list while it is carried: the one layer here that floats */
+  #ideas .icard.dragging { background:var(--raise); box-shadow:0 8px 24px #0007; }
+  #ideas .igrip, #ideas .iplus { flex:none; width:22px; height:22px; display:inline-flex; align-items:center;
+    justify-content:center; color:var(--faint); border-radius:var(--r-chip); }
+  #ideas .igrip { cursor:grab; touch-action:none; }
+  #ideas .igrip:hover, #ideas .icard.dragging .igrip { color:var(--text); background:var(--hover); }
+  #ideas .icard.dragging .igrip { cursor:grabbing; }
+  #ideas .icheck { flex:none; width:15px; height:15px; margin:var(--s1) 0 0; accent-color:var(--brand); cursor:pointer; }
+  #ideas .itext { flex:1; min-width:0; min-height:22px; resize:none; overflow:hidden; border:0; outline:none;
+    background:transparent; color:var(--text); font:inherit; font-size:13px; line-height:22px; padding:0; }
+  #ideas .itext::placeholder { color:var(--faint); }
+  #ideas .icard.done .itext { color:var(--dim); text-decoration:line-through; }
+  #ideas .itool { flex:none; width:22px; height:22px; padding:0; display:inline-flex; align-items:center;
+    justify-content:center; border:1px solid transparent; background:transparent; color:var(--dim);
+    border-radius:var(--r-chip); cursor:pointer; }
+  #ideas .itool:hover { background:var(--hover); color:var(--text); }
+  #ideas .ifrom { flex:none; display:inline-flex; }
+  #ideas .ifrom:empty { display:none; }
+  /* The issue a card became: a label to press, not a state, so no state colour */
+  #ideas .iissue { height:22px; display:inline-flex; align-items:center; padding:0 var(--s2); font:inherit;
+    font-size:11px; font-variant-numeric:tabular-nums; color:var(--dim); background:transparent;
+    border:1px solid var(--line); border-radius:var(--r-chip); cursor:pointer; text-decoration:none; }
+  #ideas .iissue:hover { color:var(--text); background:var(--hover); }
+  #ideas .ifoot { flex:none; padding:var(--s3) var(--s5); border-top:1px solid var(--line); font-size:11px;
+    color:var(--faint); line-height:1.5; }
+  @media (max-width:640px) {
+    #ideas { padding:var(--s2); }
+    #ideas .ihead { padding:var(--s3); }
+    /* The close stays at the end of the first line; the switch takes a line
+       of its own under it rather than pushing the close down beside it */
+    #ideas .ihead .grow { display:none; }
+    #ideas .iclose { order:1; margin-left:auto; }
+    #ideas .idone { order:2; }
+    #ideas .isaid { margin:var(--s2) var(--s3) 0; }
+    #ideas .ibody { padding:var(--s3); }
+    #ideas .ifoot { padding:var(--s2) var(--s3); }
+  }
 
   /* Behind the add-a-tab dialog. The dialog itself is the settings page placed
      over the board, so all the board draws is the dimming, and a press on it is
@@ -2836,6 +3078,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
        shape as the Vault, a different list underneath -->
   <!-- The quick commands: buttons over everything, no box of their own -->
   <div id="quick" hidden tabindex="-1"></div>
+  <!-- The ideas: cards written from the side column's bulb, over everything -->
+  <div id="ideas" hidden></div>
   <div id="palette" hidden>
     <div class="vbox">
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
@@ -3094,6 +3338,8 @@ let lastFlash = null;
 // Whether the quick commands are up (see openQuick). Declared this early
 // because the sidebar, drawn from the very first state, marks its button by it
 let quickOpen = false;
+// Whether the ideas are up (see __openIdeas), for the same reason
+let ideasOpen = false;
 
 // The shared toast (src/toast.rs). Declared this early because the very first
 // state can arrive with a message already in it.
@@ -3363,7 +3609,7 @@ function drawTabs() {
       // and a fold kept from before would hide its tabs with nothing to open
       const mine = inside[gi];
       if (mine.length) {
-        const away = tabsPutAway(g, mine);
+        const away = tabsPutAway(g);
         const bundle = bundleRow(g, mine, away, false);
         bundle.classList.add("wcard");
         nav.append(bundle);
@@ -3387,7 +3633,7 @@ function drawTabs() {
     // several: without it a folder running one thing had no way to be made
     // smaller at all
     if (mine.length) {
-      const away = tabsPutAway(g, mine);
+      const away = tabsPutAway(g);
       nav.append(bundleRow(g, mine, away, false));
       if (away) continue;
     }
@@ -3441,6 +3687,9 @@ function drawTabs() {
           title:T["tui.help.site"] || "Manual"}, el("span", {}, "?"))
       : el("span", {class:"sidebtn help", title:T["tui.help.site"] || "Manual",
           onclick:() => send({kind:"help"})}, el("span", {}, "?")),
+    // The ideas: notes jotted down now and dealt with later, per project
+    el("span", {class:"sidebtn ideabtn" + (ideasOpen ? " sel" : ""), title:T["tui.ideas.open"] || "Ideas",
+        onclick:e => { e.stopPropagation(); window.__openIdeas(); }}, "💡"),
     // The tools that start from a picture (snip.rs). Here, beside settings
     // and help, because they are the app's own tools rather than something
     // said to an AI: what they give back goes to the clipboard or a file
@@ -3461,7 +3710,14 @@ function drawTabs() {
 let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:1,
           list:null, problems:[], total:0, busy:"", said:"", bad:false,
           view:"list", detail:null, options:{}, armed:"", dupOf:"", want:{list:0, detail:0},
-          create:{project:"", title:"", body:"", labels:"", assignees:""} };
+          // Where a conflicted pull request's branch is on this PC, as last asked
+          place:null,
+          create:{project:"", title:"", body:"", labels:[], assignee:"", kept:""},
+          // A pull request being written: the folder and branch it comes from,
+          // what it goes into, and the issue it closes when there is one
+          pr:{project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false,
+              close:false, issue:null, kept:"", files:null, open:{}, more:false},
+          busySince: 0 };
 let issuesSig = "";
 let issuesSeq = 0;
 
@@ -3470,13 +3726,34 @@ const ISSUE_PRESETS = {
   pr: [["open", {}], ["mine", {mine:true}], ["review", {review:true}], ["merged", {state:"merged"}], ["closed", {state:"closed"}], ["all", {state:"all"}]],
 };
 function issuesAsk(act, args) {
-  if (act !== "projects" && act !== "options") { I.busy = act; I.said = ""; I.bad = false; }
+  if (!ISSUE_QUIET.has(act)) {
+    I.busy = act; I.said = ""; I.bad = false;
+    I.busySince = Date.now();
+    issuesClock();
+  }
   // Only the newest list and the newest detail count: a slow answer to a
   // question since replaced (another project, another filter, back) is dropped
   const seq = ++issuesSeq;
   if (act === "list" || act === "detail") I.want[act] = seq;
   send({kind:"issues", act, args: Object.assign({kind: I.kind, seq}, args || {})});
   drawIssues();
+}
+// Requests that fill part of a page without holding the whole of it
+const ISSUE_QUIET = new Set(["projects", "options", "pr_bases", "pr_files", "pr_file", "pr_place"]);
+// While something is being waited for, the seconds on the busy line move once a
+// second -- only that number, never the page under it
+let issuesTick = 0;
+function issuesClock() {
+  if (issuesTick) return;
+  issuesTick = setInterval(() => {
+    const at = document.getElementById("issuesbusysecs");
+    if (!I.busy || !at) { if (!I.busy) { clearInterval(issuesTick); issuesTick = 0; } return; }
+    at.textContent = issuesSecs();
+  }, 1000);
+}
+function issuesSecs() {
+  const n = Math.max(0, Math.floor((Date.now() - (I.busySince || Date.now())) / 1000));
+  return (T["issues.busy.secs"] || "{n}").replace("{n}", n);
 }
 function issuesList(page) {
   I.page = page || 1;
@@ -3493,6 +3770,50 @@ function issueAgo(iso) {
     : m < 43200 ? ["day", Math.floor(m / 1440)] : m < 525600 ? ["month", Math.floor(m / 43200)]
     : ["year", Math.floor(m / 525600)];
   return (T["issues.ago." + key] || "{n}").replace("{n}", n);
+}
+// A pull request GitHub cannot merge for its conflicts
+function prConflicted(d) {
+  return !!d && d.kind === "pr" && d.state === "open" && d.merge_state === "dirty" && !d.fork;
+}
+// Where such a pull request's branch is on this PC, asked when its page shows one
+function prPlaceAsk() {
+  const d = I.detail;
+  if (!prConflicted(d)) return;
+  issuesAsk("pr_place", {project: d.project, number: d.number, head: d.head || "", base: d.base || ""});
+}
+// Why it cannot be merged, where on this PC it would be settled and what that
+// runs, and the one press that does it: the base brought into the branch's
+// folder, and a conflict handed to an AI tab there
+function prConflictBox(d, proj, made) {
+  const base = d.base || "";
+  const box = el("div", {class:"conflict"}, el("div", {}, (T["issues.pr.conflict"] || "").replace("{base}", base)));
+  const p = I.place && I.place.key === d.project + "#" + d.number ? I.place : null;
+  if (!p) return box;
+  if (!p.folder) {
+    // A worktree made since the question was asked is asked about again, once
+    if (made && p.asked !== made.folder) { p.asked = made.folder; setTimeout(prPlaceAsk, 0); }
+    // The way to make one is the button at the top of the page, named here
+    box.append(el("div", {class:"dim"}, (T["issues.pr.conflict.nowhere"] || "").replace("{start}", T["issues.start.pr"] || "")));
+    return box;
+  }
+  // Named the way the folder list names it, with the whole path on hover
+  const g = ((S && S.groups) || []).find(x => x.folder && sameFolder(x.folder, p.folder));
+  const name = (g && g.name) || p.folder.split(/[\\/]/).filter(Boolean).pop() || p.folder;
+  box.append(el("div", {class:"dim", title: p.folder}, (T[p.merging ? "issues.pr.conflict.stopped" : "issues.pr.conflict.here"] || "")
+    .replace("{folder}", name).replace("{base}", "origin/" + base)));
+  if (!p.merging) box.append(el("pre", {class:"runs"}, (p.runs || []).join("\n")));
+  const go = el("button", {class:"go",
+    onclick:() => { if (!I.busy) issuesAsk("pr_resolve", {project: d.project, number: d.number, head: d.head || "", base}); }},
+    pickIcon("sparkles"), el("span", {}, T["git.catch_up.resolve"] || ""));
+  go.disabled = !!I.busy;
+  // What the AI tab is told is written in the desk's settings, as in the git column
+  go.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    openList(go, [el("div", {onclick:() => { closeFolderMenu(); openSettings("git-merge", true); }},
+      T["git.message.ai.edit"] || "")], false, e);
+  });
+  box.append(el("div", {class:"row"}, go));
+  return box;
 }
 // The folder already made for this one, when there is one
 function issueWorktree(kind, repo, number) {
@@ -3543,10 +3864,17 @@ window.__issues = function (d) {
     return;
   }
   if ((d.act === "list" || d.act === "detail") && d.seq !== I.want[d.act]) return;
-  I.busy = "";
+  if (!ISSUE_QUIET.has(d.act)) I.busy = "";
   if (!d.ok) {
     I.said = d.error || ""; I.bad = true;
     I.pending = null;
+    // A merge GitHub refused is read again, so its page says why in its own
+    // terms -- a conflict, with the way to settle it -- and the error stays
+    if (d.act === "merge" && I.detail) {
+      const seq = ++issuesSeq;
+      I.want.detail = seq;
+      send({kind:"issues", act:"detail", args:{kind: I.kind, seq, project: I.detail.project, number: I.detail.number}});
+    }
     drawIssues();
     return;
   }
@@ -3562,13 +3890,84 @@ window.__issues = function (d) {
       I.detail = Object.assign({project: d.project, kind: d.kind}, d.data || {});
       I.view = "detail";
       I.armed = ""; I.dupOf = "";
+      prPlaceAsk();
       break;
-    case "create":
-      I.create = {project: I.create.project, title:"", body:"", labels:"", assignees:""};
+    case "pr_place":
+      I.place = Object.assign({key: d.project + "#" + d.number}, d.data || {});
+      break;
+    case "pr_resolve": {
+      const r = d.data || {};
+      I.said = r.state === "tab"
+        ? (T[r.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "").replace("{title}", r.title || "")
+          + " " + (T["issues.pr.resolve.push"] || "")
+        : (T[r.state === "taken" ? "issues.pr.resolve.taken" : "issues.pr.resolve.latest"] || "")
+          .replace("{base}", r.base || "").replace("{n}", r.taken || 0);
+      prPlaceAsk();
+      break;
+    }
+    case "create": {
+      // Made from an idea: that idea is done now, and says which issue it
+      // became. Only here, once GitHub has said it made one -- a form that was
+      // put away, or a create that failed, leaves the idea as it was
+      const idea = I.create.idea;
+      const made = d.data || {};
+      if (idea && made.number) ideasAsk("issued", {id: idea, number: made.number, url: made.url || ""});
+      I.create = {project: I.create.project, title:"", body:"", labels:[], assignee:"", kept:""};
       I.said = (T["issues.created"] || "").replace("{n}", (d.data || {}).number || "");
       issuesAsk("detail", {project: d.project, number: (d.data || {}).number});
       issuesList(1);
       return;
+    }
+    case "draft": {
+      // The AI's issue, read into the form. Only labels and a person the
+      // project really has are taken; anything else it named is left out
+      const c = I.create;
+      const opts = I.options[c.project] || {};
+      let got = null;
+      try { got = JSON.parse(d.data || ""); } catch (e) { got = null; }
+      if (!got || typeof got.title !== "string") { I.said = T["issues.draft.failed"] || ""; I.bad = true; break; }
+      c.title = got.title;
+      if (typeof got.body === "string") c.body = got.body;
+      const known = opts.labels || [];
+      c.labels = (Array.isArray(got.labels) ? got.labels : []).filter(l => known.includes(l));
+      c.assignee = (opts.assignees || []).includes(got.assignee) ? got.assignee : "";
+      I.said = T["issues.draft.done"] || "";
+      break;
+    }
+    case "pr_bases": {
+      // What it can go into, the server's default first. The branch it comes
+      // from is not one of them
+      const p = I.pr;
+      p.bases = ((d.data || {}).bases || []).filter(b => b !== p.head);
+      if (!p.bases.includes(p.base)) p.base = p.bases[0] || "";
+      prAskFiles();
+      break;
+    }
+    case "pr_files":
+      I.pr.files = Array.isArray(d.data) ? d.data : [];
+      break;
+    case "pr_file":
+      if (d.path && Object.prototype.hasOwnProperty.call(I.pr.open, d.path)) I.pr.open[d.path] = d.data || {hunks: []};
+      break;
+    case "pr_draft": {
+      const p = I.pr;
+      let got = null;
+      try { got = JSON.parse(d.data || ""); } catch (e) { got = null; }
+      if (!got || typeof got.title !== "string") { I.said = T["issues.draft.failed"] || ""; I.bad = true; break; }
+      p.title = got.title;
+      p.body = prFixes(typeof got.body === "string" ? got.body : p.body, p);
+      I.said = T["issues.pr.draft.done"] || "";
+      break;
+    }
+    case "create_pr": {
+      const n = (d.data || {}).number || "";
+      I.pr = {project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false, close:false, issue:null, kept:"", files:null, open:{}, more:false};
+      I.kind = "pr"; I.preset = "open"; I.list = null;
+      I.said = (T["issues.pr.created"] || "").replace("{n}", n);
+      issuesAsk("detail", {project: d.project, number: n});
+      issuesList(1);
+      return;
+    }
     case "comment":
     case "issue_state":
     case "pr_state":
@@ -3636,14 +4035,23 @@ function drawIssues() {
   }
   if (I.view === "detail" && I.detail) return drawIssueDetail(box);
   if (I.view === "create") return drawIssueCreate(box);
+  if (I.view === "newpr") return drawPrCreate(box);
   drawIssueList(box);
 }
 
 // What is happening or what went wrong, or nothing -- an empty line would be
 // a gap for no reason
 function issueSaid() {
-  const words = I.busy ? (T["issues.busy"] || "…") : (I.said || "");
-  return words ? el("div", {class:"said" + (I.bad && !I.busy ? " bad" : "")}, words) : null;
+  // Waiting: the working dot, what is being done, and for how long -- the one
+  // movement the style guide allows (§6), so it cannot be mistaken for a stall
+  if (I.busy) {
+    return el("div", {class:"busyband"},
+      el("span", {class:"dot BUSY"}),
+      el("span", {class:"bt"}, T["issues.busy." + I.busy] || T["issues.busy"] || ""),
+      el("span", {class:"bs", id:"issuesbusysecs"}, issuesSecs()));
+  }
+  const words = I.said || "";
+  return words ? el("div", {class:"said" + (I.bad ? " bad" : "")}, words) : null;
 }
 
 function drawIssueList(box) {
@@ -3734,13 +4142,18 @@ function drawIssueDetail(box) {
   const pr = d.kind === "pr";
   const state = d.draft && d.state === "open" ? "draft" : d.state;
   const proj = issueProject(d.project);
-  const made = issueWorktree(d.kind, (proj || {}).repo, d.number);
+  // The folder made for it, or -- for a pull request -- the one its branch is
+  // checked out in: opened rather than made a second time
+  const place = pr && I.place && I.place.key === d.project + "#" + d.number && I.place.folder ? I.place : null;
+  const made = issueWorktree(d.kind, (proj || {}).repo, d.number) || (place ? {folder: place.folder} : null);
   box.append(el("div", {class:"bar"}, el("div", {class:"line"},
     el("button", {class:"quiet", onclick:() => { I.view = "list"; I.detail = null; I.want.detail = 0; I.busy = ""; drawIssues(); }}, "‹ " + (T["issues.back"] || "")),
     el("span", {class:"crumb grow"}, d.project + " #" + d.number),
     d.url ? (() => { const a = mdLink(d.url, (T["issues.on_github"] || "") + " \u2197"); a.classList.add("away"); return a; })() : null,
     made
-      ? el("button", {class:"go", onclick:() => send({kind:"folderview", folder: made.folder})}, (T["issues.open"] || "") + " ›")
+      // Quiet while a conflict is being offered its way out: one blue press a page
+      ? el("button", {class: prConflicted(d) && place ? "" : "go", onclick:() => send({kind:"folderview", folder: made.folder})},
+          (T["issues.open"] || "") + " ›")
       : (d.state === "open"
           ? el("button", {class:"go", onclick:() => issueStart(Object.assign({}, d, {repo: (proj || {}).repo,
               workspace: d.workspace}))}, T[pr ? "issues.start.pr" : "issues.start.issue"] || "")
@@ -3770,6 +4183,7 @@ function drawIssueDetail(box) {
       + (T["issues.files"] || "").replace("{n}", d.changed_files));
   }
   box.append(facts);
+  if (prConflicted(d)) box.append(prConflictBox(d, proj, made));
 
   // What can be done to it, in the words GitHub uses
   const acts = el("div", {class:"acts"});
@@ -3855,6 +4269,16 @@ function drawIssueDetail(box) {
 
 function drawIssueCreate(box) {
   const c = I.create;
+  // Sent from an idea: its project, by where the checkout is, once the
+  // projects are known. Asked once, and whatever is chosen after is the person's
+  if (c.at && I.projects) {
+    const p = I.projects.find(p => sameFolder(p.dir, c.at));
+    if (p) {
+      c.project = p.name;
+      if (!I.options[p.name]) send({kind:"issues", act:"options", args:{kind: I.kind, project: p.name}});
+    }
+    c.at = "";
+  }
   // However the form was reached, it names a project that is there
   if (!issueProject(c.project) && I.projects && I.projects.length) {
     c.project = issueProject(I.project) ? I.project : I.projects[0].name;
@@ -3867,39 +4291,226 @@ function drawIssueCreate(box) {
   const said = issueSaid();
   if (said) box.append(said);
   const form = el("div", {class:"form"});
+  const redraw = () => { issuesSig = ""; drawIssues(); };
+  const opts = I.options[c.project] || {};
+  const field = (label, control, hint) => form.append(el("div", {class:"field"},
+    el("span", {class:"name"}, label), control, hint ? el("span", {class:"hint"}, hint) : null));
+
+  // The description first: it is what the AI works from. Its ✨ writes the
+  // title, the description, the labels and the person from it
+  const body = draftFields(form, c, {
+    act: "draft", settings: "git-issue", title: T["issues.draft.ai"], placeholder: T["issues.new.body.ph"],
+    ask: () => {
+      if (!c.body.trim()) { I.said = T["issues.draft.need"] || ""; I.bad = true; redraw(); return false; }
+      issuesAsk("draft", {project: c.project, text: c.body, labels: opts.labels || [], assignees: opts.assignees || []});
+      return true;
+    },
+  });
+  const drafting = I.busy === "draft";
+
   const pick = el("select");
   for (const p of I.projects) pick.append(el("option", {value:p.name}, p.name + (p.repo ? "  (" + p.repo + ")" : "")));
   pick.value = c.project;
   pick.onchange = () => {
-    c.project = pick.value; c.labels = ""; c.assignees = "";
+    c.project = pick.value; c.labels = []; c.assignee = "";
     if (!I.options[c.project]) issuesAsk("options", {project: c.project});
-    issuesSig = ""; drawIssues();
+    redraw();
   };
-  const opts = I.options[c.project] || {};
-  const field = (label, control, hint) => form.append(el("label", {class:"field"},
-    el("span", {class:"name"}, label), control, hint ? el("span", {class:"hint"}, hint) : null));
+  field(T["issues.project"] || "", pick);
+
   const title = el("input", {type:"text", placeholder: T["issues.new.title.ph"] || ""});
   title.value = c.title; title.oninput = () => { c.title = title.value; };
-  const body = el("textarea", {rows:"8", placeholder: T["issues.new.body.ph"] || ""});
-  body.value = c.body; body.oninput = () => { c.body = body.value; };
-  const labels = el("input", {type:"text", placeholder: (opts.labels || []).slice(0, 4).join(", ")});
-  labels.value = c.labels; labels.oninput = () => { c.labels = labels.value; };
-  const people = el("input", {type:"text", placeholder: (opts.assignees || []).slice(0, 4).join(", ")});
-  people.value = c.assignees; people.oninput = () => { c.assignees = people.value; };
-  field(T["issues.project"] || "", pick);
   field(T["issues.new.title"] || "", title);
-  field(T["issues.new.body"] || "", body);
-  field(T["issues.labels"] || "", labels, T["issues.new.comma"] || "");
-  field(T["issues.assignees"] || "", people, T["issues.new.comma"] || "");
-  const split = v => v.split(/[\s,]+/).map(x => x.trim()).filter(Boolean);
+
+  // Labels the repository has: the chosen ones with a ✕, the rest under them
+  const chosen = el("div", {class:"chips"}, ...c.labels.map(l => el("span", {class:"lchip on"}, l,
+    el("button", {type:"button", title: T["issues.labels.remove"] || "", onclick:() => {
+      c.labels = c.labels.filter(x => x !== l); redraw();
+    }}, "\u2715"))));
+  const offered = (opts.labels || []).filter(l => !c.labels.includes(l));
+  const choices = el("div", {class:"chips"}, ...offered.map(l => el("button", {type:"button", class:"lchip",
+    onclick:() => { c.labels = c.labels.concat(l); redraw(); }}, "+ " + l)));
+  field(T["issues.labels"] || "", el("div", {class:"lpick"}, c.labels.length ? chosen : null, offered.length ? choices : null),
+    !(opts.labels || []).length ? (T["issues.labels.none"] || "") : null);
+
+  // One person, or nobody: the people GitHub says can be assigned here
+  const who = el("select");
+  who.append(el("option", {value:""}, T["issues.assignee.nobody"] || ""));
+  for (const p of opts.assignees || []) who.append(el("option", {value:p}, p));
+  who.value = c.assignee;
+  who.onchange = () => { c.assignee = who.value; };
+  field(T["issues.assignees"] || "", who);
+
   form.append(el("div", {class:"foot"},
     el("button", {class:"quiet", onclick:() => { I.view = "list"; drawIssues(); }}, T["issues.cancel"] || ""),
     el("button", {class:"go", onclick:() => {
-      if (!c.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; issuesSig = ""; drawIssues(); return; }
-      issuesAsk("create", {project: c.project, title: c.title, body: c.body, labels: split(c.labels), assignees: split(c.assignees)});
+      if (!c.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; redraw(); return; }
+      issuesAsk("create", {project: c.project, title: c.title, body: c.body, labels: c.labels,
+        assignees: c.assignee ? [c.assignee] : []});
     }}, T["issues.new.create"] || "")));
   box.append(form);
-  setTimeout(() => { if (!c.title) title.focus(); }, 30);
+  setTimeout(() => { if (!c.body && !drafting) body.focus(); }, 30);
+}
+
+// The part of a form the AI writes from: what was written before it rewrote
+// it (kept at the top until put away -- an answer that misses is not allowed to
+// cost somebody their own words), then the description with its ✨ at the right
+// of its name. Shared by a new issue and a new pull request. `how.ask` sends
+// the request and says whether it went; right-clicking the ✨ opens the prompt
+function draftFields(form, c, how) {
+  const redraw = () => { issuesSig = ""; drawIssues(); };
+  if (c.kept) {
+    form.append(el("div", {class:"kept"},
+      el("div", {class:"keptbar"},
+        el("span", {class:"name"}, T["issues.draft.kept"] || ""),
+        el("span", {class:"grow"}),
+        el("button", {class:"quiet", onclick:() => { c.body = c.kept; redraw(); }}, T["issues.draft.restore"] || ""),
+        el("button", {class:"quiet", title: T["issues.draft.dismiss"] || "", onclick:() => { c.kept = ""; redraw(); }}, "\u2715")),
+      el("div", {class:"kepttext"}, c.kept)));
+  }
+  const body = el("textarea", {rows:"8", placeholder: how.placeholder || ""});
+  body.value = c.body; body.oninput = () => { c.body = body.value; };
+  const drafting = I.busy === how.act;
+  body.disabled = drafting;
+  const ai = el("button", {class:"iai", type:"button", title: how.title || "", onclick:() => {
+    if (I.busy) return;
+    // What is kept is what somebody wrote: a line the form put there itself
+    // (the one closing an issue) is not a draft worth keeping
+    const was = c.body;
+    const own = how.own ? how.own(was) : was;
+    if (how.ask() && own.trim()) c.kept = was;
+  }}, pickIcon("sparkles"));
+  ai.disabled = !!I.busy;
+  ai.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    openList(ai, [el("div", {onclick:() => { closeFolderMenu(); openSettings(how.settings, true); }},
+      T["git.message.ai.edit"] || "")], false, e);
+  });
+  // In the corner above the box rather than inside it: a long description has
+  // a scrollbar where a button inside the box would sit
+  form.append(el("div", {class:"field"},
+    el("div", {class:"namerow"}, el("span", {class:"name"}, T["issues.new.body"] || ""), ai),
+    body));
+  return body;
+}
+
+// The line that closes an issue when the pull request is merged, on the end
+// of the description while the box is ticked and gone when it is not. Written
+// with the repository when the issue lives in another one
+function prFixes(body, p) {
+  if (!p.issue) return body;
+  const ref = prIssueRef(p);
+  const line = "Fixes " + ref;
+  const kept = body.split("\n").filter(l => l.trim() !== line).join("\n").replace(/\s+$/, "");
+  return p.close ? (kept ? kept + "\n\n" : "") + line : kept;
+}
+function prIssueRef(p) {
+  const proj = issueProject(p.project);
+  const here = proj && proj.repo && proj.repo.toLowerCase() === p.issue.repo.toLowerCase();
+  return (here ? "" : p.issue.repo) + "#" + p.issue.number;
+}
+
+// A new pull request, opened from the git column for the branch in front
+function drawPrCreate(box) {
+  const p = I.pr;
+  const redraw = () => { issuesSig = ""; drawIssues(); };
+  box.append(el("div", {class:"bar"}, el("div", {class:"line"},
+    el("button", {class:"quiet", onclick:() => { I.view = "list"; redraw(); }}, "‹ " + (T["issues.back"] || "")),
+    el("span", {class:"crumb"}, T["issues.pr.new"] || ""))));
+  const said = issueSaid();
+  if (said) box.append(said);
+  const form = el("div", {class:"form"});
+  const field = (label, control, hint) => form.append(el("div", {class:"field"},
+    el("span", {class:"name"}, label), control, hint ? el("span", {class:"hint"}, hint) : null));
+
+  draftFields(form, p, {
+    act: "pr_draft", settings: "git-pr", title: T["issues.pr.draft.ai"], placeholder: T["issues.pr.body.ph"],
+    own: text => prFixes(text, Object.assign({}, p, {close: false})),
+    ask: () => {
+      if (!p.base) { I.said = T["issues.pr.need.base"] || ""; I.bad = true; redraw(); return false; }
+      issuesAsk("pr_draft", {project: p.project, folder: p.folder, head: p.head, base: p.base});
+      return true;
+    },
+  });
+
+  const title = el("input", {type:"text", placeholder: T["issues.new.title.ph"] || ""});
+  title.value = p.title; title.oninput = () => { p.title = title.value; };
+  field(T["issues.new.title"] || "", title);
+
+  // Where it goes: the branches the server has, its default first
+  const into = el("select");
+  for (const b of p.bases || []) into.append(el("option", {value:b}, b));
+  into.value = p.base;
+  into.disabled = !(p.bases || []).length;
+  into.onchange = () => { p.base = into.value; prAskFiles(); };
+  field(T["issues.pr.base"] || "", into,
+    p.bases === null ? "\u2026" : !p.bases.length ? (T["issues.pr.bases.none"] || "")
+      : (T["issues.pr.from"] || "").replace("{head}", p.head));
+
+  // What it would carry, file by file, each opened in place to be read
+  const files = p.files;
+  if (p.base) {
+    const added = (files || []).reduce((n, f) => n + f.added, 0);
+    const removed = (files || []).reduce((n, f) => n + f.removed, 0);
+    const name = files === null ? (T["issues.pr.files"] || "")
+      : (T["issues.pr.files.n"] || "").replace("{n}", files.length).replace("{add}", added).replace("{del}", removed);
+    const list = el("div", {class:"prfiles"});
+    if (files === null) list.append(el("div", {class:"empty"}, "\u2026"));
+    else if (!files.length) list.append(el("div", {class:"empty"}, T["issues.pr.files.none"] || ""));
+    const SHOWN = 10;
+    for (const f of (files || []).slice(0, p.more ? files.length : SHOWN)) {
+      const open = Object.prototype.hasOwnProperty.call(p.open, f.path);
+      const row = el("button", {type:"button", class:"prfile" + (open ? " on" : ""), onclick:() => {
+        if (open) { delete p.open[f.path]; redraw(); return; }
+        p.open[f.path] = null;
+        issuesAsk("pr_file", {project: p.project, folder: p.folder, base: p.base, path: f.path});
+        redraw();
+      }},
+        el("span", {class:"car"}, open ? "\u25be" : "\u25b8"),
+        el("span", {class:"fp", title: f.path}, "\u200e" + f.path + "\u200e"),
+        f.binary ? el("span", {class:"fn"}, T["issues.pr.files.binary"] || "")
+          : el("span", {class:"fn"}, el("span", {class: f.added ? "a" : ""}, "+" + f.added), " ", el("span", {class: f.removed ? "d" : ""}, "\u2212" + f.removed)));
+      list.append(row);
+      if (open) {
+        const got = p.open[f.path];
+        const change = el("div", {class:"prchange"});
+        if (got === null) change.append(el("div", {class:"empty"}, "\u2026"));
+        else if (got.binary) change.append(el("div", {class:"empty"}, T["git.binary"] || ""));
+        else if (!(got.hunks || []).length) change.append(el("div", {class:"empty"}, T["git.same"] || ""));
+        else hunksInto(change, got.hunks, "view");
+        list.append(change);
+      }
+    }
+    if (files && files.length > SHOWN && !p.more) {
+      list.append(el("button", {type:"button", class:"quiet prmore", onclick:() => { p.more = true; redraw(); }},
+        (T["issues.pr.files.more"] || "").replace("{n}", files.length - SHOWN)));
+    }
+    field(name, list);
+  }
+
+  const tick = (on, label, set) => {
+    const box = el("input", {type:"checkbox"});
+    box.checked = on;
+    box.onchange = () => { set(box.checked); redraw(); };
+    return el("label", {class:"tick"}, box, el("span", {}, label));
+  };
+  // Only when the folder was made for an issue: ticked, the description ends
+  // with the line GitHub closes it by
+  if (p.issue) {
+    form.append(tick(p.close, (T["issues.pr.closes"] || "").replace("{ref}", prIssueRef(p)), v => {
+      p.close = v; p.body = prFixes(p.body, p);
+    }));
+  }
+  form.append(tick(p.draft, T["issues.pr.draft"] || "", v => { p.draft = v; }));
+
+  form.append(el("div", {class:"foot"},
+    el("button", {class:"quiet", onclick:() => { I.view = "list"; redraw(); }}, T["issues.cancel"] || ""),
+    el("button", {class:"go", onclick:() => {
+      if (!p.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; redraw(); return; }
+      if (!p.base) { I.said = T["issues.pr.need.base"] || ""; I.bad = true; redraw(); return; }
+      issuesAsk("create_pr", {project: p.project, title: p.title, body: p.body, head: p.head, base: p.base, draft: p.draft});
+    }}, T["issues.pr.create"] || "")));
+  box.append(form);
 }
 
 // A tab that could not start: why, and what to do about it. Drawn only when
@@ -5119,12 +5730,12 @@ setInterval(() => {
 // the window are each looking at their own
 const folded = new Set();
 // Folders whose tabs somebody put away or brought out, and which of the two.
-// Until then a set of several starts put away, as its pills, so a folder
-// running five things is one line until somebody asks to see them one by one
+// Until then every folder's tabs start put away, as its pills, one tab or
+// several: a folder is one line until somebody asks to see its tabs one by one
 // -- the list is for finding the folder, and the pills already say which of its
-// tabs wants you. A single tab starts out: one row is no longer than its box
+// tabs wants you
 const tabsAway = new Map();
-const tabsPutAway = (g, mine) => tabsAway.has(g.folder) ? tabsAway.get(g.folder) : mine.length >= 2;
+const tabsPutAway = g => tabsAway.has(g.folder) ? tabsAway.get(g.folder) : true;
 // Redraws the list it just changed. Asking for the address bar instead left
 // the fold recorded and the screen untouched until the next state push
 // happened to arrive -- and the app only pushes when something has actually
@@ -5382,6 +5993,8 @@ const PICK_ICON = {
   search: '<circle cx="6" cy="6" r="4.2"/><path d="M9.2 9.2 12.5 12.5"/>',
   folder: '<path d="M1.5 3.5h4l1.3 1.5h5.7v6.5h-11z"/>',
   up: '<path d="M7 11.5V3M3.5 6.5 7 3l3.5 3.5"/>',
+  down: '<path d="M7 2.5V11M3.5 7.5 7 11l3.5-3.5"/>',
+  check: '<path d="M2.5 7.5 5.5 10.5 11.5 3.5"/>',
   home: '<path d="M2 6.5 7 2.5l5 4V12H2z"/><path d="M5.6 12V8.6h2.8V12"/>',
   desktop: '<rect x="1.5" y="2.5" width="11" height="7.5" rx="1"/><path d="M5 12.5h4M7 10v2.5"/>',
   project: '<rect x="2.5" y="2.5" width="9" height="9" rx="1.5"/>',
@@ -5397,6 +6010,8 @@ const PICK_ICON = {
   open: '<path d="M8.5 2h3.5v3.5"/><path d="M6.5 7.5 12 2"/><path d="M10.5 8v3.5a.5.5 0 0 1-.5.5H2.5a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5H6"/>',
   sparkles: '<path d="M6 2.5 7 5.5 10 6.5 7 7.5 6 10.5 5 7.5 2 6.5 5 5.5z"/><path d="M11 1.5v3M9.5 3h3"/><path d="M11 9.5v2M10 10.5h2"/>',
   server: '<rect x="2" y="2" width="10" height="4" rx="1"/><rect x="2" y="8" width="10" height="4" rx="1"/><path d="M4.5 4h.01M4.5 10h.01"/>',
+  copy: '<rect x="4.5" y="4.5" width="7.5" height="7.5" rx="1"/><path d="M9.5 4.5V2.5a.5.5 0 0 0-.5-.5H2.5a.5.5 0 0 0-.5.5V9a.5.5 0 0 0 .5.5h2"/>',
+  grip: '<circle cx="5" cy="3.5" r=".7" fill="currentColor"/><circle cx="9" cy="3.5" r=".7" fill="currentColor"/><circle cx="5" cy="7" r=".7" fill="currentColor"/><circle cx="9" cy="7" r=".7" fill="currentColor"/><circle cx="5" cy="10.5" r=".7" fill="currentColor"/><circle cx="9" cy="10.5" r=".7" fill="currentColor"/>',
   refresh: '<path d="M12 7a5 5 0 0 1-8.7 3.4"/><path d="M2 7a5 5 0 0 1 8.7-3.4"/><path d="M11 1.5v2.5H8.5"/><path d="M3 12.5V10h2.5"/>',
 };
 function pickIcon(name) {
@@ -7636,7 +8251,9 @@ window.__state = function (json) {
   // The board is live now — take down the startup splash.
   const _sp = document.getElementById("splash");
   if (_sp && !_sp.hidden) _sp.hidden = true;
+  const before = S;
   S = JSON.parse(json);
+  gitAfterWork(before);
   // A page older than the app it's talking to keeps rendering yesterday's
   // UI — a phone leaves the board open across app updates, and every "the
   // button is still the old one" report traces back to that. The state
@@ -7724,7 +8341,15 @@ window.__state = function (json) {
   if (epanel) {
     const wasEdit = !epanel.hidden;
     epanel.hidden = cover || !edit;
-    if (!epanel.hidden) {
+    const diffing = !epanel.hidden && gitDiffShown();
+    if (diffing) {
+      // A change, not a file to type in: whatever was being typed is kept as
+      // a draft, and the change is what the git panel draws
+      if (ED.path) { edStash(); ED.path = null; ED.text = ""; ED.mark = null; ED.dirty = false; }
+      ED.key = diffing.id || diffing.name;
+      gitDiffFollow(diffing);
+      drawEdit();
+    } else if (!epanel.hidden) {
       const t = editorTab();
       const key = t ? (t.id || t.name) : null;
       const want = (t && t.file) || null;
@@ -7780,11 +8405,6 @@ window.__state = function (json) {
     const t = gitTab();
     if (!wasGit || G.panel !== ((t && (t.id || t.name)) || null)) {
       gitRefresh(false);
-      // The bar follows the surface: on a git panel the line being written is
-      // a commit message. Picking another panel from the switcher still works
-      castPanel = "git";
-      userPanel = null;
-      if (castPanelEl) renderPanel();
     }
     else drawGit();
   }
@@ -8339,7 +8959,7 @@ function phoneWidth() {
 // list, so the next one is a row here rather than a shape change
 const SIDE_PANELS = [
   ["files", () => T["tui.side.files"] || "Files"],
-  ["git", () => T["tui.side.git"] || "Changes"],
+  ["git", () => T["tui.side.git"] || "Git"],
 ];
 let sidePanel = "files";
 function sideWidth() {
@@ -8616,6 +9236,12 @@ function editBuild(box) {
   const bar = el("div", {class: "ebar"});
   const where = el("div", {class: "ewhere"});
   const mark = el("span", {class: "emark"});
+  // Showing a change: which one, and the way to the file itself
+  const kind = el("span", {class: "ekind"});
+  const toFile = el("button", {class: "quiet", onclick: () => {
+    const t = editorTab();
+    if (t && t.file) send({kind: "editopen", panel: t.id || t.name || "", path: t.file, diff: ""});
+  }}, T["tui.edit.open_file"] || "");
   const tell = el("button", {class: "quiet", onclick: editTell}, T["tui.edit.tell"] || "");
   const save = el("button", {class: "go", onclick: editSave}, T["tui.edit.save"] || "");
   const shut = el("button", {class: "quiet", title: T["tui.edit.close"] || "",
@@ -8623,25 +9249,57 @@ function editBuild(box) {
       const t = editorTab();
       if (t) send({kind: "editopen", panel: t.id || t.name || "", path: ""});
     }}, "\u2715");
-  bar.append(where, el("span", {class: "emark"}), el("span", {class: "grow"}), tell, save, shut);
+  bar.append(where, el("span", {class: "emark"}), kind, el("span", {class: "grow"}), toFile, tell, save, shut);
   bar.replaceChild(mark, bar.children[1]);
   const host = el("div", {class: "ehost"});
+  const change = el("div", {class: "ediff"});
   const say = el("div", {class: "esay"});
-  box.append(bar, host, say);
-  edUi = {where, mark, save, tell, host, say};
+  box.append(bar, host, change, say);
+  edUi = {where, mark, kind, toFile, save, tell, host, change, say, changeSig: ""};
 }
 function drawEdit() {
   const box = document.getElementById("editpanel");
   if (!box || box.hidden) return;
   if (!edUi || !box.firstChild) editBuild(box);
   const u = edUi;
-  const name = ED.path ? ED.path.split("/").pop() : "";
+  const diffing = gitDiffShown();
+  const path = diffing ? diffing.file : ED.path;
+  const name = path ? path.split("/").pop() : "";
   u.where.textContent = "";
-  if (ED.path) {
-    const cut = ED.path.lastIndexOf("/");
-    if (cut >= 0) u.where.append(document.createTextNode(ED.path.slice(0, cut + 1)));
+  if (path) {
+    const cut = path.lastIndexOf("/");
+    if (cut >= 0) u.where.append(document.createTextNode(path.slice(0, cut + 1)));
     u.where.append(el("b", {}, name));
   }
+  u.kind.style.display = diffing ? "" : "none";
+  u.toFile.style.display = diffing ? "" : "none";
+  u.change.style.display = diffing ? "" : "none";
+  if (diffing) {
+    const how = diffing.file_diff.startsWith("commit:") ? "commit" : (G.staged ? "staged" : "work");
+    u.kind.textContent = how === "commit"
+      ? (T["tui.edit.diff.commit"] || "{hash}").replace("{hash}", diffing.file_diff.slice(7, 14))
+      : (T[how === "staged" ? "git.group.staged" : "git.group.unstaged"] || "");
+    u.mark.textContent = "";
+    u.save.style.display = "none";
+    u.tell.style.display = "none";
+    u.host.style.display = "none";
+    u.say.textContent = "";
+    u.say.className = "esay";
+    // Nothing to say under a change, and an empty line with a rule over it
+    // reads as a part that failed to load
+    u.say.style.display = "none";
+    // Drawn again only when the change itself is different: several states a
+    // second would otherwise take the button out from under the pointer
+    const sig = JSON.stringify([how, G.sel, G.diff, !!G.waiting, (G.hunks || []).map(h => h.patch)]);
+    if (u.changeSig !== sig) {
+      u.changeSig = sig;
+      u.change.textContent = "";
+      gitChangeInto(u.change, how, false);
+    }
+    return;
+  }
+  u.changeSig = "";
+  u.say.style.display = "";
   // Still said while the file has changed underneath: the draft is still not
   // saved, and that is half of what the choice below is about
   u.mark.textContent = ED.dirty ? (T["tui.edit.dirty"] || "") : "";
@@ -9348,9 +10006,37 @@ kbd.addEventListener("keydown", e => {
   }
   if (e.ctrlKey && e.key.length === 1) {
     e.preventDefault();
-    send({kind:"key", ctrl:e.key.toLowerCase()});
+    // Shift and Alt go along: Ctrl+Shift+M is a key a person can bind, and
+    // without them it would arrive as Ctrl+M
+    send({kind:"key", ctrl:e.key.toLowerCase(), shift:e.shiftKey, alt:e.altKey});
   }
 });
+
+// A key set to work with no prefix (Settings > Keys), pressed while the caret
+// is in one of the page's own boxes -- the input bar, the ideas, a dialog --
+// where the window's keyboard never hears it. Handed on as the keyboard would
+// have sent it, so the window decides what it means in the one place it always
+// does. Only the combinations in force are taken; every other key stays the box's
+function directKeyOf(e) {
+  if (!S || !S.direct_keys || !S.direct_keys.length || typingIME(e)) return null;
+  // The letter from where it sits rather than what it types: held with Ctrl
+  // or Shift, what it types is not the letter
+  const letter = /^Key([A-Z])$/.exec(e.code || "");
+  const digit = /^Digit([0-9])$/.exec(e.code || "");
+  const ch = letter ? letter[1].toLowerCase() : digit ? digit[1] : (e.key.length === 1 ? e.key.toLowerCase() : "");
+  const named = NAMED[e.key] || "";
+  return S.direct_keys.find(d => d.ctrl === e.ctrlKey && d.shift === e.shiftKey && d.alt === e.altKey
+    && (d.ctrl ? d.key === ch : d.key === named)) || null;
+}
+document.addEventListener("keydown", e => {
+  if (e.target === kbd) return;
+  const d = directKeyOf(e);
+  if (!d) return;
+  e.preventDefault();
+  e.stopPropagation();
+  send(d.ctrl ? {kind:"key", ctrl:d.key, shift:d.shift, alt:d.alt}
+              : {kind:"key", named:d.key, shift:d.shift, alt:d.alt});
+}, true);
 
 // Same convention as PuTTY: selecting text copies it immediately, right-click pastes.
 // Except while typing in the URL bar — stealing focus there would block every keystroke
@@ -9381,6 +10067,8 @@ const focus = () => {
   // The quick commands hold the keyboard while they are up: arrows walk the
   // buttons, Enter presses one, Esc puts them away
   if (quickOpen) return;
+  // So do the ideas: the caret belongs in a card
+  if (ideasOpen) return;
   // The first-start setup holds the keyboard while it is up: Enter is its
   // Continue, and a letter must not reach the board's menu behind it
   if (setupUp()) return;
@@ -10019,7 +10707,7 @@ document.getElementById("rmore").addEventListener("click", () => rdShow());
 // below opened the bar on mouseup and the pen's own click toggled it shut again
 // The Issue tab is a page of its own controls: a press there is for them, and
 // a list that has just dropped open closed again the moment the button came up
-const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #ask, .pask, #pageui, #castdock, #composerfab, #reader, #issuespanel");
+const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #ask, .pask, #pageui, #castdock, #composerfab, #reader, #issuespanel, #ideas");
 document.addEventListener("mouseup", e => {
   if (inBar(e)) return;
   const s = window.getSelection();
@@ -10140,6 +10828,7 @@ if (REMOTE) {
     if (d.git) window.__git(d.git);
     if (d.files) window.__files(d.files);
     if (d.issues) window.__issues(d.issues);
+    if (d.ideas) window.__ideas(d.ideas);
     if (d.sftp) window.__sftp(d.sftp);
     if ("luadone" in d) window.__luaDone(d.luadone);
     if ("suggested" in d) window.__suggested(d.suggested);
@@ -10659,18 +11348,23 @@ function renderPalette() {
 // it, are looked up on the PC, so neither ever passes through this page.
 const quickWalk = {path: [], page: 0};
 let quickShape = "", quickFocusId = "";
+// Whether the page has something up over everything. Pages placed in the
+// window are windows of their own, over anything this page draws: they step
+// aside while it does. A phone has none
+function sayCovered() {
+  if (!REMOTE) send({kind:"covered", on: quickOpen || ideasOpen});
+}
 window.__openQuick = function () {
   const v = document.getElementById("quick");
   if (!v) return;
   if (quickOpen) { closeQuick(); return; }
+  if (ideasOpen) closeIdeas();
   quickOpen = true;
   quickWalk.path = []; quickWalk.page = 0; quickShape = ""; quickFocusId = "";
   v.classList.remove("still");
   v.classList.toggle("noframe", !!REMOTE);
   v.hidden = false;
-  // Pages placed in the window are windows of their own, over anything this
-  // page draws: they step aside while this is up. A phone has none
-  if (!REMOTE) send({kind:"quickshown", on:true});
+  sayCovered();
   drawQuickLauncher(true);
   drawTabs();
 };
@@ -10680,10 +11374,453 @@ function closeQuick() {
   quickOpen = false;
   v.hidden = true;
   v.textContent = "";
-  if (!REMOTE) send({kind:"quickshown", on:false});
+  sayCovered();
   drawTabs();
   focus();
 }
+
+// ── Ideas ─────────────────────────────────────────────────
+// Notes jotted down from the side column's bulb, a card each, kept by the app
+// in config/ideas.json (ideas.rs). The page keeps no truth of its own: every
+// change is sent, and every answer carries the whole list, which is drawn over
+// what is shown. Two things win over an answer until the file has them: the
+// words in the card being typed in, and edits sent but not yet answered.
+const IDEAS = {
+  items: [], projects: [],
+  // The project whose cards are shown, by key ("" is no project). null until
+  // the projects are known, and then the project of the folder in front
+  project: null, known: false,
+  showDone: false, said: "",
+  // The card the writing line at the foot is typing: {ref, id, text, sent}.
+  // Its id is null until the app has made it
+  own: null,
+  // Words for a card the writing line let go of before the app had made it
+  later: {},
+  // Edits not yet in the file, and the timers that will send them
+  pending: {}, timers: {},
+  dragging: false,
+};
+const ideasAsk = (act, args) => send({kind:"ideas", act, args: args || {}});
+// The project of the folder in front, when it is one of the projects
+function ideasFrontProject() {
+  const g = ((S && S.groups) || []).find(inFront);
+  if (!g) return "";
+  const p = IDEAS.projects.find(p => (p.folders || []).some(f => sameFolder(f, g.folder)));
+  return p ? p.key : "";
+}
+window.__openIdeas = function () {
+  const v = document.getElementById("ideas");
+  if (!v) return;
+  if (ideasOpen) { closeIdeas(); return; }
+  if (quickOpen) closeQuick();
+  ideasOpen = true;
+  IDEAS.project = IDEAS.known ? ideasFrontProject() : null;
+  IDEAS.said = "";
+  v.classList.toggle("noframe", !!REMOTE);
+  v.hidden = false;
+  sayCovered();
+  drawIdeas(true);
+  ideasAsk("list");
+  drawTabs();
+};
+function closeIdeas() {
+  const v = document.getElementById("ideas");
+  if (!ideasOpen || !v) return;
+  ideasLetGo();
+  // What is still waiting to be sent goes now, and a card left empty goes
+  for (const c of v.querySelectorAll(".ilist .icard[data-id]")) {
+    const id = Number(c.dataset.id);
+    if (!c.querySelector(".itext").value.trim()) ideasDrop(id);
+    else if (IDEAS.timers[id]) ideasEdit(id, IDEAS.pending[id], true);
+  }
+  ideasOpen = false;
+  closeFolderMenu();
+  v.hidden = true;
+  v.textContent = "";
+  sayCovered();
+  drawTabs();
+  focus();
+}
+// Words typed into a card: shown at once, sent once the typing pauses
+function ideasEdit(id, text, now) {
+  const it = IDEAS.items.find(i => i.id === id);
+  if (it) it.text = text;
+  IDEAS.pending[id] = text;
+  clearTimeout(IDEAS.timers[id]);
+  const go = () => { delete IDEAS.timers[id]; ideasAsk("edit", {id, text: IDEAS.pending[id]}); };
+  if (now) go(); else IDEAS.timers[id] = setTimeout(go, 400);
+}
+function ideasDrop(id) {
+  clearTimeout(IDEAS.timers[id]);
+  delete IDEAS.timers[id];
+  delete IDEAS.pending[id];
+  IDEAS.items = IDEAS.items.filter(i => i.id !== id);
+  ideasAsk("drop", {id});
+}
+// The writing line lets go of the card it was typing: the card joins the list
+// above it, and the line is empty for the next one
+function ideasLetGo() {
+  const own = IDEAS.own;
+  if (!own) return;
+  IDEAS.own = null;
+  const line = document.querySelector("#ideas .inew .itext");
+  if (line) { line.value = ""; ideasGrow(line); }
+  if (own.id != null) {
+    if (!own.text.trim()) ideasDrop(own.id);
+    else ideasEdit(own.id, own.text, true);
+  } else {
+    IDEAS.later[own.ref] = own.text;
+  }
+  if (ideasOpen) drawIdeas(false);
+}
+window.__ideas = function (d) {
+  if (!d) return;
+  IDEAS.said = d.ok ? "" : (d.error || "");
+  if (d.projects) IDEAS.projects = d.projects;
+  if (d.items) {
+    IDEAS.items = d.items.map(i => {
+      const want = IDEAS.pending[i.id];
+      if (want === undefined) return i;
+      if (want === i.text && !IDEAS.timers[i.id]) delete IDEAS.pending[i.id];
+      else i.text = want;
+      return i;
+    });
+  }
+  // The card this page asked to be made. An answer to another screen's
+  // request carries a ref this page never gave, and is only a new list
+  if (d.made != null && d.ref) {
+    const own = IDEAS.own;
+    if (own && own.ref === d.ref) {
+      own.id = d.made;
+      if (own.text !== own.sent) ideasEdit(own.id, own.text, false);
+    } else if (d.ref in IDEAS.later) {
+      const text = IDEAS.later[d.ref];
+      delete IDEAS.later[d.ref];
+      if (!text.trim()) ideasDrop(d.made);
+      else if (text !== (IDEAS.items.find(i => i.id === d.made) || {}).text) ideasEdit(d.made, text, true);
+    }
+  }
+  IDEAS.known = true;
+  if (IDEAS.project === null) IDEAS.project = ideasFrontProject();
+  // A project that has gone shows no project, where its cards went
+  if (IDEAS.project && !IDEAS.projects.some(p => p.key === IDEAS.project)) IDEAS.project = "";
+  if (ideasOpen) drawIdeas(false);
+};
+function ideasGrow(t) {
+  t.style.height = "auto";
+  t.style.height = t.scrollHeight + "px";
+}
+const ideasShown = () => IDEAS.items.filter(i => (i.project || "") === (IDEAS.project || "")
+  && (IDEAS.showDone || !i.done) && !(IDEAS.own && IDEAS.own.id === i.id));
+// Put the caret in a card, or in the writing line when there is none
+function ideasFocus(card, atEnd) {
+  const line = document.querySelector("#ideas .inew .itext");
+  const t = (card && card.querySelector(".itext")) || line;
+  if (!t) return;
+  t.focus();
+  const at = atEnd ? t.value.length : 0;
+  t.setSelectionRange(at, at);
+}
+function ideasNeighbour(card, by) {
+  const cards = [...document.querySelectorAll("#ideas .icard")];
+  return cards[cards.indexOf(card) + by] || null;
+}
+function ideasKey(e, card) {
+  if (typingIME(e)) return;
+  const t = e.target;
+  const writing = card.classList.contains("inew");
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopPropagation();
+    if (document.querySelector(".fmenu")) closeFolderMenu(); else closeIdeas();
+    return;
+  }
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    // The writing line hands its card to the list and stays where it is, for
+    // the next one. A card sends what it has and gives the caret to the next
+    if (writing) { ideasLetGo(); return; }
+    const id = Number(card.dataset.id);
+    if (IDEAS.timers[id]) ideasEdit(id, t.value, true);
+    ideasFocus(ideasNeighbour(card, 1), true);
+    return;
+  }
+  // A card emptied and pressed once more goes, and the caret goes up a card
+  if (e.key === "Backspace" && !writing && t.value === "") {
+    e.preventDefault();
+    const back = ideasNeighbour(card, -1) || ideasNeighbour(card, 1);
+    ideasDrop(Number(card.dataset.id));
+    card.remove();
+    drawIdeas(false);
+    ideasFocus(back, true);
+    return;
+  }
+  if (e.key === "ArrowUp" && t.selectionStart === 0 && t.selectionEnd === 0) {
+    const up = ideasNeighbour(card, -1);
+    if (up) { e.preventDefault(); ideasFocus(up, true); }
+  } else if (e.key === "ArrowDown" && t.selectionStart === t.value.length) {
+    const down = ideasNeighbour(card, 1);
+    if (down) { e.preventDefault(); ideasFocus(down, false); }
+  }
+}
+function ideaCard(it) {
+  const id = it.id;
+  const text = el("textarea", {class:"itext", rows:"1", spellcheck:"false"});
+  text.value = it.text;
+  const check = el("input", {type:"checkbox", class:"icheck"});
+  const grip = el("span", {class:"igrip", title:T["tui.ideas.drag"] || ""}, pickIcon("grip"));
+  const card = el("div", {class:"icard", "data-id":String(id)},
+    grip, check, text, el("span", {class:"ifrom"}),
+    el("button", {type:"button", class:"itool", title:T["tui.ideas.copy"] || "",
+      onclick:() => ideasCopy(text.value)}, pickIcon("copy")),
+    el("button", {type:"button", class:"itool", title:T["tui.ideas.issue"] || "",
+      onclick:() => ideaToIssue(card)}, pickIcon("issue")));
+  text.oninput = () => { ideasGrow(text); ideasEdit(id, text.value, false); };
+  text.onkeydown = e => ideasKey(e, card);
+  text.onblur = () => { if (IDEAS.timers[id]) ideasEdit(id, text.value, true); };
+  check.onchange = () => ideasSetDone(card, check.checked);
+  grip.addEventListener("pointerdown", e => ideasCarry(e, card));
+  // Its menu: at the pointer on a right-click, anywhere on the card. A phone
+  // has no right-click, and holding the grip opens the same menu (ideasCarry)
+  card.addEventListener("contextmenu", e => { e.preventDefault(); ideaMenu(card, e); });
+  return card;
+}
+// Which issue a card became: "#12", opening it. In the window the app hands
+// the address to this PC's browser; a phone follows a plain link
+function ideaIssueMark(card, it) {
+  const slot = card.querySelector(".ifrom");
+  const n = it.issue && it.issue.number;
+  const said = n ? String(n) + "\u0000" + (it.issue.url || "") : "";
+  if (slot.dataset.said === said) return;
+  slot.dataset.said = said;
+  slot.textContent = "";
+  if (!n) return;
+  const title = (T["tui.ideas.issue.open"] || "").replace("{n}", n);
+  const url = it.issue.url || "";
+  slot.append(REMOTE && url
+    ? el("a", {class:"iissue", href:url, target:"_blank", rel:"noopener", title}, "#" + n)
+    : el("button", {type:"button", class:"iissue", title,
+        onclick:() => { if (url) send({kind:"issues", act:"link", args:{url}}); }}, "#" + n));
+}
+function ideasCopy(text) {
+  copyText(text).then(() => toast(T["tui.ideas.copied"] || ""));
+}
+// Ticked off, it is done and out of the list unless done ones are shown; it is
+// still in the file. The caret goes back to the writing line rather than into
+// a stranger
+function ideasSetDone(card, done) {
+  const id = Number(card.dataset.id);
+  const i = IDEAS.items.find(x => x.id === id);
+  if (i) i.done = done;
+  const text = card.querySelector(".itext");
+  if (IDEAS.timers[id]) ideasEdit(id, text.value, true);
+  ideasAsk("done", {id, done});
+  drawIdeas(false);
+  if (!IDEAS.showDone && done) ideasFocus(null, true);
+}
+// Deleted is gone from the file, where done is only put out of sight: "Show
+// done ideas" brings a done one back, and nothing brings a deleted one back.
+// Not asked first: the menu is already the second press, and the red line
+// says what it does
+function ideasDelete(card) {
+  const had = card.contains(document.activeElement);
+  ideasDrop(Number(card.dataset.id));
+  card.remove();
+  drawIdeas(false);
+  if (had) ideasFocus(null, true);
+}
+// The Issue tab's new issue, with the idea as its description and the idea's
+// project chosen: the ✨ there turns the description into a title, a body and
+// labels. The project is matched by where its checkout is once the Issue tab
+// knows its projects (drawIssueCreate); an idea with no project, or one of
+// another desk, opens on the form's own choice, which is on screen to change
+function ideaToIssue(card) {
+  const id = Number(card.dataset.id);
+  const it = IDEAS.items.find(i => i.id === id);
+  const text = card.querySelector(".itext").value;
+  if (IDEAS.timers[id]) ideasEdit(id, text, true);
+  closeIdeas();
+  I.kind = "issue";
+  I.view = "create";
+  I.said = ""; I.bad = false;
+  I.create = {project:"", title:"", body:text, labels:[], assignee:"", kept:"", at:(it && it.project) || "", idea:id};
+  issuesSig = "";
+  send({kind:"openissues"});
+  drawIssues();
+}
+function ideaMenu(card, point) {
+  const id = Number(card.dataset.id);
+  const it = IDEAS.items.find(i => i.id === id);
+  if (!it) return;
+  const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
+  openList(card, [
+    item(T["tui.ideas.copy"] || "", () => ideasCopy(card.querySelector(".itext").value)),
+    item(T["tui.ideas.issue"] || "", () => ideaToIssue(card)),
+    item(it.done ? (T["tui.ideas.undone"] || "") : (T["tui.ideas.markdone"] || ""),
+      () => ideasSetDone(card, !it.done)),
+    // Last and in red, the one entry that cannot be taken back
+    el("div", {class:"warn", onclick:() => { closeFolderMenu(); ideasDelete(card); }}, T["tui.ideas.delete"] || ""),
+  ], false, point);
+}
+// Carry a card by its grip to where it goes. The cards move out of its way as
+// it passes their middle, and the order is sent once it is put down
+function ideasCarry(e, card) {
+  if (e.button !== 0 || IDEAS.dragging) return;
+  e.preventDefault();
+  const list = card.parentElement, body = card.closest(".ibody");
+  const before = [...list.querySelectorAll(".icard[data-id]")].map(c => Number(c.dataset.id));
+  // Listened for on the window, not captured by the grip: moving the card
+  // takes it out of the page for an instant, and a capture does not survive that
+  IDEAS.dragging = true;
+  card.classList.add("dragging");
+  // A finger held still on the grip is the phone's right-click: the card's
+  // menu, and nothing carried. Moving before then is carrying
+  const touch = e.pointerType === "touch";
+  const held = touch ? setTimeout(() => {
+    stop();
+    ideaMenu(card, {clientX: e.clientX, clientY: e.clientY});
+  }, 500) : null;
+  const move = ev => {
+    if (ev.pointerId !== e.pointerId) return;
+    if (held && Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) > 6) clearTimeout(held);
+    const r = body.getBoundingClientRect();
+    if (ev.clientY < r.top + 24) body.scrollTop -= 12;
+    else if (ev.clientY > r.bottom - 24) body.scrollTop += 12;
+    const others = [...list.querySelectorAll(".icard[data-id]")].filter(c => c !== card);
+    const next = others.find(c => { const b = c.getBoundingClientRect(); return ev.clientY < b.top + b.height / 2; });
+    if (next) { if (card.nextElementSibling !== next) list.insertBefore(card, next); }
+    else if (others.length && others[others.length - 1].nextElementSibling !== card) {
+      others[others.length - 1].after(card);
+    }
+  };
+  const stop = () => {
+    clearTimeout(held);
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", end);
+    card.classList.remove("dragging");
+    IDEAS.dragging = false;
+  };
+  const end = ev => {
+    if (ev.pointerId !== e.pointerId) return;
+    stop();
+    const ids = [...list.querySelectorAll(".icard[data-id]")].map(c => Number(c.dataset.id));
+    if (ids.join() !== before.join()) {
+      // The same places, taken in the new order, so the cards of other
+      // projects stay where they were (as ideas.rs does)
+      const slots = IDEAS.items.map((i, n) => ids.includes(i.id) ? n : -1).filter(n => n >= 0);
+      const moved = ids.map(id => IDEAS.items.find(i => i.id === id)).filter(Boolean);
+      if (moved.length === slots.length) slots.forEach((n, k) => { IDEAS.items[n] = moved[k]; });
+      ideasAsk("order", {ids});
+    }
+    drawIdeas(false);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
+}
+// Built once when opened; after that only what changed is touched, so a caret
+// in a card, a list dropped open and a card being carried all survive an answer
+function drawIdeas(fresh) {
+  const v = document.getElementById("ideas");
+  if (!v || v.hidden) return;
+  let box = v.querySelector(".ibox");
+  if (fresh || !box) {
+    v.textContent = "";
+    const pick = el("select", {class:"iproj", title:T["tui.ideas.project"] || ""});
+    pick.onchange = () => {
+      ideasLetGo();
+      IDEAS.project = pick.value;
+      drawIdeas(false);
+      ideasFocus(null, true);
+    };
+    const done = el("button", {type:"button", class:"idone", "aria-pressed":"false", onclick:() => {
+      IDEAS.showDone = !IDEAS.showDone;
+      drawIdeas(false);
+    }}, pickIcon("check"), el("span", {}, T["tui.ideas.showdone"] || ""));
+    const line = el("textarea", {class:"itext", rows:"1", spellcheck:"false", placeholder:T["tui.ideas.new.ph"] || ""});
+    const writing = el("div", {class:"icard inew"}, el("span", {class:"iplus"}, pickIcon("plus")), line);
+    line.oninput = () => {
+      ideasGrow(line);
+      const text = line.value;
+      const own = IDEAS.own;
+      if (!own) {
+        if (!text.trim()) return;
+        const ref = "i" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        IDEAS.own = {ref, id: null, text, sent: text};
+        ideasAsk("add", {project: IDEAS.project || "", text, ref});
+        return;
+      }
+      own.text = text;
+      if (own.id != null) ideasEdit(own.id, text, false);
+    };
+    line.onkeydown = e => ideasKey(e, writing);
+    box = el("div", {class:"ibox", role:"dialog", "aria-label":T["tui.ideas.title"] || ""},
+      el("div", {class:"ihead"},
+        el("span", {class:"ititle"}, T["tui.ideas.title"] || ""),
+        pick, el("span", {class:"grow"}), done,
+        el("button", {type:"button", class:"iclose", title:T["tui.ideas.close"] || "", onclick:closeIdeas}, "✕")),
+      el("div", {class:"isaid", hidden:""}),
+      el("div", {class:"ibody"},
+        el("div", {class:"ilist"}),
+        el("div", {class:"iempty", hidden:""}, T["tui.ideas.empty"] || ""),
+        writing),
+      el("div", {class:"ifoot"}, T["tui.ideas.hint"] || ""));
+    v.append(box);
+    line.focus();
+  }
+  const pick = box.querySelector(".iproj");
+  const sig = JSON.stringify(IDEAS.projects.map(p => [p.key, p.name]));
+  if (pick.dataset.sig !== sig) {
+    pick.dataset.sig = sig;
+    pick.textContent = "";
+    pick.append(el("option", {value:""}, T["tui.ideas.none"] || ""));
+    for (const p of IDEAS.projects) pick.append(el("option", {value:p.key}, p.name));
+  }
+  if (pick.value !== (IDEAS.project || "")) pick.value = IDEAS.project || "";
+  const done = box.querySelector(".idone");
+  done.classList.toggle("on", IDEAS.showDone);
+  done.setAttribute("aria-pressed", IDEAS.showDone ? "true" : "false");
+  const said = box.querySelector(".isaid");
+  if (said.textContent !== IDEAS.said) said.textContent = IDEAS.said;
+  said.hidden = !IDEAS.said;
+  const list = box.querySelector(".ilist");
+  const shown = ideasShown();
+  box.querySelector(".iempty").hidden = shown.length > 0 || !IDEAS.known;
+  // Nothing moves under a card that is being carried
+  if (IDEAS.dragging) return;
+  const have = new Map([...list.querySelectorAll(".icard[data-id]")].map(c => [Number(c.dataset.id), c]));
+  const grow = [];
+  let prev = null;
+  for (const it of shown) {
+    let card = have.get(it.id);
+    have.delete(it.id);
+    if (!card) { card = ideaCard(it); grow.push(card); }
+    const t = card.querySelector(".itext");
+    if (document.activeElement !== t && t.value !== it.text) { t.value = it.text; grow.push(card); }
+    card.querySelector(".icheck").checked = !!it.done;
+    card.classList.toggle("done", !!it.done);
+    ideaIssueMark(card, it);
+    const want = prev ? prev.nextElementSibling : list.firstElementChild;
+    if (card !== want) list.insertBefore(card, want);
+    prev = card;
+  }
+  for (const card of have.values()) card.remove();
+  for (const card of grow) ideasGrow(card.querySelector(".itext"));
+  if (fresh) { const b = box.querySelector(".ibody"); b.scrollTop = b.scrollHeight; }
+}
+(function () {
+  const v = document.getElementById("ideas");
+  if (!v) return;
+  // A press on the dark, not on the box, puts them away. Where the press went
+  // down is what counts: a selection dragged out of a card is not a press outside
+  v.addEventListener("pointerdown", e => { if (e.target === v) closeIdeas(); });
+  v.addEventListener("keydown", e => {
+    if (e.key === "Escape" && !typingIME(e)) {
+      e.preventDefault(); e.stopPropagation();
+      if (document.querySelector(".fmenu")) closeFolderMenu(); else closeIdeas();
+    }
+  });
+})();
 // The grid being shown: the top, or the folder walked into. A folder that has
 // gone since (the settings were saved meanwhile) takes the walk back out
 function quickHere(q) {
@@ -10768,10 +11905,14 @@ function drawQuickLauncher(fresh) {
 
   // Nothing made yet: say what this is, and where to make one
   if (!inFolder && !(q.items || []).length) {
+    const go = el("button", {onclick:() => { closeQuick(); openSettings("quick", true); }}, T["tui.quick.empty.go"] || "");
     col.append(el("div", {class:"qempty"},
       el("div", {class:"tt"}, T["tui.quick.empty.title"] || ""),
       el("div", {class:"tb"}, T["tui.quick.empty.body"] || ""),
-      el("button", {onclick:() => { closeQuick(); openSettings("quick", true); }}, T["tui.quick.empty.go"] || "")));
+      go));
+    // The keyboard comes here too, as it does to the first button of a grid:
+    // left in a text box underneath, Esc would never reach the launcher
+    if (fresh && !REMOTE) go.focus({preventScroll:true});
     return;
   }
 
@@ -11224,23 +12365,14 @@ function targetNote() {
 // Panels available on this surface. "target" (operate a tab) shows a placeholder
 // until that feature lands, but it's listed now so the switcher is present on both
 // the phone (keys/actions/target) and the desktop (actions/target).
-// The changes standing in the column beside a terminal. The commit bar belongs
-// in the switcher then, but not in front of it: the line being typed is still
-// for the tab being looked at, and a panel that moves the bar out from under
-// somebody mid-sentence is the bar taken away
-function sideGitUp() {
-  return sideWidth() > 0 && sidePanel === "git" && !gitSurfaceTab() && !!repoTab();
-}
 function panelOptions() {
-  const opts = panelOptionsHere();
-  return sideGitUp() && opts.indexOf("git") < 0 ? opts.concat("git") : opts;
+  return panelOptionsHere();
 }
 function panelOptionsHere() {
   const base = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions"] : ["actions"];
-  // On a git panel the line being written is a commit message, so that panel
-  // comes first and Send means commit. The others are still in the switcher --
-  // the bar is not taken away, it is pointed somewhere else
-  if (gitSurfaceTab()) return ["git"].concat(base);
+  // A git panel writes its commit message in a box of its own, so the bar
+  // over it is the bar over any other panel
+  if (gitSurfaceTab()) return base;
   // A browser tab is operated, not an operator, so it has no 🎯 target panel —
   // instead it gains 📼 (record page actions as Lua / run composer Lua on the
   // page). Otherwise it's the same sub-input bar as an AI tab.
@@ -11327,8 +12459,7 @@ function syncDockReserve() {
 }
 // Full name (for the switcher's hover title / accessibility).
 function panelName(p) {
-  return p === "git" ? (T["tui.cast.panel.git"] || "Commit")
-    : p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
+  return p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
     : p === "actions" ? (T["tui.cast.panel.actions"] || "Actions")
     : p === "lua" ? (T["tui.cast.panel.lua"] || "Lua record / run")
     : p === "suggest" ? (T["tui.cast.panel.suggest"] || "AI command suggest")
@@ -11341,12 +12472,10 @@ function gearTo(section, title) {
 }
 // A compact emoji for the switcher itself — text labels ate horizontal width.
 function panelLabel(p) {
-  return p === "git" ? "🌿"
-    : p === "keys" ? "⌨️" : p === "actions" ? "⚡" : p === "lua" ? "📼"
+  return p === "keys" ? "⌨️" : p === "actions" ? "⚡" : p === "lua" ? "📼"
     : p === "suggest" ? "🤖" : "🎯";
 }
 function panelContent(p) {
-  if (p === "git") { return buildGitPanel(); }
   if (p === "keys") { castKeysEl = buildCastKeys(); return castKeysEl; }
   if (p === "actions") { return buildActions() || el("div", {class:"castpanelhint"}, T["settings.actions.empty"] || ""); }
   if (p === "target") { return buildTargetPanel(); }
@@ -11491,10 +12620,20 @@ window.__recorded = function (line) {
 // Every button here is one message asking the app to run one automation
 // command and hand back what it answered. The panel keeps no truth of its own:
 // after anything that changes something, it asks for the list again.
-let G = { panel:null, branch:null, branches:[], rows:null, sel:null, staged:false,
-          diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null,
-          view:"changes", log:[], commit:null, about:null, remotes:false };
+// Everything the panel holds about one folder. One shape, made in one place:
+// a second copy of this list is a list that forgets a field
+function gitFresh(name) {
+  return { panel:name, branch:null, branches:[], rows:null, sel:null, staged:false,
+           diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null,
+           view:"changes", log:[], commit:null, about:null, remotes:false, then:"", need:false,
+           // Bringing the base's latest in: choosing a base, and a merge that stopped
+           pickBase:false, bases:null, baseSel:"", conflict:null };
+}
+let G = gitFresh(null);
 let gitUi = null;
+// The commit message being written, by folder. Kept apart from G so moving to
+// another folder and back does not throw away half a sentence
+const gitMsgs = {};
 
 // A git panel launched as a tab of its own: the folder it reports on is its
 // own, written down beside it in the settings
@@ -11516,6 +12655,19 @@ function repoTab() {
   const g = t ? ((S && S.groups) || [])[t.group] : null;
   return g && g.color ? t : null;
 }
+// Work a tab finishes in the folder the git column reports on -- an AI that
+// settled a merge, a build that wrote files -- is read again: nothing else
+// tells the column that its folder changed under it
+function gitAfterWork(before) {
+  const panel = document.getElementById("gitpanel");
+  if (!before || !S || !panel || panel.hidden || !G.panel || G.busy) return;
+  const t = gitTab();
+  if (!t) return;
+  const was = new Map((before.tabs || []).map(x => [x.index, x.state]));
+  if ((S.tabs || []).some(x => x.group === t.group && was.get(x.index) === "BUSY" && x.state !== "BUSY")) {
+    gitRefresh(true);
+  }
+}
 // Whichever of the two is standing. Every button on the panel goes through
 // here, so the panel itself never learns where it is
 function gitTab() {
@@ -11532,17 +12684,12 @@ function gitPicked(where) {
 // Everything the panel learns comes back through here
 window.__git = function (d) {
   if (!d || !d.act) return;
-  // The panel and the sub-input bar are drawn by different hands. Whatever
-  // changes "is something running", both of them have to hear about it
-  const bar = () => {
-    gitLockBar(G.busy === "message");
-    if (castPanel === "git" && castPanelEl) renderPanel();
-  };
-  if (d.busy) { G.busy = d.act; G.said = ""; drawGit(); bar(); return; }
-  const was = G.busy;
+  if (d.busy) { G.busy = d.act; G.said = ""; G.need = false; drawGit(); return; }
   G.busy = "";
-  if (was) bar();
+  G.need = false;
   if (!d.ok) {
+    // What was to follow a commit does not follow a commit that did not happen
+    if (d.act === "commit") G.then = "";
     // A commit refused because the branch is shared is not a failure, it is a
     // question with an answer -- asked here in the panel's own words, with the
     // way out under it. Anything else is reported as it came
@@ -11551,12 +12698,41 @@ window.__git = function (d) {
       ? (T["git.protected"] || "").replace("{branch}", d.branch || (G.branch && G.branch.name) || "")
       : (d.error || "");
     G.bad = true;
+    // Uncommitted work in the way of a pull: a person is needed, not a failure,
+    // and the files it names are put in front and picked, so the list shows
+    // what to commit
+    if (d.why === "in_the_way") {
+      G.bad = false;
+      G.need = true;
+      G.view = "changes";
+      gitPane = "files";
+      G.pick = {};
+      for (const p of d.paths || []) G.pick[p] = "work";
+    }
+    // Bringing the latest in: a base to choose, work to commit first, or a
+    // merge that stopped -- each a person being needed, not a failure
+    if (d.act === "catch_up" && ["no_base", "dirty", "conflict"].includes(d.why)) {
+      G.bad = false;
+      G.need = true;
+      // The choice was written down before anything ran, so it is not shown
+      // again once the answer is about something else
+      G.pickBase = d.why === "no_base";
+      if (d.why === "no_base") gitAsk("remote_branches");
+      if (d.why === "conflict") {
+        G.conflict = {base: d.base || "", files: d.files || []};
+        G.said = "";
+        gitRefresh(true);
+      }
+    }
     drawGit();
     return;
   }
   G.bad = false;
   if (d.act === "status") {
     G.rows = d.data || [];
+    // A stopped merge is handed over until nothing is left in conflict
+    if (G.conflict && !G.rows.some(r => r.conflict)) G.conflict = null;
+    gitConflictFromState();
     // A file that has just moved takes the reader with it. Staging the whole of
     // the file being read used to leave the pane saying "nothing differs here",
     // which is true of the side it was still looking at and useless: the change
@@ -11568,25 +12744,39 @@ window.__git = function (d) {
               && (G.staged ? moved.unstaged : moved.staged)) {
       G.staged = !G.staged;
       if (G.pick[G.sel]) { G.pick[G.sel] = G.staged ? "staged" : "work"; }
-      gitAsk("diff", {paths: [G.sel], staged: G.staged});
-      gitAsk("hunks", {paths: [G.sel], staged: G.staged});
+      gitAskChange();
+      // An editor showing this change follows it, so what it says it is
+      // showing stays true -- for a page opened later as much as for this one
+      const ed = editorTab();
+      if (ed && ed.file === G.sel && ed.file_diff && !ed.file_diff.startsWith("commit:")) {
+        gitOpenDiff(G.sel, G.staged ? "staged" : "work");
+      }
     }
   }
-  else if (d.act === "branch") { G.branch = d.data || null; }
+  else if (d.act === "branch") { G.branch = d.data || null; gitConflictFromState(); }
   else if (d.act === "branches") { G.branches = d.data || []; }
   else if (d.act === "diff") { G.diff = d.data || ""; }
-  else if (d.act === "hunks") { G.hunks = d.data || []; }
+  else if (d.act === "hunks") { G.hunks = d.data || []; G.waiting = false; }
   else if (d.act === "graph") { G.log = d.data || []; }
+  else if (d.act === "remote_branches") {
+    G.bases = d.data || [];
+    if (!G.bases.some(b => b.name === G.baseSel)) {
+      // The one the branch follows first, else the server's main line
+      const up = (G.branch && G.branch.upstream) || "";
+      const pick = G.bases.find(b => b.name === up) || G.bases.find(b => /\/(main|master|develop)$/.test(b.name)) || G.bases[0];
+      G.baseSel = pick ? pick.name : "";
+    }
+  }
+  else if (d.act === "resolve_tab") {
+    const got = d.data || {};
+    G.said = (T[got.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "")
+      .replace("{title}", got.title || "");
+  }
   else if (d.act === "detail") { G.about = d.data || null; G.sel = null; G.hunks = []; }
   else if (d.act === "hunk") {
     // A piece moved. What is staged changed, and so did the piece list
     gitAsk("status");
-    if (G.view === "history") {
-      if (G.sel && G.commit) gitAsk("hunks", {paths: [G.sel], commit: G.commit});
-    } else if (G.sel) {
-      gitAsk("hunks", {paths: [G.sel], staged: G.staged});
-      gitAsk("diff", {paths: [G.sel], staged: G.staged});
-    }
+    gitAskChange();
   }
   else if (d.act === "message") { gitSetMessage(d.data || ""); G.said = ""; }
   else {
@@ -11595,7 +12785,11 @@ window.__git = function (d) {
       G.said = (T["git.committed"] || "").replace("{hash}", d.data || "");
       gitSetMessage("");
       G.offer = false; G.pick = {}; G.sel = null; G.diff = "";
-      if (gitWantsPush()) gitAsk("push");
+      // "Commit and push" is two asks, the second made only once the first
+      // has answered yes
+      const then = G.then;
+      G.then = "";
+      if (then === "push") gitAsk("push");
     } else if (d.act === "checkout" || d.act === "branch_new") {
       // The refusal that led here is answered now -- leaving "main is a
       // protected branch" on screen after moving off main says something that
@@ -11606,41 +12800,52 @@ window.__git = function (d) {
       // do is read it, so the file list comes back and the diff with it
       G.said = String(d.data || "").split("\n").filter(Boolean)[0] || "";
       G.sel = null; G.diff = ""; G.hunks = [];
+    } else if (d.act === "catch_up") {
+      let got = {};
+      try { got = JSON.parse(d.data || "{}"); } catch (e) { got = {}; }
+      G.pickBase = false; G.conflict = null;
+      G.said = got.taken
+        ? (T["git.catch_up.taken"] || "").replace("{base}", got.base || "").replace("{n}", got.taken)
+        : (T["git.catch_up.latest"] || "").replace("{base}", got.base || "");
     } else if (d.act === "fetch" || d.act === "pull" || d.act === "push" || d.act === "merge") {
       G.said = String(d.data || "").split("\n").filter(Boolean).pop() || (T["git.done"] || "");
     }
     gitRefresh(true);
   }
   drawGit();
+  if (gitDiffShown()) drawEdit();
 };
 
+// Which folder the panel is about. Held by folder rather than by tab: moving
+// from the terminal to the editor showing one of its changes is still the same
+// folder, and starting over there threw away what was picked and being written
+function gitWhere(t) {
+  const g = t && t.group != null ? ((S && S.groups) || [])[t.group] : null;
+  return (g && g.folder) || (t ? (t.id || t.name) : null);
+}
 // Ask for everything the panel shows. `keep` holds on to what was picked --
 // after staging a file the picture changes, but not what the person meant
 function gitRefresh(keep) {
   const t = gitTab();
   if (!t) return;
   const name = t.id || t.name;
-  if (G.panel !== name) {
-    G = { panel:name, branch:null, branches:[], rows:null, sel:null, staged:false,
-          diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null,
-          view:"changes", log:[], commit:null, about:null, remotes:false };
+  if (G.where !== gitWhere(t)) {
+    G = gitFresh(name);
+    G.where = gitWhere(t);
     gitUi = null;
   } else if (!keep) {
     G.pick = {};
   }
+  G.panel = name;
   gitAsk("status"); gitAsk("branch"); gitAsk("branches");
 }
 
 function gitBuild(box) {
   box.textContent = "";
+  // The account: it is what pull, push and fetch sign in as, and a choice made
+  // for a whole project is worth seeing before pressing either. The row is
+  // there only while there is a choice to show
   const bar = el("div", {class:"bar"});
-  const mk = (label, cls, fn) => {
-    const b = el("button", cls ? {class:cls, onclick:fn} : {onclick:fn}, label);
-    bar.append(b);
-    return b;
-  };
-  // The account first: it is what pull, push and fetch sign in as, and a
-  // choice made for a whole project is worth seeing before pressing either
   const acctPick = el("select", {title: T["git.acct.title"] || ""});
   acctPick.addEventListener("change", () => {
     const t = gitTab();
@@ -11649,47 +12854,94 @@ function gitBuild(box) {
   const acctWhose = el("span");
   const acct = el("span", {class:"acct"}, acctWhose, acctPick);
   bar.append(acct);
-  const commit = mk("\u25cf " + (T["git.commit"] || ""), "go", () => gitCommit());
-  const pull = mk(T["git.pull"] || "", null, () => gitAsk("pull"));
-  const push = mk(T["git.push"] || "", null, () => gitAsk("push"));
-  const fetch = mk(T["git.fetch"] || "", null, () => gitAsk("fetch"));
-  const branch = mk(T["git.branch.new"] || "", null, () => gitNewBranch());
-  const merge = mk(T["git.merge"] || "", null, () => {
-    if (G.pickBranch) { gitAsk("merge", {text: G.pickBranch}); return; }
-    // Nothing picked: say what the button needs, and point at where to say it
-    // rather than leaving a sentence to be found somewhere else on the screen
-    gitSay(T["git.merge.pick"] || "", true);
-    if (gitUi) {
-      gitUi.branches.classList.add("asking");
-      setTimeout(() => gitUi && gitUi.branches.classList.remove("asking"), 1600);
-    }
+  box.append(bar);
+
+  // The commit, where the changes are: the branch and how far it is from the
+  // one it follows, the message, and one button that is always the next thing
+  // to do. Everything else git can be asked for is under the arrow beside it
+  const branchName = el("span", {class:"nm"});
+  const sync = el("span", {class:"up"});
+  const head = el("div", {class:"ghead"}, pickIcon("branch"), branchName, sync);
+  const msg = el("textarea", {rows:"3", spellcheck:"false", placeholder: T["git.message.ph"] || ""});
+  msg.addEventListener("input", () => { gitMsgs[G.where] = msg.value; drawGitCommit(); });
+  // Ctrl+Enter is the button, from inside the box that feeds it
+  msg.addEventListener("keydown", e => {
+    if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey) || typingIME(e)) return;
+    e.preventDefault();
+    gitUi && gitUi.main.click();
   });
-  // Only there when git has left something marked. A button for a thing that
-  // is not happening is a button people learn to read past
-  const untangle = mk("\ud83e\udd16 " + (T["git.resolve"] || ""), "go", () => {
-    if (G.busy !== "resolve") gitAsk("resolve");
+  const ai = el("button", {class:"gai", type:"button", title: T["git.message.ai"] || "",
+    onclick:() => {
+      if (G.busy) return;
+      // Said before anything is sent: the answer is half a minute away, and a
+      // button that looks untouched gets pressed again
+      G.busy = "message";
+      drawGit();
+      gitAsk("message");
+    }}, pickIcon("sparkles"));
+  // What the AI is told is written in the desk's settings. Asked for where the
+  // AI is asked: a right-click (a long press on a phone) on the same button
+  ai.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    openList(ai, [el("div", {onclick:() => { closeFolderMenu(); openSettings("git-message", true); }},
+      T["git.message.ai.edit"] || "")], false, e);
   });
-  untangle.hidden = true;
-  const said = el("span", {class:"said"});
-  bar.append(said);
-  // Making a branch asks for a name here rather than in a dialog: this window
-  // has no dialogs to open, and the answer belongs next to the button anyway
-  const name = el("input", {type:"text", placeholder:T["git.branch.name"] || "",
-    style:"padding:3px 8px;font-size:12.5px;border-radius:var(--r-ctl);border:1px solid var(--line);background:var(--bg);color:var(--text)"});
+  const main = el("button", {class:"gmain", type:"button", onclick:() => {
+    const next = gitNext();
+    if (next) next.run();
+  }});
+  // A next step an AI is told how to do says where that is written, the same
+  // way the sparkles beside the message do
+  main.addEventListener("contextmenu", e => {
+    const next = gitNext();
+    if (!next || !next.edit) return;
+    e.preventDefault();
+    openList(main, [el("div", {onclick:() => { closeFolderMenu(); openSettings(next.edit, true); }},
+      T["git.message.ai.edit"] || "")], false, e);
+  });
+  const more = el("button", {class:"gmore", type:"button", title: T["git.more"] || "",
+    onclick:e => { e.stopPropagation(); gitMenu(more); }}, "▾");
+  // A new branch is named here rather than in a dialog: the answer belongs
+  // next to the button that asked for it
+  const name = el("input", {type:"text", placeholder:T["git.branch.name"] || ""});
+  const makeBranch = () => { if (name.value.trim()) gitAsk("branch_new", {text: name.value.trim()}); };
   name.addEventListener("keydown", e => {
     if (typingIME(e)) return;
-    if (e.key === "Enter" && name.value.trim()) gitAsk("branch_new", {text: name.value.trim()});
+    if (e.key === "Enter") makeBranch();
+    if (e.key === "Escape") { G.offer = false; drawGit(); }
   });
-  const makeIt = el("button", {onclick:() => {
-    if (name.value.trim()) gitAsk("branch_new", {text: name.value.trim()});
-  }}, T["git.branch.make"] || "");
-  const naming = el("span", {style:"display:none;gap:6px;align-items:center"}, name, makeIt);
-  bar.append(naming);
-  box.append(bar);
+  const naming = el("div", {class:"gname"}, name,
+    el("button", {type:"button", onclick: makeBranch}, T["git.branch.make"] || ""));
+  const said = el("div", {class:"said"});
+  const split = el("div", {class:"gsplit"}, main, more);
+  // Choosing the base to bring the latest in from, with what will run for it
+  const basePick = el("select");
+  basePick.onchange = () => { G.baseSel = basePick.value; drawGitCommit(); };
+  const baseRuns = el("pre", {class:"gruns"});
+  const baseBox = el("div", {class:"gbase"},
+    el("div", {class:"gbasesay"}, T["git.catch_up.pick"] || ""),
+    basePick,
+    el("div", {class:"gbasesay"}, T["git.catch_up.runs"] || ""),
+    baseRuns,
+    el("div", {class:"gbaserow"},
+      el("button", {type:"button", class:"quiet", onclick:() => { G.pickBase = false; G.need = false; G.said = ""; drawGit(); }},
+        T["issues.cancel"] || ""),
+      el("button", {type:"button", onclick:() => {
+        if (!G.baseSel || G.busy) return;
+        gitAsk("catch_up", {base: G.baseSel});
+      }}, T["git.catch_up.go"] || "")));
+  // A merge that stopped: which base, which files, and the way to hand it over
+  const conflictSay = el("div", {class:"gconflictsay"});
+  const conflictFiles = el("div", {class:"gconflictfiles"});
+  // The way on is the button above it, the one thing to do next
+  const conflictBox = el("div", {class:"gconflict"}, conflictSay, conflictFiles);
+  const commitBox = el("div", {class:"gcommit"}, head, el("div", {class:"gmsg"}, msg, ai), split, naming, baseBox, conflictBox, said);
 
   const branches = el("div", {class:"branches"});
   const staged = el("div", {class:"list"});
   const work = el("div", {class:"list"});
+  const stagedN = el("span", {class:"n"});
+  const workN = el("span", {class:"n"});
   const unstageAll = el("button", {onclick:() => gitAsk("unstage", {paths: gitAllPaths(true)})},
     T["git.unstage.all"] || "");
   const unstagePick = el("button", {onclick:() => gitAsk("unstage", {paths: gitPicked("staged")})},
@@ -11698,13 +12950,13 @@ function gitBuild(box) {
     T["git.stage.all"] || "");
   const stagePick = el("button", {onclick:() => gitAsk("stage", {paths: gitPicked("work")})},
     T["git.stage.picked"] || "");
-  const mid = el("div", {class:"mid"},
-    el("div", {class:"sec"},
-      el("h4", {}, el("span", {class:"grow"}, T["git.group.staged"] || ""), unstageAll, unstagePick),
-      staged),
-    el("div", {class:"sec"},
-      el("h4", {}, el("span", {class:"grow"}, T["git.group.unstaged"] || ""), stageAll, stagePick),
-      work));
+  const stagedSec = el("div", {class:"sec"},
+    el("h4", {}, el("span", {class:"grow"}, el("span", {class:"t"}, T["git.group.staged"] || ""), stagedN), unstageAll, unstagePick),
+    staged);
+  const workSec = el("div", {class:"sec"},
+    el("h4", {}, el("span", {class:"grow"}, el("span", {class:"t"}, T["git.group.unstaged"] || ""), workN), stageAll, stagePick),
+    work);
+  const mid = el("div", {class:"mid"}, commitBox, stagedSec, workSec);
   const diff = el("pre", {class:"diff"});
   const remotes = el("input", {type:"checkbox"});
   remotes.addEventListener("change", () => {
@@ -11747,7 +12999,7 @@ function gitBuild(box) {
     diff, hist));
   gitUi = { bar, said, naming, name, branches, branchCol, staged, work, diff,
             hist, mid, log, about, commitDiff, remotes, chips, which, acct, acctPick, acctWhose, acctSig: "",
-            btn: {commit, pull, push, fetch, branch, merge, untangle},
+            branchName, sync, msg, ai, main, more, split, commitBox, baseBox, basePick, baseRuns, conflictBox, conflictSay, conflictFiles, stagedSec, workSec, stagedN, workN,
             pick: {unstageAll, unstagePick, stageAll, stagePick} };
 }
 
@@ -11793,24 +13045,47 @@ function grip(vertical, key, unit, target) {
   });
   return g;
 }
+// The two lists share the height under the commit. Both whole when they fit;
+// when they do not, the shorter keeps all of itself up to half the room and the
+// longer scrolls in the rest -- so one staged file is not pressed down to a
+// sliver because twenty others are waiting beside it
+function gitFitLists(u) {
+  const secs = [u.stagedSec, u.workSec].filter(s => s.style.display !== "none");
+  secs.forEach(s => { s.style.flex = ""; });
+  if (secs.length < 2) return;
+  const room = u.mid.clientHeight - u.commitBox.offsetHeight;
+  if (room <= 0) return;
+  const whole = secs.map(s => s.firstChild.offsetHeight + s.lastChild.scrollHeight);
+  if (whole[0] + whole[1] <= room) return;
+  const short = whole[0] <= whole[1] ? 0 : 1;
+  const give = Math.min(whole[short], Math.floor(room / 2));
+  secs[short].style.flex = "0 0 " + give + "px";
+  secs[1 - short].style.flex = "0 0 " + (room - give) + "px";
+}
 function applyGitSize() {
   const u = gitUi;
   if (!u) return;
-  u.branchCol.style.flex = "0 0 " + gitSize.branches + "px";
-  u.mid.style.flex = "0 0 " + gitSize.mid + "%";
-  u.log.style.flex = "0 0 " + gitSize.log + "%";
-  u.about.style.flex = "0 0 " + gitSize.about + "%";
+  // The sizes are widths dragged across columns. Narrow, the panes stand one
+  // above the other, and a width of 38% set on them became a height of 38%:
+  // the lists stopped a third of the way down an empty column
+  const narrow = document.getElementById("gitpanel").classList.contains("narrow");
+  u.branchCol.style.flex = narrow ? "" : "0 0 " + gitSize.branches + "px";
+  u.mid.style.flex = narrow ? "" : "0 0 " + gitSize.mid + "%";
+  u.log.style.flex = narrow ? "" : "0 0 " + gitSize.log + "%";
+  u.about.style.flex = narrow ? "" : "0 0 " + gitSize.about + "%";
 }
 
 // A phone gets the same panel with one column in front at a time
 const GIT_NARROW = 720;
 let gitPane = "files";
 function gitPanes() {
-  return G.view === "history"
+  const all = G.view === "history"
     ? [["branches", T["git.pane.branches"] || ""], ["log", T["git.pane.log"] || ""],
        ["about", T["git.pane.commit"] || ""], ["diff", T["git.pane.diff"] || ""]]
     : [["branches", T["git.pane.branches"] || ""], ["files", T["git.pane.changes"] || ""],
        ["diff", T["git.pane.diff"] || ""]];
+  // In the column a change opens in an editor tab, so it has no pane to pick
+  return gitInSide() ? all.filter(([id]) => id !== "diff") : all;
 }
 
 function gitAllPaths(staged) {
@@ -11818,10 +13093,99 @@ function gitAllPaths(staged) {
     .filter(r => (staged ? r.staged : r.unstaged) && !r.conflict)
     .map(r => r.path);
 }
-function gitSay(text, bad) { G.said = text; G.bad = !!bad; drawGit(); }
+function gitSay(text, bad) { G.said = text; G.bad = !!bad; G.need = false; drawGit(); }
+
+// Whether the panel is standing in the column on the right rather than as a
+// tab of its own
+function gitInSide() {
+  const p = document.getElementById("gitpanel");
+  return !!(p && p.closest("#side"));
+}
+// Ask for the change being read: of a commit, or of one side of the tree
+function gitAskChange() {
+  if (!G.sel) return;
+  // Until the pieces arrive, an empty list means "not here yet", not "no change"
+  G.waiting = true;
+  const ed = gitDiffShown();
+  const commit = ed ? (ed.file_diff.startsWith("commit:") ? ed.file_diff.slice(7) : "") : (G.view === "history" ? G.commit : "");
+  if (commit) { gitAsk("hunks", {paths: [G.sel], commit}); return; }
+  gitAsk("diff", {paths: [G.sel], staged: G.staged});
+  gitAsk("hunks", {paths: [G.sel], staged: G.staged});
+}
+// A change is read in an editor tab where the terminals are, not in the column:
+// the column is narrow, and a change read inside it took the place of the very
+// list whose buttons act on it. `how` is "work", "staged" or "commit:<hash>"
+function gitOpenDiff(path, how) {
+  const t = gitTab();
+  if (!t) return;
+  send({kind:"editopen", panel: t.id || t.name || "", path, diff: how});
+  // Pressed again on the change already open, the state does not change -- so
+  // the change is asked for again when the next state comes, not never
+  gitDiffSig = "";
+  // On a phone the column is a sheet over the page, covering what it opened
+  if (phoneWidth()) { sideStoodAside = true; drawSide(); }
+}
+// The editor tab in front, when what it shows is a change
+function gitDiffShown() {
+  const t = typeof editorTab === "function" ? editorTab() : null;
+  return t && t.file && t.file_diff ? t : null;
+}
+// An editor tab showing a change, as the state describes it: the panel's idea
+// of which file and which side is brought to match, and the change asked for.
+// Once per change -- the state arrives several times a second
+let gitDiffSig = "";
+function gitDiffFollow(t) {
+  const sig = (t.id || t.name) + "\u0000" + t.file + "\u0000" + t.file_diff;
+  if (gitDiffSig === sig) return;
+  gitDiffSig = sig;
+  G.sel = t.file; G.diff = ""; G.hunks = [];
+  if (t.file_diff.startsWith("commit:")) G.commit = t.file_diff.slice(7);
+  else G.staged = t.file_diff === "staged";
+  gitAskChange();
+}
+// One change, piece by piece, into `box`: the same drawing wherever a change is
+// read -- the git tab's own pane, a commit in the history, an editor tab.
+// `how` says what can be done with each piece: a piece not added yet can be
+// added or thrown away, an added one taken back out, and one in a commit
+// walked back out of the tree (the commit itself is untouched)
+function gitChangeInto(box, how, head) {
+  if (head) box.append(el("div", {class:"filehead"}, G.sel));
+  const text = G.diff || "";
+  // git says this itself when it cannot show a change as lines
+  if (how !== "commit" && (/^Binary files /m.test(text) || text.includes("GIT binary patch"))) {
+    box.append(el("div", {class:"empty"}, T["git.binary"] || ""));
+    return;
+  }
+  const hunks = G.hunks || [];
+  if (!hunks.length) {
+    box.append(el("div", {class:"empty"}, how === "commit" || G.waiting || text.trim() ? "\u2026" : (T["git.same"] || "")));
+    return;
+  }
+  hunksInto(box, hunks, how);
+}
+// The pieces themselves. `how` "view" draws them to be read and nothing more:
+// what a pull request carries is already committed, and it is not changed from
+// the page that asks for it to be taken in
+function hunksInto(box, hunks, how) {
+  hunks.forEach((h, i) => {
+    const bar = el("div", {class:"hunkhead"});
+    bar.append(el("span", {class:"grow"},
+      (T["git.hunk"] || "Hunk") + (i + 1) + "  " +
+      (T["git.hunk.lines"] || "").replace("{from}", h.start).replace("{to}", h.end)));
+    const act = (label, args) => bar.append(el("button", {onclick:() => gitAsk("hunk", Object.assign({text:h.patch}, args))}, label));
+    if (how === "view") { /* read only */ }
+    else if (how === "staged") act(T["git.hunk.unstage"] || "", {cached:true, reverse:true});
+    else if (how === "work") {
+      act(T["git.hunk.stage"] || "", {cached:true});
+      act(T["git.hunk.drop"] || "", {reverse:true});
+    } else act(T["git.hunk.drop"] || "", {reverse:true});
+    box.append(el("div", {class:"hunk"}, bar, diffLines(h.patch)));
+  });
+}
 
 // One row of a file list. A click picks it and shows what changed in it;
 // ctrl-click adds to what is picked, which is what the "picked" buttons act on
+// and nothing more -- the list stays where it is, so those buttons can be pressed
 function gitFileRow(r, where) {
   const picked = G.pick[r.path] === where;
   const shown = G.sel === r.path;
@@ -11829,15 +13193,14 @@ function gitFileRow(r, where) {
     onclick:e => {
       if (e.ctrlKey || e.metaKey) {
         if (picked) delete G.pick[r.path]; else G.pick[r.path] = where;
-      } else {
-        G.pick = {}; G.pick[r.path] = where;
+        drawGit();
+        return;
       }
+      G.pick = {}; G.pick[r.path] = where;
       G.sel = r.path; G.staged = where === "staged"; G.diff = ""; G.hunks = [];
-      // On a phone, asking for a file means asking to see it
-      if (document.getElementById("gitpanel").classList.contains("narrow")) gitPane = "diff";
       drawGit();
-      gitAsk("diff", {paths: [r.path], staged: where === "staged"});
-      gitAsk("hunks", {paths: [r.path], staged: where === "staged"});
+      if (gitInSide()) { gitOpenDiff(r.path, where); return; }
+      gitAskChange();
     }});
   row.append(el("span", {class:"x"}, gitMark(r)));
   row.append(el("span", {class:"p", title:r.from ? r.from + " -> " + r.path : r.path}, r.path));
@@ -11901,9 +13264,10 @@ function drawHistory(u) {
       const row = el("div", {class:"row" + (G.sel === f ? " pick" : ""), style:"padding:2px 0",
         onclick:() => {
           G.sel = f; G.hunks = [];
+          if (gitInSide()) { drawGit(); gitOpenDiff(f, "commit:" + G.commit); return; }
           if (document.getElementById("gitpanel").classList.contains("narrow")) gitPane = "diff";
           drawGit();
-          gitAsk("hunks", {paths:[f], commit:G.commit});
+          gitAskChange();
         }});
       row.append(el("span", {class:"p", style:"direction:ltr"}, f));
       u.about.append(row);
@@ -11915,48 +13279,266 @@ function drawHistory(u) {
     u.commitDiff.append(el("div", {class:"empty"}, T["git.pick.file"] || ""));
     return;
   }
-  u.commitDiff.append(el("div", {class:"filehead"}, G.sel));
-  const hunks = G.hunks || [];
-  if (!hunks.length) { u.commitDiff.append(el("div", {class:"empty"}, "\u2026")); return; }
-  hunks.forEach((h, i) => {
-    const head = el("div", {class:"hunkhead"});
-    head.append(el("span", {class:"grow"},
-      (T["git.hunk"] || "Hunk") + (i + 1) + "  " +
-      (T["git.hunk.lines"] || "").replace("{from}", h.start).replace("{to}", h.end)));
-    // Undoing a piece of a commit puts the old lines back in the working tree.
-    // The commit is untouched -- history is not being rewritten, the change is
-    // simply being taken back out of what is here now
-    head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, reverse:true})},
-      T["git.hunk.drop"] || ""));
-    const lines = diffLines(h.patch);
-    u.commitDiff.append(el("div", {class:"hunk"}, head, lines));
-  });
+  gitChangeInto(u.commitDiff, "commit", true);
 }
 
-// The message lives in the sub-input bar, not in a box of the panel's own:
-// there is one place a person writes a line in this app, and this is a line.
-let gitPush = false, gitAmend = false;
-function gitWantsPush() { return gitPush; }
-// The answer lands in the sub-input bar by replacing what is in it. Anything
-// typed while waiting would be thrown away without a word, so the box is held
-// shut for the half minute it takes -- and says why, where the caret was
-function gitLockBar(on) {
-  if (!castInput) return;
-  castInput.disabled = !!on;
-  if (castBar) castBar.classList.toggle("locked", !!on);
-  // What it says while shut is decided where every other prompt is decided
-  syncComposerSlot();
-}
+// The message box and what fills it. The AI's answer lands in the same box a
+// person types in, replacing it, and is read before anything is committed
+function gitMessage() { return gitMsgs[G.where] || ""; }
 function gitSetMessage(text) {
-  if (!castInput) return;
-  castInput.value = text;
-  castInput.dispatchEvent(new Event("input"));
+  gitMsgs[G.where] = text;
+  if (gitUi) gitUi.msg.value = text;
 }
-function gitCommit() {
-  if (G.busy === "message") { gitSay(T["git.busy.message"] || "", false); return; }
-  const text = castInput ? castInput.value.trim() : "";
-  if (!text) { gitSay(T["git.need.message"] || "", true); return; }
-  gitAsk("commit", {text: text, amend: gitAmend});
+// The files that go in when everything goes in: what changed, and a conflict
+// once it has been sorted out -- adding it is what tells git it is settled
+function gitStageable() {
+  return (G.rows || []).filter(r => (r.unstaged && !r.conflict) || (r.conflict && !r.tangled)).map(r => r.path);
+}
+function gitCommit(then, amend) {
+  if (G.busy) return;
+  const text = gitMessage().trim();
+  if (!text) {
+    // A person being needed, not a failure (5.4): said in --warn, and gone
+    // the moment there is a message
+    G.said = T["git.need.message"] || "";
+    G.bad = false;
+    G.need = true;
+    drawGit();
+    if (gitUi) {
+      const m = gitUi.msg;
+      m.classList.remove("ring");
+      void m.offsetWidth;
+      m.classList.add("ring");
+      m.focus();
+    }
+    return;
+  }
+  G.then = then || "";
+  gitAsk("commit", {text: text, amend: !!amend});
+}
+// The one thing to do next, read off what the folder is like right now. In the
+// order a piece of work goes through them: a conflict is settled before
+// anything is added, added before it is committed, committed before it is
+// sent. With nothing left to do here, it asks the server what is new
+function gitNext() {
+  const rows = G.rows || [];
+  const b = G.branch || {};
+  // A merge of the base that stopped goes to an AI tab, told what the settings
+  // say, which reads both sides and runs the checks before it finishes the merge
+  if (G.conflict && rows.some(r => r.conflict)) {
+    return {icon:"sparkles", label: T["git.catch_up.resolve"] || "", edit:"git-merge", run:() => gitAsk("resolve_tab")};
+  }
+  if (rows.some(r => r.conflict && r.tangled)) {
+    return {icon:"sparkles", label: T["git.resolve"] || "", run:() => gitAsk("resolve")};
+  }
+  if (rows.some(r => r.staged && !r.conflict)) {
+    return {icon:"check", label: T["git.commit"] || "", held: !gitMessage().trim(), run:() => gitCommit()};
+  }
+  const add = gitStageable();
+  if (add.length) {
+    return {icon:"plus", label: T["git.stage.all"] || "", run:() => gitAsk("stage", {paths: add})};
+  }
+  if (b.name && !b.upstream) {
+    return {icon:"up", label: T["git.publish"] || "", run:() => gitAsk("push")};
+  }
+  if (b.ahead) {
+    return {icon:"up", label: (T["git.push.n"] || "{n}").replace("{n}", b.ahead), run:() => gitAsk("push")};
+  }
+  if (b.behind) {
+    return {icon:"down", label: (T["git.pull.n"] || "{n}").replace("{n}", b.behind), run:() => gitAsk("pull")};
+  }
+  // Pushed, nothing waiting either way, and no pull request open for it: the
+  // next thing is to ask for it to be taken in. Not from a protected branch --
+  // that is where pull requests go, not where they come from
+  if (b.name && b.upstream && !b.protected && !gitPrOpen()) {
+    return {icon:"pr", label: T["git.pr.create"] || "", run: gitOpenPr};
+  }
+  return {icon:"refresh", label: T["git.fetch"] || "", run:() => gitAsk("fetch")};
+}
+// The pull request the branch in front already has, as the column's line
+// says it ("#12", "#12 draft"), when it is still open
+function gitPrOpen() {
+  const t = gitTab();
+  const pr = t && t.place && t.place.pr;
+  return pr && !/merged|closed/.test(pr) ? pr : "";
+}
+// Why a pull request cannot be made from here yet, or nothing
+function gitPrWhy() {
+  const b = G.branch || {};
+  if (!b.name) return T["git.pr.why.branch"] || "";
+  if (b.protected) return T["git.pr.why.protected"] || "";
+  if (!b.upstream || b.ahead) return T["git.pr.why.push"] || "";
+  const open = gitPrOpen();
+  return open ? (T["git.pr.why.open"] || "").replace("{pr}", open) : "";
+}
+// What the pull request would carry, asked again whenever where it goes changes
+function prAskFiles() {
+  const p = I.pr;
+  p.files = null; p.open = {}; p.more = false;
+  if (p.base) issuesAsk("pr_files", {project: p.project, folder: p.folder, base: p.base});
+}
+// The new pull request page, in the Issue tab, for the branch in front: its
+// folder, the project it belongs to, and the issue the folder was made for
+function gitOpenPr() {
+  const t = gitTab();
+  const g = t && t.group != null ? ((S && S.groups) || [])[t.group] : null;
+  const head = G.branch && G.branch.name;
+  if (!g || !head) return;
+  const made = /^issue:(.+)#(\d+)$/.exec(g.work_item || "");
+  I.pr = {project: g.project || "", folder: g.folder || "", head, base:"", bases:null, title:"", body:"",
+          draft:false, close: !!made, issue: made ? {repo: made[1], number: Number(made[2])} : null, kept:"",
+          files:null, open:{}, more:false};
+  I.pr.body = prFixes("", I.pr);
+  // The list behind it keeps the kind it was showing: switching it here left the
+  // list headed Pull requests over the issues it still held, and without the
+  // New issue button. It turns to pull requests once one has been made
+  I.view = "newpr";
+  I.said = ""; I.bad = false;
+  issuesSig = "";
+  send({kind:"openissues"});
+  send({kind:"issues", act:"pr_bases", args:{kind:"pr", project: I.pr.project, seq: 0}});
+}
+// Work a merge would be started on top of: a change to a file git follows.
+// Files git does not follow are not counted
+function gitDirty() {
+  return (G.rows || []).some(r => r.index !== "?");
+}
+// "Bring in the latest", with how far behind its base the branch is when that
+// is known -- a number with its name
+// How far the branch is from its base, in words, as of the last fetch
+function gitCatchUpNote() {
+  const b = G.branch || {};
+  if (!b.base || b.base_behind == null) return "";
+  return (b.base_behind
+    ? (T["git.catch_up.behind"] || "").replace("{base}", b.base).replace("{n}", b.base_behind)
+    : (T["git.catch_up.even"] || "").replace("{base}", b.base));
+}
+// A merge of the base that stopped earlier -- before this page was opened, or
+// on another screen -- is shown the same as one that stopped just now
+function gitConflictFromState() {
+  const b = G.branch || {};
+  const files = (G.rows || []).filter(r => r.conflict).map(r => r.path);
+  if (!G.conflict && b.catching_up && files.length) G.conflict = {base: b.catching_up, files: files};
+}
+// Bring the base's latest in. Refused while work is uncommitted; with no base
+// written down, the base is chosen first
+function gitCatchUp() {
+  if (G.busy) return;
+  if (gitDirty()) { G.said = T["git.why.dirty"] || ""; G.bad = false; G.need = true; drawGit(); return; }
+  const b = G.branch || {};
+  if (!b.base) {
+    G.pickBase = true; G.said = ""; G.need = false;
+    gitAsk("remote_branches");
+    drawGit();
+    return;
+  }
+  gitAsk("catch_up", {});
+}
+// Everything else git is asked for from here. What cannot be done yet stays in
+// the list, grey, with what it is waiting for written under it
+function gitMenu(anchor) {
+  if (G.busy) return;
+  const staged = (G.rows || []).some(r => r.staged && !r.conflict);
+  const worded = !!gitMessage().trim();
+  // What cannot be done yet stays in the list, grey, and still answers when
+  // pressed: the reason is said where the panel says things (5.4)
+  const item = (label, run, why, runs, note) => why
+    ? el("div", {class:"gdis", onclick:() => { closeFolderMenu(); G.said = why; G.bad = false; G.need = true; drawGit(); }},
+        label, note ? el("span", {class:"note"}, note) : null, el("span", {class:"why"}, why))
+    : el("div", {onclick:() => { closeFolderMenu(); run(); }}, label,
+        note ? el("span", {class:"note"}, note) : null,
+        runs && runs.length ? el("span", {class:"runs"}, runs.join("\n")) : null);
+  const sep = () => el("div", {class:"gsep"});
+  const needStage = staged ? "" : (T["git.why.stage"] || "");
+  const needWords = worded ? "" : (T["git.why.message"] || "");
+  openList(anchor, [
+    item(T["git.commit"] || "", () => gitCommit(), needStage || needWords),
+    item(T["git.commit.push"] || "", () => gitCommit("push"), needStage || needWords),
+    item(T["git.commit.amend"] || "", () => gitCommit("", true), needWords),
+    sep(),
+    item(T["git.push"] || "", () => gitAsk("push")),
+    item(T["git.pull"] || "", () => gitAsk("pull")),
+    item(T["git.fetch"] || "", () => gitAsk("fetch")),
+    sep(),
+    item(T["git.pr.create"] || "", gitOpenPr, gitPrWhy()),
+    sep(),
+    item(T["git.branch.new"] || "", () => gitNewBranch()),
+    item(G.pickBranch ? (T["git.merge"] || "") + " ← " + G.pickBranch : (T["git.merge"] || ""),
+      () => gitAsk("merge", {text: G.pickBranch}), G.pickBranch ? "" : (T["git.merge.pick"] || "")),
+    // The base's latest, fetched and merged; what runs is written under it
+    item(T["git.catch_up"] || "", gitCatchUp, gitDirty() ? (T["git.why.dirty"] || "") : "",
+      (G.branch && G.branch.catch_up) || [], gitCatchUpNote()),
+  ]);
+}
+// The top of the changes: redrawn on every answer, touching only what changed
+// so the box being typed in is never written over under the caret
+function drawGitCommit() {
+  const u = gitUi;
+  if (!u) return;
+  const b = G.branch;
+  const nm = b && b.name ? b.name : (G.branch === null && G.rows ? (T["git.detached"] || "") : "");
+  if (u.branchName.textContent !== nm) u.branchName.textContent = nm;
+  // How far this branch is from the one it follows, in words: a bare arrow and
+  // a number is a puzzle
+  let up = "";
+  if (b && b.name) {
+    if (!b.upstream) up = T["git.sync.none"] || "";
+    else if (!b.ahead && !b.behind) up = (T["git.sync.even"] || "{upstream}").replace("{upstream}", b.upstream);
+    else up = [b.ahead ? (T["git.sync.ahead"] || "{n}").replace("{n}", b.ahead) : "",
+               b.behind ? (T["git.sync.behind"] || "{n}").replace("{n}", b.behind) : ""]
+      .filter(Boolean).join(" · ");
+  }
+  if (u.sync.textContent !== up) u.sync.textContent = up;
+  u.sync.title = b && b.upstream ? (T["git.sync.title"] || "").replace("{upstream}", b.upstream) : "";
+
+  const writing = G.busy === "message";
+  u.msg.disabled = writing;
+  u.msg.placeholder = writing ? (T["git.writing.here"] || "") : (T["git.message.ph"] || "");
+  if (document.activeElement !== u.msg && u.msg.value !== gitMessage()) u.msg.value = gitMessage();
+  u.ai.disabled = !!G.busy;
+
+  const next = gitNext();
+  const label = G.busy ? (T["git.busy." + G.busy] || T["git.busy"] || "") : next.label;
+  const key = (G.busy ? "busy" : next.icon) + "\u0000" + label;
+  if (u.main.dataset.key !== key) {
+    u.main.dataset.key = key;
+    u.main.textContent = "";
+    if (!G.busy) u.main.append(pickIcon(next.icon));
+    u.main.append(el("span", {class:"gl"}, label));
+  }
+  u.main.disabled = !!G.busy;
+  u.more.disabled = !!G.busy;
+  // Grey while it waits for the message, and still answering when pressed (5.4)
+  u.split.classList.toggle("held", !G.busy && !!next.held);
+
+  u.naming.hidden = !G.offer;
+  // Choosing a base: the list is rebuilt only when it changed, so an open one
+  // is not shut under the pointer
+  u.baseBox.hidden = !G.pickBase;
+  if (G.pickBase) {
+    const sig = JSON.stringify((G.bases || []).map(b => b.name));
+    if (u.basePick.dataset.sig !== sig) {
+      u.basePick.dataset.sig = sig;
+      u.basePick.textContent = "";
+      for (const b of G.bases || []) u.basePick.append(el("option", {value: b.name}, b.name));
+    }
+    u.basePick.value = G.baseSel;
+    const chosen = (G.bases || []).find(b => b.name === G.baseSel);
+    u.baseRuns.textContent = G.bases === null ? "\u2026" : ((chosen && chosen.catch_up) || []).join("\n");
+  }
+  u.conflictBox.hidden = !G.conflict;
+  if (G.conflict) {
+    u.conflictSay.textContent = (T["git.catch_up.conflict"] || "").replace("{base}", G.conflict.base);
+    u.conflictFiles.textContent = G.conflict.files.join("\n");
+  }
+  if (G.offer && document.activeElement !== u.name) u.name.focus();
+  // The missing-message reason goes as soon as there is a message; a reason
+  // of another kind stays until the next answer replaces it
+  if (G.need && !G.offer && G.said === (T["git.need.message"] || "") && gitMessage().trim()) { G.need = false; G.said = ""; }
+  u.said.textContent = G.busy ? "" : (G.said || "");
+  // A refusal with a way out under it is a person being needed, like a missing
+  // message; only a failure is said as one
+  u.said.className = "said" + (G.offer || G.need ? " need" : G.bad ? " bad" : "");
 }
 function gitNewBranch() {
   G.offer = !G.offer;
@@ -11972,37 +13554,6 @@ function gitHistory(back) {
   G.said = "";
   if (!back) gitAsk("graph", {all:!G.pickBranch, remotes:G.remotes, branch:G.pickBranch || ""});
   drawGit();
-}
-// The panel's own row in the sub-input bar: have the AI write the message, and
-// the two things a commit can be asked to do beyond being a commit
-function buildGitPanel() {
-  const wrap = el("div", {id:"castgit"});
-  const writing = G.busy === "message";
-  // The same chip a quick action is: this row is one of them in everything but
-  // where it lives
-  const write = el("button", {class:"castaction",
-    onclick:() => {
-      if (G.busy) return;
-      // Say it started before anything is sent: the answer is half a minute
-      // away, and a button that looks untouched gets pressed again
-      G.busy = "message";
-      gitLockBar(true);
-      renderPanel();
-      drawGit();
-      gitAsk("message");
-    }},
-    writing ? ("\u23f3 " + (T["git.writing"] || "")) : ("\ud83e\udd16 " + (T["git.write"] || "")));
-  write.disabled = !!G.busy;
-  wrap.append(write);
-  const tick = (on, label, set) => {
-    const box = el("input", {type:"checkbox"});
-    box.checked = on;
-    box.addEventListener("change", () => { set(box.checked); renderPanel(); });
-    return el("label", {class:"castradio"}, box, el("span", {}, label));
-  };
-  wrap.append(tick(gitPush, T["git.then.push"] || "", v => { gitPush = v; }));
-  wrap.append(tick(gitAmend, T["git.then.amend"] || "", v => { gitAmend = v; }));
-  return wrap;
 }
 
 // ── The file panel ────────────────────────────────────────────────────────
@@ -12843,28 +14394,8 @@ function drawGit() {
   if (!gitUi || !box.firstChild) gitBuild(box);
   const u = gitUi;
   drawGitAccount(u);
-  u.said.textContent = G.busy
-    ? (T["git.busy." + G.busy] || T["git.busy"] || "")
-    : (G.said || "");
-  u.said.className = "said" + (G.bad && !G.busy ? " bad" : "");
-  // `hidden` loses to an inline display, so the display is what gets set
-  u.naming.style.display = G.offer ? "flex" : "none";
-  if (G.offer && document.activeElement !== u.name) u.name.focus();
-  for (const k in u.btn) u.btn[k].disabled = !!G.busy;
-  // The untangle button appears with the conflicts and leaves with them
-  // The button names what it would bring in: a merge with nothing named is the
-  // question people were left holding
-  u.btn.merge.textContent = G.pickBranch
-    ? (T["git.merge"] || "") + " \u2190 " + G.pickBranch
-    : (T["git.merge"] || "");
-  u.btn.merge.title = G.pickBranch ? "" : (T["git.merge.pick"] || "");
-  // Only while something still holds both sides. A file git calls unmerged
-  // because it has not been staged yet has nothing left to untangle
-  const marked = (G.rows || []).some(r => r.conflict && r.tangled);
-  u.btn.untangle.hidden = !marked;
-  u.btn.untangle.textContent = G.busy === "resolve"
-    ? "\u2026"
-    : "\ud83e\udd16 " + (T["git.resolve"] || "");
+  u.bar.style.display = u.acct.style.display === "none" ? "none" : "flex";
+  drawGitCommit();
 
   u.branches.textContent = "";
   // The first row is every branch at once -- the same question the rows below
@@ -12917,16 +14448,16 @@ function drawGit() {
   const shows = id => !narrow || gitPane === id;
   u.branchCol.style.display = shows("branches") ? "flex" : "none";
   u.mid.style.display = !history && shows("files") ? "flex" : "none";
-  u.diff.style.display = !history && shows("diff") ? "block" : "none";
+  const side = gitInSide();
+  u.diff.style.display = !history && !side && shows("diff") ? "block" : "none";
   u.hist.style.display = history ? "flex" : "none";
   if (history) {
     u.log.style.display = shows("log") ? "block" : "none";
     u.about.style.display = shows("about") ? "block" : "none";
-    u.commitDiff.style.display = shows("diff") ? "block" : "none";
+    u.commitDiff.style.display = !side && shows("diff") ? "block" : "none";
   }
   // The toolbar stays whole in either view: where you are does not change what
   // you can do, and a button that comes and goes is a button people stop trusting
-  u.btn.branch.classList.toggle("go", history);
   if (history) { drawHistory(u); return; }
 
   const rows = G.rows || [];
@@ -12936,9 +14467,14 @@ function drawGit() {
   // hunks can be staged separately. Listing it only above would say the opposite
   const staged = rows.filter(r => r.staged && !r.conflict);
   const work = rows.filter(r => r.unstaged && !r.conflict);
+  // A list with nothing in it is put away, unless both are empty -- then the
+  // one below says the folder is clean
+  u.stagedSec.style.display = staged.length ? "flex" : "none";
+  u.workSec.style.display = work.length || conflicts.length || !staged.length ? "flex" : "none";
+  u.stagedN.textContent = staged.length ? String(staged.length) : "";
+  u.workN.textContent = work.length + conflicts.length ? String(work.length + conflicts.length) : "";
   u.staged.textContent = "";
   staged.forEach(r => u.staged.append(gitFileRow(r, "staged")));
-  if (!staged.length) u.staged.append(el("div", {class:"empty"}, T["git.staged.empty"] || ""));
   u.work.textContent = "";
   conflicts.forEach(r => u.work.append(gitFileRow(r, "work")));
   work.forEach(r => u.work.append(gitFileRow(r, "work")));
@@ -12946,42 +14482,13 @@ function drawGit() {
   else if (conflicts.length && !conflicts.some(r => r.tangled)) {
     u.work.append(el("div", {class:"empty"}, T["git.settled"] || ""));
   }
+  gitFitLists(u);
 
+  // In the column there is no pane for it: the change is read in an editor tab
+  if (gitInSide()) return;
   u.diff.textContent = "";
   if (!G.sel) { u.diff.append(el("div", {class:"empty"}, T["git.diff.hint"] || "")); return; }
-  const text = G.diff || "";
-  // git says this itself when it cannot show a change as lines
-  if (/^Binary files /m.test(text) || text.includes("GIT binary patch")) {
-    u.diff.append(el("div", {class:"filehead"}, G.sel));
-    u.diff.append(el("div", {class:"empty"}, T["git.binary"] || ""));
-    return;
-  }
-  u.diff.append(el("div", {class:"filehead"}, G.sel));
-  const hunks = G.hunks || [];
-  if (!hunks.length) {
-    u.diff.append(el("div", {class:"empty"}, text.trim() ? "\u2026" : (T["git.same"] || "")));
-    return;
-  }
-  hunks.forEach((h, i) => {
-    const head = el("div", {class:"hunkhead"});
-    head.append(el("span", {class:"grow"},
-      (T["git.hunk"] || "Hunk") + (i + 1) + "  " +
-      (T["git.hunk.lines"] || "").replace("{from}", h.start).replace("{to}", h.end)));
-    // Staged: the piece can be taken back out. Not staged: it can be put in,
-    // or thrown away -- and throwing away is the one that cannot be undone,
-    // so it says so plainly rather than sitting first
-    if (G.staged) {
-      head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, cached:true, reverse:true})},
-        T["git.hunk.unstage"] || ""));
-    } else {
-      head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, cached:true})},
-        T["git.hunk.stage"] || ""));
-      head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, reverse:true})},
-        T["git.hunk.drop"] || ""));
-    }
-    const lines = diffLines(h.patch);
-    u.diff.append(el("div", {class:"hunk"}, head, lines));
-  });
+  gitChangeInto(u.diff, G.staged ? "staged" : "work", true);
 }
 
 // The PC's own git as menu entries: as it is, and -- once it holds two GitHub
@@ -13061,12 +14568,7 @@ function syncComposerSlot() {
   // walking from a terminal to a model pane swaps where a Send goes without
   // swapping the document, and a field that still said "type here to send"
   // would be describing the tab we just left.
-  // One owner for what the box says. The git panel's writing state is asked
-  // about here too, rather than being written on top and lost at the next
-  // render -- which is what happened the first time
-  castInput.placeholder = (typeof G !== "undefined" && G.busy === "message")
-    ? (T["git.writing.here"] || "")
-    : want === "lua"
+  castInput.placeholder = want === "lua"
     ? (T["tui.cast.lua.ph"] || "Recorded Lua appears here — edit, Run, or write your own")
     : onModelTab()
       ? (T["tui.chat.ph"] || "Message {model}\u2026").split("{model}").join((activeTab() || {}).name || "model")
@@ -13135,11 +14637,6 @@ function renderPanel() {
   // scroll under it, mirroring the switcher on the left.
   if (castPanel === "actions") {
     castPanelEl.append(gearTo("actions", T["tui.cast.actions.edit"] || "Edit quick actions"));
-  }
-  // The commit row is configured too, and by the same gesture: the gear at the
-  // end of the bar, in the one shape the bar has for gears
-  if (castPanel === "git") {
-    castPanelEl.append(gearTo("git", T["settings.sec.git"] || ""));
   }
   // A 🎯 that can't aim (the operator still asks for confirmation) gets the
   // same gear: no section, so it opens THIS tab's own card -- where that is
@@ -13212,9 +14709,22 @@ function ensureBar() {
   castDock = el("div", {id:"castdock"}, modeEl, castPanelEl, castBar);
   document.getElementById("main").append(castDock);
   // Enter sends; Shift+Enter (or an active IME) inserts a newline instead.
+  // Backspace in an empty field has nothing here to delete, so it goes on to
+  // where Send goes, the same way the phone's ⌫ does. A held Backspace that
+  // began on text stops at the empty field: emptying the draft must not go on
+  // to eat the prompt behind it.
+  let bsBeganOnText = false;
   castInput.addEventListener("keydown", (e) => {
     if (typingIME(e)) return;
     if (e.key === "Enter" && !e.shiftKey) { sendBar(); e.preventDefault(); }
+    if (e.key === "Backspace") {
+      if (!e.repeat) bsBeganOnText = castInput.value !== "";
+      if (castInput.value === "" && !bsBeganOnText && !e.ctrlKey && !e.altKey && !e.metaKey
+          && backspaceGoesOn()) {
+        e.preventDefault();
+        sendCastKey("backspace");
+      }
+    }
   });
   // Grow the field with its content (up to the CSS max-height, then it scrolls).
   castInput.addEventListener("input", growCastInput);
@@ -13269,6 +14779,10 @@ function closeBar() {
   if (castDock) castDock.style.display = "none";
   if (castInput) castInput.blur();
   syncPen();
+  // The room the bar stood on goes with it. Shut from the state handler (a phone
+  // looking at a git tab), it was left reserved, and every panel there stopped
+  // a bar-height above the bottom of an empty pane
+  if (typeof syncDockReserve === "function") syncDockReserve();
 }
 // Hand one line to a pane, the way THAT pane takes input: a message for a
 // model bridge, keystrokes and a submit for anything at a prompt. Everywhere a
@@ -13293,15 +14807,17 @@ function sendLine(text, tab) {
   // insert a newline) and not a line at all, so it stays a keystroke.
   send({kind:"key", named:"enter"});
 }
+// Whether a Backspace in the empty composer has a keystroke to become, asked
+// in sendBar's own order. ▶ run mode's sheet and a 🎯 goal are documents, not
+// keystrokes, and a model pane has no line to take one from: there it deletes
+// nothing, as in any empty field.
+function backspaceGoesOn() {
+  if (castPanel === "lua" && luaMode === "run") return false;
+  if (drivingBrowser()) return true;
+  return !castTarget && !onModelTab();
+}
 function sendBar() {
   if (!castInput) return;
-  // On a git panel there is nothing else Send could mean: the surface has no
-  // command line to type at, and the line in the bar is the commit message.
-  // Only the panel standing as a tab of its own, not gitTab(): that one also
-  // answers for any tab whose folder is a repository (the column's reach),
-  // which turned every Send from a phone -- to Claude, to a shell -- into a
-  // commit of whatever was typed
-  if (gitSurfaceTab()) { gitCommit(); return; }
   const t = castInput.value;
   // 📼's ▶ run mode owns the button: Run the sheet on the shown page. The
   // text stays put — it's a document being iterated, not a message. In ⏺
@@ -14434,6 +15950,87 @@ mod tests {
         );
     }
 
+    /// The ideas: opened from the bulb left of the scissors, answered on both
+    /// surfaces, never rebuilt under a caret, and carried cards that survive
+    /// being moved in the page.
+    #[test]
+    fn the_ideas_are_one_box_on_every_surface() {
+        let p = super::page();
+        let bulb = p.find(r#"el("span", {class:"sidebtn ideabtn""#).expect("there is no bulb in the bottom row");
+        let scissors = p.find(r#"el("span", {class:"sidebtn snipbtn""#).expect("the scissors are gone");
+        assert!(bulb < scissors, "the bulb is not left of the scissors");
+        assert!(p.contains(r#"<div id="ideas" hidden></div>"#), "there is nowhere to draw the ideas");
+        // A phone is told the answers down its socket, like every other panel
+        assert!(p.contains("if (d.ideas) window.__ideas(d.ideas);"), "a phone never hears back from the ideas");
+        // One place says the page is covered, for both overlays
+        assert_eq!(p.matches(r#"send({kind:"covered""#).count(), 1, "more than one place says the page is covered");
+        assert!(!p.contains("quickshown"), "the quick commands still say they are shown in words of their own");
+        // Presses and selections inside are the box's own, and the board does not take the caret
+        assert!(p.contains("#issuespanel, #ideas\")"), "a selection in a card is copied and the caret thrown to the terminal");
+        assert!(p.contains("  if (ideasOpen) return;"), "the board takes the keyboard away from a card");
+        // A card being typed in keeps its words and its caret when an answer arrives
+        assert!(p.contains("if (document.activeElement !== t && t.value !== it.text)"), "an answer overwrites the card being typed in");
+        // Moving a card takes it out of the page for an instant: a pointer
+        // capture does not survive that, and the drop would never arrive
+        assert!(p.contains(r#"window.addEventListener("pointerup", end);"#), "a carried card's drop is listened for on the grip");
+        // The writing line is where the caret is on opening
+        assert!(p.contains("    line.focus();"), "the ideas open without the caret in the writing line");
+        // A card's menu, by right-click and by holding the grip on a phone, ends
+        // in the red line that deletes it from the file
+        assert!(p.contains(r#"card.addEventListener("contextmenu", e => { e.preventDefault(); ideaMenu(card, e); });"#), "a card has no right-click menu");
+        assert!(p.contains("const touch = e.pointerType === \"touch\";"), "a phone has no way to a card's menu");
+        assert!(p.contains(r#"el("div", {class:"warn", onclick:() => { closeFolderMenu(); ideasDelete(card); }}, T["tui.ideas.delete"] || ""),"#), "delete is not the red last line of the menu");
+        assert!(p.contains(r#"  ideasDrop(Number(card.dataset.id));"#), "delete does not take the card out of the file");
+        // Sent to an Issue: the new issue form, in front, the idea as its
+        // description and its project found by where the checkout is
+        let to_issue = p.split("function ideaToIssue(card) {").nth(1).expect("an idea cannot be sent to an Issue");
+        let to_issue = &to_issue[..to_issue.find("
+}").unwrap()];
+        for want in [r#"I.view = "create";"#, "body:text", r#"send({kind:"openissues"});"#] {
+            assert!(to_issue.contains(want), "sending an idea to an Issue lost {want}");
+        }
+        assert!(p.contains("const p = I.projects.find(p => sameFolder(p.dir, c.at));"), "the idea's project is not chosen on the new issue");
+        // Done, and named by its issue, only once GitHub has made the issue
+        assert!(p.contains(r#"if (idea && made.number) ideasAsk("issued", {id: idea, number: made.number, url: made.url || ""});"#),
+            "an idea is not marked done by the issue made from it");
+        assert!(!to_issue.contains("ideasSetDone") && !to_issue.contains(r#""issued""#), "an idea is marked done before its issue exists");
+    }
+
+    /// A combination set to need no prefix works with the caret in one of the
+    /// page's boxes, where the window's keyboard never hears it, and Shift held
+    /// with Ctrl travels with the key
+    #[test]
+    fn a_combination_with_no_prefix_is_heard_from_a_text_box() {
+        let p = super::page();
+        assert!(p.contains(r#"send({kind:"key", ctrl:e.key.toLowerCase(), shift:e.shiftKey, alt:e.altKey});"#),
+            "Shift held with Ctrl is dropped on the way from the terminal");
+        assert!(p.contains("function directKeyOf(e) {") && p.contains("S.direct_keys.find("), "the page does not know which combinations to hand on");
+        assert!(p.contains("if (e.target === kbd) return;"), "a combination on the terminal would be sent twice");
+        // The empty launcher takes the keyboard, or Esc from a text box never reaches it
+        assert!(p.contains("if (fresh && !REMOTE) go.focus({preventScroll:true});"), "the empty quick commands leave the keyboard behind");
+    }
+
+    /// Backspace in the empty input bar deletes in the pane it sends to, and
+    /// nowhere else: not after a held key has emptied the draft, and not where
+    /// Send carries a document rather than keystrokes.
+    #[test]
+    fn backspace_in_an_empty_bar_goes_on_to_the_pane() {
+        let p = super::page();
+        assert!(
+            p.contains("if (!e.repeat) bsBeganOnText = castInput.value !== \"\";"),
+            "a held Backspace that emptied the draft goes on deleting in the pane"
+        );
+        assert!(
+            p.contains("&& backspaceGoesOn()) {\n        e.preventDefault();\n        sendCastKey(\"backspace\");"),
+            "Backspace in the empty input bar is not handed to the pane"
+        );
+        let at = p.find("function backspaceGoesOn() {").expect("nothing decides where Backspace goes");
+        let body = &p[at..at + p[at..].find("\n}").unwrap()];
+        for guard in ["luaMode === \"run\"", "drivingBrowser()", "!castTarget", "!onModelTab()"] {
+            assert!(body.contains(guard), "backspaceGoesOn has lost `{guard}`");
+        }
+    }
+
     /// The ✏️ pen is decided by where we are now, not by where we were when
     /// the composer was closed.
     ///
@@ -14958,22 +16555,70 @@ mod tests {
         assert!(!PAGE.contains("pageBy(d > 0 ? 1 : -1)"), "a swipe is back to turning one page");
     }
 
-    /// Send from the composer goes to the pane in front, and only a git panel
-    /// standing as its own tab turns it into a commit.
+    /// Send from the composer goes to the pane in front, and never makes a
+    /// commit. The commit message is written in the git panel's own box.
     ///
-    /// gitTab() answers for any tab whose folder is a repository -- the right
-    /// reach for the changes column, the wrong one here: asked it, every Send
-    /// from a phone to Claude or a shell in a repository became a commit of
-    /// the typed words, refused on main and so, to the person, simply dead.
+    /// The message used to be the composer's line, and the git column's
+    /// Commit button took whatever was typed there -- a line that, beside
+    /// Claude, was meant for Claude. One box with two destinations, and
+    /// nothing on screen saying which one a press would use.
     #[test]
-    fn send_reaches_the_pane_and_commits_only_on_a_git_panel() {
+    fn send_never_commits_and_the_message_has_a_box_of_its_own() {
         let at = PAGE.find("function sendBar() {").expect("there is no sendBar");
         let body = &PAGE[at..at + PAGE[at..].find("\n}\n").expect("sendBar has no end")];
-        assert!(
-            body.contains("if (gitSurfaceTab()) { gitCommit(); return; }"),
-            "sending commits even on a tab that is not the git panel"
-        );
-        assert!(!body.contains("if (gitTab())"), "sending treats every tab in the repository as the git panel");
+        assert!(!body.contains("gitCommit"), "sending from the composer makes a commit");
+        assert!(!PAGE.contains("buildGitPanel"), "the composer still has a commit row");
+        assert!(!PAGE.contains("castInput.value.trim() : \"\";\n  if (!text) { gitSay"), "the commit still reads the composer");
+        let build = PAGE.split("function gitBuild(box) {").nth(1).unwrap_or_default();
+        assert!(build.contains("el(\"textarea\""), "the git panel has no message box of its own");
+    }
+
+    /// In the column a change is read in an editor tab, and the list stays in
+    /// front. Reading it inside the column took the place of the list whose
+    /// buttons act on it, so "Add picked" could not be pressed after picking.
+    /// The drawing of a change is one function wherever it appears.
+    #[test]
+    fn a_change_opens_where_the_terminals_are_and_the_list_stays() {
+        let body = |start: &str| -> String {
+            PAGE.split(start).nth(1)
+                .and_then(|r| r.split("\n}\n").next())
+                .unwrap_or_else(|| panic!("there is no {start}"))
+                .to_string()
+        };
+        let row = body("function gitFileRow(r, where) {");
+        assert!(row.contains("if (gitInSide()) { gitOpenDiff(r.path, where); return; }"),
+                "a file pressed in the column is not opened in an editor tab");
+        assert!(!row.contains(r#"gitPane = "diff""#), "pressing a file still moves the list out of the way");
+        let ctrl = row.split("if (e.ctrlKey || e.metaKey) {").nth(1)
+            .and_then(|r| r.split("return;").next()).unwrap_or_default();
+        assert!(!ctrl.contains("gitOpenDiff") && !ctrl.contains("gitAskChange"),
+                "ctrl-click opens a change instead of only picking");
+        let panes = body("function gitPanes() {");
+        assert!(panes.contains(r#"gitInSide() ? all.filter(([id]) => id !== "diff")"#), "the column still offers a change pane");
+        let open = body("function gitOpenDiff(path, how) {");
+        assert!(open.contains(r#"send({kind:"editopen""#), "a change is not opened through the editor's own door");
+        for place in ["gitChangeInto(u.diff,", "gitChangeInto(u.commitDiff,", "gitChangeInto(u.change,"] {
+            assert!(PAGE.contains(place), "{place} does not draw with the shared function");
+        }
+        assert_eq!(PAGE.matches(r#"class:"hunkhead""#).count(), 1, "a change is drawn by more than one hand");
+    }
+
+    /// The commit's one button is always the next thing to do, in the order a
+    /// piece of work goes through git -- and every step is an ask for a
+    /// primitive the automation has too, never a mode of its own.
+    #[test]
+    fn the_commit_button_follows_the_work_through_git() {
+        let next = PAGE.split("function gitNext() {").nth(1)
+            .and_then(|r| r.split("\n}\n").next()).expect("there is no gitNext");
+        let order = ["gitAsk(\"resolve\")", "gitCommit()", "gitAsk(\"stage\"", "T[\"git.publish\"]",
+                     "T[\"git.push.n\"]", "T[\"git.pull.n\"]", "gitAsk(\"fetch\")"];
+        let mut last = 0;
+        for step in order {
+            let at = next.find(step).unwrap_or_else(|| panic!("the next thing to do never becomes {step}"));
+            assert!(at >= last, "{step} comes before the step it follows");
+            last = at;
+        }
+        assert!(!next.contains("send("), "a step talks to the app other than through gitAsk");
     }
 
     /// The folder picker is a framed dialog, drawn in this app's own marks.
@@ -15166,10 +16811,10 @@ mod tests {
         // One tab can be put away too, and nothing else stands in for the box
         assert!(!PAGE.contains("if (mine.length >= 2) {"), "a folder running one tab has no box to put it away");
         assert!(PAGE.contains("putTabsAway(g.folder, !away)"), "there is no press that folds the bundle");
-        // Several start put away, one starts out, and a press is remembered either way
-        assert!(PAGE.contains("const tabsPutAway = (g, mine) => tabsAway.has(g.folder) ? tabsAway.get(g.folder) : mine.length >= 2;"),
-            "a bundle does not start the way its size says");
-        assert!(PAGE.contains("const away = tabsPutAway(g, mine);"), "a bundle ignores what somebody chose");
+        // Every set starts put away, one tab or several, and a press is remembered either way
+        assert!(PAGE.contains("const tabsPutAway = g => tabsAway.has(g.folder) ? tabsAway.get(g.folder) : true;"),
+            "a folder's tabs do not start put away");
+        assert!(PAGE.contains("const away = tabsPutAway(g);"), "a bundle ignores what somebody chose");
         // Brought out, it is still the box, so the way to shut it is where the way to open it was
         assert!(!PAGE.contains(".bundle.away { margin"), "only a folded bundle is drawn as a box");
         assert!(PAGE.contains("function pillsRow(mine)"), "there is nothing shown when folded");

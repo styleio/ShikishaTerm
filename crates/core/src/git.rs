@@ -275,7 +275,7 @@ pub fn run_as(dir: &Path, args: &[&str], input: &str, limit: Duration, who: &As)
     let stdout = out.and_then(|h| h.join().ok()).unwrap_or_default();
     let stderr = err.and_then(|h| h.join().ok()).unwrap_or_default();
     if !status.success() {
-        let said = String::from_utf8_lossy(&stderr).trim().to_string();
+        let said = without_line_ending_notes(&String::from_utf8_lossy(&stderr));
         if let Some(why) = pc_sign_in_said(&who.auth, &said) {
             bail!(why);
         }
@@ -285,6 +285,93 @@ pub fn run_as(dir: &Path, args: &[&str], input: &str, limit: Duration, who: &As)
         ));
     }
     Ok(String::from_utf8_lossy(&stdout).to_string())
+}
+
+/// git's words for a failure, less its notes about line endings.
+///
+/// On Windows every command that touches a file checked out with LF prints
+/// "LF will be replaced by CRLF" for it -- a dozen lines that are not the
+/// failure, stacked on top of the one line that is
+fn without_line_ending_notes(said: &str) -> String {
+    said.lines()
+        .filter(|l| !(l.starts_with("warning: in the working copy of ") && l.contains(" will be replaced by ")))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// A push git will not make because the branch follows one of another name:
+/// `feature` following `origin/main` could mean either, and git asks rather
+/// than guesses
+#[derive(Debug)]
+pub struct PushNameMismatch {
+    pub branch: String,
+    pub remote: String,
+    pub target: String,
+}
+
+impl std::fmt::Display for PushNameMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::i18n::tp(
+            "err.git.push_other_name",
+            &[("branch", &self.branch), ("remote", &self.remote), ("target", &self.target)],
+        ))
+    }
+}
+
+impl std::error::Error for PushNameMismatch {}
+
+/// The name of the branch this one follows on its server (`main` for one
+/// following `origin/main`), from the branch's own settings. None when it
+/// follows nothing
+fn followed_name(dir: &Path, here: &str) -> Option<String> {
+    let merge = run(dir, &["config", "--get", &format!("branch.{here}.merge")]).ok()?;
+    let name = merge.trim().trim_start_matches("refs/heads/").to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// A pull that would write over files somebody has not committed yet.
+///
+/// Worked out from git's own lists rather than read out of its message: the
+/// message is in whatever language git speaks on the PC, and the lists are the
+/// same everywhere. The paths are the files in both -- changed here and not
+/// committed, and changed by what the pull brings in
+#[derive(Debug)]
+pub struct PullBlocked(pub Vec<String>);
+
+impl std::fmt::Display for PullBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const SHOWN: usize = 3;
+        let mut names = self.0.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(", ");
+        if self.0.len() > SHOWN {
+            names.push_str(&crate::i18n::tp(
+                "err.git.pull_blocked.more",
+                &[("n", &(self.0.len() - SHOWN).to_string())],
+            ));
+        }
+        f.write_str(&crate::i18n::tp("err.git.pull_blocked", &[("files", &names)]))
+    }
+}
+
+impl std::error::Error for PullBlocked {}
+
+/// The uncommitted files a pull would change, once the pull has fetched.
+/// Empty when there are none or it cannot be told
+fn in_the_way(dir: &Path) -> Vec<String> {
+    let Ok(coming) = run(dir, &["diff", "--name-only", "-z", "HEAD...@{upstream}"]) else {
+        return Vec::new();
+    };
+    let coming: std::collections::HashSet<&str> = coming.split('\0').filter(|p| !p.is_empty()).collect();
+    let Ok(here) = status(dir) else { return Vec::new() };
+    let mut both: Vec<String> = here
+        .into_iter()
+        .flat_map(|c| std::iter::once(c.path).chain(c.from))
+        .filter(|p| coming.contains(p.as_str()))
+        .collect();
+    both.sort();
+    both.dedup();
+    both
 }
 
 /// What to say when git on this PC wanted to ask somebody how to sign in.
@@ -596,6 +683,27 @@ pub fn show(dir: &Path, hash: &str, path: &str) -> Result<String> {
     run(dir, &args)
 }
 
+/// Where the branch checked out sends its commits, and how far apart the two
+/// are: commits here that are not there yet, and commits there that are not
+/// here. As of the last fetch -- asking the server is what fetch is for, and a
+/// count that talked to it would make every look at the panel a network wait.
+/// `None` when the branch follows nothing (never pushed) or the head is detached
+pub fn upstream(dir: &Path) -> Result<Option<(String, u32, u32)>> {
+    let Ok(name) = run(dir, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]) else {
+        return Ok(None);
+    };
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    // "behind<TAB>ahead": the left side is the upstream's own commits
+    let counts = run(dir, &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])?;
+    let mut parts = counts.split_whitespace().map(|n| n.parse::<u32>().unwrap_or(0));
+    let behind = parts.next().unwrap_or(0);
+    let ahead = parts.next().unwrap_or(0);
+    Ok(Some((name, ahead, behind)))
+}
+
 pub fn branch(dir: &Path) -> Result<Option<String>> {
     match run(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
         Ok(out) => {
@@ -794,6 +902,161 @@ pub fn is_ssh_url(url: &str) -> bool {
     }
 }
 
+/// The branch a branch was cut from, as written when its worktree was made
+/// (`origin/main`, `origin/develop`). None when nothing was written
+pub fn recorded_base(dir: &Path, branch: &str) -> Option<String> {
+    run(dir, &["config", "--get", &format!("branch.{branch}.shikishaBase")])
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Write down what a branch was cut from, so it is not asked for again
+pub fn record_base(dir: &Path, branch: &str, base: &str) -> Result<()> {
+    let base = base.trim();
+    if base.is_empty() {
+        bail!(crate::i18n::t("err.git.empty_branch"));
+    }
+    run(dir, &["config", &format!("branch.{branch}.shikishaBase"), base]).map(|_| ())
+}
+
+/// The branches the servers have, as this PC last heard: `origin/main` and so
+/// on, without the pointer each server keeps to its default
+pub fn remote_branches(dir: &Path) -> Result<Vec<String>> {
+    let out = run(dir, &["for-each-ref", "--format=%(refname:short)", "refs/remotes"])?;
+    let remotes = run(dir, &["remote"]).unwrap_or_default();
+    Ok(out
+        .lines()
+        .map(str::trim)
+        // `origin/HEAD` is written short as the remote's own name
+        .filter(|r| !r.is_empty() && !r.ends_with("/HEAD") && !remotes.lines().any(|m| m.trim() == *r))
+        .map(str::to_string)
+        .collect())
+}
+
+/// The commands that bring the latest of a branch's base in: fetch that one
+/// branch from its server, then merge what was fetched -- never the local copy
+/// of the base, which can be days old. Built once, and both shown on screen and
+/// run from here, so what is shown is what runs
+pub fn catch_up_steps(dir: &Path, base: &str) -> Vec<Vec<String>> {
+    catch_up_steps_for(dir, None, base)
+}
+
+/// The same for a pull request's branch, which is on the server as well: that
+/// branch is fetched first, so a folder behind what was pushed is told apart
+/// before anything is merged into it. Every step but the last is a fetch
+pub fn catch_up_steps_for(dir: &Path, head: Option<&str>, base: &str) -> Vec<Vec<String>> {
+    let base = base.trim();
+    let remotes = run(dir, &["remote"]).unwrap_or_default();
+    // `origin/develop` names its server; a bare `develop` is origin's
+    let (remote, branch) = match base.split_once('/') {
+        Some((r, b)) if remotes.lines().any(|m| m.trim() == r) => (r.to_string(), b.to_string()),
+        _ => ("origin".to_string(), base.to_string()),
+    };
+    let fetch = |b: &str| vec!["fetch".into(), remote.clone(), format!("+refs/heads/{b}:refs/remotes/{remote}/{b}")];
+    let mut steps = Vec::new();
+    if let Some(h) = head.map(str::trim).filter(|h| !h.is_empty() && *h != branch) {
+        steps.push(fetch(h));
+    }
+    steps.push(fetch(&branch));
+    steps.push(vec!["merge".into(), "--no-edit".into(), format!("{remote}/{branch}")]);
+    steps
+}
+
+/// The same commands as a person would type them
+pub fn catch_up_said(steps: &[Vec<String>]) -> Vec<String> {
+    steps.iter().map(|s| format!("git {}", s.join(" "))).collect()
+}
+
+/// Why bringing the latest in did not happen, or stopped
+#[derive(Debug)]
+pub enum CatchUpStop {
+    /// Changes nobody has committed: a merge on top of them is not started
+    Dirty,
+    /// The merge stopped on these files, and is left as it stopped
+    Conflict { base: String, files: Vec<String> },
+    /// What was pushed of the branch is ahead of this folder: merged here, it
+    /// could not be pushed back. Nothing is started
+    Behind { branch: String, count: u64 },
+}
+
+impl std::fmt::Display for CatchUpStop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&match self {
+            CatchUpStop::Dirty => crate::i18n::t("err.git.catch_up.dirty"),
+            CatchUpStop::Conflict { base, files } => crate::i18n::tp(
+                "err.git.catch_up.conflict",
+                &[("base", base), ("files", &files.join(", "))],
+            ),
+            CatchUpStop::Behind { branch, count } => crate::i18n::tp(
+                "err.git.catch_up.behind",
+                &[("branch", branch), ("n", &count.to_string())],
+            ),
+        })
+    }
+}
+
+impl std::error::Error for CatchUpStop {}
+
+/// Whether the merge left half done in this folder is one bringing `rev` in:
+/// what it was merging is the very commit `rev` names. So a page opened after
+/// the merge stopped can still say what stopped and offer the way on
+pub fn merging_in(dir: &Path, rev: &str) -> bool {
+    let at = |r: &str| run(dir, &["rev-parse", "-q", "--verify", &format!("{r}^{{commit}}")]).ok().map(|s| s.trim().to_string());
+    matches!((at("MERGE_HEAD"), at(rev)), (Some(a), Some(b)) if !a.is_empty() && a == b)
+}
+
+/// Bring the latest of `base` into the branch in front: refused while anything
+/// is uncommitted, and on a conflict left where the merge stopped. Answers with
+/// how many commits came in -- 0 when there was nothing new
+pub fn catch_up(dir: &Path, base: &str, who: &As) -> Result<u64> {
+    catch_up_for(dir, None, base, who)
+}
+
+/// [`catch_up`] for a pull request's branch: what was pushed of `head` is
+/// fetched too, and a folder behind it is refused before the merge
+pub fn catch_up_for(dir: &Path, head: Option<&str>, base: &str, who: &As) -> Result<u64> {
+    fits(dir, who)?;
+    // Untracked files are nobody's work in progress as far as a merge goes; a
+    // change to a file git follows is
+    if status(dir)?.iter().any(|c| c.index != '?') {
+        return Err(anyhow::Error::new(CatchUpStop::Dirty));
+    }
+    let steps = catch_up_steps_for(dir, head, base);
+    let Some((merge, fetches)) = steps.split_last() else { bail!(crate::i18n::t("err.git.empty_branch")) };
+    fn args(s: &[String]) -> Vec<&str> {
+        s.iter().map(String::as_str).collect()
+    }
+    for fetch in fetches {
+        run_as(dir, &args(fetch), "", NETWORK_LIMIT, who)?;
+    }
+    // The pull request's branch as pushed: its own fetch names where it landed
+    if fetches.len() > 1
+        && let Some(pushed) = fetches[0].last().and_then(|r| r.rsplit_once(':')).map(|(_, to)| to.trim_start_matches("refs/remotes/").to_string())
+    {
+        let count = run(dir, &["rev-list", "--count", &format!("HEAD..{pushed}")])?.trim().parse::<u64>().unwrap_or(0);
+        if count > 0 {
+            return Err(anyhow::Error::new(CatchUpStop::Behind { branch: pushed, count }));
+        }
+    }
+    let theirs = merge.last().cloned().unwrap_or_default();
+    let taken = run(dir, &["rev-list", "--count", &format!("HEAD..{theirs}")])?
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(0);
+    if taken == 0 {
+        return Ok(0);
+    }
+    if let Err(e) = run_as(dir, &args(merge), "", LIMIT, who) {
+        let files = conflicts(dir).unwrap_or_default();
+        if files.is_empty() {
+            return Err(e);
+        }
+        return Err(anyhow::Error::new(CatchUpStop::Conflict { base: theirs, files }));
+    }
+    Ok(taken)
+}
+
 pub fn fetch(dir: &Path, who: &As) -> Result<String> {
     fits(dir, who)?;
     run_as(dir, &["fetch", "--prune"], "", NETWORK_LIMIT, who)
@@ -801,7 +1064,10 @@ pub fn fetch(dir: &Path, who: &As) -> Result<String> {
 
 pub fn pull(dir: &Path, who: &As) -> Result<String> {
     fits(dir, who)?;
-    run_as(dir, &["pull"], "", NETWORK_LIMIT, who)
+    run_as(dir, &["pull"], "", NETWORK_LIMIT, who).map_err(|e| {
+        let both = in_the_way(dir);
+        if both.is_empty() { e } else { anyhow::Error::new(PullBlocked(both)) }
+    })
 }
 
 /// Send it. A branch made here has never been pushed, so the first push is the
@@ -814,6 +1080,20 @@ pub fn push(dir: &Path, who: &As) -> Result<String> {
         Ok(out) => Ok(out),
         Err(first) => {
             let Some(here) = branch(dir)? else { return Err(first) };
+            // Following a branch of another name, git will not choose between
+            // sending to that one and sending under this name. Said in those
+            // words, worked out from the branch's own settings rather than
+            // read out of git's message
+            if let Some(target) = followed_name(dir, &here)
+                && target != here
+            {
+                let remote = run(dir, &["config", "--get", &format!("branch.{here}.remote")])
+                    .map(|r| r.trim().to_string())
+                    .ok()
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or_else(|| "origin".to_string());
+                return Err(anyhow::Error::new(PushNameMismatch { branch: here, remote, target }));
+            }
             if !first.to_string().contains("--set-upstream") {
                 return Err(first);
             }
@@ -1067,6 +1347,248 @@ mod tests {
         assert!(is_not_installed(&err));
         assert!(!is_not_installed(&anyhow::anyhow!("anything else")));
         assert!(!err.to_string().is_empty());
+    }
+
+    /// A bare server, a clone of it to work in, and a branch cut from its main
+    /// the way a worktree's is -- for the catching-up tests below
+    fn catch_up_setup(tag: &str) -> Option<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)> {
+        let seed = scratch_repo(&format!("{tag}-seed"))?;
+        std::fs::write(seed.join("a.txt"), "one\n").unwrap();
+        run(&seed, &["add", "."]).unwrap();
+        run(&seed, &["commit", "-m", "one"]).unwrap();
+        let tmp = std::env::temp_dir();
+        let far = tmp.join(format!("shikisha-git-{}-{tag}-far", std::process::id()));
+        let near = tmp.join(format!("shikisha-git-{}-{tag}-near", std::process::id()));
+        let _ = std::fs::remove_dir_all(&far);
+        let _ = std::fs::remove_dir_all(&near);
+        run(&seed, &["clone", "-q", "--bare", &seed.display().to_string(), &far.display().to_string()]).unwrap();
+        run(&seed, &["clone", "-q", &far.display().to_string(), &near.display().to_string()]).unwrap();
+        for d in [&near, &seed] {
+            run(d, &["config", "user.email", "test@example.invalid"]).unwrap();
+            run(d, &["config", "user.name", "test"]).unwrap();
+        }
+        run(&seed, &["remote", "add", "far", &far.display().to_string()]).unwrap();
+        run(&near, &["checkout", "-q", "-b", "work", "--no-track", "origin/main"]).unwrap();
+        Some((seed, far, near))
+    }
+
+    /// The server's main moves on while the local main stays behind
+    fn catch_up_advance(seed: &Path, file: &str, text: &str) {
+        std::fs::write(seed.join(file), text).unwrap();
+        run(seed, &["add", "."]).unwrap();
+        run(seed, &["commit", "-qm", "far"]).unwrap();
+        run(seed, &["push", "-q", "far", "main"]).unwrap();
+    }
+
+    #[test]
+    fn catching_up_is_refused_with_uncommitted_work_and_changes_nothing() {
+        let Some((seed, far, near)) = catch_up_setup("cu-dirty") else { return };
+        record_base(&near, "work", "origin/main").unwrap();
+        catch_up_advance(&seed, "b.txt", "new\n");
+        std::fs::write(near.join("a.txt"), "mine\n").unwrap();
+        let head = run(&near, &["rev-parse", "HEAD"]).unwrap();
+        let err = catch_up(&near, "origin/main", &As::default()).unwrap_err();
+        assert!(matches!(err.downcast_ref::<CatchUpStop>(), Some(CatchUpStop::Dirty)), "{err}");
+        assert_eq!(run(&near, &["rev-parse", "HEAD"]).unwrap(), head, "the branch moved");
+        assert_eq!(std::fs::read_to_string(near.join("a.txt")).unwrap(), "mine\n", "the work was touched");
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn a_base_not_written_down_is_none_and_one_chosen_is_kept() {
+        let Some((seed, far, near)) = catch_up_setup("cu-base") else { return };
+        assert_eq!(recorded_base(&near, "work"), None);
+        assert!(remote_branches(&near).unwrap().contains(&"origin/main".to_string()));
+        record_base(&near, "work", "origin/main").unwrap();
+        assert_eq!(recorded_base(&near, "work").as_deref(), Some("origin/main"));
+        assert_eq!(
+            catch_up_said(&catch_up_steps(&near, "origin/main")),
+            vec!["git fetch origin +refs/heads/main:refs/remotes/origin/main".to_string(),
+                 "git merge --no-edit origin/main".to_string()]
+        );
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn the_latest_on_the_server_comes_in_even_when_the_local_main_is_old() {
+        let Some((seed, far, near)) = catch_up_setup("cu-latest") else { return };
+        catch_up_advance(&seed, "b.txt", "new\n");
+        catch_up_advance(&seed, "c.txt", "newer\n");
+        // The local main is where it was cloned, two commits behind the server
+        let local_main = run(&near, &["rev-parse", "main"]).unwrap();
+        assert_eq!(catch_up(&near, "origin/main", &As::default()).unwrap(), 2);
+        assert!(near.join("c.txt").exists(), "the server's latest did not come in");
+        assert_eq!(run(&near, &["rev-parse", "main"]).unwrap(), local_main, "the local main was used or moved");
+        assert_eq!(catch_up(&near, "origin/main", &As::default()).unwrap(), 0, "a second time there is nothing new");
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn a_conflict_stops_where_the_merge_stopped_and_names_the_files() {
+        let Some((seed, far, near)) = catch_up_setup("cu-conflict") else { return };
+        std::fs::write(near.join("a.txt"), "mine\n").unwrap();
+        run(&near, &["commit", "-qam", "mine"]).unwrap();
+        catch_up_advance(&seed, "a.txt", "theirs\n");
+        let err = catch_up(&near, "origin/main", &As::default()).unwrap_err();
+        match err.downcast_ref::<CatchUpStop>() {
+            Some(CatchUpStop::Conflict { base, files }) => {
+                assert_eq!(base, "origin/main");
+                assert_eq!(files, &vec!["a.txt".to_string()]);
+            }
+            other => panic!("not a conflict: {other:?} {err}"),
+        }
+        let merging = run(&near, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+        assert!(merging.is_ok(), "the merge was not left where it stopped");
+        assert!(merging_in(&near, "origin/main"), "the stopped merge is not told apart as this one");
+        assert!(!merging_in(&near, "main"), "another branch was taken for the one being merged");
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
+    }
+
+    /// A pull request's branch: what was pushed of it is fetched first, and
+    /// shown as a step of its own
+    #[test]
+    fn a_pull_requests_branch_is_fetched_before_its_base_is_merged() {
+        let Some((seed, far, near)) = catch_up_setup("cu-pr-steps") else { return };
+        assert_eq!(
+            catch_up_said(&catch_up_steps_for(&near, Some("work"), "origin/main")),
+            vec!["git fetch origin +refs/heads/work:refs/remotes/origin/work".to_string(),
+                 "git fetch origin +refs/heads/main:refs/remotes/origin/main".to_string(),
+                 "git merge --no-edit origin/main".to_string()]
+        );
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
+    }
+
+    /// Merged into a folder behind what was pushed, the result could not be
+    /// pushed back: refused, and nothing is touched
+    #[test]
+    fn a_folder_behind_its_pushed_branch_is_refused_before_the_merge() {
+        let Some((seed, far, near)) = catch_up_setup("cu-pr-behind") else { return };
+        std::fs::write(near.join("w.txt"), "pushed\n").unwrap();
+        run(&near, &["add", "."]).unwrap();
+        run(&near, &["commit", "-qm", "pushed"]).unwrap();
+        run(&near, &["push", "-q", "origin", "work"]).unwrap();
+        run(&near, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+        catch_up_advance(&seed, "b.txt", "new\n");
+        let head = run(&near, &["rev-parse", "HEAD"]).unwrap();
+        let err = catch_up_for(&near, Some("work"), "origin/main", &As::default()).unwrap_err();
+        match err.downcast_ref::<CatchUpStop>() {
+            Some(CatchUpStop::Behind { branch, count }) => {
+                assert_eq!(branch, "origin/work");
+                assert_eq!(*count, 1);
+            }
+            other => panic!("not refused as behind: {other:?} {err}"),
+        }
+        assert_eq!(run(&near, &["rev-parse", "HEAD"]).unwrap(), head, "the branch moved");
+        assert!(!near.join("b.txt").exists(), "the base was merged anyway");
+        // Up to date with what was pushed, the same call brings the base in
+        run(&near, &["merge", "-q", "--ff-only", "origin/work"]).unwrap();
+        assert_eq!(catch_up_for(&near, Some("work"), "origin/main", &As::default()).unwrap(), 1);
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
+    }
+
+    /// A push refused because the branch follows one of another name says
+    /// both names and both ways out, not git's page about push.default
+    #[test]
+    fn a_push_to_a_branch_of_another_name_is_said_plainly() {
+        let Some(seed) = scratch_repo("othername-seed") else { return };
+        std::fs::write(seed.join("a.txt"), "one\n").unwrap();
+        run(&seed, &["add", "."]).unwrap();
+        run(&seed, &["commit", "-m", "one"]).unwrap();
+        let far = std::env::temp_dir().join(format!("shikisha-git-{}-othername-far", std::process::id()));
+        let near = std::env::temp_dir().join(format!("shikisha-git-{}-othername-near", std::process::id()));
+        let _ = std::fs::remove_dir_all(&far);
+        let _ = std::fs::remove_dir_all(&near);
+        run(&seed, &["clone", "-q", "--bare", &seed.display().to_string(), &far.display().to_string()]).unwrap();
+        run(&seed, &["clone", "-q", &far.display().to_string(), &near.display().to_string()]).unwrap();
+        run(&near, &["config", "user.email", "test@example.invalid"]).unwrap();
+        run(&near, &["config", "user.name", "test"]).unwrap();
+        run(&near, &["config", "push.default", "simple"]).unwrap();
+        run(&near, &["checkout", "-q", "-b", "feature", "--track", "origin/main"]).unwrap();
+        std::fs::write(near.join("a.txt"), "two\n").unwrap();
+        run(&near, &["commit", "-qam", "two"]).unwrap();
+
+        let err = push(&near, &As::default()).unwrap_err();
+        let said = err.downcast_ref::<PushNameMismatch>().expect("the refusal is not recognised");
+        assert_eq!((said.branch.as_str(), said.remote.as_str(), said.target.as_str()), ("feature", "origin", "main"));
+        let text = err.to_string();
+        assert!(text.contains("feature") && text.contains("origin/main"), "{text}");
+        assert!(!text.contains("push.default"), "git's own page came through: {text}");
+        let _ = std::fs::remove_dir_all(&near);
+        let _ = std::fs::remove_dir_all(&far);
+        let _ = std::fs::remove_dir_all(&seed);
+    }
+
+    /// A pull refused because it would write over uncommitted work names the
+    /// files in the way, and nothing but them
+    #[test]
+    fn a_pull_in_the_way_of_uncommitted_work_names_the_files() {
+        let Some(far) = scratch_repo("blocked-far") else { return };
+        for f in ["a.txt", "b.txt"] {
+            std::fs::write(far.join(f), "one\n").unwrap();
+        }
+        run(&far, &["add", "."]).unwrap();
+        run(&far, &["commit", "-m", "one"]).unwrap();
+        let near = std::env::temp_dir().join(format!("shikisha-git-{}-blocked-near", std::process::id()));
+        let _ = std::fs::remove_dir_all(&near);
+        run(&far, &["clone", "-q", &far.display().to_string(), &near.display().to_string()]).unwrap();
+
+        // There: a.txt changes. Here: a.txt and b.txt are edited, not committed
+        std::fs::write(far.join("a.txt"), "far\n").unwrap();
+        run(&far, &["commit", "-am", "far"]).unwrap();
+        std::fs::write(near.join("a.txt"), "near\n").unwrap();
+        std::fs::write(near.join("b.txt"), "near\n").unwrap();
+
+        let err = pull(&near, &As::default()).unwrap_err();
+        let blocked = err.downcast_ref::<PullBlocked>().expect("the refusal is not recognised");
+        assert_eq!(blocked.0, vec!["a.txt".to_string()], "only the file in the way is named");
+        assert!(err.to_string().contains("a.txt"), "{err}");
+
+        // Out of the way, the same pull goes through
+        run(&near, &["checkout", "--", "a.txt"]).unwrap();
+        pull(&near, &As::default()).expect("the pull still fails with nothing in the way");
+        let _ = std::fs::remove_dir_all(&near);
+        let _ = std::fs::remove_dir_all(&far);
+    }
+
+    #[test]
+    fn a_failure_is_not_buried_under_line_ending_notes() {
+        let said = "warning: in the working copy of 'a.md', LF will be replaced by CRLF the next time Git touches it\n\
+                    error: something real\n\
+                    warning: in the working copy of 'b.rs', CRLF will be replaced by LF the next time Git touches it";
+        assert_eq!(without_line_ending_notes(said), "error: something real");
+    }
+
+    /// A branch that follows another says how many commits each side has that
+    /// the other does not; one that follows nothing says nothing at all
+    #[test]
+    fn a_branch_counts_what_it_has_to_send_and_to_take() {
+        let Some(far) = scratch_repo("upstream-far") else { return };
+        std::fs::write(far.join("a.txt"), "one").unwrap();
+        run(&far, &["add", "."]).unwrap();
+        run(&far, &["commit", "-m", "one"]).unwrap();
+        let near = std::env::temp_dir().join(format!("shikisha-git-{}-upstream-near", std::process::id()));
+        let _ = std::fs::remove_dir_all(&near);
+        run(&far, &["clone", "-q", &far.display().to_string(), &near.display().to_string()]).unwrap();
+        run(&near, &["config", "user.email", "test@example.invalid"]).unwrap();
+        run(&near, &["config", "user.name", "test"]).unwrap();
+        assert_eq!(upstream(&near).unwrap(), Some(("origin/main".to_string(), 0, 0)));
+
+        // Two commits here, one there
+        for n in ["two", "three"] {
+            std::fs::write(near.join("a.txt"), n).unwrap();
+            run(&near, &["commit", "-am", n]).unwrap();
+        }
+        std::fs::write(far.join("b.txt"), "far").unwrap();
+        run(&far, &["add", "."]).unwrap();
+        run(&far, &["commit", "-m", "far"]).unwrap();
+        assert_eq!(upstream(&near).unwrap(), Some(("origin/main".to_string(), 2, 0)), "not fetched yet");
+        run(&near, &["fetch", "-q"]).unwrap();
+        assert_eq!(upstream(&near).unwrap(), Some(("origin/main".to_string(), 2, 1)));
+
+        run(&near, &["checkout", "-q", "-b", "alone"]).unwrap();
+        assert_eq!(upstream(&near).unwrap(), None, "a branch never pushed follows nothing");
+        let _ = std::fs::remove_dir_all(&near);
+        let _ = std::fs::remove_dir_all(&far);
     }
 
     #[test]

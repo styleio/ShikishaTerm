@@ -1469,6 +1469,32 @@ end
 shikisha.set_progress(nil, "", at)
 "#;
 
+/// Something written by the AI in a shape a form can be filled from: an
+/// issue from somebody's notes, a pull request from a branch's commits. The
+/// prompt comes from the settings with its words already filled in, then the
+/// shape of the answer -- JSON -- and what comes back is asked for again, with
+/// the reason, when it cannot be read. Returns the JSON text; which fields
+/// beyond a title it must hold, and which of them are kept, the form decides
+pub const DRAFT_LUA: &str = r#"
+local prompt = shikisha.get_var("draft_prompt") or ""
+local shape  = shikisha.get_var("draft_shape") or ""
+local ask = prompt .. "\n\n" .. shape
+for try = 1, 3 do
+  local said, why = shikisha.ai_ask(ask)
+  if not said then error(why) end
+  -- A fence around the answer is not part of it
+  local body = said:gsub("^%s*```%w*%s*", "")
+  body = body:gsub("%s*```%s*$", "")
+  local got, bad = shikisha.json_decode(body)
+  if type(got) == "table" and type(got.title) == "string" and got.title ~= "" then
+    return shikisha.json_encode(got)
+  end
+  ask = prompt .. "\n\n" .. shape .. "\n\n"
+    .. shikisha.tf("ai.draft.retry", { error = bad or "no title" })
+end
+error(shikisha.t("err.draft.failed"))
+"#;
+
 /// What the commit-message button runs when nobody has written their own.
 ///
 /// It is Lua rather than Rust so that "I want it in English" and "I want a
@@ -1477,8 +1503,9 @@ shikisha.set_progress(nil, "", at)
 /// do is return the message as a string; where that string goes is the panel's
 /// business, not this template's.
 pub const COMMIT_MESSAGE_LUA: &str = r#"
-local tab  = shikisha.get_var("git_tab")
-local hint = shikisha.get_var("git_hint") or ""
+local tab    = shikisha.get_var("git_tab")
+-- The whole prompt, as written in the settings
+local prompt = shikisha.get_var("git_prompt") or ""
 -- What is staged is what is about to be committed. With nothing staged there
 -- is still a change to talk about: the one in front of them
 local diff = shikisha.git_diff(tab, { staged = true })
@@ -1486,9 +1513,16 @@ if diff == "" then diff = shikisha.git_diff(tab, { staged = false }) end
 if diff == "" then error(shikisha.t("err.git.nothing_to_describe")) end
 -- A diff can be a megabyte. The shape of the change is in the first pages
 if #diff > 12000 then diff = diff:sub(1, 12000) .. "\n...\n" end
-local extra = ""
-if hint ~= "" then extra = shikisha.t("ai.commit.extra") .. "\n" .. hint .. "\n" end
-local said, why = shikisha.ai_ask(shikisha.tf("ai.commit.prompt", { extra = extra, diff = diff }))
+-- The change goes where the prompt says {diff}, or after it
+local at = prompt:find("{diff}", 1, true)
+if at then
+  prompt = prompt:sub(1, at - 1) .. diff .. prompt:sub(at + #"{diff}")
+elseif prompt == "" then
+  prompt = diff
+else
+  prompt = prompt .. "\n\n" .. diff
+end
+local said, why = shikisha.ai_ask(prompt)
 if not said then error(why) end
 return said
 "#;
@@ -2489,6 +2523,28 @@ impl HookEngine {
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
+            // Text to a value and back. They reach nothing and change nothing:
+            // what an AI answers in JSON is read with the first, and a table
+            // handed to the page or put in a prompt is written with the second
+            shikisha
+                .set(
+                    "json_decode",
+                    lua.create_function(|lua, text: String| {
+                        match serde_json::from_str::<serde_json::Value>(text.trim()) {
+                            Ok(v) => Ok((json_to_lua(lua, &v)?, Value::Nil)),
+                            Err(e) => Ok((Value::Nil, Value::String(lua.create_string(e.to_string())?))),
+                        }
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            shikisha
+                .set(
+                    "json_encode",
+                    lua.create_function(|_, v: Value| Ok(lua_to_json(&v).to_string()))
+                        .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
             // What changed between two texts, written the way git writes a
             // diff. It is handed the texts, never told where to find them --
             // so the same command serves a file, a page, a reply and a
@@ -3202,6 +3258,36 @@ impl HookEngine {
                                 let row = lua.create_table()?;
                                 row.set("protected", crate::git::is_protected(&n, &protect))?;
                                 row.set("name", n)?;
+                                // Only when it follows something: a count
+                                // against nothing is not zero, it is no answer
+                                if let Some((up, ahead, behind)) = crate::git::upstream(&dir)
+                                    .map_err(|e| mlua::Error::runtime(e.to_string()))?
+                                {
+                                    row.set("upstream", up)?;
+                                    row.set("ahead", ahead)?;
+                                    row.set("behind", behind)?;
+                                }
+                                // What it was cut from, when that was written down,
+                                // and the commands bringing its latest in would run
+                                if let Some(base) = crate::git::recorded_base(&dir, &row.get::<String>("name")?) {
+                                    let steps = crate::git::catch_up_steps(&dir, &base);
+                                    // Commits on the base this branch does not have yet,
+                                    // as of the last fetch. Absent when that cannot be told
+                                    if let Some(theirs) = steps.last().and_then(|s| s.last())
+                                        && let Ok(n) = crate::git::run(&dir, &["rev-list", "--count", &format!("HEAD..{theirs}")])
+                                        && let Ok(n) = n.trim().parse::<u64>()
+                                    {
+                                        row.set("base_behind", n)?;
+                                    }
+                                    // A merge of that base stopped half done here
+                                    if let Some(theirs) = steps.last().and_then(|s| s.last())
+                                        && crate::git::merging_in(&dir, theirs)
+                                    {
+                                        row.set("catching_up", theirs.as_str())?;
+                                    }
+                                    row.set("catch_up", crate::git::catch_up_said(&steps))?;
+                                    row.set("base", base)?;
+                                }
                                 Ok(Value::Table(row))
                             }
                             None => Ok(Value::Nil),
@@ -3344,6 +3430,47 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
+            // The branches the servers have, each with the commands bringing its
+            // latest in would run -- the list a base is chosen from
+            let c = Rc::clone(&places);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_remote_branches",
+                    lua.create_function(move |lua, tab: Value| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let list = crate::git::remote_branches(&dir)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        let out = lua.create_table()?;
+                        for name in list {
+                            let row = lua.create_table()?;
+                            row.set("catch_up", crate::git::catch_up_said(&crate::git::catch_up_steps(&dir, &name)))?;
+                            row.set("name", name)?;
+                            out.push(row)?;
+                        }
+                        Ok(out)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            // Write down what the branch in front was cut from
+            let c = Rc::clone(&places);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_set_base",
+                    lua.create_function(move |_, (tab, base): (Value, String)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let here = crate::git::branch(&dir)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?
+                            .ok_or_else(|| mlua::Error::runtime(crate::i18n::t("err.git.empty_branch")))?;
+                        crate::git::record_base(&dir, &here, &base).map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
             // Every local branch, with a mark on the one checked out
             let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
@@ -3423,6 +3550,26 @@ impl HookEngine {
             network!("git_fetch", crate::git::fetch);
             network!("git_pull", crate::git::pull);
             network!("git_push", crate::git::push);
+            // The latest of a base, fetched from its server and merged in
+            let c = Rc::clone(&places);
+            let o = Rc::clone(&current_origin);
+            let k = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "git_catch_up",
+                    // With a third argument, the branch as pushed is fetched too,
+                    // and a folder behind it refused -- a pull request's branch
+                    lua.create_function(move |lua, (tab, base, head): (Value, String, Option<String>)| {
+                        let (dir, _, who) = git_as(&c, &o, &tab, &k, true)?;
+                        let taken = crate::git::catch_up_for(&dir, head.as_deref(), &base, &who)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        let row = lua.create_table()?;
+                        row.set("taken", taken)?;
+                        Ok(row)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
         }
         {
             // Make a branch and move onto it. What a refused commit is offered
@@ -3541,6 +3688,18 @@ impl HookEngine {
                     &s("body"),
                     &strings(o.get("labels").unwrap_or(&none)),
                     &strings(o.get("assignees").unwrap_or(&none)),
+                )
+            });
+            github!("github_pr_create", |lua, repo, hub, args| {
+                let o = arg(&args, 0);
+                let s = |k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                hub.create_pull(
+                    &repo,
+                    &s("title"),
+                    &s("body"),
+                    &s("head"),
+                    &s("base"),
+                    o.get("draft").and_then(|d| d.as_bool()).unwrap_or(false),
                 )
             });
             github!("github_comment", |lua, repo, hub, args| {
@@ -5855,6 +6014,7 @@ mod tests {
         // folder for the first time
         for (what, code) in [
             ("commit message", super::COMMIT_MESSAGE_LUA),
+            ("draft", super::DRAFT_LUA),
             ("folder move", super::FOLDER_MOVE_LUA),
         ] {
             eng.lua
@@ -6966,6 +7126,26 @@ mod tests {
         // something rather than writing a name that is one letter
         let plain = out("return shikisha.diff('one', 'two')");
         assert!(plain.contains("a/text"), "{plain}");
+    }
+
+    /// JSON read into a value and written back, and text that is not JSON
+    /// answered with nil and why -- which is how an AI's answer is checked
+    #[test]
+    fn a_script_reads_and_writes_json() {
+        let e = HookEngine::new().unwrap();
+        let out = |src: &str| {
+            e.call_primitive("lua", &[serde_json::json!(src)]).unwrap()[1]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert_eq!(
+            out(r#"local v = shikisha.json_decode('{"title":"t","labels":["bug","ui"]}') return v.title .. "|" .. v.labels[2]"#),
+            "t|ui"
+        );
+        assert_eq!(out(r#"local v, why = shikisha.json_decode('not json') return tostring(v) .. "|" .. tostring(why ~= nil)"#), "nil|true");
+        let back: serde_json::Value = serde_json::from_str(&out(r#"return shikisha.json_encode({ title = "t", labels = { "a", "b" } })"#)).unwrap();
+        assert_eq!(back, serde_json::json!({"title": "t", "labels": ["a", "b"]}));
     }
 
     /// This machine's side of a transfer, walked from a script -- and stopping

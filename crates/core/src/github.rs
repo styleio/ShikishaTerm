@@ -604,6 +604,32 @@ impl Hub {
         Ok(json!({"number": v.get("number"), "url": v.get("html_url")}))
     }
 
+    /// Open a pull request from `head` into `base`, as a draft when asked.
+    /// Answers with its number and address
+    pub fn create_pull(
+        &self,
+        repo: &Repo,
+        title: &str,
+        body: &str,
+        head: &str,
+        base: &str,
+        draft: bool,
+    ) -> Result<Value> {
+        let title = title.trim();
+        if title.is_empty() {
+            bail!(crate::i18n::t("err.github.no_title"));
+        }
+        if head.trim().is_empty() || base.trim().is_empty() {
+            bail!(crate::i18n::t("err.github.no_branches"));
+        }
+        let v = self.call(
+            "POST",
+            &format!("repos/{}/pulls", repo.slug()),
+            Some(json!({"title": title, "body": body, "head": head.trim(), "base": base.trim(), "draft": draft})),
+        )?;
+        Ok(json!({"number": v.get("number"), "url": v.get("html_url")}))
+    }
+
     /// Say something on an issue or a pull request
     pub fn comment(&self, repo: &Repo, number: u64, body: &str) -> Result<Value> {
         if body.trim().is_empty() {
@@ -751,6 +777,66 @@ pub fn desk_sources(desk: &crate::config::Desk) -> Vec<Source> {
     out
 }
 
+/// The folder the page named, when it is a folder of the project it named: the
+/// checkout or a worktree cut from it. Anything else is not a place git is run
+/// for a request from the page
+pub fn project_folder(sources: &[Source], project: &str, folder: &str) -> Option<std::path::PathBuf> {
+    let dir = std::path::PathBuf::from(folder);
+    let fam = crate::repo::family_of(&dir)?;
+    sources
+        .iter()
+        .any(|s| s.name == project && crate::repo::family_of(&s.dir).as_deref() == Some(fam.as_path()))
+        .then_some(dir)
+}
+
+/// The folder on this PC where a pull request's branch is checked out: the
+/// project's checkout itself, or any worktree cut from it. None when no folder
+/// stands on that branch -- one is made for it first
+pub fn head_folder(checkout: &std::path::Path, head: &str) -> Option<std::path::PathBuf> {
+    let head = head.trim();
+    if head.is_empty() {
+        return None;
+    }
+    let main = crate::repo::main_checkout(checkout).unwrap_or_else(|| checkout.to_path_buf());
+    if crate::repo::branch_of(&main).as_deref() == Some(head) {
+        return Some(main);
+    }
+    let family = crate::repo::family_of(&main)?;
+    crate::repo::worktrees_of(&family)
+        .into_iter()
+        .find(|(_, b)| b.as_deref() == Some(head))
+        .map(|(folder, _)| folder)
+}
+
+/// What a pull request would carry, file by file: added and removed lines, from
+/// `origin/<base>` to the branch in front. A file git cannot count lines in
+/// (an image) is said to be binary
+pub fn pr_files(dir: &std::path::Path, base: &str) -> Result<Value> {
+    let out = crate::git::run(dir, &["diff", "--no-color", "--numstat", &format!("origin/{base}...HEAD")])?;
+    let rows: Vec<Value> = out
+        .lines()
+        .filter_map(|l| {
+            let mut parts = l.splitn(3, '\t');
+            let (a, r, path) = (parts.next()?, parts.next()?, parts.next()?);
+            let binary = a == "-" && r == "-";
+            Some(json!({"path": path, "added": a.parse::<u64>().unwrap_or(0),
+                        "removed": r.parse::<u64>().unwrap_or(0), "binary": binary}))
+        })
+        .collect();
+    Ok(json!(rows))
+}
+
+/// One file's change in a pull request, in the pieces the git panel draws
+pub fn pr_file(dir: &std::path::Path, base: &str, path: &str) -> Result<Value> {
+    let text = crate::git::run(dir, &["diff", "--no-color", &format!("origin/{base}...HEAD"), "--", path])?;
+    let binary = text.lines().any(|l| l.starts_with("Binary files ")) || text.contains("GIT binary patch");
+    let hunks: Vec<Value> = crate::git::split_hunks(&text)
+        .into_iter()
+        .map(|h| json!({"start": h.start, "end": h.end, "patch": h.patch}))
+        .collect();
+    Ok(json!({"hunks": hunks, "binary": binary}))
+}
+
 /// The automation command a request from the Issue tab is the same as, so it
 /// is allowed or refused by the same row of the permission table
 pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
@@ -761,6 +847,11 @@ pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
         ("detail", true) => "github_pr",
         ("options", _) => "github_labels",
         ("create", _) => "github_issue_create",
+        ("create_pr", _) => "github_pr_create",
+        // The branches a pull request can go into are read off this PC's copy
+        ("pr_bases", _) => "git_branches",
+        // What it would carry is a diff on this PC
+        ("pr_files", _) | ("pr_file", _) => "git_diff",
         ("comment", _) => "github_comment",
         ("issue_state", _) => "github_issue_state",
         ("pr_state", _) => "github_pr_state",
@@ -864,6 +955,33 @@ pub fn answer(
             .filter_map(|x| x.as_str().map(str::to_string))
             .collect()
     };
+    // Read here, not asked of GitHub: the branches this PC knows the server
+    // has, the one its server calls the default first
+    if act == "pr_bases" {
+        let mut bases: Vec<String> = Vec::new();
+        for b in crate::worktree::bases(&source.dir) {
+            if let Some(name) = b.strip_prefix("origin/")
+                && name != "HEAD"
+                && !bases.iter().any(|x| x == name)
+            {
+                bases.push(name.to_string());
+            }
+        }
+        return with(base, json!({"ok": true, "data": {"bases": bases}}));
+    }
+    // What a pull request would carry, read from the folder it is made from
+    if act == "pr_files" || act == "pr_file" {
+        let path = s("path");
+        let read = match project_folder(sources, wanted, &s("folder")) {
+            None => Err(anyhow!(crate::i18n::t("err.github.no_project"))),
+            Some(dir) if act == "pr_files" => pr_files(&dir, &s("base")),
+            Some(dir) => pr_file(&dir, &s("base"), &path),
+        };
+        return match read {
+            Ok(data) => with(base, json!({"ok": true, "path": path, "data": data})),
+            Err(e) => with(base, json!({"ok": false, "path": path, "error": format!("{e:#}")})),
+        };
+    }
     let done = hub_for(source).and_then(|(repo, hub)| match act {
         "detail" if pulls => hub.pull(&repo, number),
         "detail" => hub.issue(&repo, number),
@@ -874,6 +992,14 @@ pub fn answer(
             &s("body"),
             &list("labels"),
             &list("assignees"),
+        ),
+        "create_pr" => hub.create_pull(
+            &repo,
+            &s("title"),
+            &s("body"),
+            &s("head"),
+            &s("base"),
+            args.get("draft").and_then(|d| d.as_bool()).unwrap_or(false),
         ),
         "comment" => hub.comment(&repo, number, &s("body")),
         "issue_state" => hub
@@ -1045,6 +1171,34 @@ fn encode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The branch a pull request comes from is found where it is checked out:
+    /// in the checkout, or in a worktree cut from it, and nowhere else
+    #[test]
+    fn a_pull_requests_branch_is_found_in_the_folder_standing_on_it() {
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            std::process::Command::new("git").current_dir(dir).args(args).output().ok().filter(|o| o.status.success())
+        };
+        let root = std::env::temp_dir().join(format!("shikisha-head-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let main = root.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        if git(&main, &["init", "-q", "-b", "main"]).is_none() {
+            return;
+        }
+        git(&main, &["-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "one"]).unwrap();
+        let cut = root.join("cut");
+        git(&main, &["worktree", "add", "-q", "-b", "feature", &cut.display().to_string()]).unwrap();
+        // Compared as the disk resolves them: a temporary folder can be named
+        // in its short form (`RUNNER~1`) and read back in its long one
+        let real = |p: &std::path::Path| std::fs::canonicalize(p).ok();
+        let is = |found: Option<std::path::PathBuf>, want: &std::path::Path| found.as_deref().and_then(real) == real(want);
+        assert!(is(super::head_folder(&main, "main"), &main), "the checkout was not found on its own branch");
+        assert!(is(super::head_folder(&cut, "feature"), &cut), "a worktree was not found from itself");
+        assert!(is(super::head_folder(&main, "feature"), &cut), "a worktree was not found from the checkout");
+        assert_eq!(super::head_folder(&main, "elsewhere"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
 
     fn repo() -> Repo {

@@ -33,7 +33,9 @@ fn main() {
         };
         html = html.replace(
             "</head>",
-            &format!("<style>:root{{{}}}</style></head>", scheme.css_vars()),
+            // And the parts the browser draws itself (check boxes, scrollbars)
+            // drawn light as well, the way the app serves a light scheme
+            &format!("<style>:root{{{}color-scheme:light;}}</style></head>", scheme.css_vars()),
         );
     }
     print!("{html}");

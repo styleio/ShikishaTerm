@@ -125,6 +125,10 @@ pub struct TabState {
     /// did -- which is the whole reason this travels
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_stamp: Option<String>,
+    /// Which change of that file the editor is showing instead of the file
+    /// itself: `work`, `staged` or `commit:<hash>`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_diff: Option<String>,
     /// The device this page is drawn on, when that is not this machine at all
     /// (the `browser_draw` setting). Such a page is already in front of the
     /// person whose machine it is and there is no picture of it to send
@@ -1009,7 +1013,7 @@ fn project_by_family(family: &str) -> Option<String> {
 /// folder is then `<parent>/<name>/.git`. That is a guess about a folder
 /// nothing is running in yet, made without touching the disk; the moment a
 /// tab starts there, what git actually says takes over
-fn family_by_path(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+pub(crate) fn family_by_path(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
     let mut at = cwd;
     loop {
         let parent = at.parent()?;
@@ -1570,6 +1574,10 @@ pub struct UiState {
     /// ones that are registered and work. Shown beside what they open
     #[serde(default)]
     pub hotkeys: std::collections::BTreeMap<String, String>,
+    /// The keys set to work with no prefix, for the page to hand on when they
+    /// are pressed in one of its own boxes (see `keys::direct_now`)
+    #[serde(default)]
+    pub direct_keys: Vec<crate::keys::DirectKey>,
     /// The quick commands, laid out and with their drawings, for the launcher.
     /// Shared rather than copied: it changes only when the settings are saved,
     /// and the state is put together many times a second
@@ -1804,6 +1812,7 @@ impl TabState {
             // ...and a session is not showing a file
             file: None,
             file_stamp: None,
+            file_diff: None,
             // ...and a session is drawn wherever its terminal is, which is here
             away: None,
             git_acct: None,
@@ -1921,6 +1930,7 @@ impl TabState {
             ask: None,
             file: None,
             file_stamp: None,
+            file_diff: None,
             // Where it is drawn is known to the runtime, not to this; filled
             // in by `view::ui_state_of` along with everything else
             away: None,
@@ -2319,6 +2329,7 @@ mod tests {
             draft: None,
             file: None,
             file_stamp: None,
+            file_diff: None,
             key: format!("tab:{index}"),
             mark: None,
         }
