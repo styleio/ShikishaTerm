@@ -5279,34 +5279,6 @@ function confirmAction(message, action) {
   });
 }
 
-// AIs selectable as a participant = interactive AI CLIs + registered model connections
-function aiChoices() {
-  const cli = [
-    {key:"claude", label:"Claude Code"},
-    {key:"codex",  label:"Codex CLI"},
-    {key:"gemini", label:"Gemini CLI"},
-  ];
-  const models = Object.keys(deskProviders()).map(n =>
-    ({key:"model:" + n, label: fill(T["wizard.discuss.model_suffix"], {name: n}), isModel:true, provider:n}));
-  return cli.concat(models);
-}
-const choiceOf = key => aiChoices().find(c => c.key === key) || null;
-const aiLabelOf = key => { const c = choiceOf(key); return c ? c.label : (key || "AI"); };
-// Builds the launch command from the selection key (+ model name). Wizard-made AIs run
-// autonomously (a discussion saves a statement every turn, code review commits, browser-op
-// writes step files), so each CLI gets its "skip confirmation prompts" flag. It is not hidden:
-// the flag also shows in the tab's Command field afterwards, so it stays editable and visible.
-// Model-API participants need no flag (the bridge writes the reply itself, in-process).
-function aiCommandOf(key, model) {
-  if (key && key.startsWith("model:")) {
-    const p = key.slice(6);
-    return "model " + p + "/" + ((model || "").trim() || DEFAULT_MODEL[p] || "");
-  }
-  if (key === "claude") return "claude " + cliFlagOf("claude");
-  if (key === "codex")  return "codex " + cliFlagOf("codex");
-  if (key === "gemini") return "gemini " + cliFlagOf("gemini");
-  return key || "";  // kimi and anything else: bare command (no known bypass flag)
-}
 // The "act without asking" flag each CLI needs to run autonomously (a
 // discussion / automation stalls without it). Surfaced explicitly in the tab
 // editor as a checkbox with a risk note — never injected silently.
@@ -5315,74 +5287,6 @@ function cliFlagOf(head) {
   if (head === "codex")  return "--dangerously-bypass-approvals-and-sandbox";
   if (head === "gemini") return "--yolo";
   return "";  // aider / kimi / others: no known bypass flag
-}
-// AI selection + (only for a model API) a model name. Writes back to st={key,model}
-// "Candidates" button: lists a provider's real models via {base_url}/models so
-// the user picks an existing model name instead of guessing. getProv() returns
-// the provider spec {base_url, api_key, headers?}; onPick(id) fills the model.
-// Returns { btn, chips } — put btn inline and chips just below.
-function modelCandidates(getProv, onPick) {
-  const chips = el("div", {style:"display:flex;gap:var(--s2);flex-wrap:wrap;margin-top:var(--s2)"});
-  // Fetch the provider's real models, render them as chips, and return the list
-  // (empty on failure). Callers can auto-select the first when nothing is set.
-  async function load() {
-    const prov = getProv() || {};
-    chips.textContent = "";
-    chips.append(el("span", {class:"hint"}, T["settings.model.candidates_loading"]));
-    let r;
-    try {
-      r = await fetch("/api/provider/models", {method:"POST",
-        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-        body: JSON.stringify({base_url: prov.base_url || "", api_key: prov.api_key || "", headers: prov.headers || {}})})
-        .then(x => x.json());
-    } catch (e) { r = {ok:false, error:String(e)}; }
-    chips.textContent = "";
-    if (!r || !r.ok) {
-      chips.append(el("span", {class:"hint"}, fill(T["settings.model.candidates_failed"], {e: (r && r.error) || ""})));
-      return [];
-    }
-    const models = r.models || [];
-    if (!models.length) { chips.append(el("span", {class:"hint"}, T["settings.model.candidates_none"])); return []; }
-    for (const id of models) chips.append(el("button", {class:"quiet", type:"button",
-      style:"font-size:12px;padding:var(--s1) var(--s2)", onclick:() => onPick(id)}, id));
-    return models;
-  }
-  const btn = el("button", {class:"quiet", type:"button", onclick: load}, T["settings.model.candidates"]);
-  return {btn, chips, load};
-}
-
-function aiPick(st) {
-  const row = el("span", {style:"display:inline-flex;gap:var(--s2);align-items:center;flex-wrap:wrap"});
-  const picker = el("select");
-  for (const c of aiChoices()) picker.append(el("option", {value:c.key}, c.label));
-  picker.value = st.key || "claude"; st.key = picker.value;
-  const modelIn = el("input", {type:"text", class:"mono", style:"width:180px"});
-  modelIn.value = st.model || "";
-  const cand = modelCandidates(
-    () => deskProviders()[(choiceOf(st.key) || {}).provider] || {},
-    id => { st.model = id; modelIn.value = id; });
-  const sync = () => {
-    const c = choiceOf(st.key), isM = !!(c && c.isModel);
-    modelIn.style.display = isM ? "" : "none";
-    cand.btn.style.display = isM ? "" : "none";
-    cand.chips.style.display = isM ? "" : "none";
-    if (!isM) cand.chips.textContent = "";
-    if (isM) modelIn.placeholder = DEFAULT_MODEL[c.provider] || T["wizard.discuss.model_ph"];
-  };
-  picker.addEventListener("change", () => { st.key = picker.value; sync(); });
-  modelIn.addEventListener("input", () => { st.model = modelIn.value.trim(); });
-  sync();
-  row.append(picker, modelIn, cand.btn);
-  return el("span", {style:"display:inline-block"}, row, cand.chips);
-}
-// A model-API participant needs a model name (except for a provider that has a default value)
-function partsValid(parts) {
-  for (const p of parts) {
-    const c = choiceOf(p.key);
-    if (c && c.isModel && !(p.model || "").trim() && !DEFAULT_MODEL[c.provider])
-      return T["wizard.discuss.model_required"];
-  }
-  return null;
 }
 // The desk a new one starts from, chosen on the first screen of adding one
 // (or null to start with none of it). Read once, by landOnWs
@@ -5472,12 +5376,18 @@ function addWs() {
   m.firstChild.append(
     el("h2", {}, T["wizard.pick.title"]),
     el("div", {class:"hint"}, T["wizard.pick.hint"]),
-    hasOwn ? el("div", {style:"margin-top:var(--s3)"}, copyLabel,
-      el("div", {class:"hint"}, T["wizard.pick.copy.hint"])) : null,
+    // Nothing to copy from means nothing said about it. Left as a null, the
+    // browser writes the word "null" into the dialog
+    ...(hasOwn ? [el("div", {style:"margin-top:var(--s3)"}, copyLabel,
+      el("div", {class:"hint"}, T["wizard.pick.copy.hint"]))] : []),
+    // A desk starts empty or comes in from a file. The three AI templates that
+    // stood here -- a discussion, a browser the AI drives, a code review --
+    // each promised what the desk they made did not do: the browser one
+    // handed its AI nothing at startup, the review's "everybody said LGTM"
+    // finish reached no code, and the discussion's own default asked for more
+    // hand-offs than the automatic chain allows. Filling a form before the
+    // work begins is the wrong shape for this anyway; git holds them
     el("div", {style:"margin-top:var(--s2)"},
-      opt("🗣", T["wizard.pick.discuss.title"], T["wizard.pick.discuss.desc"], wizardDiscuss),
-      opt("🌐", T["wizard.pick.browser.title"], T["wizard.pick.browser.desc"], wizardBrowser),
-      opt("👨\u200d💻", T["wizard.pick.review.title"], T["wizard.pick.review.desc"], wizardReview),
       opt("🖥", T["wizard.pick.blank.title"], T["wizard.pick.blank.desc"], createBlankWs),
       // A file dialog is the only way in, and a phone has none to open
       REMOTE ? null
@@ -5487,168 +5397,6 @@ function addWs() {
 }
 function createBlankWs() {
   landOnWs({name: T["settings.desk"], automation:"", tabs:[]});
-}
-
-// 🗣 Discussion wizard
-function wizardDiscuss() {
-  const parts = [{key:"claude", model:"", name:"", persona:""},
-                 {key:"claude", model:"", name:"", persona:""}];
-  const st = {verdict:"winner", judge:""};
-  const nameIn = el("input", {value:T["wizard.discuss.default_name"], style:"width:220px"});
-  const list = el("div");
-  const draw = () => {
-    list.textContent = "";
-    parts.forEach((p, i) => {
-      const nm = el("input", {value:p.name || "", placeholder:T["wizard.discuss.name_ph"], style:"width:160px"});
-      nm.addEventListener("input", () => p.name = nm.value);
-      const persona = el("textarea", {rows:2, style:"width:100%;box-sizing:border-box;margin-top:var(--s2)",
-        placeholder:T["wizard.discuss.persona_ph"]});
-      persona.value = p.persona || "";
-      persona.addEventListener("input", () => p.persona = persona.value);
-      const del = el("button", {class:"quiet", onclick:() => {
-        if (parts.length > 2) { parts.splice(i, 1); draw(); } else toast(T["wizard.discuss.min_participants"], true);
-      }}, T["common.delete"]);
-      list.append(el("div", {style:"border:1px solid var(--line);border-radius:var(--r-ctl);padding:var(--s3);margin:var(--s2) 0"},
-        el("div", {class:"row", style:"align-items:center;gap:var(--s2)"},
-          el("span", {class:"mono", style:"color:var(--muted)"}, "#" + (i + 1)), nm, aiPick(p), del),
-        persona));
-    });
-  };
-  draw();
-  const addBtn = el("button", {class:"quiet", onclick:() => {
-    parts.push({key:"claude", model:"", name:"", persona:""}); draw();
-  }}, T["wizard.discuss.add_participant"]);
-  const judgeSel = el("select");
-  judgeSel.append(el("option", {value:""}, T["wizard.discuss.judge_none"]));
-  for (const c of aiChoices().filter(c => !c.isModel))
-    judgeSel.append(el("option", {value:c.key}, c.label));
-  judgeSel.addEventListener("change", () => st.judge = judgeSel.value);
-  const verdictSel = el("select");
-  for (const [v, l] of [["winner",T["wizard.discuss.verdict.winner"]],["synthesis",T["wizard.discuss.verdict.synthesis"]]])
-    verdictSel.append(el("option", {value:v}, l));
-  verdictSel.addEventListener("change", () => st.verdict = verdictSel.value);
-  const m = openModal(
-    el("h2", {}, T["wizard.discuss.title"]),
-    el("div", {class:"hint"}, T["wizard.discuss.hint"]),
-    row(T["settings.desk.name"], nameIn),
-    el("div", {style:"margin-top:var(--s3);color:var(--text);font-size:13px"}, T["wizard.discuss.participants_label"]), list, addBtn,
-    el("div", {class:"row", style:"margin-top:var(--s3)"}, el("label", {}, T["wizard.discuss.judge_label"]), judgeSel,
-      el("label", {class:"beside"}, T["wizard.discuss.verdict_label"]), verdictSel),
-    el("div", {class:"row"}, el("label", {}, ""),
-      el("span", {class:"hint"}, T["wizard.discuss.note"])),
-    el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:var(--s3);padding-top:var(--s4)"},
-      el("button", {class:"primary", onclick:() => {
-        const err = partsValid(parts); if (err) { toast(err, true); return; }
-        const tabs = [], personas = {}, agents = [];
-        parts.forEach((p, i) => {
-          const id = "p" + (i + 1);
-          tabs.push(newTab({name: p.name.trim() || aiLabelOf(p.key), id, command: aiCommandOf(p.key, p.model)}));
-          if ((p.persona || "").trim()) personas[id] = p.persona.trim();
-          agents.push(id);
-        });
-        const discuss = {agents, order:"round-robin", max_rounds:6, verdict: st.verdict, personas};
-        if (st.judge) { tabs.push(newTab({name:T["wizard.discuss.judge_tab_name"], id:"ref", command: aiCommandOf(st.judge, "")})); discuss.judge = "ref"; }
-        m.remove();
-        landOnWs({name: nameIn.value.trim() || T["wizard.discuss.default_name"], automation:"", tabs, discuss});
-      }}, T["wizard.discuss.create"]),
-      el("button", {class:"quiet", onclick:() => m.remove()}, T["common.cancel"])));
-}
-
-// 🌐 Browser-control wizard
-function wizardBrowser() {
-  const nameIn = el("input", {value:T["wizard.browser.default_name"], style:"width:220px"});
-  const urlIn = el("input", {class:"mono", placeholder:"https://example.com/",
-    style:"width:100%;box-sizing:border-box"});
-  const ai = {key:"claude", model:""};
-  const m = openModal(
-    el("h2", {}, T["wizard.browser.title"]),
-    el("div", {class:"hint"}, T["wizard.browser.hint"]),
-    row(T["settings.desk.name"], nameIn),
-    el("div", {class:"row", style:"margin-top:var(--s2)"}, el("label", {}, T["wizard.browser.url_label"]), urlIn),
-    el("div", {class:"row"}, el("label", {}, T["wizard.browser.ai_label"]), aiPick(ai)),
-    el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:var(--s3);padding-top:var(--s4)"},
-      el("button", {class:"primary", onclick:() => {
-        const url = urlIn.value.trim();
-        if (!openableUrl(url)) { toast(T["wizard.browser.url_required"], true); return; }
-        const err = partsValid([ai]); if (err) { toast(err, true); return; }
-        const page = newTab({name:T["wizard.browser.page_tab_name"], id:"page", command:"browser " + url,
-          nav:{back:true, forward:true, reload:true, url:true}});
-        const aiTab = newTab({name:"AI", id:"ai", command: aiCommandOf(ai.key, ai.model), drives:"page"});
-        m.remove();
-        landOnWs({name: nameIn.value.trim() || T["wizard.browser.default_name"], automation:"", tabs:[page, aiTab]});
-      }}, T["wizard.browser.create"]),
-      el("button", {class:"quiet", onclick:() => m.remove()}, T["common.cancel"])));
-}
-
-// 👨‍💻 Code review (Git integration) wizard
-const CODER_PERSONA = T["wizard.review.persona.coder"];
-const REVIEW_ROLES = [
-  {label:T["wizard.review.role.ui"], id:"ui", persona:T["wizard.review.persona.ui"]},
-  {label:T["wizard.review.role.security"], id:"security", persona:T["wizard.review.persona.security"]},
-  {label:T["wizard.review.role.perf"], id:"perf", persona:T["wizard.review.persona.perf"]},
-  {label:T["wizard.review.role.test"], id:"test", persona:T["wizard.review.persona.test"]},
-  {label:T["wizard.review.role.custom"], id:"", persona:""},
-];
-function wizardReview() {
-  const nameIn = el("input", {value:T["wizard.review.default_name"], style:"width:220px"});
-  const repo = {dir:""};
-  const coder = {key:"claude", model:""};
-  const revs = [{role:T["wizard.review.role.ui"], key:"claude", model:""},
-                {role:T["wizard.review.role.security"], key:"claude", model:""}];
-  const repoIn = el("input", {class:"mono", placeholder:T["wizard.review.repo_ph"], style:"width:100%;box-sizing:border-box"});
-  repoIn.addEventListener("input", () => repo.dir = repoIn.value.trim());
-  const repoBtn = REMOTE ? null : el("button", {class:"quiet", onclick: async () => {
-    const p = await pickPath("dir", T["wizard.review.pick_repo_title"], repo.dir);
-    if (p !== null) { repo.dir = p; repoIn.value = p; }
-  }}, T["common.browse"]);
-  const list = el("div");
-  const draw = () => {
-    list.textContent = "";
-    revs.forEach((r, i) => {
-      const roleSel = el("select");
-      for (const rr of REVIEW_ROLES) roleSel.append(el("option", {value:rr.label}, rr.label));
-      roleSel.value = r.role; roleSel.addEventListener("change", () => r.role = roleSel.value);
-      const del = el("button", {class:"quiet", onclick:() => {
-        if (revs.length > 1) { revs.splice(i, 1); draw(); } else toast(T["wizard.review.min_reviewers"], true);
-      }}, T["common.delete"]);
-      list.append(el("div", {class:"row", style:"align-items:center;gap:var(--s2);border:1px solid var(--line);border-radius:var(--r-ctl);padding:var(--s3);margin:var(--s2) 0"},
-        el("span", {class:"mono", style:"color:var(--muted)"}, "#" + (i + 1)), roleSel, aiPick(r), del));
-    });
-  };
-  draw();
-  const addBtn = el("button", {class:"quiet", onclick:() => {
-    revs.push({role:T["wizard.review.role.custom"], key:"claude", model:""}); draw();
-  }}, T["wizard.review.add_reviewer"]);
-  const m = openModal(
-    el("h2", {}, T["wizard.review.title"]),
-    el("div", {class:"hint"}, T["wizard.review.hint"]),
-    row(T["settings.desk.name"], nameIn),
-    el("div", {class:"row", style:"margin-top:var(--s2)"}, el("label", {}, T["wizard.review.repo_label"]), repoIn, repoBtn),
-    el("div", {class:"row"}, el("label", {}, T["wizard.review.coder_label"]), aiPick(coder)),
-    el("div", {style:"margin-top:var(--s3);color:var(--text);font-size:13px"}, T["wizard.review.reviewers_label"]), list, addBtn,
-    el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:var(--s3);padding-top:var(--s4)"},
-      el("button", {class:"primary", onclick:() => {
-        if (!repo.dir.trim()) { toast(T["wizard.review.repo_required"], true); return; }
-        const err = partsValid([coder].concat(revs)); if (err) { toast(err, true); return; }
-        const tabs = [], personas = {}, agents = [], used = new Set();
-        tabs.push(newTab({name:T["wizard.review.coder_tab_name"], id:"coder", command: aiCommandOf(coder.key, coder.model)}));
-        personas["coder"] = CODER_PERSONA; agents.push("coder"); used.add("coder");
-        revs.forEach((r, i) => {
-          const rr = REVIEW_ROLES.find(x => x.label === r.role);
-          let base = (rr && rr.id) || slugId(r.role) || ("rev" + (i + 1)), id = base, n = 2;
-          while (used.has(id)) id = base + "-" + (n++);
-          used.add(id);
-          tabs.push(newTab({name: r.role, id, command: aiCommandOf(r.key, r.model)}));
-          personas[id] = (rr && rr.persona) || T["wizard.review.persona.custom"];
-          agents.push(id);
-        });
-        m.remove();
-        landOnWs({name: nameIn.value.trim() || T["wizard.review.default_name"], automation:"", tabs,
-          folders:[{name:"", id:"", cwd: repo.dir.trim()}],
-          discuss:{agents, order:"round-robin", max_rounds:4, personas},
-          stops:[{when:"console", agents:"all", pattern:"LGTM", outcome:"success", code:0, reason:T["wizard.review.stop_reason"]}]});
-      }}, T["wizard.review.create"]),
-      el("button", {class:"quiet", onclick:() => m.remove()}, T["common.cancel"])));
 }
 
 // ── Narrow screens: the sidebar as a drawer ─────────────────────
