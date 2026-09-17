@@ -49,7 +49,10 @@ once it reaches its first tagged release.
   and takes it out of the list until "Show done ideas" is pressed; its grip
   carries it to another place; its copy button puts it on the clipboard. Cards
   are kept in `config/ideas.json`, and a card whose project is taken out of
-  every desk goes to "No project". The same cards open from a phone.
+  every desk goes to "No project". The same cards open from a phone. A
+  right-click on a card, or holding its grip on a phone, opens a menu to copy
+  it, mark it done or not, or delete it: done keeps it for "Show done ideas",
+  deleted takes it out of the file for good.
 
 ### Changed
 - **Waiting in the Issue tab is shown plainly.** While GitHub or the AI is being

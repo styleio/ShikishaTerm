@@ -208,6 +208,44 @@ try {
   check(onDisk().some((i) => i.text === 'どこにも属さないメモ' && i.project === null), 'the card with no project has none');
   check(same(onDisk().find((i) => i.text === 'notes のメモ').project, NOTES), 'the notes card belongs to notes');
 
+  console.log('6a. the right-click menu: done keeps a card, delete takes it out of the file');
+  await type('消すメモ'); await key('Enter');
+  await type('しまうメモ'); await key('Enter');
+  await disk((it) => it.some((i) => i.text === 'しまうメモ'), 'two more notes cards');
+  await sleep(300);
+  const rightClick = async (text) => {
+    const p = await run(`(() => { const c = [...document.querySelectorAll('#ideas .ilist .icard')].find(c => c.querySelector('.itext').value === ${JSON.stringify(text)});
+      const r = c.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y });
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: p.x, y: p.y, button: 'right', clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: p.x, y: p.y, button: 'right', clickCount: 1 });
+    await until(() => run(`!!document.querySelector('.fmenu')`), 'the menu');
+  };
+  const pick = async (key) => {
+    const p = await run(`(() => { const d = [...document.querySelectorAll('.fmenu div')].find(d => d.textContent === T[${JSON.stringify(key)}]);
+      const r = d.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+      await send('Input.dispatchMouseEvent', { type, x: p.x, y: p.y, button: 'left', clickCount: 1 });
+    }
+  };
+  await rightClick('消すメモ');
+  check((await run(`[...document.querySelectorAll('.fmenu div')].map(d => d.textContent).join('|')`)) === 'コピー|完了にする|削除', 'the menu says copy, done and delete, in that order');
+  check(await run(`document.querySelector('.fmenu div:last-child').classList.contains('warn')`), 'delete is the red last line');
+  await pick('tui.ideas.delete');
+  await disk((it) => !it.some((i) => i.text === '消すメモ'), 'the deleted card gone from the file');
+  check(!(await run(`[...document.querySelectorAll('#ideas .icard .itext')].some(t => t.value === '消すメモ')`)), 'deleted, it left the list');
+  await rightClick('しまうメモ');
+  await pick('tui.ideas.markdone');
+  await disk((it) => it.some((i) => i.text === 'しまうメモ' && i.done), 'done in the file');
+  await click('#ideas .idone');
+  check(await run(`[...document.querySelectorAll('#ideas .icard.done .itext')].some(t => t.value === 'しまうメモ')`), 'done, it comes back with the done ones');
+  check(!(await run(`[...document.querySelectorAll('#ideas .icard .itext')].some(t => t.value === '消すメモ')`)), 'deleted, it does not come back with them');
+  await rightClick('しまうメモ');
+  check((await run(`[...document.querySelectorAll('.fmenu div')].map(d => d.textContent).join('|')`)) === 'コピー|未完了に戻す|削除', 'a done card offers to be not done');
+  await key('Escape');
+  check(await run(`!document.querySelector('.fmenu') && !document.getElementById('ideas').hidden`), 'Esc puts the menu away and leaves the ideas up');
+  await click('#ideas .idone');
+
   console.log('6b. Esc closes');
   await key('Escape');
   check(await run(`document.getElementById('ideas').hidden`), 'Esc closed the ideas');

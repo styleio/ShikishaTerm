@@ -11176,6 +11176,7 @@ function closeIdeas() {
     else if (IDEAS.timers[id]) ideasEdit(id, IDEAS.pending[id], true);
   }
   ideasOpen = false;
+  closeFolderMenu();
   v.hidden = true;
   v.textContent = "";
   sayCovered();
@@ -11270,7 +11271,11 @@ function ideasKey(e, card) {
   if (typingIME(e)) return;
   const t = e.target;
   const writing = card.classList.contains("inew");
-  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeIdeas(); return; }
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopPropagation();
+    if (document.querySelector(".fmenu")) closeFolderMenu(); else closeIdeas();
+    return;
+  }
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     // The writing line hands its card to the list and stays where it is, for
@@ -11308,25 +11313,59 @@ function ideaCard(it) {
   const card = el("div", {class:"icard", "data-id":String(id)},
     grip, check, text,
     el("button", {type:"button", class:"itool", title:T["tui.ideas.copy"] || "",
-      onclick:() => copyText(text.value).then(() => toast(T["tui.ideas.copied"] || ""))}, pickIcon("copy")),
+      onclick:() => ideasCopy(text.value)}, pickIcon("copy")),
     // What sending an idea to an Issue does is still to be decided: the
     // button stands where it will be, and a press does nothing yet
     el("button", {type:"button", class:"itool", title:T["tui.ideas.issue"] || ""}, pickIcon("issue")));
   text.oninput = () => { ideasGrow(text); ideasEdit(id, text.value, false); };
   text.onkeydown = e => ideasKey(e, card);
   text.onblur = () => { if (IDEAS.timers[id]) ideasEdit(id, text.value, true); };
-  // Ticked off, it is done and out of the list unless done ones are shown.
-  // The caret goes back to the writing line rather than into a stranger
-  check.onchange = () => {
-    const i = IDEAS.items.find(x => x.id === id);
-    if (i) i.done = check.checked;
-    if (IDEAS.timers[id]) ideasEdit(id, text.value, true);
-    ideasAsk("done", {id, done: check.checked});
-    drawIdeas(false);
-    if (!IDEAS.showDone && check.checked) ideasFocus(null, true);
-  };
+  check.onchange = () => ideasSetDone(card, check.checked);
   grip.addEventListener("pointerdown", e => ideasCarry(e, card));
+  // Its menu: at the pointer on a right-click, anywhere on the card. A phone
+  // has no right-click, and holding the grip opens the same menu (ideasCarry)
+  card.addEventListener("contextmenu", e => { e.preventDefault(); ideaMenu(card, e); });
   return card;
+}
+function ideasCopy(text) {
+  copyText(text).then(() => toast(T["tui.ideas.copied"] || ""));
+}
+// Ticked off, it is done and out of the list unless done ones are shown; it is
+// still in the file. The caret goes back to the writing line rather than into
+// a stranger
+function ideasSetDone(card, done) {
+  const id = Number(card.dataset.id);
+  const i = IDEAS.items.find(x => x.id === id);
+  if (i) i.done = done;
+  const text = card.querySelector(".itext");
+  if (IDEAS.timers[id]) ideasEdit(id, text.value, true);
+  ideasAsk("done", {id, done});
+  drawIdeas(false);
+  if (!IDEAS.showDone && done) ideasFocus(null, true);
+}
+// Deleted is gone from the file, where done is only put out of sight: "Show
+// done ideas" brings a done one back, and nothing brings a deleted one back.
+// Not asked first: the menu is already the second press, and the red line
+// says what it does
+function ideasDelete(card) {
+  const had = card.contains(document.activeElement);
+  ideasDrop(Number(card.dataset.id));
+  card.remove();
+  drawIdeas(false);
+  if (had) ideasFocus(null, true);
+}
+function ideaMenu(card, point) {
+  const id = Number(card.dataset.id);
+  const it = IDEAS.items.find(i => i.id === id);
+  if (!it) return;
+  const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
+  openList(card, [
+    item(T["tui.ideas.copy"] || "", () => ideasCopy(card.querySelector(".itext").value)),
+    item(it.done ? (T["tui.ideas.undone"] || "") : (T["tui.ideas.markdone"] || ""),
+      () => ideasSetDone(card, !it.done)),
+    // Last and in red, the one entry that cannot be taken back
+    el("div", {class:"warn", onclick:() => { closeFolderMenu(); ideasDelete(card); }}, T["tui.ideas.delete"] || ""),
+  ], false, point);
 }
 // Carry a card by its grip to where it goes. The cards move out of its way as
 // it passes their middle, and the order is sent once it is put down
@@ -11339,8 +11378,16 @@ function ideasCarry(e, card) {
   // takes it out of the page for an instant, and a capture does not survive that
   IDEAS.dragging = true;
   card.classList.add("dragging");
+  // A finger held still on the grip is the phone's right-click: the card's
+  // menu, and nothing carried. Moving before then is carrying
+  const touch = e.pointerType === "touch";
+  const held = touch ? setTimeout(() => {
+    stop();
+    ideaMenu(card, {clientX: e.clientX, clientY: e.clientY});
+  }, 500) : null;
   const move = ev => {
     if (ev.pointerId !== e.pointerId) return;
+    if (held && Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) > 6) clearTimeout(held);
     const r = body.getBoundingClientRect();
     if (ev.clientY < r.top + 24) body.scrollTop -= 12;
     else if (ev.clientY > r.bottom - 24) body.scrollTop += 12;
@@ -11351,13 +11398,17 @@ function ideasCarry(e, card) {
       others[others.length - 1].after(card);
     }
   };
-  const end = ev => {
-    if (ev.pointerId !== e.pointerId) return;
+  const stop = () => {
+    clearTimeout(held);
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", end);
     window.removeEventListener("pointercancel", end);
     card.classList.remove("dragging");
     IDEAS.dragging = false;
+  };
+  const end = ev => {
+    if (ev.pointerId !== e.pointerId) return;
+    stop();
     const ids = [...list.querySelectorAll(".icard[data-id]")].map(c => Number(c.dataset.id));
     if (ids.join() !== before.join()) {
       // The same places, taken in the new order, so the cards of other
@@ -11469,7 +11520,10 @@ function drawIdeas(fresh) {
   // down is what counts: a selection dragged out of a card is not a press outside
   v.addEventListener("pointerdown", e => { if (e.target === v) closeIdeas(); });
   v.addEventListener("keydown", e => {
-    if (e.key === "Escape" && !typingIME(e)) { e.preventDefault(); e.stopPropagation(); closeIdeas(); }
+    if (e.key === "Escape" && !typingIME(e)) {
+      e.preventDefault(); e.stopPropagation();
+      if (document.querySelector(".fmenu")) closeFolderMenu(); else closeIdeas();
+    }
   });
 })();
 // The grid being shown: the top, or the folder walked into. A folder that has
@@ -15401,6 +15455,12 @@ mod tests {
         assert!(p.contains(r#"window.addEventListener("pointerup", end);"#), "a carried card's drop is listened for on the grip");
         // The writing line is where the caret is on opening
         assert!(p.contains("    line.focus();"), "the ideas open without the caret in the writing line");
+        // A card's menu, by right-click and by holding the grip on a phone, ends
+        // in the red line that deletes it from the file
+        assert!(p.contains(r#"card.addEventListener("contextmenu", e => { e.preventDefault(); ideaMenu(card, e); });"#), "a card has no right-click menu");
+        assert!(p.contains("const touch = e.pointerType === \"touch\";"), "a phone has no way to a card's menu");
+        assert!(p.contains(r#"el("div", {class:"warn", onclick:() => { closeFolderMenu(); ideasDelete(card); }}, T["tui.ideas.delete"] || ""),"#), "delete is not the red last line of the menu");
+        assert!(p.contains(r#"  ideasDrop(Number(card.dataset.id));"#), "delete does not take the card out of the file");
     }
 
     /// Backspace in the empty input bar deletes in the pane it sends to, and
