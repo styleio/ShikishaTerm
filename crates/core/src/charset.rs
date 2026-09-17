@@ -105,6 +105,43 @@ pub fn write_as(text: &str, encoding: &'static Encoding) -> Option<Vec<u8>> {
     (!unmappable).then(|| bytes.into_owned())
 }
 
+/// The characters in `text` that `encoding` has no way to write, each once,
+/// in the order they first appear
+pub fn unwritable(text: &str, encoding: &'static Encoding) -> Vec<char> {
+    let mut missing = Vec::new();
+    write_each(text, encoding, |c, _| {
+        if !missing.contains(&c) {
+            missing.push(c);
+        }
+    });
+    missing
+}
+
+/// The text in `encoding`, with a `?` for each character it cannot write.
+/// Only ever what somebody chose, having been told which characters those are
+pub fn write_replacing(text: &str, encoding: &'static Encoding) -> Vec<u8> {
+    write_each(text, encoding, |_, out| out.push(b'?'))
+}
+
+/// Write `text` in `encoding`, handing each character it cannot write to
+/// `missing` along with what has been written so far. The library's own
+/// fallback writes such a character as an HTML reference (`&#128512;`),
+/// which is right for a web form and wrong for a file
+fn write_each(text: &str, encoding: &'static Encoding, mut missing: impl FnMut(char, &mut Vec<u8>)) -> Vec<u8> {
+    let mut encoder = encoding.new_encoder();
+    let mut out = Vec::with_capacity(text.len() + 16);
+    let mut rest = text;
+    loop {
+        let (result, read) = encoder.encode_from_utf8_to_vec_without_replacement(rest, &mut out, true);
+        rest = &rest[read..];
+        match result {
+            encoding_rs::EncoderResult::InputEmpty => return out,
+            encoding_rs::EncoderResult::OutputFull => out.reserve(rest.len() * 4 + 16),
+            encoding_rs::EncoderResult::Unmappable(c) => missing(c, &mut out),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +187,17 @@ mod tests {
         assert!(!r.exact);
         assert!(r.text.contains('\u{FFFD}'));
         assert_eq!(write_as(&r.text, encoding_rs::SHIFT_JIS), None);
+    }
+
+    #[test]
+    fn what_cannot_be_written_is_named_and_can_be_written_as_a_question_mark() {
+        let text = "表😀と①と😀\r\n";
+        assert_eq!(unwritable(text, encoding_rs::SHIFT_JIS), vec!['😀']);
+        assert!(unwritable(text, UTF_8).is_empty());
+        assert_eq!(write_replacing(text, encoding_rs::SHIFT_JIS), sjis("表?と①と?\r\n"));
+        // Long enough that the output has to grow more than once
+        let long = "あ😀".repeat(5000);
+        assert_eq!(write_replacing(&long, encoding_rs::SHIFT_JIS), sjis(&"あ?".repeat(5000)));
     }
 
     #[test]

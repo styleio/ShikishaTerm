@@ -7707,19 +7707,33 @@ pub fn files_answer(
                 // What is not text has no lines to put in an editor, and
                 // guessing at its encoding would write the guess back
                 Ok(bytes) if bytes.contains(&0) => fail(i18n::t("err.files.binary")),
-                Ok(bytes) => serde_json::json!({
+                Ok(bytes) => {
+                    // In the encoding asked for, else the one it most likely is
+                    let file = match str_of("encoding").trim() {
+                        "" => crate::charset::read(&bytes),
+                        name => match crate::charset::named(name) {
+                            Some(e) => crate::charset::read_as(&bytes, e),
+                            None => return fail(i18n::tp("err.git.unknown_encoding", &[("enc", name)])),
+                        },
+                    };
+                    serde_json::json!({
                     "act": "read",
                     "panel": panel,
                     "ok": true,
                     "path": str_of("path"),
-                    "text": String::from_utf8_lossy(&bytes),
+                    "text": file.text,
+                    // What it is saved back as, and whether that gives the
+                    // same bytes: a reading that lost characters says so
+                    "encoding": file.encoding.name(),
+                    "exact": file.exact,
                     "stamp": crate::files::stamp_of(&at),
                     // What the file was when it was read. A save compares this
                     // with what is on disk, so a save can tell "nobody touched
                     // it" from "somebody did"
                     "mark": crate::files::mark_of(&bytes),
-                })
-                .to_string(),
+                    })
+                    .to_string()
+                }
                 Err(e) => fail(format!("{e}")),
             }
         }
@@ -7737,13 +7751,43 @@ pub fn files_answer(
                 return fail(i18n::t("err.files.moved_on"));
             }
             let text = str_of("text");
-            match std::fs::write(&at, text.as_bytes()) {
+            let encoding = match str_of("encoding").trim() {
+                "" => encoding_rs::UTF_8,
+                name => match crate::charset::named(name) {
+                    Some(e) => e,
+                    None => return fail(i18n::tp("err.git.unknown_encoding", &[("enc", name)])),
+                },
+            };
+            let replacing = args.get("replace").and_then(|v| v.as_bool()).unwrap_or(false);
+            let how = if replacing { crate::files::Save::Replacing } else { crate::files::Save::Exact };
+            let bytes = match crate::files::save_bytes(&text, encoding, how) {
+                Ok(b) => b,
+                // Nothing is written. The characters are named, so the page can
+                // ask which way to go rather than choose for the person
+                Err(chars) => {
+                    return serde_json::json!({
+                        "act": "write",
+                        "panel": panel,
+                        "ok": false,
+                        "why": "unwritable",
+                        "encoding": encoding.name(),
+                        "chars": chars.iter().take(12).map(|c| c.to_string()).collect::<Vec<_>>(),
+                        "more": chars.len().saturating_sub(12),
+                        "error": i18n::tp("err.files.unwritable", &[("enc", encoding.name())]),
+                    })
+                    .to_string();
+                }
+            };
+            match std::fs::write(&at, &bytes) {
                 Ok(()) => serde_json::json!({
                     "act": "write",
                     "panel": panel,
                     "ok": true,
                     "path": str_of("path"),
-                    "mark": crate::files::mark_of(text.as_bytes()),
+                    "encoding": encoding.name(),
+                    // What is in the file now, when that is not what was typed
+                    "text": replacing.then(|| crate::charset::read_as(&bytes, encoding).text),
+                    "mark": crate::files::mark_of(&bytes),
                     // Our own write moved the stamp on; hand back the new one
                     // so the editor does not read its own save as somebody
                     // else's change
