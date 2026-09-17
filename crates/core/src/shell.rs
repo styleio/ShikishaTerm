@@ -740,6 +740,21 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .tab.folder.wcard .fbr .smark { margin-right:var(--s1); vertical-align:middle; min-width:0; }
   .tab.intab.wcard { padding-left:30px; }
+  /* A folder and its tabs, as one box (drawTabs). Its edge is structure
+     (--line); on the folder in front it is --brand, the colour a selected
+     row's edge wears. The rows keep their own padding, so the box adds none
+     and clips their hover to its corners. It stands --s2 in from the column,
+     and a box follows the one above it by --s4, card to card. It never
+     shrinks: the column is a flex column, and on a phone's drawer a longer
+     list squeezed each box shorter than its rows, which its clipping then cut */
+  .fcard { flex:none; margin:0 var(--s2) var(--s4); border:1px solid var(--line); border-radius:var(--r-card);
+    overflow:hidden; }
+  .fcard.front { border-color:var(--brand); }
+  .fcard .tab.folder.wcard { padding:var(--s2) 10px var(--s2) var(--s3); }
+  /* Inside the card the set of tabs is a row, not a box of its own: the card
+     is the box. 27px puts the first pill's dot (6px into the pill) under the
+     dots of the tab rows it opens into (a 3px edge and 30px in) */
+  .fcard > .bundle { margin:0; padding:0 var(--s2) var(--s1) 27px; border:none; border-radius:0; }
   /* Worktrees git knows and the desk does not list: one quiet line under the
      project's heading that opens to say where, with two answers */
   .found { margin:0 var(--s2) 2px 14px; }
@@ -3656,8 +3671,15 @@ function drawTabs() {
         if (g.family) for (const m of making) if (sameFolder(m.family, g.family)) nav.append(makingRow(m));
       }
       if (folded.has("proj:" + pk)) continue;
-      if (g.empty) { nav.append(emptyRow(g, true)); continue; }
-      nav.append(folderRow(g, inside[gi], true));
+      // One box for the folder and everything in it, so where one folder ends
+      // and the next begins is drawn rather than guessed from indents. The box
+      // is the group; the rows inside it draw no boxes of their own. The folder
+      // whose tab is in front wears the brand on its edge: a name a shade
+      // brighter than its neighbours was the only sign, and nobody saw it
+      const card = el("div", {class:"fcard" + (inFront(g) ? " front" : "")});
+      nav.append(card);
+      if (g.empty) { card.append(emptyRow(g, true)); continue; }
+      card.append(folderRow(g, inside[gi], true));
       // Not asked whether the folder itself was put away: a card has no fold,
       // and a fold kept from before would hide its tabs with nothing to open
       const mine = inside[gi];
@@ -3665,13 +3687,13 @@ function drawTabs() {
         const away = tabsPutAway(g);
         const bundle = bundleRow(g, mine, away, false);
         bundle.classList.add("wcard");
-        nav.append(bundle);
+        card.append(bundle);
         if (away) continue;
       }
       for (const t of mine) {
         const tr = tabRow(t, g, false, false);
         tr.classList.add("wcard");
-        nav.append(tr);
+        card.append(tr);
       }
       continue;
     }
@@ -17341,6 +17363,24 @@ mod tests {
             "the pane no longer puts away a git tab's panel");
     }
 
+    /// Under a project's heading, a folder and its tabs are one box, and the
+    /// folder in front says so on the box's edge. A name a shade brighter than
+    /// its neighbours was the only sign, and a person could not find it.
+    #[test]
+    fn a_folder_and_its_tabs_stand_in_one_box_edged_when_in_front() {
+        assert!(PAGE.contains(r#"const card = el("div", {class:"fcard" + (inFront(g) ? " front" : "")});"#),
+            "a folder is not boxed with its tabs");
+        assert!(PAGE.contains("card.append(folderRow(g, inside[gi], true));"), "the folder stands outside its box");
+        assert!(PAGE.contains("card.append(bundle);") && PAGE.contains("card.append(tr);"),
+            "the folder's tabs stand outside its box");
+        assert!(PAGE.contains(".fcard.front { border-color:var(--brand); }"), "the box in front looks like the rest");
+        // Only the folder is a box: the set of tabs inside it draws none
+        assert!(PAGE.contains(".fcard > .bundle { margin:0; padding:0 var(--s2) var(--s1) 27px; border:none;"),
+            "the set of tabs is still a box inside the box");
+        // A flex column squeezes a box shorter than its rows, and the box clips them
+        assert!(PAGE.contains(".fcard { flex:none;"), "a long list cuts the bottom off each box");
+    }
+
     /// Several tabs in one folder get a heading, and a folded folder speaks
     /// for them. Both are what stop a sidebar of six agents from being six
     /// rows that have to be read one at a time.
@@ -17798,7 +17838,7 @@ mod tests {
     /// walked from tabs, and a new folder has none.
     #[test]
     fn an_empty_folder_is_drawn_and_its_plus_blinks() {
-        assert!(PAGE.contains("if (g.empty) { nav.append(emptyRow(g, true)); continue; }")
+        assert!(PAGE.contains("if (g.empty) { card.append(emptyRow(g, true)); continue; }")
             && PAGE.contains("if (g.empty) { nav.append(emptyRow(g)); continue; }"), "an empty folder is not drawn");
         // What blinks is the line that puts the first tab in, on the step that asks for it
         assert!(PAGE.contains(r#"(card ? " wcard" : "") + (own ? next : ""), title:g.folder || "","#),
