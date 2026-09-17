@@ -2781,6 +2781,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::Branch { .. }) => {
                         shell.mail().branches.extend(shikisha_shared::BranchAsk::of(ev));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::BringLines { from, lines }) => {
+                        shell.mail().bring_lines.push((from, lines));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Repair {
                         folder,
                         choose,
@@ -5798,6 +5801,27 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Err(e) => e,
             });
         }
+        // How each ignore line comes along, chosen by line in the worktree
+        // dialog and applied: kept as the project's own, for this worktree and
+        // the ones after it. The dialog has already put the choices on its own
+        // list; what is left is to write them down, and to say so if that fails
+        for (from, lines) in shell.mail().take_bring_lines() {
+            let Some(desk) = desks.get(desk_index) else { continue };
+            let choices: Vec<config::BringChoice> = lines
+                .into_iter()
+                .map(|(source, pattern, how)| config::BringChoice {
+                    source: match source.trim() {
+                        "" => ".gitignore".into(),
+                        s => s.to_string(),
+                    },
+                    pattern,
+                    how,
+                })
+                .collect();
+            if !config::save_bring_choices(&desk.id, std::path::Path::new(&from), &choices) {
+                flash = Some(i18n::t("msg.bring.not_saved"));
+            }
+        }
         for ask in shell.mail().take_branches() {
             let from = std::path::PathBuf::from(&ask.from);
             let name = ask.branch.clone();
@@ -5826,6 +5850,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let rules = project.map(|p| p.bring.clone()).unwrap_or_default();
             let offers = repo.as_deref().map(|main| {
                 let mut carry = crate::worktree::carryables(main, &rules);
+                // Before this folder's own changes: a line says what the project says
+                let lines = crate::worktree::carry_lines(&carry);
                 for c in carry.iter_mut() {
                     if let Some((_, how)) = ask.carry.iter().find(|(n, _)| *n == c.name)
                         && crate::worktree::HOWS.contains(&how.as_str())
@@ -5833,9 +5859,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         c.how = how.clone();
                     }
                 }
-                (crate::worktree::bases(main), carry)
+                (crate::worktree::bases(main), carry, lines)
             });
-            let (bases, carryable) = offers.unwrap_or_default();
+            let (bases, carryable, carry_lines) = offers.unwrap_or_default();
             // What it would grow from, even when there is no name yet to grow.
             // Echoing back the empty answer would leave the picker with nothing
             // to show until somebody typed
@@ -5882,6 +5908,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 base: chosen.clone(),
                 bases,
                 carry: carryable.clone(),
+                carry_lines,
                 project: checkout
                     .as_deref()
                     .and_then(|p| p.file_name())

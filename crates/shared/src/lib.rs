@@ -240,6 +240,10 @@ pub enum Ev {
     /// somebody read what was offered and said yes. `from` is the folder whose
     /// project it is
     KeepEnv { from: String },
+    /// The worktree dialog's "by .gitignore line" choices, applied: how what
+    /// each line matches comes along, as (ignore file, line, how), to be kept as
+    /// the project's own. `from` is the folder whose project it is
+    BringLines { from: String, lines: Vec<(String, String, String)> },
     /// A colour was chosen for the project a folder belongs to. Empty means
     /// "go back to the one you work out yourselves"
     FolderColor { folder: String, color: String },
@@ -903,6 +907,22 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("keepenv") => Ev::KeepEnv {
             from: v.get("from").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
+        Some("bringlines") => Ev::BringLines {
+            from: v.get("from").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            lines: v
+                .get("lines")
+                .and_then(|x| x.as_array())
+                .map(|list| {
+                    list.iter()
+                        .map(|l| {
+                            let s = |k: &str| l.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                            (s("source"), s("pattern"), s("how"))
+                        })
+                        .filter(|(_, pattern, how)| !pattern.is_empty() && !how.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
         },
         Some("branch") => Ev::Branch {
             from: v.get("from").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

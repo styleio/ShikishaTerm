@@ -2495,11 +2495,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch #bbase { display:none; }
   /* The three ways to say what it is, as line tabs: the one in use underlined
      in the colour that means focus */
-  #branch .btabs { display:flex; gap:var(--s4); border-bottom:1px solid var(--line); }
-  #branch .btabs button { border:0; border-bottom:2px solid transparent; border-radius:0; background:transparent;
+  #branch .btabs, #branch .bctabs { display:flex; gap:var(--s4); border-bottom:1px solid var(--line); }
+  #branch .btabs button, #branch .bctabs button { border:0; border-bottom:2px solid transparent; border-radius:0; background:transparent;
     min-height:28px; padding:0; font-size:12px; color:var(--dim); font-weight:normal; }
-  #branch .btabs button:hover { color:var(--text); border-color:transparent; border-bottom-color:var(--edge); }
-  #branch .btabs button.on { color:var(--text); border-bottom-color:var(--brand); }
+  #branch .btabs button:hover, #branch .bctabs button:hover { color:var(--text); border-color:transparent; border-bottom-color:var(--edge); }
+  #branch .btabs button.on, #branch .bctabs button.on { color:var(--text); border-bottom-color:var(--brand); }
   #branch .bsrcrow { position:relative; }
   #branch .bsrcrow[hidden], #branch .bchip[hidden], #branch .bresults[hidden], #branch .brow2[hidden] { display:none; }
   #branch .bsrcico { position:absolute; left:10px; top:50%; transform:translateY(-50%); display:flex; color:var(--dim); }
@@ -2585,17 +2585,29 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      they disagree. However long, it scrolls with the rest of the dialog: a
      frame scrolling inside the scrolling part is two hands on one wheel */
   #branch .bcarryf:has(> .bcarry:empty) { display:none; }
-  #branch .bcarry { border:1px solid var(--line); border-radius:var(--r-ctl); }
-  #branch .bcarry > div { display:flex; align-items:center; gap:var(--s3); padding:var(--s1) var(--s3); }
-  #branch .bcarry > div + div { border-top:1px solid var(--line); }
+  #branch .bcarry, #branch .bclines { border:1px solid var(--line); border-radius:var(--r-ctl); }
+  #branch .bcarry[hidden], #branch .bclines[hidden], #branch .bcapply[hidden] { display:none; }
+  #branch .bcarry > div, #branch .bclines > div { display:flex; align-items:center; gap:var(--s3); padding:var(--s1) var(--s3); }
+  #branch .bcarry > div + div, #branch .bclines > div + div { border-top:1px solid var(--line); }
   /* A path is cut at its front: the end is the file's own name */
-  #branch .bcarry .nm { flex:1; min-width:0; font-family:var(--mono); font-size:12px; color:var(--text);
+  #branch .bcarry .nm, #branch .bclines .nm { flex:1; min-width:0; font-family:var(--mono); font-size:12px; color:var(--text);
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
-  #branch .bcarry select { flex:none; width:132px; height:32px; box-sizing:border-box; font:inherit; font-size:12px;
+  /* A line of an ignore file reads left to right: its start is what it says */
+  #branch .bclines .nm { direction:ltr; }
+  #branch .bclines .n { flex:none; font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  #branch .bcarry select, #branch .bclines select { flex:none; width:132px; height:32px; box-sizing:border-box; font:inherit; font-size:12px;
     padding:0 var(--s2); border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--bg); color:var(--text); }
-  #branch .bcarry select:hover { border-color:var(--edge-hi); }
-  #branch .bcarry select:focus { outline:none; border-color:var(--brand);
+  #branch .bcarry select:hover, #branch .bclines select:hover { border-color:var(--edge-hi); }
+  #branch .bcarry select:focus, #branch .bclines select:focus { outline:none; border-color:var(--brand);
     box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  /* Chosen by line and not yet on the list: said above the list, with the
+     one press that puts it there. A plain button -- the dialog's own button
+     is still the one that makes the worktree */
+  #branch .bcapply { display:flex; align-items:center; gap:var(--s3); }
+  #branch .bcapply .say { flex:1; min-width:0; font-size:11.5px; color:var(--dim); }
+  #branch .bcapply .bcgo { flex:none; height:32px; padding:0 var(--s3); font-size:12.5px; border:1px solid var(--edge);
+    border-radius:var(--r-ctl); background:var(--panel2); color:var(--text); cursor:pointer; }
+  #branch .bcapply .bcgo:hover { border-color:var(--edge-hi); }
   #branch .berr, #browse .berr { color:var(--stop); font-size:12px; white-space:pre-wrap; }
   /* Why the button did nothing is a person being needed, not a failure (5.4) */
   #branch .berr.need { color:var(--warn); font-size:11.5px; }
@@ -3235,7 +3247,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         </div>
         <div class="bfield bcarryf">
           <span class="blabel bcarrysay"></span>
+          <div class="bctabs" role="tablist"><button type="button" data-ctab="each"></button><button type="button" data-ctab="lines"></button></div>
+          <div class="bcapply" hidden><span class="say"></span><button type="button" class="bcgo"></button></div>
           <div class="bcarry"></div>
+          <div class="bclines" hidden></div>
         </div>
         <div class="bfield">
           <span class="blabel"></span>
@@ -6665,6 +6680,11 @@ function openBranch(g, preset) {
   const box = b.querySelector(".bcarry");
   box.dataset.key = "";
   box.textContent = "";
+  const byLine = b.querySelector(".bclines");
+  byLine.dataset.key = "";
+  byLine.textContent = "";
+  carryTab = "each";
+  lineChoices.clear();
   branchBase = preset.base || "";
   branchBaseChosen = !!preset.base;
   // Opened for an issue or a pull request, that is what it is made from; given
@@ -7186,6 +7206,7 @@ function drawBranch() {
   drawSetup(b, here ? p : null);
   drawDest(b, here ? p : null);
   drawCarry(b, here ? (p.carry || []) : []);
+  drawCarryLines(b, here ? (p.carry_lines || []) : []);
   showMore(b, !b.querySelector(".bextra").hidden);
   drawBases(b, here ? p : null);
   drawBranchTabs(b);
@@ -7330,6 +7351,7 @@ function drawCarry(b, items) {
   b.querySelector(".bcarrysay").textContent = T["tui.branch.carry"] || "Brought along";
   for (const it of items) {
     const pick = el("select", {"data-name": it.name});
+    if (it.line) { pick.dataset.source = it.line.source; pick.dataset.pattern = it.line.pattern; }
     for (const how of ["copy", "replace", "link", "skip"]) {
       // A folder has no text to replace in
       if (how === "replace" && it.folder && it.how !== "replace") continue;
@@ -7342,6 +7364,92 @@ function drawCarry(b, items) {
     const name = it.name + (it.folder ? "/" : "");
     box.append(el("div", {}, el("span", {class:"nm", title:name}, "‎" + name + "‎"), pick));
   }
+}
+
+// The same things, a line of the ignore files at a time. Nothing chosen here
+// touches the list until it is applied: the list is what will happen, and a
+// choice made by line is a proposal about many of its rows at once.
+// Chosen lines, by "ignore file NUL line", holding how
+let carryTab = "each";
+const lineChoices = new Map();
+const lineKey = (source, pattern) => source + "\u0000" + pattern;
+function drawCarryLines(b, lines) {
+  const tabs = b.querySelector(".bctabs");
+  const list = b.querySelector(".bcarry");
+  const byLine = b.querySelector(".bclines");
+  // Only worth a tab when there is more than one row to choose for
+  tabs.hidden = !lines.length || !list.children.length;
+  if (tabs.hidden) carryTab = "each";
+  for (const t of tabs.children) {
+    t.textContent = T["tui.branch.carry.tab." + t.dataset.ctab] || "";
+    const on = t.dataset.ctab === carryTab;
+    t.classList.toggle("on", on);
+    t.setAttribute("aria-selected", String(on));
+    t.onclick = () => { carryTab = t.dataset.ctab; drawCarryLines(b, lines); };
+  }
+  list.hidden = carryTab !== "each";
+  byLine.hidden = carryTab !== "lines";
+  // The project's answer moves once a choice is kept, and the row with it
+  const key = lines.map(l => lineKey(l.source, l.pattern) + "=" + l.how + "#" + l.count).join("\u0001");
+  if (byLine.dataset.key !== key) {
+    byLine.dataset.key = key;
+    byLine.textContent = "";
+    for (const l of lines) {
+      const k = lineKey(l.source, l.pattern);
+      // A choice that is now the project's own is no longer a change
+      if (lineChoices.get(k) === l.how) lineChoices.delete(k);
+      const pick = el("select", {});
+      for (const how of ["copy", "replace", "link", "skip"]) {
+        if (how === "replace" && l.folders && l.how !== "replace") continue;
+        pick.append(el("option", {value: how}, T["tui.branch.carry." + how] || how));
+      }
+      pick.value = lineChoices.get(k) || l.how;
+      pick.onchange = () => {
+        if (pick.value === l.how) lineChoices.delete(k); else lineChoices.set(k, pick.value);
+        drawCarryApply(b, lines);
+      };
+      const said = l.source === ".gitignore" ? l.pattern
+        : (T["tui.branch.carry.in"] || "{line} ({file})").replace("{line}", l.pattern).replace("{file}", l.source);
+      byLine.append(el("div", {},
+        el("span", {class:"nm", title:said}, said),
+        el("span", {class:"n"}, (T["tui.branch.carry.n"] || "{n}").replace("{n}", l.count)),
+        pick));
+    }
+  }
+  drawCarryApply(b, lines);
+}
+// Said on the list, where the change is going to land
+function drawCarryApply(b, lines) {
+  const apply = b.querySelector(".bcapply");
+  const n = lineChoices.size;
+  apply.hidden = carryTab !== "each" || !n;
+  if (apply.hidden) return;
+  apply.querySelector(".say").textContent = (T["tui.branch.carry.pending"] || "{n}").replace("{n}", n);
+  const go = apply.querySelector(".bcgo");
+  go.textContent = T["tui.branch.carry.apply"] || "Apply to the list";
+  go.onclick = () => applyCarryLines(b, lines);
+}
+// Every row of a changed line takes the line's choice; rows of lines left
+// alone keep whatever was chosen for them one at a time. The choices become
+// the project's own, for this worktree and the ones after it
+function applyCarryLines(b, lines) {
+  if (!lineChoices.size) return;
+  for (const s of b.querySelectorAll(".bcarry select")) {
+    if (!("pattern" in s.dataset)) continue;
+    const how = lineChoices.get(lineKey(s.dataset.source, s.dataset.pattern));
+    if (!how) continue;
+    // A folder has no text to replace in: it is copied
+    s.value = Array.from(s.options).some(o => o.value === how) ? how : "copy";
+  }
+  const chosen = Array.from(lineChoices, ([k, how]) => {
+    const [source, pattern] = k.split("\u0000");
+    return {source, pattern, how};
+  });
+  send({kind:"bringlines", from:branchFrom, lines:chosen});
+  lineChoices.clear();
+  drawCarryLines(b, lines);
+  showMore(b, !b.querySelector(".bextra").hidden);
+  askBranch();
 }
 
 (function () {

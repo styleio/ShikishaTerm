@@ -638,6 +638,7 @@ pub fn carryables(main: &Path, rules: &[crate::config::BringRule]) -> Vec<Carry>
                     .unwrap_or_else(|| default_how(&found, &i.source, &i.pattern).to_string()),
                 from: None,
                 replace: rule.map(|r| r.replace.clone()).unwrap_or_default(),
+                line: Some(CarryLineKey { source: i.source.clone(), pattern: i.pattern.clone() }),
             }
         })
         .collect();
@@ -657,9 +658,59 @@ pub fn carryables(main: &Path, rules: &[crate::config::BringRule]) -> Vec<Carry>
             },
             from: Some(from.to_string()),
             replace: r.replace.clone(),
+            line: None,
         });
     }
     out
+}
+
+/// The lines of the ignore files, each once, with how everything it matches
+/// comes along -- what the worktree dialog offers to choose by line.
+///
+/// Read off the things offered, before anything was changed for one folder,
+/// so a line says what the project says: its rule, or the answer when there is
+/// none. In the order its first match is offered
+pub fn carry_lines(offered: &[Carry]) -> Vec<CarryLine> {
+    let mut lines: Vec<CarryLine> = Vec::new();
+    for c in offered {
+        let Some(key) = &c.line else { continue };
+        match lines.iter_mut().find(|l| l.source == key.source && l.pattern == key.pattern) {
+            Some(l) => {
+                l.count += 1;
+                l.folders &= c.folder;
+            }
+            None => lines.push(CarryLine {
+                source: key.source.clone(),
+                pattern: key.pattern.clone(),
+                how: c.how.clone(),
+                count: 1,
+                folders: c.folder,
+            }),
+        }
+    }
+    lines
+}
+
+/// Which line of which ignore file makes git ignore something
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CarryLineKey {
+    /// The ignore file, as git names it (`.gitignore` is the project's own)
+    pub source: String,
+    /// The line as written
+    pub pattern: String,
+}
+
+/// One line of an ignore file, as the worktree dialog shows it
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CarryLine {
+    pub source: String,
+    pub pattern: String,
+    /// How what it matches comes along, as the project says
+    pub how: String,
+    /// How many of the things offered it matches
+    pub count: usize,
+    /// Whether every one of them is a folder (a folder has no text to replace in)
+    pub folders: bool,
 }
 
 /// The ways something can reach a new folder, in the order they are offered
@@ -680,6 +731,9 @@ pub struct Carry {
     /// For `replace`: what is written differently in the copy
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub replace: Vec<crate::config::Replace>,
+    /// The ignore line that decides it; absent for what comes from elsewhere
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<CarryLineKey>,
 }
 
 /// One thing git ignores in a checkout, and the line that makes it.
@@ -2093,7 +2147,7 @@ mod tests {
         let stray = local.join("stray");
         plan.main = local.clone();
         plan.folder = stray.clone();
-        let one = Carry { name: ".env".into(), folder: false, how: "copy".into(), from: None, replace: Vec::new() };
+        let one = Carry { name: ".env".into(), folder: false, how: "copy".into(), from: None, replace: Vec::new(), line: None };
         let missed = carry_into(&plan, &[one]).missed;
         assert_eq!(missed, [".env"], "it could not carry it, but counts as carried");
         assert!(!stray.exists(), "a folder was made on this machine under the far path's name");
@@ -3005,4 +3059,35 @@ tools/conpty.ps1"));
         std::fs::write(git.join("refs/remotes/origin/HEAD"), "ref: refs/remotes/origin/trunk\n").unwrap();
         assert_eq!(default_base(&main), "origin/trunk");
     }
+
+    /// One row per line of an ignore file, however many things it matches,
+    /// in the order they are offered, saying what the project says
+    #[test]
+    fn the_things_offered_are_counted_by_their_line() {
+        let item = |name: &str, folder: bool, how: &str, source: &str, pattern: &str| Carry {
+            name: name.into(),
+            folder,
+            how: how.into(),
+            from: None,
+            replace: Vec::new(),
+            line: Some(CarryLineKey { source: source.into(), pattern: pattern.into() }),
+        };
+        let offered = vec![
+            item("www/tmp/a", true, "link", ".gitignore", "www/tmp/*"),
+            item(".env", false, "skip", ".gitignore", ".env"),
+            item("www/tmp/b", true, "link", ".gitignore", "www/tmp/*"),
+            item("www/tmp/c.txt", false, "link", ".gitignore", "www/tmp/*"),
+            item("web/cache", true, "link", "web/.gitignore", "www/tmp/*"),
+            // From elsewhere: no line to choose it by
+            Carry { name: "keys".into(), folder: true, how: "copy".into(), from: Some("D:/keys".into()), replace: Vec::new(), line: None },
+        ];
+        let lines = carry_lines(&offered);
+        let said: Vec<_> = lines.iter().map(|l| (l.source.as_str(), l.pattern.as_str(), l.how.as_str(), l.count, l.folders)).collect();
+        assert_eq!(said, [
+            (".gitignore", "www/tmp/*", "link", 3, false),
+            (".gitignore", ".env", "skip", 1, false),
+            ("web/.gitignore", "www/tmp/*", "link", 1, true),
+        ]);
+    }
 }
+
