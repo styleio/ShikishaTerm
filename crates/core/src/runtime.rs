@@ -11561,8 +11561,11 @@ mod tests {
     /// for a side that is plain ASCII, which reads the same in any of them
     #[test]
     fn a_comparison_names_the_encoding_its_files_are_in() {
-        let sjis = crate::charset::write_as("山田\n", encoding_rs::SHIFT_JIS).unwrap();
-        let utf8 = "山田\n".as_bytes();
+        // A line as long as a real one: two characters are too few to tell
+        // Japanese from anything else on a machine not set up for Japanese
+        let line = "1001,山田太郎,東京都千代田区\n";
+        let sjis = crate::charset::write_as(line, encoding_rs::SHIFT_JIS).unwrap();
+        let utf8 = line.as_bytes();
         let ascii = b"yamada\n";
         let read = |b: &[u8]| diff_text("a", b, None).unwrap();
         let (s, u, a) = (read(&sjis), read(utf8), read(ascii));
