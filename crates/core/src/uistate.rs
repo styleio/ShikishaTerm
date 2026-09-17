@@ -150,6 +150,10 @@ pub struct TabState {
     /// into its place in the meantime
     #[serde(default)]
     pub key: String,
+    /// The name a person gave the server this tab is on ("Production"), when
+    /// it is on one and they did. Worn wherever the tab is named
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark: Option<MarkState>,
 }
 
 /// A tab whose ✕ was pressed while its work would be cut off, waiting for the
@@ -295,6 +299,88 @@ pub const PALETTE: [&str; 8] = [
     "#e0a80a", "#12b3a8", "#e5644d", "#7f8cff",
 ];
 
+/// The name a person gave a server, ready to wear: on a tab, on a file panel's
+/// connection, on a question about something that cannot be undone.
+///
+/// Only ever made for a server with a name. A colour with no word beside it
+/// does not say "production" to somebody seeing it for the first time, so a
+/// mark with no name is not a quieter mark -- it is none
+#[derive(Clone, Serialize, PartialEq, Eq, Debug, Default)]
+pub struct MarkState {
+    pub name: String,
+    /// Ready to draw: what was chosen, or one worked out from the name
+    pub color: String,
+    /// Whether something that cannot be undone there waits for the name to be typed
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub careful: bool,
+    /// Which server it is, written the way the settings file it
+    /// ([`crate::ssh::Spec::machine`]), so the settings can be opened on it
+    pub machine: String,
+}
+
+impl MarkState {
+    /// The mark for this server, if anybody named it.
+    ///
+    /// Looked up the one way the settings write it, whatever case a person
+    /// editing the file by hand used for the address
+    pub fn of(
+        machine: &str,
+        marks: &std::collections::HashMap<String, crate::config::ServerMark>,
+    ) -> Option<Self> {
+        let key = crate::ssh::machine_key(machine);
+        let mark = marks
+            .get(&key)
+            .or_else(|| marks.iter().find(|(k, _)| crate::ssh::machine_key(k) == key).map(|(_, m)| m))?;
+        let name = mark.name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        Some(Self {
+            name: name.to_string(),
+            color: mark
+                .color
+                .as_deref()
+                .map(str::trim)
+                .filter(|c| is_hex_colour(c))
+                .map(str::to_string)
+                .unwrap_or_else(|| palette_of(name)),
+            careful: mark.careful,
+            machine: key,
+        })
+    }
+
+    /// The same, for a machine a tab or a panel is on
+    pub fn of_place(
+        at: &crate::elsewhere::Elsewhere,
+        marks: &std::collections::HashMap<String, crate::config::ServerMark>,
+    ) -> Option<Self> {
+        match at {
+            crate::elsewhere::Elsewhere::Ssh(spec) => Self::of(&spec.machine(), marks),
+            // A sandbox is made when it is wanted and thrown away after: there
+            // is no lasting machine for a name to belong to
+            crate::elsewhere::Elsewhere::Cloud(_) => None,
+        }
+    }
+}
+
+/// `#rgb` or `#rrggbb`, and nothing else. The colour goes straight into the
+/// page's styles, on the window and on a phone, so what is not plainly a colour
+/// is not handed over
+fn is_hex_colour(c: &str) -> bool {
+    let Some(hex) = c.strip_prefix('#') else { return false };
+    matches!(hex.len(), 3 | 6) && hex.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// One of the colours projects are given, worked out from a name so that the
+/// same name always comes out the same colour
+fn palette_of(name: &str) -> String {
+    let mut h: u32 = 2166136261;
+    for b in name.to_lowercase().bytes() {
+        h = (h ^ b as u32).wrapping_mul(16777619);
+    }
+    PALETTE[(h % PALETTE.len() as u32) as usize].to_string()
+}
+
 /// A folder, as a heading over the tabs working in it.
 ///
 /// A group is a folder, so this is worked out from where the tabs actually
@@ -362,6 +448,9 @@ pub struct GroupState {
     /// it where a folder here says its branch
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// And the name a person gave that machine, worn beside it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark: Option<MarkState>,
 }
 
 impl GroupState {
@@ -423,6 +512,7 @@ impl GroupState {
                     empty: false,
                     work_item: None,
                     host: None,
+                    mark: None,
                 },
             ));
         }
@@ -457,6 +547,7 @@ impl GroupState {
                     empty: true,
                     work_item: None,
                     host: None,
+                    mark: None,
                 },
             ));
         }
@@ -515,11 +606,7 @@ impl GroupState {
             && !c.trim().is_empty() {
                 return c.trim().to_string();
             }
-        let mut h: u32 = 2166136261;
-        for b in key.to_lowercase().bytes() {
-            h = (h ^ b as u32).wrapping_mul(16777619);
-        }
-        PALETTE[(h % PALETTE.len() as u32) as usize].to_string()
+        palette_of(&key)
     }
 }
 
@@ -1724,6 +1811,9 @@ impl TabState {
             draft: None,
             // Filled in by `view::ui_state_of`, which knows the rows
             key: String::new(),
+            // Filled in by `view::ui_state_of` too: which server a tab is on
+            // is the tab's, but what the person named it is the settings'
+            mark: None,
         }
     }
 
@@ -1838,6 +1928,9 @@ impl TabState {
             failed: None,
             draft: None,
             key: String::new(),
+            // Filled in by `view::ui_state_of` too: which server a tab is on
+            // is the tab's, but what the person named it is the settings'
+            mark: None,
         }
     }
 }
@@ -2162,6 +2255,37 @@ mod tests {
         assert_ne!(GroupState::color_of(b, &chosen), "#123456", "it does not change another place's color");
     }
 
+    /// A server wears a mark only once somebody named it. The colour is what
+    /// was chosen when it is plainly a colour, and one worked out from the name
+    /// otherwise -- and the settings are read however the address was
+    /// capitalised by a hand editing the file
+    #[test]
+    fn a_server_is_marked_only_with_a_name() {
+        use crate::config::ServerMark;
+        let marks = |name: &str, color: Option<&str>| {
+            std::collections::HashMap::from([(
+                "Prod.Example.com:22".to_string(),
+                ServerMark { name: name.into(), color: color.map(str::to_string), careful: true },
+            )])
+        };
+        let found = MarkState::of("prod.example.com:22", &marks(" Production ", Some("#E5644D")))
+            .expect("a named server is not marked");
+        assert_eq!(found.name, "Production");
+        assert_eq!(found.color, "#E5644D");
+        assert!(found.careful);
+        assert_eq!(found.machine, "prod.example.com:22");
+
+        assert_eq!(MarkState::of("prod.example.com:22", &marks("  ", Some("#e5644d"))), None,
+            "a colour with no name was worn as a mark");
+        assert_eq!(MarkState::of("staging.example.com:22", &marks("Production", None)), None);
+
+        // Not plainly a colour, so not handed to the page's styles
+        let odd = MarkState::of("prod.example.com:22", &marks("Production", Some("red;background:url(x)"))).unwrap();
+        assert!(PALETTE.contains(&odd.color.as_str()), "{}", odd.color);
+        assert_eq!(odd.color, MarkState::of("prod.example.com:22", &marks("production", None)).unwrap().color,
+            "the same name came out two colours");
+    }
+
     fn tab(index: usize, name: &str) -> TabState {
         TabState {
             index,
@@ -2196,6 +2320,7 @@ mod tests {
             file: None,
             file_stamp: None,
             key: format!("tab:{index}"),
+            mark: None,
         }
     }
 
@@ -2237,3 +2362,4 @@ mod tests {
         assert_ne!(a, b, "the state changed but was judged the same");
     }
 }
+

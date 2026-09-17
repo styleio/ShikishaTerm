@@ -447,6 +447,23 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     white-space:nowrap; }
   .tab .place .pr, .tab .place .pt { flex:none; white-space:nowrap; }
   .tab .place .pr { color:var(--brand); }
+  /* The name a person gave a server ("Production"), worn wherever something
+     on that server is named. A mark the way a project's colour is one: a
+     square of the colour they chose and the word beside it. Never the colour
+     alone -- to someone seeing it for the first time, or someone who cannot
+     tell the colours apart, a colour says nothing -- and never spread over the
+     row or its buttons, where it would be read as a state. The chip is tinted
+     rather than filled so its word stays the text colour on every scheme.
+     In a list row the name beside it gives way first: "Production" is the
+     word read at a glance, and a long name for a server is cut at 128px
+     rather than pushing the row apart */
+  .smark { flex:0 1 auto; min-width:44px; max-width:128px; display:inline-flex; align-items:center;
+    gap:var(--s1); padding:0 5px; border-radius:var(--r-chip); font-size:11px; line-height:16px;
+    font-weight:normal; letter-spacing:0; color:var(--text); white-space:nowrap;
+    background:color-mix(in srgb, var(--mk, var(--dim)) 14%, transparent);
+    border:1px solid color-mix(in srgb, var(--mk, var(--dim)) 55%, transparent); }
+  .smark i { flex:none; width:8px; height:8px; border-radius:2px; background:var(--mk, var(--dim)); }
+  .smark .mn { min-width:0; overflow:hidden; text-overflow:ellipsis; }
   .dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--dim); }
   /* It blinks between two values instead of gliding between them. A glide has
      to be redrawn on every frame the display shows, for as long as an agent is
@@ -553,6 +570,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #strip .stab:hover { background:var(--hover); }
   #strip .stab.sel { color:var(--text); background:var(--bg);
     border-bottom-color:var(--brand); }
+  /* Across the top the room is shared by every tab, and a mark cut to "Pr…"
+     beside a name cut to nothing says neither. Each keeps a floor, and the row
+     scrolls past it the way it already does for many tabs */
+  #strip .stab .smark { line-height:14px; flex:none; max-width:96px; }
+  #strip .stab:has(.smark) { flex-shrink:0; max-width:none; }
+  #strip .stab:has(.smark) .nm { min-width:3em; max-width:120px; }
   #strip .stab .nm { min-width:0; overflow:hidden; text-overflow:ellipsis;
     white-space:nowrap; }
   #strip .snew { flex:0 0 auto; padding:0 var(--s3); display:flex; align-items:center;
@@ -601,6 +624,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .bundle:hover { background:var(--hover); }
   .bundle .word { flex:1; min-width:0; padding-left:6px; }
   .bundle .caret { flex:none; font-size:14px; line-height:1; color:var(--muted); }
+  .bundle:has(.bmarks) { flex-wrap:wrap; row-gap:var(--s1); }
+  .bundle .bmarks { flex-basis:100%; display:flex; flex-wrap:wrap; gap:var(--s1); padding:0 0 2px 6px; }
   .tab.folder.front .nm { opacity:1; color:var(--text); }
   /* What a put-away set says instead of its rows. One pill per state, each
      wearing that state's dot and a chip for every tab in it -- so the row
@@ -711,6 +736,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.folder.wcard .fill { flex:1 1 0; min-width:0; }
   .tab.folder.wcard .fbr { flex-basis:100%; padding-left:14px; font-size:10px; color:var(--dim);
     font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tab.folder.wcard .fbr .smark { margin-right:var(--s1); vertical-align:middle; min-width:0; }
   .tab.intab.wcard { padding-left:30px; }
   /* Worktrees git knows and the desk does not list: one quiet line under the
      project's heading that opens to say where, with two answers */
@@ -817,6 +843,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .pane.focused .phead { color:var(--text); background:var(--raise);
     border-bottom-color:var(--brand); }
   .pane .phead .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* A caption holds its buttons whatever its width. In a narrow pane the name
+     gives way first and then the mark, down to its floor -- never past it to
+     the square alone, and never over the buttons */
+  .pane .phead .smark { line-height:14px; }
+  .pane .phead .nm { min-width:0; }
+  .pane .phead .sp, .pane .phead .rs, .pane .phead .cl { flex:none; }
+  .pane .phead .pmark:empty { display:none; }
+  .pane .phead .pmark { display:flex; min-width:0; }
   .pane .phead .cl { opacity:.6; padding:0 2px; }
   .pane .phead .cl:hover { opacity:1; color:var(--stop); }
   /* Divide this pane. Next to the ✕ because the pair is the same thought:
@@ -2050,11 +2084,32 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #sask .brow { padding-top:var(--s3); border-top:1px solid var(--line);
     display:flex; gap:var(--s2); justify-content:flex-end; }
   #sask #sq { font:inherit; font-size:13px; background:var(--bg); color:var(--text);
-    border:1px solid var(--line); border-radius:var(--r-ctl); padding:0 12px;
+    border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 12px;
     height:36px; outline:none; }
   #sask #sq:focus { border-color:var(--brand);
     box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
   #sask #sq[hidden] { display:none; }
+  /* The server's name, typed before something cannot be undone there. A field
+     of section 5.1: its label above it, the box the same as the one above */
+  #sask .ssure { display:flex; flex-direction:column; gap:var(--s2); }
+  #sask .ssure[hidden] { display:none; }
+  #sask .ssure label { font-size:12px; font-weight:500; color:var(--text); }
+  #sask #ssq { font:inherit; font-size:13px; background:var(--bg); color:var(--text);
+    border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 12px;
+    height:36px; outline:none; }
+  #sask #ssq:focus { border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #sask #ssq.bad { border-color:var(--warn); }
+  #sask .lookhere { animation:sftplook .9s ease-out 2; }
+  /* Why the button did nothing, above the button, for as long as it is true */
+  #sask .swhy { color:var(--warn); font-size:11.5px; line-height:1.5; }
+  #sask .swhy[hidden] { display:none; }
+  /* Grey and still answering (5.4) -- the danger colour too, since a faded red
+     is still red */
+  #sask .go.held, #sask .go.stop.held { background:var(--panel2); border-color:var(--line);
+    color:var(--faint); cursor:not-allowed; }
+  #sask .bwhere .smark { margin-right:var(--s2); vertical-align:middle; }
+  #sdiff .bwhere .smark { margin-right:var(--s2); vertical-align:middle; }
   #sask .go { font:inherit; font-size:12.5px; min-height:32px; padding:0 14px;
     border-radius:var(--r-ctl); border:1px solid var(--brand); background:var(--brand);
     color:var(--bg); cursor:pointer; }
@@ -2721,6 +2776,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <div class="blist" hidden></div>
         <label class="snever" hidden><input type="checkbox"><span></span></label>
         <input id="sq" type="text" autocomplete="off" spellcheck="false" hidden>
+        <div class="ssure" hidden><label for="ssq"></label><input id="ssq" type="text" autocomplete="off" spellcheck="false"></div>
+        <div class="swhy" hidden></div>
         <div class="brow"><button class="quiet"></button><button class="go"></button></div>
       </div>
     </div>
@@ -4846,7 +4903,9 @@ function folderRow(g, mine, card) {
     // On the row itself as well as in the count above, so a folded list
     // still shows which folder is the one with the problem
     ailMark(g),
-    nameSlot("tabs", "f:" + g.folder, g.name || "", v => send({kind:"foldername", folder:g.folder, name:v}), "nm"));
+    nameSlot("tabs", "f:" + g.folder, g.name || "", v => send({kind:"foldername", folder:g.folder, name:v}), "nm"),
+    // A card says it on its second line, with the machine's address
+    card ? null : serverMark(g.mark));
   // Shut, the row has to speak for what it is hiding: the state of whichever
   // tab inside is waiting on somebody first, and the shape of the work going
   // on in there. Open, it says neither -- the rows below are already saying
@@ -4888,8 +4947,7 @@ function folderRow(g, mine, card) {
   // the + is the heading's: one worktree at a time is cut from the project
   row.append(...[drifted(g), card ? null : worktreePlus(g)].filter(Boolean));
   if (card) {
-    row.append(el("span", {class:"fbr", title:g.host ? g.host + ":" + g.folder : T["tui.folder.on.title"] || ""},
-      (g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder))));
+    row.append(folderWhere(g));
   }
   // Everything else a folder can do is a shortcut, not a door: its settings
   // are on the settings page, a repair is the ⚠ it is already wearing, and a
@@ -4897,6 +4955,14 @@ function folderRow(g, mine, card) {
   // one press away for somebody who knows to look
   row.addEventListener("contextmenu", e => { e.preventDefault(); folderMenu(e, g); });
   return row;
+}
+
+// A card's second line: the machine it is on, when that is not this one, and
+// the branch. The name a person gave that machine leads, since it is the part
+// read at a glance and the address is the part checked
+function folderWhere(g) {
+  return el("span", {class:"fbr", title:g.host ? g.host + ":" + g.folder : T["tui.folder.on.title"] || ""},
+    ...[serverMark(g.mark), (g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder))].filter(Boolean));
 }
 
 // Whether this folder is the one whose tab is in front, so its row can say so
@@ -4945,8 +5011,8 @@ function emptyRow(g, card) {
     nameSlot("tabs", "f:" + g.folder, g.name || "", v => send({kind:"foldername", folder:g.folder, name:v}), "nm"),
     ...(card
       ? [g.family && !g.linked ? el("span", {class:"prim", title:T["tui.folder.primary.title"] || ""}, T["tui.folder.primary"] || "primary") : null,
-         el("span", {class:"fill"}), el("span", {class:"fbr"}, (g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder)))]
-      : [worktreePlus(g)]).filter(Boolean));
+         el("span", {class:"fill"}), folderWhere(g)]
+      : [serverMark(g.mark), worktreePlus(g)]).filter(Boolean));
   row.addEventListener("contextmenu", e => { e.preventDefault(); folderMenu(e, g); });
   box.append(row);
   if (!own) box.append(el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)},
@@ -4980,6 +5046,9 @@ function tabRow(t, g, deep, head) {
       ? el("span", {class:"nm agent", title:t.profile},
           el("span", {class:"st"}, t.state_label || t.state), el("span", {class:"who"}, " - ", tabName(t, "tabs", "")))
       : el("span", {class:"nm", title:t.profile}, tabName(t, "tabs", "")),
+    // Beside the name rather than on the line under it: "which server" is the
+    // thing a person reads this row for before they type into it
+    serverMark(t.mark),
     t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
     t.ai && t.since ? agoMark(t.since) : spark(t.activity));
   // Its settings are its own page, opened from here: the settings list no
@@ -6700,6 +6769,7 @@ function drawStrip() {
         oncontextmenu:e => { e.preventDefault(); tabMenu(e.currentTarget, t, "strip", e); }},
       markFor(t) || el("span", {class:"dot " + t.state}),
       tabName(t, "strip", "nm"),
+      serverMark(t.mark),
       el("span", {class:"x", title:T["tui.tab.close"] || "",
           onclick:e => { e.stopPropagation(); closeTab(t); }}, "\u2715"));
     if (t.index === S.active) sel = one;
@@ -6899,6 +6969,19 @@ function markFor(t) {
   return k ? el("span", {class:"aim", title:t.profile || ""}, k + "︎") : null;
 }
 
+// A server's name, as its mark. One builder for every place it is worn, so a
+// tab row, a pane's caption and a question about deleting something cannot
+// come to draw it three ways. Nothing at all for a server nobody named: the
+// app sends no mark without a name, and this does not invent one
+function serverMark(m) {
+  if (!m || !m.name) return null;
+  const chip = el("span", {class:"smark",
+      title:(T["tui.mark.title"] || "{name}: {machine}").replace("{name}", m.name).replace("{machine}", m.machine || "")},
+    el("i"), el("span", {class:"mn"}, m.name));
+  chip.style.setProperty("--mk", m.color || "");
+  return chip;
+}
+
 function aiMark(key) {
   const k = (key || "").toLowerCase();
   const glyph = (Object.prototype.hasOwnProperty.call(AI_MARK, k) ? AI_MARK[k] : AI_MARK[""]);
@@ -6937,11 +7020,20 @@ function bundleRow(g, mine, away, deep) {
     // The words for what the pills can only show in colour, for the eye that
     // does not know the colours yet: the state of whatever wants somebody first
     const worst = (mine.find(t => t.state === worstOf(mine)) || {}).state_label;
+    // Put away is not the same as forgotten: a production shell folded into
+    // a set says so on the set, once for each server named in it
+    const marks = [];
+    for (const t of mine) {
+      if (t.mark && !marks.some(m => m.machine === t.mark.machine)) marks.push(t.mark);
+    }
     return el("div", {class:"bundle away" + (deep ? " deep" : ""),
         title:[word, worst, T["tui.folder.tabs.open"] || ""].filter(Boolean).join(" · "),
         onclick:toggle},
       pillsRow(mine),
-      el("span", {class:"caret"}, "›"));
+      el("span", {class:"caret"}, "›"),
+      // On a line of their own under the pills, so the pills keep the width
+      // they are read across
+      marks.length ? el("span", {class:"bmarks"}, ...marks.map(serverMark)) : null);
   }
   return el("div", {class:"bundle" + (deep ? " deep" : ""),
       title:T["tui.folder.tabs.title"] || "", onclick:toggle},
@@ -7833,7 +7925,7 @@ window.__panes = function (json) {
       el.className = "pane";
       el.dataset.pid = p.id;
       el.innerHTML = '<div class="phead"><span class="dot"></span>' +
-        '<span class="nm"></span>' +
+        '<span class="nm"></span><span class="pmark"></span>' +
         // ▥ lines running down = a division down the middle; ▤ lines running
         // across = a division across. A matched pair, so the two read as one
         // choice with two directions rather than as two unrelated icons
@@ -7955,6 +8047,15 @@ function paintPaneHeads() {
     const t = paneTab(p);
     el.querySelector(".nm").textContent = t ? t.name : "";
     el.querySelector(".dot").className = "dot " + (t ? t.state : "");
+    // Two panes side by side, one on production and one on staging, is the
+    // moment this mark is for. Redrawn only when it says something else, so a
+    // caption repainted several times a second does not flicker
+    const slot = el.querySelector(".pmark");
+    const said = t && t.mark ? JSON.stringify(t.mark) : "";
+    if (slot.dataset.said !== said) {
+      slot.dataset.said = said;
+      slot.replaceChildren(...[t && serverMark(t.mark)].filter(Boolean));
+    }
     // Offered only where it would do something. The app's own screens (the
     // settings form, the result view) have nothing behind them to put back,
     // and a control that refuses is worse than one that is not there
@@ -11924,6 +12025,13 @@ let sftpUi = null;
 function sftpTab() {
   return (S && S.tabs || []).find(t => t.index === S.active && t.kind === "sftp");
 }
+// The name somebody gave the server this panel reaches, if they did. Read off
+// the tab rather than kept on the panel, so the row in the sidebar and a
+// question asked here are wearing the one mark the app sent
+function sftpMark() {
+  const t = sftpTab();
+  return (t && t.mark) || null;
+}
 function sftpAsk(act, args) {
   const t = sftpTab();
   if (!t) return;
@@ -12135,6 +12243,8 @@ function askFolders(which, picked) {
       .replace("{n}", folders)
       .replace("{all}", picked.length),
     what: sftpWhere(dest, F[dest].at),
+    mark: dest === "remote" ? sftpMark() : null,
+    sure: dest === "remote",
     rows: picked.map(r => el("div", {class:"brow2"},
       el("span", {class:"tag"}, r.dir ? (T["sftp.folders.one"] || "") : ""),
       el("span", {class:"nm"}, r.name))),
@@ -12198,6 +12308,8 @@ function askSend(which, files, there, go) {
     title: T["sftp.over.title"] || "",
     say: (T["sftp.over.say"] || "").replace("{n}", files.length).replace("{over}", over),
     what: sftpWhere(dest, F[dest].at),
+    mark: dest === "remote" ? sftpMark() : null,
+    sure: dest === "remote",
     rows,
     label: T["sftp.over.go"] || "",
     danger: true,
@@ -12251,7 +12363,7 @@ function openDiff(name) {
   // What the two marks mean, while there are marks to explain
   u.say.hidden = true;
   u.where.textContent = "";
-  u.where.append(el("span", {}, sftpWhere("remote", rjoin(F.remote.at, name))));
+  u.where.append(el("span", {}, serverMark(sftpMark()), sftpWhere("remote", rjoin(F.remote.at, name))));
   u.where.append(el("span", {}, sftpWhere("local", ljoin(F.local.at, name))));
   u.body.textContent = "";
   u.body.append(el("div", {class:"dsay"}, T["sftp.diff.reading"] || ""));
@@ -12287,13 +12399,19 @@ function showDiff(msg) {
 let sAskGo = null, sAskBack = null;
 // `never` is the words of a "don't show this again" box. Its answer is handed
 // to `go` after the field's
-function askQuestion({title, say, what, rows, field, label, danger, never, go, back}) {
+//
+// `mark` is the name somebody gave the server `what` is on, worn in front of
+// it. `sure` says this answer cannot be taken back on that server: when the
+// server was marked as careful, the button waits for its name to be typed.
+// The typing is what makes the name read -- a mark beside a button is easy to
+// look past on the fortieth delete of the day, and "Production" typed out is not
+function askQuestion({title, say, what, mark, sure, rows, field, label, danger, never, go, back}) {
   const box = document.getElementById("sask");
   box.hidden = false;
   box.querySelector(".vtitle").textContent = title;
   box.querySelector(".vsay").textContent = say;
   const where = box.querySelector(".bwhere");
-  where.textContent = what || "";
+  where.replaceChildren(...[what ? serverMark(mark) : null, what || ""].filter(Boolean));
   where.hidden = !what;
   // The rows are built by whoever asked, because only they know what the
   // columns mean. All this does is hold them
@@ -12315,13 +12433,51 @@ function askQuestion({title, say, what, rows, field, label, danger, never, go, b
   const btn = box.querySelector(".go");
   btn.textContent = label;
   btn.classList.toggle("stop", !!danger);
+  // The server's name, typed, when the server asks for it. Compared without
+  // regard to case: what matters is that the name was read, not how the
+  // Shift key was held
+  const need = sure && mark && mark.careful ? mark.name : "";
+  const sureBox = box.querySelector(".ssure");
+  const sureIn = box.querySelector("#ssq");
+  const why = box.querySelector(".swhy");
+  sureBox.hidden = !need;
+  sureBox.querySelector("label").textContent = need ? (T["sftp.sure.label"] || "{name}").replace("{name}", need) : "";
+  sureIn.value = "";
+  sureIn.placeholder = need;
+  why.hidden = true;
+  why.textContent = "";
+  const typed = () => !need || sureIn.value.trim().toLowerCase() === need.toLowerCase();
+  // Grey while the name is not there yet, and the reason, once given, follows
+  // what is in the box: typed out, it goes away (style guide 5.4)
+  const paint = () => {
+    btn.classList.toggle("held", !typed());
+    if (typed()) { why.hidden = true; sureIn.classList.remove("bad"); }
+  };
+  sureIn.oninput = paint;
+  paint();
   // A question asked over an open one replaces it, and the one replaced was
   // not answered
   if (sAskBack) { const was = sAskBack; sAskBack = null; was(); }
   sAskBack = back || null;
-  sAskGo = () => { sAskBack = null; closeAsk(); go(input.value.trim(), !!never && unasked.checked); };
+  sAskGo = () => {
+    // Pressed before the name is in: nothing is done, the reason is written
+    // above the button, and the box it is waiting on is pointed at
+    if (!typed()) {
+      why.textContent = (T["sftp.sure.why"] || "{name}").replace("{name}", need);
+      why.hidden = false;
+      sureIn.classList.add("bad");
+      sureIn.classList.remove("lookhere");
+      void sureIn.offsetWidth;
+      sureIn.classList.add("lookhere");
+      sureIn.focus();
+      return;
+    }
+    sAskBack = null;
+    closeAsk();
+    go(input.value.trim(), !!never && unasked.checked);
+  };
   btn.onclick = sAskGo;
-  setTimeout(() => (field ? input : btn).focus(), 0);
+  setTimeout(() => (field ? input : need ? sureIn : btn).focus(), 0);
 }
 // `quiet` when the app took the question away itself: there is nobody to tell
 function closeAsk(quiet) {
@@ -12363,6 +12519,8 @@ function sftpRowMenu(anchor, which, row) {
       title: T["sftp.rename.title"] || "",
       say: T["sftp.rename.say"] || "",
       what: sftpWhere(which, rjoin(side.at, row.name)),
+      mark: sftpMark(),
+      sure: true,
       field: row.name,
       label: T["sftp.rename"] || "",
       go: name => {
@@ -12375,6 +12533,8 @@ function sftpRowMenu(anchor, which, row) {
       title: T["sftp.remove.title"] || "",
       say: row.dir ? (T["sftp.remove.dir"] || "") : (T["sftp.remove.say"] || ""),
       what: sftpWhere(which, rjoin(side.at, row.name)),
+      mark: sftpMark(),
+      sure: true,
       label: T["sftp.remove"] || "",
       danger: true,
       go: () => sftpMove("rm", [{act:"rm", name: row.name,
@@ -12454,6 +12614,9 @@ function sftpCrumbs(box, which) {
   box.append(el("span", {class:"who"},
     (which === "local" ? (T["sftp.here.mark"] || "") : (T["sftp.there.mark"] || "")) + " "
     + (which === "local" ? (T["sftp.here"] || "") : (F.server || (T["sftp.there"] || ""))) + ":"));
+  // Over the server's own list too: on a phone this column is the whole
+  // screen, and the bar that names the connection may be scrolled away
+  if (which === "remote") box.append(...[serverMark(sftpMark())].filter(Boolean));
   const root = (side.root || "").replace(/\/+$/, "");
   let at = (side.at || root).replace(/\/+$/, "") || "/";
   // "." is what the far end is asked for when nobody has said where to open:
@@ -12538,6 +12701,9 @@ function drawSftp() {
   u.pick.classList.toggle("unset", !F.server);
   u.pick.append(el("span", {class:"nm"},
     "🖧 " + (F.server || (T["sftp.no_address"] || ""))));
+  // The address says where; the name says what that place is to the person
+  // who named it, which is the half read at a glance
+  u.pick.append(...[serverMark(sftpMark())].filter(Boolean));
   u.pick.append(el("span", {class:"caret"}, "⚙"));
   // Built once, so its grey has to be kept in step with the address above it
   u.test.classList.toggle("held", !F.server);
@@ -12562,6 +12728,8 @@ function drawSftp() {
         title: T["sftp.mkdir.title"] || "",
         say: which === "local" ? (T["sftp.mkdir.here.say"] || "") : (T["sftp.mkdir.say"] || ""),
         what: sftpWhere(which, side.at),
+        // Named, and not asked to be typed: a new folder takes nothing away
+        mark: which === "remote" ? sftpMark() : null,
         field: "",
         label: T["sftp.mkdir.go"] || "",
         go: name => name && sftpMove(which === "local" ? "local_mkdir" : "mkdir",
@@ -15008,7 +15176,8 @@ mod tests {
         // Put away, the set is one box that opens from anywhere on it, with a ›
         // at its end -- the pills inside are not buttons of their own
         assert!(PAGE.contains(r#"return el("div", {class:"bundle away""#), "a folded bundle is not one box");
-        assert!(PAGE.contains(r#"el("span", {class:"caret"}, "›"));"#), "a folded bundle has no › at its right end");
+        assert!(PAGE.contains(r#"      el("span", {class:"caret"}, "›"),
+      // On a line of their own under the pills"#), "a folded bundle has no › at its right end");
         assert!(!PAGE.contains(r#"onclick:() => send({kind:"select", tab:ts[0].index})"#), "a pill inside the bundle has become a button that means something else");
         // The folder's name goes to the folder; putting it away is the caret's
         assert!(
@@ -15406,8 +15575,9 @@ mod tests {
         assert!(PAGE.contains(r#"if (folded.has("proj:" + pk)) continue;"#), "a project cannot be put away from its heading");
         assert!(PAGE.contains(r#"onclick:e => { e.stopPropagation(); openBranch(main); }}, "+")"#), "the heading has no + for another worktree");
         assert!(PAGE.contains(r#"T["tui.folder.primary"] || "primary""#), "the checkout is not marked primary");
-        assert!(PAGE.contains(r#"(g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder))));"#),
+        assert!(PAGE.contains(r#"(g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder))].filter(Boolean));"#),
             "a card does not say the branch it is on");
+        assert!(PAGE.contains(r#"el("span", {class:"fill"}), folderWhere(g)]"#), "an empty card does not say the branch it is on");
         assert!(PAGE.contains(r#"if (g.branch && g.branch !== g.name && !card) {"#), "grouped by state, a folder loses the branch it is on");
         assert!(PAGE.contains(r#"const GROUP_AXES = ["none", "state"];"#), "grouping by project is offered twice");
         assert!(PAGE.contains("openGroupMenu(e.currentTarget);"), "the grouping is still a row in the list");
