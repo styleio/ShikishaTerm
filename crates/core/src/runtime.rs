@@ -4339,6 +4339,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         serde_json::json!({
                             "path": paths.first().cloned().unwrap_or_default(),
                             "staged": args.get("staged").and_then(|v| v.as_bool()).unwrap_or(false),
+                            "encoding": args.get("encoding").and_then(|v| v.as_str()).unwrap_or(""),
                         }),
                     ],
                 ),
@@ -4362,6 +4363,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             "path": paths.first().cloned().unwrap_or_default(),
                             "staged": args.get("staged").and_then(|v| v.as_bool()).unwrap_or(false),
                             "commit": args.get("commit").and_then(|v| v.as_str()).unwrap_or(""),
+                            "encoding": args.get("encoding").and_then(|v| v.as_str()).unwrap_or(""),
                         }),
                     ],
                 ),
@@ -4374,6 +4376,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         serde_json::json!({
                             "cached": args.get("cached").and_then(|v| v.as_bool()).unwrap_or(false),
                             "reverse": args.get("reverse").and_then(|v| v.as_bool()).unwrap_or(false),
+                            "encoding": args.get("encoding").and_then(|v| v.as_str()).unwrap_or(""),
                         }),
                     ],
                 ),

@@ -16,6 +16,7 @@ pub mod ball;
 pub mod bridge;
 pub mod browserstate;
 pub mod caps;
+pub mod charset;
 pub mod cdp;
 pub mod chrome;
 pub mod clients;

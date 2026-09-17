@@ -1764,8 +1764,19 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--line); background:none; color:var(--muted); cursor:pointer; }
   #gitpanel .hunkhead button:hover, #editpanel .hunkhead button:hover { color:var(--text); background:var(--panel2); }
   #gitpanel .hunk .lines, #editpanel .hunk .lines { padding:4px 12px; }
-  #gitpanel .filehead { padding:5px 12px; font-size:12px;
+  #gitpanel .filehead { padding:5px 12px; font-size:12px; display:flex; align-items:center; gap:var(--s2);
     border-bottom:1px solid var(--line); color:var(--text); background:var(--panel); }
+  #gitpanel .filehead .grow { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* The encoding a change is read in: a one-word name and the menu, which
+     gives way first in a narrow pane */
+  .genc { display:flex; align-items:center; gap:var(--s2); min-width:0; flex:0 1 auto; }
+  .genc > span { color:var(--dim); font-size:12px; flex:none; white-space:nowrap; }
+  .genc > select { min-width:0; max-width:180px; padding:4px 8px; font-size:12.5px; font-family:inherit;
+    border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--panel); color:var(--text); }
+  .genc > select:hover { border-color:var(--edge-hi); }
+  /* Read in an encoding that loses characters: said above the pieces, whose
+     buttons are left out until it is read as itself */
+  .gencnote { padding:6px 12px; font-size:11.5px; color:var(--warn); border-bottom:1px solid var(--line); }
   /* An editor tab showing a change: the pieces fill it and scroll */
   #editpanel .ediff { flex:1 1 auto; min-height:0; overflow:auto; }
   #editpanel .ediff .empty { color:var(--muted); padding:12px 10px; font-size:12px; }
@@ -9573,6 +9584,7 @@ function editBuild(box) {
   const mark = el("span", {class: "emark"});
   // Showing a change: which one, and the way to the file itself
   const kind = el("span", {class: "ekind"});
+  const enc = gitEncPicker();
   const toFile = el("button", {class: "quiet", onclick: () => {
     const t = editorTab();
     if (t && t.file) send({kind: "editopen", panel: t.id || t.name || "", path: t.file, diff: ""});
@@ -9584,13 +9596,13 @@ function editBuild(box) {
       const t = editorTab();
       if (t) send({kind: "editopen", panel: t.id || t.name || "", path: ""});
     }}, "\u2715");
-  bar.append(where, el("span", {class: "emark"}), kind, el("span", {class: "grow"}), toFile, tell, save, shut);
+  bar.append(where, el("span", {class: "emark"}), kind, enc, el("span", {class: "grow"}), toFile, tell, save, shut);
   bar.replaceChild(mark, bar.children[1]);
   const host = el("div", {class: "ehost"});
   const change = el("div", {class: "ediff"});
   const say = el("div", {class: "esay"});
   box.append(bar, host, change, say);
-  edUi = {where, mark, kind, toFile, save, tell, host, change, say, changeSig: ""};
+  edUi = {where, mark, kind, enc, toFile, save, tell, host, change, say, changeSig: ""};
 }
 function drawEdit() {
   const box = document.getElementById("editpanel");
@@ -9607,6 +9619,7 @@ function drawEdit() {
     u.where.append(el("b", {}, name));
   }
   u.kind.style.display = diffing ? "" : "none";
+  u.enc.style.display = diffing ? "" : "none";
   u.toFile.style.display = diffing ? "" : "none";
   u.change.style.display = diffing ? "" : "none";
   if (diffing) {
@@ -9623,9 +9636,10 @@ function drawEdit() {
     // Nothing to say under a change, and an empty line with a rule over it
     // reads as a part that failed to load
     u.say.style.display = "none";
+    gitEncPicker(u.enc);
     // Drawn again only when the change itself is different: several states a
     // second would otherwise take the button out from under the pointer
-    const sig = JSON.stringify([how, G.sel, G.diff, !!G.waiting, (G.hunks || []).map(h => h.patch)]);
+    const sig = gitChangeSig(how);
     if (u.changeSig !== sig) {
       u.changeSig = sig;
       u.change.textContent = "";
@@ -13521,9 +13535,53 @@ function gitAskChange() {
   G.waiting = true;
   const ed = gitDiffShown();
   const commit = ed ? (ed.file_diff.startsWith("commit:") ? ed.file_diff.slice(7) : "") : (G.view === "history" ? G.commit : "");
-  if (commit) { gitAsk("hunks", {paths: [G.sel], commit}); return; }
-  gitAsk("diff", {paths: [G.sel], staged: G.staged});
-  gitAsk("hunks", {paths: [G.sel], staged: G.staged});
+  const encoding = gitEnc();
+  if (commit) { gitAsk("hunks", {paths: [G.sel], commit, encoding}); return; }
+  gitAsk("diff", {paths: [G.sel], staged: G.staged, encoding});
+  gitAsk("hunks", {paths: [G.sel], staged: G.staged, encoding});
+}
+// The encoding chosen for a file, by folder and path: "" is "work it out".
+// Kept apart from G, so looking at another folder and back keeps the choice
+const gitEncs = {};
+// What can be chosen, handed in by the app (charset.rs) so the menu offers
+// only what the app can read and write back
+const GIT_ENCODINGS = {{GIT_ENCODINGS}};
+function gitEncKey() { return (G.where || "") + "\u0000" + (G.sel || ""); }
+function gitEnc() { return gitEncs[gitEncKey()] || ""; }
+// The encoding menu for the change being read, made when `box` is not given
+// and brought up to date when it is. Its options are only touched when what
+// they say changes, so a state arriving while it is open does not close it
+function gitEncPicker(box) {
+  if (!box) {
+    const pick = el("select", {title: T["git.enc"] || ""});
+    pick.onchange = () => {
+      gitEncs[gitEncKey()] = pick.value;
+      G.diff = ""; G.hunks = [];
+      gitAskChange();
+      drawGit(); drawEdit();
+    };
+    box = el("label", {class: "genc"}, el("span", {}, T["git.enc"] || ""), pick);
+  }
+  const pick = box.querySelector("select");
+  // What the pieces were read as, said on "Auto" while nothing is chosen
+  const read = !gitEnc() && (G.hunks || [])[0] ? G.hunks[0].encoding || "" : "";
+  const auto = read ? (T["git.enc.auto"] || "{enc}").replace("{enc}", read) : (T["git.enc.auto.plain"] || "");
+  const want = [["", auto]].concat(GIT_ENCODINGS.map(e => [e, e]));
+  const sig = JSON.stringify(want);
+  if (pick.dataset.sig !== sig) {
+    pick.dataset.sig = sig;
+    pick.textContent = "";
+    for (const [v, label] of want) pick.append(el("option", {value: v}, label));
+  }
+  if (pick.value !== gitEnc()) pick.value = gitEnc();
+  return box;
+}
+// Everything a drawn change depends on. A pane draws it again only when this
+// differs: several states a second would otherwise take a button, or an open
+// menu, out from under the pointer
+function gitChangeSig(how) {
+  return JSON.stringify([how, G.sel, G.diff, !!G.waiting, gitEnc(),
+    (G.hunks || []).map(h => [h.patch, h.encoding, h.exact])]);
 }
 // A change is read in an editor tab where the terminals are, not in the column:
 // the column is narrow, and a change read inside it took the place of the very
@@ -13562,7 +13620,7 @@ function gitDiffFollow(t) {
 // added or thrown away, an added one taken back out, and one in a commit
 // walked back out of the tree (the commit itself is untouched)
 function gitChangeInto(box, how, head) {
-  if (head) box.append(el("div", {class:"filehead"}, G.sel));
+  if (head) box.append(el("div", {class:"filehead"}, el("span", {class:"grow"}, G.sel), gitEncPicker()));
   const text = G.diff || "";
   // git says this itself when it cannot show a change as lines
   if (how !== "commit" && (/^Binary files /m.test(text) || text.includes("GIT binary patch"))) {
@@ -13574,6 +13632,10 @@ function gitChangeInto(box, how, head) {
     box.append(el("div", {class:"empty"}, how === "commit" || G.waiting || text.trim() ? "\u2026" : (T["git.same"] || "")));
     return;
   }
+  // Read in an encoding that loses characters, the words are wrong and a piece
+  // handed back would write them into the file: said, and the buttons left out
+  const lossy = how !== "view" && hunks.find(h => h.exact === false);
+  if (lossy) box.append(el("div", {class:"gencnote"}, (T["git.enc.inexact"] || "").replace("{enc}", lossy.encoding || "")));
   hunksInto(box, hunks, how);
 }
 // The pieces themselves. `how` "view" draws them to be read and nothing more:
@@ -13585,8 +13647,8 @@ function hunksInto(box, hunks, how) {
     bar.append(el("span", {class:"grow"},
       (T["git.hunk"] || "Hunk") + (i + 1) + "  " +
       (T["git.hunk.lines"] || "").replace("{from}", h.start).replace("{to}", h.end)));
-    const act = (label, args) => bar.append(el("button", {onclick:() => gitAsk("hunk", Object.assign({text:h.patch}, args))}, label));
-    if (how === "view") { /* read only */ }
+    const act = (label, args) => bar.append(el("button", {onclick:() => gitAsk("hunk", Object.assign({text:h.patch, encoding:h.encoding || ""}, args))}, label));
+    if (how === "view" || h.exact === false) { /* read only */ }
     else if (how === "staged") act(T["git.hunk.unstage"] || "", {cached:true, reverse:true});
     else if (how === "work") {
       act(T["git.hunk.stage"] || "", {cached:true});
@@ -13687,6 +13749,9 @@ function drawHistory(u) {
     }
   }
 
+  const commitSig = G.sel ? gitChangeSig("commit") : "";
+  if (u.commitDiff.dataset.sig === commitSig && u.commitDiff.firstChild) return;
+  u.commitDiff.dataset.sig = commitSig;
   u.commitDiff.textContent = "";
   if (!G.sel) {
     u.commitDiff.append(el("div", {class:"empty"}, T["git.pick.file"] || ""));
@@ -15146,7 +15211,8 @@ function drawSftp() {
 // not for whoever reads it, so what is left on screen is what changed
 function diffLines(patch) {
   const box = el("pre", {class:"lines dlines"});
-  for (const line of String(patch || "").split("\n")) {
+  // A Windows line ending's carriage return belongs to the patch, not to what is shown
+  for (const line of String(patch || "").split(/\r?\n/)) {
     if (line.startsWith("diff --git ") || line.startsWith("index ")
       || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("@@")) continue;
     box.append(el("span", {class: line.startsWith("+") ? "a" : line.startsWith("-") ? "d" : ""},
@@ -15254,9 +15320,13 @@ function drawGit() {
 
   // In the column there is no pane for it: the change is read in an editor tab
   if (gitInSide()) return;
+  const how = G.staged ? "staged" : "work";
+  const sig = G.sel ? gitChangeSig(how) : "";
+  if (u.diff.dataset.sig === sig && u.diff.firstChild) return;
+  u.diff.dataset.sig = sig;
   u.diff.textContent = "";
   if (!G.sel) { u.diff.append(el("div", {class:"empty"}, T["git.diff.hint"] || "")); return; }
-  gitChangeInto(u.diff, G.staged ? "staged" : "work", true);
+  gitChangeInto(u.diff, how, true);
 }
 
 // The PC's own git as menu entries: as it is, and -- once it holds two GitHub
@@ -16194,6 +16264,10 @@ fn built(sticky: bool, by: Served) -> String {
     .replace("{{TAB_W_MIN}}", &crate::config::TAB_BAR_MIN_PX.to_string())
     .replace("{{TAB_W_MAX}}", &crate::config::TAB_BAR_MAX_PX.to_string())
     .replace("{{TAB_W_DEF}}", &crate::config::TAB_BAR_DEFAULT_PX.to_string())
+    .replace(
+        "{{GIT_ENCODINGS}}",
+        &serde_json::to_string(crate::charset::CHOICES).unwrap_or_else(|_| "[]".into()),
+    )
     .replace(
         "{{SNIP_TOOLS}}",
         &serde_json::to_string(crate::snip::TOOLS).unwrap_or_else(|_| "[]".into()),

@@ -435,6 +435,20 @@ fn lua_to_json(v: &Value) -> serde_json::Value {
 /// own line should answer, not vanish — so the chunk is first compiled
 /// REPL-style with `return` prepended, falling back to the plain statement
 /// form when that isn't valid Lua
+/// The `encoding` a git call was given: `None` when it was not, or was left
+/// empty, which means "work out what each file is written in". A name nobody
+/// knows is an error rather than a quiet UTF-8 -- the caller asked for
+/// something in particular
+fn encoding_opt(opts: &Option<Table>) -> mlua::Result<Option<&'static encoding_rs::Encoding>> {
+    let Some(t) = opts else { return Ok(None) };
+    let Some(name) = t.get::<Option<String>>("encoding")?.filter(|n| !n.trim().is_empty()) else {
+        return Ok(None);
+    };
+    crate::charset::named(&name)
+        .map(Some)
+        .ok_or_else(|| mlua::Error::runtime(crate::i18n::tp("err.git.unknown_encoding", &[("enc", &name)])))
+}
+
 /// The repository a git command runs in.
 ///
 /// `nil` means the tab that called, which is the same rule `set_status` uses.
@@ -3197,22 +3211,25 @@ impl HookEngine {
                             Some(t) => t.get("commit")?,
                             None => None,
                         };
+                        let encoding = encoding_opt(&opts)?;
                         // A commit's own change is cut the same way the working
                         // tree's is -- which is what lets one piece of a commit
                         // be walked back without touching the rest
-                        let text = match commit.as_deref().filter(|c| !c.is_empty()) {
-                            Some(c) => crate::git::show(&dir, c, path.as_deref().unwrap_or_default()),
-                            None => crate::git::diff(&dir, path.as_deref(), staged),
+                        let raw = match commit.as_deref().filter(|c| !c.is_empty()) {
+                            Some(c) => crate::git::show_bytes(&dir, c, path.as_deref().unwrap_or_default()),
+                            None => crate::git::diff_bytes(&dir, path.as_deref(), staged),
                         }
                         .map_err(|e| mlua::Error::runtime(e.to_string()))?;
                         let out = lua.create_table()?;
-                        for h in crate::git::split_hunks(&text) {
+                        for h in crate::git::split_hunks_bytes(&raw, encoding) {
                             let row = lua.create_table()?;
                             row.set("file", h.file)?;
                             row.set("header", h.header)?;
                             row.set("start", h.start)?;
                             row.set("end", h.end)?;
                             row.set("patch", h.patch)?;
+                            row.set("encoding", h.encoding.name())?;
+                            row.set("exact", h.exact)?;
                             out.push(row)?;
                         }
                         Ok(out)
@@ -3235,7 +3252,8 @@ impl HookEngine {
                                 None => false,
                             })
                         };
-                        crate::git::apply(&dir, &patch, flag("cached")?, flag("reverse")?)
+                        let encoding = encoding_opt(&opts)?.unwrap_or(encoding_rs::UTF_8);
+                        crate::git::apply(&dir, &patch, encoding, flag("cached")?, flag("reverse")?)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,
@@ -3278,7 +3296,9 @@ impl HookEngine {
                             Some(t) => t.get::<Option<bool>>("staged")?.unwrap_or(false),
                             None => false,
                         };
-                        crate::git::diff(&dir, path.as_deref(), staged)
+                        let encoding = encoding_opt(&opts)?;
+                        crate::git::diff_bytes(&dir, path.as_deref(), staged)
+                            .map(|raw| crate::git::diff_text(&raw, encoding))
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,
@@ -7223,7 +7243,7 @@ mod tests {
         let hunks =
             crate::git::split_hunks(&crate::git::diff(&dir, Some("f.txt"), false).unwrap());
         assert_eq!(hunks.len(), 2, "two places far apart are two hunks");
-        crate::git::apply(&dir, &hunks[0].patch, true, false).unwrap();
+        crate::git::apply(&dir, &hunks[0].patch, hunks[0].encoding, true, false).unwrap();
 
         let e = HookEngine::new().unwrap();
         let key = TabKey { id: Some("work".into()) };
