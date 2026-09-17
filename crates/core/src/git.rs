@@ -902,6 +902,126 @@ pub fn is_ssh_url(url: &str) -> bool {
     }
 }
 
+/// The branch a branch was cut from, as written when its worktree was made
+/// (`origin/main`, `origin/develop`). None when nothing was written
+pub fn recorded_base(dir: &Path, branch: &str) -> Option<String> {
+    run(dir, &["config", "--get", &format!("branch.{branch}.shikishaBase")])
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Write down what a branch was cut from, so it is not asked for again
+pub fn record_base(dir: &Path, branch: &str, base: &str) -> Result<()> {
+    let base = base.trim();
+    if base.is_empty() {
+        bail!(crate::i18n::t("err.git.empty_branch"));
+    }
+    run(dir, &["config", &format!("branch.{branch}.shikishaBase"), base]).map(|_| ())
+}
+
+/// The branches the servers have, as this PC last heard: `origin/main` and so
+/// on, without the pointer each server keeps to its default
+pub fn remote_branches(dir: &Path) -> Result<Vec<String>> {
+    let out = run(dir, &["for-each-ref", "--format=%(refname:short)", "refs/remotes"])?;
+    let remotes = run(dir, &["remote"]).unwrap_or_default();
+    Ok(out
+        .lines()
+        .map(str::trim)
+        // `origin/HEAD` is written short as the remote's own name
+        .filter(|r| !r.is_empty() && !r.ends_with("/HEAD") && !remotes.lines().any(|m| m.trim() == *r))
+        .map(str::to_string)
+        .collect())
+}
+
+/// The commands that bring the latest of a branch's base in: fetch that one
+/// branch from its server, then merge what was fetched -- never the local copy
+/// of the base, which can be days old. Built once, and both shown on screen and
+/// run from here, so what is shown is what runs
+pub fn catch_up_steps(dir: &Path, base: &str) -> Vec<Vec<String>> {
+    let base = base.trim();
+    let remotes = run(dir, &["remote"]).unwrap_or_default();
+    // `origin/develop` names its server; a bare `develop` is origin's
+    let (remote, branch) = match base.split_once('/') {
+        Some((r, b)) if remotes.lines().any(|m| m.trim() == r) => (r.to_string(), b.to_string()),
+        _ => ("origin".to_string(), base.to_string()),
+    };
+    vec![
+        vec!["fetch".into(), remote.clone(), format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}")],
+        vec!["merge".into(), "--no-edit".into(), format!("{remote}/{branch}")],
+    ]
+}
+
+/// The same commands as a person would type them
+pub fn catch_up_said(steps: &[Vec<String>]) -> Vec<String> {
+    steps.iter().map(|s| format!("git {}", s.join(" "))).collect()
+}
+
+/// Why bringing the latest in did not happen, or stopped
+#[derive(Debug)]
+pub enum CatchUpStop {
+    /// Changes nobody has committed: a merge on top of them is not started
+    Dirty,
+    /// The merge stopped on these files, and is left as it stopped
+    Conflict { base: String, files: Vec<String> },
+}
+
+impl std::fmt::Display for CatchUpStop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&match self {
+            CatchUpStop::Dirty => crate::i18n::t("err.git.catch_up.dirty"),
+            CatchUpStop::Conflict { base, files } => crate::i18n::tp(
+                "err.git.catch_up.conflict",
+                &[("base", base), ("files", &files.join(", "))],
+            ),
+        })
+    }
+}
+
+impl std::error::Error for CatchUpStop {}
+
+/// Whether the merge left half done in this folder is one bringing `rev` in:
+/// what it was merging is the very commit `rev` names. So a page opened after
+/// the merge stopped can still say what stopped and offer the way on
+pub fn merging_in(dir: &Path, rev: &str) -> bool {
+    let at = |r: &str| run(dir, &["rev-parse", "-q", "--verify", &format!("{r}^{{commit}}")]).ok().map(|s| s.trim().to_string());
+    matches!((at("MERGE_HEAD"), at(rev)), (Some(a), Some(b)) if !a.is_empty() && a == b)
+}
+
+/// Bring the latest of `base` into the branch in front: refused while anything
+/// is uncommitted, and on a conflict left where the merge stopped. Answers with
+/// how many commits came in -- 0 when there was nothing new
+pub fn catch_up(dir: &Path, base: &str, who: &As) -> Result<u64> {
+    fits(dir, who)?;
+    // Untracked files are nobody's work in progress as far as a merge goes; a
+    // change to a file git follows is
+    if status(dir)?.iter().any(|c| c.index != '?') {
+        return Err(anyhow::Error::new(CatchUpStop::Dirty));
+    }
+    let steps = catch_up_steps(dir, base);
+    let [fetch, merge] = steps.as_slice() else { bail!(crate::i18n::t("err.git.empty_branch")) };
+    fn args(s: &[String]) -> Vec<&str> {
+        s.iter().map(String::as_str).collect()
+    }
+    run_as(dir, &args(fetch), "", NETWORK_LIMIT, who)?;
+    let theirs = merge.last().cloned().unwrap_or_default();
+    let taken = run(dir, &["rev-list", "--count", &format!("HEAD..{theirs}")])?
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(0);
+    if taken == 0 {
+        return Ok(0);
+    }
+    if let Err(e) = run_as(dir, &args(merge), "", LIMIT, who) {
+        let files = conflicts(dir).unwrap_or_default();
+        if files.is_empty() {
+            return Err(e);
+        }
+        return Err(anyhow::Error::new(CatchUpStop::Conflict { base: theirs, files }));
+    }
+    Ok(taken)
+}
+
 pub fn fetch(dir: &Path, who: &As) -> Result<String> {
     fits(dir, who)?;
     run_as(dir, &["fetch", "--prune"], "", NETWORK_LIMIT, who)
@@ -1192,6 +1312,101 @@ mod tests {
         assert!(is_not_installed(&err));
         assert!(!is_not_installed(&anyhow::anyhow!("anything else")));
         assert!(!err.to_string().is_empty());
+    }
+
+    /// A bare server, a clone of it to work in, and a branch cut from its main
+    /// the way a worktree's is -- for the catching-up tests below
+    fn catch_up_setup(tag: &str) -> Option<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)> {
+        let seed = scratch_repo(&format!("{tag}-seed"))?;
+        std::fs::write(seed.join("a.txt"), "one\n").unwrap();
+        run(&seed, &["add", "."]).unwrap();
+        run(&seed, &["commit", "-m", "one"]).unwrap();
+        let tmp = std::env::temp_dir();
+        let far = tmp.join(format!("shikisha-git-{}-{tag}-far", std::process::id()));
+        let near = tmp.join(format!("shikisha-git-{}-{tag}-near", std::process::id()));
+        let _ = std::fs::remove_dir_all(&far);
+        let _ = std::fs::remove_dir_all(&near);
+        run(&seed, &["clone", "-q", "--bare", &seed.display().to_string(), &far.display().to_string()]).unwrap();
+        run(&seed, &["clone", "-q", &far.display().to_string(), &near.display().to_string()]).unwrap();
+        for d in [&near, &seed] {
+            run(d, &["config", "user.email", "test@example.invalid"]).unwrap();
+            run(d, &["config", "user.name", "test"]).unwrap();
+        }
+        run(&seed, &["remote", "add", "far", &far.display().to_string()]).unwrap();
+        run(&near, &["checkout", "-q", "-b", "work", "--no-track", "origin/main"]).unwrap();
+        Some((seed, far, near))
+    }
+
+    /// The server's main moves on while the local main stays behind
+    fn catch_up_advance(seed: &Path, file: &str, text: &str) {
+        std::fs::write(seed.join(file), text).unwrap();
+        run(seed, &["add", "."]).unwrap();
+        run(seed, &["commit", "-qm", "far"]).unwrap();
+        run(seed, &["push", "-q", "far", "main"]).unwrap();
+    }
+
+    #[test]
+    fn catching_up_is_refused_with_uncommitted_work_and_changes_nothing() {
+        let Some((seed, far, near)) = catch_up_setup("cu-dirty") else { return };
+        record_base(&near, "work", "origin/main").unwrap();
+        catch_up_advance(&seed, "b.txt", "new\n");
+        std::fs::write(near.join("a.txt"), "mine\n").unwrap();
+        let head = run(&near, &["rev-parse", "HEAD"]).unwrap();
+        let err = catch_up(&near, "origin/main", &As::default()).unwrap_err();
+        assert!(matches!(err.downcast_ref::<CatchUpStop>(), Some(CatchUpStop::Dirty)), "{err}");
+        assert_eq!(run(&near, &["rev-parse", "HEAD"]).unwrap(), head, "the branch moved");
+        assert_eq!(std::fs::read_to_string(near.join("a.txt")).unwrap(), "mine\n", "the work was touched");
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn a_base_not_written_down_is_none_and_one_chosen_is_kept() {
+        let Some((seed, far, near)) = catch_up_setup("cu-base") else { return };
+        assert_eq!(recorded_base(&near, "work"), None);
+        assert!(remote_branches(&near).unwrap().contains(&"origin/main".to_string()));
+        record_base(&near, "work", "origin/main").unwrap();
+        assert_eq!(recorded_base(&near, "work").as_deref(), Some("origin/main"));
+        assert_eq!(
+            catch_up_said(&catch_up_steps(&near, "origin/main")),
+            vec!["git fetch origin +refs/heads/main:refs/remotes/origin/main".to_string(),
+                 "git merge --no-edit origin/main".to_string()]
+        );
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn the_latest_on_the_server_comes_in_even_when_the_local_main_is_old() {
+        let Some((seed, far, near)) = catch_up_setup("cu-latest") else { return };
+        catch_up_advance(&seed, "b.txt", "new\n");
+        catch_up_advance(&seed, "c.txt", "newer\n");
+        // The local main is where it was cloned, two commits behind the server
+        let local_main = run(&near, &["rev-parse", "main"]).unwrap();
+        assert_eq!(catch_up(&near, "origin/main", &As::default()).unwrap(), 2);
+        assert!(near.join("c.txt").exists(), "the server's latest did not come in");
+        assert_eq!(run(&near, &["rev-parse", "main"]).unwrap(), local_main, "the local main was used or moved");
+        assert_eq!(catch_up(&near, "origin/main", &As::default()).unwrap(), 0, "a second time there is nothing new");
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn a_conflict_stops_where_the_merge_stopped_and_names_the_files() {
+        let Some((seed, far, near)) = catch_up_setup("cu-conflict") else { return };
+        std::fs::write(near.join("a.txt"), "mine\n").unwrap();
+        run(&near, &["commit", "-qam", "mine"]).unwrap();
+        catch_up_advance(&seed, "a.txt", "theirs\n");
+        let err = catch_up(&near, "origin/main", &As::default()).unwrap_err();
+        match err.downcast_ref::<CatchUpStop>() {
+            Some(CatchUpStop::Conflict { base, files }) => {
+                assert_eq!(base, "origin/main");
+                assert_eq!(files, &vec!["a.txt".to_string()]);
+            }
+            other => panic!("not a conflict: {other:?} {err}"),
+        }
+        let merging = run(&near, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+        assert!(merging.is_ok(), "the merge was not left where it stopped");
+        assert!(merging_in(&near, "origin/main"), "the stopped merge is not told apart as this one");
+        assert!(!merging_in(&near, "main"), "another branch was taken for the one being merged");
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
     }
 
     /// A push refused because the branch follows one of another name says

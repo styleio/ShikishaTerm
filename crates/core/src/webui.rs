@@ -6706,7 +6706,7 @@ function globalSections() {
 // Links that name one of a desk's settings (the git panel's gear asks for
 // "git"): the desk in view, at that entry, since there is no copy of the
 // program's to land on. Older names for the same places are kept here
-const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", "git-pr":"git", protect:"git", gitaccounts:"gitaccounts", providers:"providers",
+const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", "git-pr":"git", "git-merge":"git", protect:"git", gitaccounts:"gitaccounts", providers:"providers",
                     permissions:"permissions", caps:"caps", tools:"tools"};
 
 // ── Update ─────────────────────────────────────────────────────
@@ -7755,6 +7755,9 @@ function gitFields(owner) {
       el("summary", {}, T["settings.git.prompt.more"]),
       el("div", {class:"hint"}, T["settings.git.pr.shape"]),
       el("pre", {class:"mono promptshape"}, T["ai.pr.shape"] || "")),
+    el("h3", {}, T["settings.git.merge.title"]),
+    el("div", {class:"hint"}, T["settings.git.merge.about"]),
+    promptField(g, "merge_prompt", "ai.merge.default_prompt", "desk-git-merge", ["folder", "branch", "base", "files"]),
     el("h3", {}, T["settings.git.issue.title"]),
     el("div", {class:"hint"}, T["settings.git.issue.about"]),
     promptField(g, "issue_prompt", "ai.issue.default_prompt", "desk-git-issue", ["text", "ai"]),
@@ -11806,6 +11809,7 @@ load().then(() => {
     if (sec === "git-message") lookAtCard("desk-git-message", 50);
     if (sec === "git-issue") lookAtCard("desk-git-issue", 50);
     if (sec === "git-pr") lookAtCard("desk-git-pr", 50);
+    if (sec === "git-merge") lookAtCard("desk-git-merge", 50);
     return;
   }
   const wi = idx("addtab");

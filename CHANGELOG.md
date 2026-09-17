@@ -9,6 +9,23 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **Bring in the latest of a branch's base, from the git column.** Under the arrow,
+  Bring in the latest says how far the branch is behind the branch it was cut
+  from, as of the last fetch, and quotes the two commands it runs: a fetch of that
+  one branch from its server, then a merge of what was fetched -- never the local
+  copy of the base, which can be days old. With uncommitted changes it stays grey
+  and says so. When the base is not written down it asks for it once, from the
+  server's branches, and remembers the answer. It says how many commits came in,
+  or that there was nothing new. On a conflict it names the base and the files,
+  leaves the merge where it stopped, and the button becomes Resolve in an AI tab:
+  a new tab of the default AI, in the same folder, told what the prompt in
+  Settings > desk > git says (read both sides, finish the merge, run the checks,
+  push nothing, report per file). A second press brings that tab forward rather
+  than setting another AI on the same merge. A page opened after the merge stopped
+  shows the same, and the column reads the folder again when work in it ends.
+- **`shikisha.git_catch_up`, `shikisha.git_set_base` and
+  `shikisha.git_remote_branches`** do the same from a script; `git_branch` also
+  says `base`, `base_behind`, `catch_up` and `catching_up`.
 - **A new pull request lists the files it changes.** Under the branch it goes
   into, each file with its added and removed lines, the total at the top; pressed,
   a file opens its change in place, to be read. Ten are shown, and the rest one
@@ -101,6 +118,10 @@ once it reaches its first tagged release.
   or shut stays that way.
 
 ### Fixed
+- **An AI tab opened with a first message no longer quits on Claude Code's folder
+  trust question.** The question was not taken for one, so the message and Enter
+  went in and chose No, exit -- in every new worktree. The tab now waits until the
+  question is answered.
 - **The Issue tab keeps showing issues after a pull request page is opened from the
   git column.** Opening it turned the list behind it to pull requests without
   asking for them again, so the list was headed Pull requests over issues and the
