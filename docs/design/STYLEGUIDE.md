@@ -125,6 +125,9 @@ Numbers that are compared line up: `font-variant-numeric: tabular-nums`.
 
 ## 4. Spacing, radius, elevation
 
+- A row is `padding: 7px 10px; gap: 8px`. A row's children step in: a tab under
+  its folder by 26px, a branch under its project by 14px more.
+
 **Space comes in steps, and every gap is one of them.** Without them a label sat
 as far from its own field as the field sat from the next question, and a form
 read as one long list of unrelated lines.
