@@ -9275,10 +9275,17 @@ pub fn keys_for(ev: &shikisha_shared::Ev) -> Vec<Event> {
                     .map(|code| vec![Event::Key(KeyEvent::new(code, mods))])
                     .unwrap_or_default()
             } else if let Some(c) = ctrl.as_ref().and_then(|s| s.chars().next()) {
-                vec![Event::Key(KeyEvent::new(
-                    KeyCode::Char(c),
-                    KeyModifiers::CONTROL,
-                ))]
+                // Shift and Alt held with Ctrl come along: Ctrl+Shift+M is a
+                // key of its own to bind, even though a program is sent the
+                // same byte for it as for Ctrl+M
+                let mut mods = KeyModifiers::CONTROL;
+                if *shift {
+                    mods |= KeyModifiers::SHIFT;
+                }
+                if *alt {
+                    mods |= KeyModifiers::ALT;
+                }
+                vec![Event::Key(KeyEvent::new(KeyCode::Char(c), mods))]
             } else if let Some(t) = text {
                 t.chars().map(plain).collect()
             } else {
@@ -9652,6 +9659,16 @@ mod tests {
                 _ => None,
             }
         };
+
+        // A letter held with Ctrl keeps its Shift too, so Ctrl+Shift+M can be
+        // told from Ctrl+M when a key is bound to it
+        let chord = keys_for(&shikisha_shared::Ev::Key {
+            text: None, named: None, ctrl: Some("m".into()), shift: true, alt: false,
+        });
+        match chord.first() {
+            Some(Event::Key(k)) => assert_eq!(k.modifiers, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            other => panic!("Ctrl+Shift+M did not arrive: {other:?}"),
+        }
 
         let plain = pressed("enter", false).expect("Enter did not arrive");
         let shifted = pressed("enter", true).expect("Shift+Enter did not arrive");

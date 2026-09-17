@@ -9824,9 +9824,37 @@ kbd.addEventListener("keydown", e => {
   }
   if (e.ctrlKey && e.key.length === 1) {
     e.preventDefault();
-    send({kind:"key", ctrl:e.key.toLowerCase()});
+    // Shift and Alt go along: Ctrl+Shift+M is a key a person can bind, and
+    // without them it would arrive as Ctrl+M
+    send({kind:"key", ctrl:e.key.toLowerCase(), shift:e.shiftKey, alt:e.altKey});
   }
 });
+
+// A key set to work with no prefix (Settings > Keys), pressed while the caret
+// is in one of the page's own boxes -- the input bar, the ideas, a dialog --
+// where the window's keyboard never hears it. Handed on as the keyboard would
+// have sent it, so the window decides what it means in the one place it always
+// does. Only the combinations in force are taken; every other key stays the box's
+function directKeyOf(e) {
+  if (!S || !S.direct_keys || !S.direct_keys.length || typingIME(e)) return null;
+  // The letter from where it sits rather than what it types: held with Ctrl
+  // or Shift, what it types is not the letter
+  const letter = /^Key([A-Z])$/.exec(e.code || "");
+  const digit = /^Digit([0-9])$/.exec(e.code || "");
+  const ch = letter ? letter[1].toLowerCase() : digit ? digit[1] : (e.key.length === 1 ? e.key.toLowerCase() : "");
+  const named = NAMED[e.key] || "";
+  return S.direct_keys.find(d => d.ctrl === e.ctrlKey && d.shift === e.shiftKey && d.alt === e.altKey
+    && (d.ctrl ? d.key === ch : d.key === named)) || null;
+}
+document.addEventListener("keydown", e => {
+  if (e.target === kbd) return;
+  const d = directKeyOf(e);
+  if (!d) return;
+  e.preventDefault();
+  e.stopPropagation();
+  send(d.ctrl ? {kind:"key", ctrl:d.key, shift:d.shift, alt:d.alt}
+              : {kind:"key", named:d.key, shift:d.shift, alt:d.alt});
+}, true);
 
 // Same convention as PuTTY: selecting text copies it immediately, right-click pastes.
 // Except while typing in the URL bar — stealing focus there would block every keystroke
@@ -11695,10 +11723,14 @@ function drawQuickLauncher(fresh) {
 
   // Nothing made yet: say what this is, and where to make one
   if (!inFolder && !(q.items || []).length) {
+    const go = el("button", {onclick:() => { closeQuick(); openSettings("quick", true); }}, T["tui.quick.empty.go"] || "");
     col.append(el("div", {class:"qempty"},
       el("div", {class:"tt"}, T["tui.quick.empty.title"] || ""),
       el("div", {class:"tb"}, T["tui.quick.empty.body"] || ""),
-      el("button", {onclick:() => { closeQuick(); openSettings("quick", true); }}, T["tui.quick.empty.go"] || "")));
+      go));
+    // The keyboard comes here too, as it does to the first button of a grid:
+    // left in a text box underneath, Esc would never reach the launcher
+    if (fresh && !REMOTE) go.focus({preventScroll:true});
     return;
   }
 
@@ -15713,6 +15745,20 @@ mod tests {
         assert!(p.contains(r#"if (idea && made.number) ideasAsk("issued", {id: idea, number: made.number, url: made.url || ""});"#),
             "an idea is not marked done by the issue made from it");
         assert!(!to_issue.contains("ideasSetDone") && !to_issue.contains(r#""issued""#), "an idea is marked done before its issue exists");
+    }
+
+    /// A combination set to need no prefix works with the caret in one of the
+    /// page's boxes, where the window's keyboard never hears it, and Shift held
+    /// with Ctrl travels with the key
+    #[test]
+    fn a_combination_with_no_prefix_is_heard_from_a_text_box() {
+        let p = super::page();
+        assert!(p.contains(r#"send({kind:"key", ctrl:e.key.toLowerCase(), shift:e.shiftKey, alt:e.altKey});"#),
+            "Shift held with Ctrl is dropped on the way from the terminal");
+        assert!(p.contains("function directKeyOf(e) {") && p.contains("S.direct_keys.find("), "the page does not know which combinations to hand on");
+        assert!(p.contains("if (e.target === kbd) return;"), "a combination on the terminal would be sent twice");
+        // The empty launcher takes the keyboard, or Esc from a text box never reaches it
+        assert!(p.contains("if (fresh && !REMOTE) go.focus({preventScroll:true});"), "the empty quick commands leave the keyboard behind");
     }
 
     /// Backspace in the empty input bar deletes in the pane it sends to, and

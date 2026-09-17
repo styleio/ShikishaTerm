@@ -1487,6 +1487,10 @@ pub struct UiState {
     /// ones that are registered and work. Shown beside what they open
     #[serde(default)]
     pub hotkeys: std::collections::BTreeMap<String, String>,
+    /// The keys set to work with no prefix, for the page to hand on when they
+    /// are pressed in one of its own boxes (see `keys::direct_now`)
+    #[serde(default)]
+    pub direct_keys: Vec<crate::keys::DirectKey>,
     /// The quick commands, laid out and with their drawings, for the launcher.
     /// Shared rather than copied: it changes only when the settings are saved,
     /// and the state is put together many times a second
