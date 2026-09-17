@@ -74,6 +74,31 @@ impl TabOptions {
     pub fn called<'a>(&'a self, title: &'a str) -> &'a str {
         self.id.as_deref().filter(|s| !s.is_empty()).unwrap_or(title)
     }
+
+    /// Whether two launches stand in the same place: the same folder on the
+    /// same machine.
+    ///
+    /// A name is not enough to tell a running tab from another. Every worktree
+    /// cut from a folder copies that folder's tabs, names and all, so one desk
+    /// easily has a "claude" in each of three folders -- and a reload that
+    /// matched by name alone handed the first one's process to the second's
+    /// settings and stopped the one that was actually at work. Whether the
+    /// folder is there right now is not part of the place (see `held`): a
+    /// folder deleted from disk is still where that tab was working
+    pub fn same_place(&self, other: &TabOptions) -> bool {
+        let folder = match (&self.cwd, &other.cwd) {
+            (Some(a), Some(b)) => crate::uistate::same_folder(a, b),
+            (a, b) => a == b,
+        };
+        let machine = |o: &TabOptions| {
+            (
+                o.remote.as_ref().map(|r| (r.host.clone(), r.port, r.user.clone())),
+                o.cloud.as_ref().map(|c| (c.name.clone(), c.at.clone())),
+                o.remote_cwd.clone(),
+            )
+        };
+        folder && machine(self) == machine(other)
+    }
 }
 
 /// Why a tab is being held rather than started.
@@ -2762,6 +2787,12 @@ impl Tab {
     /// can reach them by the path we hand back.
     pub fn cwd(&self) -> Option<&std::path::Path> {
         self.opts.cwd.as_deref()
+    }
+
+    /// Whether this tab stands where a launch with these options would
+    /// (see [`TabOptions::same_place`])
+    pub fn stands_at(&self, opts: &TabOptions) -> bool {
+        self.opts.same_place(opts)
     }
 
     /// What its folder is called, when someone named it. The folder itself is

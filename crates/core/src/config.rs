@@ -4302,6 +4302,42 @@ impl Config {
     }
 }
 
+/// Where each desk that was open stands in the settings as read again.
+///
+/// One entry per desk in `before`: its place in `after`, or `None` when it is
+/// gone. A desk is its id first -- that is what renaming leaves alone -- and
+/// its name only for a desk the id cannot answer for (settings from before
+/// ids, or an id changed by hand), and only against a desk no id claimed.
+/// Pairing by name alone treated a renamed desk as a deleted one and stopped
+/// every tab running in it; and a new desk given the old one's name would have
+/// been handed tabs it never had
+pub fn pair_desks(before: &[Desk], after: &[Desk]) -> Vec<Option<usize>> {
+    let mut claimed = vec![false; after.len()];
+    let mut pairs: Vec<Option<usize>> = before
+        .iter()
+        .map(|b| {
+            let j = after.iter().position(|a| !b.id.is_empty() && a.id == b.id)?;
+            claimed[j] = true;
+            Some(j)
+        })
+        .collect();
+    for (i, b) in before.iter().enumerate() {
+        if pairs[i].is_some() {
+            continue;
+        }
+        let known = |a: &Desk| before.iter().any(|x| !x.id.is_empty() && x.id == a.id);
+        if let Some(j) = after
+            .iter()
+            .enumerate()
+            .position(|(j, a)| !claimed[j] && !known(a) && a.name == b.name)
+        {
+            claimed[j] = true;
+            pairs[i] = Some(j);
+        }
+    }
+    pairs
+}
+
 /// Give every desk a name that is not the one on screen, and make sure no
 /// two are the same.
 ///
@@ -4533,7 +4569,7 @@ pub fn logs_dir() -> std::path::PathBuf {
     p
 }
 
-/// Home for the name of the last-open desk.
+/// Home for the id of the last-open desk (a file from before ids were kept holds its name).
 ///
 /// Not written back into config.json -- that would interrupt a user mid-edit,
 /// and the change-watcher would react to its own write and trigger a reload
@@ -4541,17 +4577,17 @@ fn last_desk_path() -> std::path::PathBuf {
     state_path("last-desk")
 }
 
-/// Name of the last-open desk
+/// Id of the last-open desk, or the name an older version wrote
 pub fn load_last_desk() -> Option<String> {
     let s = std::fs::read_to_string(last_desk_path()).ok()?;
     let s = s.trim().to_string();
     (!s.is_empty()).then_some(s)
 }
 
-/// Remember the name of the currently open desk. Fails silently if it can't
+/// Remember the id of the currently open desk. Fails silently if it can't
 /// (being unable to remember it is no reason for things to stop working)
-pub fn save_last_desk(name: &str) {
-    let _ = crate::crypto::write_atomic(&last_desk_path(), name);
+pub fn save_last_desk(id: &str) {
+    let _ = crate::crypto::write_atomic(&last_desk_path(), id);
 }
 
 /// Write one appearance value back into the settings file, leaving the rest of
@@ -5007,6 +5043,39 @@ pub fn load() -> Option<Config> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod pair_desks_tests {
+    use super::{Desk, pair_desks};
+
+    fn desk(id: &str, name: &str) -> Desk {
+        Desk { id: id.into(), name: name.into(), ..Default::default() }
+    }
+
+    /// A desk is found again by its id, not by what it is called
+    #[test]
+    fn a_desk_is_found_again_by_its_id() {
+        let before = [desk("default", "DEFAULT"), desk("space", "ワークスペース")];
+        // Renamed, and the other one deleted
+        let after = [desk("default", "ワイアード＆エコ")];
+        assert_eq!(pair_desks(&before, &after), vec![Some(0), None], "a renamed desk is taken for a deleted one");
+
+        // Moved in the list
+        let after = [desk("space", "ワークスペース"), desk("default", "DEFAULT")];
+        assert_eq!(pair_desks(&before, &after), vec![Some(1), Some(0)]);
+
+        // A new desk given a deleted desk's name is a new desk
+        let after = [desk("default", "DEFAULT"), desk("space-2", "ワークスペース")];
+        assert_eq!(pair_desks(&before, &after), vec![Some(0), Some(1)], "an id changed by hand still finds it by name");
+        let before = [desk("default", "DEFAULT"), desk("space", "ワークスペース"), desk("new", "新規")];
+        let after = [desk("default", "DEFAULT"), desk("new", "ワークスペース")];
+        assert_eq!(
+            pair_desks(&before, &after),
+            vec![Some(0), None, Some(1)],
+            "a desk that took a deleted one's name was handed that desk's tabs"
+        );
+    }
 }
 
 #[cfg(test)]
