@@ -836,8 +836,10 @@ pub struct DiscoveredState {
     pub kept: bool,
 }
 
-/// A worktree being made, drawn as a row under its project's heading until it
-/// is a card of its own there.
+/// A worktree on its way onto the desk or off it, drawn as a row under its
+/// project's heading. One being made stays until it is a card of its own there;
+/// one being deleted stays until its folder is gone, or until the person answers
+/// for a folder that would not go.
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct MakingState {
     /// Its own number, which its row's buttons answer with
@@ -848,8 +850,9 @@ pub struct MakingState {
     pub name: String,
     /// Where it is being made
     pub folder: String,
-    /// `preparing`, `creating`, `setting_up` or `stopping`; `failed` once
-    /// it failed
+    /// Being made: `preparing`, `creating`, `setting_up` or `stopping`,
+    /// and `failed` once it failed. Being deleted: `removing`, and
+    /// `unremoved` once its folder would not go
     pub stage: String,
     /// Why it failed, in git's words where git said
     #[serde(skip_serializing_if = "String::is_empty")]

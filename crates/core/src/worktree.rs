@@ -507,7 +507,10 @@ fn take_back(plan: &Plan) {
     if plan.host.is_none() {
         unhook_links(&plan.folder);
     }
-    let _ = run_for(plan, &["git".into(), "-C".into(), main.clone(), "worktree".into(), "remove".into(), "--force".into(), folder]);
+    let _ = run_for(
+        plan,
+        &["git".into(), "-C".into(), main.clone(), "-c".into(), LONG_PATHS.into(), "worktree".into(), "remove".into(), "--force".into(), folder],
+    );
     if plan.host.is_some() {
         return;
     }
@@ -1097,6 +1100,13 @@ pub fn unhook_links(folder: &Path) {
     }
 }
 
+/// Said to git on every removal. Without it git on Windows cannot delete a
+/// path longer than 260 characters, and a build or a browser profile under
+/// `target` has thousands of them. Git does not stop cleanly when it meets one:
+/// it has already deleted `.git` and forgotten the worktree, and it leaves
+/// everything after that file on disk
+const LONG_PATHS: &str = "core.longpaths=true";
+
 /// Gets rid of a branch's folder, once there is nothing in it to lose.
 ///
 /// Refused while anything is uncommitted. A folder full of work that only
@@ -1105,72 +1115,200 @@ pub fn unhook_links(folder: &Path) {
 /// the first place. What it does not check is whether the branch was merged:
 /// that is a judgement, and it belongs to the person.
 pub fn discard(folder: &Path) -> Result<()> {
+    discard_step(folder, &mut false)
+}
+
+/// One try at [`discard`]. `released` is whether git has let go of this
+/// folder during this removal. What is left after that is still this
+/// worktree's, and it is cleared here even though git no longer calls the
+/// folder a worktree. Without that record, a folder git half-deleted looks
+/// the same as a folder that was never a worktree, and it could never be
+/// finished.
+fn discard_step(folder: &Path, released: &mut bool) -> Result<()> {
     if !folder.exists() {
         return Ok(());
     }
-    // Already out of git's hands, and only the empty folder is left: Windows
-    // keeps one alive while it is some process's working folder, and the tab
-    // that was standing here has just been asked to leave. Nothing but an
-    // empty folder is ever removed this way, so it can take nothing with it
-    if !crate::repo::is_linked(folder) {
-        let empty = std::fs::read_dir(folder).map(|d| d.count() == 0).unwrap_or(false);
-        if empty {
-            std::fs::remove_dir(folder)?;
-            return Ok(());
+    if crate::repo::is_linked(folder) {
+        ready_to_discard(folder)?;
+        let main = crate::repo::main_checkout(folder)
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.not_a_repo")))?;
+        // Git's own removal, so the repository stops listing it too. Anything
+        // linked into the folder is unhooked first: removing the folder with a
+        // junction still in it walks through and takes what is on the other side
+        unhook_links(folder);
+        let removed = run(&[
+            "git".into(),
+            "-C".into(),
+            main.display().to_string(),
+            "-c".into(),
+            LONG_PATHS.into(),
+            "worktree".into(),
+            "remove".into(),
+            folder.display().to_string(),
+        ]);
+        // Git deletes `.git` before anything else in the folder. If it is still
+        // there, git refused before it touched anything, and git's reason is the
+        // answer. If it is gone, git got part of the way, and the rest is ours
+        if let Err(e) = removed {
+            if folder.join(".git").exists() {
+                return Err(e);
+            }
         }
+        *released = true;
+        let _ = run(&[
+            "git".into(),
+            "-C".into(),
+            main.display().to_string(),
+            "worktree".into(),
+            "prune".into(),
+        ]);
     }
-    ready_to_discard(folder)?;
-    let main = crate::repo::main_checkout(folder)
-        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.not_a_repo")))?;
-    // Git's own removal, so the repository stops listing it too. Anything
-    // linked into the folder is unhooked first: removing the folder with a
-    // junction still in it walks through and takes what is on the other side
-    unhook_links(folder);
-    run(&[
-        "git".into(),
-        "-C".into(),
-        main.display().to_string(),
-        "worktree".into(),
-        "remove".into(),
-        folder.display().to_string(),
-    ])?;
-    // Git empties the folder but can leave the folder itself, because Windows
-    // holds one open while it is some process's working folder -- and the tab
-    // that just closed was standing in this one. Only ever removed empty, so
-    // this can never take anything with it
-    let _ = std::fs::remove_dir(folder);
+    if !folder.exists() {
+        return Ok(());
+    }
+    if *released {
+        return clear_remains(folder);
+    }
+    // Not a worktree, and not one this removal saw: only an empty folder is
+    // taken, so a folder that was never ours can lose nothing
+    let empty = std::fs::read_dir(folder).map(|d| d.count() == 0).unwrap_or(false);
+    if !empty {
+        bail!(crate::i18n::t("err.worktree.not_a_branch"));
+    }
+    std::fs::remove_dir(folder)?;
     Ok(())
 }
 
-/// Removes a folder once whatever is standing in it has left.
+/// Deletes what is left in a worktree's folder once git has let go of it, and
+/// then the folder.
+///
+/// A link is removed and never entered, for the reason given at
+/// [`unhook_links`]. When something will not go, everything else is still
+/// deleted, and the first thing that stayed is named: which file, and what
+/// Windows said about it. That is what somebody needs in order to close the
+/// program holding it.
+fn clear_remains(folder: &Path) -> Result<()> {
+    let mut stuck: Option<(PathBuf, std::io::Error)> = None;
+    scrub(folder, &mut stuck);
+    let last = match std::fs::remove_dir(folder) {
+        Ok(()) => return Ok(()),
+        Err(_) if !folder.exists() => return Ok(()),
+        Err(e) => e,
+    };
+    let (at, why) = stuck.unwrap_or((folder.to_path_buf(), last));
+    let shown = at.strip_prefix(folder).ok().filter(|p| !p.as_os_str().is_empty()).unwrap_or(&at);
+    bail!(crate::i18n::tp(
+        "err.worktree.left",
+        &[("path", &shown.display().to_string()), ("why", &why.to_string())]
+    ))
+}
+
+/// Empties `dir`, keeping the first thing that would not go
+fn scrub(dir: &Path, stuck: &mut Option<(PathBuf, std::io::Error)>) {
+    fn keep(stuck: &mut Option<(PathBuf, std::io::Error)>, at: &Path, e: std::io::Error) {
+        if stuck.is_none() {
+            *stuck = Some((at.to_path_buf(), e));
+        }
+    }
+    let here = match std::fs::read_dir(dir) {
+        Ok(here) => here,
+        Err(e) => return keep(stuck, dir, e),
+    };
+    for entry in here.flatten() {
+        let at = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&at) else { continue };
+        let kind = meta.file_type();
+        let gone = if kind.is_symlink() {
+            // The same two calls as `unhook_links`: neither opens the other side
+            std::fs::remove_dir(&at).or_else(|_| std::fs::remove_file(&at))
+        } else if kind.is_dir() {
+            scrub(&at, stuck);
+            // A folder that kept something already has its reason recorded
+            if stuck.is_some() && std::fs::read_dir(&at).is_ok_and(|mut d| d.next().is_some()) {
+                continue;
+            }
+            std::fs::remove_dir(&at)
+        } else {
+            std::fs::remove_file(&at).or_else(|e| {
+                // A read-only file is deleted all the same. It is inside a
+                // folder that is being deleted as a whole
+                if !meta.permissions().readonly() {
+                    return Err(e);
+                }
+                let mut writable = meta.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                writable.set_readonly(false);
+                std::fs::set_permissions(&at, writable)?;
+                std::fs::remove_file(&at)
+            })
+        };
+        if let Err(e) = gone {
+            keep(stuck, &at, e);
+        }
+    }
+}
+
+/// How long a removal waits for the tabs that were in the folder to leave
+const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Deletes a folder once whatever is standing in it has left.
 ///
 /// Git will not remove a folder a process is standing in, and what stands in
-/// this one is the tabs that were working there -- which are on their way out,
+/// this one is the tabs that were working there. They are on their way out,
 /// because taking the folder out of the settings is what ends them. So the
-/// removal waits, off to one side, rather than failing on the first try.
+/// removal tries again for a while rather than failing on the first try, and
+/// returns the last reason if the folder is still there when time is up.
 ///
 /// Nothing here decides *whether* it should go: that was settled by
 /// `ready_to_discard` before anything was closed, while saying no was still
 /// free.
-pub fn discard_soon(folder: std::path::PathBuf) {
-    std::thread::spawn(move || {
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        loop {
-            // Gone is the only thing that counts as done: git can let go of a
-            // folder while Windows still holds the empty shell of it open
-            if !folder.exists() {
-                return;
-            }
-            let trouble = discard(&folder).err();
-            if std::time::Instant::now() > until {
-                if let Some(e) = trouble {
-                    crate::append_hook_log(&format!("could not remove {}: {e:#}", folder.display()));
-                }
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(400));
+pub fn discard_waiting(folder: &Path) -> Result<()> {
+    let until = std::time::Instant::now() + REMOVAL_WAIT;
+    let mut released = false;
+    loop {
+        let tried = discard_step(folder, &mut released);
+        // Gone is the only thing that counts as done: git can let go of a
+        // folder while Windows still holds the empty shell of it open
+        if !folder.exists() {
+            return Ok(());
         }
-    });
+        if std::time::Instant::now() > until {
+            tried?;
+            bail!(crate::i18n::tp("err.worktree.still_there", &[("path", &folder.display().to_string())]));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+    }
+}
+
+/// A worktree's folder being deleted on a thread of its own.
+///
+/// A big folder takes seconds to delete, and the tabs standing in it take a
+/// moment to leave. The window cannot wait for either. The loop takes the
+/// `outcome` once there is one, and a folder that stayed is said, not only
+/// written to a log.
+pub struct Removal {
+    pub folder: PathBuf,
+    outcome: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+}
+
+impl Removal {
+    pub fn start(folder: PathBuf) -> Removal {
+        let removal = Removal { folder: folder.clone(), outcome: Default::default() };
+        let outcome = removal.outcome.clone();
+        std::thread::spawn(move || {
+            let said = discard_waiting(&folder).map_err(|e| format!("{e:#}"));
+            if let Err(why) = &said {
+                crate::append_hook_log(&format!("could not remove {}: {why}", folder.display()));
+            }
+            *outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(said);
+        });
+        removal
+    }
+
+    /// What became of it, once: gone, or why it is still there
+    pub fn outcome(&self) -> Option<Result<(), String>> {
+        self.outcome.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
 }
 
 /// A branch about to be called something else.
@@ -2724,6 +2862,99 @@ tools/conpty.ps1"));
         // Asking again is not an error: it is already how it was asked to be
         discard(&cut.folder).unwrap();
 
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A real project with a git repository and one worktree cut from it, for
+    /// the removal tests
+    fn cut_for_removal(name: &str) -> (PathBuf, Plan) {
+        let main = scratch(name).join(format!("proj-{name}"));
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+        let _ = std::fs::remove_dir_all(branches_root().join(format!("proj-{name}")));
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |args: &[&str]| {
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(&main).args(args);
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(main.join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(main.join("readme.md"), "hi\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "first"]);
+        let cut = plan(&main, "feature/leaving", None).unwrap();
+        create(&cut).unwrap();
+        (main, cut)
+    }
+
+    fn git_lists(main: &Path, folder: &Path) -> bool {
+        let mut ask = std::process::Command::new("git");
+        ask.arg("-C").arg(main).args(["worktree", "list", "--porcelain"]);
+        let listed = crate::detach_console(&mut ask).output().unwrap();
+        let name = folder.file_name().unwrap().to_string_lossy().into_owned();
+        String::from_utf8_lossy(&listed.stdout).contains(&name)
+    }
+
+    /// A build leaves paths longer than Windows' 260 characters under an
+    /// ignored folder. Without long paths, git deleted `.git` and forgot the
+    /// worktree, then stopped at the first long path. Everything after that
+    /// stayed on disk, and the next try refused the folder as "not a worktree"
+    #[test]
+    fn a_worktree_with_paths_longer_than_windows_allows_is_deleted_whole() {
+        let (main, cut) = cut_for_removal("longpath");
+        let mut deep = cut.folder.join("target").join("aa");
+        while deep.as_os_str().len() < 300 {
+            deep = deep.join("d".repeat(40));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("f.txt"), "x").unwrap();
+        // Read only, as some tools leave what they write
+        let stiff = cut.folder.join("target").join("zz").join("stiff.txt");
+        std::fs::create_dir_all(stiff.parent().unwrap()).unwrap();
+        std::fs::write(&stiff, "x").unwrap();
+        let mut ro = std::fs::metadata(&stiff).unwrap().permissions();
+        ro.set_readonly(true);
+        std::fs::set_permissions(&stiff, ro).unwrap();
+
+        discard_waiting(&cut.folder).unwrap();
+        assert!(!cut.folder.exists(), "the folder is still there");
+        assert!(!git_lists(&main, &cut.folder), "git still holds it");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// Something that will not delete is named, with everything else already
+    /// gone. Once it is let go, the same removal finishes, even though git has
+    /// forgotten the worktree by then
+    #[cfg(windows)]
+    #[test]
+    fn a_file_held_open_is_named_and_the_removal_finishes_once_it_is_let_go() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (main, cut) = cut_for_removal("heldopen");
+        let target = cut.folder.join("target");
+        std::fs::create_dir_all(target.join("a")).unwrap();
+        std::fs::write(target.join("a").join("free.txt"), "x").unwrap();
+        let held_at = target.join("held.bin");
+        std::fs::write(&held_at, "x").unwrap();
+        std::fs::create_dir_all(target.join("z")).unwrap();
+        std::fs::write(target.join("z").join("after.txt"), "x").unwrap();
+        // Nobody else may open it, delete it or move it while this is open
+        let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(&held_at).unwrap();
+
+        let mut released = false;
+        let said = discard_step(&cut.folder, &mut released).unwrap_err().to_string();
+        assert!(said.contains("held.bin"), "it does not say which file stayed: {said}");
+        assert!(held_at.exists());
+        assert!(!target.join("a").exists() && !target.join("z").exists(), "what could go did not");
+        assert!(!cut.folder.join("readme.md").exists(), "what git tracks did not go");
+        assert!(released, "git let go of it, and the removal does not know");
+        assert!(!git_lists(&main, &cut.folder), "git still lists a worktree it has deleted .git from");
+
+        drop(held);
+        discard_step(&cut.folder, &mut released).unwrap();
+        assert!(!cut.folder.exists(), "the rest was not finished once the file was let go");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 

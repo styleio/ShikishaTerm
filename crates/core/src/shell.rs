@@ -796,6 +796,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .making .mbtns button { font:inherit; font-size:11px; min-height:24px; padding:0 var(--s2); border-radius:var(--r-ctl);
     border:1px solid var(--edge); background:var(--panel2); color:var(--text); cursor:pointer; }
   .making .mbtns button:hover { border-color:var(--edge-hi); }
+  /* A folder that would not delete waits for a person, which is --warn, not a
+     stop. Its reason is what somebody acts on, so it is read whole */
+  .making.unremoved { border-color:color-mix(in srgb, var(--warn) 35%, transparent); }
+  .making.unremoved .mk, .making.unremoved .ms { color:var(--warn); }
+  .making.unremoved .ms { max-height:none; overflow:visible; }
   /* An AI's row: what it is doing, then which tab, then how long ago. The
      state reads first and plain; the tab's name and the time are the quiet
      part (65% and 10px), so the eye runs down the states */
@@ -5530,21 +5535,53 @@ function foundRow(d) {
 
 // A worktree being made: what it is called and how far it has got, with a ✕
 // that takes it back. Failed: why, and "Try again" or "Dismiss"
+// A worktree on its way in or out. Being deleted, it has no ✕: a folder half
+// deleted cannot be stopped back into a whole one
 function makingRow(m) {
-  const failed = m.stage === "failed";
+  const unremoved = m.stage === "unremoved";
+  const failed = m.stage === "failed" || unremoved;
   const stopping = m.stage === "stopping";
-  const row = el("div", {class:"making" + (failed ? " failed" : ""), title:m.folder || ""},
+  const leaving = unremoved || m.stage === "removing";
+  const row = el("div", {class:"making" + (failed ? " failed" : "") + (unremoved ? " unremoved" : ""), title:m.folder || ""},
     failed ? el("span", {class:"mk"}, "⚠") : el("span", {class:"dot BUSY"}),
     el("span", {class:"nm"}, m.name || ""),
-    failed || stopping ? null : el("span", {class:"fx", title:T["tui.making.stop"] || "",
+    failed || stopping || leaving ? null : el("span", {class:"fx", title:T["tui.making.stop"] || "",
       onclick:e => { e.stopPropagation(); send({kind:"making", id:m.id, act:"stop"}); }}, "✕"),
     el("span", {class:"ms"}, failed ? (m.error || T["tui.making.failed"] || "") : (T["tui.making.stage." + m.stage] || "")));
-  if (failed) {
+  if (unremoved) {
+    row.append(el("div", {class:"mbtns"},
+      el("button", {type:"button", onclick:() => { leftAsked.delete(m.id); send({kind:"making", id:m.id, act:"retry"}); }}, T["tui.making.retry"] || ""),
+      el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"restore"})}, T["worktree.left.restore"] || ""),
+      el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"forget"})}, T["worktree.left.forget"] || "")));
+  } else if (failed) {
     row.append(el("div", {class:"mbtns"},
       el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"retry"})}, T["tui.making.retry"] || ""),
       el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"dismiss"})}, T["tui.making.dismiss"] || "")));
   }
   return row;
+}
+// A worktree whose folder would not delete is asked about once, where it is
+// seen. The question is the same as the row's buttons: Cancel leaves the row
+// to answer later. Answered somewhere else -- the phone, the row -- the
+// question here goes too. "Try again" from the row asks again if it fails again
+const leftAsked = new Set();
+let leftAsking = 0;
+function askAboutLeft() {
+  const left = (S.making || []).filter(m => m.stage === "unremoved");
+  if (leftAsking && !left.some(m => m.id === leftAsking)) { leftAsking = 0; closeAsk(true); }
+  if (leftAsking) return;
+  const m = left.find(m => !leftAsked.has(m.id));
+  if (!m) return;
+  leftAsked.add(m.id);
+  leftAsking = m.id;
+  askQuestion({
+    title: T["worktree.left.title"] || "",
+    say: (T["worktree.left.say"] || "").replace("{why}", m.error || ""),
+    what: m.folder,
+    label: T["worktree.left.forget"] || "",
+    go: () => { leftAsking = 0; send({kind:"making", id:m.id, act:"forget"}); },
+    back: () => { leftAsking = 0; },
+  });
 }
 
 function folderRow(g, mine, card) {
@@ -8587,6 +8624,7 @@ window.__state = function (json) {
     lastFlash = S.flash;
     if (S.flash) toast(S.flash); else hideToast();
   }
+  askAboutLeft();
   paintPaneHeads();
 };
 
@@ -17667,6 +17705,24 @@ mod tests {
         assert!(PAGE.contains("go(input.value.trim(), !!never && unasked.checked)"), "the box's answer is not handed on");
         assert!(PAGE.contains(r#"send({kind:"folderdiscard", folder:g.folder, unasked})"#), "the answer does not reach the app");
         assert!(PAGE.contains("unasked.checked = false;"), "a box ticked once stays ticked in the next question");
+    }
+
+    /// A worktree whose folder would not delete is said and asked about, not
+    /// only written to a log: the row stays with its reason, the question is
+    /// put once, and each answer reaches the app
+    #[test]
+    fn a_worktree_that_would_not_delete_is_asked_about() {
+        assert!(PAGE.matches("askAboutLeft();").count() == 1, "the question is never put, or put from two places");
+        assert!(PAGE.contains(r#"const left = (S.making || []).filter(m => m.stage === "unremoved");"#), "it asks about the wrong rows");
+        assert!(PAGE.contains("if (leftAsking && !left.some(m => m.id === leftAsking)) { leftAsking = 0; closeAsk(true); }"),
+            "answered elsewhere, the question stays open here");
+        assert!(PAGE.contains("leftAsked.add(m.id);"), "it asks again on every frame");
+        assert!(PAGE.contains(r#"go: () => { leftAsking = 0; send({kind:"making", id:m.id, act:"forget"}); },"#),
+            "yes does not reach the app");
+        for act in ["retry", "restore", "forget"] {
+            assert!(PAGE.contains(&format!(r#"send({{kind:"making", id:m.id, act:"{act}"}})"#)), "the row cannot {act}");
+        }
+        assert!(PAGE.contains("failed || stopping || leaving ? null"), "a folder being deleted offers a ✕ that cannot stop it");
     }
 
     #[test]

@@ -63,6 +63,14 @@ once it reaches its first tagged release.
 - **Testing a connection through a bastion on a port other than 22** tested it
   on 22. The test built the connection with a copy of the launch code that did
   not read a port typed into the box; it now uses the launch code itself.
+- **Deleting a worktree left most of its folder on disk and said it was gone.**
+  A path longer than 260 characters (a build or a browser profile under
+  `target`) stopped git halfway, after it had already forgotten the worktree,
+  and the next try took what was left for somebody else's folder. The whole
+  folder now goes, links unhooked first and never entered. Its row says it is
+  being deleted until it is. A folder that still will not go names the file that
+  stayed and why, and asks whether to remove it from the list anyway; the row
+  also offers to try again or put it back in the list, tabs and all.
 
 ## [0.16.0] - 2026-09-17
 
