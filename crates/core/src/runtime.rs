@@ -1377,7 +1377,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for want in shell.mail().take_folder_views() {
             let want = std::path::PathBuf::from(want);
             let is_want = |f: &std::path::Path| crate::uistate::same_folder(f, &want);
-            if !(view_folder.as_deref().is_some_and(is_want) && !board_open && !settings_open) {
+            if folder_press_moves(surface_folder(&surfaces, &tabs, active), &want, board_open || settings_open) {
                 let keyed = surface_keys(&surfaces, &tabs);
                 let back = folder_views.iter().find(|(f, _)| is_want(f)).and_then(|(_, kept)| {
                     crate::layout::Layout::restore(kept, &pane_layout, |k| {
@@ -1438,7 +1438,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     view_folder = Some(here.to_path_buf());
                 }
             }
-            if view_folder.is_some() {
+            // Kept only while what is in front works in that folder. With a
+            // tab of no folder in front -- the Issue tab, a page -- the folder
+            // was still counted as the one being looked at, and the view kept
+            // for it became that tab: pressing the folder brought the Issue
+            // tab back instead of the folder's own
+            if view_folder.is_some() && surface_folder(&surfaces, &tabs, active).is_some() {
                 let keyed = surface_keys(&surfaces, &tabs);
                 view_kept = Some(pane_layout.keep(|s| keyed.get(s - 1).and_then(|k| k.id.clone())));
             }
@@ -8313,6 +8318,15 @@ pub fn save_replay_to_downloads() -> std::io::Result<Option<std::path::PathBuf>>
 /// the same thing (numbers shift with reordering, so using names when writing is recommended).
 /// The folder a surface (1..) works in, if it works in one. A page works in
 /// none; a panel works in the folder it reports on.
+/// Whether pressing a working folder's name moves the screen. Not when that
+/// folder's own tab is already in front and nothing covers the board -- the
+/// press is somebody finding their place. With a tab of no folder in front
+/// (the Issue tab, a page), the folder is not what is being looked at, however
+/// recently it was
+pub fn folder_press_moves(front: Option<&std::path::Path>, want: &std::path::Path, covered: bool) -> bool {
+    covered || !front.is_some_and(|f| crate::uistate::same_folder(f, want))
+}
+
 pub fn surface_folder<'a>(surfaces: &'a [Surface], tabs: &'a [Tab], surface: usize) -> Option<&'a std::path::Path> {
     match surfaces.get(surface.checked_sub(1)?)? {
         Surface::Session(i) => tabs.get(*i)?.cwd(),
@@ -9138,6 +9152,19 @@ mod remote_token_tests {
 #[cfg(test)]
 mod survey_tests {
     use super::*;
+
+    /// Pressing a folder moves the screen unless that folder's own tab is in
+    /// front. With the Issue tab in front the folder last looked at is not the
+    /// one being looked at, and pressing it has to take somebody there
+    #[test]
+    fn a_folder_pressed_over_a_tab_of_no_folder_goes_to_the_folder() {
+        let a = std::path::Path::new("C:/work/a");
+        let b = std::path::Path::new("C:/work/b");
+        assert!(!folder_press_moves(Some(a), a, false), "its own tab in front moves nothing");
+        assert!(folder_press_moves(Some(b), a, false), "another folder's tab in front moves");
+        assert!(folder_press_moves(None, a, false), "the Issue tab in front moves to the folder");
+        assert!(folder_press_moves(Some(a), a, true), "the board over it moves back to the folder");
+    }
 
     /// The echoed command line carries BOTH markers inside one line and must
     /// never be captured; the real output block (bare marker on its own
