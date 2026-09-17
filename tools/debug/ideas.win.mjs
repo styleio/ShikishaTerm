@@ -6,7 +6,9 @@
  * answer finding its way back into the page while somebody is still typing.
  *
  * So this starts the app built in this checkout, in a folder of its own, with a
- * desk of two project folders, and uses the ideas the way a person does: the
+ * desk of two git repositories -- one with a worktree cut somewhere else
+ * entirely -- and a folder that is no repository, and uses the ideas the way a
+ * person does: the
  * bulb, typing, Enter, Shift+Enter, ticking one off, carrying one by its grip,
  * a card with no project, and a project taken out of the settings. Every step
  * is checked against config/ideas.json itself, not only against the window.
@@ -33,6 +35,10 @@ const RUN = path.join(os.tmpdir(), 'sk-ideas');
 const APP = path.join(RUN, 'app');
 const APPDIR = path.join(RUN, 'work', 'app');
 const NOTES = path.join(RUN, 'work', 'notes');
+// A worktree of app, away from it: the same project however far away it is
+const BRANCH = path.join(RUN, 'elsewhere', 'fix');
+// No repository at all: no project
+const PLAIN = path.join(RUN, 'work', 'plain');
 const FILE = path.join(APP, 'config', 'ideas.json');
 const CONFIG = path.join(APP, 'config', 'config.json');
 
@@ -55,7 +61,17 @@ console.log('starting this checkout\'s build, isolated');
 stopApp();
 await sleep(800);
 fs.rmSync(RUN, { recursive: true, force: true });
-for (const d of [APP, APPDIR, NOTES, path.join(RUN, 'localappdata')]) fs.mkdirSync(d, { recursive: true });
+for (const d of [APP, APPDIR, NOTES, PLAIN, path.join(RUN, 'localappdata')]) fs.mkdirSync(d, { recursive: true });
+const git = (cwd, ...args) => {
+  const r = spawnSync('git', ['-c', 'user.name=check', '-c', 'user.email=check@example.com', ...args], { cwd, encoding: 'utf8' });
+  if (r.status !== 0) die('git ' + args.join(' ') + ' failed:\n' + r.stderr);
+};
+for (const repo of [APPDIR, NOTES]) {
+  git(repo, 'init', '-q');
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'start');
+}
+fs.mkdirSync(path.dirname(BRANCH), { recursive: true });
+git(APPDIR, 'worktree', 'add', '-q', '-b', 'fix', BRANCH);
 const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
 if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n' + staged.stdout + staged.stderr);
 
@@ -66,8 +82,10 @@ const settings = (folders) => ({
 });
 const appFolder = { cwd: APPDIR, tabs: [{ name: 'app-shell', id: 'app-shell', command: 'cmd.exe' }] };
 const notesFolder = { cwd: NOTES, tabs: [{ name: 'notes-shell', id: 'notes-shell', command: 'cmd.exe' }] };
+const branchFolder = { cwd: BRANCH, tabs: [{ name: 'fix-shell', id: 'fix-shell', command: 'cmd.exe' }] };
+const plainFolder = { cwd: PLAIN, tabs: [{ name: 'plain-shell', id: 'plain-shell', command: 'cmd.exe' }] };
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
-fs.writeFileSync(CONFIG, JSON.stringify(settings([appFolder, notesFolder]), null, 2));
+fs.writeFileSync(CONFIG, JSON.stringify(settings([appFolder, branchFolder, notesFolder, plainFolder]), null, 2));
 
 // Started directly, so the isolated LOCALAPPDATA and the DevTools port reach
 // it. What says "you are inside Claude Code" is taken out, so the app is not
@@ -132,13 +150,14 @@ const same = (a, b) => (a || '').replace(/[\\/]+$/, '').toLowerCase() === (b || 
 
 try {
   console.log('1. the bulb opens the ideas, the caret in the writing line');
-  await until(() => run(`!!document.querySelector('.gearrow .ideabtn') && !!(S && S.groups && S.groups.length === 2)`), 'the side column');
+  await until(() => run(`!!document.querySelector('.gearrow .ideabtn') && !!(S && S.groups && S.groups.length === 4)`), 'the side column');
   await click('.gearrow .ideabtn');
   await until(() => run(`!document.getElementById('ideas').hidden && IDEAS.known`), 'the ideas and their projects');
   check(await run(`document.activeElement.matches('#ideas .inew .itext')`), 'the caret is in the writing line');
   const chosen = await run(`document.querySelector('#ideas .iproj').value`);
   check(same(chosen, APPDIR), 'the project of the folder in front is chosen: ' + chosen);
-  check((await run(`IDEAS.projects.length`)) === 2, 'both project folders are offered');
+  const offered = await run(`IDEAS.projects.map(p => p.name + ':' + p.folders.length).sort().join(',')`);
+  check(offered === 'app:2,notes:1', "the two repositories are offered, the worktree elsewhere counted as app's, the plain folder not at all: " + offered);
 
   console.log('2. writing cards');
   await type('最初のアイデア'); await key('Enter');
@@ -189,15 +208,27 @@ try {
   check(onDisk().some((i) => i.text === 'どこにも属さないメモ' && i.project === null), 'the card with no project has none');
   check(same(onDisk().find((i) => i.text === 'notes のメモ').project, NOTES), 'the notes card belongs to notes');
 
-  console.log('7. Esc closes and the settings lose the notes folder');
+  console.log('6b. Esc closes');
   await key('Escape');
   check(await run(`document.getElementById('ideas').hidden`), 'Esc closed the ideas');
-  fs.writeFileSync(CONFIG, JSON.stringify(settings([appFolder]), null, 2));
-  await until(() => run(`S && S.groups && S.groups.length === 1`), 'the settings to be read again', 30000);
+
+  console.log('7. from the worktree elsewhere, the project is app');
+  await run(`send({kind:'select', tab: S.tabs.find(t => t.name === 'fix-shell').index}); true`);
+  await until(() => run(`activeTab() && activeTab().name === 'fix-shell'`), 'the worktree tab in front');
+  await click('.gearrow .ideabtn');
+  await until(() => run(`!document.getElementById('ideas').hidden && IDEAS.known`), 'the ideas');
+  check(same(await run(`document.querySelector('#ideas .iproj').value`), APPDIR), "the worktree's folder opens on app");
+  check((await run(`document.querySelectorAll('#ideas .ilist .icard').length`)) === 2, "with app's cards");
+  await key('Escape');
+
+  console.log('8. the settings lose the notes repository');
+  fs.writeFileSync(CONFIG, JSON.stringify(settings([appFolder, branchFolder, plainFolder]), null, 2));
+  await until(() => run(`S && S.groups && S.groups.length === 3`), 'the settings to be read again', 30000);
   await click('.gearrow .ideabtn');
   await disk((it) => { const n = it.find((i) => i.text === 'notes のメモ'); return n && n.project === null; }, 'the notes card moved to no project');
   check(true, 'the card of the removed project went to no project');
   check((await run(`IDEAS.projects.length`)) === 1, 'the removed project is no longer offered');
+  check(onDisk().some((i) => i.text === '最初のアイデア（直した）' && same(i.project, APPDIR)), "app's cards stayed with app");
   shot('3-project-removed');
   await key('Escape');
 } catch (e) {
