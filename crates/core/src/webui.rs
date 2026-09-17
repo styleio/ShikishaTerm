@@ -7839,7 +7839,7 @@ function gitFields(owner) {
       el("pre", {class:"mono promptshape"}, T["ai.pr.shape"] || "")),
     el("h3", {}, T["settings.git.merge.title"]),
     el("div", {class:"hint"}, T["settings.git.merge.about"]),
-    promptField(g, "merge_prompt", "ai.merge.default_prompt", "desk-git-merge", ["folder", "branch", "base", "files"]),
+    promptField(g, "merge_prompt", "ai.merge.default_prompt", "desk-git-merge", ["folder", "branch", "base", "files", "language"]),
     el("h3", {}, T["settings.git.issue.title"]),
     el("div", {class:"hint"}, T["settings.git.issue.about"]),
     promptField(g, "issue_prompt", "ai.issue.default_prompt", "desk-git-issue", ["text", "ai"]),

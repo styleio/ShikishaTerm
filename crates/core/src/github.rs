@@ -483,6 +483,45 @@ impl Hub {
         Ok(out)
     }
 
+    /// Every pull request made from `head` in this repository, newest first: one
+    /// a base, as a branch can be sent to more than one. An open one says whether
+    /// GitHub can merge it -- asked of each, since the list does not say
+    pub fn branch_pulls(&self, repo: &Repo, head: &str) -> Result<Value> {
+        let head = head.trim();
+        if head.is_empty() {
+            return Ok(json!([]));
+        }
+        let v = self.call(
+            "GET",
+            &format!("repos/{}/pulls?head={}:{}&state=all&per_page=20", repo.slug(), repo.owner, head),
+            None,
+        )?;
+        let mut out = Vec::new();
+        for p in v.as_array().into_iter().flatten() {
+            let Some(number) = p.get("number").and_then(|n| n.as_u64()) else { continue };
+            let merged = p.get("merged_at").is_some_and(|m| !m.is_null());
+            let open = p.get("state").and_then(|s| s.as_str()) == Some("open");
+            let merge_state = match open {
+                true => self
+                    .call("GET", &format!("repos/{}/pulls/{number}", repo.slug()), None)
+                    .ok()
+                    .and_then(|full| full.get("mergeable_state").cloned())
+                    .unwrap_or(Value::Null),
+                false => Value::Null,
+            };
+            out.push(json!({
+                "number": number,
+                "title": p.get("title"),
+                "base": p.pointer("/base/ref"),
+                "state": if merged { "merged" } else if open { "open" } else { "closed" },
+                "draft": p.get("draft").cloned().unwrap_or(json!(false)),
+                "merge_state": merge_state,
+                "url": p.get("html_url"),
+            }));
+        }
+        Ok(Value::Array(out))
+    }
+
     /// Each reviewer's latest word: changes asked for outweighs an approval
     fn review_decision(&self, repo: &Repo, number: u64) -> Result<String> {
         let v = self.call(
@@ -842,7 +881,7 @@ pub fn pr_file(dir: &std::path::Path, base: &str, path: &str) -> Result<Value> {
 pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
     Some(match (act, pulls) {
         ("list", false) => "github_issues",
-        ("list", true) => "github_prs",
+        ("list", true) | ("branch_prs", _) => "github_prs",
         ("detail", false) => "github_issue",
         ("detail", true) => "github_pr",
         ("options", _) => "github_labels",
@@ -985,6 +1024,7 @@ pub fn answer(
     let done = hub_for(source).and_then(|(repo, hub)| match act {
         "detail" if pulls => hub.pull(&repo, number),
         "detail" => hub.issue(&repo, number),
+        "branch_prs" => hub.branch_pulls(&repo, &s("head")),
         "options" => Ok(json!({"labels": hub.labels(&repo)?, "assignees": hub.assignees(&repo)?})),
         "create" => hub.create_issue(
             &repo,

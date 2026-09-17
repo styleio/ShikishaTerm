@@ -1585,6 +1585,38 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-radius:var(--r-ctl); background:color-mix(in srgb, var(--warn) 9%, transparent);
     border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
   #gitpanel .gbase[hidden], #gitpanel .gconflict[hidden] { display:none; }
+  /* Commit, push, pull request, merge: the one being worked on in the colour
+     for attention, the ones done ticked and quiet, the ones not this branch's faint */
+  #gitpanel .gsteps { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s1) var(--s2);
+    font-size:11.5px; color:var(--faint); }
+  #gitpanel .gsteps .st { display:inline-flex; align-items:center; gap:var(--s1); white-space:nowrap; }
+  #gitpanel .gsteps .st.done { color:var(--dim); }
+  #gitpanel .gsteps .st.now { color:var(--brand); font-weight:600; }
+  #gitpanel .gsteps .st.na { color:var(--faint); }
+  #gitpanel .gsteps .st .ico svg { width:11px; height:11px; }
+  #gitpanel .gsteps .sep { color:var(--faint); }
+  #gitpanel .gprform { display:flex; flex-direction:column; gap:var(--s2); }
+  #gitpanel .gprform[hidden], #gitpanel .gmsg[hidden], #gitpanel .gprform [hidden] { display:none !important; }
+  #gitpanel .gprrow { display:flex; align-items:center; gap:var(--s2); font-size:12px; color:var(--dim); }
+  #gitpanel .gprrow select { flex:1 1 auto; min-width:0; }
+  #gitpanel .gprform input[type=text] { width:100%; }
+  #gitpanel .gprform .tick { display:flex; align-items:center; gap:var(--s2); font-size:12px; color:var(--text); }
+  #gitpanel .gprlinks { display:flex; align-items:center; gap:var(--s2); }
+  #gitpanel .gprlinks .grow { flex:1 1 auto; }
+  #gitpanel button.link { border:none; background:none; padding:0; min-height:0; color:var(--dim); font-size:12px;
+    text-align:left; cursor:pointer; }
+  #gitpanel button.link:hover { color:var(--text); }
+  #gitpanel .gprs { display:flex; flex-direction:column; gap:var(--s1); }
+  #gitpanel .gprs:empty { display:none; }
+  #gitpanel .gprs .why { font-size:11.5px; color:var(--dim); overflow-wrap:anywhere; }
+  #gitpanel .gpr { display:flex; align-items:center; gap:var(--s2); font-size:12px; min-height:28px; }
+  #gitpanel .gpr .to { color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+  #gitpanel .gpr .num { color:var(--dim); font-family:var(--mono); }
+  #gitpanel .gpr .st { flex:1 1 auto; min-width:0; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #gitpanel .gpr .st.need { color:var(--warn); }
+  #gitpanel .gpr .st.ok { color:var(--text); }
+  #gitpanel .gpr button:not(.link) { flex:0 0 auto; padding:2px var(--s2); font-size:12px; }
+  #gitpanel .gpr button.armed { border-color:var(--stop); color:var(--stop); }
   #gitpanel .gbasesay, #gitpanel .gconflictsay { font-size:11.5px; color:var(--text); }
   #gitpanel .gbase select { height:32px; font:inherit; font-size:12.5px; background:var(--bg); color:var(--text);
     border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 var(--s2); }
@@ -1598,10 +1630,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .gbaserow button.quiet { border-color:transparent; background:transparent; color:var(--dim); }
   #gitpanel .gbaserow button .ico { display:flex; }
   #gitpanel .gname[hidden] { display:none; }
-  #gitpanel .gname input { flex:1; min-width:0; height:32px; box-sizing:border-box; padding:0 var(--s3);
+  #gitpanel .gname input, #gitpanel .gprform input[type=text] { flex:1 1 auto; min-width:0; height:32px; box-sizing:border-box; padding:0 var(--s3);
     font:inherit; font-size:13px; background:var(--bg); color:var(--text); border:1px solid var(--edge);
     border-radius:var(--r-ctl); outline:none; }
-  #gitpanel .gname input:focus { border-color:var(--brand);
+  #gitpanel .gname input:focus, #gitpanel .gprform input[type=text]:focus { border-color:var(--brand);
     box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
   #gitpanel .gname button { height:32px; padding:0 var(--s3); font:inherit; font-size:12.5px; cursor:pointer;
     border:1px solid var(--edge); background:var(--panel2); color:var(--text); border-radius:var(--r-ctl); }
@@ -3838,6 +3870,9 @@ window.__issues = function (d) {
   if (!d || !d.act) return;
   // The worktree dialog's own questions, under numbers of its own
   if (typeof d.seq === "string" && d.seq.startsWith("wt-")) { ghAnswer(d); return; }
+  // The git column's own questions to GitHub: its pull requests, made, merged
+  // and settled from there, answered there and nowhere on this tab
+  if (typeof d.seq === "string" && d.seq.startsWith("git-")) { gitIssues(d); return; }
   // The settings changed or another desk came to the front: the projects, their
   // accounts and so what could be read are asked for again, and what is on
   // screen stays until the answers replace it
@@ -3875,6 +3910,7 @@ window.__issues = function (d) {
       I.want.detail = seq;
       send({kind:"issues", act:"detail", args:{kind: I.kind, seq, project: I.detail.project, number: I.detail.number}});
     }
+    if (d.act === "pr_draft" && I.pr.from === "git") { G.busy = ""; G.said = I.said; G.bad = true; G.need = false; drawGit(); }
     drawIssues();
     return;
   }
@@ -3950,13 +3986,11 @@ window.__issues = function (d) {
       if (d.path && Object.prototype.hasOwnProperty.call(I.pr.open, d.path)) I.pr.open[d.path] = d.data || {hunks: []};
       break;
     case "pr_draft": {
-      const p = I.pr;
-      let got = null;
-      try { got = JSON.parse(d.data || ""); } catch (e) { got = null; }
-      if (!got || typeof got.title !== "string") { I.said = T["issues.draft.failed"] || ""; I.bad = true; break; }
-      p.title = got.title;
-      p.body = prFixes(typeof got.body === "string" ? got.body : p.body, p);
-      I.said = T["issues.pr.draft.done"] || "";
+      const took = prDraftInto(I.pr, d.data);
+      I.said = T[took ? "issues.pr.draft.done" : "issues.draft.failed"] || "";
+      I.bad = !took;
+      // Asked from the git column: said there, where it was asked
+      if (I.pr.from === "git") { G.busy = ""; G.said = I.said; G.bad = I.bad; G.need = false; drawGit(); }
       break;
     }
     case "create_pr": {
@@ -4392,6 +4426,17 @@ function draftFields(form, c, how) {
     el("div", {class:"namerow"}, el("span", {class:"name"}, T["issues.new.body"] || ""), ai),
     body));
   return body;
+}
+
+// What the AI wrote for a pull request, read into it: a title, and a
+// description that keeps the line closing its issue. Whether it could be read
+function prDraftInto(p, data) {
+  let got = null;
+  try { got = JSON.parse(data || ""); } catch (e) { got = null; }
+  if (!got || typeof got.title !== "string") return false;
+  p.title = got.title;
+  p.body = prFixes(typeof got.body === "string" ? got.body : p.body, p);
+  return true;
 }
 
 // The line that closes an issue when the pull request is merged, on the end
@@ -12627,7 +12672,12 @@ function gitFresh(name) {
            diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null,
            view:"changes", log:[], commit:null, about:null, remotes:false, then:"", need:false,
            // Bringing the base's latest in: choosing a base, and a merge that stopped
-           pickBase:false, bases:null, baseSel:"", conflict:null };
+           pickBase:false, bases:null, baseSel:"", conflict:null,
+           // The branch's pull requests as GitHub last said (null: not known),
+           // why they could not be read, the new one's form opened by hand,
+           // the one a first press of Merge armed, and how many more times to
+           // ask while GitHub is still working out whether it can merge
+           prs:null, prsWhy:"", prForm:false, armed:0, prsTries:0, prsWatch:false };
 }
 let G = gitFresh(null);
 let gitUi = null;
@@ -12684,7 +12734,11 @@ function gitPicked(where) {
 // Everything the panel learns comes back through here
 window.__git = function (d) {
   if (!d || !d.act) return;
-  if (d.busy) { G.busy = d.act; G.said = ""; G.need = false; drawGit(); return; }
+  // A fetch the column makes by itself, after a merge, says nothing over what the
+  // merge said
+  const quiet = d.act === "fetch" && G.quietFetch;
+  if (d.busy) { G.busy = d.act; if (!quiet) G.said = ""; G.need = false; drawGit(); return; }
+  if (quiet) G.quietFetch = false;
   G.busy = "";
   G.need = false;
   if (!d.ok) {
@@ -12753,7 +12807,12 @@ window.__git = function (d) {
       }
     }
   }
-  else if (d.act === "branch") { G.branch = d.data || null; gitConflictFromState(); }
+  else if (d.act === "branch") {
+    G.branch = d.data || null;
+    gitConflictFromState();
+    // Its pull requests are asked for once the branch they are for is known
+    if (G.prsAsk) { G.prsAsk = false; gitAskPrs(); }
+  }
   else if (d.act === "branches") { G.branches = d.data || []; }
   else if (d.act === "diff") { G.diff = d.data || ""; }
   else if (d.act === "hunks") { G.hunks = d.data || []; G.waiting = false; }
@@ -12807,8 +12866,15 @@ window.__git = function (d) {
       G.said = got.taken
         ? (T["git.catch_up.taken"] || "").replace("{base}", got.base || "").replace("{n}", got.taken)
         : (T["git.catch_up.latest"] || "").replace("{base}", got.base || "");
-    } else if (d.act === "fetch" || d.act === "pull" || d.act === "push" || d.act === "merge") {
+    } else if ((d.act === "fetch" && !quiet) || d.act === "pull" || d.act === "push" || d.act === "merge") {
       G.said = String(d.data || "").split("\n").filter(Boolean).pop() || (T["git.done"] || "");
+    }
+    // What GitHub says about the branch's pull requests can have changed with
+    // what the server now has. After a push it takes GitHub a moment to work
+    // out again whether they merge, so it is asked a few more times
+    if (["fetch", "pull", "push"].includes(d.act)) {
+      if (d.act === "push") { G.prsTries = 6; G.prsWatch = true; }
+      G.prsAsk = true;
     }
     gitRefresh(true);
   }
@@ -12838,6 +12904,9 @@ function gitRefresh(keep) {
   }
   G.panel = name;
   gitAsk("status"); gitAsk("branch"); gitAsk("branches");
+  // GitHub is asked when the panel comes up, not on every local change: what
+  // changes it -- a push, a pull request made or merged -- asks for itself
+  if (!keep || !G.prsAsked) G.prsAsk = true;
 }
 
 function gitBuild(box) {
@@ -12935,7 +13004,56 @@ function gitBuild(box) {
   const conflictFiles = el("div", {class:"gconflictfiles"});
   // The way on is the button above it, the one thing to do next
   const conflictBox = el("div", {class:"gconflict"}, conflictSay, conflictFiles);
-  const commitBox = el("div", {class:"gcommit"}, head, el("div", {class:"gmsg"}, msg, ai), split, naming, baseBox, conflictBox, said);
+  // Where the branch is on its way in: commit, push, pull request, merge
+  const steps = el("div", {class:"gsteps"});
+  // A new pull request, written where the branch was pushed from. Built once
+  // and filled in by drawGitCommit, so nothing is written over under the caret.
+  // It shares its state with the page in the middle, which shows the same one
+  // with the files it changes
+  const prBase = el("select");
+  prBase.onchange = () => { if (I.pr) I.pr.base = prBase.value; drawGitCommit(); };
+  const prBody = el("textarea", {rows:"5", placeholder: T["issues.pr.body.ph"] || ""});
+  prBody.oninput = () => { if (I.pr) I.pr.body = prBody.value; };
+  const prAi = el("button", {class:"gai", type:"button", title: T["issues.pr.draft.ai"] || "", onclick: gitPrDraft},
+    pickIcon("sparkles"));
+  prAi.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    openList(prAi, [el("div", {onclick:() => { closeFolderMenu(); openSettings("git-pr", true); }},
+      T["git.message.ai.edit"] || "")], false, e);
+  });
+  const prTitle = el("input", {type:"text", placeholder: T["issues.new.title.ph"] || ""});
+  prTitle.oninput = () => { if (I.pr) I.pr.title = prTitle.value; drawGitCommit(); };
+  const prCloseBox = el("input", {type:"checkbox"});
+  prCloseBox.onchange = () => {
+    if (!I.pr) return;
+    I.pr.close = prCloseBox.checked;
+    I.pr.body = prFixes(I.pr.body, I.pr);
+    drawGitCommit();
+  };
+  const prCloseWords = el("span");
+  const prClose = el("label", {class:"tick"}, prCloseBox, prCloseWords);
+  // What was written before the AI rewrote it, one press away
+  const prKept = el("button", {type:"button", class:"link", onclick:() => {
+    if (!I.pr) return;
+    I.pr.body = I.pr.kept; I.pr.kept = "";
+    drawGitCommit();
+  }}, T["issues.draft.restore"] || "");
+  const prForm = el("div", {class:"gprform"},
+    el("label", {class:"gprrow"}, el("span", {class:"nm"}, T["issues.pr.base"] || ""), prBase),
+    el("div", {class:"gmsg"}, prBody, prAi),
+    prKept,
+    prTitle,
+    prClose,
+    el("div", {class:"gprlinks"},
+      el("button", {type:"button", class:"link", onclick: gitOpenPr}, T["git.pr.center"] || ""),
+      el("span", {class:"grow"}),
+      el("button", {type:"button", class:"link gprcancel", onclick:() => { G.prForm = false; drawGit(); }},
+        T["issues.cancel"] || "")));
+  const prCancel = prForm.querySelector(".gprcancel");
+  // The pull requests this branch has, one for each base it was sent to
+  const prs = el("div", {class:"gprs"});
+  const msgBox = el("div", {class:"gmsg"}, msg, ai);
+  const commitBox = el("div", {class:"gcommit"}, steps, head, msgBox, prForm, split, naming, baseBox, conflictBox, said, prs);
 
   const branches = el("div", {class:"branches"});
   const staged = el("div", {class:"list"});
@@ -12999,7 +13117,8 @@ function gitBuild(box) {
     diff, hist));
   gitUi = { bar, said, naming, name, branches, branchCol, staged, work, diff,
             hist, mid, log, about, commitDiff, remotes, chips, which, acct, acctPick, acctWhose, acctSig: "",
-            branchName, sync, msg, ai, main, more, split, commitBox, baseBox, basePick, baseRuns, conflictBox, conflictSay, conflictFiles, stagedSec, workSec, stagedN, workN,
+            branchName, sync, msg, ai, main, more, split, commitBox, steps, msgBox, prForm, prBase, prBody, prAi, prTitle,
+            prClose, prCloseBox, prCloseWords, prKept, prCancel, prs, baseBox, basePick, baseRuns, conflictBox, conflictSay, conflictFiles, stagedSec, workSec, stagedN, workN,
             pick: {unstageAll, unstagePick, stageAll, stagePick} };
 }
 
@@ -13084,8 +13203,9 @@ function gitPanes() {
        ["about", T["git.pane.commit"] || ""], ["diff", T["git.pane.diff"] || ""]]
     : [["branches", T["git.pane.branches"] || ""], ["files", T["git.pane.changes"] || ""],
        ["diff", T["git.pane.diff"] || ""]];
-  // In the column a change opens in an editor tab, so it has no pane to pick
-  return gitInSide() ? all.filter(([id]) => id !== "diff") : all;
+  // In the column a change opens in an editor tab, so it has no pane to pick;
+  // the branches are in a Git tab of their own, one press away under the arrow
+  return gitInSide() ? all.filter(([id]) => id !== "diff" && id !== "branches") : all;
 }
 
 function gitAllPaths(staged) {
@@ -13347,20 +13467,26 @@ function gitNext() {
   if (b.behind) {
     return {icon:"down", label: (T["git.pull.n"] || "{n}").replace("{n}", b.behind), run:() => gitAsk("pull")};
   }
-  // Pushed, nothing waiting either way, and no pull request open for it: the
-  // next thing is to ask for it to be taken in. Not from a protected branch --
-  // that is where pull requests go, not where they come from
-  if (b.name && b.upstream && !b.protected && !gitPrOpen()) {
-    return {icon:"pr", label: T["git.pr.create"] || "", run: gitOpenPr};
+  // Its pull requests, as GitHub last said. A conflict first: nothing else
+  // moves until it is settled. Then the one being written, then one GitHub can
+  // merge, and once every one is merged, the worktree that is done with
+  const open = gitPrsOpen();
+  const stuck = open.find(p => gitPrAction(p) && p.merge_state === "dirty");
+  if (stuck) return Object.assign({icon:"sparkles", edit:"git-merge", pr: stuck.number}, gitPrAction(stuck),
+    {label: (T["git.prs.resolve"] || "").replace("{base}", stuck.base || "")});
+  if (gitPrFormShown()) {
+    const p = I.pr || {};
+    return {icon:"pr", label: T["git.pr.create"] || "", held: !(p.title || "").trim() || !p.base,
+            run:() => gitPrCreate(false)};
+  }
+  const ready = open.find(p => gitPrAction(p));
+  if (ready) return Object.assign({icon:"check", pr: ready.number}, gitPrAction(ready),
+    G.armed === ready.number ? {} : {label: (T["git.prs.merge"] || "").replace("{base}", ready.base || "")});
+  const g = gitGroup();
+  if (gitPrsDone() && g && g.linked && !g.host) {
+    return {icon:"folder", label: T["git.cleanup"] || "", run:() => discardFolder(g)};
   }
   return {icon:"refresh", label: T["git.fetch"] || "", run:() => gitAsk("fetch")};
-}
-// The pull request the branch in front already has, as the column's line
-// says it ("#12", "#12 draft"), when it is still open
-function gitPrOpen() {
-  const t = gitTab();
-  const pr = t && t.place && t.place.pr;
-  return pr && !/merged|closed/.test(pr) ? pr : "";
 }
 // Why a pull request cannot be made from here yet, or nothing
 function gitPrWhy() {
@@ -13368,8 +13494,7 @@ function gitPrWhy() {
   if (!b.name) return T["git.pr.why.branch"] || "";
   if (b.protected) return T["git.pr.why.protected"] || "";
   if (!b.upstream || b.ahead) return T["git.pr.why.push"] || "";
-  const open = gitPrOpen();
-  return open ? (T["git.pr.why.open"] || "").replace("{pr}", open) : "";
+  return "";
 }
 // What the pull request would carry, asked again whenever where it goes changes
 function prAskFiles() {
@@ -13377,26 +13502,212 @@ function prAskFiles() {
   p.files = null; p.open = {}; p.more = false;
   if (p.base) issuesAsk("pr_files", {project: p.project, folder: p.folder, base: p.base});
 }
-// The new pull request page, in the Issue tab, for the branch in front: its
-// folder, the project it belongs to, and the issue the folder was made for
-function gitOpenPr() {
+
+// ── Pull requests, from the column ─────────────────
+// Made, merged and settled where the branch was committed and pushed from, so
+// the way in never leaves the column. The page in the middle shows the same
+// ones in full, for reading
+
+// What GitHub can merge now. A draft is not one of them
+const PR_MERGEABLE = ["clean", "has_hooks", "unstable"];
+// The folder the column is about, as the folder list knows it
+function gitGroup() {
   const t = gitTab();
-  const g = t && t.group != null ? ((S && S.groups) || [])[t.group] : null;
+  return t && t.group != null ? ((S && S.groups) || [])[t.group] || null : null;
+}
+// A question to GitHub that belongs to the column: answered to it (gitIssues)
+function gitIssuesAsk(act, args) {
+  send({kind:"issues", act, args: Object.assign({kind:"pr", seq:"git-" + act}, args || {})});
+}
+// Whether the folder's server is GitHub, as the folder list already knows
+function gitOnGithub() {
+  const t = gitTab();
+  return !!(t && t.place && t.place.repo);
+}
+// The branch's pull requests. Not for a protected branch, which is where they
+// go, and not where the server is not GitHub
+function gitAskPrs() {
+  const g = gitGroup();
+  const b = G.branch || {};
+  G.prsAsked = true;
+  if (!g || !g.project || !b.name || b.protected || !gitOnGithub()) { G.prs = null; G.prsWhy = ""; return; }
+  gitIssuesAsk("branch_prs", {project: g.project, head: b.name});
+}
+function gitPrsOpen() {
+  return (Array.isArray(G.prs) ? G.prs : []).filter(p => p.state === "open");
+}
+function gitPrsDone() {
+  return Array.isArray(G.prs) && G.prs.length > 0 && G.prs.every(p => p.state === "merged");
+}
+// Whether GitHub is still working out if it merges: just after a push it says
+// the old answer for a moment, so a conflict it reported then is not trusted
+function gitPrChecking(p) {
+  return p.state === "open" && (!p.merge_state || p.merge_state === "unknown" || (G.prsWatch && p.merge_state === "dirty"));
+}
+// The one thing that can be done to a pull request from here, or nothing:
+// settle its conflict, or merge it -- armed by the first press, done by the second
+function gitPrAction(p) {
+  if (p.state !== "open" || gitPrChecking(p)) return null;
+  if (p.merge_state === "dirty") {
+    return {label: T["git.prs.resolve.short"] || "", run:() => gitPrResolve(p)};
+  }
+  if (!p.draft && PR_MERGEABLE.includes(p.merge_state)) {
+    return {label: G.armed === p.number ? (T["issues.merge.sure"] || "") : (T["git.prs.merge.short"] || ""),
+            run:() => gitPrMerge(p)};
+  }
+  return null;
+}
+// The form for a new one: when nothing is left to commit or push and the branch
+// has none yet, or when another base is asked for
+function gitPrFormShown() {
+  const b = G.branch || {};
+  if (!b.name || b.protected || !b.upstream || b.ahead || b.behind || !Array.isArray(G.prs)) return false;
+  if (gitStageable().length || (G.rows || []).some(r => r.staged || r.conflict)) return false;
+  return G.prForm || G.prs.length === 0;
+}
+// The pull request being written, made to stand for the branch in front: kept
+// while it is the same branch of the same folder, started afresh otherwise
+function gitPrFormFit() {
+  const g = gitGroup();
   const head = G.branch && G.branch.name;
-  if (!g || !head) return;
+  if (!g || !head || !gitPrFormShown()) return;
+  const p = I.pr;
+  if (p && p.from === "git" && p.head === head && p.folder === g.folder) { gitPrBaseFit(); return; }
   const made = /^issue:(.+)#(\d+)$/.exec(g.work_item || "");
-  I.pr = {project: g.project || "", folder: g.folder || "", head, base:"", bases:null, title:"", body:"",
+  I.pr = {from:"git", project: g.project || "", folder: g.folder || "", head, base:"", bases:null, title:"", body:"",
           draft:false, close: !!made, issue: made ? {repo: made[1], number: Number(made[2])} : null, kept:"",
           files:null, open:{}, more:false};
   I.pr.body = prFixes("", I.pr);
-  // The list behind it keeps the kind it was showing: switching it here left the
-  // list headed Pull requests over the issues it still held, and without the
-  // New issue button. It turns to pull requests once one has been made
+  gitIssuesAsk("pr_bases", {project: I.pr.project});
+}
+// Where it goes, until somebody chooses: a base it has not been sent to yet --
+// the one the branch was cut from first, then the server's default
+function gitPrBaseFit() {
+  const p = I.pr;
+  if (!p || !p.bases) return;
+  const sent = (G.prs || []).map(x => x.base);
+  if (p.base && p.bases.includes(p.base) && !sent.includes(p.base)) return;
+  const cut = ((G.branch && G.branch.base) || "").replace(/^origin\//, "");
+  const order = [cut, ...p.bases].filter(x => x && x !== p.head && p.bases.includes(x));
+  p.base = order.find(x => !sent.includes(x)) || order[0] || "";
+}
+// The ✨: the AI writes the title and description from the branch's commits and
+// change. What was written is kept, one press from coming back
+function gitPrDraft() {
+  const p = I.pr;
+  if (!p || p.from !== "git" || G.busy) return;
+  if (!p.base) { G.said = T["issues.pr.need.base"] || ""; G.need = true; drawGit(); return; }
+  if (prFixes(p.body, Object.assign({}, p, {close:false})).trim()) p.kept = p.body;
+  G.busy = "pr_draft"; G.said = "";
+  drawGit();
+  send({kind:"issues", act:"pr_draft", args:{kind:"pr", project: p.project, folder: p.folder, head: p.head, base: p.base}});
+}
+function gitPrCreate(draft) {
+  const p = I.pr;
+  if (!p || p.from !== "git" || G.busy) return;
+  if (!p.base) { G.said = T["issues.pr.need.base"] || ""; G.need = true; drawGit(); return; }
+  if (!p.title.trim()) { G.said = T["issues.new.title.need"] || ""; G.need = true; drawGit(); return; }
+  G.busy = "pr_create"; G.said = "";
+  drawGit();
+  gitIssuesAsk("create_pr", {project: p.project, title: p.title, body: p.body, head: p.head, base: p.base, draft: !!draft});
+}
+// How a merge is made, as last chosen here
+function gitMergeMethod() {
+  try { return localStorage.getItem("shikisha.git.merge") || "squash"; } catch (e) { return "squash"; }
+}
+function gitPrMerge(p) {
+  const g = gitGroup();
+  if (!g || G.busy) return;
+  if (G.armed !== p.number) { G.armed = p.number; G.said = ""; drawGit(); return; }
+  G.armed = 0; G.busy = "pr_merge"; G.said = ""; G.merging = p.base || "";
+  drawGit();
+  gitIssuesAsk("merge", {project: g.project, number: p.number, method: gitMergeMethod()});
+}
+// Its base brought into this folder; a conflict opens an AI tab in the middle
+function gitPrResolve(p) {
+  const g = gitGroup();
+  if (!g || G.busy || !G.branch) return;
+  G.busy = "pr_resolve"; G.said = ""; G.armed = 0;
+  drawGit();
+  gitIssuesAsk("pr_resolve", {project: g.project, number: p.number, head: G.branch.name, base: p.base || ""});
+}
+// A pull request in full, on the page in the middle
+function gitPrShow(p) {
+  const g = gitGroup();
+  if (!g) return;
+  issuesAsk("detail", {kind:"pr", project: g.project, number: p.number});
+  send({kind:"openissues"});
+}
+// The pull request being written, on the page in the middle: the same one,
+// with the files it changes
+function gitOpenPr() {
+  if (!I.pr || I.pr.from !== "git") return;
   I.view = "newpr";
   I.said = ""; I.bad = false;
   issuesSig = "";
+  prAskFiles();
   send({kind:"openissues"});
-  send({kind:"issues", act:"pr_bases", args:{kind:"pr", project: I.pr.project, seq: 0}});
+}
+// What GitHub answered the column
+function gitIssues(d) {
+  if (d.act === "branch_prs") {
+    if (!d.ok) { G.prs = null; G.prsWhy = d.error || ""; drawGit(); return; }
+    G.prsWhy = "";
+    // One closed without being merged is not on its way anywhere
+    G.prs = (Array.isArray(d.data) ? d.data : []).filter(p => p.state !== "closed");
+    if (G.prsTries > 0 && G.prs.some(gitPrChecking)) {
+      G.prsTries--;
+      setTimeout(gitAskPrs, 3000);
+    } else {
+      G.prsTries = 0;
+      G.prsWatch = false;
+    }
+    if (!G.prs.some(p => p.number === G.armed)) G.armed = 0;
+    gitPrFormFit();
+    drawGit();
+    return;
+  }
+  if (d.act === "pr_bases") {
+    if (d.ok && I.pr && I.pr.from === "git") {
+      I.pr.bases = ((d.data || {}).bases || []).filter(x => x !== I.pr.head);
+      gitPrBaseFit();
+    }
+    drawGit();
+    return;
+  }
+  G.busy = "";
+  G.need = false;
+  if (!d.ok) {
+    G.said = d.error || ""; G.bad = true;
+    // A merge refused, or a conflict not settled: what GitHub says now is read again
+    G.prsAsked = false;
+    gitAskPrs();
+    drawGit();
+    return;
+  }
+  G.bad = false;
+  if (d.act === "create_pr") {
+    G.said = (T["issues.pr.created"] || "").replace("{n}", (d.data || {}).number || "");
+    G.prForm = false;
+    I.pr = {from:"", project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false, close:false, issue:null, kept:"", files:null, open:{}, more:false};
+    G.prsTries = 3;
+  } else if (d.act === "merge") {
+    G.said = (T["git.prs.merged"] || "").replace("{base}", G.merging || "");
+    // What it merged into moved on the server
+    G.quietFetch = true;
+    gitAsk("fetch");
+  } else if (d.act === "pr_resolve") {
+    const r = d.data || {};
+    G.said = r.state === "tab"
+      ? (T[r.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "").replace("{title}", r.title || "")
+        + " " + (T["git.prs.push"] || "")
+      : r.state === "taken"
+        ? (T["git.catch_up.taken"] || "").replace("{base}", r.base || "").replace("{n}", r.taken || 0)
+        : (T["git.catch_up.latest"] || "").replace("{base}", r.base || "");
+    gitRefresh(true);
+  }
+  gitAskPrs();
+  drawGit();
 }
 // Work a merge would be started on top of: a change to a file git follows.
 // Files git does not follow are not counted
@@ -13451,7 +13762,19 @@ function gitMenu(anchor) {
   const sep = () => el("div", {class:"gsep"});
   const needStage = staged ? "" : (T["git.why.stage"] || "");
   const needWords = worded ? "" : (T["git.why.message"] || "");
+  const writing = gitPrFormShown();
+  // How a merge from the column is made, the chosen one ticked
+  const methods = gitPrsOpen().length
+    ? ["squash", "merge", "rebase"].map(m => el("div", {onclick:() => {
+        closeFolderMenu();
+        try { localStorage.setItem("shikisha.git.merge", m); } catch (e) {}
+      }}, (T["git.merge.method"] || "{method}").replace("{method}", T["issues.merge." + m] || m)
+          + (gitMergeMethod() === m ? " ✓" : "")))
+    : [];
   openList(anchor, [
+    // The other way to make the one being written, first while it is
+    writing ? item(T["git.pr.draft.create"] || "", () => gitPrCreate(true)) : null,
+    writing ? sep() : null,
     item(T["git.commit"] || "", () => gitCommit(), needStage || needWords),
     item(T["git.commit.push"] || "", () => gitCommit("push"), needStage || needWords),
     item(T["git.commit.amend"] || "", () => gitCommit("", true), needWords),
@@ -13460,15 +13783,20 @@ function gitMenu(anchor) {
     item(T["git.pull"] || "", () => gitAsk("pull")),
     item(T["git.fetch"] || "", () => gitAsk("fetch")),
     sep(),
-    item(T["git.pr.create"] || "", gitOpenPr, gitPrWhy()),
+    item(T["git.pr.create"] || "", () => { G.prForm = true; gitPrFormFit(); drawGit(); }, gitPrWhy()),
+    ...methods,
     sep(),
     item(T["git.branch.new"] || "", () => gitNewBranch()),
-    item(G.pickBranch ? (T["git.merge"] || "") + " ← " + G.pickBranch : (T["git.merge"] || ""),
+    // Picked from the branch list, which the column leaves to the Git tab
+    gitInSide() ? null : item(G.pickBranch ? (T["git.merge"] || "") + " ← " + G.pickBranch : (T["git.merge"] || ""),
       () => gitAsk("merge", {text: G.pickBranch}), G.pickBranch ? "" : (T["git.merge.pick"] || "")),
     // The base's latest, fetched and merged; what runs is written under it
     item(T["git.catch_up"] || "", gitCatchUp, gitDirty() ? (T["git.why.dirty"] || "") : "",
       (G.branch && G.branch.catch_up) || [], gitCatchUpNote()),
-  ]);
+    // Out of the column's way: the branches and the history, in a tab of their own
+    gitInSide() ? sep() : null,
+    gitInSide() ? item(T["git.branches.open"] || "", () => gitAsk("open_tab")) : null,
+  ].filter(Boolean));
 }
 // The top of the changes: redrawn on every answer, touching only what changed
 // so the box being typed in is never written over under the caret
@@ -13539,6 +13867,104 @@ function drawGitCommit() {
   // A refusal with a way out under it is a person being needed, like a missing
   // message; only a failure is said as one
   u.said.className = "said" + (G.offer || G.need ? " need" : G.bad ? " bad" : "");
+  drawGitSteps(u);
+  drawGitPrForm(u);
+  drawGitPrs(u, next);
+}
+// Commit, push, pull request, merge: the one being worked on stands out, the
+// ones behind it are ticked. A protected branch is where pull requests go, so
+// its last two are shown as not being its to do
+function drawGitSteps(u) {
+  const b = G.branch || {};
+  const prs = Array.isArray(G.prs) ? G.prs : [];
+  const merged = prs.filter(p => p.state === "merged").length;
+  const changed = gitStageable().length > 0 || (G.rows || []).some(r => r.staged || r.conflict);
+  const theirs = !b.name || b.protected || !gitOnGithub();
+  const steps = [
+    ["commit", T["git.step.commit"] || "", !changed, false],
+    ["push", T["git.step.push"] || "", !changed && !!b.upstream && !b.ahead, false],
+    ["pr", (T["git.step.pr"] || "") + (prs.length > 1 ? " " + prs.length : ""), prs.length > 0, theirs],
+    ["merge", (T["git.step.merge"] || "") + (prs.length > 1 ? " " + merged + "/" + prs.length : ""),
+      prs.length > 0 && merged === prs.length, theirs],
+  ];
+  // One being written for another base is the pull request step again
+  const now = gitPrFormShown() ? 2 : steps.findIndex(([, , done, na]) => !done && !na);
+  const sig = JSON.stringify([steps, now]);
+  if (u.steps.dataset.sig === sig) return;
+  u.steps.dataset.sig = sig;
+  u.steps.textContent = "";
+  steps.forEach(([id, label, done, na], i) => {
+    if (i) u.steps.append(el("span", {class:"sep"}, "›"));
+    u.steps.append(el("span", {class:"st" + (na ? " na" : done ? " done" : i === now ? " now" : "")},
+      done && !na ? pickIcon("check") : null, label));
+  });
+}
+// The new pull request's fields, filled from its state unless being typed in
+function drawGitPrForm(u) {
+  const shown = gitPrFormShown() && !!I.pr && I.pr.from === "git";
+  u.prForm.hidden = !shown;
+  // Nothing is left to commit while it is up, so the message box steps aside
+  u.msgBox.hidden = shown;
+  if (!shown) return;
+  const p = I.pr;
+  const sig = JSON.stringify(p.bases);
+  if (u.prBase.dataset.sig !== sig) {
+    u.prBase.dataset.sig = sig;
+    u.prBase.textContent = "";
+    for (const name of p.bases || []) u.prBase.append(el("option", {value: name}, name));
+  }
+  u.prBase.disabled = !(p.bases || []).length;
+  if (document.activeElement !== u.prBase) u.prBase.value = p.base;
+  if (document.activeElement !== u.prBody && u.prBody.value !== p.body) u.prBody.value = p.body;
+  if (document.activeElement !== u.prTitle && u.prTitle.value !== p.title) u.prTitle.value = p.title;
+  const writing = G.busy === "pr_draft";
+  u.prBody.disabled = writing;
+  u.prAi.disabled = !!G.busy;
+  u.prKept.hidden = !p.kept;
+  // Put away only when it was opened for another base: with none made yet it is
+  // the next thing to do, not something to put away
+  u.prCancel.hidden = !(Array.isArray(G.prs) && G.prs.length);
+  u.prClose.hidden = !p.issue;
+  if (p.issue) {
+    u.prCloseBox.checked = !!p.close;
+    u.prCloseWords.textContent = (T["issues.pr.closes"] || "").replace("{ref}", prIssueRef(p));
+  }
+}
+// The branch's pull requests, a line for each base: where it goes, its number
+// (which opens it in the middle), what GitHub says, and -- for any but the one
+// the button above is already about -- what can be done to it
+function drawGitPrs(u, next) {
+  const b = G.branch || {};
+  const prs = Array.isArray(G.prs) ? G.prs : [];
+  const another = prs.length > 0 && !gitPrsDone() && !gitPrFormShown() && !!b.name && !b.protected && !!b.upstream && !b.ahead;
+  const sig = JSON.stringify([prs, G.prsWhy, G.armed, G.prsWatch, !!G.busy, next.pr || 0, another]);
+  if (u.prs.dataset.sig === sig) return;
+  u.prs.dataset.sig = sig;
+  u.prs.textContent = "";
+  if (G.prsWhy && !b.protected) u.prs.append(el("div", {class:"why"}, G.prsWhy));
+  for (const p of prs) {
+    const checking = p.state === "open" && (!p.merge_state || p.merge_state === "unknown" || (G.prsWatch && p.merge_state === "dirty"));
+    const words = p.state === "merged" ? (T["issues.state.merged"] || "")
+      : p.draft ? (T["issues.merge_state.draft"] || "")
+      : T["issues.merge_state." + (checking ? "unknown" : p.merge_state)] || p.merge_state || "";
+    const tone = p.state === "merged" ? "done" : checking ? "" : p.merge_state === "dirty" ? "need"
+      : PR_MERGEABLE.includes(p.merge_state) ? "ok" : "need";
+    const row = el("div", {class:"gpr"},
+      el("span", {class:"to"}, "→ " + (p.base || "")),
+      el("button", {type:"button", class:"link num", title: p.title || "", onclick:() => gitPrShow(p)}, "#" + p.number),
+      el("span", {class:"st " + tone}, words));
+    const act = gitPrAction(p);
+    if (act && next.pr !== p.number) {
+      const go = el("button", {type:"button", class: G.armed === p.number ? "armed" : "", onclick: act.run}, act.label);
+      go.disabled = !!G.busy;
+      row.append(go);
+    }
+    u.prs.append(row);
+  }
+  if (another) {
+    u.prs.append(el("button", {type:"button", class:"link", onclick:() => { G.prForm = true; gitPrFormFit(); drawGit(); }},
+      T["git.prs.another"] || ""));
+  }
 }
 function gitNewBranch() {
   G.offer = !G.offer;
@@ -14440,8 +14866,9 @@ function drawGit() {
   // The chips only mean anything while one pane is in front
   u.chips.textContent = "";
   const panes = gitPanes();
-  if (narrow && !panes.some(([id]) => id === gitPane)) gitPane = panes[1][0];
-  for (const [id, label] of panes) {
+  if (narrow && !panes.some(([id]) => id === gitPane)) gitPane = (panes.find(([id]) => id !== "branches") || panes[0])[0];
+  // One pane has nothing to choose between
+  for (const [id, label] of panes.length > 1 ? panes : []) {
     u.chips.append(el("button", {class: gitPane === id ? "on" : "",
       onclick:() => { gitPane = id; drawGit(); }}, label));
   }
@@ -16594,7 +17021,8 @@ mod tests {
         assert!(!ctrl.contains("gitOpenDiff") && !ctrl.contains("gitAskChange"),
                 "ctrl-click opens a change instead of only picking");
         let panes = body("function gitPanes() {");
-        assert!(panes.contains(r#"gitInSide() ? all.filter(([id]) => id !== "diff")"#), "the column still offers a change pane");
+        assert!(panes.contains(r#"gitInSide() ? all.filter(([id]) => id !== "diff" && id !== "branches")"#),
+                "the column still offers a change pane, or the branches it opens in a tab of their own");
         let open = body("function gitOpenDiff(path, how) {");
         assert!(open.contains(r#"send({kind:"editopen""#), "a change is not opened through the editor's own door");
         for place in ["gitChangeInto(u.diff,", "gitChangeInto(u.commitDiff,", "gitChangeInto(u.change,"] {

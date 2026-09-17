@@ -9,6 +9,22 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **A branch goes all the way in from the git column: commit, push, pull request,
+  merge.** A row of steps at the top of the column says which one the branch is
+  on. Once it is pushed and has no pull request, the column is the new one's form:
+  the base it goes into (a base it has not been sent to yet comes first), the
+  description with its ✨, the title, and -- for a folder made for an issue -- the
+  tick that closes it; the button makes it, and the arrow beside it makes it as a
+  draft. Its pull requests are listed a line for each base, with what GitHub says
+  of each; a number opens it in the middle. A conflict makes the button Resolve
+  conflicts with that base, which brings the base in and opens an AI tab in the
+  middle, told to say in your language to press Push when it is done. After the
+  push the column asks GitHub again until it has worked out whether it merges.
+  One it can merge makes the button Merge into that base, pressed twice; how it
+  merges is chosen under the arrow. Send to another base too opens the form again.
+  Once every one is merged, the button is Clean up this worktree.
+- **The merge prompt has `{language}`**, the language the screen is in, and the
+  default asks the AI to answer in it and end by saying to press Push.
 - **Production can be told from staging at a glance.** A server is given a name
   and a colour in the settings of a connection that reaches it, and every tab
   that reaches the same server wears them: the row in the list, the tab over the
@@ -22,6 +38,12 @@ once it reaches its first tagged release.
   renamed or replaced. Pressed before, the button says why and points at the box.
 - **Server names** in the settings lists every named server, including one no
   tab reaches any more.
+
+### Changed
+- **The branches and the history open as a Git tab in the middle**, from the arrow
+  in the git column, rather than being a pane of the column. The column keeps what
+  is done every day. A Git tab with no account of its own uses its project's.
+- **The Issue tab is called Issues & PRs.**
 
 ### Fixed
 - **Testing a connection through a bastion on a port other than 22** tested it
