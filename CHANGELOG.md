@@ -8,6 +8,12 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-17
+
+Pull requests are made from the git column and written by the AI, a conflict is
+handed to an AI tab, and ideas are jotted on cards per project and sent on to
+an Issue.
+
 ### Added
 - **A pull request GitHub cannot merge for its conflicts is settled from its page.**
   A pull request whose branch conflicts with the one it goes into says so under
@@ -2412,7 +2418,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/styleio/ShikishaTerm/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/styleio/ShikishaTerm/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/styleio/ShikishaTerm/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/styleio/ShikishaTerm/compare/v0.12.0...v0.13.0
