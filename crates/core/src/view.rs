@@ -913,7 +913,12 @@ pub fn surfaces_written(
                     Surface::Git {
                         dir: desk.cwd_of(ft),
                         protect: desk.folder_of(ft).map(|f| f.protect.clone()).unwrap_or_default(),
-                        git: desk.git_use(ft.cfg.git_account.as_deref()),
+                        // Its own choice when it made one, else its folder's
+                        // project's -- the one the column beside that folder uses
+                        git: match (ft.cfg.git_account.as_deref(), desk.cwd_of(ft)) {
+                            (None, Some(cwd)) => desk.git_use_of_folder(&cwd).0,
+                            (chosen, _) => desk.git_use(chosen),
+                        },
                         key,
                         name,
                     },
