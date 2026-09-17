@@ -148,6 +148,11 @@ for (const [name, scene] of Object.entries(spec.scenes)) {
       for (const [size, w, h] of at.sizes || sizes) {
         await chrome.send('Emulation.setDeviceMetricsOverride',
           { width: w, height: h, deviceScaleFactor: 2, mobile: size === 'phone' });
+        // A phone is a touch screen, not only a narrow one: what the page
+        // draws only where there is no pointer to rest ("@media (hover: none)")
+        // is drawn for it the way a real phone draws it
+        await chrome.send('Emulation.setTouchEmulationEnabled',
+          { enabled: size === 'phone', maxTouchPoints: size === 'phone' ? 5 : 1 });
         await chrome.send('Page.navigate',
           { url: pathToFileURL(pages[lang + '.' + look]).href });
         await sleep(spec.settle || 900);

@@ -2656,6 +2656,11 @@ pub struct Tab {
     /// None means "never touched yet." Using 0 to represent that would be
     /// misread as "just touched" for the guard duration right after app startup
     pub last_manual_ms: Option<u64>,
+    /// What a person asked the program in this tab since the loop last looked:
+    /// sent from the input bar, or reported by the program itself as having
+    /// been asked. Read for the folder's automatic name and summary
+    /// ([`crate::labels`]), and nothing else
+    pub asked: Vec<String>,
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     child_exited: Arc<AtomicBool>,
@@ -2793,6 +2798,18 @@ impl Tab {
     /// (see [`TabOptions::same_place`])
     pub fn stands_at(&self, opts: &TabOptions) -> bool {
         self.opts.same_place(opts)
+    }
+
+    /// A person asked the program in this tab something (see [`Tab::asked`]).
+    /// Only the latest few are kept: a tab nobody reads from for a while is
+    /// not a place for requests to pile up
+    pub fn heard(&mut self, text: &str) {
+        const KEEP: usize = 8;
+        self.asked.push(text.to_string());
+        if self.asked.len() > KEEP {
+            let over = self.asked.len() - KEEP;
+            self.asked.drain(..over);
+        }
     }
 
     /// What its folder is called, when someone named it. The folder itself is
@@ -3185,6 +3202,7 @@ impl Tab {
             profile_spec,
             opts,
             last_manual_ms: None,
+            asked: Vec::new(),
             master,
             killer,
             child_exited,

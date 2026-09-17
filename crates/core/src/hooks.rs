@@ -1083,6 +1083,9 @@ pub enum Command {
     /// itself — from its own hook, or by anything else speaking for it — so the
     /// tab is `origin`, never a name the caller chose to give
     SetSession { id: String, origin: usize },
+    /// "I was just asked this." Reported by the tab itself, the same way as
+    /// `SetSession`. What a folder's automatic name is written from
+    ReportPrompt { text: String, origin: usize },
     /// "This is what I am doing", from the program itself. The state dot is
     /// otherwise read off the screen, which is a guess -- a good one, and
     /// still a guess. A program that will say so outright is believed
@@ -1186,11 +1189,20 @@ pub struct TabCtx {
     pub reply: Option<String>,
 }
 
+/// Who `shikisha.ai_ask` puts its question to
+enum AiAsk {
+    /// An assistant AI on this machine, by name; None is the one chosen under
+    /// Basic, or the first installed
+    Cli(Option<String>),
+    /// One of the desk's model connections
+    Model(crate::bridge::ModelConn),
+}
+
 enum WaitKind {
     Sleep {
         deadline: Instant,
     },
-    /// Waiting on the assistant AI. The asking happens on a thread of its own,
+    /// Waiting on an AI. The asking happens on a thread of its own,
     /// because it takes tens of seconds and the engine runs on the main loop --
     /// so the coroutine yields here and the loop keeps drawing until the answer
     /// arrives down this channel
@@ -1314,9 +1326,15 @@ end
 -- Ask the assistant AI (the one in Settings > Basic) and get its answer back.
 -- Written as a yield so the app keeps running while it thinks: everything else
 -- -- other tabs, the screen, this hook's own siblings -- carries on.
+-- opts.light asks for a short answer as cheaply as the AI can give one: its
+-- smallest model where it has a choice, no tools, no long instructions.
+-- opts.ai names who answers instead: "claude", "codex", "gemini", or
+-- "model <connection>/<model>" for one of this desk's model connections.
 -- Returns the text, or nil and the reason.
 function shikisha.ai_ask(prompt, opts)
-  return coroutine.yield({op = "ai", prompt = prompt, timeout_ms = (opts or {}).timeout_ms})
+  opts = opts or {}
+  return coroutine.yield({op = "ai", prompt = prompt, timeout_ms = opts.timeout_ms,
+    light = opts.light and true or false, ai = opts.ai})
 end
 function shikisha.sleep(ms)
   return coroutine.yield({ op = "sleep", ms = ms })
@@ -1493,6 +1511,39 @@ for try = 1, 3 do
     .. shikisha.tf("ai.draft.retry", { error = bad or "no title" })
 end
 error(shikisha.t("err.draft.failed"))
+"#;
+
+/// What writes a working folder's name and summary from what its AIs were
+/// asked (see `crate::labels`). The prompt comes filled in; what it must
+/// return is `{"name": ..., "summary": ...}` as JSON, and the loop decides
+/// whether the folder still wants it written.
+///
+/// Lua rather than Rust for the same reason as the commit message: a person
+/// who wants the name written another way -- a ticket number in front, their
+/// own model -- changes this text, not the program
+pub const LABEL_LUA: &str = r#"
+local prompt = shikisha.get_var("label_prompt") or ""
+local ai     = shikisha.get_var("label_ai") or ""
+local opts = { light = true }
+if ai ~= "" then opts.ai = ai end
+local ask = prompt
+for try = 1, 2 do
+  local said, why = shikisha.ai_ask(ask, opts)
+  if not said then error(why) end
+  -- The object, wherever the AI put it: a fence or a preamble around it is
+  -- not part of the answer
+  local body = said:match("%b{}")
+  local got, bad = nil, "no JSON object"
+  if body then got, bad = shikisha.json_decode(body) end
+  if type(got) == "table" and type(got.name) == "string" and got.name ~= "" then
+    return shikisha.json_encode({
+      name = got.name,
+      summary = type(got.summary) == "string" and got.summary or "",
+    })
+  end
+  ask = prompt .. "\n\n" .. shikisha.tf("ai.draft.retry", { error = bad or "no name" })
+end
+error(shikisha.t("err.label.failed"))
 "#;
 
 /// What the commit-message button runs when nobody has written their own.
@@ -2858,6 +2909,26 @@ impl HookEngine {
                     "set_session",
                     lua.create_function(move |_, id: String| {
                         c.borrow_mut().push(Command::SetSession { id, origin: o.get() });
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // The tab says what a person just asked the program in it. An AI
+            // CLI's own hook reports it the moment a request is sent, which
+            // also catches what was typed straight into the terminal -- the
+            // input bar only sees what went through it.
+            //
+            // Same rule as set_session: the caller IS the tab
+            let c = Rc::clone(&commands);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "report_prompt",
+                    lua.create_function(move |_, text: String| {
+                        c.borrow_mut().push(Command::ReportPrompt { text, origin: o.get() });
                         Ok(())
                     })
                     .map_err(lerr)?,
@@ -5646,12 +5717,42 @@ end
             "ai" => {
                 let prompt: String = t.get("prompt").map_err(lerr)?;
                 let ms: Option<u64> = t.get("timeout_ms").ok().flatten();
-                let engine = self.ai_engine.borrow().clone();
+                let light: bool = t.get::<Option<bool>>("light").ok().flatten().unwrap_or(false);
+                let named: Option<String> = t
+                    .get::<Option<String>>("ai")
+                    .ok()
+                    .flatten()
+                    .map(|a| a.trim().to_string())
+                    .filter(|a| !a.is_empty());
+                // A model connection is looked up now, where the desk's are
+                // known; the thread only makes the request
+                let asked = match named.as_deref() {
+                    Some(line) if line.starts_with("model ") || line == "model" => {
+                        let argv: Vec<String> = line.split_whitespace().map(str::to_string).collect();
+                        match crate::bridge::launch_for(&argv) {
+                            Some(conn) => AiAsk::Model(conn),
+                            None => anyhow::bail!(crate::bridge::why_not(&argv)
+                                .unwrap_or_else(|| crate::i18n::tp("err.model.bad_line", &[("line", line)]))),
+                        }
+                    }
+                    Some(cli) => AiAsk::Cli(Some(cli.to_string())),
+                    None => AiAsk::Cli(self.ai_engine.borrow().clone()),
+                };
                 let (tx, rx) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {
-                    let said = crate::webui::ask_local_ai(&prompt, engine.as_deref())
-                        .map_err(|e| e.to_string());
-                    let _ = tx.send(said);
+                    let said = match asked {
+                        AiAsk::Model(conn) => crate::bridge::complete(
+                            &conn.url,
+                            &conn.model,
+                            &conn.headers,
+                            conn.timeout,
+                            None,
+                            &prompt,
+                        ),
+                        AiAsk::Cli(engine) if light => crate::webui::ask_local_ai_light(&prompt, engine.as_deref()),
+                        AiAsk::Cli(engine) => crate::webui::ask_local_ai(&prompt, engine.as_deref()),
+                    };
+                    let _ = tx.send(said.map_err(|e| e.to_string()));
                 });
                 Ok(WaitKind::Ai {
                     rx,
@@ -5991,6 +6092,65 @@ mod tests {
         }
     }
 
+    /// A folder's name and summary, written end to end by the assistant AI
+    /// installed here: requests cut down the way the loop cuts them, the
+    /// prompt the loop fills in, the Lua the loop runs, and an answer read back
+    /// the way the loop reads it. Costs a call; run by hand with
+    /// `cargo test -- --ignored a_folder_is_named_from_what_was_asked`, with
+    /// `SHIKISHA_LABEL_AI=codex` (or `gemini`, or `model <connection>/<model>`)
+    /// to ask another
+    #[test]
+    #[ignore]
+    fn a_folder_is_named_from_what_was_asked() {
+        let caps: crate::hooks::Caps = std::rc::Rc::new(crate::caps::Capabilities::new(
+            Default::default(),
+            std::path::PathBuf::from("."),
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            Default::default(),
+        ));
+        let mut eng = super::HookEngine::with_caps(caps).expect("engine");
+        let asks = [
+            "ログイン画面でパスワードを間違えたとき、何も表示されずにフォームが空に戻ります。\n```ts\nif (!ok) { form.reset(); return; }\n```\n理由（パスワード違い・ロック・期限切れ）を表示するようにしてください",
+            "ロックされたときは解除までの残り時間も出してほしい",
+        ];
+        let listed = asks
+            .iter()
+            .map(|a| crate::labels::trim_ask(a))
+            .enumerate()
+            .map(|(i, a)| format!("{}. {a}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let none = crate::i18n::t("ai.label.none");
+        let prompt = crate::i18n::tp(
+            "ai.label.prompt",
+            &[("name", &none), ("summary", &none), ("asks", &listed), ("language", "Japanese")],
+        );
+        // Which AI answers: the first installed, or the one named in SHIKISHA_LABEL_AI
+        let ai = std::env::var("SHIKISHA_LABEL_AI").unwrap_or_default();
+        for (name, value) in [("label_prompt", prompt), ("label_ai", ai)] {
+            eng.call_primitive_as(None, crate::grants::Subject::Human, "set_var", &[serde_json::json!(name), serde_json::json!(value)])
+                .expect("set_var");
+        }
+        let t0 = std::time::Instant::now();
+        eng.start_snippet("folder_label:1", super::LABEL_LUA);
+        let said = loop {
+            eng.tick_pending(&|_| None);
+            if let Some((_, said)) = eng.take_snippets().into_iter().next() {
+                break said;
+            }
+            assert!(t0.elapsed() < std::time::Duration::from_secs(240), "no answer came back");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        eprintln!("{:.1}s -> {said:?}", t0.elapsed().as_secs_f32());
+        let v: serde_json::Value = serde_json::from_str(&said.expect("the Lua failed")).expect("not JSON");
+        let name = crate::labels::fit(v["name"].as_str().unwrap_or_default(), crate::labels::NAME_ROOM);
+        let summary = crate::labels::fit(v["summary"].as_str().unwrap_or_default(), crate::labels::SUMMARY_ROOM);
+        eprintln!("name: {name}\nsummary: {summary}");
+        assert!(!name.is_empty() && !summary.is_empty());
+        assert!(!name.is_ascii(), "the name was not written in the language asked for");
+    }
+
     /// Every built-in orchestrator must actually compile.
     ///
     /// The user never writes these — they are the app's own Lua, edited in Rust
@@ -6015,6 +6175,7 @@ mod tests {
         for (what, code) in [
             ("commit message", super::COMMIT_MESSAGE_LUA),
             ("draft", super::DRAFT_LUA),
+            ("folder label", super::LABEL_LUA),
             ("folder move", super::FOLDER_MOVE_LUA),
         ] {
             eng.lua

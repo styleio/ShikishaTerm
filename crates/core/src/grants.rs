@@ -155,6 +155,7 @@ pub const CATALOG: &[Entry] = &[
     e("set_status", Group::Report, true, true, false),
     e("set_progress", Group::Report, true, true, false),
     e("set_session", Group::Report, true, true, false),
+    e("report_prompt", Group::Report, true, true, false),
     // -- Browser -------------------------------------------------------------
     e("browser_open", Group::Browser, true, true, true),
     e("browser_close", Group::Browser, true, true, false),

@@ -1008,6 +1008,8 @@ struct Report {
     id: Option<String>,
     /// What to tell the tab it is doing, in this app's own vocabulary
     state: Option<String>,
+    /// What a person just asked, when the event is the one carrying it
+    prompt: Option<String>,
 }
 
 /// `kind` is what the hook entry asked for: `session`, or `state:<STATE>`.
@@ -1021,7 +1023,7 @@ fn hook_report(kind: &str, v: &serde_json::Value) -> Report {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     let Some(state) = kind.strip_prefix("state:") else {
-        return Report { id: id.filter(|_| kind == "session"), state: None };
+        return Report { id: id.filter(|_| kind == "session"), ..Default::default() };
     };
     // A subagent's events carry its parent's session id, so its "finished"
     // would put the whole tab back to rest while the real turn runs on. The
@@ -1034,7 +1036,15 @@ fn hook_report(kind: &str, v: &serde_json::Value) -> Report {
         .iter()
         .any(|k| v.get(*k).is_some_and(|x| !x.is_null()));
     let keep = !sub || state.eq_ignore_ascii_case("QUESTION");
-    Report { id: None, state: keep.then(|| state.to_string()) }
+    // The request itself rides on the event that says one was sent. A
+    // subagent's prompt is the main agent talking to it, not a person
+    let prompt = (!sub)
+        .then(|| v.get("prompt").and_then(|p| p.as_str()))
+        .flatten()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string);
+    Report { id: None, state: keep.then(|| state.to_string()), prompt }
 }
 
 /// Carry one hook event from an AI CLI back to the app.
@@ -1060,6 +1070,9 @@ fn hook_mode(kind: String) -> Result<()> {
     }
     if let Some(state) = report.state {
         calls.push(("set_state", vec![state.into(), sent.into()]));
+    }
+    if let Some(prompt) = report.prompt {
+        calls.push(("report_prompt", vec![prompt.into()]));
     }
     if calls.is_empty() {
         // A hook that quietly does nothing is the worst way for this to fail —
@@ -1114,7 +1127,7 @@ mod hook_report_tests {
     fn the_conversation_is_taken_from_the_event_that_carries_it() {
         assert_eq!(
             hook_report("session", &claude("SessionStart")),
-            Report { id: Some("abc123".into()), state: None }
+            Report { id: Some("abc123".into()), ..Default::default() }
         );
     }
 
@@ -1122,8 +1135,23 @@ mod hook_report_tests {
     fn a_state_event_says_the_state_and_nothing_else() {
         assert_eq!(
             hook_report("state:BUSY", &claude("UserPromptSubmit")),
-            Report { id: None, state: Some("BUSY".into()) }
+            Report { id: None, state: Some("BUSY".into()), prompt: None }
         );
+    }
+
+    /// The request a person sent comes along with the event that says one was
+    /// sent -- the one road that also sees what was typed straight into the
+    /// terminal. A subagent's prompt is its parent talking, and is left out
+    #[test]
+    fn the_request_rides_along_with_the_event_that_carries_it() {
+        let mut sent = claude("UserPromptSubmit");
+        sent["prompt"] = serde_json::json!("  make the sidebar remember what was folded  ");
+        assert_eq!(
+            hook_report("state:BUSY", &sent),
+            Report { id: None, state: Some("BUSY".into()), prompt: Some("make the sidebar remember what was folded".into()) }
+        );
+        sent["agent_id"] = serde_json::json!("agent_42");
+        assert_eq!(hook_report("state:BUSY", &sent).prompt, None, "a subagent's prompt was taken for a person's");
     }
 
     /// A subagent's events arrive under the parent's session id. Its "finished"

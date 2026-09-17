@@ -1100,6 +1100,8 @@ mod remote_folder_tests {
             protect: Vec::new(),
             project: None,
             work_item: None,
+            summary: None,
+            auto_label: false,
         };
         let cfg = config::TabConfig::default();
         let opts = tab_options(&cfg, Some(&there));

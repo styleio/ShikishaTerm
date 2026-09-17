@@ -9,6 +9,34 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **Working folders are named and described from what their AIs are asked.** With
+  Auto on, an AI writes a folder's name and a summary of a few sentences from the
+  requests sent to the AIs in it -- sent from the input bar, or typed straight into
+  Claude Code or Codex -- at once after the first request, then again when an AI
+  there finishes its work, at most once every 10 minutes. Only the requests are sent,
+  cut down first: short replies such as "yes" are skipped, and code pasted into them
+  (fenced, or a log or stack trace) is replaced by a mark saying how many lines there
+  were. The worktree dialog opens on a new Auto tab, so a worktree made from it is on
+  by default; typing a name of one's own keeps that name. An automatic name is drawn a
+  shade quieter until somebody renames the folder, which turns Auto off, as does
+  editing the summary. Resting the pointer on a folder shows its name and summary
+  instead of its path; on a phone, the card carries one line of the summary, and
+  holding a card down opens its menu with the whole summary at the top. The folder's
+  settings page has Summary and Auto under Name, and says why the last try failed if
+  it did. Which AI writes them is chosen per desk under Automatic names: the assistant
+  AI, asked the lightest way it can be (measured at about 1,400 tokens a time for
+  Claude Code, 4,500 for Codex CLI and 2,800 for Gemini CLI, against 9,500 and more
+  started plainly), or one of the desk's model connections.
+- **`shikisha.ai_ask` takes `{light=true}` and `{ai=...}`.** Light asks for a short
+  answer the cheapest way the assistant AI can give one: Claude Code on its smallest
+  model with no tools, MCP servers, skills, hooks or thinking; Codex CLI at low
+  reasoning, read-only, with its optional features off; Gemini CLI read-only with no
+  extensions -- each in an empty folder of its own, with its instructions replaced
+  and its conversation not kept. An older CLI that does not know an option is asked
+  again the ordinary way. `ai` names another assistant AI, or `model
+  <connection>/<model>` for one of the desk's model connections.
+- **`shikisha.report_prompt(text)`**: a tab says what it was just asked. Claude Code's
+  and Codex's own hooks report through it.
 - **CI is shown in the git column, and a failure is handed to an AI.** Under a
   branch's pull requests, one line counts its checks as passed, failed and
   running -- once for the branch, since they run on the commit whichever base it

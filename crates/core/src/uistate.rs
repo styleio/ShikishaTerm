@@ -385,6 +385,15 @@ fn palette_of(name: &str) -> String {
     PALETTE[(h % PALETTE.len() as u32) as usize].to_string()
 }
 
+/// A folder's summary and whether it is written for it, as the settings have
+/// them (see [`GroupState::describe`])
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct FolderLabel {
+    pub folder: std::path::PathBuf,
+    pub summary: Option<String>,
+    pub auto: bool,
+}
+
 /// A folder, as a heading over the tabs working in it.
 ///
 /// A group is a folder, so this is worked out from where the tabs actually
@@ -405,7 +414,7 @@ pub struct GroupState {
     /// can only see headings -- and a heading is not the project's name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
-    /// The whole path, for the tooltip
+    /// The whole path: what the page knows the folder by, and says it by
     pub folder: String,
     /// The colour of this folder's project, ready to draw. Folders sharing one
     /// are branches of one repository, and the list draws them as a family.
@@ -455,6 +464,14 @@ pub struct GroupState {
     /// And the name a person gave that machine, worn beside it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mark: Option<MarkState>,
+    /// What is being done in it, in a few sentences: over the name when the
+    /// pointer rests on it, and on a card where there is no pointer
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Whether the name and summary are written from what its AIs are asked,
+    /// rather than by a person. The name is drawn a shade quieter then
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto: bool,
 }
 
 impl GroupState {
@@ -517,6 +534,10 @@ impl GroupState {
                     work_item: None,
                     host: None,
                     mark: None,
+                    // Put on by whoever is drawing, from the settings
+                    // (`describe`), the same as the project's name
+                    summary: None,
+                    auto: false,
                 },
             ));
         }
@@ -552,6 +573,10 @@ impl GroupState {
                     work_item: None,
                     host: None,
                     mark: None,
+                    // Put on by whoever is drawing, from the settings
+                    // (`describe`), the same as the project's name
+                    summary: None,
+                    auto: false,
                 },
             ));
         }
@@ -571,6 +596,16 @@ impl GroupState {
     pub fn name_work_items(groups: &mut [(std::path::PathBuf, GroupState)], items: &[(std::path::PathBuf, String)]) {
         for (at, g) in groups.iter_mut() {
             g.work_item = items.iter().find(|(k, _)| same_folder(k, at)).map(|(_, w)| w.clone());
+        }
+    }
+
+    /// Give each folder what the settings say is being done in it, and
+    /// whether that is written for it (see [`FolderLabel`])
+    pub fn describe(groups: &mut [(std::path::PathBuf, GroupState)], labels: &[FolderLabel]) {
+        for (at, g) in groups.iter_mut() {
+            let Some(l) = labels.iter().find(|l| same_folder(&l.folder, at)) else { continue };
+            g.summary = l.summary.clone();
+            g.auto = l.auto;
         }
     }
 

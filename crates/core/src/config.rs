@@ -1923,6 +1923,12 @@ pub struct DeskSpec {
     /// question, and a stored yes would answer it for the person
     #[serde(default)]
     pub send_pictures_to: Option<String>,
+    /// What writes the names and summaries of the folders that ask for them
+    /// (`auto_label`): an assistant AI by name ("claude", "codex", "gemini"),
+    /// or `model <connection>/<model>` for one of this desk's model
+    /// connections. Unset is the assistant AI chosen under Basic
+    #[serde(default)]
+    pub summary_ai: Option<String>,
 }
 
 /// Contents of a desk definition file (desks/*.json)
@@ -2352,6 +2358,16 @@ pub struct FolderConfig {
     /// worktree already exists for it, and open that one instead of a second
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_item: Option<String>,
+    /// A few sentences on what is being done in here, shown when the pointer
+    /// rests on the folder and on the card of a device without one. Written by
+    /// a person, or -- while `auto_label` is on -- from what its AIs are asked
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Whether the name and the summary are written from what the AIs in this
+    /// folder are asked. A person writing either one takes this off, so what
+    /// they wrote is not written over
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_label: bool,
     /// The machine this folder is on, by the name in `hosts`. Absent is this
     /// one. A folder somewhere else is not missing from this machine -- it was
     /// never meant to be here -- so nothing about it is repaired or offered
@@ -2495,6 +2511,10 @@ pub struct Folder {
     pub project: Option<String>,
     /// The issue or pull request it was made for (see [`FolderConfig::work_item`])
     pub work_item: Option<String>,
+    /// What is being done in it (see [`FolderConfig::summary`])
+    pub summary: Option<String>,
+    /// Whether its name and summary are written from what its AIs are asked
+    pub auto_label: bool,
 }
 
 /// A desk resolved at launch time (tabs are flattened; depth preserves the hierarchy)
@@ -2543,6 +2563,8 @@ pub struct Desk {
     /// The assistant AI this desk agreed to hand pictures to (see
     /// [`DeskSpec::send_pictures_to`])
     pub send_pictures_to: Option<String>,
+    /// What writes the folders' automatic names (see [`DeskSpec::summary_ai`])
+    pub summary_ai: Option<String>,
 }
 
 /// A value that may be written `@name`: the secret by that name, or the value
@@ -3172,6 +3194,8 @@ fn resolve_folders(
             },
             project: def.project.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_string),
             work_item: def.work_item.as_deref().map(str::trim).filter(|w| !w.is_empty()).map(str::to_string),
+            summary: def.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+            auto_label: def.auto_label,
         });
         flatten(&def.tabs, 0, at, &mut tabs);
     }
@@ -3521,21 +3545,90 @@ pub fn rename_tab_at(path: &Path, desk_name: &str, title: &str, name: &str) -> R
     Ok(after)
 }
 
+/// A person naming a folder. Whatever was writing its name for them stops:
+/// the name they chose is not to be written over by the next summary
 pub fn rename_folder(desk_name: &str, cwd: &Path, name: &str) -> Result<()> {
-    with_folders(&config_file_path(), desk_name, |folders| {
+    rename_folder_at(&config_file_path(), desk_name, cwd, name)
+}
+
+/// The same, told which settings file to edit.
+pub fn rename_folder_at(path: &Path, desk_name: &str, cwd: &Path, name: &str) -> Result<()> {
+    with_folders(path, desk_name, |folders| {
         let Some(g) = find_folder(folders, cwd) else {
+            return Ok(());
+        };
+        let Some(o) = g.as_object_mut() else {
             return Ok(());
         };
         match name.trim() {
             "" => {
-                if let Some(o) = g.as_object_mut() {
-                    o.shift_remove("name");
-                }
+                o.shift_remove("name");
             }
-            n => g["name"] = serde_json::json!(n),
+            n => {
+                o.insert("name".into(), serde_json::json!(n));
+            }
+        }
+        o.shift_remove("auto_label");
+        Ok(())
+    })
+}
+
+/// Turns a folder's automatic name and summary on or off.
+pub fn set_folder_auto_label(desk_name: &str, cwd: &Path, on: bool) -> Result<()> {
+    set_folder_auto_label_at(&config_file_path(), desk_name, cwd, on)
+}
+
+/// The same, told which settings file to edit.
+pub fn set_folder_auto_label_at(path: &Path, desk_name: &str, cwd: &Path, on: bool) -> Result<()> {
+    with_folders(path, desk_name, |folders| {
+        let Some(o) = find_folder(folders, cwd).and_then(|g| g.as_object_mut()) else {
+            return Ok(());
+        };
+        match on {
+            true => {
+                o.insert("auto_label".into(), serde_json::json!(true));
+            }
+            false => {
+                o.shift_remove("auto_label");
+            }
         }
         Ok(())
     })
+}
+
+/// Writes the name and summary an AI wrote for a folder -- but only into a
+/// folder that still asks for one. The AI took seconds to answer, and in that
+/// time a person may have named the folder themselves, or taken it off the
+/// list; either way what they did stands. Answers whether it was written
+pub fn write_folder_label(desk_name: &str, cwd: &Path, name: &str, summary: &str) -> Result<bool> {
+    write_folder_label_at(&config_file_path(), desk_name, cwd, name, summary)
+}
+
+/// The same, told which settings file to edit.
+pub fn write_folder_label_at(
+    path: &Path,
+    desk_name: &str,
+    cwd: &Path,
+    name: &str,
+    summary: &str,
+) -> Result<bool> {
+    let mut wrote = false;
+    with_folders(path, desk_name, |folders| {
+        let Some(o) = find_folder(folders, cwd).and_then(|g| g.as_object_mut()) else {
+            return Ok(());
+        };
+        if o.get("auto_label").and_then(|v| v.as_bool()) != Some(true) {
+            return Ok(());
+        }
+        for (key, value) in [("name", name.trim()), ("summary", summary.trim())] {
+            if !value.is_empty() {
+                o.insert(key.into(), serde_json::json!(value));
+            }
+        }
+        wrote = true;
+        Ok(())
+    })?;
+    Ok(wrote)
 }
 
 /// Writes down where a folder came from, so no machine has to ask again.
@@ -4218,6 +4311,7 @@ impl Config {
                     git,
                     git_accounts: Vec::new(),
                     send_pictures_to: None,
+                    summary_ai: None,
                 });
             }
             return (out, errors);
@@ -4295,6 +4389,7 @@ impl Config {
                 git_accounts: desk.git_accounts.clone(),
                 projects: desk.projects.clone(),
                 send_pictures_to: desk.send_pictures_to.as_deref().and_then(one_name),
+                summary_ai: desk.summary_ai.as_deref().and_then(one_name),
             });
         }
         errors.extend(settle_desk_ids(&mut out));
@@ -5777,6 +5872,43 @@ mod tests {
     fn read_desk(file: &Path) -> Desk {
         let cfg: Config = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
         cfg.resolve_desks().0.remove(0)
+    }
+
+    /// A folder names itself from what its AIs are asked only while it asks
+    /// to. An answer that arrives after a person named it is not written over
+    /// what they wrote, and a person naming it takes the asking off
+    #[test]
+    fn a_written_name_goes_only_where_it_is_still_wanted() {
+        let at = std::env::temp_dir().join("shikisha-label-folder");
+        let body = serde_json::json!({"desks": [{"name": "work", "folders": [
+            {"cwd": at.display().to_string(), "name": "mighty-gannet", "tabs": []}
+        ]}]})
+        .to_string();
+        let (_dir, file) = tabs_file("label", &body);
+
+        // Not asked for: nothing is written
+        assert!(!write_folder_label_at(&file, "work", &at, "Login errors", "Show why sign-in failed").unwrap());
+        assert_eq!(read_desk(&file).folders[0].name.as_deref(), Some("mighty-gannet"));
+
+        set_folder_auto_label_at(&file, "work", &at, true).unwrap();
+        let desk = read_desk(&file);
+        assert!(desk.folders[0].auto_label);
+        assert_eq!(desk.folders[0].summary, None);
+        assert!(write_folder_label_at(&file, "work", &at, "Login errors", "Show why sign-in failed").unwrap());
+        let desk = read_desk(&file);
+        assert_eq!(desk.folders[0].name.as_deref(), Some("Login errors"));
+        assert_eq!(desk.folders[0].summary.as_deref(), Some("Show why sign-in failed"));
+        assert!(desk.folders[0].auto_label, "writing the name took the asking off");
+
+        // A person names it: what they wrote stands, and nothing more is written
+        rename_folder_at(&file, "work", &at, "My name").unwrap();
+        let desk = read_desk(&file);
+        assert!(!desk.folders[0].auto_label, "naming it by hand left Auto on");
+        assert!(!write_folder_label_at(&file, "work", &at, "Another", "Something else").unwrap());
+        let desk = read_desk(&file);
+        assert_eq!(desk.folders[0].name.as_deref(), Some("My name"));
+        assert_eq!(desk.folders[0].summary.as_deref(), Some("Show why sign-in failed"), "the summary written earlier was lost");
+        assert!(!std::fs::read_to_string(&file).unwrap().contains("auto_label"), "Auto off is written as nothing at all");
     }
 
     /// The first-start setup's desk: written beside what the setup already

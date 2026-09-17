@@ -229,6 +229,9 @@ pub enum Ev {
         /// The branch is already open in another folder, and the answer was
         /// "use that folder": it is taken into the desk instead of a new one made
         adopt: bool,
+        /// Whether the folder names and describes itself from what its AIs are
+        /// asked, rather than keeping a name somebody typed
+        auto: bool,
     },
     /// Put the offered environment file in the project.
     ///
@@ -730,14 +733,15 @@ pub struct BranchAsk {
     pub setup: bool,
     pub link: serde_json::Value,
     pub adopt: bool,
+    pub auto: bool,
 }
 
 impl BranchAsk {
     /// The ask carried by a branch event, or nothing for any other event.
     pub fn of(ev: Ev) -> Option<Self> {
         match ev {
-            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, setup, link, adopt } => {
-                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, setup, link, adopt })
+            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, setup, link, adopt, auto } => {
+                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, setup, link, adopt, auto })
             }
             _ => None,
         }
@@ -926,6 +930,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             setup: v.get("setup").and_then(|x| x.as_bool()).unwrap_or(true),
             link: v.get("link").cloned().unwrap_or(serde_json::Value::Null),
             adopt: v.get("adopt").and_then(|x| x.as_bool()).unwrap_or(false),
+            // Absent means no: an older shell never offered it, and a name
+            // it sent was one somebody chose
+            auto: v.get("auto").and_then(|x| x.as_bool()).unwrap_or(false),
             ais: v
                 .get("ais")
                 .and_then(|x| x.as_array())

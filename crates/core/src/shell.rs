@@ -739,6 +739,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.folder.wcard .fbr { flex-basis:100%; padding-left:14px; font-size:10px; color:var(--dim);
     font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .tab.folder.wcard .fbr .smark { margin-right:var(--s1); vertical-align:middle; min-width:0; }
+  /* A name written from what the folder's AIs were asked, rather than by a
+     person: a shade quieter, until somebody names it themselves */
+  .tab.folder .nm.auto { color:var(--dim); }
+  /* What is being done in a folder, on its card. Over the name when a pointer
+     rests on it; a device with no pointer to rest has it as a line of its own,
+     under the name, cut to one line (the menu holds the rest) */
+  .tab.folder.wcard .fsum { display:none; }
+  @media (hover: none) {
+    .tab.folder.wcard .fsum { display:block; flex-basis:100%; padding-left:14px; font-size:10px; color:var(--dim);
+      font-family:var(--mono);
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  }
+  /* Held down, a folder opens its menu: no callout or selection over it */
+  .tab.folder { -webkit-touch-callout:none; }
   .tab.intab.wcard { padding-left:30px; }
   /* A folder and its tabs, as one box (drawTabs). Its edge is structure
      (--line); on the folder in front it is --brand, the colour a selected
@@ -2508,6 +2522,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bchip .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #branch .bchip button.bicon { width:24px; min-height:24px; }
   #branch .bfrom { font-size:11.5px; color:var(--faint); }
+  /* What the Auto tab does, in the place the other tabs put what they ask */
+  #branch .bautosay { font-size:11.5px; color:var(--dim); line-height:1.5; }
   #branch .bfrom:empty { display:none; }
   #branch .bprojsay { font-size:11.5px; color:var(--faint); }
   #branch .bprojsay:empty { display:none; }
@@ -2740,6 +2756,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .fmenu .projadd { border-top:1px solid var(--line); margin-top:var(--s1); color:var(--text); }
   .fmenu .projadd .ico { display:flex; color:var(--dim); }
   .fmenu div.warn { color:var(--stop); }
+  /* A folder's name and what is being done in it, over its menu: the whole
+     summary, which a card has room for one line of. Read, not chosen */
+  .fmenu div.fabout { cursor:default; max-width:320px; white-space:normal; border-bottom:1px solid var(--line);
+    margin-bottom:var(--s1); border-radius:0; }
+  .fmenu div.fabout:hover { background:transparent; }
+  .fmenu div.fabout .ttl { display:block; font-weight:600; }
+  .fmenu div.fabout .sum { display:block; margin-top:var(--s1); font-size:11.5px; color:var(--dim); line-height:1.5; }
   /* A fact at the foot of a menu, not one of its choices */
   .fmenu div.note { color:var(--dim); font-size:11px; cursor:default;
     border-top:1px solid var(--line); border-radius:0; margin-top:var(--s1);
@@ -3184,11 +3207,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       </div>
       <div class="bfield">
         <label class="blabel" for="bq"></label>
-        <div class="btabs" role="tablist"><button type="button" data-tab="github"></button><button type="button" data-tab="branch"></button><button type="button" data-tab="name"></button></div>
+        <div class="btabs" role="tablist"><button type="button" data-tab="auto"></button><button type="button" data-tab="github"></button><button type="button" data-tab="branch"></button><button type="button" data-tab="name"></button></div>
         <div class="bsrcrow" hidden><span class="bsrcico"></span><input id="bsrc" type="text" autocomplete="off" spellcheck="false"></div>
         <div class="bchip" hidden></div>
         <div class="bresults" hidden></div>
         <div class="brow2"><div id="bbase" class="bpick" tabindex="0"></div><input id="bq" type="text" autocomplete="off" spellcheck="false"></div>
+        <div class="bautosay" hidden></div>
         <div class="bfrom"></div>
       </div>
       <div class="bfield bstartf" hidden>
@@ -5623,7 +5647,7 @@ function folderRow(g, mine, card) {
   // but never led anywhere
   const row = el("div", {class:"tab folder" + (g.linked ? " cut" : "")
         + (card ? " wcard" : "") + (inFront(g) ? " front" : ""),
-      title:g.folder || "", onclick:() => send({kind:"folderview", folder:g.folder || ""})},
+      title:folderAbout(g), onclick:() => send({kind:"folderview", folder:g.folder || ""})},
     chip,
     // A card has no fold of its own: its tabs put away from the "N tabs" row
     // under it, and the whole project from its heading. A caret here stood in
@@ -5634,7 +5658,7 @@ function folderRow(g, mine, card) {
     // On the row itself as well as in the count above, so a folded list
     // still shows which folder is the one with the problem
     ailMark(g),
-    nameSlot("tabs", "f:" + g.folder, g.name || "", v => send({kind:"foldername", folder:g.folder, name:v}), "nm"),
+    nameSlot("tabs", "f:" + g.folder, g.name || "", v => send({kind:"foldername", folder:g.folder, name:v}), folderNameClass(g)),
     // A card says it on its second line, with the machine's address
     card ? null : serverMark(g.mark));
   // Shut, the row has to speak for what it is hiding: the state of whichever
@@ -5678,14 +5702,62 @@ function folderRow(g, mine, card) {
   // the + is the heading's: one worktree at a time is cut from the project
   row.append(...[drifted(g), card ? null : worktreePlus(g)].filter(Boolean));
   if (card) {
-    row.append(folderWhere(g));
+    row.append(...[folderSummary(g), folderWhere(g)].filter(Boolean));
   }
   // Everything else a folder can do is a shortcut, not a door: its settings
   // are on the settings page, a repair is the ⚠ it is already wearing, and a
   // tab goes in from the bar over the folder in front. Right-click keeps them
   // one press away for somebody who knows to look
   row.addEventListener("contextmenu", e => { e.preventDefault(); folderMenu(e, g); });
+  holdOpens(row, e => folderMenu(e, g));
   return row;
+}
+
+// What resting the pointer on a folder says: its name, and what is being done
+// in it. The path is on its settings page
+function folderAbout(g) {
+  const name = "[" + (g.name || leafOf(g.folder || "")) + "]";
+  return g.summary ? name + "\n" + g.summary : name;
+}
+// A folder's name, a shade quieter while it is written from what its AIs are
+// asked rather than by a person
+function folderNameClass(g) {
+  return "nm" + (g.auto ? " auto" : "");
+}
+// What is being done in a folder, as a line on its card. Drawn only where
+// there is no pointer to rest on the name (the CSS decides)
+function folderSummary(g) {
+  return g.summary ? el("span", {class:"fsum"}, g.summary) : null;
+}
+// A press held on a row opens what a right-click opens. A phone has no
+// right-click, and not every phone's browser turns a long press into one. The
+// press that opened the menu is not also a press on the row: the release does
+// not go to the folder, and a phone that also says "right-click" is not
+// answered twice
+let heldAt = 0;
+function holdOpens(row, open) {
+  let timer = 0, x = 0, y = 0;
+  const stop = () => { clearTimeout(timer); timer = 0; };
+  row.addEventListener("pointerdown", e => {
+    if (e.pointerType !== "touch") return;
+    stop();
+    x = e.clientX; y = e.clientY;
+    timer = setTimeout(() => {
+      timer = 0;
+      heldAt = Date.now();
+      open({currentTarget: row, clientX: x, clientY: y, preventDefault() {}});
+    }, 500);
+  });
+  row.addEventListener("pointermove", e => { if (timer && Math.hypot(e.clientX - x, e.clientY - y) > 10) stop(); });
+  for (const ev of ["pointerup", "pointercancel"]) row.addEventListener(ev, stop);
+  const swallow = e => {
+    if (Date.now() - heldAt > 800) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  };
+  row.addEventListener("click", swallow, true);
+  row.addEventListener("contextmenu", swallow, true);
+  row.addEventListener("touchend", e => { if (Date.now() - heldAt < 800) e.preventDefault(); }, {passive:false});
 }
 
 // A card's second line: the machine it is on, when that is not this one, and
@@ -5735,16 +5807,17 @@ function emptyRow(g, card) {
   const box = el("div", {class:"fempty"});
   const next = (S.coach || 0) === 2 ? " pulse" : "";
   const own = !g.linked;
-  const row = el("div", {class:"tab folder empty" + (g.linked ? " cut" : "") + (card ? " wcard" : "") + (own ? next : ""), title:g.folder || "",
+  const row = el("div", {class:"tab folder empty" + (g.linked ? " cut" : "") + (card ? " wcard" : "") + (own ? next : ""), title:folderAbout(g),
       onclick:() => { if (own) send({kind:"folderview", folder:g.folder || ""}); }},
     card ? el("span", {class:"dot"}) : g.linked ? cutMark() : el("span", {class:"chip"}),
     ailMark(g),
-    nameSlot("tabs", "f:" + g.folder, g.name || "", v => send({kind:"foldername", folder:g.folder, name:v}), "nm"),
+    nameSlot("tabs", "f:" + g.folder, g.name || "", v => send({kind:"foldername", folder:g.folder, name:v}), folderNameClass(g)),
     ...(card
       ? [g.family && !g.linked ? el("span", {class:"prim", title:T["tui.folder.primary.title"] || ""}, T["tui.folder.primary"] || "primary") : null,
-         el("span", {class:"fill"}), folderWhere(g)]
+         el("span", {class:"fill"}), folderSummary(g), folderWhere(g)]
       : [serverMark(g.mark), worktreePlus(g)]).filter(Boolean));
   row.addEventListener("contextmenu", e => { e.preventDefault(); folderMenu(e, g); });
+  holdOpens(row, e => folderMenu(e, g));
   box.append(row);
   if (!own) box.append(el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)},
     el("span", {class:"nm"}, T["tui.pane.add"] || "+ Add tab")));
@@ -6064,6 +6137,10 @@ function tabMenu(anchor, t, where, e) {
 function folderMenu(e, g) {
   const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
   openList(e.currentTarget, [
+    // What is being done in it, whole, over what can be done to it. The card
+    // has room for a line of it, and a phone has no pointer to rest on it
+    g.summary ? el("div", {class:"fabout"},
+      el("span", {class:"ttl"}, g.name || leafOf(g.folder || "")), el("span", {class:"sum"}, g.summary)) : null,
     // First when the folder is not here at all: nothing else in this menu can
     // be done in a folder that does not exist
     ailing(g) ? item(T["tui.repair.go"] || "", () => openRepair(g)) : null,
@@ -6590,14 +6667,15 @@ function openBranch(g, preset) {
   box.textContent = "";
   branchBase = preset.base || "";
   branchBaseChosen = !!preset.base;
-  // Opened for an issue or a pull request, that is what it is made from
-  branchTab = preset.link ? "github" : "name";
+  // Opened for an issue or a pull request, that is what it is made from; given
+  // a name, that name. Otherwise it names itself from what it is asked
+  branchTab = preset.link ? "github" : preset.name ? "name" : "auto";
   branchPick = preset.link ? Object.assign({title: (preset.about || "").replace(/^#\d+\s*/, "")}, preset.link) : null;
   branchNamed = !!preset.name && !preset.link;
   branchHi = -1;
   ghRows = {issue: [], pr: []}; ghWant = {issue: "", pr: ""}; ghSaid = ""; ghBusy = false; ghFresh = false;
   document.getElementById("bsrc").value = "";
-  const tabNames = {github: T["tui.branch.tab.github"] || "GitHub", branch: T["tui.branch.tab.branch"] || "", name: T["tui.branch.tab.name"] || ""};
+  const tabNames = {auto: T["tui.branch.tab.auto"] || "", github: T["tui.branch.tab.github"] || "GitHub", branch: T["tui.branch.tab.branch"] || "", name: T["tui.branch.tab.name"] || ""};
   for (const t of b.querySelectorAll(".btabs button")) t.textContent = tabNames[t.dataset.tab] || "";
   drawBranchTabs(b);
   branchBases = [];
@@ -6625,7 +6703,19 @@ function openBranch(g, preset) {
   // type is a picker nobody finds anything in. With no project yet there is
   // nothing to ask about, and the first thing to do is choose one
   if (branchFrom) send({kind:"branch", from:branchFrom, branch:q.value, base:branchBase, make:false, carry:[], link:branchLink});
-  setTimeout(() => (branchFrom ? q : proj).focus(), 30);
+  setTimeout(() => (branchFrom ? branchFocus(b) : proj).focus(), 30);
+}
+// Where the keyboard goes in the tab that is up: the name, the search -- or,
+// with nothing to type under Auto, the button that makes it
+function branchFocus(b) {
+  if (branchTab === "name") return document.getElementById("bq");
+  if (branchTab === "auto") return b.querySelector(".bgo .go");
+  return document.getElementById("bsrc");
+}
+// Whether the folder made names itself from what its AIs are asked: under
+// Auto, and whenever nobody typed a name of their own
+function branchAuto() {
+  return branchTab === "auto" || !branchNamed;
 }
 // The worktree dialog opened from the PROJECT heading's +: on the project in
 // front, else the first one this desk has, else on none -- where it asks for one
@@ -6722,8 +6812,10 @@ function drawBranchTabs(b) {
   const named = b.querySelector(".brow2");
   const input = document.getElementById("bsrc");
   named.hidden = branchTab !== "name";
+  b.querySelector(".bautosay").hidden = branchTab !== "auto";
+  b.querySelector(".bautosay").textContent = T["tui.branch.auto.say"] || "";
   const picked = branchTab === "github" ? branchPick : branchTab === "branch" && branchBaseChosen ? {branch: branchBase} : null;
-  src.hidden = branchTab === "name" || !!picked;
+  src.hidden = branchTab === "name" || branchTab === "auto" || !!picked;
   results.hidden = src.hidden;
   chip.hidden = !picked;
   if (picked) drawBranchChip(chip, picked);
@@ -7325,7 +7417,8 @@ function drawCarry(b, items) {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:true, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, adopt});
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, adopt,
+          auto:branchAuto()});
   };
   b.querySelector(".bgo .go").onclick = () => makeIt(false);
   // Ctrl+Enter makes it from anywhere in the dialog, as the chip on the button
@@ -7394,7 +7487,7 @@ function drawCarry(b, items) {
       branchHi = -1;
       drawBranchTabs(b);
       if (branchTab === "github" && !branchPick && !ghBusy && !ghRows.issue.length && !ghRows.pr.length) ghSearch(document.getElementById("bsrc").value);
-      setTimeout(() => (branchTab === "name" ? document.getElementById("bq") : document.getElementById("bsrc")).focus(), 0);
+      setTimeout(() => branchFocus(b).focus(), 0);
     });
   }
   const src = document.getElementById("bsrc");
@@ -17821,7 +17914,7 @@ mod tests {
         assert!(PAGE.contains(r#"T["tui.folder.primary"] || "primary""#), "the checkout is not marked primary");
         assert!(PAGE.contains(r#"(g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder))].filter(Boolean));"#),
             "a card does not say the branch it is on");
-        assert!(PAGE.contains(r#"el("span", {class:"fill"}), folderWhere(g)]"#), "an empty card does not say the branch it is on");
+        assert!(PAGE.contains(r#"el("span", {class:"fill"}), folderSummary(g), folderWhere(g)]"#), "an empty card does not say the branch it is on");
         assert!(PAGE.contains(r#"if (g.branch && g.branch !== g.name && !card) {"#), "grouped by state, a folder loses the branch it is on");
         assert!(PAGE.contains(r#"const GROUP_AXES = ["none", "state"];"#), "grouping by project is offered twice");
         assert!(PAGE.contains("openGroupMenu(e.currentTarget);"), "the grouping is still a row in the list");
@@ -17841,12 +17934,37 @@ mod tests {
         assert!(PAGE.contains("if (g.empty) { card.append(emptyRow(g, true)); continue; }")
             && PAGE.contains("if (g.empty) { nav.append(emptyRow(g)); continue; }"), "an empty folder is not drawn");
         // What blinks is the line that puts the first tab in, on the step that asks for it
-        assert!(PAGE.contains(r#"(card ? " wcard" : "") + (own ? next : ""), title:g.folder || "","#),
+        assert!(PAGE.contains(r#"(card ? " wcard" : "") + (own ? next : ""), title:folderAbout(g),"#),
                 "in an empty folder the next thing to press does not light up");
         assert!(
             PAGE.contains("const bare = (S.coach || 0) === 1;"),
             "on a machine with nothing yet, 'Add a working folder' does not light up"
         );
+    }
+
+    /// Resting the pointer on a folder says what is being done in it, not
+    /// where it is; a phone, with nothing to rest, has it on the card and
+    /// whole in the menu a held press opens. A name written for the folder is
+    /// drawn a shade quieter than one a person chose
+    #[test]
+    fn a_folder_says_what_is_being_done_in_it() {
+        assert!(PAGE.contains(r#"title:folderAbout(g), onclick:() => send({kind:"folderview""#), "a card's tooltip is not its summary");
+        assert!(PAGE.contains(r#"return g.summary ? name + "\n" + g.summary : name;"#));
+        assert!(PAGE.contains("@media (hover: none) {\n    .tab.folder.wcard .fsum { display:block;"), "a phone has no summary on the card");
+        assert!(PAGE.contains(r#"row.append(...[folderSummary(g), folderWhere(g)].filter(Boolean));"#));
+        assert_eq!(PAGE.matches("holdOpens(row, e => folderMenu(e, g));").count(), 2, "a held press opens no menu on a folder");
+        assert!(PAGE.contains(r#"g.summary ? el("div", {class:"fabout"},"#), "the menu does not hold the whole summary");
+        assert!(PAGE.contains(r#"return "nm" + (g.auto ? " auto" : "");"#) && PAGE.contains(".tab.folder .nm.auto { color:var(--dim); }"));
+    }
+
+    /// The worktree dialog opens on Auto: nothing to type, and the folder names
+    /// itself. A name somebody typed is theirs, and is not written over
+    #[test]
+    fn a_worktree_names_itself_unless_somebody_named_it() {
+        assert!(PAGE.contains(r#"<button type="button" data-tab="auto"></button><button type="button" data-tab="github">"#));
+        assert!(PAGE.contains(r#"branchTab = preset.link ? "github" : preset.name ? "name" : "auto";"#));
+        assert!(PAGE.contains(r#"return branchTab === "auto" || !branchNamed;"#));
+        assert!(PAGE.contains("auto:branchAuto()});"), "the make button does not say whether it names itself");
     }
 
     /// The tab bar's + has to work on a phone too.

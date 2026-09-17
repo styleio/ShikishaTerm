@@ -139,10 +139,12 @@ and the terminal run over there.
 **Create worktree** dialog opens:
 
 - **Project** — which project it is made from;
-- **Name or what to create it from** — three tabs. **GitHub** searches the project's
-  issues and pull requests; picking one names the worktree and ties the work to it
-  (a pull request's branch is fetched). **Branch** picks what it grows from.
-  **Name** is typed; leave it empty and a name is chosen;
+- **Name or what to create it from** — four tabs. **Auto**, the one it opens on, has
+  nothing to type: the worktree is named and described from what its AIs are asked
+  (below). **GitHub** searches the project's issues and pull requests; picking one
+  names the worktree and ties the work to it (a pull request's branch is fetched).
+  **Branch** picks what it grows from. **Name** is typed; a name typed there is kept,
+  and leaving it empty keeps Auto on;
 - **AI** — what runs in the new folder. The default is Settings → Basic → Assistant AI;
 - **More** — one folder per AI, where it goes, things git does not carry (`.env`,
   `node_modules`) to bring along, and the exact `git worktree add` line.
@@ -152,6 +154,18 @@ the project's heading and turns into the folder's card once it is made. Its ✕ 
 and takes back the half-made folder and the new branch. If it fails, the row says why
 and offers **Try again** or **Dismiss**. Folders made this way live in
 `~/SHIKISHA-TERM/branches/<project>/<name>`.
+
+**Names written from what was asked.** A folder with Auto on (Settings → the folder →
+Auto; on by default for a worktree made from the dialog) is named and described by an
+AI from the requests sent to the AIs in it: at once after the first one, then again when
+an AI there finishes its work, at most once every 10 minutes. Only the requests are
+sent, never the answers, and long code pasted into them is left out. Until it is
+written the list shows the branch name; a name written this way is drawn a shade
+quieter. Rest the pointer on a folder to read its name and summary; on a phone the
+card carries a line of the summary, and holding a card down opens its menu with the
+whole summary at the top. Changing the name or the summary by hand turns Auto off.
+Which AI writes them is chosen per desk under Settings → desk → Automatic names: the
+assistant AI, asked the lightest way it can be, or one of the desk's model connections.
 
 Worktrees made from a terminal or another tool show up under the heading as "Hiding N
 found worktrees". Open it and **Show in the worktree list**, or press ✕ to keep them hidden.

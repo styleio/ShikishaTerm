@@ -563,6 +563,8 @@ mod tests {
             protect: Vec::new(),
             project: None,
             work_item: None,
+            summary: None,
+            auto_label: false,
         };
         let one = Desk { folders: vec![folder(&app), folder(&notes)], ..Default::default() };
         let two = Desk { folders: vec![folder(&wt)], ..Default::default() };
