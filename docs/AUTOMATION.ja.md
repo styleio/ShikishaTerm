@@ -1055,7 +1055,7 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | 命令 | 説明 |
 |---|---|
 | `shikisha.git_status(タブ)` | 変わったファイルの一覧。1件ずつ `{path, index, work, staged, unstaged, conflict, from}`。`index` と `work` は git が出す2文字（ステージ側と作業ツリー側）そのまま。`staged` と `unstaged` は反対語ではない（hunk を1つだけステージすると両方 true） |
-| `shikisha.git_diff(タブ, {path=…, staged=…})` | 差分をそのまま文字列で。`staged=true` でステージ済みの側、`path` で1ファイルに絞る |
+| `shikisha.git_diff(タブ, {path=…, staged=…, encoding=…})` | 差分をそのまま文字列で。`staged=true` でステージ済みの側、`path` で1ファイルに絞る。ファイルごとに保存されている文字コード（UTF-8・Shift_JIS・EUC-JP など）で読む。`encoding` で指定もできる |
 | `shikisha.git_log(タブ, 件数)` | 最近のコミット。`{hash, short, author, date, subject}`。既定20件 |
 | `shikisha.git_conflicts(タブ)` | 衝突しているファイルのパスだけ |
 | `shikisha.git_branch(タブ)` | 今のブランチ `{name, protected, upstream, ahead, behind, base, base_behind, catch_up, catching_up}`。`protected` は「このフォルダが守っているので直接コミットしない方がよい」の印。`upstream` は追いかけているブランチ（`origin/main`）、`ahead` はここにあって向こうにまだ無いコミットの数、`behind` はその逆で、どちらも最後にフェッチした時点の数。何も追いかけていなければ3つとも無い。`base` は書き留めてある起点、`base_behind` は最後にフェッチした時点で起点より遅れているコミット数、`catch_up` はその最新を取り込むときに実行するコマンド、`catching_up` はその起点のマージが途中で止まっているときの起点名。detached なら `nil` |
@@ -1068,8 +1068,8 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | `shikisha.git_set_base(タブ, "origin/develop")` | 手前の枝の起点を書き留める。最新を取り込むときの取り込み元になる。アプリで作ったワークツリーには最初から書かれている |
 | `shikisha.git_remote_branches(タブ)` | サーバにある枝（最後にフェッチした時点）。`{name, catch_up}` で、`catch_up` はその枝を起点にしたとき `git_catch_up` が実行するコマンド |
 | `shikisha.git_fetch(タブ)` / `shikisha.git_pull(タブ)` / `shikisha.git_push(タブ)` | サーバと話す。**返るまで他のことは止まります**（最大3分）。押しっぱなしにできる画面が要るなら、待ちは呼ぶ側で組むこと。`git_push` は一度も送っていないブランチなら upstream を付けて送り直し、その旨を返す。そのタブに選ばれた git アカウント（下記）でサインインし、選ばれていなければ動かない |
-| `shikisha.git_hunks(タブ, {path=…, staged=…})` | 差分をまとまり（hunk）に切って返す。`{file, header, start, end, patch}`。`patch` はそれ自体が完結したパッチ |
-| `shikisha.git_apply(タブ, パッチ, {cached=…, reverse=…})` | パッチを当てる。`cached` で次のコミット側へ、`reverse` で逆向き（取り消し）。**hunk 単位のステージはこの2つの組み合わせ** |
+| `shikisha.git_hunks(タブ, {path=…, staged=…, commit=…, encoding=…})` | 差分をまとまり（hunk）に切って返す。`{file, header, start, end, patch, encoding, exact}`。`patch` はそれ自体が完結したパッチ。`encoding` はファイルの行を読んだ文字コード。その文字コードで欠けずに読めなかったときは `exact` が false になり、そのパッチは `git_apply` が断る |
+| `shikisha.git_apply(タブ, パッチ, {cached=…, reverse=…, encoding=…})` | パッチを当てる。`cached` で次のコミット側へ、`reverse` で逆向き（取り消し）。hunk の `encoding` を渡すと、ファイル元のバイトのまま戻る（省略時は UTF-8）。**hunk 単位のステージはこの2つの組み合わせ** |
 | `shikisha.git_stage(タブ, パス)` | 次のコミットに入れる。パスは文字列1つでも、テーブルで複数でも |
 | `shikisha.git_unstage(タブ, パス)` | 次のコミットから外す |
 | `shikisha.git_branch_create(タブ, "名前")` | ブランチを作って、そこへ移る。ステージしたものは持ったまま移るので、**共有ブランチで断られたときの行き先**になる |

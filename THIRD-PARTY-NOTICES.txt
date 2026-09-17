@@ -5940,6 +5940,8 @@ MIT License
 ================================================================================
 
 Applies to:
+  * chardetng 1.0.0
+    https://github.com/hsivonen/chardetng
   * encoding_rs 0.8.35
     https://github.com/hsivonen/encoding_rs
   * utf8_iter 1.0.4

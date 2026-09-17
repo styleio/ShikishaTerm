@@ -1046,7 +1046,7 @@ that path never launches git, which is why it still answers during a rebase.
 | Command | What it does |
 |---|---|
 | `shikisha.git_status(tab)` | The changed files, one row each: `{path, index, work, staged, unstaged, conflict, from}`. `index` and `work` are git's own two letters (staged side, working-tree side). `staged` and `unstaged` are not opposites — stage one hunk of a file and both are true |
-| `shikisha.git_diff(tab, {path=…, staged=…})` | The diff, as text. `staged=true` reads the staged side; `path` narrows it to one file |
+| `shikisha.git_diff(tab, {path=…, staged=…, encoding=…})` | The diff, as text. `staged=true` reads the staged side; `path` narrows it to one file. Each file's lines are read in the encoding they are saved in (UTF-8, Shift_JIS, EUC-JP…); `encoding` says which instead |
 | `shikisha.git_log(tab, count)` | Recent commits: `{hash, short, author, date, subject}`. 20 by default |
 | `shikisha.git_conflicts(tab)` | Just the paths of the files with a conflict |
 | `shikisha.git_branch(tab)` | The branch: `{name, protected, upstream, ahead, behind, base, base_behind, catch_up, catching_up}`. `protected` marks one this folder guards, so committing straight onto it is worth asking about. `upstream` is the branch it follows (`origin/main`), `ahead` the commits here not there yet and `behind` the other way round, as of the last fetch -- all three absent when it follows nothing. `base` is what the branch was cut from when that is written down, `base_behind` how many commits it is behind that base as of the last fetch, `catch_up` the commands bringing its latest in would run, and `catching_up` that base's name while a merge of it has stopped half done. `nil` when the head is detached |
@@ -1059,8 +1059,8 @@ that path never launches git, which is why it still answers during a rebase.
 | `shikisha.git_set_base(tab, "origin/develop")` | Write down what the branch in front was cut from, so bringing its latest in knows where from. A worktree made in the app has it written already |
 | `shikisha.git_remote_branches(tab)` | The branches the servers have, as last fetched: `{name, catch_up}`, where `catch_up` is the commands `git_catch_up` would run for that base |
 | `shikisha.git_fetch(tab)` / `shikisha.git_pull(tab)` / `shikisha.git_push(tab)` | Talk to the server. **Everything else waits** until it answers (up to three minutes). `git_push` sets the upstream and retries when the branch has never been sent, and says so in its answer. They sign in as the git account chosen for the tab (see below), and refuse to run where none is chosen |
-| `shikisha.git_hunks(tab, {path=…, staged=…})` | The diff cut into hunks: `{file, header, start, end, patch}`. Each `patch` is a whole patch on its own |
-| `shikisha.git_apply(tab, patch, {cached=…, reverse=…})` | Apply a patch. `cached` puts it in the next commit, `reverse` takes it back out. **Staging one hunk is these two together** |
+| `shikisha.git_hunks(tab, {path=…, staged=…, commit=…, encoding=…})` | The diff cut into hunks: `{file, header, start, end, patch, encoding, exact}`. Each `patch` is a whole patch on its own. `encoding` is what the file's lines were read as; `exact` is false when they could not be read in it without loss, and such a patch is refused by `git_apply` |
+| `shikisha.git_apply(tab, patch, {cached=…, reverse=…, encoding=…})` | Apply a patch. `cached` puts it in the next commit, `reverse` takes it back out. Pass the hunk's `encoding` so its lines go back as the file's own bytes (UTF-8 when left out). **Staging one hunk is these two together** |
 | `shikisha.git_stage(tab, paths)` | Add to the next commit. One path as a string, or several in a table |
 | `shikisha.git_unstage(tab, paths)` | Take back out of the next commit |
 | `shikisha.git_branch_create(tab, "name")` | Make a branch and move onto it. Staged work moves with you, which is what makes this **the way out of a refusal on a shared branch** |

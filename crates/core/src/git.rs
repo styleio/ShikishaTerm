@@ -224,6 +224,18 @@ pub fn run_stdin(dir: &Path, args: &[&str], input: &str, limit: Duration) -> Res
 
 /// ...as somebody in particular
 pub fn run_as(dir: &Path, args: &[&str], input: &str, limit: Duration, who: &As) -> Result<String> {
+    run_bytes_as(dir, args, input.as_bytes(), limit, who).map(|out| String::from_utf8_lossy(&out).into_owned())
+}
+
+/// What git wrote, as the bytes it wrote. For the one kind of output that is
+/// somebody's file rather than git's own words: a diff, whose lines are in
+/// whatever encoding the file is, and can go back into `git apply` only as
+/// those same bytes
+pub fn run_bytes(dir: &Path, args: &[&str], input: &[u8], limit: Duration) -> Result<Vec<u8>> {
+    run_bytes_as(dir, args, input, limit, &As::default())
+}
+
+fn run_bytes_as(dir: &Path, args: &[&str], input: &[u8], limit: Duration, who: &As) -> Result<Vec<u8>> {
     if !dir.is_dir() {
         bail!(crate::i18n::tp(
             "err.git.no_folder",
@@ -252,7 +264,7 @@ pub fn run_as(dir: &Path, args: &[&str], input: &str, limit: Duration, who: &As)
     if !input.is_empty() {
         use std::io::Write as _;
         if let Some(mut w) = child.stdin.take() {
-            w.write_all(input.as_bytes())?;
+            w.write_all(input)?;
         }
     }
     let out = child.stdout.take().map(drain);
@@ -284,7 +296,7 @@ pub fn run_as(dir: &Path, args: &[&str], input: &str, limit: Duration, who: &As)
             &[("cmd", &args.join(" ")), ("said", &said)]
         ));
     }
-    Ok(String::from_utf8_lossy(&stdout).to_string())
+    Ok(stdout)
 }
 
 /// git's words for a failure, less its notes about line endings.
@@ -483,8 +495,14 @@ pub fn tangled(dir: &Path) -> Result<Vec<String>> {
 }
 
 /// The diff, as text. `staged` reads the staged side instead of the working
-/// tree; `path` narrows it to one file
+/// tree; `path` narrows it to one file. Each file's lines are read in that
+/// file's own encoding
 pub fn diff(dir: &Path, path: Option<&str>, staged: bool) -> Result<String> {
+    Ok(diff_text(&diff_bytes(dir, path, staged)?, None))
+}
+
+/// The same diff, as git wrote it
+pub fn diff_bytes(dir: &Path, path: Option<&str>, staged: bool) -> Result<Vec<u8>> {
     let mut args: Vec<&str> = vec!["diff", "--no-color"];
     if staged {
         args.push("--cached");
@@ -493,7 +511,7 @@ pub fn diff(dir: &Path, path: Option<&str>, staged: bool) -> Result<String> {
         args.push("--");
         args.push(p);
     }
-    run(dir, &args)
+    run_bytes(dir, &args, b"", LIMIT)
 }
 
 pub fn log(dir: &Path, count: u32) -> Result<Vec<Commit>> {
@@ -669,8 +687,8 @@ pub fn detail(dir: &Path, hash: &str) -> Result<Detail> {
 }
 
 /// What one commit did to one file, as a patch that can be cut into hunks and
-/// walked back one at a time
-pub fn show(dir: &Path, hash: &str, path: &str) -> Result<String> {
+/// walked back one at a time. As git wrote it: the file's own bytes
+pub fn show_bytes(dir: &Path, hash: &str, path: &str) -> Result<Vec<u8>> {
     let hash = hash.trim();
     if hash.is_empty() {
         bail!(crate::i18n::t("err.git.no_commit"));
@@ -680,7 +698,7 @@ pub fn show(dir: &Path, hash: &str, path: &str) -> Result<String> {
         args.push("--");
         args.push(path);
     }
-    run(dir, &args)
+    run_bytes(dir, &args, b"", LIMIT)
 }
 
 /// Where the branch checked out sends its commits, and how far apart the two
@@ -728,6 +746,13 @@ pub struct Hunk {
     pub start: u32,
     pub end: u32,
     pub patch: String,
+    /// What the file's lines in `patch` were read as, and so what they are
+    /// written back as when it is applied
+    pub encoding: &'static encoding_rs::Encoding,
+    /// Whether writing `patch` back gives the bytes git wrote. A hunk read
+    /// in the wrong encoding is still worth reading, but handed back it would
+    /// put the misreading into the file
+    pub exact: bool,
 }
 
 /// Cut a diff into hunks.
@@ -745,7 +770,10 @@ pub fn split_hunks(diff: &str) -> Vec<Hunk> {
             out.push(h);
         }
     };
-    for line in diff.lines() {
+    // Cut at the newline and nothing else: in a file saved with Windows line
+    // endings the carriage return is part of the line, and a patch without it
+    // no longer matches the file it came from
+    for line in diff.split_terminator('\n') {
         if line.starts_with("diff --git ") {
             finish(&mut cur, &mut out);
             head = format!("{line}\n");
@@ -774,6 +802,8 @@ pub fn split_hunks(diff: &str) -> Vec<Hunk> {
                 start,
                 end: start + count.saturating_sub(1),
                 patch: format!("{head}{line}\n"),
+                encoding: encoding_rs::UTF_8,
+                exact: true,
             });
             continue;
         }
@@ -784,6 +814,70 @@ pub fn split_hunks(diff: &str) -> Vec<Hunk> {
     }
     finish(&mut cur, &mut out);
     out
+}
+
+/// A diff as git wrote it, cut into hunks: each file's lines read in the
+/// encoding they most likely are, or in `encoding` when somebody has said
+pub fn split_hunks_bytes(diff: &[u8], encoding: Option<&'static encoding_rs::Encoding>) -> Vec<Hunk> {
+    files_of(diff, encoding)
+        .into_iter()
+        .flat_map(|f| {
+            split_hunks(&f.text).into_iter().map(move |mut h| {
+                h.encoding = f.encoding;
+                h.exact = f.exact;
+                h
+            })
+        })
+        .collect()
+}
+
+/// ...or kept whole, as text
+pub fn diff_text(diff: &[u8], encoding: Option<&'static encoding_rs::Encoding>) -> String {
+    files_of(diff, encoding).into_iter().map(|f| f.text).collect()
+}
+
+/// A diff, one file at a time.
+///
+/// Read per file because a commit can hold a UTF-8 source file and a
+/// Shift_JIS CSV side by side. Only the file's own lines -- from the first
+/// `@@` on -- are in the file's encoding; the header above them is git's
+fn files_of(diff: &[u8], encoding: Option<&'static encoding_rs::Encoding>) -> Vec<crate::charset::Reading> {
+    let mut out = Vec::new();
+    let mut head: Vec<u8> = Vec::new();
+    let mut body: Vec<u8> = Vec::new();
+    for line in diff.split_inclusive(|b| *b == b'\n') {
+        if line.starts_with(b"diff --git ") {
+            read_file(&mut head, &mut body, encoding, &mut out);
+        }
+        if body.is_empty() && !line.starts_with(b"@@") {
+            head.extend_from_slice(line);
+        } else {
+            body.extend_from_slice(line);
+        }
+    }
+    read_file(&mut head, &mut body, encoding, &mut out);
+    out
+}
+
+fn read_file(
+    head: &mut Vec<u8>,
+    body: &mut Vec<u8>,
+    encoding: Option<&'static encoding_rs::Encoding>,
+    out: &mut Vec<crate::charset::Reading>,
+) {
+    if head.is_empty() && body.is_empty() {
+        return;
+    }
+    let mut file = match encoding {
+        Some(e) => crate::charset::read_as(body, e),
+        None => crate::charset::read(body),
+    };
+    // The header goes back as UTF-8, so it is exact only if it was UTF-8
+    file.exact &= std::str::from_utf8(head).is_ok();
+    file.text.insert_str(0, &String::from_utf8_lossy(head));
+    out.push(file);
+    head.clear();
+    body.clear();
 }
 
 /// The `+start,count` half of a hunk header. A missing count means one line,
@@ -805,9 +899,33 @@ fn new_range(header: &str) -> (u32, u32) {
 /// time, with the two switches saying which. git decides whether the patch
 /// still fits; if the file moved on since it was drawn, it refuses, and that
 /// refusal is the truth rather than something to work around
-pub fn apply(dir: &Path, patch: &str, cached: bool, reverse: bool) -> Result<()> {
+pub fn apply(dir: &Path, patch: &str, encoding: &'static encoding_rs::Encoding, cached: bool, reverse: bool) -> Result<()> {
     if patch.trim().is_empty() {
         bail!(crate::i18n::t("err.git.empty_patch"));
+    }
+    // The file's lines go back in the file's encoding, and git's own lines as
+    // git wrote them. A line that cannot be written exactly stops it: a
+    // replacement mark is what a misread line looks like, and applied it would
+    // become part of the file
+    let mut body: Vec<u8> = Vec::with_capacity(patch.len() + 1);
+    let mut in_file = false;
+    for line in patch.split_inclusive('\n') {
+        if line.starts_with("diff --git ") {
+            in_file = false;
+        } else if line.starts_with("@@") {
+            in_file = true;
+        }
+        if !in_file {
+            body.extend_from_slice(line.as_bytes());
+            continue;
+        }
+        match crate::charset::write_as(line, encoding).filter(|_| !line.contains('\u{FFFD}')) {
+            Some(bytes) => body.extend_from_slice(&bytes),
+            None => bail!(crate::i18n::tp("err.git.unwritable_patch", &[("enc", encoding.name())])),
+        }
+    }
+    if !body.ends_with(b"\n") {
+        body.push(b'\n');
     }
     let mut args: Vec<&str> = vec!["apply"];
     if cached {
@@ -819,11 +937,7 @@ pub fn apply(dir: &Path, patch: &str, cached: bool, reverse: bool) -> Result<()>
     // Whitespace is somebody's file, not something to tidy on the way past
     args.push("--whitespace=nowarn");
     args.push("-");
-    let mut body = patch.to_string();
-    if !body.ends_with('\n') {
-        body.push('\n');
-    }
-    run_stdin(dir, &args, &body, LIMIT).map(|_| ())
+    run_bytes(dir, &args, &body, LIMIT).map(|_| ())
 }
 
 /// Every local branch, and which one is checked out.
@@ -1807,12 +1921,12 @@ mod tests {
         assert!(!d.committer.is_empty() && !d.commit_date.is_empty());
 
         // What it did to one file, cut into pieces that can be walked back
-        let patch = show(&dir, &commits[0].hash, "a.txt").unwrap();
-        let hunks = split_hunks(&patch);
+        let patch = show_bytes(&dir, &commits[0].hash, "a.txt").unwrap();
+        let hunks = split_hunks_bytes(&patch, None);
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].patch.contains("+two"));
         // ...and walking one back leaves the file as it was before that commit
-        apply(&dir, &hunks[0].patch, false, true).expect("it can be undone");
+        apply(&dir, &hunks[0].patch, hunks[0].encoding, false, true).expect("it can be undone");
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap().trim(), "one");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1905,7 +2019,7 @@ mod tests {
             hunks = hunks.iter().map(|h| h.header.clone()).collect::<Vec<_>>());
 
         // Stage the first one only
-        apply(&dir, &hunks[0].patch, true, false).expect("a single hunk can be staged");
+        apply(&dir, &hunks[0].patch, hunks[0].encoding, true, false).expect("a single hunk can be staged");
         let staged = diff(&dir, Some("f.txt"), true).unwrap();
         assert!(staged.contains("LINE ONE"), "the one chosen is in");
         assert!(!staged.contains("LINE TWENTY"), "the one not chosen is not in");
@@ -1914,9 +2028,72 @@ mod tests {
         assert!(left.contains("LINE TWENTY") && !left.contains("LINE ONE"));
 
         // Taking it back out again
-        apply(&dir, &hunks[0].patch, true, true).expect("it can be taken back");
+        apply(&dir, &hunks[0].patch, hunks[0].encoding, true, true).expect("it can be taken back");
         assert!(diff(&dir, Some("f.txt"), true).unwrap().trim().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A spreadsheet's CSV: Shift_JIS, with Windows line endings. What changed
+    /// in it reads as the words it holds, and one piece of it can be staged
+    /// and taken back without a byte of the file changing on the way
+    #[test]
+    fn a_shift_jis_csv_is_read_and_staged_as_itself() {
+        let Some(dir) = scratch_repo("sjis") else { return };
+        // The line endings kept as they are, as on any machine not set to
+        // convert them: the carriage returns are then in the diff itself
+        run(&dir, &["config", "core.autocrlf", "false"]).unwrap();
+        let sjis = |text: &str| crate::charset::write_as(text, encoding_rs::SHIFT_JIS).unwrap();
+        let rows = |changed: &str| {
+            let mut out = String::from("氏名,住所\r\n");
+            for n in 1..=20 {
+                out.push_str(&format!("{},東京都{n}丁目\r\n", if n == 2 { changed } else { "山田" }));
+            }
+            out
+        };
+        std::fs::write(dir.join("名簿.csv"), sjis(&rows("山田"))).unwrap();
+        stage(&dir, &["名簿.csv".to_string()]).unwrap();
+        commit(&dir, "start", &[], true, false, &As::default()).unwrap();
+        let changed = sjis(&rows("佐藤"));
+        std::fs::write(dir.join("名簿.csv"), &changed).unwrap();
+
+        let raw = diff_bytes(&dir, Some("名簿.csv"), false).unwrap();
+        let hunks = split_hunks_bytes(&raw, None);
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].encoding, encoding_rs::SHIFT_JIS);
+        assert!(hunks[0].exact);
+        assert!(hunks[0].patch.contains("+佐藤,東京都2丁目"), "{}", hunks[0].patch);
+        assert!(diff(&dir, Some("名簿.csv"), false).unwrap().contains("-山田,東京都2丁目"));
+
+        apply(&dir, &hunks[0].patch, hunks[0].encoding, true, false).expect("the piece can be staged");
+        let staged = run_bytes(&dir, &["show", ":名簿.csv"], b"", LIMIT).unwrap();
+        assert_eq!(staged, changed, "what is staged is the file, byte for byte");
+        apply(&dir, &hunks[0].patch, hunks[0].encoding, true, true).expect("it can be taken back");
+        assert!(diff_bytes(&dir, Some("名簿.csv"), true).unwrap().is_empty());
+
+        // Read as the wrong encoding it can still be looked at, but it is not
+        // exact, and handing it back is refused rather than written
+        let wrong = split_hunks_bytes(&raw, Some(encoding_rs::UTF_8));
+        assert!(!wrong[0].exact);
+        assert!(apply(&dir, &wrong[0].patch, wrong[0].encoding, true, false).is_err());
+        assert!(diff_bytes(&dir, Some("名簿.csv"), true).unwrap().is_empty(), "nothing was staged");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_file_in_a_diff_is_read_in_its_own_encoding() {
+        let mut raw = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+新しい\n"
+            .as_bytes()
+            .to_vec();
+        raw.extend_from_slice(b"diff --git a/b.csv b/b.csv\n--- a/b.csv\n+++ b/b.csv\n@@ -1 +1 @@\n-old\n+");
+        raw.extend_from_slice(&crate::charset::write_as("新しい行です", encoding_rs::SHIFT_JIS).unwrap());
+        raw.push(b'\n');
+        let hunks = split_hunks_bytes(&raw, None);
+        assert_eq!(hunks.len(), 2);
+        assert_eq!((hunks[0].file.as_str(), hunks[0].encoding), ("a.txt", encoding_rs::UTF_8));
+        assert!(hunks[0].patch.ends_with("+新しい\n"));
+        assert_eq!((hunks[1].file.as_str(), hunks[1].encoding), ("b.csv", encoding_rs::SHIFT_JIS));
+        assert!(hunks[1].patch.ends_with("+新しい行です\n"));
+        assert!(hunks.iter().all(|h| h.exact));
     }
 
     #[test]
