@@ -768,7 +768,15 @@ pub fn ignored(main: &Path) -> Vec<Ignored> {
         return Vec::new();
     }
     // Which line decides each: <source> NUL <line> NUL <pattern> NUL <path> NUL
-    let Some(why) = git_z(main, &["check-ignore", "-z", "-v", "--stdin"], &paths.join("\0")) else {
+    //
+    // Asked without the slash that marks a folder. With it, `www/tmp/` is
+    // matched by `www/tmp/*` -- the star matching nothing after the slash --
+    // so the folder was offered beside the very things inside it that the
+    // line ignores, although git itself does not ignore the folder. Without
+    // it git still knows a folder from the disk, so `node_modules/` goes on
+    // matching `node_modules`
+    let asked: Vec<&str> = paths.iter().map(|p| p.trim_end_matches('/')).collect();
+    let Some(why) = git_z(main, &["check-ignore", "-z", "-v", "--stdin"], &asked.join("\0")) else {
         return Vec::new();
     };
     let parts: Vec<&str> = why.split('\0').collect();
@@ -776,7 +784,12 @@ pub fn ignored(main: &Path) -> Vec<Ignored> {
         .chunks(4)
         .filter(|c| c.len() == 4 && !c[3].is_empty() && !c[2].starts_with('!'))
         .map(|c| {
-            let path = c[3].to_string();
+            // Given back the way it was listed: a folder ends in /
+            let path = paths
+                .iter()
+                .find(|p| p.trim_end_matches('/') == c[3])
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| c[3].to_string());
             let leaf = path.trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_string();
             Ignored {
                 folder: path.ends_with('/') || main.join(&path).is_dir(),
@@ -2834,6 +2847,35 @@ tools/conpty.ps1"));
         assert!(apply_replaces("x", &[r("(", "y", true)]).is_err());
         // What found nothing is said
         assert_eq!(apply_replaces("A=1\n", &[r("A=1", "A=2", false), r("^B=", "B=", true)]).unwrap().1, ["^B="]);
+    }
+
+    /// A line that ignores what is inside a folder offers those things, not
+    /// the folder: git does not ignore `www/tmp` for `www/tmp/*`, and offering
+    /// it put a link to the whole folder beside a link to each thing in it.
+    /// A line naming a folder still offers that folder
+    #[test]
+    fn a_folder_is_offered_only_when_a_line_ignores_the_folder_itself() {
+        let main = scratch("ignoredfolders").join("proj-ignoredfolders");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+        std::fs::create_dir_all(&main).unwrap();
+        crate::git::run(&main, &["init", "-q", "-b", "main"]).unwrap();
+        std::fs::write(main.join(".gitignore"), "www/tmp/*\nnode_modules/\nbuild\n*.log\n").unwrap();
+        for dir in ["www/tmp/a", "www/tmp/b", "node_modules/x", "build/y", "logs"] {
+            std::fs::create_dir_all(main.join(dir)).unwrap();
+        }
+        for file in ["www/tmp/a/f", "node_modules/x/f", "build/y/f", "logs/a.log"] {
+            std::fs::write(main.join(file), "x").unwrap();
+        }
+        let found: Vec<(String, String, bool)> =
+            ignored(&main).into_iter().map(|i| (i.path, i.pattern, i.folder)).collect();
+        let row = |p: &str, pattern: &str, folder: bool| (p.to_string(), pattern.to_string(), folder);
+        assert_eq!(found, [
+            row("build/", "build", true),
+            row("logs/a.log", "*.log", false),
+            row("node_modules/", "node_modules/", true),
+            row("www/tmp/a/", "www/tmp/*", true),
+            row("www/tmp/b/", "www/tmp/*", true),
+        ]);
     }
 
     /// The project's .gitignore, changed a line at a time, and the files git

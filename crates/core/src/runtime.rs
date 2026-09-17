@@ -5902,6 +5902,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // git is handed another
             let checkout = crate::repo::main_checkout(&from);
             let mut view = crate::uistate::BranchPlan {
+                seq: ask.seq,
                 from: from.display().to_string(),
                 branch: name.clone(),
                 asked: name.clone(),

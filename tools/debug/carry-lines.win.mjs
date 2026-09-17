@@ -59,8 +59,8 @@ git('init', '-q');
 fs.writeFileSync(path.join(REPO, '.gitignore'), 'www/tmp/*\ndata/config.php\nThumbs.db\n');
 git('add', '.gitignore');
 git('commit', '-q', '-m', 'start');
-// One line matching many folders (git also lists the folder holding them, under
-// the same line), and two lines matching one file each
+// One line matching many folders -- the folder holding them is not ignored and
+// is not offered -- and two lines matching one file each
 const TMP = 12;
 for (let i = 0; i < TMP; i++) fs.mkdirSync(path.join(REPO, 'www', 'tmp', `t${String(i).padStart(2, '0')}`), { recursive: true });
 fs.mkdirSync(path.join(REPO, 'data'), { recursive: true });
@@ -131,7 +131,7 @@ const rule = (pattern) => {
 };
 const open = async () => {
   await run(`openBranch({folder: ${JSON.stringify(REPO)}}); showMore(document.getElementById('branch'), true); true`);
-  await until(async () => Object.keys(await rows()).length === TMP + 3, 'the list of what comes along', 30000)
+  await until(async () => Object.keys(await rows()).length === TMP + 2, 'the list of what comes along', 30000)
     .catch(async (e) => {
       console.log('--- rows ---\n' + JSON.stringify(await rows()) + '\n--- the app\'s answer ---\n' +
         JSON.stringify(await run(`S.branch && {from: S.branch.from, carry: (S.branch.carry || []).length, error: S.branch.error}`)));
@@ -145,6 +145,7 @@ try {
   console.log('1. the dialog lists every row, and offers the lines');
   await open();
   const first = await rows();
+  check(!('www/tmp' in first), 'the folder holding what the line ignores is not offered');
   check(first['www/tmp/t00'] === 'link' && first['data/config.php'] === 'copy', 'rows start from the project\'s answer: ' + JSON.stringify(first));
   check(await run(`!document.querySelector('#branch .bctabs').hidden`), 'the two tabs are shown');
   check(await run(`document.querySelector('#branch .bctabs button.on').dataset.ctab === 'each'`), 'the list is the tab in front');
@@ -155,7 +156,7 @@ try {
   await click('#branch .bctabs button[data-ctab="lines"]');
   check(await run(`!document.querySelector('#branch .bclines').hidden && document.querySelector('#branch .bcarry').hidden`), 'the lines replace the list');
   const lines = await run(`Array.from(document.querySelectorAll('#branch .bclines > div')).map(d => d.querySelector('.nm').textContent + '|' + d.querySelector('.n').textContent)`);
-  check(lines.includes(`www/tmp/*|${TMP + 1} 件`), 'the line and how many it matches: ' + JSON.stringify(lines));
+  check(lines.includes(`www/tmp/*|${TMP} 件`), 'the line and how many it matches: ' + JSON.stringify(lines));
   await run(`(() => { const d = Array.from(document.querySelectorAll('#branch .bclines > div')).find(d => d.querySelector('.nm').textContent === 'www/tmp/*');
     const s = d.querySelector('select'); s.value = 'skip'; s.dispatchEvent(new Event('change')); return true; })()`);
   check((await rows())['www/tmp/t00'] === 'link', 'choosing by line does not touch the list yet');
@@ -170,7 +171,7 @@ try {
   await click('#branch .bcapply .bcgo');
   const after = await rows();
   const tmpRows = Object.entries(after).filter(([n]) => n === 'www/tmp' || n.startsWith('www/tmp/'));
-  check(tmpRows.length === TMP + 1 && tmpRows.every(([, h]) => h === 'skip'), 'every row of the line is left out');
+  check(tmpRows.length === TMP && tmpRows.every(([, h]) => h === 'skip'), 'every row of the line is left out');
   check(after['data/config.php'] === 'skip', 'the row changed by hand kept its choice');
   check(after['Thumbs.db'] === 'copy', 'a line nobody chose stays as it was');
   check(await run(`document.querySelector('#branch .bcapply').hidden`), 'nothing is left to apply');
@@ -186,6 +187,7 @@ try {
   await sleep(500);
   await open();
   await until(async () => (await rows())['www/tmp/t05'] === 'skip', 'the saved choice on a new dialog', 15000);
+  check((await rows())['data/config.php'] === 'copy', 'a row changed by hand in the dialog before is not carried into this one');
   await click('#branch .bctabs button[data-ctab="lines"]');
   const saidLine = await run(`(() => { const d = Array.from(document.querySelectorAll('#branch .bclines > div')).find(d => d.querySelector('.nm').textContent === 'www/tmp/*'); return d.querySelector('select').value; })()`);
   check(saidLine === 'skip', 'the line says the project\'s choice');

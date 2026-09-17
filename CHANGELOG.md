@@ -91,6 +91,11 @@ once it reaches its first tagged release.
 - **The Issue tab is called Issues & PRs.**
 
 ### Fixed
+- **A folder whose contents a .gitignore line ignores is no longer offered to a
+  new worktree beside them.** For `www/tmp/*` the dialog listed `www/tmp/` as
+  well as each folder inside it, although git does not ignore `www/tmp` itself.
+- **The worktree dialog opened again starts from the project's choices** of what
+  comes along, not from the rows changed by hand the last time it was open.
 - **An AI at work keeps working while other worktrees and desks are changed.**
   Deleting one worktree stopped the AI tab of the same name in another worktree
   of that project, and started it again there as a new conversation: after a
