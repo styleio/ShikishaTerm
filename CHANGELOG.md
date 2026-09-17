@@ -46,6 +46,9 @@ once it reaches its first tagged release.
 - **The Issue tab is called Issues & PRs.**
 
 ### Fixed
+- **A project's + opens the worktree dialog again after a worktree was made
+  without a name.** The answer about that worktree stayed with the app, and the
+  dialog took it for one just made and closed as it opened, so the + seemed dead.
 - **Testing a connection through a bastion on a port other than 22** tested it
   on 22. The test built the connection with a copy of the launch code that did
   not read a port typed into the box; it now uses the launch code itself.
