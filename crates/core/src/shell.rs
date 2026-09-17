@@ -1291,6 +1291,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #issuespanel .acts { display:flex; flex-wrap:wrap; gap:var(--s2); align-items:center;
     padding:var(--s3); border-top:1px solid var(--line); }
   #issuespanel .acts .lbl { color:var(--dim); font-size:12px; margin-right:var(--s1); }
+  /* A pull request GitHub cannot merge: in the colour for a person being needed */
+  #issuespanel .conflict { display:flex; flex-direction:column; gap:var(--s2); margin:0 var(--s3) var(--s3);
+    padding:var(--s2) var(--s3); border-radius:var(--r-ctl); background:color-mix(in srgb, var(--warn) 9%, transparent);
+    border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+  #issuespanel .conflict .dim { color:var(--dim); font-size:12px; overflow-wrap:anywhere; }
+  #issuespanel .conflict .runs { margin:0; font-family:var(--mono); font-size:11px; color:var(--dim);
+    white-space:pre-wrap; overflow-wrap:anywhere; }
+  #issuespanel .conflict .row { display:flex; flex-wrap:wrap; gap:var(--s2); }
   #issuespanel .acts input { width:180px; }
   #issuespanel button.link { min-height:0; border:none; background:none; padding:0; color:var(--dim); font-size:12px; }
   #issuespanel button.link:hover { color:var(--text); background:none; }
@@ -3645,6 +3653,8 @@ function drawTabs() {
 let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:1,
           list:null, problems:[], total:0, busy:"", said:"", bad:false,
           view:"list", detail:null, options:{}, armed:"", dupOf:"", want:{list:0, detail:0},
+          // Where a conflicted pull request's branch is on this PC, as last asked
+          place:null,
           create:{project:"", title:"", body:"", labels:[], assignee:"", kept:""},
           // A pull request being written: the folder and branch it comes from,
           // what it goes into, and the issue it closes when there is one
@@ -3672,7 +3682,7 @@ function issuesAsk(act, args) {
   drawIssues();
 }
 // Requests that fill part of a page without holding the whole of it
-const ISSUE_QUIET = new Set(["projects", "options", "pr_bases", "pr_files", "pr_file"]);
+const ISSUE_QUIET = new Set(["projects", "options", "pr_bases", "pr_files", "pr_file", "pr_place"]);
 // While something is being waited for, the seconds on the busy line move once a
 // second -- only that number, never the page under it
 let issuesTick = 0;
@@ -3703,6 +3713,50 @@ function issueAgo(iso) {
     : m < 43200 ? ["day", Math.floor(m / 1440)] : m < 525600 ? ["month", Math.floor(m / 43200)]
     : ["year", Math.floor(m / 525600)];
   return (T["issues.ago." + key] || "{n}").replace("{n}", n);
+}
+// A pull request GitHub cannot merge for its conflicts
+function prConflicted(d) {
+  return !!d && d.kind === "pr" && d.state === "open" && d.merge_state === "dirty" && !d.fork;
+}
+// Where such a pull request's branch is on this PC, asked when its page shows one
+function prPlaceAsk() {
+  const d = I.detail;
+  if (!prConflicted(d)) return;
+  issuesAsk("pr_place", {project: d.project, number: d.number, head: d.head || "", base: d.base || ""});
+}
+// Why it cannot be merged, where on this PC it would be settled and what that
+// runs, and the one press that does it: the base brought into the branch's
+// folder, and a conflict handed to an AI tab there
+function prConflictBox(d, proj, made) {
+  const base = d.base || "";
+  const box = el("div", {class:"conflict"}, el("div", {}, (T["issues.pr.conflict"] || "").replace("{base}", base)));
+  const p = I.place && I.place.key === d.project + "#" + d.number ? I.place : null;
+  if (!p) return box;
+  if (!p.folder) {
+    // A worktree made since the question was asked is asked about again, once
+    if (made && p.asked !== made.folder) { p.asked = made.folder; setTimeout(prPlaceAsk, 0); }
+    // The way to make one is the button at the top of the page, named here
+    box.append(el("div", {class:"dim"}, (T["issues.pr.conflict.nowhere"] || "").replace("{start}", T["issues.start.pr"] || "")));
+    return box;
+  }
+  // Named the way the folder list names it, with the whole path on hover
+  const g = ((S && S.groups) || []).find(x => x.folder && sameFolder(x.folder, p.folder));
+  const name = (g && g.name) || p.folder.split(/[\\/]/).filter(Boolean).pop() || p.folder;
+  box.append(el("div", {class:"dim", title: p.folder}, (T[p.merging ? "issues.pr.conflict.stopped" : "issues.pr.conflict.here"] || "")
+    .replace("{folder}", name).replace("{base}", "origin/" + base)));
+  if (!p.merging) box.append(el("pre", {class:"runs"}, (p.runs || []).join("\n")));
+  const go = el("button", {class:"go",
+    onclick:() => { if (!I.busy) issuesAsk("pr_resolve", {project: d.project, number: d.number, head: d.head || "", base}); }},
+    pickIcon("sparkles"), el("span", {}, T["git.catch_up.resolve"] || ""));
+  go.disabled = !!I.busy;
+  // What the AI tab is told is written in the desk's settings, as in the git column
+  go.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    openList(go, [el("div", {onclick:() => { closeFolderMenu(); openSettings("git-merge", true); }},
+      T["git.message.ai.edit"] || "")], false, e);
+  });
+  box.append(el("div", {class:"row"}, go));
+  return box;
 }
 // The folder already made for this one, when there is one
 function issueWorktree(kind, repo, number) {
@@ -3757,6 +3811,13 @@ window.__issues = function (d) {
   if (!d.ok) {
     I.said = d.error || ""; I.bad = true;
     I.pending = null;
+    // A merge GitHub refused is read again, so its page says why in its own
+    // terms -- a conflict, with the way to settle it -- and the error stays
+    if (d.act === "merge" && I.detail) {
+      const seq = ++issuesSeq;
+      I.want.detail = seq;
+      send({kind:"issues", act:"detail", args:{kind: I.kind, seq, project: I.detail.project, number: I.detail.number}});
+    }
     drawIssues();
     return;
   }
@@ -3772,7 +3833,21 @@ window.__issues = function (d) {
       I.detail = Object.assign({project: d.project, kind: d.kind}, d.data || {});
       I.view = "detail";
       I.armed = ""; I.dupOf = "";
+      prPlaceAsk();
       break;
+    case "pr_place":
+      I.place = Object.assign({key: d.project + "#" + d.number}, d.data || {});
+      break;
+    case "pr_resolve": {
+      const r = d.data || {};
+      I.said = r.state === "tab"
+        ? (T[r.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "").replace("{title}", r.title || "")
+          + " " + (T["issues.pr.resolve.push"] || "")
+        : (T[r.state === "taken" ? "issues.pr.resolve.taken" : "issues.pr.resolve.latest"] || "")
+          .replace("{base}", r.base || "").replace("{n}", r.taken || 0);
+      prPlaceAsk();
+      break;
+    }
     case "create": {
       // Made from an idea: that idea is done now, and says which issue it
       // became. Only here, once GitHub has said it made one -- a form that was
@@ -4010,13 +4085,18 @@ function drawIssueDetail(box) {
   const pr = d.kind === "pr";
   const state = d.draft && d.state === "open" ? "draft" : d.state;
   const proj = issueProject(d.project);
-  const made = issueWorktree(d.kind, (proj || {}).repo, d.number);
+  // The folder made for it, or -- for a pull request -- the one its branch is
+  // checked out in: opened rather than made a second time
+  const place = pr && I.place && I.place.key === d.project + "#" + d.number && I.place.folder ? I.place : null;
+  const made = issueWorktree(d.kind, (proj || {}).repo, d.number) || (place ? {folder: place.folder} : null);
   box.append(el("div", {class:"bar"}, el("div", {class:"line"},
     el("button", {class:"quiet", onclick:() => { I.view = "list"; I.detail = null; I.want.detail = 0; I.busy = ""; drawIssues(); }}, "‹ " + (T["issues.back"] || "")),
     el("span", {class:"crumb grow"}, d.project + " #" + d.number),
     d.url ? (() => { const a = mdLink(d.url, (T["issues.on_github"] || "") + " \u2197"); a.classList.add("away"); return a; })() : null,
     made
-      ? el("button", {class:"go", onclick:() => send({kind:"folderview", folder: made.folder})}, (T["issues.open"] || "") + " ›")
+      // Quiet while a conflict is being offered its way out: one blue press a page
+      ? el("button", {class: prConflicted(d) && place ? "" : "go", onclick:() => send({kind:"folderview", folder: made.folder})},
+          (T["issues.open"] || "") + " ›")
       : (d.state === "open"
           ? el("button", {class:"go", onclick:() => issueStart(Object.assign({}, d, {repo: (proj || {}).repo,
               workspace: d.workspace}))}, T[pr ? "issues.start.pr" : "issues.start.issue"] || "")
@@ -4046,6 +4126,7 @@ function drawIssueDetail(box) {
       + (T["issues.files"] || "").replace("{n}", d.changed_files));
   }
   box.append(facts);
+  if (prConflicted(d)) box.append(prConflictBox(d, proj, made));
 
   // What can be done to it, in the words GitHub uses
   const acts = el("div", {class:"acts"});
@@ -4359,7 +4440,7 @@ function drawPrCreate(box) {
   // Only when the folder was made for an issue: ticked, the description ends
   // with the line GitHub closes it by
   if (p.issue) {
-    form.append(tick(p.close, (T["issues.pr.close"] || "").replace("{ref}", prIssueRef(p)), v => {
+    form.append(tick(p.close, (T["issues.pr.closes"] || "").replace("{ref}", prIssueRef(p)), v => {
       p.close = v; p.body = prFixes(p.body, p);
     }));
   }

@@ -939,6 +939,13 @@ pub fn remote_branches(dir: &Path) -> Result<Vec<String>> {
 /// of the base, which can be days old. Built once, and both shown on screen and
 /// run from here, so what is shown is what runs
 pub fn catch_up_steps(dir: &Path, base: &str) -> Vec<Vec<String>> {
+    catch_up_steps_for(dir, None, base)
+}
+
+/// The same for a pull request's branch, which is on the server as well: that
+/// branch is fetched first, so a folder behind what was pushed is told apart
+/// before anything is merged into it. Every step but the last is a fetch
+pub fn catch_up_steps_for(dir: &Path, head: Option<&str>, base: &str) -> Vec<Vec<String>> {
     let base = base.trim();
     let remotes = run(dir, &["remote"]).unwrap_or_default();
     // `origin/develop` names its server; a bare `develop` is origin's
@@ -946,10 +953,14 @@ pub fn catch_up_steps(dir: &Path, base: &str) -> Vec<Vec<String>> {
         Some((r, b)) if remotes.lines().any(|m| m.trim() == r) => (r.to_string(), b.to_string()),
         _ => ("origin".to_string(), base.to_string()),
     };
-    vec![
-        vec!["fetch".into(), remote.clone(), format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}")],
-        vec!["merge".into(), "--no-edit".into(), format!("{remote}/{branch}")],
-    ]
+    let fetch = |b: &str| vec!["fetch".into(), remote.clone(), format!("+refs/heads/{b}:refs/remotes/{remote}/{b}")];
+    let mut steps = Vec::new();
+    if let Some(h) = head.map(str::trim).filter(|h| !h.is_empty() && *h != branch) {
+        steps.push(fetch(h));
+    }
+    steps.push(fetch(&branch));
+    steps.push(vec!["merge".into(), "--no-edit".into(), format!("{remote}/{branch}")]);
+    steps
 }
 
 /// The same commands as a person would type them
@@ -964,6 +975,9 @@ pub enum CatchUpStop {
     Dirty,
     /// The merge stopped on these files, and is left as it stopped
     Conflict { base: String, files: Vec<String> },
+    /// What was pushed of the branch is ahead of this folder: merged here, it
+    /// could not be pushed back. Nothing is started
+    Behind { branch: String, count: u64 },
 }
 
 impl std::fmt::Display for CatchUpStop {
@@ -973,6 +987,10 @@ impl std::fmt::Display for CatchUpStop {
             CatchUpStop::Conflict { base, files } => crate::i18n::tp(
                 "err.git.catch_up.conflict",
                 &[("base", base), ("files", &files.join(", "))],
+            ),
+            CatchUpStop::Behind { branch, count } => crate::i18n::tp(
+                "err.git.catch_up.behind",
+                &[("branch", branch), ("n", &count.to_string())],
             ),
         })
     }
@@ -992,18 +1010,35 @@ pub fn merging_in(dir: &Path, rev: &str) -> bool {
 /// is uncommitted, and on a conflict left where the merge stopped. Answers with
 /// how many commits came in -- 0 when there was nothing new
 pub fn catch_up(dir: &Path, base: &str, who: &As) -> Result<u64> {
+    catch_up_for(dir, None, base, who)
+}
+
+/// [`catch_up`] for a pull request's branch: what was pushed of `head` is
+/// fetched too, and a folder behind it is refused before the merge
+pub fn catch_up_for(dir: &Path, head: Option<&str>, base: &str, who: &As) -> Result<u64> {
     fits(dir, who)?;
     // Untracked files are nobody's work in progress as far as a merge goes; a
     // change to a file git follows is
     if status(dir)?.iter().any(|c| c.index != '?') {
         return Err(anyhow::Error::new(CatchUpStop::Dirty));
     }
-    let steps = catch_up_steps(dir, base);
-    let [fetch, merge] = steps.as_slice() else { bail!(crate::i18n::t("err.git.empty_branch")) };
+    let steps = catch_up_steps_for(dir, head, base);
+    let Some((merge, fetches)) = steps.split_last() else { bail!(crate::i18n::t("err.git.empty_branch")) };
     fn args(s: &[String]) -> Vec<&str> {
         s.iter().map(String::as_str).collect()
     }
-    run_as(dir, &args(fetch), "", NETWORK_LIMIT, who)?;
+    for fetch in fetches {
+        run_as(dir, &args(fetch), "", NETWORK_LIMIT, who)?;
+    }
+    // The pull request's branch as pushed: its own fetch names where it landed
+    if fetches.len() > 1
+        && let Some(pushed) = fetches[0].last().and_then(|r| r.rsplit_once(':')).map(|(_, to)| to.trim_start_matches("refs/remotes/").to_string())
+    {
+        let count = run(dir, &["rev-list", "--count", &format!("HEAD..{pushed}")])?.trim().parse::<u64>().unwrap_or(0);
+        if count > 0 {
+            return Err(anyhow::Error::new(CatchUpStop::Behind { branch: pushed, count }));
+        }
+    }
     let theirs = merge.last().cloned().unwrap_or_default();
     let taken = run(dir, &["rev-list", "--count", &format!("HEAD..{theirs}")])?
         .trim()
@@ -1406,6 +1441,48 @@ mod tests {
         assert!(merging.is_ok(), "the merge was not left where it stopped");
         assert!(merging_in(&near, "origin/main"), "the stopped merge is not told apart as this one");
         assert!(!merging_in(&near, "main"), "another branch was taken for the one being merged");
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
+    }
+
+    /// A pull request's branch: what was pushed of it is fetched first, and
+    /// shown as a step of its own
+    #[test]
+    fn a_pull_requests_branch_is_fetched_before_its_base_is_merged() {
+        let Some((seed, far, near)) = catch_up_setup("cu-pr-steps") else { return };
+        assert_eq!(
+            catch_up_said(&catch_up_steps_for(&near, Some("work"), "origin/main")),
+            vec!["git fetch origin +refs/heads/work:refs/remotes/origin/work".to_string(),
+                 "git fetch origin +refs/heads/main:refs/remotes/origin/main".to_string(),
+                 "git merge --no-edit origin/main".to_string()]
+        );
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
+    }
+
+    /// Merged into a folder behind what was pushed, the result could not be
+    /// pushed back: refused, and nothing is touched
+    #[test]
+    fn a_folder_behind_its_pushed_branch_is_refused_before_the_merge() {
+        let Some((seed, far, near)) = catch_up_setup("cu-pr-behind") else { return };
+        std::fs::write(near.join("w.txt"), "pushed\n").unwrap();
+        run(&near, &["add", "."]).unwrap();
+        run(&near, &["commit", "-qm", "pushed"]).unwrap();
+        run(&near, &["push", "-q", "origin", "work"]).unwrap();
+        run(&near, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+        catch_up_advance(&seed, "b.txt", "new\n");
+        let head = run(&near, &["rev-parse", "HEAD"]).unwrap();
+        let err = catch_up_for(&near, Some("work"), "origin/main", &As::default()).unwrap_err();
+        match err.downcast_ref::<CatchUpStop>() {
+            Some(CatchUpStop::Behind { branch, count }) => {
+                assert_eq!(branch, "origin/work");
+                assert_eq!(*count, 1);
+            }
+            other => panic!("not refused as behind: {other:?} {err}"),
+        }
+        assert_eq!(run(&near, &["rev-parse", "HEAD"]).unwrap(), head, "the branch moved");
+        assert!(!near.join("b.txt").exists(), "the base was merged anyway");
+        // Up to date with what was pushed, the same call brings the base in
+        run(&near, &["merge", "-q", "--ff-only", "origin/work"]).unwrap();
+        assert_eq!(catch_up_for(&near, Some("work"), "origin/main", &As::default()).unwrap(), 1);
         for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
     }
 

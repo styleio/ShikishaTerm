@@ -9,6 +9,19 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **A pull request GitHub cannot merge for its conflicts is settled from its page.**
+  A pull request whose branch conflicts with the one it goes into says so under
+  its facts, and -- when a merge was refused -- is read again so it does. When its
+  branch is checked out in a folder on this PC (the checkout or any worktree), it
+  names that folder, quotes the three commands it runs (fetch the branch as
+  pushed, fetch the base, merge the base) and offers Resolve in an AI tab: the
+  base is brought in there, and a conflict opens the same AI tab the git column
+  does, with the same prompt. A folder behind what was pushed, or with
+  uncommitted changes, is refused before anything is merged; a base already in
+  says to push. With no folder on that branch, it points to Start from this pull
+  request. The page's own Open goes to that folder rather than making another.
+  `shikisha.git_catch_up` takes the pushed branch as a third argument to do the
+  same from a script.
 - **Bring in the latest of a branch's base, from the git column.** Under the arrow,
   Bring in the latest says how far the branch is behind the branch it was cut
   from, as of the last fetch, and quotes the two commands it runs: a fetch of that
@@ -122,6 +135,10 @@ once it reaches its first tagged release.
   or shut stays that way.
 
 ### Fixed
+- **A pull request's Close pull request button says that again.** The tick on a
+  new pull request that closes its issue had been given the same word, so the
+  button read "Close issue {ref} when it is merged". A test now refuses a word
+  written twice in a dictionary.
 - **An AI tab opened with a first message no longer quits on Claude Code's folder
   trust question.** The question was not taken for one, so the message and Enter
   went in and chose No, exit -- in every new worktree. The tab now waits until the
