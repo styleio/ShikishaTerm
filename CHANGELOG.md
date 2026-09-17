@@ -37,6 +37,12 @@ once it reaches its first tagged release.
   <connection>/<model>` for one of the desk's model connections.
 - **`shikisha.report_prompt(text)`**: a tab says what it was just asked. Claude Code's
   and Codex's own hooks report through it.
+- **What a new worktree brings along can be chosen a .gitignore line at a time.**
+  The list in the worktree dialog has a second tab, Together (by .gitignore
+  line), with each line once and how many things it matches. Lines chosen there
+  reach the list when Apply to the list is pressed on the first tab: every row of
+  a changed line takes its choice, rows changed one by one on other lines keep
+  theirs, and the choice becomes the project's default for the worktrees after it.
 - **CI is shown in the git column, and a failure is handed to an AI.** Under a
   branch's pull requests, one line counts its checks as passed, failed and
   running -- once for the branch, since they run on the commit whichever base it

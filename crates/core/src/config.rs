@@ -4883,51 +4883,137 @@ fn write_git_choice(doc: &mut serde_json::Value, desk: &Desk, at: GitChoiceAt, a
             }
         }
         GitChoiceAt::Folder(cwd) => {
-            let projects = entry
-                .entry("projects")
-                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-            let Some(projects) = projects.as_array_mut() else { return false };
-            match desk.project_of(cwd) {
-                Some(p) => match projects
-                    .iter_mut()
-                    .find(|x| x.get("name").and_then(|n| n.as_str()) == Some(&p.name))
-                    .and_then(|x| x.as_object_mut())
-                {
-                    Some(written) => {
-                        set_or_clear(written, "git_account", account);
-                        true
-                    }
-                    None => false,
-                },
-                // A repository with no project written down yet gets one, named
-                // after its own checkout, the way the settings screen makes one
-                None => {
-                    if account.trim().is_empty() {
-                        return true;
-                    }
-                    let Some(main) = crate::repo::main_checkout(cwd) else {
-                        return false;
-                    };
-                    let base = main
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .filter(|n| !n.is_empty())
-                        .unwrap_or_else(|| "project".into());
-                    let taken = |n: &str| desk.projects.iter().any(|p| p.name == n);
-                    let name = match taken(&base) {
-                        false => base,
-                        true => (2..).map(|i| format!("{base} {i}")).find(|n| !taken(n)).expect("endless"),
-                    };
-                    projects.push(serde_json::json!({
-                        "name": name,
-                        "at": main.display().to_string().replace('\\', "/"),
-                        "git_account": account.trim(),
-                    }));
+            // Nothing to take away from a project that is not written down yet
+            if account.trim().is_empty() && desk.project_of(cwd).is_none() {
+                return true;
+            }
+            match project_entry_mut(entry, desk, cwd) {
+                Some(written) => {
+                    set_or_clear(written, "git_account", account);
                     true
                 }
+                None => false,
             }
         }
     }
+}
+
+/// The written entry of the project a folder belongs to, on a desk's entry.
+///
+/// A repository with no project written down yet gets one, named after its own
+/// checkout, the way the settings screen makes one. None when the folder is no
+/// repository, or its project is known but missing from the file
+fn project_entry_mut<'a>(
+    entry: &'a mut serde_json::Map<String, serde_json::Value>,
+    desk: &Desk,
+    cwd: &Path,
+) -> Option<&'a mut serde_json::Map<String, serde_json::Value>> {
+    let projects = entry
+        .entry("projects")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+        .as_array_mut()?;
+    let name = match desk.project_of(cwd) {
+        Some(p) => p.name.clone(),
+        None => {
+            let main = crate::repo::main_checkout(cwd)?;
+            let base = main
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| "project".into());
+            let taken = |n: &str| desk.projects.iter().any(|p| p.name == n);
+            let name = match taken(&base) {
+                false => base,
+                true => (2..).map(|i| format!("{base} {i}")).find(|n| !taken(n)).expect("endless"),
+            };
+            projects.push(serde_json::json!({
+                "name": name,
+                "at": main.display().to_string().replace('\\', "/"),
+            }));
+            name
+        }
+    };
+    projects
+        .iter_mut()
+        .find(|x| x.get("name").and_then(|n| n.as_str()) == Some(name.as_str()))
+        .and_then(|x| x.as_object_mut())
+}
+
+/// How the things one line of an ignore file makes git ignore reach a new
+/// worktree, chosen for that line as a whole
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BringChoice {
+    /// The ignore file, as git names it (`.gitignore` is the project's own)
+    pub source: String,
+    pub pattern: String,
+    /// `copy`, `replace`, `link` or `skip`
+    pub how: String,
+}
+
+/// Write down, as the project's own, how each of these lines comes along.
+///
+/// What the worktree dialog does when a person chooses by line: the next
+/// worktree of the project starts from these, the same as if they had been
+/// chosen in the settings. A line's replacements are kept -- only how it
+/// comes along is chosen here. Read-modify-write on the parsed JSON, like
+/// every other change here. Returns whether it was written
+pub fn save_bring_choices(desk_id: &str, cwd: &Path, choices: &[BringChoice]) -> bool {
+    let Some(cfg) = load() else { return false };
+    let (desks, _) = cfg.resolve_desks();
+    let Some(desk) = desks.iter().find(|d| d.id == desk_id) else {
+        return false;
+    };
+    let path = config_file_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
+    else {
+        crate::append_hook_log("could not record how lines come along: settings are not readable");
+        return false;
+    };
+    if !write_bring_choices(&mut doc, desk, cwd, choices) {
+        return false;
+    }
+    match serde_json::to_string_pretty(&doc) {
+        Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// The same, on a parsed settings file, for the desk `desk` as it was read
+fn write_bring_choices(doc: &mut serde_json::Value, desk: &Desk, cwd: &Path, choices: &[BringChoice]) -> bool {
+    let Some(entry) = desk_entry_mut(doc, &desk.id) else {
+        return false;
+    };
+    let Some(project) = project_entry_mut(entry, desk, cwd) else {
+        return false;
+    };
+    let rules = project
+        .entry("bring")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let Some(rules) = rules.as_array_mut() else { return false };
+    for c in choices.iter().filter(|c| crate::worktree::HOWS.contains(&c.how.as_str())) {
+        let found = rules.iter_mut().filter_map(|r| r.as_object_mut()).find(|r| {
+            let rule: BringRule = serde_json::from_value(serde_json::Value::Object((*r).clone())).unwrap_or_default();
+            rule.is_for(&c.source, &c.pattern)
+        });
+        match found {
+            Some(rule) => {
+                rule.insert("how".into(), serde_json::Value::String(c.how.clone()));
+                if c.how != "replace" {
+                    rule.shift_remove("replace");
+                }
+            }
+            None => {
+                let mut rule = serde_json::json!({ "pattern": c.pattern, "how": c.how });
+                // The project's own file is what a rule with no source means
+                if c.source != ".gitignore" {
+                    rule["source"] = serde_json::Value::String(c.source.clone());
+                }
+                rules.push(rule);
+            }
+        }
+    }
+    true
 }
 
 /// Read-modify-write on the parsed JSON, like every other change here, so the
@@ -5270,6 +5356,52 @@ mod tests {
         // An account of another server is not for this repository whatever
         // owners it names
         assert_eq!(order(None, None), ["home", "lab", "company", "key"]);
+    }
+
+    /// Choosing by line in the worktree dialog writes the project's own rules:
+    /// a line with none gets one, a line with one is changed in place, and a
+    /// line's replacements stay while it is still copied with them
+    #[test]
+    fn a_choice_by_line_becomes_the_projects_rule() {
+        let here = std::env::current_dir().unwrap();
+        let Some(main) = crate::repo::main_checkout(&here) else { return }; // built outside a checkout
+        let at = main.display().to_string().replace('\\', "/");
+        let mut doc = serde_json::json!({
+            "desks": [{"name": "Work", "id": "work",
+                "folders": [{"cwd": here.display().to_string(), "tabs": []}],
+                "projects": [{"name": "app", "at": at, "bring": [
+                    {"pattern": ".env", "how": "replace", "replace": [{"find": "a", "with": "b"}]},
+                    {"pattern": "cache/", "source": "web/.gitignore", "how": "link"}
+                ]}]}]
+        });
+        let work = serde_json::from_value::<super::Config>(doc.clone()).unwrap().resolve_desks().0.remove(0);
+        let choice = |source: &str, pattern: &str, how: &str| super::BringChoice {
+            source: source.into(),
+            pattern: pattern.into(),
+            how: how.into(),
+        };
+        assert!(super::write_bring_choices(&mut doc, &work, &here, &[
+            choice(".gitignore", "tmp/", "skip"),
+            choice("web/.gitignore", "cache/", "skip"),
+            choice(".gitignore", ".env", "replace"),
+            choice(".gitignore", "junk", "nonsense"),
+        ]));
+        let rules = doc["desks"][0]["projects"][0]["bring"].as_array().unwrap().clone();
+        assert_eq!(rules.len(), 3, "{rules:?}");
+        assert_eq!(rules[0]["replace"][0]["find"], "a", "the replacements of a line still copied with them went");
+        assert_eq!(rules[1]["how"], "skip", "the line of another ignore file was not changed in place");
+        assert_eq!(rules[2], serde_json::json!({"pattern": "tmp/", "how": "skip"}), "a new line is not written as the settings write one");
+
+        // Copied plainly from now on: its replacements are not kept for nothing
+        let work = serde_json::from_value::<super::Config>(doc.clone()).unwrap().resolve_desks().0.remove(0);
+        assert!(super::write_bring_choices(&mut doc, &work, &here, &[choice(".gitignore", ".env", "copy")]));
+        assert!(doc["desks"][0]["projects"][0]["bring"][0].get("replace").is_none());
+
+        // What the project now says is what the next worktree is offered
+        let work = serde_json::from_value::<super::Config>(doc.clone()).unwrap().resolve_desks().0.remove(0);
+        let rules = &work.project_of(&here).expect("the folder lost its project").bring;
+        assert!(rules.iter().any(|r| r.is_for(".gitignore", "tmp/") && r.how == "skip"));
+        assert!(rules.iter().any(|r| r.is_for("web/.gitignore", "cache/") && r.how == "skip"));
     }
 
     /// A choice made at the git column lands on the git tab it was made on, or

@@ -679,6 +679,10 @@ pub struct BranchPlan {
     /// ignored things that are actually there, offered to come along
     #[serde(default)]
     pub carry: Vec<crate::worktree::Carry>,
+    /// The ignore lines behind `carry`, each once with how the project brings
+    /// what it matches -- to be chosen by line instead of one thing at a time
+    #[serde(default)]
+    pub carry_lines: Vec<crate::worktree::CarryLine>,
     /// Why it cannot be done, when it cannot
     #[serde(default)]
     pub error: Option<String>,

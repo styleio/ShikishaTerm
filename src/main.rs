@@ -629,6 +629,7 @@ impl WinSurface {
                     self.mail.branches.extend(shikisha_shared::BranchAsk::of(ev));
                 }
                 Ev::KeepEnv { from } => self.mail.keep_envs.push(from),
+                Ev::BringLines { from, lines } => self.mail.bring_lines.push((from, lines)),
                 Ev::Repair { folder, choose, branch, take } => {
                     self.mail.repairs.push((folder, choose, branch, take))
                 }

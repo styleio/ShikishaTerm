@@ -251,6 +251,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // worktrees git knows put on the desk or kept hidden. No further than
         // `Ev::Branch`, which is what started them
         Ev::Making { .. } | Ev::Found { .. } => true,
+        // Choosing, in that same dialog, how what each ignore line matches
+        // comes along, and keeping it as the project's. The settings page
+        // already writes the same rules from the phone (/cfg)
+        Ev::BringLines { .. } => true,
         // Closing the first-run pointer. It is drawn on the phone as well, and
         // a pointer that cannot be closed from where it is seen is a nag
         Ev::Coach { .. } => true,

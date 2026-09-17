@@ -198,6 +198,9 @@ pub struct Mailbox {
     /// Folders whose project was offered an environment file and told to keep
     /// it. One act, once, because somebody read it and said yes
     pub keep_envs: Vec<String>,
+    /// How ignore lines come along, chosen by line in the worktree dialog and
+    /// applied: (the folder whose project it is, (ignore file, line, how)...)
+    pub bring_lines: Vec<(String, Vec<(String, String, String)>)>,
     /// Working folders asked about, and asked for: (the folder, the project
     /// chosen when one had to be, the branch, go ahead)
     pub repairs: Vec<(String, String, String, bool)>,
@@ -445,6 +448,9 @@ impl Mailbox {
     }
     pub fn take_keep_envs(&mut self) -> Vec<String> {
         std::mem::take(&mut self.keep_envs)
+    }
+    pub fn take_bring_lines(&mut self) -> Vec<(String, Vec<(String, String, String)>)> {
+        std::mem::take(&mut self.bring_lines)
     }
     pub fn take_repairs(&mut self) -> Vec<(String, String, String, bool)> {
         std::mem::take(&mut self.repairs)
