@@ -51,6 +51,18 @@ pub struct Idea {
     pub made: u64,
     #[serde(default)]
     pub changed: u64,
+    /// The issue it became. Written when an issue sent from it was made, which
+    /// is also when it was marked done
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<IssueRef>,
+}
+
+/// An issue, by what a person reads and what a press opens
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IssueRef {
+    pub number: u64,
+    #[serde(default)]
+    pub url: String,
 }
 
 /// Everything in the file. The order of `items` is the order on screen
@@ -277,6 +289,7 @@ pub fn answer(file: &Path, act: &str, args: &Value, known: &Known) -> Value {
                 done: false,
                 made: at,
                 changed: at,
+                issue: None,
             };
             // Straight after the card it was made from, or at the end
             let after = args.get("after").and_then(Value::as_u64);
@@ -287,7 +300,7 @@ pub fn answer(file: &Path, act: &str, args: &Value, known: &Known) -> Value {
             made = json!(new_id);
             changed = true;
         }
-        "edit" | "done" => {
+        "edit" | "done" | "issued" => {
             let Some(at) = store.items.iter().position(|i| i.id == id) else {
                 return reply(false, Some(&store), json!({"error": crate::i18n::t("err.ideas.gone")}));
             };
@@ -296,6 +309,16 @@ pub fn answer(file: &Path, act: &str, args: &Value, known: &Known) -> Value {
                 let text = args.get("text").and_then(Value::as_str).unwrap_or_default();
                 if i.text != text {
                     i.text = text.to_string();
+                    i.changed = now();
+                    changed = true;
+                }
+            } else if act == "issued" {
+                // Made into an issue: done, and which issue it became
+                let number = args.get("number").and_then(Value::as_u64).unwrap_or(0);
+                let url = args.get("url").and_then(Value::as_str).unwrap_or_default().to_string();
+                if number > 0 {
+                    i.done = true;
+                    i.issue = Some(IssueRef { number, url });
                     i.changed = now();
                     changed = true;
                 }
@@ -422,6 +445,26 @@ mod tests {
         assert_eq!(v["items"][0]["done"], true);
         let v = answer(&f, "done", &json!({"id": id, "done": false}), &known(&ps));
         assert_eq!(v["items"][0]["done"], false);
+    }
+
+    /// An idea made into an issue is done and says which issue, and keeps
+    /// saying it when it is ticked back to not done
+    #[test]
+    fn an_idea_made_into_an_issue_is_done_and_names_it() {
+        let f = temp("issued");
+        let ps = [project("D:\\app")];
+        let id = answer(&f, "add", &json!({"project": "D:\\app", "text": "x"}), &known(&ps))["made"].as_u64().unwrap();
+        let v = answer(&f, "issued", &json!({"id": id, "number": 12, "url": "https://github.com/o/r/issues/12"}), &known(&ps));
+        assert_eq!(v["items"][0]["done"], true);
+        assert_eq!(v["items"][0]["issue"]["number"], 12);
+        assert_eq!(v["items"][0]["issue"]["url"], "https://github.com/o/r/issues/12");
+        let v = answer(&f, "done", &json!({"id": id, "done": false}), &known(&ps));
+        assert_eq!(v["items"][0]["issue"]["number"], 12, "not done any more, it forgot its issue");
+        // An answer with no number is no issue, and changes nothing
+        let other = answer(&f, "add", &json!({"text": "y"}), &known(&ps))["made"].as_u64().unwrap();
+        let v = answer(&f, "issued", &json!({"id": other}), &known(&ps));
+        assert_eq!(v["items"][1]["done"], false);
+        assert!(v["items"][1].get("issue").is_none());
     }
 
     /// Reordering one project's cards moves them among their own places and

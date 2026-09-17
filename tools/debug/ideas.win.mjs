@@ -280,6 +280,28 @@ try {
   check((await run(`I.create.project`)) === 'app', 'the idea\'s project is chosen: ' + (await run(`I.create.project`)));
   check(await run(`!!document.querySelector('#issuespanel .iai')`), 'the ✨ that writes the rest from it is there');
   shot('4-sent-to-issue');
+
+  console.log('10. put away, the idea is left as it was; made, it is done and names the issue');
+  await click('#issuespanel .foot .quiet');
+  await sleep(500);
+  check(!onDisk().find((i) => i.text === sent).done, 'cancelling the form leaves the idea not done');
+  // Back on the form, GitHub's answer to "make it" is handed to the page as the
+  // app hands it, rather than making a real issue on somebody's account
+  await run(`(() => { I.view = 'create'; issuesSig = ''; drawIssues(); return true; })()`);
+  await run(`window.__issues({act:'create', ok:true, kind:'issue', project:'app', seq:null, data:{number:12, url:'https://github.com/example/app/issues/12'}}); true`);
+  await disk((it) => { const c = it.find((i) => i.text === sent); return c && c.done && c.issue && c.issue.number === 12; }, 'the idea done, with issue 12');
+  check(true, 'made, the idea is done and remembers issue #12');
+  await click('.gearrow .ideabtn');
+  await until(() => run(`!document.getElementById('ideas').hidden && IDEAS.known`), 'the ideas');
+  // The Issue tab is in front, so no folder is: app is chosen by hand
+  const appKey = await run(`IDEAS.projects.find(p => p.name === 'app').key`);
+  await run(`(() => { const p = document.querySelector('#ideas .iproj'); p.value = ${JSON.stringify(appKey)}; p.dispatchEvent(new Event('change')); })()`);
+  check(!(await run(`[...document.querySelectorAll('#ideas .icard .itext')].some(t => t.value === ${JSON.stringify(sent)})`)), 'done, it is out of the list');
+  await click('#ideas .idone');
+  const mark = await run(`(() => { const c = [...document.querySelectorAll('#ideas .icard')].find(c => c.querySelector('.itext').value === ${JSON.stringify(sent)}); return c ? c.querySelector('.iissue')?.textContent : null; })()`);
+  check(mark === '#12', 'shown with the done ones, it wears #12: ' + mark);
+  shot('5-issue-mark');
+  await key('Escape');
 } catch (e) {
   check(false, e.message);
 } finally {

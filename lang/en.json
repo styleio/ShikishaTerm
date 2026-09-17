@@ -1074,6 +1074,7 @@
   "tui.ideas.undone": "Mark as not done",
   "tui.ideas.delete": "Delete",
   "tui.ideas.issue": "Send to Issue",
+  "tui.ideas.issue.open": "Open issue #{n}",
   "tui.ideas.close": "Close",
   "tui.quick.edit": "Edit quick commands",
   "tui.quick.close": "Close",

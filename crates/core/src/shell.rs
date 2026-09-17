@@ -2133,6 +2133,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     justify-content:center; border:1px solid transparent; background:transparent; color:var(--dim);
     border-radius:var(--r-chip); cursor:pointer; }
   #ideas .itool:hover { background:var(--hover); color:var(--text); }
+  #ideas .ifrom { flex:none; display:inline-flex; }
+  #ideas .ifrom:empty { display:none; }
+  /* The issue a card became: a label to press, not a state, so no state colour */
+  #ideas .iissue { height:22px; display:inline-flex; align-items:center; padding:0 var(--s2); font:inherit;
+    font-size:11px; font-variant-numeric:tabular-nums; color:var(--dim); background:transparent;
+    border:1px solid var(--line); border-radius:var(--r-chip); cursor:pointer; text-decoration:none; }
+  #ideas .iissue:hover { color:var(--text); background:var(--hover); }
   #ideas .ifoot { flex:none; padding:var(--s3) var(--s5); border-top:1px solid var(--line); font-size:11px;
     color:var(--faint); line-height:1.5; }
   @media (max-width:640px) {
@@ -3744,12 +3751,19 @@ window.__issues = function (d) {
       I.view = "detail";
       I.armed = ""; I.dupOf = "";
       break;
-    case "create":
+    case "create": {
+      // Made from an idea: that idea is done now, and says which issue it
+      // became. Only here, once GitHub has said it made one -- a form that was
+      // put away, or a create that failed, leaves the idea as it was
+      const idea = I.create.idea;
+      const made = d.data || {};
+      if (idea && made.number) ideasAsk("issued", {id: idea, number: made.number, url: made.url || ""});
       I.create = {project: I.create.project, title:"", body:"", labels:[], assignee:"", kept:""};
       I.said = (T["issues.created"] || "").replace("{n}", (d.data || {}).number || "");
       issuesAsk("detail", {project: d.project, number: (d.data || {}).number});
       issuesList(1);
       return;
+    }
     case "draft": {
       // The AI's issue, read into the form. Only labels and a person the
       // project really has are taken; anything else it named is left out
@@ -11321,7 +11335,7 @@ function ideaCard(it) {
   const check = el("input", {type:"checkbox", class:"icheck"});
   const grip = el("span", {class:"igrip", title:T["tui.ideas.drag"] || ""}, pickIcon("grip"));
   const card = el("div", {class:"icard", "data-id":String(id)},
-    grip, check, text,
+    grip, check, text, el("span", {class:"ifrom"}),
     el("button", {type:"button", class:"itool", title:T["tui.ideas.copy"] || "",
       onclick:() => ideasCopy(text.value)}, pickIcon("copy")),
     el("button", {type:"button", class:"itool", title:T["tui.ideas.issue"] || "",
@@ -11335,6 +11349,23 @@ function ideaCard(it) {
   // has no right-click, and holding the grip opens the same menu (ideasCarry)
   card.addEventListener("contextmenu", e => { e.preventDefault(); ideaMenu(card, e); });
   return card;
+}
+// Which issue a card became: "#12", opening it. In the window the app hands
+// the address to this PC's browser; a phone follows a plain link
+function ideaIssueMark(card, it) {
+  const slot = card.querySelector(".ifrom");
+  const n = it.issue && it.issue.number;
+  const said = n ? String(n) + "\u0000" + (it.issue.url || "") : "";
+  if (slot.dataset.said === said) return;
+  slot.dataset.said = said;
+  slot.textContent = "";
+  if (!n) return;
+  const title = (T["tui.ideas.issue.open"] || "").replace("{n}", n);
+  const url = it.issue.url || "";
+  slot.append(REMOTE && url
+    ? el("a", {class:"iissue", href:url, target:"_blank", rel:"noopener", title}, "#" + n)
+    : el("button", {type:"button", class:"iissue", title,
+        onclick:() => { if (url) send({kind:"issues", act:"link", args:{url}}); }}, "#" + n));
 }
 function ideasCopy(text) {
   copyText(text).then(() => toast(T["tui.ideas.copied"] || ""));
@@ -11377,7 +11408,7 @@ function ideaToIssue(card) {
   I.kind = "issue";
   I.view = "create";
   I.said = ""; I.bad = false;
-  I.create = {project:"", title:"", body:text, labels:[], assignee:"", kept:"", at:(it && it.project) || ""};
+  I.create = {project:"", title:"", body:text, labels:[], assignee:"", kept:"", at:(it && it.project) || "", idea:id};
   issuesSig = "";
   send({kind:"openissues"});
   drawIssues();
@@ -11534,6 +11565,7 @@ function drawIdeas(fresh) {
     if (document.activeElement !== t && t.value !== it.text) { t.value = it.text; grow.push(card); }
     card.querySelector(".icheck").checked = !!it.done;
     card.classList.toggle("done", !!it.done);
+    ideaIssueMark(card, it);
     const want = prev ? prev.nextElementSibling : list.firstElementChild;
     if (card !== want) list.insertBefore(card, want);
     prev = card;
@@ -15499,6 +15531,10 @@ mod tests {
             assert!(to_issue.contains(want), "sending an idea to an Issue lost {want}");
         }
         assert!(p.contains("const p = I.projects.find(p => sameFolder(p.dir, c.at));"), "the idea's project is not chosen on the new issue");
+        // Done, and named by its issue, only once GitHub has made the issue
+        assert!(p.contains(r#"if (idea && made.number) ideasAsk("issued", {id: idea, number: made.number, url: made.url || ""});"#),
+            "an idea is not marked done by the issue made from it");
+        assert!(!to_issue.contains("ideasSetDone") && !to_issue.contains(r#""issued""#), "an idea is marked done before its issue exists");
     }
 
     /// Backspace in the empty input bar deletes in the pane it sends to, and

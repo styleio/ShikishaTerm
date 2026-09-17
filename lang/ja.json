@@ -1064,6 +1064,7 @@
   "tui.ideas.undone": "未完了に戻す",
   "tui.ideas.delete": "削除",
   "tui.ideas.issue": "Issue に送る",
+  "tui.ideas.issue.open": "Issue #{n} を開く",
   "tui.ideas.close": "閉じる",
   "tui.quick.edit": "クイックコマンドを編集",
   "tui.quick.close": "閉じる",
