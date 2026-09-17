@@ -89,6 +89,20 @@ export default {
           + ' label:"assets/img/hero.png"}); "ok"',
     diff: 'openDiff("index.html"); '
       + answer({ act: 'diff', ok: true, name: 'index.html', text: patch }),
+    // A spreadsheet's CSV in Shift_JIS, read as its words, with the encoding
+    // it was read in said on the menu
+    diffsjis: {
+      run: 'openDiff("customers.csv"); '
+        + answer({ act: 'diff', ok: true, name: 'customers.csv', asked: '', encoding: 'Shift_JIS', text: [
+          'diff --git a/customers.csv b/customers.csv',
+          '@@ -1,3 +1,3 @@',
+          ' 顧客番号,氏名,住所',
+          '-1001,山田太郎,東京都千代田区',
+          '+1001,山田太郎,東京都港区',
+          ' 1002,佐藤花子,大阪府堺市',
+        ].join('\n') }),
+      looks: ['dark', 'light'],
+    },
     diffsame: {
       run: 'openDiff("index.html"); '
         + answer({ act: 'diff', ok: true, name: 'index.html', text: '' }),

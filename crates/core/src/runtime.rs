@@ -7606,8 +7606,17 @@ pub const SFTP_DIFF_MAX: usize = 1 << 20;
 ///
 /// Size first: a refusal that arrives before the reading is a refusal that
 /// cost nothing. Then whether it is text at all, because a diff of two
-/// pictures is a wall of replacement characters, not an answer
-pub fn diff_text(name: &str, bytes: &[u8]) -> std::result::Result<String, String> {
+/// pictures is a wall of replacement characters, not an answer.
+///
+/// Text in whatever encoding it is saved in: a Shift_JIS CSV on the server is
+/// as much a file to compare as a UTF-8 one here. `encoding` is somebody's
+/// choice when the guess was wrong, and is shown however well it reads -- the
+/// marks are what tell them it is still the wrong one
+pub fn diff_text(
+    name: &str,
+    bytes: &[u8],
+    encoding: Option<&'static encoding_rs::Encoding>,
+) -> std::result::Result<crate::charset::Reading, String> {
     if bytes.len() > SFTP_DIFF_MAX {
         return Err(i18n::tp(
             "err.sftp.diff_big",
@@ -7619,9 +7628,31 @@ pub fn diff_text(name: &str, bytes: &[u8]) -> std::result::Result<String, String
     if bytes.contains(&0) {
         return Err(i18n::tp("err.sftp.diff_not_text", &[("name", name)]));
     }
-    match std::str::from_utf8(bytes) {
-        Ok(t) => Ok(t.to_string()),
-        Err(_) => Err(i18n::tp("err.sftp.diff_not_text", &[("name", name)])),
+    match encoding {
+        Some(e) => Ok(crate::charset::read_as(bytes, e)),
+        None => Some(crate::charset::read(bytes))
+            .filter(|r| r.exact)
+            .ok_or_else(|| i18n::tp("err.sftp.diff_not_text", &[("name", name)])),
+    }
+}
+
+/// What the two sides of a comparison were read as, in the order the window
+/// lists them: the server's, then this machine's. Said once when they agree,
+/// and a side that is plain ASCII agrees with anything -- it reads the same in
+/// all of them, and naming it UTF-8 beside a Shift_JIS file would be a
+/// difference that is not there
+pub fn diff_encodings(there: (&crate::charset::Reading, &[u8]), here: (&crate::charset::Reading, &[u8])) -> String {
+    let named: Vec<&str> = [there, here]
+        .iter()
+        .filter(|(_, bytes)| !bytes.is_ascii())
+        .map(|(r, _)| r.encoding.name())
+        .collect();
+    match named.as_slice() {
+        [] => encoding_rs::UTF_8.name().to_string(),
+        [one] => one.to_string(),
+        [a, b] if a == b => a.to_string(),
+        [a, b] => format!("{a} / {b}"),
+        _ => unreachable!(),
     }
 }
 /// One thing the file panel asked for.
@@ -7964,7 +7995,14 @@ pub fn sftp_answer(
     // Read here rather than in the thread: it is this machine's own disk, and
     // a file that is missing or too big should say so before a connection is
     // spent on the other half of the comparison
-    let mut here: Option<(String, String)> = None;
+    let mut here: Option<(String, crate::charset::Reading, Vec<u8>)> = None;
+    let chosen = match str_of("encoding").trim() {
+        "" => None,
+        name => match crate::charset::named(name) {
+            Some(e) => Some(e),
+            None => return fail(i18n::tp("err.git.unknown_encoding", &[("enc", name)])),
+        },
+    };
     if act == "diff" {
         let Some(root) = local_root.clone() else {
             return fail(i18n::t("err.sftp.no_folder"));
@@ -7975,9 +8013,9 @@ pub fn sftp_answer(
         let file = str_of("name");
         match std::fs::read(&path) {
             Err(e) => return fail(format!("{e}")),
-            Ok(bytes) => match diff_text(&file, &bytes) {
+            Ok(bytes) => match diff_text(&file, &bytes, chosen) {
                 Err(why) => return fail(why),
-                Ok(text) => here = Some((file, text)),
+                Ok(text) => here = Some((file, text, bytes)),
             },
         }
     }
@@ -8000,6 +8038,9 @@ pub fn sftp_answer(
         _ => String::new(),
     };
     let (act, panel) = (act.to_string(), panel.to_string());
+    // Sent back as it was asked, so an answer for an encoding somebody has
+    // since changed away from is known for what it is
+    let asked_encoding = str_of("encoding");
     let tx = tx.clone();
     std::thread::spawn(move || {
         let said = crate::elsewhere::files(&machine, job, SFTP_WAIT_MS);
@@ -8016,16 +8057,18 @@ pub fn sftp_answer(
             // move the file -- one reading, so the signs never swap meaning
             Ok(ssh::FileAnswer::Bytes(bytes)) => match here {
                 None => serde_json::json!({"act": act, "panel": panel, "ok": true}),
-                Some((file, mine)) => match diff_text(&file, &bytes) {
-                    Err(why) => serde_json::json!(
-                        {"act": act, "panel": panel, "ok": false, "name": file, "error": why}),
+                Some((file, mine, mine_bytes)) => match diff_text(&file, &bytes, chosen) {
+                    Err(why) => serde_json::json!({"act": act, "panel": panel, "ok": false,
+                        "name": file, "asked": asked_encoding, "error": why}),
                     Ok(theirs) => serde_json::json!({
                         "act": act,
                         "panel": panel,
                         "ok": true,
                         "name": file,
+                        "asked": asked_encoding,
+                        "encoding": diff_encodings((&theirs, &bytes), (&mine, &mine_bytes)),
                         "text": crate::diff::unified(
-                            &theirs, &mine, &file, crate::diff::CONTEXT),
+                            &theirs.text, &mine.text, &file, crate::diff::CONTEXT),
                     }),
                 },
             },
@@ -11496,17 +11539,37 @@ mod tests {
     /// a refusal, it is an apology
     #[test]
     fn only_text_of_a_readable_size_is_compared() {
-        assert_eq!(diff_text("a.txt", b"one\ntwo\n").as_deref(), Ok("one\ntwo\n"));
+        let text = |name: &str, bytes: &[u8]| diff_text(name, bytes, None).map(|r| r.text);
+        assert_eq!(text("a.txt", b"one\ntwo\n").as_deref(), Ok("one\ntwo\n"));
         // Empty is text: two empty files are the same, which is an answer
-        assert_eq!(diff_text("a.txt", b"").as_deref(), Ok(""));
+        assert_eq!(text("a.txt", b"").as_deref(), Ok(""));
         let big = vec![b'x'; SFTP_DIFF_MAX + 1];
-        assert!(diff_text("big.js", &big).is_err(), "a file past the limit is refused");
+        assert!(text("big.js", &big).is_err(), "a file past the limit is refused");
         let edge = vec![b'x'; SFTP_DIFF_MAX];
-        assert!(diff_text("big.js", &edge).is_ok(), "the limit itself is still read");
+        assert!(text("big.js", &edge).is_ok(), "the limit itself is still read");
         // A picture: the zero bytes in it are what says so
-        assert!(diff_text("logo.png", &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]).is_err());
-        // Bytes that are not text, with no zero in them to give it away
-        assert!(diff_text("odd.txt", &[0xff, 0xfe, 0x41]).is_err(), "invalid text is refused");
+        assert!(text("logo.png", &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]).is_err());
+        // A spreadsheet's CSV is text, read as the words it holds
+        let sjis = crate::charset::write_as("氏名,住所\r\n山田太郎,東京都\r\n", encoding_rs::SHIFT_JIS).unwrap();
+        assert_eq!(text("a.csv", &sjis).as_deref(), Ok("氏名,住所\r\n山田太郎,東京都\r\n"));
+        // ...and read as something it is not, when that is what was chosen
+        let wrong = diff_text("a.csv", &sjis, Some(encoding_rs::UTF_8)).unwrap();
+        assert!(wrong.text.contains('\u{FFFD}') && !wrong.exact);
+    }
+
+    /// The encoding a comparison names: once when both sides agree, and never
+    /// for a side that is plain ASCII, which reads the same in any of them
+    #[test]
+    fn a_comparison_names_the_encoding_its_files_are_in() {
+        let sjis = crate::charset::write_as("山田\n", encoding_rs::SHIFT_JIS).unwrap();
+        let utf8 = "山田\n".as_bytes();
+        let ascii = b"yamada\n";
+        let read = |b: &[u8]| diff_text("a", b, None).unwrap();
+        let (s, u, a) = (read(&sjis), read(utf8), read(ascii));
+        assert_eq!(diff_encodings((&s, &sjis), (&s, &sjis)), "Shift_JIS");
+        assert_eq!(diff_encodings((&a, ascii), (&s, &sjis)), "Shift_JIS");
+        assert_eq!(diff_encodings((&a, ascii), (&a, ascii)), "UTF-8");
+        assert_eq!(diff_encodings((&s, &sjis), (&u, utf8)), "Shift_JIS / UTF-8");
     }
 
     #[test]
