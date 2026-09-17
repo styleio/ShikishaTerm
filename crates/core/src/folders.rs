@@ -492,6 +492,10 @@ fn expand_argv(at: &Path, branch: &str, base: &str, to: &Path) -> Vec<String> {
         "add".into(),
     ];
     if !branch_known(at, branch) {
+        // Following nothing, the way a branch cut from the worktree dialog is
+        // made (`worktree::Plan::argv`): grown from a remote branch it would
+        // follow that one, and a plain push refuses a branch of another name
+        v.push("--no-track".into());
         v.push("-b".into());
         v.push(branch.to_string());
         v.push(to.display().to_string());

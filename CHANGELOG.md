@@ -22,6 +22,211 @@ once it reaches its first tagged release.
   renamed or replaced. Pressed before, the button says why and points at the box.
 - **Server names** in the settings lists every named server, including one no
   tab reaches any more.
+
+### Fixed
+- **Testing a connection through a bastion on a port other than 22** tested it
+  on 22. The test built the connection with a copy of the launch code that did
+  not read a port typed into the box; it now uses the launch code itself.
+
+## [0.16.0] - 2026-09-17
+
+Pull requests are made from the git column and written by the AI, a conflict is
+handed to an AI tab, and ideas are jotted on cards per project and sent on to
+an Issue.
+
+### Added
+- **A pull request GitHub cannot merge for its conflicts is settled from its page.**
+  A pull request whose branch conflicts with the one it goes into says so under
+  its facts, and -- when a merge was refused -- is read again so it does. When its
+  branch is checked out in a folder on this PC (the checkout or any worktree), it
+  names that folder, quotes the three commands it runs (fetch the branch as
+  pushed, fetch the base, merge the base) and offers Resolve in an AI tab: the
+  base is brought in there, and a conflict opens the same AI tab the git column
+  does, with the same prompt. A folder behind what was pushed, or with
+  uncommitted changes, is refused before anything is merged; a base already in
+  says to push. With no folder on that branch, it points to Start from this pull
+  request. The page's own Open goes to that folder rather than making another.
+  `shikisha.git_catch_up` takes the pushed branch as a third argument to do the
+  same from a script.
+- **Bring in the latest of a branch's base, from the git column.** Under the arrow,
+  Bring in the latest says how far the branch is behind the branch it was cut
+  from, as of the last fetch, and quotes the two commands it runs: a fetch of that
+  one branch from its server, then a merge of what was fetched -- never the local
+  copy of the base, which can be days old. With uncommitted changes it stays grey
+  and says so. When the base is not written down it asks for it once, from the
+  server's branches, and remembers the answer. It says how many commits came in,
+  or that there was nothing new. On a conflict it names the base and the files,
+  leaves the merge where it stopped, and the button becomes Resolve in an AI tab:
+  a new tab of the default AI, in the same folder, told what the prompt in
+  Settings > desk > git says (read both sides, finish the merge, run the checks,
+  push nothing, report per file). A second press brings that tab forward rather
+  than setting another AI on the same merge. A page opened after the merge stopped
+  shows the same, and the column reads the folder again when work in it ends.
+- **`shikisha.git_catch_up`, `shikisha.git_set_base` and
+  `shikisha.git_remote_branches`** do the same from a script; `git_branch` also
+  says `base`, `base_behind`, `catch_up` and `catching_up`.
+- **A new pull request lists the files it changes.** Under the branch it goes
+  into, each file with its added and removed lines, the total at the top; pressed,
+  a file opens its change in place, to be read. Ten are shown, and the rest one
+  press away.
+- **A pull request is made from the git column.** Once a branch is pushed and
+  has nothing waiting either way, the git column's button becomes Create pull
+  request (not on a protected branch, and not while the branch already has one
+  open); it is also under the arrow, greyed with the reason when it cannot be made
+  yet. It opens a New pull request page in the Issue tab: the description with its
+  ✨, the title, the branch it goes into (the server's default first), Create as a
+  draft, and -- for a folder made for an issue -- a tick that ends the description
+  with `Fixes #123`. The ✨ has the AI write the title and description from the
+  branch's commits and change, with the prompt in Settings > desk > git, the same
+  way a new issue is written. Once made, the pull request opens.
+- **`shikisha.github_pr_create`** opens a pull request from a script.
+- **A new issue can be written by the AI from what is in its description.** The
+  description now comes first, with a ✨ at the right of its name. Pressed, the AI
+  writes the title, the description, the labels and the assignee from what was
+  written, and what was written is kept at the top with a button that puts it
+  back. What the AI is told is Settings > desk > git > New issue from notes, shown
+  whole and changeable like the commit message prompt; after it, the shape of the
+  answer is always added (JSON, with the repository's labels and assignable
+  people), and an answer that cannot be read is asked for again, up to three
+  times. Right-clicking the ✨ opens that prompt.
+- **Labels and the assignee of a new issue are chosen, not typed.** The labels
+  the repository has are offered under the field and a chosen one has a ✕; the
+  assignee is a list of the people GitHub lets be assigned, with Nobody first.
+- **`shikisha.json_decode` and `shikisha.json_encode`** read JSON text into a
+  value and write a value back out.
+- **Ideas: write down what comes to mind, per project.** The 💡 at the foot of
+  the side column, left of the tools, opens a box of cards over the screen with
+  the caret already in the line to write in. Enter moves to the next card and
+  Shift+Enter starts a new line inside one; there is no Save, what is typed is
+  kept as it is typed. The list at the top chooses a project, or "No project",
+  and opens on the project of the folder in front. A project is a git
+  repository: its checkout and every worktree of it share one set of cards,
+  wherever those folders are, and a folder that is no repository is not offered. Ticking a card marks it done
+  and takes it out of the list until "Show done ideas" is pressed; its grip
+  carries it to another place; its copy button puts it on the clipboard. Cards
+  are kept in `config/ideas.json`, and a card whose project is taken out of
+  every desk goes to "No project". The same cards open from a phone. A
+  right-click on a card, or holding its grip on a phone, opens a menu to copy
+  it, send it to an Issue, mark it done or not, or delete it: done keeps it for
+  "Show done ideas", deleted takes it out of the file for good. Sending to an
+  Issue brings the Issue tab to the front on a new issue whose description is
+  the idea, in the idea's project; its ✨ writes the title and labels from it.
+  Once the issue is made the idea is done, and wears the issue's number (`#12`),
+  which opens it; a form put away without making one leaves the idea as it was.
+- **The quick commands and the ideas open with a combination of their own,
+  and any action can be given one.** `Ctrl+Shift+K` opens the quick commands and
+  `Ctrl+Shift+M` the ideas, with no prefix, and even while the caret is in the
+  input bar or another text box. Under Settings > Keys, choosing the box beside
+  an action and pressing a combination writes it there; Shift held with Ctrl now
+  makes a key of its own, so Ctrl+Shift+M is not taken for Ctrl+M.
+
+### Changed
+- **Waiting in the Issue tab is shown plainly.** While GitHub or the AI is being
+  waited for, a line at the top of the page has the working dot, what is being
+  done ("The AI is writing the pull request…") and how many seconds it has been.
+- **The right-hand column's git panel is called Git.** "Changes" did not say what
+  it was the changes of.
+- **The commit message prompt is written out whole in the settings, and can be
+  changed or emptied.** The AI used to be given a prompt nobody could see, with
+  the settings only adding a line to it. Settings > desk > git now shows the whole
+  prompt: a summary line, a short body on why, and a last line naming the AI that
+  wrote the message (`Assisted-by: {ai}`, which can be taken out). `{diff}` is
+  where the change goes and `{ai}` becomes the AI's name; both can be put in with
+  a press. Not written, the default is used and said to be; written empty, the
+  AI is given the change alone; "Back to the default" returns to it. An
+  instruction written in an earlier version is shown on the end of the default.
+  A prompt for a pull request's title and description is there in the same form,
+  for when the git panel makes pull requests. Right-clicking the AI button in the
+  git panel offers Edit, which opens that prompt.
+- **The commit message is written in the git panel, and one button does the next
+  thing.** The message used to be the line in the input bar under the terminal,
+  and the Commit button in the Changes column took whatever was typed there --
+  beside Claude, a line meant for Claude. The panel now has a message box of its
+  own, with a button in its corner that has the AI write one, and under it a
+  single button that follows the work: settle a conflict, add everything, commit,
+  publish the branch, push, pull, fetch. Commit and push, amending the last commit,
+  a new branch and merge are under the arrow beside it, and what cannot be done
+  yet stays in that list with what it is waiting for. The branch line says how
+  far it is from the branch it follows ("2 to push"). The input bar no longer has
+  a commit row, and Send on a git tab no longer commits.
+- **`shikisha.git_branch` also says what the branch follows.** `upstream`,
+  `ahead` and `behind`, as of the last fetch, and absent when it follows nothing.
+- **Backspace in the empty input bar deletes in the tab it sends to.** In a
+  terminal or a browser page, a Backspace with nothing typed goes on to the
+  prompt or the page, so a character sent a moment ago can be taken back without
+  leaving the bar. Holding Backspace to clear what was typed stops at the empty
+  bar. A chat with a model, a 🎯 goal and ▶ Lua keep Backspace to themselves.
+- **A folder's tabs start put away in the side column, one tab or several.** Each
+  folder is one line of pills until its box is pressed, and what somebody opened
+  or shut stays that way.
+
+### Fixed
+- **A pull request's Close pull request button says that again.** The tick on a
+  new pull request that closes its issue had been given the same word, so the
+  button read "Close issue {ref} when it is merged". A test now refuses a word
+  written twice in a dictionary.
+- **An AI tab opened with a first message no longer quits on Claude Code's folder
+  trust question.** The question was not taken for one, so the message and Enter
+  went in and chose No, exit -- in every new worktree. The tab now waits until the
+  question is answered.
+- **Esc puts away the quick commands before any are made.** The note saying
+  none exist yet did not take the keyboard, so opened from a text box the
+  launcher stayed up whatever was pressed.
+- **The Issue tab keeps showing issues after a pull request page is opened from the
+  git column.** Opening it turned the list behind it to pull requests without
+  asking for them again, so the list was headed Pull requests over issues and the
+  New issue button was gone. The list turns to pull requests once one is made.
+- **A worktree made in the app pushes under its own name.** A branch cut from
+  `origin/main` (a worktree made from an issue, for one) was set to follow
+  `origin/main`, so Push in the git panel stopped and said the branch follows one
+  of another name. A new branch now follows nothing until its first push, which
+  sends it to the remote under its own name and follows that. The same holds for
+  a branch made again where its folder had gone, and on an SSH host. Branches
+  already made this way still say how to send them (`git push -u origin HEAD`).
+- **A push git will not make because the branch follows one of another name says
+  so.** A worktree's branch that follows `origin/main` could not be pushed, and the
+  panel showed git's paragraph about `push.default`. It now says which branch
+  follows which, and the command for each way out: sending to `main`, or sending
+  under the branch's own name.
+- **Pressing a folder with the Issue tab in front goes to the folder.** The Issue
+  tab belongs to no folder, so the folder looked at just before still counted as
+  the one in front: pressing it did nothing, and the view kept for it became the
+  Issue tab, so pressing it later from another folder brought the Issue tab back.
+  A folder's view is now kept only while one of its own tabs is in front.
+- **The lists of changes use the whole height of the right-hand column.** A width
+  set for the git tab's middle column (38%) was applied to it standing in the
+  column, where it became 38% of the height, and the two lists split what was
+  left evenly however many files each held. The lists now reach the bottom; when
+  they do not both fit, the shorter keeps its files in view (up to half the room)
+  and the longer scrolls. On a phone or in a browser, a git tab also no longer
+  stops a bar's height above the bottom after the input bar is put away.
+- **A change is read in an editor tab, and the list of changes stays where it
+  is.** In the right-hand column, pressing a file replaced the list with that
+  file's change, so after picking files the "Add picked" button was no longer on
+  screen. The change now opens in the editor tab beside the terminals, one piece
+  at a time with the same Add, Remove and Discard buttons, and follows the file
+  when it moves between the two lists; "Open the file" switches it to the file
+  itself. Ctrl-click only picks. The column no longer has a Diff pane.
+- **A pull that would write over uncommitted work says so, and shows the files.**
+  git refuses such a pull, and the panel showed its whole answer: a dozen lines
+  about line endings with the reason at the bottom. It now says the pull could not
+  go ahead because those files have uncommitted changes, names them, and picks
+  them in the list, asking for them to be committed first. Line-ending notes are
+  left out of every git error.
+- **A long worktree name no longer breaks the top of the right-hand column.** The
+  Files and Changes buttons were allowed to shrink, so a name like
+  `issue-3-feature-request-tell-product` folded them onto two lines and the strip
+  grew under them. The buttons stay whole and the name is cut with an ellipsis. In
+  the same narrow column the account label and the list headings stay on one line,
+  and a cut heading keeps its count.
+
+## [0.15.0] - 2026-09-16
+
+The file panel sends and brings back whole folders, says what a send would
+replace before it does, and holds a file up against its copy on the server. A
+worktree is deleted from its right-click menu.
+
+### Added
 - **A question about the far end says which machine it is about.** Deleting,
   renaming and making a folder quoted a path and nothing else, so the one thing
   that decides whether the answer is safe was left to memory.
@@ -59,9 +264,10 @@ once it reaches its first tagged release.
   before deleting a worktree" is where that answer is kept and turned back on.
 
 ### Fixed
-- **Testing a connection through a bastion on a port other than 22** tested it
-  on 22. The test built the connection with a copy of the launch code that did
-  not read a port typed into the box; it now uses the launch code itself.
+- **A folder with an editor tab opens the editor.** It tried to run a program
+  called "editor" instead, and said to install it.
+- **The account list in the changes panel stays open when it is pressed.** In
+  the column on the right it shut again the moment it dropped open.
 - **A folder sent from the file panel never started on a desk with no
   automation of its own** -- which is nearly every desk. The walk runs as Lua,
   and nothing had made the engine that runs it; it said the panel was no longer
@@ -2232,7 +2438,9 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/styleio/ShikishaTerm/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/styleio/ShikishaTerm/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/styleio/ShikishaTerm/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/styleio/ShikishaTerm/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/styleio/ShikishaTerm/compare/v0.11.0...v0.12.0

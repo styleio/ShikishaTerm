@@ -74,6 +74,17 @@ pub const ACTIONS: &[Action] = &[
     Action { name: "help", key: '?', also: &[], desc: "keys.help" },
     Action { name: "palette", key: ':', also: &[], desc: "keys.palette" },
     Action { name: "quick_commands", key: 'k', also: &[], desc: "keys.quick_commands" },
+    Action { name: "ideas", key: 'm', also: &[], desc: "keys.ideas" },
+];
+
+/// Actions that also answer to a combination with no prefix, before anything
+/// is read from the settings. The things that are opened over everything and
+/// wanted in the middle of typing, where going through the prefix is two
+/// presses too many. Ctrl with Shift, because a terminal program cannot tell
+/// Ctrl+Shift+a letter from Ctrl+that letter, so none of them asks for it
+const DEFAULT_DIRECT: &[(&str, &str)] = &[
+    ("quick_commands", "ctrl+shift+k"),
+    ("ideas", "ctrl+shift+m"),
 ];
 
 /// The prefix, before anything is read from the settings.
@@ -89,6 +100,26 @@ const DEFAULT_PREFIX: &str = "ctrl+b";
 /// every button in the app from working. There is exactly one of these per
 /// process, so a process-wide value is what it honestly is.
 static IN_FORCE: Mutex<Option<Trigger>> = Mutex::new(None);
+
+/// The combinations in force that need no prefix, for the page: pressed while
+/// the caret is in one of its own boxes, the keys never reach the window's
+/// keyboard, so the page has to know which ones to hand on
+static DIRECT_IN_FORCE: Mutex<Vec<DirectKey>> = Mutex::new(Vec::new());
+
+/// One combination with no prefix, in the words the page sends keys in: a
+/// character with the modifiers held, or a named key (`f5`, `pgup`)
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DirectKey {
+    pub key: String,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+}
+
+/// What the page should hand on, as the keys stand
+pub fn direct_now() -> Vec<DirectKey> {
+    DIRECT_IN_FORCE.lock().map(|g| g.clone()).unwrap_or_default()
+}
 
 /// The prefix a synthesised press should use.
 pub fn prefix_now() -> Trigger {
@@ -109,16 +140,19 @@ pub struct Trigger {
 impl Trigger {
     /// Whether a press is this trigger.
     ///
-    /// Shift is not compared when the key is a character, because the shift is
-    /// already in the character: a terminal reports `%` for shift+5, and asking
-    /// for shift on top of that would mean nothing ever matched
+    /// Shift is not compared when the key is a character on its own, because
+    /// the shift is already in the character: a terminal reports `%` for
+    /// shift+5, and asking for shift on top of that would mean nothing ever
+    /// matched. Held with Ctrl or Alt it is compared: the letter arrives the
+    /// same either way, and Ctrl+Shift+M is not Ctrl+M (which is Enter)
     pub fn matches(&self, ev: &KeyEvent) -> bool {
         if self.code != ev.code {
             return false;
         }
+        let chord = KeyModifiers::CONTROL | KeyModifiers::ALT;
         let mask = match self.code {
-            KeyCode::Char(_) => KeyModifiers::CONTROL | KeyModifiers::ALT,
-            _ => KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            KeyCode::Char(_) if !self.mods.intersects(chord) && !ev.modifiers.intersects(chord) => chord,
+            _ => chord | KeyModifiers::SHIFT,
         };
         (self.mods & mask) == (ev.modifiers & mask)
     }
@@ -238,8 +272,9 @@ pub struct Keys {
     /// What a character typed after the prefix really means. Holds the
     /// defaults and their old spellings, minus anything a person moved away
     typed: HashMap<char, char>,
-    /// Combos that need no prefix at all
-    direct: Vec<(Trigger, char)>,
+    /// Combos that need no prefix at all, each with whether a person wrote it
+    /// (false is one of `DEFAULT_DIRECT`, which a person's own choice replaces)
+    direct: Vec<(Trigger, char, bool)>,
 }
 
 impl Default for Keys {
@@ -273,7 +308,11 @@ impl Keys {
                 typed.insert(*c, a.key);
             }
         }
-        let mut direct: Vec<(Trigger, char)> = Vec::new();
+        let mut direct: Vec<(Trigger, char, bool)> = Vec::new();
+        for (name, combo) in DEFAULT_DIRECT {
+            let action = ACTIONS.iter().find(|a| a.name == *name).expect("a default names an action");
+            direct.push((Trigger::parse(combo).expect("a default combination parses"), action.key, false));
+        }
 
         for (name, want) in binds {
             let Some(action) = ACTIONS.iter().find(|a| a.name == name) else {
@@ -288,6 +327,7 @@ impl Keys {
             // is moved, or the old key would go on working and the person
             // would never see their change take effect
             typed.retain(|_, v| *v != action.key);
+            direct.retain(|(_, c, written)| *written || *c != action.key);
             if off {
                 continue;
             }
@@ -308,7 +348,9 @@ impl Keys {
                     typed.insert(c, action.key);
                 }
                 _ => {
-                    if let Some((_, taken)) = direct.iter().find(|(o, _)| *o == t) {
+                    // Another action's default gives way: this one was chosen
+                    direct.retain(|(o, _, written)| *written || *o != t);
+                    if let Some((_, taken, _)) = direct.iter().find(|(o, _, _)| *o == t) {
                         errs.push(clash(&t.show(), taken));
                         continue;
                     }
@@ -316,7 +358,7 @@ impl Keys {
                         errs.push(crate::i18n::tp("err.keys.is_prefix", &[("key", &t.show())]));
                         continue;
                     }
-                    direct.push((t, action.key));
+                    direct.push((t, action.key, true));
                 }
             }
         }
@@ -336,7 +378,48 @@ impl Keys {
         if let Ok(mut g) = IN_FORCE.lock() {
             *g = Some(keys.prefix);
         }
+        if let Ok(mut g) = DIRECT_IN_FORCE.lock() {
+            *g = keys.direct_for_page();
+        }
         (keys, errs)
+    }
+
+    /// The combinations with no prefix, in the page's words. One the page has
+    /// no way to send (Ctrl with a named key) is left to the window's own
+    /// keyboard, where it already works
+    pub fn direct_for_page(&self) -> Vec<DirectKey> {
+        self.direct
+            .iter()
+            .filter_map(|(t, _, _)| {
+                let ctrl = t.mods.contains(KeyModifiers::CONTROL);
+                let key = match t.code {
+                    KeyCode::Char(c) if ctrl => c.to_string(),
+                    KeyCode::Char(_) => return None,
+                    _ if ctrl => return None,
+                    KeyCode::F(n) => format!("f{n}"),
+                    KeyCode::Enter => "enter".into(),
+                    KeyCode::Esc => "esc".into(),
+                    KeyCode::Tab => "tab".into(),
+                    KeyCode::Backspace => "bs".into(),
+                    KeyCode::Delete => "del".into(),
+                    KeyCode::Home => "home".into(),
+                    KeyCode::End => "end".into(),
+                    KeyCode::PageUp => "pgup".into(),
+                    KeyCode::PageDown => "pgdn".into(),
+                    KeyCode::Up => "up".into(),
+                    KeyCode::Down => "down".into(),
+                    KeyCode::Left => "left".into(),
+                    KeyCode::Right => "right".into(),
+                    _ => return None,
+                };
+                Some(DirectKey {
+                    key,
+                    ctrl,
+                    shift: t.mods.contains(KeyModifiers::SHIFT),
+                    alt: t.mods.contains(KeyModifiers::ALT),
+                })
+            })
+            .collect()
     }
 
     pub fn is_prefix(&self, ev: &KeyEvent) -> bool {
@@ -364,8 +447,8 @@ impl Keys {
     pub fn direct(&self, ev: &KeyEvent) -> Option<KeyCode> {
         self.direct
             .iter()
-            .find(|(t, _)| t.matches(ev))
-            .map(|(_, c)| KeyCode::Char(*c))
+            .find(|(t, _, _)| t.matches(ev))
+            .map(|(_, c, _)| KeyCode::Char(*c))
     }
 
     /// The help screen: every action, with the keys that actually reach it.
@@ -380,8 +463,8 @@ impl Keys {
                 let mut ways: Vec<String> = self
                     .direct
                     .iter()
-                    .filter(|(_, c)| *c == a.key)
-                    .map(|(t, _)| t.show())
+                    .filter(|(_, c, _)| *c == a.key)
+                    .map(|(t, _, _)| t.show())
                     .collect();
                 let mut after: Vec<char> =
                     self.typed.iter().filter(|(_, v)| **v == a.key).map(|(k, _)| *k).collect();
@@ -483,6 +566,58 @@ mod tests {
         assert!(t.matches(&press('%', KeyModifiers::SHIFT)));
         assert!(t.matches(&press('%', KeyModifiers::NONE)));
         assert!(!t.matches(&press('%', KeyModifiers::CONTROL)));
+    }
+
+    /// Held with Ctrl, Shift is part of the key: Ctrl+Shift+M and Ctrl+M are
+    /// two keys, and the second is Enter to a program in a tab
+    #[test]
+    fn shift_held_with_ctrl_makes_another_key() {
+        let t = Trigger::parse("ctrl+shift+m").unwrap();
+        assert!(t.matches(&press('m', KeyModifiers::CONTROL | KeyModifiers::SHIFT)));
+        assert!(!t.matches(&press('m', KeyModifiers::CONTROL)), "Ctrl+M opened what Ctrl+Shift+M is for");
+        let plain = Trigger::parse("ctrl+m").unwrap();
+        assert!(!plain.matches(&press('m', KeyModifiers::CONTROL | KeyModifiers::SHIFT)));
+    }
+
+    /// The quick commands and the ideas open with a combination and no prefix
+    /// as they ship, and the prefix still reaches them too
+    #[test]
+    fn the_quick_commands_and_the_ideas_open_with_no_prefix() {
+        let keys = Keys::default();
+        let both = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        assert_eq!(keys.direct(&press('k', both)), Some(KeyCode::Char('k')));
+        assert_eq!(keys.direct(&press('m', both)), Some(KeyCode::Char('m')));
+        assert_eq!(keys.direct(&press('m', KeyModifiers::CONTROL)), None, "Ctrl+M was taken from the program in the tab");
+        assert_eq!(keys.after_prefix(KeyCode::Char('m')), Some(KeyCode::Char('m')));
+        let rows = keys.help_rows();
+        assert!(rows.iter().any(|(k, d)| *d == "keys.ideas" && k.starts_with("Ctrl+Shift+M")), "{rows:?}");
+        // What the page is told to hand on from its own boxes
+        let page = keys.direct_for_page();
+        assert!(page.contains(&DirectKey { key: "m".into(), ctrl: true, shift: true, alt: false }), "{page:?}");
+        assert!(page.contains(&DirectKey { key: "k".into(), ctrl: true, shift: true, alt: false }), "{page:?}");
+    }
+
+    /// A person's own combination replaces what an action shipped with, and
+    /// taking another action's shipped combination is not a clash
+    #[test]
+    fn a_chosen_combination_takes_the_place_of_a_shipped_one() {
+        let binds = HashMap::from([
+            ("ideas".to_string(), "ctrl+alt+i".to_string()),
+            ("palette".to_string(), "ctrl+shift+k".to_string()),
+        ]);
+        let (keys, errs) = Keys::from(None, &binds);
+        assert!(errs.is_empty(), "{errs:?}");
+        let both = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        assert_eq!(keys.direct(&press('m', both)), None, "the ideas kept the combination they moved away from");
+        assert_eq!(keys.direct(&press('i', KeyModifiers::CONTROL | KeyModifiers::ALT)), Some(KeyCode::Char('m')));
+        assert_eq!(keys.direct(&press('k', both)), Some(KeyCode::Char(':')), "the chosen one did not win");
+        // Two combinations a person wrote still cannot share one key
+        let binds = HashMap::from([
+            ("ideas".to_string(), "ctrl+shift+y".to_string()),
+            ("palette".to_string(), "ctrl+shift+y".to_string()),
+        ]);
+        let (_, errs) = Keys::from(None, &binds);
+        assert_eq!(errs.len(), 1, "{errs:?}");
     }
 
     #[test]

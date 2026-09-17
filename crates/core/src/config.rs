@@ -2795,17 +2795,37 @@ pub fn browser_url_of(argv: &[String]) -> Option<String> {
 
 /// What the git panel's commit-message button does.
 ///
-/// Two levels on purpose. `message_hint` is **added** to the built-in prompt --
-/// the rules and the diff still go, and this says the extra thing ("always in
-/// English", "start with a ticket number"). Replacing the whole prompt would
-/// leave the AI describing a change it was never shown, which is why the field
-/// that replaces things is the Lua one: there, the caller builds the whole
-/// question themselves and can reach anything automation can reach.
+/// Two levels. `message_prompt` is the whole of what the AI is told -- there
+/// is no instruction kept out of sight behind it. `{diff}` in it is where the
+/// change goes (after it, when it is not written) and `{ai}` becomes the name
+/// of the AI answering. For more than words, `message_lua` replaces the
+/// template that asks, and can reach anything automation can reach.
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct GitSpec {
-    /// Added to the built-in prompt. Empty means the built-in prompt alone
+    /// The whole prompt. Absent is the default prompt; empty is no instruction
+    /// at all, the change alone
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_prompt: Option<String>,
+    /// Written by earlier versions: an instruction added to a prompt that was
+    /// not shown. Read as the default prompt with it on the end, which is
+    /// what those versions asked, until the prompt is written out whole
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_hint: Option<String>,
+    /// The whole prompt a pull request's title and description are asked with,
+    /// in the same three states as `message_prompt`. Its words to fill in are
+    /// `{branch}`, `{base}`, `{commits}`, `{diff}` and `{ai}`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_prompt: Option<String>,
+    /// The prompt an issue is drafted from somebody's notes with, in the same
+    /// three states. Its words to fill in are `{text}` and `{ai}`; the shape of
+    /// the answer is always added after it (see `hooks::ISSUE_DRAFT_LUA`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_prompt: Option<String>,
+    /// What an AI tab opened to finish a stopped merge is told first, in the same
+    /// three states. Its words to fill in are `{folder}`, `{branch}`, `{base}`
+    /// and `{files}`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_prompt: Option<String>,
     /// Lua that produces the message itself. When set, the built-in template is
     /// not used at all -- this is the whole of it
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2821,6 +2841,32 @@ pub struct GitSpec {
 }
 
 impl GitSpec {
+    /// The prompt the commit message is asked with, before `{ai}` and `{diff}`
+    /// are filled in: the one written, else the default -- carrying on the end
+    /// an instruction an earlier version kept apart from it
+    pub fn commit_prompt(&self) -> String {
+        if let Some(p) = &self.message_prompt {
+            return p.clone();
+        }
+        let base = crate::i18n::t("ai.commit.default_prompt");
+        match self.message_hint.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+            Some(h) => format!("{base}\n\n{h}"),
+            None => base,
+        }
+    }
+    /// The prompt a pull request is drafted with: the one written, else the default
+    pub fn pr_prompt(&self) -> String {
+        self.pr_prompt.clone().unwrap_or_else(|| crate::i18n::t("ai.pr.default_prompt"))
+    }
+    /// What an AI tab opened to finish a stopped merge is told: the one written,
+    /// else the default
+    pub fn merge_prompt(&self) -> String {
+        self.merge_prompt.clone().unwrap_or_else(|| crate::i18n::t("ai.merge.default_prompt"))
+    }
+    /// The prompt an issue is drafted with: the one written, else the default
+    pub fn issue_prompt(&self) -> String {
+        self.issue_prompt.clone().unwrap_or_else(|| crate::i18n::t("ai.issue.default_prompt"))
+    }
     /// The branches to guard where nobody has said anything more specific.
     pub fn protected(&self) -> Vec<String> {
         match &self.protect {
@@ -5971,6 +6017,33 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A prompt not written is the default, a prompt written empty is empty,
+    /// and the two are told apart by whether the key is there at all. An
+    /// instruction an earlier version kept apart goes on the end of the
+    /// default, as it was used.
+    #[test]
+    fn a_prompt_not_written_is_the_default_and_one_written_empty_is_empty() {
+        let spec = |json: &str| serde_json::from_str::<GitSpec>(json).unwrap();
+        let standard = crate::i18n::t("ai.commit.default_prompt");
+        assert!(standard.contains("{diff}") && standard.contains("Assisted-by: {ai}"),
+                "the default prompt does not show where the change and the AI's name go: {standard}");
+        assert_eq!(spec("{}").commit_prompt(), standard);
+        assert_eq!(spec(r#"{"message_prompt": ""}"#).commit_prompt(), "");
+        assert_eq!(spec(r#"{"message_prompt": "mine {diff}"}"#).commit_prompt(), "mine {diff}");
+        assert_eq!(spec(r#"{"message_hint": "Always in English."}"#).commit_prompt(),
+                   format!("{standard}\n\nAlways in English."));
+        assert_eq!(spec(r#"{"message_prompt": "", "message_hint": "old"}"#).commit_prompt(), "",
+                   "a prompt written out is used over an old instruction");
+
+        // Written empty stays in the file; not written is not in it
+        let empty = serde_json::to_value(spec(r#"{"message_prompt": "", "pr_prompt": ""}"#)).unwrap();
+        assert_eq!(empty["message_prompt"], "");
+        assert_eq!(empty["pr_prompt"], "");
+        let none = serde_json::to_value(spec("{}")).unwrap();
+        assert!(none.get("message_prompt").is_none() && none.get("pr_prompt").is_none());
+        assert!(crate::i18n::t("ai.pr.default_prompt").contains("{commits}"));
     }
 
     /// Each desk has its own notification destinations, model connections,

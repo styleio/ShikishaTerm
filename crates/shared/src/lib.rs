@@ -433,6 +433,10 @@ pub enum Ev {
     EditOpen {
         panel: String,
         path: String,
+        /// Which change of that file to show instead of the file itself:
+        /// `work` (not added yet), `staged` (in the next commit) or
+        /// `commit:<hash>`. Empty opens the file to edit
+        diff: String,
     },
     /// The window's own bar, which the page draws now that the frame is ours:
     /// "drag" (the bar was taken hold of), "minimize", "maximize" (toggles),
@@ -572,10 +576,17 @@ pub enum Ev {
     /// on arrival, which is also where any secret it names is put in -- so a
     /// value never passes through a page
     Quick { id: String, tab: usize },
-    /// The window's quick-command launcher went up or came down. Pages placed
-    /// in the window step aside while it is up, since nothing the board draws
-    /// can cover them. The window's own; a phone has no placed pages
-    QuickShown { on: bool },
+    /// Something the board draws over everything (the quick commands, the
+    /// ideas) went up or came down. Pages placed in the window step aside
+    /// while it is up, since nothing the board draws can cover them. The
+    /// window's own; a phone has no placed pages
+    Covered { on: bool },
+    /// The ideas window asking for its cards, or changing one. `act` is one
+    /// of a short list (see `ideas::answer`)
+    Ideas {
+        act: String,
+        args: serde_json::Value,
+    },
     /// The window was closed
     Closed,
 }
@@ -1045,6 +1056,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("editopen") => Ev::EditOpen {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             path: v.get("path").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            diff: v.get("diff").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         // The window's own bar (see `Ev::Window`).
         Some("window") => Ev::Window {
@@ -1294,8 +1306,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
         },
-        Some("quickshown") => Ev::QuickShown {
+        Some("covered") => Ev::Covered {
             on: v.get("on").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        Some("ideas") => Ev::Ideas {
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
         },
         // Save the latest run's replay.lua where the user can grab it
         // (the window board can't download over HTTP, so it asks the app)

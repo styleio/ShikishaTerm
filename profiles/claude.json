@@ -13,7 +13,8 @@
     "❯\\s*1\\.",
     "\\(y/n\\)",
     "yes/no",
-    "Allow .+\\?"
+    "Allow .+\\?",
+    "Enter to confirm"
   ],
   "limit_patterns": [
     "You've hit your limit",

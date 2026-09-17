@@ -463,6 +463,12 @@ impl WinSurface {
         let _ = self.win.eval("window.__openQuick && window.__openQuick();");
     }
 
+    /// Bring up the ideas on this window's page (the keyboard path; the bulb
+    /// left of the scissors opens them in the page directly)
+    fn open_ideas(&self) {
+        let _ = self.win.eval("window.__openIdeas && window.__openIdeas();");
+    }
+
     /// Hand one answer back to the git panel (already JSON-encoded)
     fn push_git(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__git && window.__git({json});"));
@@ -477,6 +483,11 @@ impl WinSurface {
     /// Hand one answer back to the Issue tab (already JSON-encoded)
     fn push_issues(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__issues && window.__issues({json});"));
+    }
+
+    /// Hand one answer back to the ideas window (already JSON-encoded)
+    fn push_ideas(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__ideas && window.__ideas({json});"));
     }
 
     /// Hand one answer back to the transfer panel (already JSON-encoded)
@@ -681,7 +692,7 @@ impl WinSurface {
                 Ev::Files { panel, act, args } => self.mail.files.push((panel, act, args)),
                 Ev::Issues { act, args } => self.mail.issues.push((act, args)),
                 Ev::OpenIssues => self.mail.open_issues = true,
-                Ev::EditOpen { panel, path } => self.mail.edits.push((panel, path)),
+                Ev::EditOpen { panel, path, diff } => self.mail.edits.push((panel, path, diff)),
                 Ev::Sftp { panel, act, args } => self.mail.sftps.push((panel, act, args)),
                 Ev::Recorded {
                     from: Some(child),
@@ -711,7 +722,8 @@ impl WinSurface {
                 Ev::Scroll { by, row, col } => self.mail.scrolls.push((by, row, col)),
                 Ev::Say { tab, text } => self.mail.says.push((tab, text)),
                 Ev::Quick { id, tab } => self.mail.quicks.push((id, tab)),
-                Ev::QuickShown { on } => self.mail.quick_shown = Some(on),
+                Ev::Covered { on } => self.mail.covered = Some(on),
+                Ev::Ideas { act, args } => self.mail.ideas.push((act, args)),
                 Ev::Where {
                     from: Some(name),
                     url,
@@ -1791,9 +1803,11 @@ impl shikisha_core::host::Shell for WinSurface {
     fn open_vault(&self) { WinSurface::open_vault(self) }
     fn open_palette(&self) { WinSurface::open_palette(self) }
     fn open_quick(&self) { WinSurface::open_quick(self) }
+    fn open_ideas(&self) { WinSurface::open_ideas(self) }
     fn push_git(&self, json: &str) { WinSurface::push_git(self, json) }
     fn push_files(&self, json: &str) { WinSurface::push_files(self, json) }
     fn push_issues(&self, json: &str) { WinSurface::push_issues(self, json) }
+    fn push_ideas(&self, json: &str) { WinSurface::push_ideas(self, json) }
     fn push_sftp(&self, json: &str) { WinSurface::push_sftp(self, json) }
     fn push_recorded(&self, line_json: &str) { WinSurface::push_recorded(self, line_json) }
     fn queue_vault(&mut self, ev: shikisha_shared::Ev) { WinSurface::queue_vault(self, ev) }

@@ -150,9 +150,12 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // the composer, which the phone can already do. Any secret it names
         // is put in on this machine and never travels to the phone
         Ev::Quick { .. } => true,
-        // Only the window's launcher moves the pages placed in the window;
-        // a phone's launcher covers nothing here
-        Ev::QuickShown { .. } => false,
+        // Only the window's own overlays move the pages placed in the window;
+        // one drawn on a phone covers nothing here
+        Ev::Covered { .. } => false,
+        // The ideas window: the person's own notes, read and written in the
+        // one file they are kept in
+        Ev::Ideas { .. } => true,
         // Pressing the bar a script put under a page ("done logging in"). The
         // bar is drawn by the board so that only a person can press it, and
         // the person may well be on the phone -- a login it was waiting for is

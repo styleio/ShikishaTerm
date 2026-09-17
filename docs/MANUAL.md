@@ -34,10 +34,10 @@ letters. `Ctrl+B 0` brings it back from anywhere.
   branch it is on, its pull request, and any ports it is listening on; under that,
   what it last said about itself.
 - Under INDEX and Issue, the **PROJECT** heading with a `+` at its end (add a project).
-  At the very bottom, the gear (settings), `?` (this page), the scissors (tools) and
-  🎛️ (quick commands).
+  At the very bottom, the gear (settings), `?` (this page), 💡 (ideas), the scissors
+  (tools) and 🎛️ (quick commands).
 
-**Quick commands** are a grid of buttons you make yourself. 🎛️ or `Ctrl+B k` brings
+**Quick commands** are a grid of buttons you make yourself. 🎛️ or `Ctrl+Shift+K` brings
 them up over the whole window. Every press opens a new tab in the folder of the
 tab you are looking at: a command runs in a new shell tab, and a prompt is given
 to an AI started in a new tab. With no
@@ -79,6 +79,11 @@ away.
 The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` shows the keys you actually have,
 since every one of them can be changed in the settings.
 
+A few keys need no prefix: `Ctrl+Shift+K` opens the quick commands and
+`Ctrl+Shift+M` the ideas, even while the caret is in a text box. Under
+Settings > Keys, choose the box beside an action and press the combination you
+want (`Ctrl+Shift+D`, `Alt+F4`, `F5`) to give it one of its own.
+
 | Key | What it does |
 |---|---|
 | `Ctrl+B q` | Quit |
@@ -104,6 +109,7 @@ since every one of them can be changed in the settings.
 | `Ctrl+B b` | Send the prefix key itself to the program |
 | `Ctrl+B :` | Command palette |
 | `Ctrl+B k` | Quick commands |
+| `Ctrl+B m` | Ideas |
 | `Ctrl+B ?` | The key list |
 
 On INDEX the menu is single letters: `e` settings, `p` the palette, `f` find,

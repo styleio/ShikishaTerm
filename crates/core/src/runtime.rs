@@ -829,6 +829,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let (git_tx, git_rx) = std::sync::mpsc::channel::<String>();
     // Answers to the Issue tab, from the threads that waited for GitHub
     let (issues_tx, issues_rx) = std::sync::mpsc::channel::<String>();
+    // A pull request's base brought into its folder: the merge on a thread, and
+    // a conflict handed to an AI tab back here, where the tabs are
+    let (pr_tx, pr_rx) = std::sync::mpsc::channel::<PrCatchUp>();
     // Everything the file panel asks of a server, which is all of it: a folder
     // on the far end is a network round trip and the window cannot wait for one
     let (sftp_tx, sftp_rx) = std::sync::mpsc::channel::<String>();
@@ -1144,10 +1147,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Where a command with no folder in front opens. Looked up once: it is
     // asked on every frame the launcher could be showing
     let home = home_folder();
-    // Whether the window's launcher is up. Pages placed in the window are
-    // windows of their own and nothing drawn can cover them, so they step
-    // aside while it is, the way they do for the help and the desk list
-    let mut quick_open = false;
+    // Whether the page has something up over everything (the quick commands,
+    // the ideas). Pages placed in the window are windows of their own and
+    // nothing drawn can cover them, so they step aside while it is, the way
+    // they do for the help and the desk list
+    let mut page_covered = false;
 
     let mut desk_open = false;
     let mut help_open = false;
@@ -1377,7 +1381,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for want in shell.mail().take_folder_views() {
             let want = std::path::PathBuf::from(want);
             let is_want = |f: &std::path::Path| crate::uistate::same_folder(f, &want);
-            if !(view_folder.as_deref().is_some_and(is_want) && !board_open && !settings_open) {
+            if folder_press_moves(surface_folder(&surfaces, &tabs, active), &want, board_open || settings_open) {
                 let keyed = surface_keys(&surfaces, &tabs);
                 let back = folder_views.iter().find(|(f, _)| is_want(f)).and_then(|(_, kept)| {
                     crate::layout::Layout::restore(kept, &pane_layout, |k| {
@@ -1438,7 +1442,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     view_folder = Some(here.to_path_buf());
                 }
             }
-            if view_folder.is_some() {
+            // Kept only while what is in front works in that folder. With a
+            // tab of no folder in front -- the Issue tab, a page -- the folder
+            // was still counted as the one being looked at, and the view kept
+            // for it became that tab: pressing the folder brought the Issue
+            // tab back instead of the folder's own
+            if view_folder.is_some() && surface_folder(&surfaces, &tabs, active).is_some() {
                 let keyed = surface_keys(&surfaces, &tabs);
                 view_kept = Some(pane_layout.keep(|s| keyed.get(s - 1).and_then(|k| k.id.clone())));
             }
@@ -2652,11 +2661,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::OpenIssues) => {
                         shell.mail().open_issues = true;
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Ideas { act, args }) => {
+                        shell.mail().ideas.push((act, args));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Files { panel, act, args }) => {
                         shell.mail().files.push((panel, act, args));
                     }
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::EditOpen { panel, path }) => {
-                        shell.mail().edits.push((panel, path));
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::EditOpen { panel, path, diff }) => {
+                        shell.mail().edits.push((panel, path, diff));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Sftp { panel, act, args }) => {
                         shell.mail().sftps.push((panel, act, args));
@@ -3654,7 +3666,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // over the screen, the browsers step aside. They keep their pages;
             // being given no rectangle is all that happens to them
             // The question a tab's ✕ asks is one of those things
-            let covered = help_open || desk_open || qr_open || quick_open || close_ask.is_some();
+            let covered = help_open || desk_open || qr_open || page_covered || close_ask.is_some();
             // The settings form is a screen, not a pane: it covers the content
             // area and the layout waits underneath. It asks about the whole
             // app, so seating it in one corner of the app made as little sense
@@ -3739,9 +3751,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
 
-        // The window's quick-command launcher went up or down (see `quick_open`)
-        if let Some(on) = shell.mail().take_quick_shown() {
-            quick_open = on;
+        // Something the page draws over everything went up or down (see `page_covered`)
+        if let Some(on) = shell.mail().take_covered() {
+            page_covered = on;
         }
         // Quick commands pressed, on the window or the phone. Each opens a tab
         // of its own (`quick_go`); what it sends is read from the settings here
@@ -3794,25 +3806,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // The log says the button and what it was written as. The text
             // that goes out may hold a secret's value, so that is never logged
             let Some(desk) = desks.get(desk_index).map(|d| d.name.clone()) else { continue };
-            let (title, tab_id) = quick_tab_names(&label, &program, &tabs);
-            let line = serde_json::json!({"name": title, "id": tab_id, "command": command});
-            if config::append_tab(&desk, line, Some(&cwd)) {
-                append_hook_log(&format!(
-                    "quick command \"{label}\" -> new tab \"{title}\" in {}: {}",
-                    cwd.display(),
-                    log_excerpt(&item.body, 120)
-                ));
-                reveal = Some((tab_id.clone(), Instant::now() + Duration::from_secs(20)));
-                pending_quicks.push(PendingQuick {
-                    id: tab_id,
-                    label,
-                    text,
-                    submit: item.enter,
-                    until: Instant::now() + QUICK_WAIT,
-                });
-                watcher.poke();
-            } else {
-                flash = Some(i18n::tp("msg.quick.open_failed", &[("label", &label)]));
+            match open_and_say(&desk, &cwd, &command, &program, &label, text, item.enter, &tabs, &mut pending_quicks, &mut reveal) {
+                Some(title) => {
+                    append_hook_log(&format!(
+                        "quick command \"{label}\" -> new tab \"{title}\" in {}: {}",
+                        cwd.display(),
+                        log_excerpt(&item.body, 120)
+                    ));
+                    watcher.poke();
+                }
+                None => flash = Some(i18n::tp("msg.quick.open_failed", &[("label", &label)])),
             }
         }
         // Lines waiting for a tab a quick command opened: handed over once
@@ -3971,6 +3974,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let spec = desks.get(desk_index).map(|w| w.git.clone()).unwrap_or_default();
                 let code = spec
                     .message_lua
+                    .clone()
                     .filter(|l| !l.trim().is_empty())
                     .unwrap_or_else(|| crate::hooks::COMMIT_MESSAGE_LUA.to_string());
                 let _ = eng.call_primitive_as(
@@ -3979,20 +3983,58 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     "set_var",
                     &[serde_json::json!("git_tab"), serde_json::json!(panel)],
                 );
+                // The whole prompt, as written in the settings (or the default
+                // shown there). The name of the AI that will answer goes in
+                // where the prompt asks for it; the change goes in inside the Lua
+                let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).filter(|s| !s.is_empty());
+                let prompt = spec
+                    .commit_prompt()
+                    .replace("{ai}", crate::webui::local_ai_label(ai.as_deref()).unwrap_or("an AI"));
                 let _ = eng.call_primitive_as(
                     None,
                     grants::Subject::Human,
                     "set_var",
-                    &[
-                        serde_json::json!("git_hint"),
-                        serde_json::json!(spec.message_hint.unwrap_or_default()),
-                    ],
+                    &[serde_json::json!("git_prompt"), serde_json::json!(prompt)],
                 );
                 shell.push_git(&serde_json::json!({"act": "message", "busy": true}).to_string());
                 eng.start_snippet("message", &code);
                 continue;
             }
-            if matches!(act.as_str(), "fetch" | "pull" | "push" | "resolve") {
+            // A merge that stopped, handed to an AI tab in the same folder with
+            // the desk's instruction as its first message. What it names -- the
+            // branch, the base, the files -- is read from the folder, not taken
+            // from the page
+            if act == "resolve_tab" {
+                let place = panel_places(&surfaces)
+                    .into_iter()
+                    .chain(tab_places(&tabs).into_iter().filter(|p| !p.dir.as_os_str().is_empty()))
+                    .find(|p| p.key.matches(&panel));
+                let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
+                let answer = match (place, desks.get(desk_index), quick_ai_choice(&ai, &ai_choices)) {
+                    (None, ..) | (_, None, _) => Err(i18n::t("err.git.no_tab")),
+                    (.., None) => Err(i18n::t("msg.quick.no_ai")),
+                    (Some(place), Some(desk), Some(choice)) => {
+                        let branch = crate::git::branch(&place.dir).ok().flatten().unwrap_or_default();
+                        let base = crate::git::recorded_base(&place.dir, &branch).unwrap_or_default();
+                        let said = resolve_in_tab(desk, &place.dir, &base, choice, &tabs, &mut pending_quicks, &mut reveal);
+                        if said.as_ref().is_ok_and(|v| v["already"] == false) {
+                            watcher.poke();
+                        }
+                        said
+                    }
+                };
+                let js = match answer {
+                    Ok(data) => serde_json::json!({"act": act, "ok": true, "data": data}),
+                    Err(why) => serde_json::json!({"act": act, "ok": false, "error": why}),
+                }
+                .to_string();
+                shell.push_git(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"git\":{js}}}"));
+                }
+                continue;
+            }
+            if matches!(act.as_str(), "fetch" | "pull" | "push" | "resolve" | "catch_up") {
                 // "message" is the AI writing one, which is a read of the diff
                 // followed by a wait on a program -- the same reason as the
                 // network ones for not doing it on this thread
@@ -4026,6 +4068,27 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     (true, Some(_), Some(Err(why))) => Some(why),
                     (true, Some(place), Some(Ok(who))) => {
                         let dir = place.dir;
+                        // Bringing the latest in needs a base: the one written down
+                        // for the branch, or the one just chosen -- written down now,
+                        // so it is not asked for again
+                        let mut base = String::new();
+                        if act == "catch_up" {
+                            let here = crate::git::branch(&dir).ok().flatten().unwrap_or_default();
+                            let chosen = args.get("base").and_then(|b| b.as_str()).unwrap_or_default().trim().to_string();
+                            if !chosen.is_empty() && !here.is_empty() {
+                                let _ = crate::git::record_base(&dir, &here, &chosen);
+                            }
+                            base = crate::git::recorded_base(&dir, &here).unwrap_or(chosen);
+                            if base.is_empty() {
+                                let js = serde_json::json!({"act": act, "ok": false, "why": "no_base",
+                                    "error": i18n::t("git.catch_up.pick")}).to_string();
+                                shell.push_git(&js);
+                                if let Some(r) = remote_ui.as_ref() {
+                                    r.push_state(format!("{{\"git\":{js}}}"));
+                                }
+                                continue;
+                            }
+                        }
                         // Say it started, so a button that will be a while
                         // does not look like a button that did nothing --
                         // wherever it was pressed
@@ -4045,6 +4108,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 "fetch" => crate::git::fetch(&dir, &who),
                                 "pull" => crate::git::pull(&dir, &who),
                                 "push" => crate::git::push(&dir, &who),
+                                "catch_up" => crate::git::catch_up(&dir, &base, &who)
+                                    .map(|n| serde_json::json!({"taken": n, "base": base}).to_string()),
                                 #[allow(unreachable_patterns)]
                                 // Every file git left marked, one at a time.
                                 // Nothing is staged and nothing is committed:
@@ -4083,9 +4148,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 Ok(said) => serde_json::json!({
                                     "act": act2, "ok": true, "data": said.trim(),
                                 }),
-                                Err(e) => serde_json::json!({
-                                    "act": act2, "ok": false, "error": plain_error(&e.to_string()),
-                                }),
+                                // Uncommitted work in the way of a pull is named,
+                                // so the panel can put those files in front
+                                Err(e) => match (e.downcast_ref::<crate::git::PullBlocked>(), e.downcast_ref::<crate::git::CatchUpStop>()) {
+                                    (Some(blocked), _) => serde_json::json!({
+                                        "act": act2, "ok": false, "error": e.to_string(),
+                                        "why": "in_the_way", "paths": blocked.0,
+                                    }),
+                                    // A merge that stopped names the base and its files,
+                                    // so the panel can offer to hand it over
+                                    (_, Some(crate::git::CatchUpStop::Conflict { base, files })) => serde_json::json!({
+                                        "act": act2, "ok": false, "error": e.to_string(),
+                                        "why": "conflict", "base": base, "files": files,
+                                    }),
+                                    (_, Some(crate::git::CatchUpStop::Dirty)) => serde_json::json!({
+                                        "act": act2, "ok": false, "error": e.to_string(), "why": "dirty",
+                                    }),
+                                    _ => serde_json::json!({
+                                        "act": act2, "ok": false, "error": plain_error(&e.to_string()),
+                                    }),
+                                },
                             };
                             let _ = tx.send(js.to_string());
                         });
@@ -4176,6 +4258,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 ),
                 "checkout" => ("git_checkout", vec![who.clone(), serde_json::json!(text)]),
                 "merge" => ("git_merge", vec![who.clone(), serde_json::json!(text)]),
+                "remote_branches" => ("git_remote_branches", vec![who.clone()]),
                 // "make a branch and commit there" -- the answer to a refusal
                 // rather than a way around it
                 "branch_new" => ("git_branch_create", vec![who.clone(), serde_json::json!(text)]),
@@ -4224,14 +4307,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Answers from the Lua that was left running (the commit message)
         if let Some(eng) = engine.as_mut() {
             for (tag, said) in eng.take_snippets() {
+                // A draft goes to the Issue tab under the act that asked for it,
+                // everything else to git
+                let issue = tag == DRAFT_ISSUE_TAG || tag == DRAFT_PR_TAG;
+                let act = if tag == DRAFT_ISSUE_TAG { "draft" } else if tag == DRAFT_PR_TAG { "pr_draft" } else { tag.as_str() };
                 let payload = match said {
-                    Ok(text) => serde_json::json!({"act": tag, "ok": true, "data": text}),
-                    Err(why) => serde_json::json!({"act": tag, "ok": false, "error": why}),
+                    Ok(text) => serde_json::json!({"act": act, "ok": true, "data": text}),
+                    Err(why) => serde_json::json!({"act": act, "ok": false, "error": why}),
                 };
                 let js = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
-                shell.push_git(&js);
+                if issue {
+                    shell.push_issues(&js);
+                } else {
+                    shell.push_git(&js);
+                }
                 if let Some(r) = remote_ui.as_ref() {
-                    r.push_state(format!("{{\"git\":{js}}}"));
+                    r.push_state(format!("{{\"{}\":{js}}}", if issue { "issues" } else { "git" }));
                 }
             }
         }
@@ -4241,6 +4332,47 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             shell.push_git(&js);
             if let Some(r) = remote_ui.as_ref() {
                 r.push_state(format!("{{\"git\":{js}}}"));
+            }
+        }
+        // A pull request's base, brought into its folder. A conflict goes to an
+        // AI tab from here; anything else is said on the pull request's page
+        while let Ok(done) = pr_rx.try_recv() {
+            let PrCatchUp { project, number, dir, base, result } = done;
+            let folder = dir.display().to_string();
+            let answer = match result {
+                Ok(taken) => serde_json::json!({"ok": true, "data": {"state": if taken > 0 { "taken" } else { "latest" }, "taken": taken, "base": base, "folder": folder}}),
+                Err(e) => match e.downcast_ref::<crate::git::CatchUpStop>() {
+                    Some(crate::git::CatchUpStop::Conflict { files, .. }) => {
+                        let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
+                        let files = files.clone();
+                        match (desks.get(desk_index), quick_ai_choice(&ai, &ai_choices)) {
+                            (None, _) => serde_json::json!({"ok": false, "error": i18n::t("err.github.no_project")}),
+                            (_, None) => serde_json::json!({"ok": false, "error": i18n::t("msg.quick.no_ai")}),
+                            (Some(desk), Some(choice)) => match resolve_in_tab(desk, &dir, &base, choice, &tabs, &mut pending_quicks, &mut reveal) {
+                                Ok(tab) => {
+                                    if tab["already"] == false {
+                                        watcher.poke();
+                                    }
+                                    serde_json::json!({"ok": true, "data": {"state": "tab", "title": tab["title"], "already": tab["already"],
+                                        "base": base, "files": files, "folder": folder}})
+                                }
+                                Err(why) => serde_json::json!({"ok": false, "error": why}),
+                            },
+                        }
+                    }
+                    Some(stop) => serde_json::json!({"ok": false, "error": stop.to_string()}),
+                    None => serde_json::json!({"ok": false, "error": plain_error(&e.to_string())}),
+                },
+            };
+            let mut js = answer;
+            js["act"] = serde_json::json!("pr_resolve");
+            js["project"] = serde_json::json!(project);
+            js["number"] = serde_json::json!(number);
+            let js = js.to_string();
+            append_hook_log(&format!("issues: {}", log_excerpt(&js, 200)));
+            shell.push_issues(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"issues\":{js}}}"));
             }
         }
 
@@ -4253,7 +4385,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         //
         // so nothing has to be set up before pressing a file, and pressing ten
         // files leaves one editor rather than ten
-        for (panel, path) in shell.mail().take_edits() {
+        for (panel, path, diff) in shell.mail().take_edits() {
             let Some(dir) = panel_places(&surfaces)
                 .into_iter()
                 .chain(tab_places(&tabs).into_iter().filter(|p| !p.dir.as_os_str().is_empty()))
@@ -4300,6 +4432,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // Filled in when the state is built, from the disk itself
                 stamp: None,
                 scratch: key == EDITOR_SCRATCH,
+                // A change is only ever of a file that is being shown
+                diff: showing.as_ref().and_then(|_| (!diff.trim().is_empty()).then(|| diff.trim().to_string())),
             };
             match editors.iter_mut().find(|e| e.key == key) {
                 Some(e) => *e = entry,
@@ -4346,7 +4480,150 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 continue;
             }
+            // Something for the AI to write into a form: an issue from the notes
+            // in its description, or a pull request from a branch's commits. The
+            // desk's prompt with its words filled in, then the shape of the answer;
+            // Lua the same way the commit message is, so the window keeps drawing
+            if act == "draft" || act == "pr_draft" {
+                let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).filter(|s| !s.is_empty());
+                let label = crate::webui::local_ai_label(ai.as_deref()).unwrap_or("an AI");
+                let text = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                let list = |k: &str| args.get(k).cloned().filter(|v| v.is_array()).unwrap_or(serde_json::json!([]));
+                let (prompt, shape, tag) = if act == "draft" {
+                    let notes = text("text");
+                    if notes.trim().is_empty() {
+                        let js = serde_json::json!({"act": "draft", "ok": false, "error": i18n::t("err.issue.nothing_to_draft")}).to_string();
+                        shell.push_issues(&js);
+                        continue;
+                    }
+                    let shape = i18n::tp("ai.issue.shape", &[
+                        ("labels", &list("labels").to_string()),
+                        ("assignees", &list("assignees").to_string()),
+                    ]);
+                    (fill_or_append(&desk.git.issue_prompt(), &[("ai", label)], "text", &notes), shape, DRAFT_ISSUE_TAG)
+                } else {
+                    // The branch, what it goes into, its commits and its change,
+                    // read from the folder the pull request is for
+                    // Only a folder of the project it names: the page says which
+                    // folder, and git is not run anywhere it could point at
+                    let Some(dir) = crate::github::project_folder(&crate::github::desk_sources(desk), &text("project"), &text("folder")) else {
+                        let js = serde_json::json!({"act": "pr_draft", "ok": false, "error": i18n::t("err.github.no_project")}).to_string();
+                        shell.push_issues(&js);
+                        continue;
+                    };
+                    let (head, into) = (text("head"), text("base"));
+                    let against = format!("origin/{into}");
+                    let commits = crate::git::run(&dir, &["log", "--no-color", "--format=- %s", &format!("{against}..HEAD")])
+                        .unwrap_or_default();
+                    let mut change = crate::git::run(&dir, &["diff", "--no-color", &format!("{against}...HEAD")]).unwrap_or_default();
+                    // A change can be a megabyte. The shape of it is in the first pages
+                    if change.len() > 12000 {
+                        let cut = (0..=12000).rev().find(|&i| change.is_char_boundary(i)).unwrap_or(0);
+                        change.truncate(cut);
+                        change.push_str("\n...\n");
+                    }
+                    let prompt = fill_or_append(
+                        &desk.git.pr_prompt(),
+                        &[("ai", label), ("branch", &head), ("base", &into), ("commits", commits.trim())],
+                        "diff",
+                        &change,
+                    );
+                    (prompt, i18n::t("ai.pr.shape"), DRAFT_PR_TAG)
+                };
+                if engine.is_none() {
+                    engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+                }
+                let Some(eng) = engine.as_mut() else { continue };
+                for (name, value) in [("draft_prompt", prompt), ("draft_shape", shape)] {
+                    let _ = eng.call_primitive_as(
+                        None,
+                        grants::Subject::Human,
+                        "set_var",
+                        &[serde_json::json!(name), serde_json::json!(value)],
+                    );
+                }
+                eng.start_snippet(tag, crate::hooks::DRAFT_LUA);
+                continue;
+            }
             let sources = crate::github::desk_sources(desk);
+            // A pull request that cannot be merged for its conflicts: where its
+            // branch is checked out on this PC and what bringing its base in
+            // there would run (`pr_place`), and doing it (`pr_resolve`). What is
+            // shown and what runs are the same steps
+            if act == "pr_place" || act == "pr_resolve" {
+                let text = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+                let (project, head, into) = (text("project"), text("head"), text("base"));
+                let number = args.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+                let source = sources.iter().find(|s| s.name == project);
+                let dir = source.and_then(|s| crate::github::head_folder(&s.dir, &head));
+                let base = format!("origin/{into}");
+                let say = |mut js: serde_json::Value| {
+                    js["act"] = serde_json::json!(act);
+                    js["project"] = serde_json::json!(project);
+                    js["number"] = serde_json::json!(number);
+                    js.to_string()
+                };
+                let answer = if act == "pr_place" {
+                    Some(say(match &dir {
+                        Some(d) => serde_json::json!({"ok": true, "data": {
+                            "folder": d.display().to_string(),
+                            "runs": crate::git::catch_up_said(&crate::git::catch_up_steps_for(d, Some(&head), &base)),
+                            "merging": crate::git::merging_in(d, &base) && !crate::git::conflicts(d).unwrap_or_default().is_empty(),
+                        }}),
+                        None => serde_json::json!({"ok": true, "data": {"folder": null}}),
+                    }))
+                } else {
+                    match (caps.allows("git_catch_up", grants::Subject::Human), source, dir) {
+                        (false, ..) => Some(say(serde_json::json!({"ok": false, "error": i18n::tp(
+                            "err.hooks.not_permitted",
+                            &[("name", "git_catch_up"), ("who", &i18n::t("grant.who.human"))],
+                        )}))),
+                        (true, None, _) => Some(say(serde_json::json!({"ok": false, "error": i18n::t("err.github.no_project")}))),
+                        (true, Some(_), None) => Some(say(serde_json::json!({"ok": false,
+                            "error": i18n::tp("err.github.pr.no_folder", &[("branch", &head)])}))),
+                        (true, Some(source), Some(dir)) => {
+                            // Written down for the branch when nothing is, so the git
+                            // column beside that folder speaks of the same base
+                            if !head.is_empty() && crate::git::recorded_base(&dir, &head).is_none() {
+                                let _ = crate::git::record_base(&dir, &head, &base);
+                            }
+                            let stopped = crate::git::merging_in(&dir, &base)
+                                && !crate::git::conflicts(&dir).unwrap_or_default().is_empty();
+                            match (source.git.to_git(true, &|k| caps.secret_value(k).ok()), stopped) {
+                                // A merge of this base that already stopped here goes
+                                // straight to the AI: nothing to fetch or merge again
+                                (_, true) => {
+                                    let _ = pr_tx.send(PrCatchUp {
+                                        project: project.clone(), number, dir: dir.clone(), base: base.clone(),
+                                        result: Err(anyhow::Error::new(crate::git::CatchUpStop::Conflict {
+                                            base: base.clone(),
+                                            files: crate::git::conflicts(&dir).unwrap_or_default(),
+                                        })),
+                                    });
+                                    None
+                                }
+                                (Err(why), _) => Some(say(serde_json::json!({"ok": false, "error": why}))),
+                                (Ok(who), false) => {
+                                    let tx = pr_tx.clone();
+                                    let (project, base) = (project.clone(), base.clone());
+                                    std::thread::spawn(move || {
+                                        let result = crate::git::catch_up_for(&dir, Some(&head), &base, &who);
+                                        let _ = tx.send(PrCatchUp { project, number, dir, base, result });
+                                    });
+                                    None
+                                }
+                            }
+                        }
+                    }
+                };
+                if let Some(js) = answer {
+                    shell.push_issues(&js);
+                    if let Some(r) = remote_ui.as_ref() {
+                        r.push_state(format!("{{\"issues\":{js}}}"));
+                    }
+                }
+                continue;
+            }
             if act == "projects" {
                 let projects: Vec<serde_json::Value> = sources
                     .iter()
@@ -4411,6 +4688,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let js = crate::github::answer(&act, &args, &sources, &|k| tokens.get(k).cloned());
                 let _ = tx.send(js.to_string());
             });
+        }
+        // What the ideas window asked for. Answered here: it is one small file
+        // on this machine, and every surface looking at the cards is told the
+        // result, so the window and a phone never show two different lists
+        for (act, args) in shell.mail().take_ideas() {
+            let projects = crate::ideas::projects(&desks);
+            let js = crate::ideas::answer(&crate::ideas::path(), &act, &args, &projects).to_string();
+            shell.push_ideas(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"ideas\":{js}}}"));
+            }
         }
         while let Ok(js) = issues_rx.try_recv() {
             shell.push_issues(&js);
@@ -6083,6 +6371,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // The quick commands, over everything. Drawn by the
                         // page like the palette, so this only nudges it open
                         KeyCode::Char('k') => shell.open_quick(),
+                        // The ideas, the same way: drawn by the page
+                        KeyCode::Char('m') => shell.open_ideas(),
                         // 0 is the board, which is a screen over everything;
                         // 1.. are the running things, which live in panes. One
                         // key row, two different kinds of destination
@@ -8136,6 +8426,109 @@ pub fn quick_ai_choice<'a>(
 pub const QUICK_SETTLE_MS: u64 = 2_500;
 pub const QUICK_WAIT: Duration = Duration::from_secs(90);
 
+/// Open a tab running `command` in `cwd` and have `text` typed into it once the
+/// program in it is ready: what a quick command does, and what the git panel's
+/// "Resolve" does with its instruction. Answers the tab's title; the caller
+/// tells the settings watcher, which is what starts the tab
+#[allow(clippy::too_many_arguments)]
+fn open_and_say(
+    desk: &str,
+    cwd: &std::path::Path,
+    command: &str,
+    program: &str,
+    label: &str,
+    text: String,
+    submit: bool,
+    tabs: &[Tab],
+    pending: &mut Vec<PendingQuick>,
+    reveal: &mut Option<(String, Instant)>,
+) -> Option<String> {
+    let (title, tab_id) = quick_tab_names(label, program, tabs);
+    let line = serde_json::json!({"name": title, "id": tab_id, "command": command});
+    if !config::append_tab(desk, line, Some(cwd)) {
+        return None;
+    }
+    *reveal = Some((tab_id.clone(), Instant::now() + Duration::from_secs(20)));
+    pending.push(PendingQuick {
+        id: tab_id,
+        title: title.clone(),
+        label: label.to_string(),
+        cwd: cwd.to_path_buf(),
+        text,
+        submit,
+        until: Instant::now() + QUICK_WAIT,
+    });
+    Some(title)
+}
+
+/// A pull request's base brought into the folder its branch is in, as the
+/// thread that ran it answers
+struct PrCatchUp {
+    project: String,
+    number: u64,
+    dir: std::path::PathBuf,
+    /// `origin/<base>`
+    base: String,
+    result: anyhow::Result<u64>,
+}
+
+/// Hand the merge stopped in `dir` to a new tab of `choice`, told what the
+/// desk's merge prompt says with this folder's branch, `base` and conflicted
+/// files filled in. A tab already at it is brought forward instead: one AI on a
+/// merge at a time. The git column and a pull request's page both come here
+fn resolve_in_tab(
+    desk: &config::Desk,
+    dir: &std::path::Path,
+    base: &str,
+    choice: &crate::uistate::AiChoice,
+    tabs: &[Tab],
+    pending: &mut Vec<PendingQuick>,
+    reveal: &mut Option<(String, Instant)>,
+) -> Result<serde_json::Value, String> {
+    let label = i18n::t("git.catch_up.tab");
+    if let Some((title, name)) = opened_for(&label, dir, tabs, pending) {
+        *reveal = Some((name, Instant::now() + Duration::from_secs(20)));
+        return Ok(serde_json::json!({"title": title, "already": true}));
+    }
+    let branch = crate::git::branch(dir).ok().flatten().unwrap_or_default();
+    let files = crate::git::conflicts(dir).unwrap_or_default();
+    let prompt = desk
+        .git
+        .merge_prompt()
+        .replace("{folder}", &dir.display().to_string())
+        .replace("{branch}", &branch)
+        .replace("{base}", base)
+        .replace("{files}", &files.iter().map(|f| format!("  - {f}")).collect::<Vec<_>>().join("\n"));
+    match open_and_say(&desk.name, dir, &choice.key, &choice.name, &label, prompt, true, tabs, pending, reveal) {
+        Some(title) => Ok(serde_json::json!({"title": title, "already": false})),
+        None => Err(i18n::tp("msg.quick.open_failed", &[("label", &label)])),
+    }
+}
+
+/// A tab opened under `label` in `dir` that is still running, or one on its
+/// way there: its title and the name to bring it forward by. Pressing again
+/// shows that one, rather than setting a second AI on the same work
+pub fn opened_for(label: &str, dir: &std::path::Path, tabs: &[Tab], pending: &[PendingQuick]) -> Option<(String, String)> {
+    // The title `quick_tab_names` gives: the label, or the label and a number
+    let named = |title: &str| {
+        title == label
+            || title
+                .strip_prefix(label)
+                .and_then(|rest| rest.strip_prefix(' '))
+                .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    };
+    let open = tabs.iter().find(|t| {
+        named(&t.title) && !t.exited() && t.cwd().is_some_and(|c| crate::uistate::same_folder(c, dir))
+    });
+    if let Some(t) = open {
+        return Some((t.title.clone(), t.id.clone().unwrap_or_else(|| t.title.clone())));
+    }
+    pending
+        .iter()
+        .find(|p| p.label == label && crate::uistate::same_folder(&p.cwd, dir))
+        .map(|p| (p.title.clone(), p.id.clone()))
+}
+
 pub fn quick_ready(t: &Tab, now_ms: u64) -> bool {
     t.had_output()
         && !matches!(t.state, crate::detect::TabState::Busy | crate::detect::TabState::Question)
@@ -8146,7 +8539,11 @@ pub fn quick_ready(t: &Tab, now_ms: u64) -> bool {
 pub struct PendingQuick {
     /// The new tab's automation name
     pub id: String,
+    /// What its tab strip will say
+    pub title: String,
     pub label: String,
+    /// The folder it opens in
+    pub cwd: std::path::PathBuf,
     pub text: String,
     pub submit: bool,
     pub until: Instant,
@@ -8312,6 +8709,37 @@ pub fn save_replay_to_downloads() -> std::io::Result<Option<std::path::PathBuf>>
 /// the same thing (numbers shift with reordering, so using names when writing is recommended).
 /// The folder a surface (1..) works in, if it works in one. A page works in
 /// none; a panel works in the folder it reports on.
+/// Whether pressing a working folder's name moves the screen. Not when that
+/// folder's own tab is already in front and nothing covers the board -- the
+/// press is somebody finding their place. With a tab of no folder in front
+/// (the Issue tab, a page), the folder is not what is being looked at, however
+/// recently it was
+/// The tags a draft's answer comes back under
+const DRAFT_ISSUE_TAG: &str = "issue_draft";
+const DRAFT_PR_TAG: &str = "pr_draft";
+
+/// A prompt with its words filled in: each `{name}` becomes its value, and
+/// `{main}` becomes the main material -- or, when the prompt does not say where
+/// it goes, the material follows it. An empty prompt is the material alone
+fn fill_or_append(prompt: &str, words: &[(&str, &str)], main: &str, material: &str) -> String {
+    let mut out = prompt.to_string();
+    for (name, value) in words {
+        out = out.replace(&format!("{{{name}}}"), value);
+    }
+    let mark = format!("{{{main}}}");
+    if out.contains(&mark) {
+        out.replace(&mark, material)
+    } else if out.trim().is_empty() {
+        material.to_string()
+    } else {
+        format!("{out}\n\n{material}")
+    }
+}
+
+pub fn folder_press_moves(front: Option<&std::path::Path>, want: &std::path::Path, covered: bool) -> bool {
+    covered || !front.is_some_and(|f| crate::uistate::same_folder(f, want))
+}
+
 pub fn surface_folder<'a>(surfaces: &'a [Surface], tabs: &'a [Tab], surface: usize) -> Option<&'a std::path::Path> {
     match surfaces.get(surface.checked_sub(1)?)? {
         Surface::Session(i) => tabs.get(*i)?.cwd(),
@@ -9007,10 +9435,17 @@ pub fn keys_for(ev: &shikisha_shared::Ev) -> Vec<Event> {
                     .map(|code| vec![Event::Key(KeyEvent::new(code, mods))])
                     .unwrap_or_default()
             } else if let Some(c) = ctrl.as_ref().and_then(|s| s.chars().next()) {
-                vec![Event::Key(KeyEvent::new(
-                    KeyCode::Char(c),
-                    KeyModifiers::CONTROL,
-                ))]
+                // Shift and Alt held with Ctrl come along: Ctrl+Shift+M is a
+                // key of its own to bind, even though a program is sent the
+                // same byte for it as for Ctrl+M
+                let mut mods = KeyModifiers::CONTROL;
+                if *shift {
+                    mods |= KeyModifiers::SHIFT;
+                }
+                if *alt {
+                    mods |= KeyModifiers::ALT;
+                }
+                vec![Event::Key(KeyEvent::new(KeyCode::Char(c), mods))]
             } else if let Some(t) = text {
                 t.chars().map(plain).collect()
             } else {
@@ -9138,6 +9573,19 @@ mod remote_token_tests {
 mod survey_tests {
     use super::*;
 
+    /// Pressing a folder moves the screen unless that folder's own tab is in
+    /// front. With the Issue tab in front the folder last looked at is not the
+    /// one being looked at, and pressing it has to take somebody there
+    #[test]
+    fn a_folder_pressed_over_a_tab_of_no_folder_goes_to_the_folder() {
+        let a = std::path::Path::new("C:/work/a");
+        let b = std::path::Path::new("C:/work/b");
+        assert!(!folder_press_moves(Some(a), a, false), "its own tab in front moves nothing");
+        assert!(folder_press_moves(Some(b), a, false), "another folder's tab in front moves");
+        assert!(folder_press_moves(None, a, false), "the Issue tab in front moves to the folder");
+        assert!(folder_press_moves(Some(a), a, true), "the board over it moves back to the folder");
+    }
+
     /// The echoed command line carries BOTH markers inside one line and must
     /// never be captured; the real output block (bare marker on its own
     /// line) must be. And an echo alone (not sent yet) captures nothing
@@ -9159,6 +9607,29 @@ mod survey_tests {
         assert!(got.contains("Microsoft Windows"), "{got}");
         assert!(got.contains("git.exe"), "{got}");
         assert!(!got.contains("where git"), "the echo line is not included: {got}");
+    }
+
+    /// A second press while the first tab is still on its way finds that tab,
+    /// in that folder only
+    #[test]
+    fn a_tab_on_its_way_is_found_again_in_its_own_folder() {
+        let here = std::env::temp_dir().join("shikisha-opened-for-here");
+        let there = std::env::temp_dir().join("shikisha-opened-for-there");
+        let pending = vec![PendingQuick {
+            id: "resolve-conflicts".into(),
+            title: "Resolve conflicts".into(),
+            label: "Resolve conflicts".into(),
+            cwd: here.clone(),
+            text: String::new(),
+            submit: true,
+            until: Instant::now() + QUICK_WAIT,
+        }];
+        assert_eq!(
+            opened_for("Resolve conflicts", &here, &[], &pending),
+            Some(("Resolve conflicts".to_string(), "resolve-conflicts".to_string()))
+        );
+        assert_eq!(opened_for("Resolve conflicts", &there, &[], &pending), None, "another folder's merge is its own");
+        assert_eq!(opened_for("Review", &here, &[], &pending), None, "another kind of work is not this one");
     }
 
     /// The probe picker follows argv first, then the prompt's shape
@@ -9348,6 +9819,16 @@ mod tests {
                 _ => None,
             }
         };
+
+        // A letter held with Ctrl keeps its Shift too, so Ctrl+Shift+M can be
+        // told from Ctrl+M when a key is bound to it
+        let chord = keys_for(&shikisha_shared::Ev::Key {
+            text: None, named: None, ctrl: Some("m".into()), shift: true, alt: false,
+        });
+        match chord.first() {
+            Some(Event::Key(k)) => assert_eq!(k.modifiers, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            other => panic!("Ctrl+Shift+M did not arrive: {other:?}"),
+        }
 
         let plain = pressed("enter", false).expect("Enter did not arrive");
         let shifted = pressed("enter", true).expect("Shift+Enter did not arrive");

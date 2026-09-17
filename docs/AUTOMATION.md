@@ -863,6 +863,8 @@ thought of.
 | `shikisha.now("%Y-%m-%d")` | The local date/time, formatted. Sorts chronologically by default — good in file names |
 | `shikisha.epoch_ms()` | Milliseconds since the epoch, as a number, for measuring elapsed time |
 | `shikisha.diff(before, after, opts)` | What changed between two texts, written the way git writes a diff. `""` when they are the same. `opts` is `{ name = "plan.md", context = 3 }`: the name goes on the header lines, and the context is how many unchanged lines are kept either side of a change |
+| `shikisha.json_decode(text)` | A JSON text as a Lua value (objects as tables, arrays numbered from 1). `nil, why` when it is not JSON -- the usual way to read an answer an AI was asked to give as JSON |
+| `shikisha.json_encode(value)` | A Lua value as JSON text: a table numbered 1..n becomes an array, any other table an object |
 
 It is handed the two texts and never told where to find them, so the same
 command serves a reply, a page, a file and a recording:
@@ -1045,12 +1047,15 @@ that path never launches git, which is why it still answers during a rebase.
 | `shikisha.git_diff(tab, {path=…, staged=…})` | The diff, as text. `staged=true` reads the staged side; `path` narrows it to one file |
 | `shikisha.git_log(tab, count)` | Recent commits: `{hash, short, author, date, subject}`. 20 by default |
 | `shikisha.git_conflicts(tab)` | Just the paths of the files with a conflict |
-| `shikisha.git_branch(tab)` | The branch: `{name, protected}`. `protected` marks one this folder guards, so committing straight onto it is worth asking about. `nil` when the head is detached |
+| `shikisha.git_branch(tab)` | The branch: `{name, protected, upstream, ahead, behind, base, base_behind, catch_up, catching_up}`. `protected` marks one this folder guards, so committing straight onto it is worth asking about. `upstream` is the branch it follows (`origin/main`), `ahead` the commits here not there yet and `behind` the other way round, as of the last fetch -- all three absent when it follows nothing. `base` is what the branch was cut from when that is written down, `base_behind` how many commits it is behind that base as of the last fetch, `catch_up` the commands bringing its latest in would run, and `catching_up` that base's name while a merge of it has stopped half done. `nil` when the head is detached |
 | `shikisha.git_graph(tab, {all=…, remotes=…, count=…})` | The history: `{graph, hash, short, author, date, subject}`. `graph` is git's own drawing, and the rows with no commit on them (a merge closing) are kept |
 | `shikisha.git_detail(tab, hash)` | One commit in full: `{hash, parents, author, author_date, committer, commit_date, subject, body, files}` |
 | `shikisha.git_branches(tab)` | Every branch: `{name, current, protected}` |
 | `shikisha.git_checkout(tab, "name")` | Move onto that branch |
 | `shikisha.git_merge(tab, "name")` | Bring that branch in. A conflict stops it, and shows up in `git_conflicts` |
+| `shikisha.git_catch_up(tab, "origin/main")` | Bring the latest of a base in: fetch that one branch from its server, then merge what was fetched (never the local copy). Refused while anything tracked is uncommitted; a conflict stops it where the merge stopped, with the files in `git_conflicts`. Answers `{taken}`, the number of commits that came in (0 when there was nothing new). A third argument names the branch as it was pushed (`git_catch_up(tab, "origin/main", "feature")`): it is fetched first, and a folder behind it is refused before anything is merged -- the way a pull request's conflict is settled |
+| `shikisha.git_set_base(tab, "origin/develop")` | Write down what the branch in front was cut from, so bringing its latest in knows where from. A worktree made in the app has it written already |
+| `shikisha.git_remote_branches(tab)` | The branches the servers have, as last fetched: `{name, catch_up}`, where `catch_up` is the commands `git_catch_up` would run for that base |
 | `shikisha.git_fetch(tab)` / `shikisha.git_pull(tab)` / `shikisha.git_push(tab)` | Talk to the server. **Everything else waits** until it answers (up to three minutes). `git_push` sets the upstream and retries when the branch has never been sent, and says so in its answer. They sign in as the git account chosen for the tab (see below), and refuse to run where none is chosen |
 | `shikisha.git_hunks(tab, {path=…, staged=…})` | The diff cut into hunks: `{file, header, start, end, patch}`. Each `patch` is a whole patch on its own |
 | `shikisha.git_apply(tab, patch, {cached=…, reverse=…})` | Apply a patch. `cached` puts it in the next commit, `reverse` takes it back out. **Staging one hunk is these two together** |
@@ -1078,6 +1083,7 @@ The issues and pull requests of the repository a tab works in, signed in as the 
 | `shikisha.github_pr(tab, number)` | One pull request in full, as above plus `head`, `base`, `fork`, `merged`, `mergeable`, `merge_state`, `additions`, `deletions`, `changed_files`, `reviewers`, `review` (`approved` / `changes_requested` / empty) and `checks` (`{failed, pending, passed, total, items}`) |
 | `shikisha.github_labels(tab)` / `shikisha.github_assignees(tab)` | The labels an issue can have, and the logins it can be assigned to |
 | `shikisha.github_issue_create(tab, {title=…, body=…, labels=…, assignees=…})` | Open an issue. Answers `{number, url}` |
+| `shikisha.github_pr_create(tab, {title=…, body=…, head=…, base=…, draft=…})` | Open a pull request from the branch `head` into `base`, as a draft when `draft = true`. Answers `{number, url}` |
 | `shikisha.github_comment(tab, number, "text")` | Comment on an issue or a pull request. Answers `{id, url}` |
 | `shikisha.github_issue_state(tab, number, state, {duplicate_of=…})` | `open`, `completed`, `not_planned`, or `duplicate` (with `duplicate_of`, which also posts "Duplicate of #n") |
 | `shikisha.github_pr_state(tab, number, "open" or "closed")` | Close a pull request without merging it, or open it again |

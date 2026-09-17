@@ -210,6 +210,9 @@ pub const CATALOG: &[Entry] = &[
     // Two strings in, a diff out. It reaches nothing and changes nothing, so
     // there is no one to keep it from
     e("diff", Group::Basics, true, true, false),
+    // Text to a value and back: they reach nothing and change nothing
+    e("json_decode", Group::Basics, true, true, false),
+    e("json_encode", Group::Basics, true, true, false),
     // -- git -------------------------------------------------------------------
     // Closed to an AI to begin with, reads included. Letting an AI look at a
     // diff is a reasonable thing to want and a one-click decision to make; it
@@ -242,6 +245,9 @@ pub const CATALOG: &[Entry] = &[
     e("git_branch_create", Group::Git, true, false, false),
     e("git_checkout", Group::Git, true, false, false),
     e("git_merge", Group::Git, true, false, false),
+    e("git_catch_up", Group::Git, true, false, false),
+    e("git_set_base", Group::Git, true, false, false),
+    e("git_remote_branches", Group::Git, true, false, false),
     e("git_fetch", Group::Git, true, false, false),
     e("git_pull", Group::Git, true, false, false),
     e("git_push", Group::Git, true, false, false),
@@ -258,6 +264,7 @@ pub const CATALOG: &[Entry] = &[
     e("github_labels", Group::GitHub, true, false, false),
     e("github_assignees", Group::GitHub, true, false, false),
     e("github_issue_create", Group::GitHub, true, false, false),
+    e("github_pr_create", Group::GitHub, true, false, false),
     e("github_comment", Group::GitHub, true, false, false),
     e("github_issue_state", Group::GitHub, true, false, false),
     e("github_pr_state", Group::GitHub, true, false, false),
@@ -451,6 +458,9 @@ mod tests {
                 "git_branch_create",
                 "git_checkout",
                 "git_merge",
+                "git_catch_up",
+                "git_set_base",
+                "git_remote_branches",
                 "git_fetch",
                 "git_pull",
                 "git_push",
@@ -462,6 +472,7 @@ mod tests {
                 "github_labels",
                 "github_assignees",
                 "github_issue_create",
+                "github_pr_create",
                 "github_comment",
                 "github_issue_state",
                 "github_pr_state",

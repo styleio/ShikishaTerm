@@ -200,6 +200,29 @@ mod tests {
         }
     }
 
+    /// No key is written twice in a dictionary. JSON reading keeps the last
+    /// one without a word, so a second key of the same name added for another
+    /// screen quietly renames the button the first one labelled
+    #[test]
+    fn no_word_is_written_twice() {
+        let lang_dir = crate::repo_root().join("lang");
+        for entry in std::fs::read_dir(&lang_dir).expect("the lang folder") {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let mut seen = std::collections::HashSet::new();
+            for line in text.lines() {
+                // One entry a line, as every dictionary here is written
+                let Some(key) = line.trim_start().strip_prefix('"').and_then(|l| l.split_once("\":")).map(|(k, _)| k) else {
+                    continue;
+                };
+                assert!(seen.insert(key.to_string()), "{}: {key} is written twice", path.display());
+            }
+        }
+    }
+
     /// Every word the pages ask for by name is one English has.
     ///
     /// The pages ask by name, look the name up in a table built at
