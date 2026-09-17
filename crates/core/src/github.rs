@@ -777,6 +777,47 @@ pub fn desk_sources(desk: &crate::config::Desk) -> Vec<Source> {
     out
 }
 
+/// The folder the page named, when it is a folder of the project it named: the
+/// checkout or a worktree cut from it. Anything else is not a place git is run
+/// for a request from the page
+pub fn project_folder(sources: &[Source], project: &str, folder: &str) -> Option<std::path::PathBuf> {
+    let dir = std::path::PathBuf::from(folder);
+    let fam = crate::repo::family_of(&dir)?;
+    sources
+        .iter()
+        .any(|s| s.name == project && crate::repo::family_of(&s.dir).as_deref() == Some(fam.as_path()))
+        .then_some(dir)
+}
+
+/// What a pull request would carry, file by file: added and removed lines, from
+/// `origin/<base>` to the branch in front. A file git cannot count lines in
+/// (an image) is said to be binary
+pub fn pr_files(dir: &std::path::Path, base: &str) -> Result<Value> {
+    let out = crate::git::run(dir, &["diff", "--no-color", "--numstat", &format!("origin/{base}...HEAD")])?;
+    let rows: Vec<Value> = out
+        .lines()
+        .filter_map(|l| {
+            let mut parts = l.splitn(3, '\t');
+            let (a, r, path) = (parts.next()?, parts.next()?, parts.next()?);
+            let binary = a == "-" && r == "-";
+            Some(json!({"path": path, "added": a.parse::<u64>().unwrap_or(0),
+                        "removed": r.parse::<u64>().unwrap_or(0), "binary": binary}))
+        })
+        .collect();
+    Ok(json!(rows))
+}
+
+/// One file's change in a pull request, in the pieces the git panel draws
+pub fn pr_file(dir: &std::path::Path, base: &str, path: &str) -> Result<Value> {
+    let text = crate::git::run(dir, &["diff", "--no-color", &format!("origin/{base}...HEAD"), "--", path])?;
+    let binary = text.lines().any(|l| l.starts_with("Binary files ")) || text.contains("GIT binary patch");
+    let hunks: Vec<Value> = crate::git::split_hunks(&text)
+        .into_iter()
+        .map(|h| json!({"start": h.start, "end": h.end, "patch": h.patch}))
+        .collect();
+    Ok(json!({"hunks": hunks, "binary": binary}))
+}
+
 /// The automation command a request from the Issue tab is the same as, so it
 /// is allowed or refused by the same row of the permission table
 pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
@@ -790,6 +831,8 @@ pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
         ("create_pr", _) => "github_pr_create",
         // The branches a pull request can go into are read off this PC's copy
         ("pr_bases", _) => "git_branches",
+        // What it would carry is a diff on this PC
+        ("pr_files", _) | ("pr_file", _) => "git_diff",
         ("comment", _) => "github_comment",
         ("issue_state", _) => "github_issue_state",
         ("pr_state", _) => "github_pr_state",
@@ -906,6 +949,19 @@ pub fn answer(
             }
         }
         return with(base, json!({"ok": true, "data": {"bases": bases}}));
+    }
+    // What a pull request would carry, read from the folder it is made from
+    if act == "pr_files" || act == "pr_file" {
+        let path = s("path");
+        let read = match project_folder(sources, wanted, &s("folder")) {
+            None => Err(anyhow!(crate::i18n::t("err.github.no_project"))),
+            Some(dir) if act == "pr_files" => pr_files(&dir, &s("base")),
+            Some(dir) => pr_file(&dir, &s("base"), &path),
+        };
+        return match read {
+            Ok(data) => with(base, json!({"ok": true, "path": path, "data": data})),
+            Err(e) => with(base, json!({"ok": false, "path": path, "error": format!("{e:#}")})),
+        };
     }
     let done = hub_for(source).and_then(|(repo, hub)| match act {
         "detail" if pulls => hub.pull(&repo, number),
