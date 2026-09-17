@@ -190,6 +190,16 @@ want and press Send or Bring here; the `...` at the end of a row makes a
 folder, renames one, or deletes one. On a phone the switch at the top shows one
 side at a time.
 
+**Telling production from staging.** In a connection's settings, give the
+server a name under "Name for this server" -- Production, Staging -- and pick a
+colour. The name belongs to the server rather than the tab, so every tab that
+reaches it, terminal or files, wears the name with a square of its colour, and
+so does the question before a file there is deleted, renamed or replaced. A
+server behind a bastion is a different server for each bastion. Tick "Ask for
+this name to be typed before anything that cannot be undone" and those actions
+wait until it is typed. Every named server is listed under "Server names" in
+the settings.
+
 **A server whose key is not the one from last time is refused.** If you
 reinstalled the server, delete its line from `data/known-hosts.json`.
 

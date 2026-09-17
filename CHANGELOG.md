@@ -8,6 +8,26 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **Production can be told from staging at a glance.** A server is given a name
+  and a colour in the settings of a connection that reaches it, and every tab
+  that reaches the same server wears them: the row in the list, the tab over the
+  panes, a pane's caption, a put-away set of tabs, the file panel, and the
+  question before something there cannot be undone. The name belongs to the
+  server, not to the tab it was typed on, so a terminal and a file panel on
+  production are both marked from one setting. Whoever signs in, it is the same
+  server; behind two bastions, one private address is two servers. A colour is
+  never shown without its name.
+- **A server can ask for its name to be typed** before a file there is deleted,
+  renamed or replaced. Pressed before, the button says why and points at the box.
+- **Server names** in the settings lists every named server, including one no
+  tab reaches any more.
+
+### Fixed
+- **Testing a connection through a bastion on a port other than 22** tested it
+  on 22. The test built the connection with a copy of the launch code that did
+  not read a port typed into the box; it now uses the launch code itself.
+
 ## [0.16.0] - 2026-09-17
 
 Pull requests are made from the git column and written by the AI, a conflict is
