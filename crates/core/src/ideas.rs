@@ -15,10 +15,13 @@
 //! held here would put back, on its next change, whatever that PC had since
 //! written.
 //!
-//! A project is named by where its own checkout is, worked out from the paths
-//! in the settings alone: no disk is asked, so a drive that is not there today
-//! does not make a project look deleted. A card whose project is in no desk
-//! any more goes to "no project" the next time the list is read.
+//! A project is a git repository: its checkout and every worktree cut from it
+//! are one project, wherever those folders are, and a folder that is no
+//! repository is no project. Which repository a folder is part of is asked of
+//! git's own files. A card whose project is in no desk any more goes to "no
+//! project" the next time the list is read -- but not while any folder of the
+//! settings cannot be looked at (a drive that is not there today), since then
+//! a missing project may only be a missing drive.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -69,14 +72,22 @@ impl Default for Store {
 /// A project a card can belong to
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Project {
-    /// Where its checkout is (or, for a folder that is no repository, the
-    /// folder), with the machine in front for one reached over SSH
+    /// Where the repository's own checkout is, with the machine in front for
+    /// one reached over SSH
     pub key: String,
     /// What it is called on screen
     pub name: String,
     /// The folders of it the settings list, so the screen can tell which
     /// project the folder in front belongs to without working it out again
     pub folders: Vec<String>,
+}
+
+/// The projects of the settings, and whether every folder could be looked at.
+/// Only a list that is `whole` may say a project has been deleted
+#[derive(Debug, Clone, Default)]
+pub struct Known {
+    pub list: Vec<Project>,
+    pub whole: bool,
 }
 
 /// Where the cards are kept
@@ -88,32 +99,44 @@ pub fn path() -> PathBuf {
 ///
 /// Every desk and not only the one in front: a card written about a project
 /// of another desk is not about a deleted project
-pub fn projects(desks: &[Desk]) -> Vec<Project> {
-    let mut out: Vec<Project> = Vec::new();
+pub fn projects(desks: &[Desk]) -> Known {
+    let mut out = Known { list: Vec::new(), whole: !desks.is_empty() };
     for desk in desks {
         for f in &desk.folders {
             let Some(cwd) = f.cwd.as_deref() else { continue };
-            // A branch folder's checkout, read off its path the way the side
-            // column reads it; any other folder is its own checkout
-            let family = crate::uistate::family_by_path(cwd);
-            let checkout = family
-                .as_deref()
-                .and_then(Path::parent)
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| cwd.to_path_buf());
-            let where_ = checkout.display().to_string();
-            let key = match &f.host {
-                Some(h) => format!("{}|{}", h.at, where_),
-                None => where_,
+            let (key, checkout) = match &f.host {
+                // Over SSH nothing here can read its git folder; the host says
+                // where the project is checked out over there, and a folder on
+                // a host that names none is no project
+                Some(h) => {
+                    let Some(at) = h.project.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
+                        continue;
+                    };
+                    (format!("{}|{}", h.at, at), PathBuf::from(at))
+                }
+                None => {
+                    if !cwd.exists() {
+                        out.whole = false;
+                        continue;
+                    }
+                    let Some(family) = crate::repo::family_of(cwd) else { continue };
+                    // The git folder of a checkout is inside it; a bare
+                    // repository is its own folder
+                    let checkout = match family.file_name().is_some_and(|n| n.eq_ignore_ascii_case(".git")) {
+                        true => family.parent().map(Path::to_path_buf).unwrap_or(family),
+                        false => family,
+                    };
+                    (checkout.display().to_string(), checkout)
+                }
             };
             let folder = cwd.display().to_string();
-            if let Some(p) = out.iter_mut().find(|p| same_key(&p.key, &key)) {
+            if let Some(p) = out.list.iter_mut().find(|p| same_key(&p.key, &key)) {
                 if !p.folders.iter().any(|x| same_folder(Path::new(x), cwd)) {
                     p.folders.push(folder);
                 }
                 continue;
             }
-            // What the settings call it; else the checkout's own folder name
+            // What the settings call it; else the repository's folder name
             let named = f
                 .project
                 .as_deref()
@@ -121,14 +144,18 @@ pub fn projects(desks: &[Desk]) -> Vec<Project> {
                 .filter(|n| desk.projects.iter().any(|p| p.name == *n))
                 .map(str::to_string);
             let name = named
-                .or_else(|| checkout.file_name().map(|n| n.to_string_lossy().to_string()))
-                .or_else(|| f.name.clone())
+                .or_else(|| {
+                    checkout.file_name().map(|n| {
+                        let n = n.to_string_lossy();
+                        n.strip_suffix(".git").unwrap_or(&n).to_string()
+                    })
+                })
                 .unwrap_or_else(|| key.clone());
             let name = match &f.host {
                 Some(h) => format!("{name} ({})", h.name),
                 None => name,
             };
-            out.push(Project { key, name, folders: vec![folder] });
+            out.list.push(Project { key, name, folders: vec![folder] });
         }
     }
     out
@@ -180,7 +207,8 @@ fn write(file: &Path, store: &Store) -> Result<(), String> {
 /// phone looking at the same cards both end up showing what is in the file.
 /// `ref` goes back as it came, so the screen can tell which card it just asked
 /// to be made
-pub fn answer(file: &Path, act: &str, args: &Value, projects: &[Project]) -> Value {
+pub fn answer(file: &Path, act: &str, args: &Value, known: &Known) -> Value {
+    let projects = &known.list;
     let reply = |ok: bool, store: Option<&Store>, extra: Value| {
         let mut v = json!({
             "act": act,
@@ -202,21 +230,33 @@ pub fn answer(file: &Path, act: &str, args: &Value, projects: &[Project]) -> Val
         Ok(s) => s,
         Err(why) => return reply(false, None, json!({"error": why})),
     };
-    let known = |key: &str| projects.iter().find(|p| same_key(&p.key, key)).map(|p| p.key.clone());
+    // A project by its key, or by one of its folders: a card written when
+    // its project was named by a folder finds the repository that folder is in
+    let known_as = |key: &str| {
+        projects
+            .iter()
+            .find(|p| same_key(&p.key, key) || p.folders.iter().any(|f| same_key(f, key)))
+            .map(|p| p.key.clone())
+    };
     let id = args.get("id").and_then(Value::as_u64).unwrap_or(0);
     let mut changed = false;
     let mut made = Value::Null;
-    // Cards whose project has gone go to no project. Not while there are no
-    // projects at all: that is settings that did not load, not every project
-    // deleted at once
-    if !projects.is_empty() {
-        for i in store.items.iter_mut() {
-            if let Some(k) = i.project.as_deref()
-                && known(k).is_none()
-            {
+    // Cards whose project has gone go to no project, and a card named by a
+    // folder of its project is named by the project. Only from a whole list:
+    // a folder that could not be looked at may be the project's only one
+    for i in store.items.iter_mut() {
+        let Some(k) = i.project.clone() else { continue };
+        match known_as(&k) {
+            Some(key) if key != k => {
+                i.project = Some(key);
+                changed = true;
+            }
+            Some(_) => {}
+            None if known.whole => {
                 i.project = None;
                 changed = true;
             }
+            None => {}
         }
     }
     match act {
@@ -226,7 +266,7 @@ pub fn answer(file: &Path, act: &str, args: &Value, projects: &[Project]) -> Val
                 .get("project")
                 .and_then(Value::as_str)
                 .filter(|p| !p.is_empty())
-                .and_then(known);
+                .and_then(known_as);
             let at = now();
             let new_id = store.next.max(store.items.iter().map(|i| i.id + 1).max().unwrap_or(1));
             store.next = new_id + 1;
@@ -328,6 +368,10 @@ mod tests {
         Project { key: key.to_string(), name: key.to_string(), folders: vec![key.to_string()] }
     }
 
+    fn known(ps: &[Project]) -> Known {
+        Known { list: ps.to_vec(), whole: true }
+    }
+
     fn ids(v: &Value) -> Vec<u64> {
         v["items"].as_array().unwrap().iter().map(|i| i["id"].as_u64().unwrap()).collect()
     }
@@ -338,13 +382,13 @@ mod tests {
     fn a_card_is_in_the_file_as_soon_as_it_is_written() {
         let f = temp("write");
         let ps = [project("D:\\app")];
-        let a = answer(&f, "add", &json!({"project": "d:/app/", "text": "first", "ref": "r1"}), &ps);
+        let a = answer(&f, "add", &json!({"project": "d:/app/", "text": "first", "ref": "r1"}), &known(&ps));
         assert_eq!(a["ok"], true);
         assert_eq!(a["ref"], "r1", "the screen cannot tell which card it asked for");
         let id = a["made"].as_u64().unwrap();
         assert_eq!(a["items"][0]["project"], "D:\\app", "a project spelled another way was not recognised");
-        answer(&f, "edit", &json!({"id": id, "text": "first, changed"}), &ps);
-        let again = answer(&f, "list", &json!({}), &ps);
+        answer(&f, "edit", &json!({"id": id, "text": "first, changed"}), &known(&ps));
+        let again = answer(&f, "list", &json!({}), &known(&ps));
         assert_eq!(again["items"][0]["text"], "first, changed");
         let on_disk: Store = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
         assert_eq!(on_disk.items.len(), 1);
@@ -356,13 +400,13 @@ mod tests {
     fn a_card_is_made_after_the_one_it_came_from() {
         let f = temp("after");
         let ps = [project("D:\\app")];
-        let one = answer(&f, "add", &json!({"text": "1"}), &ps)["made"].as_u64().unwrap();
-        let two = answer(&f, "add", &json!({"text": "2"}), &ps)["made"].as_u64().unwrap();
-        let mid = answer(&f, "add", &json!({"text": "1.5", "after": one}), &ps);
+        let one = answer(&f, "add", &json!({"text": "1"}), &known(&ps))["made"].as_u64().unwrap();
+        let two = answer(&f, "add", &json!({"text": "2"}), &known(&ps))["made"].as_u64().unwrap();
+        let mid = answer(&f, "add", &json!({"text": "1.5", "after": one}), &known(&ps));
         let mid_id = mid["made"].as_u64().unwrap();
         assert_eq!(ids(&mid), vec![one, mid_id, two]);
-        answer(&f, "drop", &json!({"id": two}), &ps);
-        let next = answer(&f, "add", &json!({"text": "3"}), &ps)["made"].as_u64().unwrap();
+        answer(&f, "drop", &json!({"id": two}), &known(&ps));
+        let next = answer(&f, "add", &json!({"text": "3"}), &known(&ps))["made"].as_u64().unwrap();
         assert!(next > mid_id, "an id was given again");
     }
 
@@ -371,10 +415,10 @@ mod tests {
     fn done_is_kept_not_deleted() {
         let f = temp("done");
         let ps = [project("D:\\app")];
-        let id = answer(&f, "add", &json!({"text": "x"}), &ps)["made"].as_u64().unwrap();
-        let v = answer(&f, "done", &json!({"id": id, "done": true}), &ps);
+        let id = answer(&f, "add", &json!({"text": "x"}), &known(&ps))["made"].as_u64().unwrap();
+        let v = answer(&f, "done", &json!({"id": id, "done": true}), &known(&ps));
         assert_eq!(v["items"][0]["done"], true);
-        let v = answer(&f, "done", &json!({"id": id, "done": false}), &ps);
+        let v = answer(&f, "done", &json!({"id": id, "done": false}), &known(&ps));
         assert_eq!(v["items"][0]["done"], false);
     }
 
@@ -384,13 +428,13 @@ mod tests {
     fn reordering_one_project_leaves_the_others_in_place() {
         let f = temp("order");
         let ps = [project("D:\\a"), project("D:\\b")];
-        let a1 = answer(&f, "add", &json!({"project": "D:\\a", "text": "a1"}), &ps)["made"].as_u64().unwrap();
-        let b1 = answer(&f, "add", &json!({"project": "D:\\b", "text": "b1"}), &ps)["made"].as_u64().unwrap();
-        let a2 = answer(&f, "add", &json!({"project": "D:\\a", "text": "a2"}), &ps)["made"].as_u64().unwrap();
-        let v = answer(&f, "order", &json!({"ids": [a2, a1]}), &ps);
+        let a1 = answer(&f, "add", &json!({"project": "D:\\a", "text": "a1"}), &known(&ps))["made"].as_u64().unwrap();
+        let b1 = answer(&f, "add", &json!({"project": "D:\\b", "text": "b1"}), &known(&ps))["made"].as_u64().unwrap();
+        let a2 = answer(&f, "add", &json!({"project": "D:\\a", "text": "a2"}), &known(&ps))["made"].as_u64().unwrap();
+        let v = answer(&f, "order", &json!({"ids": [a2, a1]}), &known(&ps));
         assert_eq!(ids(&v), vec![a2, b1, a1]);
         // A list that names a card that is not there changes nothing
-        let v = answer(&f, "order", &json!({"ids": [a1, 999]}), &ps);
+        let v = answer(&f, "order", &json!({"ids": [a1, 999]}), &known(&ps));
         assert_eq!(ids(&v), vec![a2, b1, a1]);
     }
 
@@ -400,15 +444,15 @@ mod tests {
     fn a_deleted_project_sends_its_cards_to_no_project() {
         let f = temp("gone");
         let both = [project("D:\\a"), project("D:\\b")];
-        answer(&f, "add", &json!({"project": "D:\\a", "text": "keep"}), &both);
-        answer(&f, "add", &json!({"project": "D:\\b", "text": "orphan"}), &both);
-        let none = answer(&f, "list", &json!({}), &[]);
-        assert_eq!(none["items"][1]["project"], "D:\\b", "an empty project list moved cards");
-        let v = answer(&f, "list", &json!({}), &[project("D:\\a")]);
+        answer(&f, "add", &json!({"project": "D:\\a", "text": "keep"}), &known(&both));
+        answer(&f, "add", &json!({"project": "D:\\b", "text": "orphan"}), &known(&both));
+        let none = answer(&f, "list", &json!({}), &Known::default());
+        assert_eq!(none["items"][1]["project"], "D:\\b", "a list that is not whole moved cards");
+        let v = answer(&f, "list", &json!({}), &known(&[project("D:\\a")]));
         assert_eq!(v["items"][0]["project"], "D:\\a");
         assert!(v["items"][1]["project"].is_null(), "the card of a deleted project kept it");
         // And an unknown project asked for when adding is no project
-        let v = answer(&f, "add", &json!({"project": "D:\\z", "text": "?"}), &[project("D:\\a")]);
+        let v = answer(&f, "add", &json!({"project": "D:\\z", "text": "?"}), &known(&[project("D:\\a")]));
         assert!(v["items"][2]["project"].is_null());
     }
 
@@ -419,34 +463,73 @@ mod tests {
         let f = temp("broken");
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
         std::fs::write(&f, "{ not json").unwrap();
-        let v = answer(&f, "add", &json!({"text": "x"}), &[]);
+        let v = answer(&f, "add", &json!({"text": "x"}), &Known::default());
         assert_eq!(v["ok"], false);
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "{ not json");
         std::fs::write(&f, r#"{"version": 99, "items": []}"#).unwrap();
-        let v = answer(&f, "add", &json!({"text": "x"}), &[]);
+        let v = answer(&f, "add", &json!({"text": "x"}), &Known::default());
         assert_eq!(v["ok"], false, "a file from a later version was written over");
     }
 
-    /// A branch folder counts as its project's checkout, and a project in two
-    /// desks is listed once
+    /// A card named by a folder of its project comes to be named by the project
     #[test]
-    fn a_project_is_listed_once_by_its_checkout() {
-        let folder = |p: &str| crate::config::Folder {
+    fn a_card_named_by_a_folder_moves_to_its_project() {
+        let f = temp("folder");
+        let app = Project {
+            key: "D:\\app".into(),
+            name: "app".into(),
+            folders: vec!["D:\\app".into(), "E:\\wt\\fix".into()],
+        };
+        let old = answer(&f, "add", &json!({"text": "x"}), &known(&[]));
+        let id = old["made"].as_u64().unwrap();
+        // Written by an earlier version, which named the worktree's folder
+        let mut store: Store = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+        store.items[0].project = Some("e:/wt/fix".into());
+        std::fs::write(&f, serde_json::to_string(&store).unwrap()).unwrap();
+        let v = answer(&f, "list", &json!({}), &known(&[app]));
+        assert_eq!(v["items"][0]["id"], id);
+        assert_eq!(v["items"][0]["project"], "D:\\app", "the worktree's card did not find its repository");
+    }
+
+    /// A project is a repository: its checkout and a worktree cut from it in
+    /// another place entirely are one project, a folder that is no repository
+    /// is none, and a folder that cannot be looked at makes the list not whole
+    #[test]
+    fn a_project_is_a_repository_however_its_folders_are_spread() {
+        let root = std::env::temp_dir().join(format!("shikisha-ideas-git-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let app = root.join("app");
+        let wt = root.join("elsewhere").join("fix");
+        let notes = root.join("notes");
+        std::fs::create_dir_all(app.join(".git").join("worktrees").join("fix")).unwrap();
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::create_dir_all(&notes).unwrap();
+        // What `git worktree add` leaves: a .git file naming the worktree's own
+        // git folder, and in that folder the way back to the shared one
+        let own = app.join(".git").join("worktrees").join("fix");
+        std::fs::write(wt.join(".git"), format!("gitdir: {}", own.display())).unwrap();
+        std::fs::write(own.join("commondir"), "../..").unwrap();
+        let folder = |p: &Path| crate::config::Folder {
             name: None,
             id: None,
             host: None,
-            cwd: Some(PathBuf::from(p)),
+            cwd: Some(p.to_path_buf()),
             source: Default::default(),
             protect: Vec::new(),
             project: None,
             work_item: None,
         };
-        let one = Desk { folders: vec![folder("D:\\work\\app"), folder("D:\\work\\app.worktrees\\fix")], ..Default::default() };
-        let two = Desk { folders: vec![folder("d:/work/app/"), folder("D:\\notes")], ..Default::default() };
-        let ps = projects(&[one, two]);
-        assert_eq!(ps.len(), 2, "{ps:?}");
-        assert_eq!(ps[0].name, "app");
-        assert_eq!(ps[0].folders.len(), 2, "the branch folder is not counted as the project's");
-        assert_eq!(ps[1].name, "notes");
+        let one = Desk { folders: vec![folder(&app), folder(&notes)], ..Default::default() };
+        let two = Desk { folders: vec![folder(&wt)], ..Default::default() };
+        let k = projects(&[one, two]);
+        assert!(k.whole);
+        assert_eq!(k.list.len(), 1, "{:?}", k.list);
+        assert_eq!(k.list[0].name, "app");
+        assert_eq!(k.list[0].folders.len(), 2, "the worktree elsewhere is not counted as the repository's");
+        assert!(same_folder(Path::new(&k.list[0].key), &app));
+        let gone = Desk { folders: vec![folder(&app), folder(&root.join("not-here"))], ..Default::default() };
+        assert!(!projects(&[gone]).whole, "a folder that is not there still let a project be called deleted");
+        assert!(!projects(&[]).whole, "no desks at all is a whole list");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
