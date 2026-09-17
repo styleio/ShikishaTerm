@@ -1537,6 +1537,24 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .gsplit.held .gmain { cursor:not-allowed; }
   #gitpanel .gsplit button[disabled] { cursor:default; }
   #gitpanel .gname { display:flex; gap:var(--s2); }
+  /* Choosing the base, and a merge that stopped: boxed, said in --warn where a
+     person is needed, with what will run quoted as it is */
+  #gitpanel .gbase, #gitpanel .gconflict { display:flex; flex-direction:column; gap:var(--s2); padding:var(--s2) var(--s3);
+    border-radius:var(--r-ctl); background:color-mix(in srgb, var(--warn) 9%, transparent);
+    border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+  #gitpanel .gbase[hidden], #gitpanel .gconflict[hidden] { display:none; }
+  #gitpanel .gbasesay, #gitpanel .gconflictsay { font-size:11.5px; color:var(--text); }
+  #gitpanel .gbase select { height:32px; font:inherit; font-size:12.5px; background:var(--bg); color:var(--text);
+    border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 var(--s2); }
+  #gitpanel .gruns, #gitpanel .gconflictfiles { margin:0; font-family:var(--mono); font-size:11px; color:var(--dim);
+    white-space:pre-wrap; overflow-wrap:anywhere; background:var(--sunk, var(--bg)); border:1px solid var(--line);
+    border-radius:var(--r-ctl); padding:var(--s1) var(--s2); }
+  #gitpanel .gbaserow { display:flex; justify-content:flex-end; gap:var(--s2); }
+  #gitpanel .gbaserow button { height:32px; padding:0 var(--s3); font:inherit; font-size:12.5px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:var(--s1); border:1px solid var(--edge); background:var(--panel2);
+    color:var(--text); border-radius:var(--r-ctl); }
+  #gitpanel .gbaserow button.quiet { border-color:transparent; background:transparent; color:var(--dim); }
+  #gitpanel .gbaserow button .ico { display:flex; }
   #gitpanel .gname[hidden] { display:none; }
   #gitpanel .gname input { flex:1; min-width:0; height:32px; box-sizing:border-box; padding:0 var(--s3);
     font:inherit; font-size:13px; background:var(--bg); color:var(--text); border:1px solid var(--edge);
@@ -1556,6 +1574,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .fmenu div.gdis { color:var(--faint); cursor:not-allowed; }
   .fmenu div.gdis:hover { background:transparent; }
   .fmenu div.gdis .why { display:block; font-size:11px; }
+  /* What an entry will run, quoted under it */
+  .fmenu div .note { display:block; font-size:11px; color:var(--dim); }
+  .fmenu div .runs { display:block; font-family:var(--mono); font-size:10.5px; color:var(--dim);
+    white-space:pre-wrap; overflow-wrap:anywhere; max-width:300px; }
   #gitpanel .cols { display:flex; flex:1 1 auto; min-height:0; }
   #gitpanel .branches { flex:0 0 170px; overflow:auto; min-width:0; }
   #gitpanel .mid { flex:0 0 38%; min-width:0; display:flex;
@@ -8056,7 +8078,9 @@ window.__state = function (json) {
   // The board is live now — take down the startup splash.
   const _sp = document.getElementById("splash");
   if (_sp && !_sp.hidden) _sp.hidden = true;
+  const before = S;
   S = JSON.parse(json);
+  gitAfterWork(before);
   // A page older than the app it's talking to keeps rendering yesterday's
   // UI — a phone leaves the board open across app updates, and every "the
   // button is still the old one" report traces back to that. The state
@@ -12387,7 +12411,9 @@ window.__recorded = function (line) {
 function gitFresh(name) {
   return { panel:name, branch:null, branches:[], rows:null, sel:null, staged:false,
            diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null,
-           view:"changes", log:[], commit:null, about:null, remotes:false, then:"", need:false };
+           view:"changes", log:[], commit:null, about:null, remotes:false, then:"", need:false,
+           // Bringing the base's latest in: choosing a base, and a merge that stopped
+           pickBase:false, bases:null, baseSel:"", conflict:null };
 }
 let G = gitFresh(null);
 let gitUi = null;
@@ -12414,6 +12440,19 @@ function repoTab() {
   const t = folderTab();
   const g = t ? ((S && S.groups) || [])[t.group] : null;
   return g && g.color ? t : null;
+}
+// Work a tab finishes in the folder the git column reports on -- an AI that
+// settled a merge, a build that wrote files -- is read again: nothing else
+// tells the column that its folder changed under it
+function gitAfterWork(before) {
+  const panel = document.getElementById("gitpanel");
+  if (!before || !S || !panel || panel.hidden || !G.panel || G.busy) return;
+  const t = gitTab();
+  if (!t) return;
+  const was = new Map((before.tabs || []).map(x => [x.index, x.state]));
+  if ((S.tabs || []).some(x => x.group === t.group && was.get(x.index) === "BUSY" && x.state !== "BUSY")) {
+    gitRefresh(true);
+  }
 }
 // Whichever of the two is standing. Every button on the panel goes through
 // here, so the panel itself never learns where it is
@@ -12456,12 +12495,30 @@ window.__git = function (d) {
       G.pick = {};
       for (const p of d.paths || []) G.pick[p] = "work";
     }
+    // Bringing the latest in: a base to choose, work to commit first, or a
+    // merge that stopped -- each a person being needed, not a failure
+    if (d.act === "catch_up" && ["no_base", "dirty", "conflict"].includes(d.why)) {
+      G.bad = false;
+      G.need = true;
+      // The choice was written down before anything ran, so it is not shown
+      // again once the answer is about something else
+      G.pickBase = d.why === "no_base";
+      if (d.why === "no_base") gitAsk("remote_branches");
+      if (d.why === "conflict") {
+        G.conflict = {base: d.base || "", files: d.files || []};
+        G.said = "";
+        gitRefresh(true);
+      }
+    }
     drawGit();
     return;
   }
   G.bad = false;
   if (d.act === "status") {
     G.rows = d.data || [];
+    // A stopped merge is handed over until nothing is left in conflict
+    if (G.conflict && !G.rows.some(r => r.conflict)) G.conflict = null;
+    gitConflictFromState();
     // A file that has just moved takes the reader with it. Staging the whole of
     // the file being read used to leave the pane saying "nothing differs here",
     // which is true of the side it was still looking at and useless: the change
@@ -12482,11 +12539,25 @@ window.__git = function (d) {
       }
     }
   }
-  else if (d.act === "branch") { G.branch = d.data || null; }
+  else if (d.act === "branch") { G.branch = d.data || null; gitConflictFromState(); }
   else if (d.act === "branches") { G.branches = d.data || []; }
   else if (d.act === "diff") { G.diff = d.data || ""; }
   else if (d.act === "hunks") { G.hunks = d.data || []; G.waiting = false; }
   else if (d.act === "graph") { G.log = d.data || []; }
+  else if (d.act === "remote_branches") {
+    G.bases = d.data || [];
+    if (!G.bases.some(b => b.name === G.baseSel)) {
+      // The one the branch follows first, else the server's main line
+      const up = (G.branch && G.branch.upstream) || "";
+      const pick = G.bases.find(b => b.name === up) || G.bases.find(b => /\/(main|master|develop)$/.test(b.name)) || G.bases[0];
+      G.baseSel = pick ? pick.name : "";
+    }
+  }
+  else if (d.act === "resolve_tab") {
+    const got = d.data || {};
+    G.said = (T[got.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "")
+      .replace("{title}", got.title || "");
+  }
   else if (d.act === "detail") { G.about = d.data || null; G.sel = null; G.hunks = []; }
   else if (d.act === "hunk") {
     // A piece moved. What is staged changed, and so did the piece list
@@ -12515,6 +12586,13 @@ window.__git = function (d) {
       // do is read it, so the file list comes back and the diff with it
       G.said = String(d.data || "").split("\n").filter(Boolean)[0] || "";
       G.sel = null; G.diff = ""; G.hunks = [];
+    } else if (d.act === "catch_up") {
+      let got = {};
+      try { got = JSON.parse(d.data || "{}"); } catch (e) { got = {}; }
+      G.pickBase = false; G.conflict = null;
+      G.said = got.taken
+        ? (T["git.catch_up.taken"] || "").replace("{base}", got.base || "").replace("{n}", got.taken)
+        : (T["git.catch_up.latest"] || "").replace("{base}", got.base || "");
     } else if (d.act === "fetch" || d.act === "pull" || d.act === "push" || d.act === "merge") {
       G.said = String(d.data || "").split("\n").filter(Boolean).pop() || (T["git.done"] || "");
     }
@@ -12598,6 +12676,15 @@ function gitBuild(box) {
     const next = gitNext();
     if (next) next.run();
   }});
+  // A next step an AI is told how to do says where that is written, the same
+  // way the sparkles beside the message do
+  main.addEventListener("contextmenu", e => {
+    const next = gitNext();
+    if (!next || !next.edit) return;
+    e.preventDefault();
+    openList(main, [el("div", {onclick:() => { closeFolderMenu(); openSettings(next.edit, true); }},
+      T["git.message.ai.edit"] || "")], false, e);
+  });
   const more = el("button", {class:"gmore", type:"button", title: T["git.more"] || "",
     onclick:e => { e.stopPropagation(); gitMenu(more); }}, "▾");
   // A new branch is named here rather than in a dialog: the answer belongs
@@ -12613,7 +12700,28 @@ function gitBuild(box) {
     el("button", {type:"button", onclick: makeBranch}, T["git.branch.make"] || ""));
   const said = el("div", {class:"said"});
   const split = el("div", {class:"gsplit"}, main, more);
-  const commitBox = el("div", {class:"gcommit"}, head, el("div", {class:"gmsg"}, msg, ai), split, naming, said);
+  // Choosing the base to bring the latest in from, with what will run for it
+  const basePick = el("select");
+  basePick.onchange = () => { G.baseSel = basePick.value; drawGitCommit(); };
+  const baseRuns = el("pre", {class:"gruns"});
+  const baseBox = el("div", {class:"gbase"},
+    el("div", {class:"gbasesay"}, T["git.catch_up.pick"] || ""),
+    basePick,
+    el("div", {class:"gbasesay"}, T["git.catch_up.runs"] || ""),
+    baseRuns,
+    el("div", {class:"gbaserow"},
+      el("button", {type:"button", class:"quiet", onclick:() => { G.pickBase = false; G.need = false; G.said = ""; drawGit(); }},
+        T["issues.cancel"] || ""),
+      el("button", {type:"button", onclick:() => {
+        if (!G.baseSel || G.busy) return;
+        gitAsk("catch_up", {base: G.baseSel});
+      }}, T["git.catch_up.go"] || "")));
+  // A merge that stopped: which base, which files, and the way to hand it over
+  const conflictSay = el("div", {class:"gconflictsay"});
+  const conflictFiles = el("div", {class:"gconflictfiles"});
+  // The way on is the button above it, the one thing to do next
+  const conflictBox = el("div", {class:"gconflict"}, conflictSay, conflictFiles);
+  const commitBox = el("div", {class:"gcommit"}, head, el("div", {class:"gmsg"}, msg, ai), split, naming, baseBox, conflictBox, said);
 
   const branches = el("div", {class:"branches"});
   const staged = el("div", {class:"list"});
@@ -12677,7 +12785,7 @@ function gitBuild(box) {
     diff, hist));
   gitUi = { bar, said, naming, name, branches, branchCol, staged, work, diff,
             hist, mid, log, about, commitDiff, remotes, chips, which, acct, acctPick, acctWhose, acctSig: "",
-            branchName, sync, msg, ai, main, more, split, commitBox, stagedSec, workSec, stagedN, workN,
+            branchName, sync, msg, ai, main, more, split, commitBox, baseBox, basePick, baseRuns, conflictBox, conflictSay, conflictFiles, stagedSec, workSec, stagedN, workN,
             pick: {unstageAll, unstagePick, stageAll, stagePick} };
 }
 
@@ -13001,6 +13109,11 @@ function gitCommit(then, amend) {
 function gitNext() {
   const rows = G.rows || [];
   const b = G.branch || {};
+  // A merge of the base that stopped goes to an AI tab, told what the settings
+  // say, which reads both sides and runs the checks before it finishes the merge
+  if (G.conflict && rows.some(r => r.conflict)) {
+    return {icon:"sparkles", label: T["git.catch_up.resolve"] || "", edit:"git-merge", run:() => gitAsk("resolve_tab")};
+  }
   if (rows.some(r => r.conflict && r.tangled)) {
     return {icon:"sparkles", label: T["git.resolve"] || "", run:() => gitAsk("resolve")};
   }
@@ -13071,15 +13184,56 @@ function gitOpenPr() {
   send({kind:"openissues"});
   send({kind:"issues", act:"pr_bases", args:{kind:"pr", project: I.pr.project, seq: 0}});
 }
+// Work a merge would be started on top of: a change to a file git follows.
+// Files git does not follow are not counted
+function gitDirty() {
+  return (G.rows || []).some(r => r.index !== "?");
+}
+// "Bring in the latest", with how far behind its base the branch is when that
+// is known -- a number with its name
+// How far the branch is from its base, in words, as of the last fetch
+function gitCatchUpNote() {
+  const b = G.branch || {};
+  if (!b.base || b.base_behind == null) return "";
+  return (b.base_behind
+    ? (T["git.catch_up.behind"] || "").replace("{base}", b.base).replace("{n}", b.base_behind)
+    : (T["git.catch_up.even"] || "").replace("{base}", b.base));
+}
+// A merge of the base that stopped earlier -- before this page was opened, or
+// on another screen -- is shown the same as one that stopped just now
+function gitConflictFromState() {
+  const b = G.branch || {};
+  const files = (G.rows || []).filter(r => r.conflict).map(r => r.path);
+  if (!G.conflict && b.catching_up && files.length) G.conflict = {base: b.catching_up, files: files};
+}
+// Bring the base's latest in. Refused while work is uncommitted; with no base
+// written down, the base is chosen first
+function gitCatchUp() {
+  if (G.busy) return;
+  if (gitDirty()) { G.said = T["git.why.dirty"] || ""; G.bad = false; G.need = true; drawGit(); return; }
+  const b = G.branch || {};
+  if (!b.base) {
+    G.pickBase = true; G.said = ""; G.need = false;
+    gitAsk("remote_branches");
+    drawGit();
+    return;
+  }
+  gitAsk("catch_up", {});
+}
 // Everything else git is asked for from here. What cannot be done yet stays in
 // the list, grey, with what it is waiting for written under it
 function gitMenu(anchor) {
   if (G.busy) return;
   const staged = (G.rows || []).some(r => r.staged && !r.conflict);
   const worded = !!gitMessage().trim();
-  const item = (label, run, why) => why
-    ? el("div", {class:"gdis"}, label, el("span", {class:"why"}, why))
-    : el("div", {onclick:() => { closeFolderMenu(); run(); }}, label);
+  // What cannot be done yet stays in the list, grey, and still answers when
+  // pressed: the reason is said where the panel says things (5.4)
+  const item = (label, run, why, runs, note) => why
+    ? el("div", {class:"gdis", onclick:() => { closeFolderMenu(); G.said = why; G.bad = false; G.need = true; drawGit(); }},
+        label, note ? el("span", {class:"note"}, note) : null, el("span", {class:"why"}, why))
+    : el("div", {onclick:() => { closeFolderMenu(); run(); }}, label,
+        note ? el("span", {class:"note"}, note) : null,
+        runs && runs.length ? el("span", {class:"runs"}, runs.join("\n")) : null);
   const sep = () => el("div", {class:"gsep"});
   const needStage = staged ? "" : (T["git.why.stage"] || "");
   const needWords = worded ? "" : (T["git.why.message"] || "");
@@ -13097,6 +13251,9 @@ function gitMenu(anchor) {
     item(T["git.branch.new"] || "", () => gitNewBranch()),
     item(G.pickBranch ? (T["git.merge"] || "") + " ← " + G.pickBranch : (T["git.merge"] || ""),
       () => gitAsk("merge", {text: G.pickBranch}), G.pickBranch ? "" : (T["git.merge.pick"] || "")),
+    // The base's latest, fetched and merged; what runs is written under it
+    item(T["git.catch_up"] || "", gitCatchUp, gitDirty() ? (T["git.why.dirty"] || "") : "",
+      (G.branch && G.branch.catch_up) || [], gitCatchUpNote()),
   ]);
 }
 // The top of the changes: redrawn on every answer, touching only what changed
@@ -13141,6 +13298,25 @@ function drawGitCommit() {
   u.split.classList.toggle("held", !G.busy && !!next.held);
 
   u.naming.hidden = !G.offer;
+  // Choosing a base: the list is rebuilt only when it changed, so an open one
+  // is not shut under the pointer
+  u.baseBox.hidden = !G.pickBase;
+  if (G.pickBase) {
+    const sig = JSON.stringify((G.bases || []).map(b => b.name));
+    if (u.basePick.dataset.sig !== sig) {
+      u.basePick.dataset.sig = sig;
+      u.basePick.textContent = "";
+      for (const b of G.bases || []) u.basePick.append(el("option", {value: b.name}, b.name));
+    }
+    u.basePick.value = G.baseSel;
+    const chosen = (G.bases || []).find(b => b.name === G.baseSel);
+    u.baseRuns.textContent = G.bases === null ? "\u2026" : ((chosen && chosen.catch_up) || []).join("\n");
+  }
+  u.conflictBox.hidden = !G.conflict;
+  if (G.conflict) {
+    u.conflictSay.textContent = (T["git.catch_up.conflict"] || "").replace("{base}", G.conflict.base);
+    u.conflictFiles.textContent = G.conflict.files.join("\n");
+  }
   if (G.offer && document.activeElement !== u.name) u.name.focus();
   // The missing-message reason goes as soon as there is a message; a reason
   // of another kind stays until the next answer replaces it

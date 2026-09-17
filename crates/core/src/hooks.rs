@@ -3267,6 +3267,27 @@ impl HookEngine {
                                     row.set("ahead", ahead)?;
                                     row.set("behind", behind)?;
                                 }
+                                // What it was cut from, when that was written down,
+                                // and the commands bringing its latest in would run
+                                if let Some(base) = crate::git::recorded_base(&dir, &row.get::<String>("name")?) {
+                                    let steps = crate::git::catch_up_steps(&dir, &base);
+                                    // Commits on the base this branch does not have yet,
+                                    // as of the last fetch. Absent when that cannot be told
+                                    if let Some(theirs) = steps.last().and_then(|s| s.last())
+                                        && let Ok(n) = crate::git::run(&dir, &["rev-list", "--count", &format!("HEAD..{theirs}")])
+                                        && let Ok(n) = n.trim().parse::<u64>()
+                                    {
+                                        row.set("base_behind", n)?;
+                                    }
+                                    // A merge of that base stopped half done here
+                                    if let Some(theirs) = steps.last().and_then(|s| s.last())
+                                        && crate::git::merging_in(&dir, theirs)
+                                    {
+                                        row.set("catching_up", theirs.as_str())?;
+                                    }
+                                    row.set("catch_up", crate::git::catch_up_said(&steps))?;
+                                    row.set("base", base)?;
+                                }
                                 Ok(Value::Table(row))
                             }
                             None => Ok(Value::Nil),
@@ -3409,6 +3430,47 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
+            // The branches the servers have, each with the commands bringing its
+            // latest in would run -- the list a base is chosen from
+            let c = Rc::clone(&places);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_remote_branches",
+                    lua.create_function(move |lua, tab: Value| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let list = crate::git::remote_branches(&dir)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        let out = lua.create_table()?;
+                        for name in list {
+                            let row = lua.create_table()?;
+                            row.set("catch_up", crate::git::catch_up_said(&crate::git::catch_up_steps(&dir, &name)))?;
+                            row.set("name", name)?;
+                            out.push(row)?;
+                        }
+                        Ok(out)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            // Write down what the branch in front was cut from
+            let c = Rc::clone(&places);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_set_base",
+                    lua.create_function(move |_, (tab, base): (Value, String)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let here = crate::git::branch(&dir)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?
+                            .ok_or_else(|| mlua::Error::runtime(crate::i18n::t("err.git.empty_branch")))?;
+                        crate::git::record_base(&dir, &here, &base).map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
             // Every local branch, with a mark on the one checked out
             let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
@@ -3488,6 +3550,24 @@ impl HookEngine {
             network!("git_fetch", crate::git::fetch);
             network!("git_pull", crate::git::pull);
             network!("git_push", crate::git::push);
+            // The latest of a base, fetched from its server and merged in
+            let c = Rc::clone(&places);
+            let o = Rc::clone(&current_origin);
+            let k = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "git_catch_up",
+                    lua.create_function(move |lua, (tab, base): (Value, String)| {
+                        let (dir, _, who) = git_as(&c, &o, &tab, &k, true)?;
+                        let taken = crate::git::catch_up(&dir, &base, &who)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        let row = lua.create_table()?;
+                        row.set("taken", taken)?;
+                        Ok(row)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
         }
         {
             // Make a branch and move onto it. What a refused commit is offered

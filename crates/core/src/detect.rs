@@ -668,6 +668,29 @@ mod tests {
         assert!(d.working_shown(), "it misses the real working indicator");
     }
 
+    /// The real profile, read from `profiles/claude.json`, against the prompt
+    /// Claude Code stops on the first time it is started in a folder -- a new
+    /// worktree always is one. The choice under the cursor is "No, exit", so a
+    /// tab taken for ready here and handed a line and Enter quits
+    #[test]
+    fn claudes_trust_prompt_is_a_question() {
+        let profile = crate::profile::load_for_command("claude");
+        let mut d = Detector::new(profile);
+        let trust = r" Accessing workspace:
+
+ C:\work\repo
+
+ Quick safety check: Is this a project you created or one you trust?
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel";
+        assert_eq!(d.tick(trust, 10_000, 0), TabState::Question, "taken for ready while it waits for a person");
+    }
+
     #[test]
     fn busy_pattern_wins_over_silence() {
         let mut d = Detector::new(claude_like());

@@ -3789,25 +3789,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // The log says the button and what it was written as. The text
             // that goes out may hold a secret's value, so that is never logged
             let Some(desk) = desks.get(desk_index).map(|d| d.name.clone()) else { continue };
-            let (title, tab_id) = quick_tab_names(&label, &program, &tabs);
-            let line = serde_json::json!({"name": title, "id": tab_id, "command": command});
-            if config::append_tab(&desk, line, Some(&cwd)) {
-                append_hook_log(&format!(
-                    "quick command \"{label}\" -> new tab \"{title}\" in {}: {}",
-                    cwd.display(),
-                    log_excerpt(&item.body, 120)
-                ));
-                reveal = Some((tab_id.clone(), Instant::now() + Duration::from_secs(20)));
-                pending_quicks.push(PendingQuick {
-                    id: tab_id,
-                    label,
-                    text,
-                    submit: item.enter,
-                    until: Instant::now() + QUICK_WAIT,
-                });
-                watcher.poke();
-            } else {
-                flash = Some(i18n::tp("msg.quick.open_failed", &[("label", &label)]));
+            match open_and_say(&desk, &cwd, &command, &program, &label, text, item.enter, &tabs, &mut pending_quicks, &mut reveal) {
+                Some(title) => {
+                    append_hook_log(&format!(
+                        "quick command \"{label}\" -> new tab \"{title}\" in {}: {}",
+                        cwd.display(),
+                        log_excerpt(&item.body, 120)
+                    ));
+                    watcher.poke();
+                }
+                None => flash = Some(i18n::tp("msg.quick.open_failed", &[("label", &label)])),
             }
         }
         // Lines waiting for a tab a quick command opened: handed over once
@@ -3992,7 +3983,61 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 eng.start_snippet("message", &code);
                 continue;
             }
-            if matches!(act.as_str(), "fetch" | "pull" | "push" | "resolve") {
+            // A merge that stopped, handed to an AI tab in the same folder with
+            // the desk's instruction as its first message. What it names -- the
+            // branch, the base, the files -- is read from the folder, not taken
+            // from the page
+            if act == "resolve_tab" {
+                let place = panel_places(&surfaces)
+                    .into_iter()
+                    .chain(tab_places(&tabs).into_iter().filter(|p| !p.dir.as_os_str().is_empty()))
+                    .find(|p| p.key.matches(&panel));
+                let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
+                let answer = match (place, desks.get(desk_index), quick_ai_choice(&ai, &ai_choices)) {
+                    (None, ..) | (_, None, _) => Err(i18n::t("err.git.no_tab")),
+                    (.., None) => Err(i18n::t("msg.quick.no_ai")),
+                    (Some(place), Some(desk), Some(choice)) => {
+                        let dir = place.dir;
+                        let branch = crate::git::branch(&dir).ok().flatten().unwrap_or_default();
+                        let base = crate::git::recorded_base(&dir, &branch).unwrap_or_default();
+                        let files = crate::git::conflicts(&dir).unwrap_or_default();
+                        let prompt = desk
+                            .git
+                            .merge_prompt()
+                            .replace("{folder}", &dir.display().to_string())
+                            .replace("{branch}", &branch)
+                            .replace("{base}", &base)
+                            .replace("{files}", &files.iter().map(|f| format!("  - {f}")).collect::<Vec<_>>().join("\n"));
+                        let label = i18n::t("git.catch_up.tab");
+                        // One AI on a merge at a time: a tab already at it is
+                        // brought forward instead of a second one opened
+                        match opened_for(&label, &dir, &tabs, &pending_quicks) {
+                            Some((title, name)) => {
+                                reveal = Some((name, Instant::now() + Duration::from_secs(20)));
+                                Ok(serde_json::json!({"title": title, "already": true}))
+                            }
+                            None => match open_and_say(&desk.name, &dir, &choice.key, &choice.name, &label, prompt, true, &tabs, &mut pending_quicks, &mut reveal) {
+                                Some(title) => {
+                                    watcher.poke();
+                                    Ok(serde_json::json!({"title": title, "already": false}))
+                                }
+                                None => Err(i18n::tp("msg.quick.open_failed", &[("label", &label)])),
+                            },
+                        }
+                    }
+                };
+                let js = match answer {
+                    Ok(data) => serde_json::json!({"act": act, "ok": true, "data": data}),
+                    Err(why) => serde_json::json!({"act": act, "ok": false, "error": why}),
+                }
+                .to_string();
+                shell.push_git(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"git\":{js}}}"));
+                }
+                continue;
+            }
+            if matches!(act.as_str(), "fetch" | "pull" | "push" | "resolve" | "catch_up") {
                 // "message" is the AI writing one, which is a read of the diff
                 // followed by a wait on a program -- the same reason as the
                 // network ones for not doing it on this thread
@@ -4026,6 +4071,27 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     (true, Some(_), Some(Err(why))) => Some(why),
                     (true, Some(place), Some(Ok(who))) => {
                         let dir = place.dir;
+                        // Bringing the latest in needs a base: the one written down
+                        // for the branch, or the one just chosen -- written down now,
+                        // so it is not asked for again
+                        let mut base = String::new();
+                        if act == "catch_up" {
+                            let here = crate::git::branch(&dir).ok().flatten().unwrap_or_default();
+                            let chosen = args.get("base").and_then(|b| b.as_str()).unwrap_or_default().trim().to_string();
+                            if !chosen.is_empty() && !here.is_empty() {
+                                let _ = crate::git::record_base(&dir, &here, &chosen);
+                            }
+                            base = crate::git::recorded_base(&dir, &here).unwrap_or(chosen);
+                            if base.is_empty() {
+                                let js = serde_json::json!({"act": act, "ok": false, "why": "no_base",
+                                    "error": i18n::t("git.catch_up.pick")}).to_string();
+                                shell.push_git(&js);
+                                if let Some(r) = remote_ui.as_ref() {
+                                    r.push_state(format!("{{\"git\":{js}}}"));
+                                }
+                                continue;
+                            }
+                        }
                         // Say it started, so a button that will be a while
                         // does not look like a button that did nothing --
                         // wherever it was pressed
@@ -4045,6 +4111,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 "fetch" => crate::git::fetch(&dir, &who),
                                 "pull" => crate::git::pull(&dir, &who),
                                 "push" => crate::git::push(&dir, &who),
+                                "catch_up" => crate::git::catch_up(&dir, &base, &who)
+                                    .map(|n| serde_json::json!({"taken": n, "base": base}).to_string()),
                                 #[allow(unreachable_patterns)]
                                 // Every file git left marked, one at a time.
                                 // Nothing is staged and nothing is committed:
@@ -4085,12 +4153,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 }),
                                 // Uncommitted work in the way of a pull is named,
                                 // so the panel can put those files in front
-                                Err(e) => match e.downcast_ref::<crate::git::PullBlocked>() {
-                                    Some(blocked) => serde_json::json!({
+                                Err(e) => match (e.downcast_ref::<crate::git::PullBlocked>(), e.downcast_ref::<crate::git::CatchUpStop>()) {
+                                    (Some(blocked), _) => serde_json::json!({
                                         "act": act2, "ok": false, "error": e.to_string(),
                                         "why": "in_the_way", "paths": blocked.0,
                                     }),
-                                    None => serde_json::json!({
+                                    // A merge that stopped names the base and its files,
+                                    // so the panel can offer to hand it over
+                                    (_, Some(crate::git::CatchUpStop::Conflict { base, files })) => serde_json::json!({
+                                        "act": act2, "ok": false, "error": e.to_string(),
+                                        "why": "conflict", "base": base, "files": files,
+                                    }),
+                                    (_, Some(crate::git::CatchUpStop::Dirty)) => serde_json::json!({
+                                        "act": act2, "ok": false, "error": e.to_string(), "why": "dirty",
+                                    }),
+                                    _ => serde_json::json!({
                                         "act": act2, "ok": false, "error": plain_error(&e.to_string()),
                                     }),
                                 },
@@ -4184,6 +4261,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 ),
                 "checkout" => ("git_checkout", vec![who.clone(), serde_json::json!(text)]),
                 "merge" => ("git_merge", vec![who.clone(), serde_json::json!(text)]),
+                "remote_branches" => ("git_remote_branches", vec![who.clone()]),
                 // "make a branch and commit there" -- the answer to a refusal
                 // rather than a way around it
                 "branch_new" => ("git_branch_create", vec![who.clone(), serde_json::json!(text)]),
@@ -8232,6 +8310,65 @@ pub fn quick_ai_choice<'a>(
 pub const QUICK_SETTLE_MS: u64 = 2_500;
 pub const QUICK_WAIT: Duration = Duration::from_secs(90);
 
+/// Open a tab running `command` in `cwd` and have `text` typed into it once the
+/// program in it is ready: what a quick command does, and what the git panel's
+/// "Resolve" does with its instruction. Answers the tab's title; the caller
+/// tells the settings watcher, which is what starts the tab
+#[allow(clippy::too_many_arguments)]
+fn open_and_say(
+    desk: &str,
+    cwd: &std::path::Path,
+    command: &str,
+    program: &str,
+    label: &str,
+    text: String,
+    submit: bool,
+    tabs: &[Tab],
+    pending: &mut Vec<PendingQuick>,
+    reveal: &mut Option<(String, Instant)>,
+) -> Option<String> {
+    let (title, tab_id) = quick_tab_names(label, program, tabs);
+    let line = serde_json::json!({"name": title, "id": tab_id, "command": command});
+    if !config::append_tab(desk, line, Some(cwd)) {
+        return None;
+    }
+    *reveal = Some((tab_id.clone(), Instant::now() + Duration::from_secs(20)));
+    pending.push(PendingQuick {
+        id: tab_id,
+        title: title.clone(),
+        label: label.to_string(),
+        cwd: cwd.to_path_buf(),
+        text,
+        submit,
+        until: Instant::now() + QUICK_WAIT,
+    });
+    Some(title)
+}
+
+/// A tab opened under `label` in `dir` that is still running, or one on its
+/// way there: its title and the name to bring it forward by. Pressing again
+/// shows that one, rather than setting a second AI on the same work
+pub fn opened_for(label: &str, dir: &std::path::Path, tabs: &[Tab], pending: &[PendingQuick]) -> Option<(String, String)> {
+    // The title `quick_tab_names` gives: the label, or the label and a number
+    let named = |title: &str| {
+        title == label
+            || title
+                .strip_prefix(label)
+                .and_then(|rest| rest.strip_prefix(' '))
+                .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    };
+    let open = tabs.iter().find(|t| {
+        named(&t.title) && !t.exited() && t.cwd().is_some_and(|c| crate::uistate::same_folder(c, dir))
+    });
+    if let Some(t) = open {
+        return Some((t.title.clone(), t.id.clone().unwrap_or_else(|| t.title.clone())));
+    }
+    pending
+        .iter()
+        .find(|p| p.label == label && crate::uistate::same_folder(&p.cwd, dir))
+        .map(|p| (p.title.clone(), p.id.clone()))
+}
+
 pub fn quick_ready(t: &Tab, now_ms: u64) -> bool {
     t.had_output()
         && !matches!(t.state, crate::detect::TabState::Busy | crate::detect::TabState::Question)
@@ -8242,7 +8379,11 @@ pub fn quick_ready(t: &Tab, now_ms: u64) -> bool {
 pub struct PendingQuick {
     /// The new tab's automation name
     pub id: String,
+    /// What its tab strip will say
+    pub title: String,
     pub label: String,
+    /// The folder it opens in
+    pub cwd: std::path::PathBuf,
     pub text: String,
     pub submit: bool,
     pub until: Instant,
@@ -9299,6 +9440,29 @@ mod survey_tests {
         assert!(got.contains("Microsoft Windows"), "{got}");
         assert!(got.contains("git.exe"), "{got}");
         assert!(!got.contains("where git"), "the echo line is not included: {got}");
+    }
+
+    /// A second press while the first tab is still on its way finds that tab,
+    /// in that folder only
+    #[test]
+    fn a_tab_on_its_way_is_found_again_in_its_own_folder() {
+        let here = std::env::temp_dir().join("shikisha-opened-for-here");
+        let there = std::env::temp_dir().join("shikisha-opened-for-there");
+        let pending = vec![PendingQuick {
+            id: "resolve-conflicts".into(),
+            title: "Resolve conflicts".into(),
+            label: "Resolve conflicts".into(),
+            cwd: here.clone(),
+            text: String::new(),
+            submit: true,
+            until: Instant::now() + QUICK_WAIT,
+        }];
+        assert_eq!(
+            opened_for("Resolve conflicts", &here, &[], &pending),
+            Some(("Resolve conflicts".to_string(), "resolve-conflicts".to_string()))
+        );
+        assert_eq!(opened_for("Resolve conflicts", &there, &[], &pending), None, "another folder's merge is its own");
+        assert_eq!(opened_for("Review", &here, &[], &pending), None, "another kind of work is not this one");
     }
 
     /// The probe picker follows argv first, then the prompt's shape
