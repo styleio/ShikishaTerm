@@ -1188,9 +1188,13 @@ mod tests {
         git(&main, &["-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "one"]).unwrap();
         let cut = root.join("cut");
         git(&main, &["worktree", "add", "-q", "-b", "feature", &cut.display().to_string()]).unwrap();
-        assert!(super::head_folder(&main, "main").is_some_and(|f| crate::uistate::same_folder(&f, &main)));
-        assert!(super::head_folder(&cut, "feature").is_some_and(|f| crate::uistate::same_folder(&f, &cut)), "a worktree was not found from itself");
-        assert!(super::head_folder(&main, "feature").is_some_and(|f| crate::uistate::same_folder(&f, &cut)));
+        // Compared as the disk resolves them: a temporary folder can be named
+        // in its short form (`RUNNER~1`) and read back in its long one
+        let real = |p: &std::path::Path| std::fs::canonicalize(p).ok();
+        let is = |found: Option<std::path::PathBuf>, want: &std::path::Path| found.as_deref().and_then(real) == real(want);
+        assert!(is(super::head_folder(&main, "main"), &main), "the checkout was not found on its own branch");
+        assert!(is(super::head_folder(&cut, "feature"), &cut), "a worktree was not found from itself");
+        assert!(is(super::head_folder(&main, "feature"), &cut), "a worktree was not found from the checkout");
         assert_eq!(super::head_folder(&main, "elsewhere"), None);
         let _ = std::fs::remove_dir_all(&root);
     }
