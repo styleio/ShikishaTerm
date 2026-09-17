@@ -488,7 +488,7 @@ const EVENT_FILES: [&str; 8] = [
 const AI_ENGINES: [(&str, &[&str], &str); 3] = [
     ("claude", &["-p"], "Claude Code"),
     ("codex", &["exec"], "Codex CLI"),
-    ("gemini", &["-p"], "Gemini CLI"),
+    ("gemini", &["-p", ""], "Gemini CLI"),
 ];
 
 /// Turns the tab layout into descriptive text. Passed so the AI knows the destination number
@@ -947,15 +947,59 @@ fn picture_answer(name: &str, out: &str) -> Result<String> {
 /// picture, when that AI is handed a file, and the shape -- and the folder is
 /// gone again once it is done. Stopped after [`PICTURE_TIMEOUT`]
 pub fn ask_about_picture(name: &str, prompt: &str, png: &[u8], schema: &str) -> Result<String> {
-    use std::io::Write as _;
     let (args, input, on_disk) = picture_invocation(name, prompt, png, schema)
         .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
-    let (cmd, args) = launcher(name, args)
-        .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
+    let mut files: Vec<(&str, &[u8])> = vec![(SCHEMA_FILE, schema.as_bytes())];
+    if on_disk {
+        files.push((PICTURE_FILE, png));
+    }
+    let ran = run_in_own_folder(name, args, input, &files, &[], PICTURE_TIMEOUT)?;
+    if !ran.ok {
+        // Claude Code says what went wrong in its answer, not on stderr
+        let said = picture_answer(name, &ran.out).err().map(|e| e.to_string()).unwrap_or_default();
+        let why = if ran.err.trim().is_empty() { said } else { ran.err.trim().to_string() };
+        anyhow::bail!("{}", crate::i18n::tp("ai.err.failed", &[("cmd", &ran.cmd), ("error", &why)]));
+    }
+    picture_answer(name, &ran.out)
+}
+
+/// What an AI started by [`run_in_own_folder`] left behind
+struct Ran {
+    /// The program that was started, for saying which one failed
+    cmd: String,
+    ok: bool,
+    out: String,
+    err: String,
+}
+
+/// Start the assistant AI `name` once, in a folder of its own that holds only
+/// `files`, with `input` on its standard input, and stop it after `timeout`.
+///
+/// A folder of its own for two reasons. Nothing the AI reads can reach past
+/// what it was handed -- and a project's instructions to its agents
+/// (CLAUDE.md, AGENTS.md, GEMINI.md) are not read in either, which is also
+/// much of what a one-line answer would otherwise be charged for. And whatever
+/// it writes beside itself is gone with the folder
+fn run_in_own_folder(
+    name: &str,
+    args: Vec<String>,
+    input: String,
+    files: &[(&str, &[u8])],
+    env: &[(&str, String)],
+    timeout: std::time::Duration,
+) -> Result<Ran> {
+    use std::io::Write as _;
     let dir = std::env::temp_dir()
         .join("shikisha-term")
-        .join("pictures")
+        .join("ask")
         .join(crate::random_hex(8));
+    // `{dir}` in an argument or a variable is that folder: a file named from
+    // it is read the same whether the program resolves names against where it
+    // stands or against its own settings folder
+    let at = dir.display().to_string();
+    let args = args.into_iter().map(|a| a.replace("{dir}", &at)).collect();
+    let (cmd, args) = launcher(name, args)
+        .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
     std::fs::create_dir_all(&dir)?;
     struct Gone(std::path::PathBuf);
     impl Drop for Gone {
@@ -964,10 +1008,9 @@ pub fn ask_about_picture(name: &str, prompt: &str, png: &[u8], schema: &str) -> 
         }
     }
     let _gone = Gone(dir.clone());
-    if on_disk {
-        std::fs::write(dir.join(PICTURE_FILE), png)?;
+    for (file, body) in files {
+        std::fs::write(dir.join(file), body)?;
     }
-    std::fs::write(dir.join(SCHEMA_FILE), schema)?;
     let mut spawner = std::process::Command::new(&cmd);
     spawner
         .args(&args)
@@ -975,6 +1018,12 @@ pub fn ask_about_picture(name: &str, prompt: &str, png: &[u8], schema: &str) -> 
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    for (k, v) in env {
+        spawner.env(k, v.replace("{dir}", &at));
+    }
+    // The way in a tab's programs report through. An AI the app asks something
+    // is not a tab, and its hooks must not speak for one
+    spawner.env_remove(crate::api::ENV_PIPE);
     // Inheriting the console here would kill the mouse (same reason as open_browser)
     let mut child = crate::detach_console(&mut spawner)
         .spawn()
@@ -1002,26 +1051,132 @@ pub fn ask_about_picture(name: &str, prompt: &str, png: &[u8], schema: &str) -> 
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if started.elapsed() > PICTURE_TIMEOUT {
+        if started.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
             anyhow::bail!(
                 "{}",
-                crate::i18n::tp("snip.ai.timeout", &[("seconds", &PICTURE_TIMEOUT.as_secs().to_string())])
+                crate::i18n::tp("snip.ai.timeout", &[("seconds", &timeout.as_secs().to_string())])
             );
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
     let _ = feed.join();
-    let out = String::from_utf8_lossy(&out.join().unwrap_or_default()).to_string();
-    let err = String::from_utf8_lossy(&err.join().unwrap_or_default()).to_string();
-    if !status.success() {
-        // Claude Code says what went wrong in its answer, not on stderr
-        let said = picture_answer(name, &out).err().map(|e| e.to_string()).unwrap_or_default();
-        let why = if err.trim().is_empty() { said } else { err.trim().to_string() };
-        anyhow::bail!("{}", crate::i18n::tp("ai.err.failed", &[("cmd", &cmd), ("error", &why)]));
+    Ok(Ran {
+        cmd,
+        ok: status.success(),
+        out: String::from_utf8_lossy(&out.join().unwrap_or_default()).to_string(),
+        err: String::from_utf8_lossy(&err.join().unwrap_or_default()).to_string(),
+    })
+}
+
+/// What the AI giving a short answer is told it is, in place of each CLI's own
+/// instructions for working on code -- thousands of tokens about tools it is
+/// not given
+const LIGHT_SYSTEM: &str =
+    "You give one short reply containing only what is asked for. You have no tools and need none.";
+
+/// The file those instructions are written to, beside the AI
+const SYSTEM_FILE: &str = "system.md";
+
+/// The settings file Claude Code is pointed at: its hooks off, so a question
+/// the app asks is not reported back to the app as a person's request
+const CLAUDE_SETTINGS_FILE: &str = "settings.json";
+
+/// How long a short answer is waited for. Measured 2026-09-17 at one to seven
+/// seconds for each of the three; the rest is a slow network or a first start
+const LIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// What to start an assistant AI with for a short answer that costs as little
+/// as it can: the arguments after the program, and what goes in its
+/// environment. The prompt goes in on standard input; the instructions are in
+/// [`SYSTEM_FILE`] beside it. Files rather than arguments, because two of the
+/// three are started through cmd.exe, which takes quotes apart.
+///
+/// Everything a CLI loads for working on code is left out: its tools, its
+/// connected servers and plugins, its long instructions, its thinking, its
+/// hooks. Its conversation is not kept, so these do not turn up in the list of
+/// conversations to resume. Measured 2026-09-17 on a request for a name and a
+/// summary, against the same CLI started plainly:
+/// - Claude Code: about 1,400 tokens instead of 9,500. Its smallest model
+/// - Codex CLI: about 4,500 instead of 15,400. Low reasoning, read-only, no web
+///   search. Its model is the one the person chose: model names differ by
+///   account, and a wrong one is a failure rather than a saving. Features are
+///   turned off as settings rather than flags, because a flag it does not know
+///   stops it and a setting it does not know is passed over
+/// - Gemini CLI: about 2,800, where started plainly it spent turns looking
+///   through the folder with its tools. Read-only, its instructions replaced.
+///   Its own routing already sends a request this small to a small model
+fn light_invocation(name: &str) -> Option<(Vec<String>, Vec<(&'static str, String)>)> {
+    let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    match name {
+        "claude" => Some((
+            v(&[
+                "-p", "--model", "haiku", "--tools", "", "--no-session-persistence", "--strict-mcp-config",
+                "--disable-slash-commands", "--settings", &format!("{{dir}}/{CLAUDE_SETTINGS_FILE}"),
+                "--system-prompt-file", &format!("{{dir}}/{SYSTEM_FILE}"),
+            ]),
+            vec![("MAX_THINKING_TOKENS", "0".to_string())],
+        )),
+        "codex" => {
+            let mut args = v(&[
+                "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never",
+                "-c", "model_reasoning_effort=low", "-c", "web_search=disabled", "-c", "mcp_servers={}",
+            ]);
+            args.push("-c".into());
+            args.push(format!("model_instructions_file={{dir}}/{SYSTEM_FILE}"));
+            for feature in [
+                "apps", "browser_use", "computer_use", "image_generation", "goals", "hooks", "multi_agent", "plugins",
+                "shell_tool", "sleep_tool", "tool_suggest", "unified_exec", "view_image", "skill_search", "personality",
+                "memories", "in_app_browser",
+            ] {
+                args.push("-c".into());
+                args.push(format!("features.{feature}=false"));
+            }
+            args.push("-".into());
+            Some((args, Vec::new()))
+        }
+        "gemini" => Some((
+            v(&["--extensions", "none", "--allowed-mcp-server-names", "none", "--approval-mode", "plan", "-p", ""]),
+            vec![("GEMINI_SYSTEM_MD", format!("{{dir}}/{SYSTEM_FILE}"))],
+        )),
+        _ => None,
     }
-    picture_answer(name, &out)
+}
+
+/// Ask the assistant AI for a short answer, as cheaply as it can be asked
+/// ([`light_invocation`]).
+///
+/// When the light way fails -- an older CLI that does not know one of its
+/// options -- it is asked once more the ordinary way. A name a folder waits a
+/// few seconds longer for is better than no name at all
+pub fn ask_local_ai_light(prompt: &str, engine: Option<&str>) -> Result<String> {
+    let (name, _) = assistant_ai(engine).with_context(|| match engine {
+        Some(w) => crate::i18n::tp("webui.err.ai_not_found", &[("name", w)]),
+        None => crate::i18n::t("webui.err.ai_missing"),
+    })?;
+    match ask_light_once(name, prompt) {
+        Ok(said) => Ok(said),
+        Err(e) => {
+            crate::append_hook_log(&format!("a light {name} call failed, asking the ordinary way: {e:#}"));
+            ask_local_ai(prompt, Some(name))
+        }
+    }
+}
+
+/// The light way alone, with nothing to fall back on
+fn ask_light_once(name: &str, prompt: &str) -> Result<String> {
+    let (args, env) = light_invocation(name).with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
+    let files: [(&str, &[u8]); 2] = [
+        (SYSTEM_FILE, LIGHT_SYSTEM.as_bytes()),
+        (CLAUDE_SETTINGS_FILE, br#"{"disableAllHooks": true}"#),
+    ];
+    let ran = run_in_own_folder(name, args, prompt.to_string(), &files, &env, LIGHT_TIMEOUT)?;
+    if !ran.ok || ran.out.trim().is_empty() {
+        let why: String = ran.err.trim().chars().take(300).collect();
+        anyhow::bail!("{}", crate::i18n::tp("ai.err.failed", &[("cmd", &ran.cmd), ("error", &why)]));
+    }
+    Ok(ran.out)
 }
 
 /// Strips the code fence AIs tend to add
@@ -1372,6 +1527,20 @@ fn handle(
                 }));
             }
             req.respond(json_resp(serde_json::json!({ "families": out })))?;
+        }
+        // Why a folder's automatic name and summary could not be written the
+        // last time they were tried, if they could not. Kept by the loop that
+        // tried, beside the app (`crate::labels::note_outcome`)
+        ("GET", "/api/folder-label") => {
+            let at = query_param(req.url(), "path")
+                .map(|c| percent_decode(&c))
+                .unwrap_or_default();
+            let at = crate::config::resolve_folder_cwd(&at);
+            let failed = crate::labels::outcomes()
+                .into_iter()
+                .find(|(k, _)| crate::uistate::same_folder(std::path::Path::new(k), &at))
+                .and_then(|(_, v)| v.as_str().map(str::to_string));
+            req.respond(json_resp(serde_json::json!({ "failed": failed })))?;
         }
         // Which project a folder belongs to, and whether its folder is one the
         // app made. The settings screen cannot work either out: both mean
@@ -3361,6 +3530,11 @@ const PAGE: &str = r##"<!doctype html>
  .qfields { flex:1 1 280px; min-width:0; }
  .qfields > .field:first-child { margin-top:0; }
  .qfields textarea.qbody { min-height:96px; }
+ /* A few sentences rather than a document: the height of the quick
+    command's body above */
+ textarea.short { min-height:96px; }
+ /* A reason under a row stands on a line of its own */
+ .row > .site-warn { flex-basis:100%; }
  .qcount { align-self:center; color:var(--dim); font-size:13px; font-variant-numeric:tabular-nums; }
  .qdelrow { margin-top:var(--s5); }
  .fmenuitem.bad { color:var(--stop); }
@@ -8723,6 +8897,7 @@ function deskSections(desk) {
     s("discuss", deskDiscussCard),
     s("stops", deskStopsCard),
     s("tools", deskToolsCard),
+    s("labels", deskLabelsCard),
   ];
   // Written by hand in the file, so listed only where there is something written
   if (deskCapsCard(desk)) list.splice(4, 0, s("caps", deskCapsCard));
@@ -8766,6 +8941,56 @@ function deskToolsCard(desk) {
   });
   draw();
   return card(T["settings.desk.pictures.title"], el("div", {class:"row"}, tick), said);
+}
+
+// Which AI writes the names and summaries of this desk's folders that have
+// Auto on. The assistant AI unless something else is chosen: it is asked the
+// light way, so it costs little. A model connection runs on that connection's
+// own account, which is the reason to choose one
+function deskLabelsCard(desk) {
+  const assistant = aiEngines.find(e => e.id === (current.ai_engine || "")) || (current.ai_engine ? null : aiEngines[0]);
+  const picker = el("select");
+  picker.append(el("option", {value:""}, assistant
+    ? fill(T["settings.labels.ai.assistant"], {name: assistant.label})
+    : T["settings.labels.ai.assistant_none"]));
+  for (const e of aiEngines) picker.append(el("option", {value:e.id}, e.label));
+  const providers = Object.keys(deskProviders());
+  for (const p of providers) picker.append(el("option", {value:"model:" + p}, fill(T["wizard.discuss.model_suffix"], {name: p})));
+  const written = (desk.summary_ai || "").trim();
+  const asModel = written.match(/^model\s+([^/\s]+)\/(.*)$/);
+  picker.value = asModel ? "model:" + asModel[1] : written;
+  // A choice no longer on offer -- an AI since uninstalled, a connection since
+  // removed -- is still what the settings say, and shown as that
+  if (picker.value !== (asModel ? "model:" + asModel[1] : written)) {
+    picker.append(el("option", {value: asModel ? "model:" + asModel[1] : written}, written));
+    picker.value = asModel ? "model:" + asModel[1] : written;
+  }
+  const modelIn = el("input", {type:"text", class:"mono", style:"width:220px"});
+  modelIn.value = asModel ? asModel[2].trim() : "";
+  const provider = () => picker.value.startsWith("model:") ? picker.value.slice(6) : "";
+  const cand = modelCandidates(() => deskProviders()[provider()] || {}, id => { modelIn.value = id; store(); });
+  const modelRow = row(T["settings.labels.model"], modelIn, cand.btn, cand.chips);
+  const store = () => {
+    const p = provider();
+    // A connection with no model named asks for the one it is known for, as
+    // the placeholder says, rather than for a model called nothing
+    const v = p ? "model " + p + "/" + (modelIn.value.trim() || DEFAULT_MODEL[p] || "") : picker.value;
+    if (v) desk.summary_ai = v; else delete desk.summary_ai;
+    refreshSave();
+  };
+  const sync = () => {
+    const p = provider();
+    modelRow.hidden = !p;
+    if (p) modelIn.placeholder = DEFAULT_MODEL[p] || T["wizard.discuss.model_ph"];
+    else cand.chips.textContent = "";
+  };
+  picker.addEventListener("change", () => { sync(); store(); });
+  modelIn.addEventListener("input", store);
+  sync();
+  return card(T["settings.labels.title"],
+    el("div", {class:"hint"}, T["settings.labels.hint"]),
+    row(T["settings.labels.ai"], picker, el("span", {class:"hint"}, T["settings.labels.ai.hint"])),
+    modelRow);
 }
 
 function deskShareCard() {
@@ -9184,10 +9409,54 @@ function folderPane(desk, g, gi) {
   const ownLabel = el("label", {class:"check"});
   ownLabel.append(ownProtect, document.createTextNode(T["settings.group.protect.own"]));
 
+  // The name and the summary, and whether they are written for the folder
+  // from what its AIs are asked. Writing either by hand takes that off: what a
+  // person wrote is not written over
+  const autoBox = el("input", {type:"checkbox"});
+  autoBox.checked = !!g.auto_label;
+  const autoLabel = el("label", {class:"check"});
+  autoLabel.append(autoBox, document.createTextNode(T["settings.group.auto.label"]));
+  const autoFailed = el("div", {class:"site-warn", hidden:true});
+  const handWritten = () => {
+    if (!g.auto_label) return;
+    delete g.auto_label;
+    autoBox.checked = false;
+    autoFailed.hidden = true;
+    refreshSave();
+  };
+  autoBox.addEventListener("change", () => {
+    if (autoBox.checked) g.auto_label = true; else delete g.auto_label;
+    autoFailed.hidden = true;
+    refreshSave();
+  });
+  const summaryBox = el("textarea", {class:"short", rows:"3", placeholder:T["settings.group.summary.ph"]});
+  summaryBox.value = g.summary || "";
+  summaryBox.addEventListener("input", () => {
+    if (summaryBox.value.trim()) g.summary = summaryBox.value; else delete g.summary;
+    handWritten();
+    refreshSave();
+  });
+  // Why the last try to write them failed, when it did. Only while it is on:
+  // a folder that no longer asks has nothing to fix
+  if (g.auto_label && (g.cwd || "").trim()) {
+    fetch("/api/folder-label?path=" + encodeURIComponent(g.cwd), {headers:{"X-Token":TOKEN}})
+      .then(r => r.json())
+      .then(j => {
+        if (!j || !j.failed || !g.auto_label) return;
+        autoFailed.textContent = fill(T["settings.group.auto.failed"], {why: j.failed});
+        autoFailed.hidden = false;
+      })
+      .catch(() => {});
+  }
+
   box.append(card(T["settings.group.title"],
     row(T["settings.group.name"], field(g, "name", folderLabel(g, gi), {grow:false, width:280,
-        onInput:() => renderNav()}),
+        onInput:() => { handWritten(); renderNav(); }}),
         el("span", {class:"hint"}, T["settings.group.name.hint"])),
+    row(T["settings.group.summary"], summaryBox,
+        el("span", {class:"hint"}, T["settings.group.summary.hint"])),
+    row(T["settings.group.auto"], autoLabel,
+        el("span", {class:"hint"}, T["settings.group.auto.hint"]), autoFailed),
     row(T["settings.group.folder"],
         ...pathField(g, "cwd", T["settings.group.folder.ph"], "dir", T["settings.group.folder.pick"]),
         el("span", {class:"hint"}, T["settings.group.folder.hint"])),
@@ -12844,6 +13113,24 @@ mod tests {
             eprintln!("{name} {:.1}s -> {said:?}", t0.elapsed().as_secs_f32());
             let said = said.unwrap_or_else(|e| panic!("{name} could not read it: {e:#}"));
             assert!(said.contains("\"text\""), "{name} did not answer in the required shape");
+        }
+    }
+
+    /// Each installed assistant AI answers a short question the light way,
+    /// without falling back to the ordinary one. Costs a call to each; run by
+    /// hand with `cargo test -- --ignored every_installed_ai_answers_lightly`
+    #[test]
+    #[ignore]
+    fn every_installed_ai_answers_lightly() {
+        for (name, _, _) in super::AI_ENGINES {
+            if crate::tab::resolve_command(name).is_none() {
+                continue;
+            }
+            let t0 = std::time::Instant::now();
+            let said = super::ask_light_once(name, "Reply with the single word PONG in capital letters.");
+            eprintln!("{name} {:.1}s -> {said:?}", t0.elapsed().as_secs_f32());
+            let said = said.unwrap_or_else(|e| panic!("{name} could not be asked lightly: {e:#}"));
+            assert!(said.contains("PONG"), "{name} did not answer what it was asked");
         }
     }
 

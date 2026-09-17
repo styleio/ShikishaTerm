@@ -261,6 +261,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     let mut groups = crate::uistate::GroupState::all(tabs, &ui.folder_colors, &ui.folders);
     crate::uistate::GroupState::name_projects(&mut groups, &ui.folder_projects);
     crate::uistate::GroupState::name_work_items(&mut groups, &ui.folder_items);
+    crate::uistate::GroupState::describe(&mut groups, &ui.folder_labels);
     // And whether each of them is on this machine. Asked here because this is
     // the one place the list is built, and answered from a table kept up to
     // date on its own threads -- a drive that has stopped answering must not
@@ -1122,6 +1123,9 @@ pub struct Ui {
     pub folder_projects: Vec<(std::path::PathBuf, String)>,
     /// Of those, the ones made for an issue or a pull request: (the folder, what for)
     pub folder_items: Vec<(std::path::PathBuf, String)>,
+    /// Of those, what each says is being done in it, and whether that is
+    /// written for it from what its AIs are asked
+    pub folder_labels: Vec<crate::uistate::FolderLabel>,
     /// Words waiting for the input bar of the AI tabs in a folder: (the folder,
     /// the words). The address of the issue a worktree was just made for
     pub drafts: Vec<(std::path::PathBuf, String)>,

@@ -104,6 +104,7 @@ page shows it and lets you change it.
 | `shikisha.restart(tab)` | Restart that tab, carrying its conversation over. `shikisha.restart(tab, "fresh")` starts a new one |
 | `shikisha.log("text")` | Record in `logs/hooks.log` |
 | `shikisha.set_session("id")` | Say which conversation THIS tab's CLI is running, so a restart can pick it up. No tab argument: the caller is the tab |
+| `shikisha.report_prompt("text")` | Say what a person just asked THIS tab's CLI. A folder with Auto on writes its name and summary from these. Claude Code's and Codex's own hooks report through here, which also catches what was typed straight into the terminal |
 | `shikisha.set_state("BUSY")` | Say what THIS tab is doing, instead of leaving it to be read off the screen: `BUSY`, `QUESTION`, `DONE` or `WAIT`. This is how an AI CLI's own hooks drive the state dot. A second argument is the sender's clock in milliseconds, so reports that overtake each other still apply in the order they were said |
 | `shikisha.set_status("key", "text", tab)` | Say what a tab is doing, in its own words, under its name in the tab bar. `key` lets several sources speak without overwriting each other; an empty text removes that one. Leave `tab` out and it is THIS tab |
 | `shikisha.set_progress(0.4, "label", tab)` | How far along, 0..1, shown beside the status. `nil` removes it. Leave `tab` out and it is THIS tab |
@@ -900,6 +901,7 @@ report about another tab. An AI CLI's own hooks report through here too.
 | `shikisha.set_status("key", "text", tab)` | Say what is being worked on, in its own words (shown under the tab name). Separate keys let several writers speak without overwriting each other; an empty string clears one. Leave `tab` out and it is **this tab** |
 | `shikisha.set_progress(0.4, "label", tab)` | How far along it is (0..1), shown beside the state. `nil` clears it. Leave `tab` out and it is **this tab** |
 | `shikisha.set_session("id")` | **This tab** says which conversation its CLI is running, so a restart can pick it back up |
+| `shikisha.report_prompt("text")` | **This tab** says what a person just asked its CLI. A folder with Auto on writes its name and summary from these |
 
 ### Browsing
 
@@ -1023,7 +1025,7 @@ How the rally works: files in and out, plus a judge. You can build your own the 
 | `shikisha.exchange_write(path, "text")` | Write a file (overwrites) |
 | `shikisha.exchange_append(path, "text")` | Append to one |
 | `shikisha.exchange_take(path)` | Read it, delete it, return it. `nil` if absent — this is the hand-over |
-| `shikisha.ai_ask("what you want")` | Ask the **assistant AI** from Settings > Basic and get the answer as text; `nil` and a reason when there is none. **The app keeps running while it thinks** (the same machinery as `sleep`: other tabs and the screen carry on). Three minutes by default, `{timeout_ms=…}` to change it |
+| `shikisha.ai_ask("what you want")` | Ask the **assistant AI** from Settings > Basic and get the answer as text; `nil` and a reason when there is none. **The app keeps running while it thinks** (the same machinery as `sleep`: other tabs and the screen carry on). Three minutes by default, `{timeout_ms=…}` to change it. `{light=true}` asks for a short answer as cheaply as the AI can give one (its smallest model where it has a choice, no tools, no long instructions); for anything more than a line or two, leave it off. `{ai="codex"}` asks a different assistant AI, and `{ai="model deepseek/deepseek-chat"}` one of this desk's model connections |
 | `shikisha.lint(code)` | Compile-check Lua without running it. An error string, or `nil` if sound |
 | `shikisha.run_scoped(id, code)` | Run AI-written Lua against one page, in a jail: no files, no network, no other tabs. Returns `err, out` |
 | `shikisha.lua(code)` | Run a whole chunk with everything in reach — loops, branches, several commands at once. Returns `err` (`nil` when it ran) followed by whatever the chunk returned. The unwalled twin of `run_scoped`, so never hand it code you didn't write |

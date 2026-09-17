@@ -127,6 +127,8 @@ struct Pending {
     start: config::Start,
     /// The issue or pull request it is for, when it is for one
     link: serde_json::Value,
+    /// Whether it names and describes itself from what its AIs are asked
+    auto: bool,
     carry: Vec<crate::worktree::Carry>,
     /// The folder is there; only writing it down is left (or failed)
     made: bool,
@@ -168,7 +170,13 @@ impl Pending {
             Some(&plan.branch),
             &self.start,
             plan.host.as_ref().map(|h| h.name.as_str()),
-        )
+        )?;
+        // Named for its branch until something is asked in it. A folder on
+        // another machine is not: what its AIs are asked is not heard here
+        if self.auto && plan.host.is_none() {
+            config::set_folder_auto_label(&self.desk, &plan.folder, true)?;
+        }
+        Ok(())
     }
 }
 
@@ -958,6 +966,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Words waiting for the input bar of a worktree just made for an issue or
     // a pull request: (the folder, the words, since when)
     let mut pending_drafts: Vec<(std::path::PathBuf, String, Instant)> = Vec::new();
+    // What people asked the AIs in each folder, for the folders that name and
+    // describe themselves from it (`crate::labels`)
+    let mut heard = crate::labels::Board::default();
+    let mut label_jobs: Vec<LabelJob> = Vec::new();
+    let mut label_seq: u64 = 0;
+    let mut label_look = Instant::now();
     let mut drawn_names: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     // Whether automation may switch which tab is on screen (see ViewMove)
@@ -1776,6 +1790,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             for (i, t) in tabs.iter_mut().enumerate() {
                 let (old, new) = t.tick(start);
                 transitions.push((i + 1, old, new));
+            }
+            // What people asked the AIs, gathered by folder, and which folders
+            // an AI just finished a turn in: what a folder's automatic name is
+            // written from, and when. Heard whatever the emergency stop says --
+            // it stops AIs acting, and this is not an AI acting
+            for t in tabs.iter_mut() {
+                let asked = std::mem::take(&mut t.asked);
+                if let Some(at) = t.cwd() {
+                    for text in asked {
+                        heard.hear(at, &text);
+                    }
+                }
+            }
+            for &(idx, old, new) in &transitions {
+                if old == TabState::Busy
+                    && new.turn_ended()
+                    && let Some(at) = tabs.get(idx - 1).and_then(|t| t.cwd())
+                {
+                    heard.turn_ended(at);
+                }
             }
             // The first answer an AI has ever finished on this machine is the
             // moment to ask for a star: something worked. Busy first, so a
@@ -3226,6 +3260,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .get(desk_index)
                 .map(|w| w.folders.iter().filter_map(|f| f.cwd.clone().zip(f.work_item.clone())).collect())
                 .unwrap_or_default(),
+            folder_labels: desks
+                .get(desk_index)
+                .map(|w| {
+                    w.folders
+                        .iter()
+                        .filter_map(|f| {
+                            f.cwd.clone().map(|folder| crate::uistate::FolderLabel {
+                                folder,
+                                summary: f.summary.clone(),
+                                auto: f.auto_label,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             drafts: {
                 // Only for a while: the words are for the first look at a tab
                 // made a moment ago, not for every time it is opened after
@@ -4381,9 +4430,125 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 r.push_state(format!("{{\"git\":{js}}}"));
             }
         }
+        // Folders that name and describe themselves from what their AIs were
+        // asked (`crate::labels`): looked at once a second, and each one that
+        // is due handed to the Lua that writes it (`hooks::LABEL_LUA`)
+        if label_look.elapsed() >= Duration::from_secs(1) {
+            label_look = Instant::now();
+            let now = Instant::now();
+            // An answer that never comes -- the engine was built again under
+            // it, or the desk it ran in has been put away for long -- does not
+            // hold the folder forever. Its requests are read next time
+            let (stale, live): (Vec<LabelJob>, Vec<LabelJob>) =
+                label_jobs.drain(..).partition(|j| now.duration_since(j.started) > LABEL_GIVE_UP);
+            label_jobs = live;
+            for job in stale {
+                append_hook_log(&format!("folder label for {} never came back", job.folder.display()));
+                heard.finished(&job.folder, now, Some(job.asks));
+            }
+            if let Some(desk) = desks.get(desk_index) {
+                let mut wanted = Vec::new();
+                for f in &desk.folders {
+                    let Some(cwd) = f.cwd.as_ref() else { continue };
+                    match f.auto_label && f.host.is_none() {
+                        true => wanted.push((cwd.clone(), f.summary.is_some())),
+                        // Heard for nothing: a folder that does not ask keeps nothing
+                        false => heard.forget(cwd),
+                    }
+                }
+                let due = heard.due(now, &wanted);
+                if !due.is_empty() && engine.is_none() {
+                    engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+                }
+                if let Some(eng) = engine.as_mut() {
+                    for at in due {
+                        let Some(f) = desk.folders.iter().find(|f| {
+                            f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &at))
+                        }) else {
+                            continue;
+                        };
+                        let asks = heard.take(&at);
+                        // What it is called and said to be now, when that was
+                        // written from requests before. A folder never
+                        // described is only its branch's name, which says
+                        // nothing about the work and would be kept for that
+                        let none = i18n::t("ai.label.none");
+                        let (name_now, summary_now) = match f.summary.as_deref() {
+                            Some(s) => (f.name.clone().unwrap_or_else(|| none.clone()), s.to_string()),
+                            None => (none.clone(), none.clone()),
+                        };
+                        let listed = asks
+                            .iter()
+                            .enumerate()
+                            .map(|(i, a)| format!("{}. {a}", i + 1))
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        let prompt = i18n::tp(
+                            "ai.label.prompt",
+                            &[
+                                ("name", &name_now),
+                                ("summary", &summary_now),
+                                ("asks", &listed),
+                                ("language", &i18n::t("ai.label.language")),
+                            ],
+                        );
+                        let ai = desk
+                            .summary_ai
+                            .clone()
+                            .or_else(|| cfg.as_ref().and_then(|c| c.ai_engine.clone()))
+                            .filter(|a| !a.trim().is_empty())
+                            .unwrap_or_default();
+                        for (name, value) in [("label_prompt", prompt), ("label_ai", ai)] {
+                            let _ = eng.call_primitive_as(
+                                None,
+                                grants::Subject::Human,
+                                "set_var",
+                                &[serde_json::json!(name), serde_json::json!(value)],
+                            );
+                        }
+                        label_seq += 1;
+                        let tag = format!("{LABEL_TAG}{label_seq}");
+                        label_jobs.push(LabelJob {
+                            tag: tag.clone(),
+                            desk: desk.name.clone(),
+                            folder: at.clone(),
+                            asks,
+                            started: now,
+                        });
+                        eng.start_snippet(&tag, crate::hooks::LABEL_LUA);
+                    }
+                }
+            }
+        }
         // Answers from the Lua that was left running (the commit message)
         if let Some(eng) = engine.as_mut() {
             for (tag, said) in eng.take_snippets() {
+                // A folder's name and summary go into the settings, and only
+                // into a folder that still wants them written
+                if tag.starts_with(LABEL_TAG) {
+                    let Some(i) = label_jobs.iter().position(|j| j.tag == tag) else { continue };
+                    let job = label_jobs.remove(i);
+                    let now = Instant::now();
+                    let written = said.and_then(|text| {
+                        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+                        let text_of = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                        let name = crate::labels::fit(&text_of("name"), crate::labels::NAME_ROOM);
+                        let summary = crate::labels::fit(&text_of("summary"), crate::labels::SUMMARY_ROOM);
+                        config::write_folder_label(&job.desk, &job.folder, &name, &summary).map_err(|e| format!("{e:#}"))
+                    });
+                    match written {
+                        Ok(_) => {
+                            crate::labels::note_outcome(&job.folder, None);
+                            heard.finished(&job.folder, now, None);
+                        }
+                        Err(why) => {
+                            append_hook_log(&format!("folder label for {}: {why}", job.folder.display()));
+                            crate::labels::note_outcome(&job.folder, Some(&why));
+                            heard.finished(&job.folder, now, Some(job.asks));
+                        }
+                    }
+                    continue;
+                }
                 // A draft goes to the Issue tab under the act that asked for it,
                 // everything else to git
                 let issue = tag == DRAFT_ISSUE_TAG || tag == DRAFT_PR_TAG;
@@ -5798,6 +5963,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     None,
                                 ),
                             };
+                            // Taken in by this answer, it names itself as a
+                            // new one would. One already on the desk keeps
+                            // whatever it was called there
+                            let taken_in = taken_in.and_then(|()| match (listed, ask.auto) {
+                                (false, true) => config::set_folder_auto_label(&desk, &taken.folder, true),
+                                _ => Ok(()),
+                            });
                             match taken_in {
                                 Ok(()) => {
                                     view.done = true;
@@ -5850,6 +6022,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 family: crate::repo::family_of(&from).map(|f| f.display().to_string()).unwrap_or_default(),
                                 start: start.clone(),
                                 link: ask.link.clone(),
+                                auto: ask.auto,
                                 carry: carryable.clone(),
                                 made: false,
                                 error: None,
@@ -5904,6 +6077,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             family: crate::repo::family_of(&from).map(|f| f.display().to_string()).unwrap_or_default(),
                             start: start_of(&ai, &ai_choices),
                             link: ask.link.clone(),
+                            auto: ask.auto,
                             carry: carryable.clone(),
                             made: false,
                             error: None,
@@ -8456,7 +8630,14 @@ pub fn hand_line(
     pending_send: &mut Vec<PendingSend>,
     ball: &mut ball::Ball,
 ) -> bool {
-    hand_over(tabs, surfaces, target, text, true, now_ms, pending_send, ball)
+    // Every road here is a person's words, which is what a folder's automatic
+    // name is written from (`crate::labels`)
+    let heard = text.clone();
+    let landed = hand_over(tabs, surfaces, target, text, true, now_ms, pending_send, ball);
+    if landed && let Some(t) = session_at(surfaces, target).and_then(|i| tabs.get_mut(i)) {
+        t.heard(&heard);
+    }
+    landed
 }
 /// The same, with a choice about the Enter at the end: `submit` false leaves
 /// the text at the prompt for the person to finish (a quick command whose
@@ -8982,6 +9163,23 @@ pub fn save_replay_to_downloads() -> std::io::Result<Option<std::path::PathBuf>>
 /// press is somebody finding their place. With a tab of no folder in front
 /// (the Issue tab, a page), the folder is not what is being looked at, however
 /// recently it was
+/// What a folder's name and summary come back under, followed by a number
+const LABEL_TAG: &str = "folder_label:";
+
+/// How long a folder's name is waited for before its requests are read again
+/// next time. The AI is given ninety seconds, and asked twice at most
+const LABEL_GIVE_UP: Duration = Duration::from_secs(5 * 60);
+
+/// A folder's name and summary being written: which folder, in which desk,
+/// from which requests (handed back if it fails)
+struct LabelJob {
+    tag: String,
+    desk: String,
+    folder: std::path::PathBuf,
+    asks: Vec<String>,
+    started: Instant,
+}
+
 /// The tags a draft's answer comes back under
 const DRAFT_ISSUE_TAG: &str = "issue_draft";
 const DRAFT_PR_TAG: &str = "pr_draft";
@@ -9213,6 +9411,15 @@ pub fn exec_commands(
                 let s = tab::Session { id, source: tab::SessionSource::Hook };
                 append_hook_log(&format!("tab{origin} \"{}\" is running {}", t.title, s.short()));
                 t.session = Some(s);
+            }
+            // A tab saying what it was just asked. Kept on the tab for its
+            // folder's automatic name; the words are not logged
+            Command::ReportPrompt { text, origin } => {
+                let Some(t) = session_of(origin).and_then(|i| tabs.get_mut(i)) else {
+                    append_hook_log(&format!("report_prompt from tab{origin}: no such tab"));
+                    continue;
+                };
+                t.heard(&text);
             }
             // A tab saying what it is doing, rather than being read. Believed
             // over the screen, and dropped when it is older than something
