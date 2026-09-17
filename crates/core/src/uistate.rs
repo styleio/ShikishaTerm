@@ -669,6 +669,9 @@ pub struct BranchPlan {
     /// the dialog has to be able to tell that
     #[serde(default)]
     pub asked: String,
+    /// Which opening of the dialog asked (see `Ev::Branch`)
+    #[serde(default)]
+    pub seq: u64,
     /// What the new branch will grow from
     #[serde(default)]
     pub base: String,

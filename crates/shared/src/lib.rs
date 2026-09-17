@@ -232,6 +232,10 @@ pub enum Ev {
         /// Whether the folder names and describes itself from what its AIs are
         /// asked, rather than keeping a name somebody typed
         auto: bool,
+        /// Which opening of the dialog is asking, handed back with the answer.
+        /// An answer to the dialog as it was last time says nothing about the
+        /// choices of this one
+        seq: u64,
     },
     /// Put the offered environment file in the project.
     ///
@@ -738,14 +742,15 @@ pub struct BranchAsk {
     pub link: serde_json::Value,
     pub adopt: bool,
     pub auto: bool,
+    pub seq: u64,
 }
 
 impl BranchAsk {
     /// The ask carried by a branch event, or nothing for any other event.
     pub fn of(ev: Ev) -> Option<Self> {
         match ev {
-            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, setup, link, adopt, auto } => {
-                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, setup, link, adopt, auto })
+            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, setup, link, adopt, auto, seq } => {
+                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, setup, link, adopt, auto, seq })
             }
             _ => None,
         }
@@ -953,6 +958,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             // Absent means no: an older shell never offered it, and a name
             // it sent was one somebody chose
             auto: v.get("auto").and_then(|x| x.as_bool()).unwrap_or(false),
+            seq: v.get("seq").and_then(|x| x.as_u64()).unwrap_or(0),
             ais: v
                 .get("ais")
                 .and_then(|x| x.as_array())

@@ -6518,6 +6518,10 @@ function pickChoose() {
 // it are answered by the app -- the same code that will run it -- and shown
 // while the name is still being typed
 let branchFrom = "";
+// Which opening of the dialog this is. Every question carries it and every
+// answer hands it back, so the choices made in an earlier opening -- and still
+// standing in the last answer -- are not drawn into this one as if just made
+let branchSeq = 0;
 let branchTimer = 0;
 // Putting a working folder back on this machine.
 //
@@ -6630,6 +6634,7 @@ function openBranch(g, preset) {
   preset = preset || {};
   branchLink = preset.link || null;
   branchFrom = g.folder || "";
+  branchSeq += 1;
   b.hidden = false;
   b.querySelector(".vtitle").textContent = T["tui.branch.title"] || "WORKTREE";
   showMore(b, false);
@@ -6722,7 +6727,7 @@ function openBranch(g, preset) {
   // from does not depend on the name, and a picker that is empty until you
   // type is a picker nobody finds anything in. With no project yet there is
   // nothing to ask about, and the first thing to do is choose one
-  if (branchFrom) send({kind:"branch", from:branchFrom, branch:q.value, base:branchBase, make:false, carry:[], link:branchLink});
+  if (branchFrom) send({kind:"branch", from:branchFrom, branch:q.value, base:branchBase, make:false, carry:[], link:branchLink, seq:branchSeq});
   setTimeout(() => (branchFrom ? branchFocus(b) : proj).focus(), 30);
 }
 // Where the keyboard goes in the tab that is up: the name, the search -- or,
@@ -7067,7 +7072,7 @@ function askBranch() {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:false, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink});
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, seq:branchSeq});
   }, 180);
 }
 
@@ -7205,8 +7210,11 @@ function drawBranch() {
   drawStart(b);
   drawSetup(b, here ? p : null);
   drawDest(b, here ? p : null);
-  drawCarry(b, here ? (p.carry || []) : []);
-  drawCarryLines(b, here ? (p.carry_lines || []) : []);
+  // What comes along is drawn from an answer to this opening only: the last
+  // answer still holds the choices of the dialog as it was before it closed
+  const fresh = here && p.seq === branchSeq;
+  drawCarry(b, fresh ? (p.carry || []) : []);
+  drawCarryLines(b, fresh ? (p.carry_lines || []) : []);
   showMore(b, !b.querySelector(".bextra").hidden);
   drawBases(b, here ? p : null);
   drawBranchTabs(b);
@@ -7526,7 +7534,7 @@ function applyCarryLines(b, lines) {
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:true, carry:carrying(), start:starting(), ais:fanning(),
           at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, adopt,
-          auto:branchAuto()});
+          auto:branchAuto(), seq:branchSeq});
   };
   b.querySelector(".bgo .go").onclick = () => makeIt(false);
   // Ctrl+Enter makes it from anywhere in the dialog, as the chip on the button
@@ -18072,7 +18080,7 @@ mod tests {
         assert!(PAGE.contains(r#"<button type="button" data-tab="auto"></button><button type="button" data-tab="github">"#));
         assert!(PAGE.contains(r#"branchTab = preset.link ? "github" : preset.name ? "name" : "auto";"#));
         assert!(PAGE.contains(r#"return branchTab === "auto" || !branchNamed;"#));
-        assert!(PAGE.contains("auto:branchAuto()});"), "the make button does not say whether it names itself");
+        assert!(PAGE.contains("auto:branchAuto(), seq:branchSeq});"), "the make button does not say whether it names itself");
     }
 
     /// The tab bar's + has to work on a phone too.
