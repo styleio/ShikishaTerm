@@ -27,6 +27,9 @@ once it reaches its first tagged release.
   prompt or the page, so a character sent a moment ago can be taken back without
   leaving the bar. Holding Backspace to clear what was typed stops at the empty
   bar. A chat with a model, a 🎯 goal and ▶ Lua keep Backspace to themselves.
+- **A folder's tabs start put away in the side column, one tab or several.** Each
+  folder is one line of pills until its box is pressed, and what somebody opened
+  or shut stays that way.
 
 ### Fixed
 - **A change is read in an editor tab, and the list of changes stays where it

@@ -3375,7 +3375,7 @@ function drawTabs() {
       // and a fold kept from before would hide its tabs with nothing to open
       const mine = inside[gi];
       if (mine.length) {
-        const away = tabsPutAway(g, mine);
+        const away = tabsPutAway(g);
         const bundle = bundleRow(g, mine, away, false);
         bundle.classList.add("wcard");
         nav.append(bundle);
@@ -3399,7 +3399,7 @@ function drawTabs() {
     // several: without it a folder running one thing had no way to be made
     // smaller at all
     if (mine.length) {
-      const away = tabsPutAway(g, mine);
+      const away = tabsPutAway(g);
       nav.append(bundleRow(g, mine, away, false));
       if (away) continue;
     }
@@ -5119,12 +5119,12 @@ setInterval(() => {
 // the window are each looking at their own
 const folded = new Set();
 // Folders whose tabs somebody put away or brought out, and which of the two.
-// Until then a set of several starts put away, as its pills, so a folder
-// running five things is one line until somebody asks to see them one by one
+// Until then every folder's tabs start put away, as its pills, one tab or
+// several: a folder is one line until somebody asks to see its tabs one by one
 // -- the list is for finding the folder, and the pills already say which of its
-// tabs wants you. A single tab starts out: one row is no longer than its box
+// tabs wants you
 const tabsAway = new Map();
-const tabsPutAway = (g, mine) => tabsAway.has(g.folder) ? tabsAway.get(g.folder) : mine.length >= 2;
+const tabsPutAway = g => tabsAway.has(g.folder) ? tabsAway.get(g.folder) : true;
 // Redraws the list it just changed. Asking for the address bar instead left
 // the fold recorded and the screen untouched until the next state push
 // happened to arrive -- and the app only pushes when something has actually
@@ -15311,10 +15311,10 @@ mod tests {
         // One tab can be put away too, and nothing else stands in for the box
         assert!(!PAGE.contains("if (mine.length >= 2) {"), "a folder running one tab has no box to put it away");
         assert!(PAGE.contains("putTabsAway(g.folder, !away)"), "there is no press that folds the bundle");
-        // Several start put away, one starts out, and a press is remembered either way
-        assert!(PAGE.contains("const tabsPutAway = (g, mine) => tabsAway.has(g.folder) ? tabsAway.get(g.folder) : mine.length >= 2;"),
-            "a bundle does not start the way its size says");
-        assert!(PAGE.contains("const away = tabsPutAway(g, mine);"), "a bundle ignores what somebody chose");
+        // Every set starts put away, one tab or several, and a press is remembered either way
+        assert!(PAGE.contains("const tabsPutAway = g => tabsAway.has(g.folder) ? tabsAway.get(g.folder) : true;"),
+            "a folder's tabs do not start put away");
+        assert!(PAGE.contains("const away = tabsPutAway(g);"), "a bundle ignores what somebody chose");
         // Brought out, it is still the box, so the way to shut it is where the way to open it was
         assert!(!PAGE.contains(".bundle.away { margin"), "only a folded bundle is drawn as a box");
         assert!(PAGE.contains("function pillsRow(mine)"), "there is nothing shown when folded");
