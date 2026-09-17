@@ -9,6 +9,10 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **A new pull request lists the files it changes.** Under the branch it goes
+  into, each file with its added and removed lines, the total at the top; pressed,
+  a file opens its change in place, to be read. Ten are shown, and the rest one
+  press away.
 - **A pull request is made from the git column.** Once a branch is pushed and
   has nothing waiting either way, the git column's button becomes Create pull
   request (not on a protected branch, and not while the branch already has one
@@ -48,6 +52,9 @@ once it reaches its first tagged release.
   every desk goes to "No project". The same cards open from a phone.
 
 ### Changed
+- **Waiting in the Issue tab is shown plainly.** While GitHub or the AI is being
+  waited for, a line at the top of the page has the working dot, what is being
+  done ("The AI is writing the pull request…") and how many seconds it has been.
 - **The right-hand column's git panel is called Git.** "Changes" did not say what
   it was the changes of.
 - **The commit message prompt is written out whole in the settings, and can be

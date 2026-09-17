@@ -1369,6 +1369,36 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #issuespanel .lchip.on { color:var(--text); background:var(--raise); cursor:default; }
   #issuespanel .lchip.on button { border:0; background:transparent; color:var(--dim); cursor:pointer; padding:0 2px; font-size:11px; }
   #issuespanel .lchip.on button:hover { color:var(--text); }
+  /* Waiting on GitHub or the AI: the working dot, what is happening, the seconds */
+  #issuespanel .busyband { display:flex; align-items:center; gap:var(--s2); margin:var(--s2) var(--s3) 0;
+    padding:var(--s2) var(--s3); border:1px solid var(--line); border-radius:var(--r-ctl); background:var(--raise);
+    font-size:12.5px; color:var(--text); }
+  #issuespanel .busyband .dot { width:8px; height:8px; border-radius:50%; flex:none; }
+  #issuespanel .busyband .bt { flex:1; min-width:0; }
+  #issuespanel .busyband .bs { flex:none; color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; }
+  /* What a pull request carries: one line per file, opened in place */
+  #issuespanel .prfiles { display:flex; flex-direction:column; border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; }
+  #issuespanel .prfiles > .empty { padding:var(--s2) var(--s3); font-size:12px; color:var(--faint); }
+  #issuespanel .prfile { display:flex; align-items:center; gap:var(--s2); width:100%; min-height:32px; padding:0 var(--s3);
+    font:inherit; font-size:12px; text-align:left; border:0; border-top:1px solid var(--line); background:transparent;
+    color:var(--text); cursor:pointer; }
+  #issuespanel .prfile:first-child { border-top:0; }
+  #issuespanel .prfile:hover { background:var(--hover); }
+  #issuespanel .prfile.on { background:var(--raise); }
+  #issuespanel .prfile .car { flex:none; width:12px; font-size:9px; color:var(--dim); }
+  #issuespanel .prfile .fp { flex:1; min-width:0; font-family:var(--mono); overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; direction:rtl; }
+  #issuespanel .prfile .fn { flex:none; font-family:var(--mono); font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  #issuespanel .prfile .fn .a { color:var(--live); }
+  #issuespanel .prfile .fn .d { color:var(--stop); }
+  #issuespanel .prchange { border-top:1px solid var(--line); max-height:420px; overflow:auto; }
+  #issuespanel .prchange .empty { padding:var(--s2) var(--s3); font-size:12px; color:var(--faint); }
+  #issuespanel .prmore { border-top:1px solid var(--line); border-radius:0; height:32px; font-size:12px; }
+  #issuespanel .hunk { border-bottom:1px solid var(--line); }
+  #issuespanel .hunkhead { display:flex; align-items:center; gap:var(--s2); padding:4px 10px; background:var(--panel);
+    font-size:11.5px; color:var(--muted); position:sticky; top:0; }
+  #issuespanel .hunkhead .grow { flex:1; }
+  #issuespanel .hunk .lines { padding:4px 12px; }
   /* A tick box and its words, beside each other (5.1) */
   #issuespanel .tick { display:flex; align-items:center; gap:var(--s2); font-size:13px; color:var(--text); cursor:pointer; }
   #issuespanel .tick input { width:15px; height:15px; margin:0; flex:none; }
@@ -3590,7 +3620,8 @@ let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:
           // A pull request being written: the folder and branch it comes from,
           // what it goes into, and the issue it closes when there is one
           pr:{project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false,
-              close:false, issue:null, kept:""} };
+              close:false, issue:null, kept:"", files:null, open:{}, more:false},
+          busySince: 0 };
 let issuesSig = "";
 let issuesSeq = 0;
 
@@ -3599,13 +3630,34 @@ const ISSUE_PRESETS = {
   pr: [["open", {}], ["mine", {mine:true}], ["review", {review:true}], ["merged", {state:"merged"}], ["closed", {state:"closed"}], ["all", {state:"all"}]],
 };
 function issuesAsk(act, args) {
-  if (act !== "projects" && act !== "options" && act !== "pr_bases") { I.busy = act; I.said = ""; I.bad = false; }
+  if (!ISSUE_QUIET.has(act)) {
+    I.busy = act; I.said = ""; I.bad = false;
+    I.busySince = Date.now();
+    issuesClock();
+  }
   // Only the newest list and the newest detail count: a slow answer to a
   // question since replaced (another project, another filter, back) is dropped
   const seq = ++issuesSeq;
   if (act === "list" || act === "detail") I.want[act] = seq;
   send({kind:"issues", act, args: Object.assign({kind: I.kind, seq}, args || {})});
   drawIssues();
+}
+// Requests that fill part of a page without holding the whole of it
+const ISSUE_QUIET = new Set(["projects", "options", "pr_bases", "pr_files", "pr_file"]);
+// While something is being waited for, the seconds on the busy line move once a
+// second -- only that number, never the page under it
+let issuesTick = 0;
+function issuesClock() {
+  if (issuesTick) return;
+  issuesTick = setInterval(() => {
+    const at = document.getElementById("issuesbusysecs");
+    if (!I.busy || !at) { if (!I.busy) { clearInterval(issuesTick); issuesTick = 0; } return; }
+    at.textContent = issuesSecs();
+  }, 1000);
+}
+function issuesSecs() {
+  const n = Math.max(0, Math.floor((Date.now() - (I.busySince || Date.now())) / 1000));
+  return (T["issues.busy.secs"] || "{n}").replace("{n}", n);
 }
 function issuesList(page) {
   I.page = page || 1;
@@ -3672,7 +3724,7 @@ window.__issues = function (d) {
     return;
   }
   if ((d.act === "list" || d.act === "detail") && d.seq !== I.want[d.act]) return;
-  I.busy = "";
+  if (!ISSUE_QUIET.has(d.act)) I.busy = "";
   if (!d.ok) {
     I.said = d.error || ""; I.bad = true;
     I.pending = null;
@@ -3720,8 +3772,15 @@ window.__issues = function (d) {
       const p = I.pr;
       p.bases = ((d.data || {}).bases || []).filter(b => b !== p.head);
       if (!p.bases.includes(p.base)) p.base = p.bases[0] || "";
+      prAskFiles();
       break;
     }
+    case "pr_files":
+      I.pr.files = Array.isArray(d.data) ? d.data : [];
+      break;
+    case "pr_file":
+      if (d.path && Object.prototype.hasOwnProperty.call(I.pr.open, d.path)) I.pr.open[d.path] = d.data || {hunks: []};
+      break;
     case "pr_draft": {
       const p = I.pr;
       let got = null;
@@ -3734,7 +3793,7 @@ window.__issues = function (d) {
     }
     case "create_pr": {
       const n = (d.data || {}).number || "";
-      I.pr = {project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false, close:false, issue:null, kept:""};
+      I.pr = {project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false, close:false, issue:null, kept:"", files:null, open:{}, more:false};
       I.kind = "pr";
       I.said = (T["issues.pr.created"] || "").replace("{n}", n);
       issuesAsk("detail", {project: d.project, number: n});
@@ -3815,8 +3874,16 @@ function drawIssues() {
 // What is happening or what went wrong, or nothing -- an empty line would be
 // a gap for no reason
 function issueSaid() {
-  const words = I.busy ? (T["issues.busy"] || "…") : (I.said || "");
-  return words ? el("div", {class:"said" + (I.bad && !I.busy ? " bad" : "")}, words) : null;
+  // Waiting: the working dot, what is being done, and for how long -- the one
+  // movement the style guide allows (§6), so it cannot be mistaken for a stall
+  if (I.busy) {
+    return el("div", {class:"busyband"},
+      el("span", {class:"dot BUSY"}),
+      el("span", {class:"bt"}, T["issues.busy." + I.busy] || T["issues.busy"] || ""),
+      el("span", {class:"bs", id:"issuesbusysecs"}, issuesSecs()));
+  }
+  const words = I.said || "";
+  return words ? el("div", {class:"said" + (I.bad ? " bad" : "")}, words) : null;
 }
 
 function drawIssueList(box) {
@@ -4139,7 +4206,7 @@ function draftFields(form, c, how) {
   // a scrollbar where a button inside the box would sit
   form.append(el("div", {class:"field"},
     el("div", {class:"namerow"}, el("span", {class:"name"}, T["issues.new.body"] || ""), ai),
-    body, drafting ? el("span", {class:"hint"}, T["issues.draft.busy"] || "") : null));
+    body));
   return body;
 }
 
@@ -4191,10 +4258,51 @@ function drawPrCreate(box) {
   for (const b of p.bases || []) into.append(el("option", {value:b}, b));
   into.value = p.base;
   into.disabled = !(p.bases || []).length;
-  into.onchange = () => { p.base = into.value; };
+  into.onchange = () => { p.base = into.value; prAskFiles(); };
   field(T["issues.pr.base"] || "", into,
     p.bases === null ? "\u2026" : !p.bases.length ? (T["issues.pr.bases.none"] || "")
       : (T["issues.pr.from"] || "").replace("{head}", p.head));
+
+  // What it would carry, file by file, each opened in place to be read
+  const files = p.files;
+  if (p.base) {
+    const added = (files || []).reduce((n, f) => n + f.added, 0);
+    const removed = (files || []).reduce((n, f) => n + f.removed, 0);
+    const name = files === null ? (T["issues.pr.files"] || "")
+      : (T["issues.pr.files.n"] || "").replace("{n}", files.length).replace("{add}", added).replace("{del}", removed);
+    const list = el("div", {class:"prfiles"});
+    if (files === null) list.append(el("div", {class:"empty"}, "\u2026"));
+    else if (!files.length) list.append(el("div", {class:"empty"}, T["issues.pr.files.none"] || ""));
+    const SHOWN = 10;
+    for (const f of (files || []).slice(0, p.more ? files.length : SHOWN)) {
+      const open = Object.prototype.hasOwnProperty.call(p.open, f.path);
+      const row = el("button", {type:"button", class:"prfile" + (open ? " on" : ""), onclick:() => {
+        if (open) { delete p.open[f.path]; redraw(); return; }
+        p.open[f.path] = null;
+        issuesAsk("pr_file", {project: p.project, folder: p.folder, base: p.base, path: f.path});
+        redraw();
+      }},
+        el("span", {class:"car"}, open ? "\u25be" : "\u25b8"),
+        el("span", {class:"fp", title: f.path}, "\u200e" + f.path + "\u200e"),
+        f.binary ? el("span", {class:"fn"}, T["issues.pr.files.binary"] || "")
+          : el("span", {class:"fn"}, el("span", {class: f.added ? "a" : ""}, "+" + f.added), " ", el("span", {class: f.removed ? "d" : ""}, "\u2212" + f.removed)));
+      list.append(row);
+      if (open) {
+        const got = p.open[f.path];
+        const change = el("div", {class:"prchange"});
+        if (got === null) change.append(el("div", {class:"empty"}, "\u2026"));
+        else if (got.binary) change.append(el("div", {class:"empty"}, T["git.binary"] || ""));
+        else if (!(got.hunks || []).length) change.append(el("div", {class:"empty"}, T["git.same"] || ""));
+        else hunksInto(change, got.hunks, "view");
+        list.append(change);
+      }
+    }
+    if (files && files.length > SHOWN && !p.more) {
+      list.append(el("button", {type:"button", class:"quiet prmore", onclick:() => { p.more = true; redraw(); }},
+        (T["issues.pr.files.more"] || "").replace("{n}", files.length - SHOWN)));
+    }
+    field(name, list);
+  }
 
   const tick = (on, label, set) => {
     const box = el("input", {type:"checkbox"});
@@ -12616,13 +12724,20 @@ function gitChangeInto(box, how, head) {
     box.append(el("div", {class:"empty"}, how === "commit" || G.waiting || text.trim() ? "\u2026" : (T["git.same"] || "")));
     return;
   }
+  hunksInto(box, hunks, how);
+}
+// The pieces themselves. `how` "view" draws them to be read and nothing more:
+// what a pull request carries is already committed, and it is not changed from
+// the page that asks for it to be taken in
+function hunksInto(box, hunks, how) {
   hunks.forEach((h, i) => {
     const bar = el("div", {class:"hunkhead"});
     bar.append(el("span", {class:"grow"},
       (T["git.hunk"] || "Hunk") + (i + 1) + "  " +
       (T["git.hunk.lines"] || "").replace("{from}", h.start).replace("{to}", h.end)));
     const act = (label, args) => bar.append(el("button", {onclick:() => gitAsk("hunk", Object.assign({text:h.patch}, args))}, label));
-    if (how === "staged") act(T["git.hunk.unstage"] || "", {cached:true, reverse:true});
+    if (how === "view") { /* read only */ }
+    else if (how === "staged") act(T["git.hunk.unstage"] || "", {cached:true, reverse:true});
     else if (how === "work") {
       act(T["git.hunk.stage"] || "", {cached:true});
       act(T["git.hunk.drop"] || "", {reverse:true});
@@ -12814,6 +12929,12 @@ function gitPrWhy() {
   const open = gitPrOpen();
   return open ? (T["git.pr.why.open"] || "").replace("{pr}", open) : "";
 }
+// What the pull request would carry, asked again whenever where it goes changes
+function prAskFiles() {
+  const p = I.pr;
+  p.files = null; p.open = {}; p.more = false;
+  if (p.base) issuesAsk("pr_files", {project: p.project, folder: p.folder, base: p.base});
+}
 // The new pull request page, in the Issue tab, for the branch in front: its
 // folder, the project it belongs to, and the issue the folder was made for
 function gitOpenPr() {
@@ -12823,7 +12944,8 @@ function gitOpenPr() {
   if (!g || !head) return;
   const made = /^issue:(.+)#(\d+)$/.exec(g.work_item || "");
   I.pr = {project: g.project || "", folder: g.folder || "", head, base:"", bases:null, title:"", body:"",
-          draft:false, close: !!made, issue: made ? {repo: made[1], number: Number(made[2])} : null, kept:""};
+          draft:false, close: !!made, issue: made ? {repo: made[1], number: Number(made[2])} : null, kept:"",
+          files:null, open:{}, more:false};
   I.pr.body = prFixes("", I.pr);
   I.kind = "pr";
   I.view = "newpr";

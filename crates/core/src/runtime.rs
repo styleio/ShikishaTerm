@@ -4388,19 +4388,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 } else {
                     // The branch, what it goes into, its commits and its change,
                     // read from the folder the pull request is for
-                    let dir = std::path::PathBuf::from(text("folder"));
                     // Only a folder of the project it names: the page says which
                     // folder, and git is not run anywhere it could point at
-                    let ours = crate::repo::family_of(&dir).is_some_and(|fam| {
-                        crate::github::desk_sources(desk).iter().any(|s| {
-                            s.name == text("project") && crate::repo::family_of(&s.dir).as_deref() == Some(fam.as_path())
-                        })
-                    });
-                    if !ours {
+                    let Some(dir) = crate::github::project_folder(&crate::github::desk_sources(desk), &text("project"), &text("folder")) else {
                         let js = serde_json::json!({"act": "pr_draft", "ok": false, "error": i18n::t("err.github.no_project")}).to_string();
                         shell.push_issues(&js);
                         continue;
-                    }
+                    };
                     let (head, into) = (text("head"), text("base"));
                     let against = format!("origin/{into}");
                     let commits = crate::git::run(&dir, &["log", "--no-color", "--format=- %s", &format!("{against}..HEAD")])
