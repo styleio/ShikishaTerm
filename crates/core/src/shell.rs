@@ -1537,7 +1537,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #editpanel .emark { flex:0 0 auto; font-size:11px; color:var(--warn); }
   #editpanel .esay { flex:0 0 auto; padding:6px 10px; font-size:11.5px; color:var(--faint);
     border-top:1px solid var(--line); display:flex; flex-wrap:wrap; align-items:center; gap:var(--s3); }
-  #editpanel .esay button { white-space:nowrap; }
+  #editpanel .esay button { white-space:nowrap; padding:2px 10px; font-size:11.5px; font-family:inherit;
+    border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--panel2); color:var(--text); cursor:pointer; }
+  #editpanel .esay button:hover { border-color:var(--edge-hi); }
+  #editpanel .esay button.quiet { border-color:transparent; background:none; color:var(--dim); }
+  #editpanel .esay button.quiet:hover { color:var(--text); background:var(--hover); }
   #editpanel .esay.bad { color:var(--stop); }
   #editpanel .ehost { flex:1 1 auto; min-height:0; position:relative; }
   #editpanel .eempty { flex:1 1 auto; padding:var(--s4) var(--s3); color:var(--faint);
@@ -8709,7 +8713,7 @@ window.__state = function (json) {
         } else {
           ED.stamp = stamp;
           ED.loading = true;
-          editAsk("read", {path: ED.path});
+          edRead();
         }
       }
       if (ED.key !== key || (want && want !== ED.path)) {
@@ -8717,6 +8721,7 @@ window.__state = function (json) {
         ED.key = key;
         if (want) {
           ED.path = want; ED.loading = true; ED.said = ""; ED.bad = false;
+          ED.encPicked = false; ED.stop = null;
           editAsk("read", {path: want});
         } else {
           ED.path = null; ED.text = ""; ED.mark = null; ED.dirty = false;
@@ -9428,6 +9433,13 @@ const ED = {
   text: "",         // what was read, to tell "changed" from "the same"
   dirty: false,
   outside: false,   // it changed on disk while we had it open
+  // The encoding it is read and saved in, whether reading it that way lost
+  // anything, and whether a person chose it (a choice is kept on a reload)
+  encoding: "UTF-8", exact: true, encPicked: false,
+  // A save that stopped to ask: {why: "unwritable", encoding, chars, more} or
+  // {why: "lossy"}, with the `opts` it was tried with so an answer carries them
+  stop: null,
+  asked: null,      // the opts of the save waiting for an answer
   said: "", bad: false,
   loading: false,
 };
@@ -9443,7 +9455,12 @@ const edDraftKey = path => JSON.stringify([ED.key, path]);
 function edStash() {
   if (!ED.path || !ED.dirty || !edAce) return;
   edDrafts.set(edDraftKey(ED.path),
-    {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp});
+    {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp,
+     encoding: ED.encoding, exact: ED.exact, encPicked: ED.encPicked});
+}
+// Read the file again, in the encoding somebody chose for it if they did
+function edRead() {
+  editAsk("read", ED.encPicked ? {path: ED.path, encoding: ED.encoding} : {path: ED.path});
 }
 
 // Which tab is the editor being looked at, if that is what is being looked at
@@ -9513,6 +9530,7 @@ function editHeard(d) {
     if (!d.ok) { ED.said = d.error || ""; ED.bad = true; drawEdit(); return; }
     ED.path = d.path; ED.mark = d.mark; ED.stamp = d.stamp || null; ED.text = d.text || "";
     ED.dirty = false; ED.outside = false; ED.said = ""; ED.bad = false;
+    ED.encoding = d.encoding || "UTF-8"; ED.exact = d.exact !== false; ED.stop = null;
     // A draft left in this file comes back. It keeps the mark it was typed
     // against, so a save still cannot land on bytes that changed since; and if
     // they did change, that is said the same way as for a file open on screen
@@ -9522,6 +9540,8 @@ function editHeard(d) {
     if (draft) {
       ED.outside = draft.mark !== d.mark;
       ED.mark = draft.mark; ED.stamp = draft.stamp; ED.text = draft.base;
+      ED.encoding = draft.encoding || ED.encoding; ED.exact = draft.exact !== false;
+      ED.encPicked = !!draft.encPicked;
     }
     drawEdit();
     if (edAce) {
@@ -9535,34 +9555,73 @@ function editHeard(d) {
     return;
   }
   if (d.act === "write") {
+    // Characters its encoding cannot hold: nothing was written, and the
+    // person picks what to lose or what to change
+    if (!d.ok && d.why === "unwritable") {
+      ED.stop = {why: "unwritable", encoding: d.encoding || ED.encoding, chars: d.chars || [], more: d.more || 0, opts: ED.asked || {}};
+      ED.said = ""; ED.bad = false;
+      drawEdit();
+      return;
+    }
     if (!d.ok) { ED.said = d.error || ""; ED.bad = true; drawEdit(); return; }
     edDrafts.delete(edDraftKey(ED.path));
     ED.mark = d.mark; ED.stamp = d.stamp || null;
+    ED.encoding = d.encoding || ED.encoding; ED.exact = true; ED.stop = null;
+    // Saved with question marks: what is in the file is what is shown
+    if (typeof d.text === "string") {
+      ED.text = d.text;
+      if (edAce) { edAce.session.doc.setValue(d.text); edAce.clearSelection(); }
+    }
     ED.text = edAce ? edAce.getValue() : ED.text;
     ED.dirty = false; ED.outside = false;
     ED.said = T["tui.edit.saved"] || ""; ED.bad = false;
     drawEdit();
   }
 }
-function editSave() {
+function editSave() { editWrite({}); }
+// A save, and the answers already given to what it asked: `overwrite` saves
+// over a file that moved on, `lossy` over what could not be read, `replace`
+// writes ? for what the encoding cannot hold, and `encoding` changes it
+function editWrite(opts) {
   if (!ED.path || ED.loading) return;
+  // Read in an encoding that lost characters: saving writes the loss into the
+  // file, so it is asked before anything is sent
+  if (!ED.exact && !opts.lossy) {
+    ED.stop = {why: "lossy", opts}; ED.said = ""; ED.bad = false;
+    drawEdit();
+    return;
+  }
+  ED.asked = opts;
   // Rule 2: the mark says what we were given. The app refuses the write if the
   // file has moved on since, and says so -- it does not win the race
-  editAsk("write", {path: ED.path, text: edAce ? edAce.getValue() : ED.text, mark: ED.mark});
+  editAsk("write", {path: ED.path, text: edAce ? edAce.getValue() : ED.text,
+    mark: opts.overwrite ? "" : ED.mark, encoding: opts.encoding || ED.encoding, replace: !!opts.replace});
 }
 // Keep what is here, over what changed on disk. The one save that does not
 // carry the mark, and so the one the app does not refuse: offered only once the
 // person has been told the file moved on, so it is a choice and never a race
-function editOverwrite() {
-  if (!ED.path || ED.loading) return;
-  editAsk("write", {path: ED.path, text: edAce ? edAce.getValue() : ED.text, mark: ""});
+function editOverwrite() { editWrite({overwrite: true}); }
+// The encoding chosen from the menu. Nothing typed yet: the file is read again
+// in it, which is how somebody finds the one it is saved in. Something typed:
+// reading again would throw the typing away, so it is what the save writes
+function editPickEncoding(v) {
+  if (!ED.path) return;
+  ED.encPicked = true; ED.stop = null; ED.bad = false;
+  ED.encoding = v;
+  if (ED.dirty) {
+    ED.said = (T["tui.edit.enc.later"] || "{enc}").replace("{enc}", v);
+    drawEdit();
+    return;
+  }
+  ED.said = ""; ED.loading = true;
+  edRead();
 }
 function editReload() {
   if (!ED.path) return;
   // Reloading is choosing the file over the draft, so no draft comes back
   edDrafts.delete(edDraftKey(ED.path));
-  ED.loading = true; ED.said = ""; ED.bad = false;
-  editAsk("read", {path: ED.path});
+  ED.loading = true; ED.said = ""; ED.bad = false; ED.stop = null;
+  edRead();
 }
 // The place being read, handed to the AI in the box below: `path:line`, or
 // `path:from-to` when something is selected. The one form every one of them
@@ -9585,6 +9644,7 @@ function editBuild(box) {
   // Showing a change: which one, and the way to the file itself
   const kind = el("span", {class: "ekind"});
   const enc = gitEncPicker();
+  const fenc = encPicker(editPickEncoding);
   const toFile = el("button", {class: "quiet", onclick: () => {
     const t = editorTab();
     if (t && t.file) send({kind: "editopen", panel: t.id || t.name || "", path: t.file, diff: ""});
@@ -9596,13 +9656,13 @@ function editBuild(box) {
       const t = editorTab();
       if (t) send({kind: "editopen", panel: t.id || t.name || "", path: ""});
     }}, "\u2715");
-  bar.append(where, el("span", {class: "emark"}), kind, enc, el("span", {class: "grow"}), toFile, tell, save, shut);
+  bar.append(where, el("span", {class: "emark"}), kind, enc, fenc, el("span", {class: "grow"}), toFile, tell, save, shut);
   bar.replaceChild(mark, bar.children[1]);
   const host = el("div", {class: "ehost"});
   const change = el("div", {class: "ediff"});
   const say = el("div", {class: "esay"});
   box.append(bar, host, change, say);
-  edUi = {where, mark, kind, enc, toFile, save, tell, host, change, say, changeSig: ""};
+  edUi = {where, mark, kind, enc, fenc, toFile, save, tell, host, change, say, changeSig: ""};
 }
 function drawEdit() {
   const box = document.getElementById("editpanel");
@@ -9620,6 +9680,7 @@ function drawEdit() {
   }
   u.kind.style.display = diffing ? "" : "none";
   u.enc.style.display = diffing ? "" : "none";
+  u.fenc.style.display = !diffing && ED.path ? "" : "none";
   u.toFile.style.display = diffing ? "" : "none";
   u.change.style.display = diffing ? "" : "none";
   if (diffing) {
@@ -9655,6 +9716,10 @@ function drawEdit() {
   const shown = !!ED.path;
   u.save.style.display = shown ? "" : "none";
   u.tell.style.display = shown ? "" : "none";
+  if (shown) {
+    const all = ENCODINGS.includes(ED.encoding) ? ENCODINGS : ENCODINGS.concat([ED.encoding]);
+    encPickerFill(u.fenc, all.map(e => [e, e]), ED.encoding);
+  }
   // The line under it says the one thing that matters right now, in order of
   // how much it matters
   u.say.textContent = "";
@@ -9674,6 +9739,27 @@ function drawEdit() {
     u.say.append(document.createTextNode((ED.bad && ED.said) || T["tui.edit.outside"] || ""),
       el("button", {class: "quiet", onclick: editReload}, T["tui.edit.reload"] || ""),
       el("button", {class: "quiet", onclick: editOverwrite}, T["tui.edit.overwrite"] || ""));
+  } else if (ED.stop) {
+    // A save that stopped to ask. Its answers are the ways on, and each is
+    // the same save again with that answer added
+    const st = ED.stop;
+    const again = more => () => editWrite(Object.assign({}, st.opts, more));
+    const cancel = el("button", {class: "quiet", onclick: () => { ED.stop = null; drawEdit(); }}, T["common.cancel"] || "");
+    u.say.style.color = "var(--warn)";
+    if (st.why === "lossy") {
+      u.say.append(document.createTextNode((T["tui.edit.lossy_stop"] || "{enc}").replace("{enc}", ED.encoding)),
+        el("button", {onclick: again({lossy: true})}, T["tui.edit.lossy_save"] || ""), cancel);
+    } else {
+      const chars = st.chars.join(" ") + (st.more ? (T["tui.edit.unwritable.more"] || "").replace("{n}", st.more) : "");
+      u.say.append(document.createTextNode((T["tui.edit.unwritable"] || "{enc} {chars}")
+          .replace("{enc}", st.encoding).replace("{chars}", chars)),
+        el("button", {onclick: again({replace: true})}, T["tui.edit.replace_save"] || ""),
+        el("button", {onclick: again({encoding: "UTF-8"})}, T["tui.edit.convert_save"] || ""),
+        cancel);
+    }
+  } else if (!ED.exact && !ED.said) {
+    u.say.style.color = "var(--warn)";
+    u.say.append(document.createTextNode((T["tui.edit.lossy"] || "{enc}").replace("{enc}", ED.encoding)));
   } else {
     u.say.style.color = "";
     u.say.append(document.createTextNode(ED.said || ""));
@@ -9703,7 +9789,11 @@ function drawEdit() {
         const now = edAce.getValue();
         const was = ED.dirty;
         ED.dirty = now !== ED.text;
-        if (was !== ED.dirty) drawEdit();
+        // What stopped the last save may be what was just typed away; the
+        // next save asks again if it is still there
+        const stopped = !!ED.stop;
+        ED.stop = null;
+        if (was !== ED.dirty || stopped) drawEdit();
       });
       edAce.session.doc.setValue(ED.text);
       edAce.session.getUndoManager().reset();
@@ -13545,7 +13635,7 @@ function gitAskChange() {
 const gitEncs = {};
 // What can be chosen, handed in by the app (charset.rs) so the menu offers
 // only what the app can read and write back
-const GIT_ENCODINGS = {{GIT_ENCODINGS}};
+const ENCODINGS = {{ENCODINGS}};
 function gitEncKey() { return (G.where || "") + "\u0000" + (G.sel || ""); }
 function gitEnc() { return gitEncs[gitEncKey()] || ""; }
 // The encoding menu for the change being read, made when `box` is not given
@@ -13553,27 +13643,35 @@ function gitEnc() { return gitEncs[gitEncKey()] || ""; }
 // they say changes, so a state arriving while it is open does not close it
 function gitEncPicker(box) {
   if (!box) {
-    const pick = el("select", {title: T["git.enc"] || ""});
-    pick.onchange = () => {
-      gitEncs[gitEncKey()] = pick.value;
+    box = encPicker(v => {
+      gitEncs[gitEncKey()] = v;
       G.diff = ""; G.hunks = [];
       gitAskChange();
       drawGit(); drawEdit();
-    };
-    box = el("label", {class: "genc"}, el("span", {}, T["git.enc"] || ""), pick);
+    });
   }
-  const pick = box.querySelector("select");
   // What the pieces were read as, said on "Auto" while nothing is chosen
   const read = !gitEnc() && (G.hunks || [])[0] ? G.hunks[0].encoding || "" : "";
   const auto = read ? (T["git.enc.auto"] || "{enc}").replace("{enc}", read) : (T["git.enc.auto.plain"] || "");
-  const want = [["", auto]].concat(GIT_ENCODINGS.map(e => [e, e]));
-  const sig = JSON.stringify(want);
+  return encPickerFill(box, [["", auto]].concat(ENCODINGS.map(e => [e, e])), gitEnc());
+}
+// An encoding menu with its name beside it: the same one wherever text is read
+function encPicker(picked) {
+  const pick = el("select", {title: T["git.enc"] || ""});
+  pick.onchange = () => picked(pick.value);
+  return el("label", {class: "genc"}, el("span", {}, T["git.enc"] || ""), pick);
+}
+// Its options and what is chosen. The options are only touched when what they
+// say changes, so a state arriving while the menu is open does not close it
+function encPickerFill(box, options, value) {
+  const pick = box.querySelector("select");
+  const sig = JSON.stringify(options);
   if (pick.dataset.sig !== sig) {
     pick.dataset.sig = sig;
     pick.textContent = "";
-    for (const [v, label] of want) pick.append(el("option", {value: v}, label));
+    for (const [v, label] of options) pick.append(el("option", {value: v}, label));
   }
-  if (pick.value !== gitEnc()) pick.value = gitEnc();
+  if (pick.value !== value) pick.value = value;
   return box;
 }
 // Everything a drawn change depends on. A pane draws it again only when this
@@ -16265,7 +16363,7 @@ fn built(sticky: bool, by: Served) -> String {
     .replace("{{TAB_W_MAX}}", &crate::config::TAB_BAR_MAX_PX.to_string())
     .replace("{{TAB_W_DEF}}", &crate::config::TAB_BAR_DEFAULT_PX.to_string())
     .replace(
-        "{{GIT_ENCODINGS}}",
+        "{{ENCODINGS}}",
         &serde_json::to_string(crate::charset::CHOICES).unwrap_or_else(|_| "[]".into()),
     )
     .replace(
@@ -17108,11 +17206,11 @@ mod tests {
         // Opening another file, or closing this one, puts the draft aside first
         // and brings it back when that file is opened again
         let switching = p.find("if (ED.key !== key || (want && want !== ED.path)) {").expect("there is no switch");
-        assert!(p[switching..switching + 400].matches("edStash();").count() == 2, "opening another file loses the unsaved changes");
+        assert!(p[switching..switching + 500].matches("edStash();").count() == 2, "opening another file loses the unsaved changes");
         assert!(p.contains("const draft = edDrafts.get(key);"), "the unsaved changes do not come back");
         // The save carries the mark it was given, so the app can refuse
         assert!(
-            p.contains(r#"editAsk("write", {path: ED.path, text: edAce ? edAce.getValue() : ED.text, mark: ED.mark});"#),
+            p.contains(r#"mark: opts.overwrite ? "" : ED.mark, encoding: opts.encoding || ED.encoding"#),
             "saving does not carry the mark"
         );
         // Nothing writes on its own: the only ways in are the button and the key

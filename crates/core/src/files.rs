@@ -244,6 +244,27 @@ fn walked(root: &Path) -> (Vec<String>, bool) {
     (out, capped)
 }
 
+/// How a file saved from the editor is written.
+pub enum Save {
+    /// In its encoding, exactly. Refused when a character in it cannot be
+    Exact,
+    /// In its encoding, with `?` for what cannot be written
+    Replacing,
+}
+
+/// The bytes the editor's text is saved as, or the characters that stop it.
+///
+/// A file is written back in the encoding it was read in: a Shift_JIS CSV saved
+/// as UTF-8 opens as nonsense in the spreadsheet that made it. What that
+/// encoding cannot hold is not quietly dropped -- the characters come back, so
+/// the person can choose to lose them or to change the file's encoding
+pub fn save_bytes(text: &str, encoding: &'static encoding_rs::Encoding, how: Save) -> Result<Vec<u8>, Vec<char>> {
+    match how {
+        Save::Exact => crate::charset::write_as(text, encoding).ok_or_else(|| crate::charset::unwritable(text, encoding)),
+        Save::Replacing => Ok(crate::charset::write_replacing(text, encoding)),
+    }
+}
+
 /// A path under the root, written the one way.
 fn relative(root: &Path, path: &Path) -> Option<String> {
     path.strip_prefix(root).ok().map(|p| p.to_string_lossy().replace('\\', "/"))
@@ -263,6 +284,25 @@ fn read_head(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Shift_JIS CSV saved from the editor: back in Shift_JIS, byte for
+    /// byte. A character it cannot hold stops the save and is named; written
+    /// with question marks only when that is what was asked for
+    #[test]
+    fn a_file_is_saved_in_its_own_encoding_or_says_what_stops_it() {
+        let sjis = encoding_rs::SHIFT_JIS;
+        let text = "氏名,メモ\r\n山田,①済\r\n";
+        assert_eq!(save_bytes(text, sjis, Save::Exact).unwrap(), crate::charset::write_as(text, sjis).unwrap());
+        assert_eq!(save_bytes(text, encoding_rs::UTF_8, Save::Exact).unwrap(), text.as_bytes());
+
+        let with_emoji = "山田,済😀👍😀\r\n";
+        assert_eq!(save_bytes(with_emoji, sjis, Save::Exact).unwrap_err(), vec!['😀', '👍']);
+        assert_eq!(
+            save_bytes(with_emoji, sjis, Save::Replacing).unwrap(),
+            crate::charset::write_as("山田,済???\r\n", sjis).unwrap()
+        );
+        assert_eq!(save_bytes(with_emoji, encoding_rs::UTF_8, Save::Exact).unwrap(), with_emoji.as_bytes());
+    }
 
     /// A folder of this test's own. The process id is in the path because two
     /// test runs on one machine (another window, a watch loop) otherwise share
