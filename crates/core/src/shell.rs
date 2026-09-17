@@ -830,6 +830,18 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .making.unremoved { border-color:color-mix(in srgb, var(--warn) 35%, transparent); }
   .making.unremoved .mk, .making.unremoved .ms { color:var(--warn); }
   .making.unremoved .ms { max-height:none; overflow:visible; }
+  /* A folder git will not work in: the same waiting-for-a-person colour, since
+     the branch is there and what is missing is one line in the person's own
+     git settings */
+  .making.untrusted { border-color:color-mix(in srgb, var(--warn) 35%, transparent); }
+  .making.untrusted .mk, .making.untrusted .ms { color:var(--warn); }
+  .making.untrusted .ms { max-height:none; overflow:visible; white-space:normal; }
+  /* What would be written, laid out as it will sit in the file: the label
+     above it, and the line itself across the whole width */
+  #sask .blist .brow2.stacked { display:block; padding:8px 12px; }
+  #sask .blist .brow2.stacked .tag { display:block; flex:none; padding-bottom:3px; }
+  #sask .blist .brow2.stacked .nm { display:block; }
+  #sask .blist .brow2 .nm.asis { white-space:pre-wrap; overflow-wrap:anywhere; }
   /* An AI's row: what it is doing, then which tab, then how long ago. The
      state reads first and plain; the tab's name and the time are the quiet
      part (65% and 10px), so the eye runs down the states */
@@ -5616,26 +5628,72 @@ function foundRow(d) {
 // deleted cannot be stopped back into a whole one
 function makingRow(m) {
   const unremoved = m.stage === "unremoved";
+  const untrusted = m.stage === "untrusted";
   const failed = m.stage === "failed" || unremoved;
   const stopping = m.stage === "stopping";
   const leaving = unremoved || m.stage === "removing";
-  const row = el("div", {class:"making" + (failed ? " failed" : "") + (unremoved ? " unremoved" : ""), title:m.folder || ""},
-    failed ? el("span", {class:"mk"}, "⚠") : el("span", {class:"dot BUSY"}),
+  const row = el("div", {class:"making" + (failed ? " failed" : "") + (unremoved ? " unremoved" : "")
+      + (untrusted ? " untrusted" : ""), title:m.folder || ""},
+    failed || untrusted ? el("span", {class:"mk"}, "⚠") : el("span", {class:"dot BUSY"}),
     el("span", {class:"nm"}, m.name || ""),
-    failed || stopping || leaving ? null : el("span", {class:"fx", title:T["tui.making.stop"] || "",
+    failed || stopping || leaving || untrusted ? null : el("span", {class:"fx", title:T["tui.making.stop"] || "",
       onclick:e => { e.stopPropagation(); send({kind:"making", id:m.id, act:"stop"}); }}, "✕"),
-    el("span", {class:"ms"}, failed ? (m.error || T["tui.making.failed"] || "") : (T["tui.making.stage." + m.stage] || "")));
+    el("span", {class:"ms"}, untrusted ? (T["worktree.trust.row"] || "")
+      : failed ? (m.error || T["tui.making.failed"] || "") : (T["tui.making.stage." + m.stage] || "")));
+  // The branch is there and git will not go into it. The press is the same
+  // one the question asks for, so a row answered here needs no dialog
+  if (untrusted) {
+    row.append(el("div", {class:"mbtns"},
+      el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"trust"})}, T["worktree.trust.go"] || ""),
+      el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"dismiss"})}, T["worktree.trust.leave"] || "")));
+    return row;
+  }
   if (unremoved) {
     row.append(el("div", {class:"mbtns"},
       el("button", {type:"button", onclick:() => { leftAsked.delete(m.id); send({kind:"making", id:m.id, act:"retry"}); }}, T["tui.making.retry"] || ""),
       el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"restore"})}, T["worktree.left.restore"] || ""),
       el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"forget"})}, T["worktree.left.forget"] || "")));
   } else if (failed) {
+    // Git refused the project itself: the answer is the line it asked for,
+    // and taking it cuts the branch again. Offered first, since "try again"
+    // on its own would fail the same way
     row.append(el("div", {class:"mbtns"},
+      ...(m.trust ? [el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"trust"})}, T["worktree.trust.go"] || "")] : []),
       el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"retry"})}, T["tui.making.retry"] || ""),
       el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"dismiss"})}, T["tui.making.dismiss"] || "")));
   }
   return row;
+}
+// A branch git will not work in is asked about once, where it is seen: what
+// would be written, and into which file. Cancel leaves the row to answer
+// later, and the row's own buttons say the same two things
+const trustAsked = new Set();
+let trustAsking = "";
+// One row can have two of these in turn -- git stops at the project first and
+// at the branch's own folder after -- so what has been asked is the pair, not
+// the row
+const trustKey = m => m.id + " " + (m.trust || "");
+function askAboutTrust() {
+  const waiting = (S.making || []).filter(m => m.trust);
+  if (trustAsking && !waiting.some(m => trustKey(m) === trustAsking)) { trustAsking = ""; closeAsk(true); }
+  if (trustAsking) return;
+  const m = waiting.find(m => !trustAsked.has(trustKey(m)));
+  if (!m) return;
+  trustAsked.add(trustKey(m));
+  trustAsking = trustKey(m);
+  // Label above, and the thing itself under it across the whole width: a
+  // settings line broken in the middle of a path is one nobody can check
+  const put = (tag, what, asis) => el("div", {class:"brow2 stacked"},
+    el("span", {class:"tag"}, tag), el("span", {class:"nm" + (asis ? " asis" : "")}, what));
+  askQuestion({
+    title: T["worktree.trust.title"] || "",
+    say: T["worktree.trust.say"] || "",
+    rows: [put(T["worktree.trust.into"] || "", m.trust_file || ""),
+           put(T["worktree.trust.what"] || "", m.trust_line || "", true)],
+    label: T["worktree.trust.go"] || "",
+    go: () => { trustAsking = ""; send({kind:"making", id:m.id, act:"trust"}); },
+    back: () => { trustAsking = ""; },
+  });
 }
 // A worktree whose folder would not delete is asked about once, where it is
 // seen. The question is the same as the row's buttons: Cancel leaves the row
@@ -8873,6 +8931,7 @@ window.__state = function (json) {
     if (S.flash) toast(S.flash); else hideToast();
   }
   askAboutLeft();
+  askAboutTrust();
   paintPaneHeads();
 };
 
@@ -18158,6 +18217,44 @@ mod tests {
         assert!(PAGE.contains("unasked.checked = false;"), "a box ticked once stays ticked in the next question");
     }
 
+    /// A branch cut from a project on another machine's share is refused by
+    /// git until one line is in the person's own git settings. The row says
+    /// so, the question says what would be written and into which file, and
+    /// both answers reach the app -- so nobody meets git's refusal as a wall
+    /// of English in a terminal instead (2026-09-18)
+    #[test]
+    fn a_folder_git_will_not_work_in_says_so_and_offers_the_one_line() {
+        assert!(PAGE.matches("askAboutTrust();").count() == 1, "the question is never put, or put from two places");
+        assert!(PAGE.contains("const waiting = (S.making || []).filter(m => m.trust);"), "it asks about the wrong rows");
+        assert!(PAGE.contains("if (trustAsking && !waiting.some(m => trustKey(m) === trustAsking)) { trustAsking = \"\"; closeAsk(true); }"),
+            "answered elsewhere, the question stays open here");
+        assert!(PAGE.contains("trustAsked.add(trustKey(m));"), "it asks again on every frame");
+        // Git stops twice on the way: at the project, and at the branch's own
+        // folder once the project's line is in. The second one has to be put
+        // as well, and keying on the row alone swallowed it (2026-09-18, seen
+        // in the app)
+        assert!(PAGE.contains(r#"const trustKey = m => m.id + " " + (m.trust || "");"#),
+            "one row can only ever ask once, so the second folder is never offered");
+        // What is being agreed to is on screen: the file, and the line itself
+        assert!(PAGE.contains(r#"rows: [put(T["worktree.trust.into"] || "", m.trust_file || ""),"#),
+            "the question does not say which file it writes into");
+        assert!(PAGE.contains(r#"put(T["worktree.trust.what"] || "", m.trust_line || "", true)],"#),
+            "the question does not show the line it would write");
+        assert!(PAGE.contains(r#"go: () => { trustAsking = ""; send({kind:"making", id:m.id, act:"trust"}); },"#),
+            "yes does not reach the app");
+        // And the row keeps both answers, for a question put away rather than
+        // answered -- as does the failure where git refused the project itself
+        assert!(PAGE.contains(r#"send({kind:"making", id:m.id, act:"trust"})}, T["worktree.trust.go"] || "")"#),
+            "the row cannot answer the question it carries");
+        assert!(PAGE.contains(r#"T["worktree.trust.leave"] || "")));"#), "the row cannot leave it alone");
+        assert!(PAGE.contains("...(m.trust ? [el(\"button\""), "a refused project offers only try again, which fails the same way");
+        // And what it would write is laid out to be read, not broken across a
+        // narrow column
+        assert!(PAGE.contains("#sask .blist .brow2.stacked { display:block;"), "the line has no room to be read");
+        assert!(PAGE.contains(r#"el("span", {class:"ms"}, untrusted ? (T["worktree.trust.row"] || "")"#),
+            "the row does not say why it is marked");
+    }
+
     /// A worktree whose folder would not delete is said and asked about, not
     /// only written to a log: the row stays with its reason, the question is
     /// put once, and each answer reaches the app
@@ -18173,7 +18270,7 @@ mod tests {
         for act in ["retry", "restore", "forget"] {
             assert!(PAGE.contains(&format!(r#"send({{kind:"making", id:m.id, act:"{act}"}})"#)), "the row cannot {act}");
         }
-        assert!(PAGE.contains("failed || stopping || leaving ? null"), "a folder being deleted offers a ✕ that cannot stop it");
+        assert!(PAGE.contains("failed || stopping || leaving || untrusted ? null"), "a folder being deleted offers a ✕ that cannot stop it");
     }
 
     #[test]
