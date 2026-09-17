@@ -8399,7 +8399,7 @@ function phoneWidth() {
 // list, so the next one is a row here rather than a shape change
 const SIDE_PANELS = [
   ["files", () => T["tui.side.files"] || "Files"],
-  ["git", () => T["tui.side.git"] || "Changes"],
+  ["git", () => T["tui.side.git"] || "Git"],
 ];
 let sidePanel = "files";
 function sideWidth() {

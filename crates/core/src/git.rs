@@ -301,6 +301,36 @@ fn without_line_ending_notes(said: &str) -> String {
         .to_string()
 }
 
+/// A push git will not make because the branch follows one of another name:
+/// `feature` following `origin/main` could mean either, and git asks rather
+/// than guesses
+#[derive(Debug)]
+pub struct PushNameMismatch {
+    pub branch: String,
+    pub remote: String,
+    pub target: String,
+}
+
+impl std::fmt::Display for PushNameMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::i18n::tp(
+            "err.git.push_other_name",
+            &[("branch", &self.branch), ("remote", &self.remote), ("target", &self.target)],
+        ))
+    }
+}
+
+impl std::error::Error for PushNameMismatch {}
+
+/// The name of the branch this one follows on its server (`main` for one
+/// following `origin/main`), from the branch's own settings. None when it
+/// follows nothing
+fn followed_name(dir: &Path, here: &str) -> Option<String> {
+    let merge = run(dir, &["config", "--get", &format!("branch.{here}.merge")]).ok()?;
+    let name = merge.trim().trim_start_matches("refs/heads/").to_string();
+    (!name.is_empty()).then_some(name)
+}
+
 /// A pull that would write over files somebody has not committed yet.
 ///
 /// Worked out from git's own lists rather than read out of its message: the
@@ -895,6 +925,20 @@ pub fn push(dir: &Path, who: &As) -> Result<String> {
         Ok(out) => Ok(out),
         Err(first) => {
             let Some(here) = branch(dir)? else { return Err(first) };
+            // Following a branch of another name, git will not choose between
+            // sending to that one and sending under this name. Said in those
+            // words, worked out from the branch's own settings rather than
+            // read out of git's message
+            if let Some(target) = followed_name(dir, &here)
+                && target != here
+            {
+                let remote = run(dir, &["config", "--get", &format!("branch.{here}.remote")])
+                    .map(|r| r.trim().to_string())
+                    .ok()
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or_else(|| "origin".to_string());
+                return Err(anyhow::Error::new(PushNameMismatch { branch: here, remote, target }));
+            }
             if !first.to_string().contains("--set-upstream") {
                 return Err(first);
             }
@@ -1148,6 +1192,38 @@ mod tests {
         assert!(is_not_installed(&err));
         assert!(!is_not_installed(&anyhow::anyhow!("anything else")));
         assert!(!err.to_string().is_empty());
+    }
+
+    /// A push refused because the branch follows one of another name says
+    /// both names and both ways out, not git's page about push.default
+    #[test]
+    fn a_push_to_a_branch_of_another_name_is_said_plainly() {
+        let Some(seed) = scratch_repo("othername-seed") else { return };
+        std::fs::write(seed.join("a.txt"), "one\n").unwrap();
+        run(&seed, &["add", "."]).unwrap();
+        run(&seed, &["commit", "-m", "one"]).unwrap();
+        let far = std::env::temp_dir().join(format!("shikisha-git-{}-othername-far", std::process::id()));
+        let near = std::env::temp_dir().join(format!("shikisha-git-{}-othername-near", std::process::id()));
+        let _ = std::fs::remove_dir_all(&far);
+        let _ = std::fs::remove_dir_all(&near);
+        run(&seed, &["clone", "-q", "--bare", &seed.display().to_string(), &far.display().to_string()]).unwrap();
+        run(&seed, &["clone", "-q", &far.display().to_string(), &near.display().to_string()]).unwrap();
+        run(&near, &["config", "user.email", "test@example.invalid"]).unwrap();
+        run(&near, &["config", "user.name", "test"]).unwrap();
+        run(&near, &["config", "push.default", "simple"]).unwrap();
+        run(&near, &["checkout", "-q", "-b", "feature", "--track", "origin/main"]).unwrap();
+        std::fs::write(near.join("a.txt"), "two\n").unwrap();
+        run(&near, &["commit", "-qam", "two"]).unwrap();
+
+        let err = push(&near, &As::default()).unwrap_err();
+        let said = err.downcast_ref::<PushNameMismatch>().expect("the refusal is not recognised");
+        assert_eq!((said.branch.as_str(), said.remote.as_str(), said.target.as_str()), ("feature", "origin", "main"));
+        let text = err.to_string();
+        assert!(text.contains("feature") && text.contains("origin/main"), "{text}");
+        assert!(!text.contains("push.default"), "git's own page came through: {text}");
+        let _ = std::fs::remove_dir_all(&near);
+        let _ = std::fs::remove_dir_all(&far);
+        let _ = std::fs::remove_dir_all(&seed);
     }
 
     /// A pull refused because it would write over uncommitted work names the

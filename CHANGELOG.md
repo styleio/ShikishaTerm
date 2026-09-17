@@ -23,6 +23,8 @@ once it reaches its first tagged release.
   every desk goes to "No project". The same cards open from a phone.
 
 ### Changed
+- **The right-hand column's git panel is called Git.** "Changes" did not say what
+  it was the changes of.
 - **The commit message prompt is written out whole in the settings, and can be
   changed or emptied.** The AI used to be given a prompt nobody could see, with
   the settings only adding a line to it. Settings > desk > git now shows the whole
@@ -58,6 +60,11 @@ once it reaches its first tagged release.
   or shut stays that way.
 
 ### Fixed
+- **A push git will not make because the branch follows one of another name says
+  so.** A worktree's branch that follows `origin/main` could not be pushed, and the
+  panel showed git's paragraph about `push.default`. It now says which branch
+  follows which, and the command for each way out: sending to `main`, or sending
+  under the branch's own name.
 - **Pressing a folder with the Issue tab in front goes to the folder.** The Issue
   tab belongs to no folder, so the folder looked at just before still counted as
   the one in front: pressing it did nothing, and the view kept for it became the
