@@ -149,8 +149,22 @@ const shot = (name) => ps('-File', path.join(ROOT, 'tools', 'debug', 'shot-windo
 const same = (a, b) => (a || '').replace(/[\\/]+$/, '').toLowerCase() === (b || '').replace(/[\\/]+$/, '').toLowerCase();
 
 try {
-  console.log('1. the bulb opens the ideas, the caret in the writing line');
+  console.log('0. Ctrl+B m opens the ideas, the way Ctrl+B k opens the quick commands');
   await until(() => run(`!!document.querySelector('.gearrow .ideabtn') && !!(S && S.groups && S.groups.length === 4)`), 'the side column');
+  await until(() => run(`document.activeElement && document.activeElement.id === 'kbd'`), 'the keyboard on the terminal');
+  const press = async (keyName, code, vk, modifiers, text) => {
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: keyName, code, windowsVirtualKeyCode: vk, modifiers, text });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: keyName, code, windowsVirtualKeyCode: vk, modifiers });
+  };
+  await press('b', 'KeyB', 66, 2);
+  await press('m', 'KeyM', 77, 0, 'm');
+  await until(() => run(`!document.getElementById('ideas').hidden`), 'the ideas from the keys');
+  check(true, 'Ctrl+B m brought the ideas up');
+  check(await run(`KEY_ACTIONS.some(a => a.name === 'ideas')`), 'the ideas are among the actions the palette and the key list offer');
+  await key('Escape');
+  await until(() => run(`document.getElementById('ideas').hidden`), 'the ideas put away');
+
+  console.log('1. the bulb opens the ideas, the caret in the writing line');
   await click('.gearrow .ideabtn');
   await until(() => run(`!document.getElementById('ideas').hidden && IDEAS.known`), 'the ideas and their projects');
   check(await run(`document.activeElement.matches('#ideas .inew .itext')`), 'the caret is in the writing line');

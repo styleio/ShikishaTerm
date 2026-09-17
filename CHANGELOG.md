@@ -57,6 +57,8 @@ once it reaches its first tagged release.
   the idea, in the idea's project; its ✨ writes the title and labels from it.
   Once the issue is made the idea is done, and wears the issue's number (`#12`),
   which opens it; a form put away without making one leaves the idea as it was.
+  `Ctrl+B m` opens the ideas too, and the key can be changed under Settings >
+  Keys like any other.
 
 ### Changed
 - **Waiting in the Issue tab is shown plainly.** While GitHub or the AI is being

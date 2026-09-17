@@ -964,6 +964,7 @@
   "keys.literal_prefix": "Send the prefix key itself to the program",
   "keys.palette": "Command palette",
   "keys.quick_commands": "Quick commands",
+  "keys.ideas": "Ideas",
   "keys.help": "This list",
   "err.login.write": "could not save the login {label}",
   "err.login.missing": "there is no saved login called {label}",

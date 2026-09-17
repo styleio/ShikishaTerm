@@ -34,8 +34,8 @@ letters. `Ctrl+B 0` brings it back from anywhere.
   branch it is on, its pull request, and any ports it is listening on; under that,
   what it last said about itself.
 - Under INDEX and Issue, the **PROJECT** heading with a `+` at its end (add a project).
-  At the very bottom, the gear (settings), `?` (this page), the scissors (tools) and
-  🎛️ (quick commands).
+  At the very bottom, the gear (settings), `?` (this page), 💡 (ideas), the scissors
+  (tools) and 🎛️ (quick commands).
 
 **Quick commands** are a grid of buttons you make yourself. 🎛️ or `Ctrl+B k` brings
 them up over the whole window. Every press opens a new tab in the folder of the
@@ -104,6 +104,7 @@ since every one of them can be changed in the settings.
 | `Ctrl+B b` | Send the prefix key itself to the program |
 | `Ctrl+B :` | Command palette |
 | `Ctrl+B k` | Quick commands |
+| `Ctrl+B m` | Ideas |
 | `Ctrl+B ?` | The key list |
 
 On INDEX the menu is single letters: `e` settings, `p` the palette, `f` find,

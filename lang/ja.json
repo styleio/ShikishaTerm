@@ -954,6 +954,7 @@
   "keys.literal_prefix": "接頭キーそのものをプログラムに送る",
   "keys.palette": "コマンドパレット",
   "keys.quick_commands": "クイックコマンド",
+  "keys.ideas": "アイデア",
   "keys.help": "この一覧",
   "err.login.write": "ログイン {label} を保存できませんでした",
   "err.login.missing": "{label} という保存済みログインはありません",
