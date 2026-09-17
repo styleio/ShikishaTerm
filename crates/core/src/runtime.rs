@@ -3208,6 +3208,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default(),
+            folder_machines: desks
+                .get(desk_index)
+                .map(|w| {
+                    w.folders
+                        .iter()
+                        .filter_map(|f| {
+                            let at = crate::elsewhere::Elsewhere::of(f.host.as_ref()?).ok()?;
+                            let crate::elsewhere::Elsewhere::Ssh(spec) = at else { return None };
+                            f.cwd.clone().zip(Some(spec.machine()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            server_marks: cfg.as_ref().map(|c| c.server_marks.clone()).unwrap_or_default(),
             self_cost: self_cost.clone(),
             // With a stand-in laid out there is a link to show even when
             // nothing is listening — that is the whole point of it (netaddr::demo_link)
