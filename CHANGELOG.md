@@ -44,6 +44,11 @@ once it reaches its first tagged release.
   or shut stays that way.
 
 ### Fixed
+- **Pressing a folder with the Issue tab in front goes to the folder.** The Issue
+  tab belongs to no folder, so the folder looked at just before still counted as
+  the one in front: pressing it did nothing, and the view kept for it became the
+  Issue tab, so pressing it later from another folder brought the Issue tab back.
+  A folder's view is now kept only while one of its own tabs is in front.
 - **The lists of changes use the whole height of the right-hand column.** A width
   set for the git tab's middle column (38%) was applied to it standing in the
   column, where it became 38% of the height, and the two lists split what was
