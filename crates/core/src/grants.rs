@@ -210,6 +210,9 @@ pub const CATALOG: &[Entry] = &[
     // Two strings in, a diff out. It reaches nothing and changes nothing, so
     // there is no one to keep it from
     e("diff", Group::Basics, true, true, false),
+    // Text to a value and back: they reach nothing and change nothing
+    e("json_decode", Group::Basics, true, true, false),
+    e("json_encode", Group::Basics, true, true, false),
     // -- git -------------------------------------------------------------------
     // Closed to an AI to begin with, reads included. Letting an AI look at a
     // diff is a reasonable thing to want and a one-click decision to make; it
