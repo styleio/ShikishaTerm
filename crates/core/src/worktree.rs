@@ -1597,7 +1597,7 @@ fn short_enough(at: &Path) -> bool {
 /// Once because the answer costs a folder made and removed in the person's
 /// home, and the dialog asks for it on every keystroke -- and because whether
 /// a home folder can be written to does not change while a program is running
-fn branches_root() -> PathBuf {
+pub(crate) fn branches_root() -> PathBuf {
     static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
         // A test run never writes into the person's own folder. A run that
