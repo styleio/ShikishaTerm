@@ -6177,6 +6177,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // The quick commands, over everything. Drawn by the
                         // page like the palette, so this only nudges it open
                         KeyCode::Char('k') => shell.open_quick(),
+                        // The ideas, the same way: drawn by the page
+                        KeyCode::Char('m') => shell.open_ideas(),
                         // 0 is the board, which is a screen over everything;
                         // 1.. are the running things, which live in panes. One
                         // key row, two different kinds of destination

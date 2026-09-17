@@ -74,6 +74,7 @@ pub const ACTIONS: &[Action] = &[
     Action { name: "help", key: '?', also: &[], desc: "keys.help" },
     Action { name: "palette", key: ':', also: &[], desc: "keys.palette" },
     Action { name: "quick_commands", key: 'k', also: &[], desc: "keys.quick_commands" },
+    Action { name: "ideas", key: 'm', also: &[], desc: "keys.ideas" },
 ];
 
 /// The prefix, before anything is read from the settings.
