@@ -515,6 +515,7 @@ impl Hub {
                 "base": p.pointer("/base/ref"),
                 "state": if merged { "merged" } else if open { "open" } else { "closed" },
                 "draft": p.get("draft").cloned().unwrap_or(json!(false)),
+                "sha": p.pointer("/head/sha"),
                 "merge_state": merge_state,
                 "url": p.get("html_url"),
             }));
@@ -587,8 +588,12 @@ impl Hub {
                 "passed" => passed += 1,
                 _ => {}
             }
-            items
-                .push(json!({"name": r.get("name"), "verdict": verdict, "url": r.get("html_url")}));
+            // A job GitHub Actions ran has a log that can be read; its check is the job
+            let job = match r.pointer("/app/slug").and_then(|s| s.as_str()) {
+                Some("github-actions") => r.get("id").cloned().unwrap_or(Value::Null),
+                _ => Value::Null,
+            };
+            items.push(json!({"name": r.get("name"), "verdict": verdict, "url": r.get("html_url"), "job": job}));
         }
         for s in status
             .get("statuses")
@@ -613,6 +618,27 @@ impl Hub {
         Ok(
             json!({"failed": failed, "pending": pending, "passed": passed, "total": items.len(), "items": items}),
         )
+    }
+
+    /// The end of a GitHub Actions job's log: where a failure says what failed.
+    /// GitHub answers with a redirect to the file, which is followed
+    pub fn job_log_tail(&self, repo: &Repo, job: u64) -> Result<String> {
+        let url = format!("https://api.github.com/repos/{}/actions/jobs/{job}/logs", repo.slug());
+        let mut resp = self
+            .agent
+            .get(&url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", API_VERSION)
+            .header("User-Agent", concat!("shikisha-term/", env!("CARGO_PKG_VERSION")))
+            .call()
+            .map_err(|e| anyhow!(crate::i18n::tp("err.github.unreachable", &[("error", &e.to_string())])))?;
+        let status = resp.status().as_u16();
+        let text = resp.body_mut().read_to_string().unwrap_or_default();
+        if !(200..300).contains(&status) {
+            bail!(crate::i18n::tp("err.github.other", &[("status", &status.to_string()), ("said", text.trim())]));
+        }
+        Ok(log_tail(&text))
     }
 
     /// Open a new issue. Answers with its number and address
@@ -882,6 +908,8 @@ pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
     Some(match (act, pulls) {
         ("list", false) => "github_issues",
         ("list", true) | ("branch_prs", _) => "github_prs",
+        // Reading a pull request's failed checks, to hand them to an AI tab
+        ("ci_fix", _) => "github_pr",
         ("detail", false) => "github_issue",
         ("detail", true) => "github_pr",
         ("options", _) => "github_labels",
@@ -1024,7 +1052,22 @@ pub fn answer(
     let done = hub_for(source).and_then(|(repo, hub)| match act {
         "detail" if pulls => hub.pull(&repo, number),
         "detail" => hub.issue(&repo, number),
-        "branch_prs" => hub.branch_pulls(&repo, &s("head")),
+        // With what CI says of the commit the newest open one is at: the same
+        // commit for every base the branch was sent to
+        "branch_prs" => hub.branch_pulls(&repo, &s("head")).map(|prs| {
+            let sha = prs
+                .as_array()
+                .and_then(|a| a.iter().find(|p| p["state"] == "open"))
+                .and_then(|p| p["sha"].as_str())
+                .map(str::to_string);
+            let checks = sha.as_deref().and_then(|sha| {
+                hub.checks(&repo, sha).ok().map(|mut c| {
+                    c["sha"] = json!(sha);
+                    c
+                })
+            });
+            json!({"prs": prs, "checks": checks})
+        }),
         "options" => Ok(json!({"labels": hub.labels(&repo)?, "assignees": hub.assignees(&repo)?})),
         "create" => hub.create_issue(
             &repo,
@@ -1160,6 +1203,66 @@ fn logins(v: Option<&Value>) -> Value {
 }
 
 /// A check run's verdict: failed, pending, passed, or neutral
+/// How much of a failed job's log is handed on: the lines before its last
+/// error, where a failure says what failed -- not the clean-up after it
+const LOG_TAIL_LINES: usize = 80;
+const LOG_TAIL_CHARS: usize = 6000;
+
+/// The part of a job's log worth reading: GitHub's time stamps taken off,
+/// everything after the last error dropped, the last lines of what is left
+pub fn log_tail(log: &str) -> String {
+    let lines: Vec<&str> = log
+        .lines()
+        .map(|l| {
+            // "2026-09-17T06:20:15.6543593Z text"
+            match l.split_once(' ') {
+                Some((stamp, rest)) if stamp.len() >= 20 && stamp.ends_with('Z') && stamp.as_bytes().get(10) == Some(&b'T') => rest,
+                _ => l,
+            }
+        })
+        .collect();
+    let end = lines.iter().rposition(|l| l.contains("##[error]")).map(|i| i + 1).unwrap_or(lines.len());
+    let start = end.saturating_sub(LOG_TAIL_LINES);
+    let mut out = lines[start..end].join("\n");
+    if out.len() > LOG_TAIL_CHARS {
+        let cut = out.len() - LOG_TAIL_CHARS;
+        let at = (cut..out.len()).find(|&i| out.is_char_boundary(i)).unwrap_or(out.len());
+        out = out[at..].to_string();
+    }
+    out
+}
+
+/// The failed checks of a commit, each with the end of its log when GitHub
+/// Actions ran it -- what an AI is given to find out why CI failed
+pub fn ci_failures(
+    sources: &[Source],
+    project: &str,
+    sha: &str,
+    look: &dyn Fn(&str) -> Option<String>,
+) -> Result<Value> {
+    let source = sources
+        .iter()
+        .find(|s| s.name == project)
+        .ok_or_else(|| anyhow!(crate::i18n::t("err.github.no_project")))?;
+    let (repo, token) = target(&source.dir, &source.git, look)?;
+    let hub = Hub::new(token);
+    let checks = hub.checks(&repo, sha)?;
+    let mut out = Vec::new();
+    for c in checks.get("items").and_then(|i| i.as_array()).into_iter().flatten() {
+        if c.get("verdict").and_then(|v| v.as_str()) != Some("failed") {
+            continue;
+        }
+        let mut row = json!({"name": c.get("name"), "url": c.get("url")});
+        if let Some(job) = c.get("job").and_then(|j| j.as_u64())
+            && let Ok(tail) = hub.job_log_tail(&repo, job)
+        {
+            row["log_tail"] = json!(tail);
+        }
+        out.push(row);
+    }
+    Ok(Value::Array(out))
+}
+
 fn check_verdict(done: bool, conclusion: &str) -> &'static str {
     match (done, conclusion) {
         (false, _) => "pending",
@@ -1211,6 +1314,23 @@ fn encode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// What an AI is given of a failed job's log: the lines up to its last
+    /// error, without GitHub's time stamps, and not the clean-up after it
+    #[test]
+    fn a_failed_logs_tail_ends_at_its_last_error() {
+        let log = "2026-09-17T06:20:15.6543593Z running 3 tests\n\
+                   2026-09-17T06:20:15.6545498Z test a ... FAILED\n\
+                   2026-09-17T06:20:39.5426807Z ##[error]Process completed with exit code 1.\n\
+                   2026-09-17T06:20:39.5667565Z Post job cleanup.\n\
+                   2026-09-17T06:20:39.7690104Z [command]git version";
+        let tail = super::log_tail(log);
+        assert_eq!(tail, "running 3 tests\ntest a ... FAILED\n##[error]Process completed with exit code 1.");
+        let long: String = (0..500).map(|i| format!("line {i}\n")).collect();
+        let tail = super::log_tail(&long);
+        assert!(tail.lines().count() <= super::LOG_TAIL_LINES, "more lines than a tail");
+        assert!(tail.ends_with("line 499"), "the end of a log with no error is not its end");
+    }
+
     /// The branch a pull request comes from is found where it is checked out:
     /// in the checkout, or in a worktree cut from it, and nowhere else
     #[test]
