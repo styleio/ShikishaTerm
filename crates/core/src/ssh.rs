@@ -121,6 +121,35 @@ impl Spec {
         }
         at
     }
+
+    /// Which server this is, for the name and colour a person gave it
+    /// ("Production", "Staging").
+    ///
+    /// A third question, between the other two. Not [`Spec::route`]: who signs
+    /// in does not change which server it is -- `deploy@` and `root@` on
+    /// production are both production, and a name given from one tab has to
+    /// be worn by every tab that reaches the same machine. Not
+    /// [`Spec::address`] either: the way there *is* part of it, because the
+    /// same private address behind two bastions is two machines. That is the
+    /// usual shape of a production and a staging network, and filing them
+    /// together would put one's name on the other.
+    ///
+    /// Written one way whatever case the address was typed in, since a host
+    /// name is not case-sensitive and the person typed it twice in two tabs
+    pub fn machine(&self) -> String {
+        let mut at = machine_key(&self.address());
+        if let Some(j) = &self.jump {
+            at = format!("{}>{at}", j.machine());
+        }
+        at
+    }
+}
+
+/// A server's name for its mark, spelled the one way [`Spec::machine`] spells
+/// it. For reading one back out of the settings, where a person may have
+/// written it by hand
+pub fn machine_key(written: &str) -> String {
+    written.split('>').map(|hop| hop.trim().to_lowercase()).collect::<Vec<_>>().join(">")
 }
 
 /// The fingerprints of the servers we have met, by address.
@@ -1036,6 +1065,36 @@ mod tests {
         assert_eq!(through.address(), at("a").address(), "a different route is still the same machine");
         assert_ne!(through.route(), at("a").route(), "through a jump host is a different connection");
         assert!(through.route().contains("gate"), "it cannot tell which way it went");
+    }
+
+    /// The name a person gives a server belongs to the server: whoever signs
+    /// in, however the address was capitalised. The way there is part of it,
+    /// because one private address behind two bastions is two machines
+    #[test]
+    fn a_server_is_one_server_whoever_signs_in() {
+        let at = |user: &str, host: &str| Spec {
+            host: host.into(),
+            port: 22,
+            user: user.into(),
+            ..Default::default()
+        };
+        assert_eq!(at("deploy", "Prod.Example.com").machine(), "prod.example.com:22");
+        assert_eq!(at("deploy", "prod.example.com").machine(), at("root", "PROD.example.com").machine());
+
+        let behind = |gate: &str| {
+            let mut s = at("deploy", "10.0.0.5");
+            s.jump = Some(Box::new(at("me", gate)));
+            s
+        };
+        assert_eq!(behind("gw-prod.example.com").machine(), "gw-prod.example.com:22>10.0.0.5:22");
+        assert_ne!(
+            behind("gw-prod.example.com").machine(),
+            behind("gw-staging.example.com").machine(),
+            "two networks with the same private address were filed as one machine"
+        );
+        assert_ne!(behind("gw-prod.example.com").machine(), at("deploy", "10.0.0.5").machine());
+        // Read back from a file somebody edited by hand, it is still the same key
+        assert_eq!(machine_key(" GW-Prod.example.com:22 > 10.0.0.5:22 "), behind("gw-prod.example.com").machine());
     }
 
     /// The reader hands out exactly what arrived, in order, however the caller

@@ -302,6 +302,11 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     let discovered = discovered_of(&cuts, &listed, &ui.worktrees_kept);
     for (at, g) in groups.iter_mut() {
         g.host = ui.folder_hosts.iter().find(|(k, _)| k == at).map(|(_, h)| h.clone());
+        g.mark = ui
+            .folder_machines
+            .iter()
+            .find(|(k, _)| k == at)
+            .and_then(|(_, m)| crate::uistate::MarkState::of(m, &ui.server_marks));
         if g.empty
             && g.color.is_none()
             && let Some((family, linked)) = repos.get(at)
@@ -393,6 +398,12 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     ts.group = t.cwd().and_then(|c| {
                         groups.iter().position(|(k, _)| crate::uistate::same_folder(k, c))
                     });
+                    // A terminal on a server wears that server's name. A tab
+                    // in a folder on a server is on one too: its terminal is
+                    // opened there, with the same address the folder has
+                    ts.mark = t
+                        .remote()
+                        .and_then(|spec| crate::uistate::MarkState::of(&spec.machine(), &ui.server_marks));
                     // Beside a folder in a repository, the git column signs in
                     // as the project's account
                     ts.git_acct = t.place.family.is_some().then(|| {
@@ -418,11 +429,16 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     t.away = ui.away.iter().find(|(k, _)| k == key).map(|(_, who)| who.clone());
                     Some(t)
                 }
-                Surface::Sftp { key, name, dir, .. } => {
+                Surface::Sftp { key, name, dir, at, .. } => {
                     let group = dir.as_deref().and_then(|d| {
                         groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
                     });
-                    Some(crate::uistate::TabState::sftp(i + 1, key, name, group))
+                    let mut t = crate::uistate::TabState::sftp(i + 1, key, name, group);
+                    // The panel's server, which is the one its questions are
+                    // about -- so the page reads the mark off the tab, and the
+                    // tab row and the question cannot disagree about it
+                    t.mark = at.as_ref().and_then(|m| crate::uistate::MarkState::of_place(m, &ui.server_marks));
+                    Some(t)
                 }
                 Surface::Editor { key, name, dir } => {
                     let showing = ui
@@ -445,12 +461,13 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     Some(t)
                 }
                 Surface::Issues { key } => Some(crate::uistate::TabState::issues(i + 1, key)),
-                Surface::Failed { key, name, dir, why, install_url } => {
+                Surface::Failed { key, name, dir, why, install_url, machine } => {
                     let group = dir.as_deref().and_then(|d| {
                         groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
                     });
                     let mut t = crate::uistate::TabState::failed(i + 1, key, name, group);
                     t.failed = Some(crate::uistate::FailedState { why: why.clone(), install_url: install_url.clone() });
+                    t.mark = machine.as_deref().and_then(|m| crate::uistate::MarkState::of(m, &ui.server_marks));
                     Some(t)
                 }
                 Surface::Git { key, name, dir, git, .. } => {
@@ -612,6 +629,80 @@ mod file_panel_tests {
             }"#,
         );
         assert!(at.is_none(), "it made a destination though there is none");
+    }
+
+    /// A name given to a server from the settings is found by the file panel
+    /// that reaches it, and by a terminal that reaches it through the same
+    /// bastion -- because the settings file it under the spelling a launch
+    /// builds, and nothing else spells it.
+    #[test]
+    fn a_servers_name_is_filed_the_way_a_launch_reaches_it() {
+        let json = r#"{
+          "desks": [ { "name":"w", "id": "w",
+            "folders": [ {"name":"here","cwd":"."} ],
+            "tabs": [
+              {"name":"files","id":"files","group":0,
+               "command":"sftp://deploy@10.0.0.5:22",
+               "server":{"jump":{"host":"GW-Prod.example.com","user":"me"}}},
+              {"name":"shell","id":"shell","group":0,
+               "command":"ssh://root@10.0.0.5",
+               "server":{"jump":{"host":"gw-prod.example.com","port":22,"user":"other"}}},
+              {"name":"staging","id":"staging","group":0,
+               "command":"ssh://root@10.0.0.5",
+               "server":{"jump":{"host":"gw-staging.example.com","user":"me"}}}
+            ] } ]
+        }"#;
+        let cfg: config::Config = serde_json::from_str(json).expect("the settings cannot be read");
+        let (desks, errs) = cfg.resolve_desks();
+        assert!(errs.is_empty(), "{errs:?}");
+        let desk = desks.first().expect("there is no desk");
+        let tab = |id: &str| {
+            desk.tabs.iter().find(|t| t.cfg.id.as_deref() == Some(id)).expect("no such tab").cfg.clone()
+        };
+        // What the settings screen is told, for the panel it names from
+        let filed = machine_of(&tab("files").command.argv(), tab("files").server.as_ref())
+            .expect("the panel's address reaches no server");
+        assert_eq!(filed, "gw-prod.example.com:22>10.0.0.5:22");
+
+        // What a terminal is launched with, through a different person on the
+        // same bastion
+        let launched = |id: &str| {
+            let cfg = tab(id);
+            let mut opts = crate::tab::TabOptions::default();
+            crate::desk::resolve_launch(cfg.command.argv(), &mut opts, Some(desk), &cfg);
+            opts.remote.expect("the terminal reaches no server").machine()
+        };
+        assert_eq!(launched("shell"), filed, "the terminal is filed under another spelling");
+        assert_ne!(launched("staging"), filed, "staging behind its own bastion took production's name");
+
+        // And the panel on screen wears what was filed
+        let marks = std::collections::HashMap::from([(
+            filed.clone(),
+            config::ServerMark { name: "Production".into(), color: Some("#e5644d".into()), careful: true },
+        )]);
+        let ui = Ui {
+            active: 1,
+            surfaces: surfaces_of(Some(desk), &[], &[], &[], false),
+            server_marks: marks,
+            ..Default::default()
+        };
+        let state = ui_state_of(&[], &ui, None);
+        let panel = state.tabs.iter().find(|t| t.kind == "sftp").expect("the panel is not on screen");
+        let mark = panel.mark.as_ref().expect("the panel does not wear its server's name");
+        assert_eq!((mark.name.as_str(), mark.color.as_str(), mark.careful), ("Production", "#e5644d", true));
+        assert_eq!(mark.machine, filed);
+    }
+
+    /// Nothing reaches a server until its address is written out: no name can
+    /// be filed for a half-written one, and a command that is a program is
+    /// not an address at all
+    #[test]
+    fn no_server_is_named_before_there_is_one() {
+        let argv = |c: &str| config::CommandSpec::Line(c.into()).argv();
+        assert_eq!(machine_of(&argv("sftp://"), None), None);
+        assert_eq!(machine_of(&argv("ssh://@example.com"), None), None);
+        assert_eq!(machine_of(&argv("ssh deploy@example.com"), None), None);
+        assert_eq!(machine_of(&argv("ssh://deploy@Example.com:2222"), None).as_deref(), Some("example.com:2222"));
     }
 }
 
@@ -868,6 +959,15 @@ pub fn surfaces_written(
                         dir: desk.cwd_of(ft),
                         why: failed.why,
                         install_url: failed.install_url,
+                        // Worked out the way a launch reaches it: the address
+                        // on the tab, else the machine its folder is on
+                        machine: machine_of(&argv, ft.cfg.server.as_ref()).or_else(|| {
+                            let host = desk.folder_of(ft).and_then(|f| f.host.as_ref())?;
+                            match crate::elsewhere::Elsewhere::of(host).ok()? {
+                                crate::elsewhere::Elsewhere::Ssh(spec) => Some(spec.machine()),
+                                crate::elsewhere::Elsewhere::Cloud(_) => None,
+                            }
+                        }),
                     },
                     Some(written),
                 ));
@@ -1026,6 +1126,12 @@ pub struct Ui {
     pub folders_elsewhere: Vec<std::path::PathBuf>,
     /// Those same folders, each with the name of the machine it is on
     pub folder_hosts: Vec<(std::path::PathBuf, String)>,
+    /// And each with the server that machine is, for the name a person gave it
+    /// ([`crate::ssh::Spec::machine`]). Absent for a sandbox, which is no
+    /// lasting machine to name
+    pub folder_machines: Vec<(std::path::PathBuf, String)>,
+    /// What each server is called, as the settings have it
+    pub server_marks: std::collections::HashMap<String, crate::config::ServerMark>,
     /// The controls shown over the browser being viewed (None = don't show)
     pub nav: Option<crate::uistate::NavState>,
     /// What each page of this desk is asking the person, by the name
@@ -1134,6 +1240,11 @@ pub enum Surface {
         dir: Option<std::path::PathBuf>,
         why: String,
         install_url: Option<String>,
+        /// The server it was to reach ([`crate::ssh::Spec::machine`]), for a
+        /// terminal that could not get there. A tab that failed to reach
+        /// production is still a production tab, and which server did not
+        /// answer is the first thing to know about it
+        machine: Option<String>,
     },
     /// The issues and pull requests of the desk's projects, drawn by the board.
     /// One per desk, opened from the list's own row and put away like a tab
@@ -1272,6 +1383,18 @@ pub fn server_spec(
         keepalive: server.and_then(|s| s.keepalive).filter(|n| *n > 0),
         file_command: server.and_then(|s| key(&s.file_command)),
     }
+}
+
+/// Which server a tab's command reaches, for the name a person gave it
+/// ([`crate::ssh::Spec::machine`]).
+///
+/// Worked out from the same spec a launch builds, so the settings screen that
+/// files a name and the tab row that looks it up cannot spell the server two
+/// ways. None for a command that reaches no server, or whose address is not
+/// written out far enough to be one yet
+pub fn machine_of(argv: &[String], server: Option<&config::ServerSpec>) -> Option<String> {
+    let (host, port, user) = config::ssh_endpoint(argv).or_else(|| config::sftp_endpoint(argv))?;
+    Some(server_spec(&host, port, &user, server, &|_| None).machine())
 }
 
 /// Screen size. Only width and height are needed.

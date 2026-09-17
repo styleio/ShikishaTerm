@@ -1693,41 +1693,23 @@ fn handle(
             let text = |k: &str| {
                 v.get(k).and_then(|x| x.as_str()).unwrap_or_default().trim().to_string()
             };
-            let some = |t: String| (!t.is_empty()).then_some(t);
             let desk = text("desk");
             let tab = text("tab");
             let under = |what: &str| {
                 (!desk.is_empty() && !tab.is_empty()).then(|| format!("ssh/{desk}/{tab}/{what}"))
             };
-            let jump = v.get("jump").filter(|j| {
-                j.get("host").and_then(|h| h.as_str()).unwrap_or("").trim() != ""
-            });
-            let spec = crate::ssh::Spec {
-                host: text("host"),
-                port: v.get("port").and_then(|x| x.as_u64()).unwrap_or(22) as u16,
-                user: text("user"),
-                password_key: under("password"),
-                key: some(text("key")),
-                passphrase_key: under("passphrase"),
-                jump: jump.map(|j| {
-                    let jt = |k: &str| {
-                        j.get(k).and_then(|x| x.as_str()).unwrap_or_default().trim().to_string()
-                    };
-                    Box::new(crate::ssh::Spec {
-                        host: jt("host"),
-                        port: j.get("port").and_then(|x| x.as_u64()).unwrap_or(22) as u16,
-                        user: jt("user"),
-                        password_key: under("jump_password"),
-                        key: some(jt("key")),
-                        passphrase_key: under("jump_passphrase"),
-                        jump: None,
-                        keepalive: None,
-                        file_command: None,
-                    })
-                }),
-                keepalive: v.get("keepalive").and_then(|x| x.as_u64()).filter(|n| *n > 0),
-                file_command: some(text("file_command")),
-            };
+            // Built by the same function a launch builds it with, from the
+            // settings as the page has them. A copy of that function here had
+            // already drifted: a bastion's port arrives as the text typed into
+            // its box, which the copy did not read, so a bastion on any port
+            // but 22 was tested on 22 and launched on the right one
+            let spec = crate::view::server_spec(
+                &text("host"),
+                port_of(v.get("port")).unwrap_or(22),
+                &text("user"),
+                Some(&server_of_page(&v)),
+                &under,
+            );
             let resp = if spec.host.is_empty() || spec.user.is_empty() {
                 serde_json::json!({"ok": false, "error": crate::i18n::t("err.server.incomplete")})
             } else {
@@ -1744,6 +1726,24 @@ fn handle(
                 }
             };
             req.respond(json_resp(resp))?;
+        }
+        // Which server a tab's command reaches, in the one spelling its name
+        // is filed under (`ssh::Spec::machine`). The settings screen asks
+        // rather than working it out: the tab row finds a server's name by
+        // this spelling, and a second way of writing it in the page would
+        // file a name the tab row never finds
+        ("POST", "/api/server/machine") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let command = v.get("command").and_then(|c| c.as_str()).unwrap_or_default();
+            let argv = crate::config::CommandSpec::Line(command.to_string()).argv();
+            let server = v.get("server").map(server_of_page);
+            let machine = crate::view::machine_of(&argv, server.as_ref());
+            req.respond(json_resp(serde_json::json!({ "machine": machine })))?;
         }
         // Syntax-check a Lua snippet ({"code":"…"}) so the settings UI can refuse
         // to save a quick action whose Lua is broken. Compile-only, never runs it.
@@ -3041,6 +3041,38 @@ fn handle(
     Ok(())
 }
 
+/// A port as the settings page holds it: a number, or the text typed into a
+/// box. Anything that is not a port is no port
+fn port_of(v: Option<&serde_json::Value>) -> Option<u16> {
+    match v? {
+        serde_json::Value::Number(n) => n.as_u64().and_then(|n| u16::try_from(n).ok()),
+        serde_json::Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// A server connection's own settings as the page holds them before they are
+/// saved -- the shape a tab's `server` block is written in, but with whatever
+/// the boxes hold (a port as text, an empty key) rather than what is saved
+fn server_of_page(v: &serde_json::Value) -> crate::config::ServerSpec {
+    let text = |o: &serde_json::Value, k: &str| {
+        Some(o.get(k).and_then(|x| x.as_str()).unwrap_or_default().trim().to_string())
+            .filter(|t| !t.is_empty())
+    };
+    crate::config::ServerSpec {
+        key: text(v, "key"),
+        jump: v.get("jump").filter(|j| j.is_object()).map(|j| crate::config::JumpSpec {
+            host: text(j, "host").unwrap_or_default(),
+            port: port_of(j.get("port")),
+            user: text(j, "user").unwrap_or_default(),
+            key: text(j, "key"),
+        }),
+        keepalive: v.get("keepalive").and_then(|x| x.as_u64()),
+        file_command: text(v, "file_command"),
+        remote_dir: text(v, "remote_dir"),
+    }
+}
+
 // The settings screen. Unlike the main app's cyber look, it's a quiet UI that prioritizes readability
 // (sidebar + detail pane. The list shows only "what exists"; editing stays focused on one item at a time)
 /// The colours and the toast, poured into a page.
@@ -3058,6 +3090,13 @@ pub(crate) fn themed(html: String) -> String {
     let scheme = look.scheme();
     crate::quick::render(crate::push::inject(crate::toast::render(html)))
         .replace("{{THEME}}", &scheme.css_vars())
+        // The colours a project or a server is offered, from the list the app
+        // colours an unchosen one from -- so a picked colour and a worked-out
+        // one are always from the same eight
+        .replace(
+            "{{MARK_COLOURS}}",
+            &serde_json::to_string(&crate::uistate::PALETTE).unwrap_or_else(|_| "[]".into()),
+        )
         .replace(
             "{{SCHEME}}",
             if crate::theme::is_light(&scheme) { "light" } else { "dark" },
@@ -3433,6 +3472,9 @@ const PAGE: &str = r##"<!doctype html>
  .secretrow:hover .go { color:var(--text); }
  .secretname { flex:0 0 132px; color:var(--text); overflow:hidden;
    text-overflow:ellipsis; white-space:nowrap; }
+ /* A named server: the square of its colour in front of its name, on one line */
+ .secretname.markname { display:flex; align-items:center; gap:var(--s2); }
+ .secretname.markname > span:last-child { min-width:0; overflow:hidden; text-overflow:ellipsis; }
  /* The facts after the name are columns, so a list of them can be read down
     rather than across: what it is, where it goes, and that a value is held */
  .secretdesc { flex:1 1 140px; overflow:hidden; text-overflow:ellipsis;
@@ -3930,6 +3972,8 @@ const deskApi = (m, file, b) => fetch("/api/desk?file=" + encodeURIComponent(fil
 // A plain object: what a desk's maps are written as. A list or null in their
 // place is somebody else's shape, read as nothing
 const isObj = v => !!v && typeof v === "object" && !Array.isArray(v);
+// The colours a project or a server is offered (uistate::PALETTE)
+const MARK_COLOURS = {{MARK_COLOURS}};
 let current = {};        // Contents of config.json (holds the base settings)
 let desks = [];            // Desks and tabs
 let sel = {desk:0, tab:null, global:true, section:"basic"};
@@ -6717,6 +6761,7 @@ function globalSections() {
     {id:"snapshots", label:T["settings.sec.snapshots"], sub:T["settings.sec.snapshots.sub"], build:snapshotsCard},
     {id:"actions",   label:T["settings.sec.actions"],   sub:T["settings.sec.actions.sub"],   build:actionsCard},
     {id:"hosts",     label:T["settings.sec.hosts"],     sub:T["settings.sec.hosts.sub"],     build:hostsCard},
+    {id:"servers",   label:T["settings.sec.servers"],   sub:T["settings.sec.servers.sub"],   build:marksCard},
     {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
     {id:"claudeusage", label:T["settings.sec.claudeusage"], sub:T["settings.sec.claudeusage.sub"], build:claudeUsageCard},
     {id:"remote",    label:T["settings.sec.remote"],    sub:T["settings.sec.remote.sub"],    build:remoteCard},
@@ -7597,6 +7642,14 @@ function hostDialog(at, redraw, kind) {
         T["settings.hosts.password"], T["settings.ssh.password.hint"],
         () => "SSH " + hostName(), T["settings.hosts.name_required"]);
   nameIn.addEventListener("change", () => credential.refresh());
+  // A machine reached over SSH is a server like any a tab reaches, and can be
+  // given its name here as well. A sandbox is made and thrown away, and has no
+  // lasting server for a name to belong to
+  const mark = made ? null : markFields({ask: () => {
+    const a = atIn.value.trim();
+    return a ? {command: a, server: null} : null;
+  }}, false);
+  if (mark) atIn.addEventListener("input", () => mark.schedule());
 
   const shut = () => back.remove();
   const back = openModal(
@@ -7611,6 +7664,7 @@ function hostDialog(at, redraw, kind) {
            field(T["settings.hosts.template"], templateIn, T["settings.hosts.template.hint"]),
            field(T["settings.hosts.minutes"], minutesIn, T["settings.hosts.minutes.hint"])]
         : [field(T["settings.hosts.at"], atIn, ""),
+           mark.box,
            credential,
            field(T["settings.hosts.project"], projectIn, T["settings.hosts.project.hint"]),
            field(T["settings.hosts.branches"], branchesIn, "")])),
@@ -7655,6 +7709,7 @@ function hostDialog(at, redraw, kind) {
       if (b) it.branches = b; else delete it.branches;
     }
     if (!editing) (current.hosts = current.hosts || []).push(it);
+    if (mark) mark.commit();
     refreshSave(); shut(); redraw();
   });
   setTimeout(recheck, 0);
@@ -9147,16 +9202,7 @@ function folderPane(desk, g, gi) {
       refreshSave();
       paint(family);
     };
-    for (const c of ["#d97757","#19c37d","#4285f4","#a06bff",
-                     "#e0a80a","#12b3a8","#e5644d","#7f8cff"]) {
-      const sw = el("i", {class:(now.toLowerCase() === c ? "on" : ""), onclick:() => put(c)});
-      sw.style.background = c;
-      colours.append(sw);
-    }
-    const any = el("input", {type:"color", value:now || "#888888"});
-    any.addEventListener("input", () => put(any.value));
-    const opener = el("i", {class:"any", onclick:() => any.click()});
-    colours.append(opener, any);
+    swatchesInto(colours, now, put);
     if (now) colours.append(el("button", {class:"quiet", onclick:() => put("")},
       T["settings.group.color.auto"]));
   };
@@ -10736,7 +10782,10 @@ function openProvidersPopup() {
 // `conn` is the parsed address and `build` puts it back into a command line,
 // which is what differs: `ssh://` opens a terminal, `sftp://` opens the lists
 function connectionFields(box, t, conn, build, cmdInput) {
-  const upd = () => setCommand(t, cmdInput, build(conn));
+  // What this server is called, once which server it is has been worked out.
+  // Asked again whenever the address or the way there changes
+  const mark = markFields({ask: () => ({command: build(conn), server: t.server || null})}, true);
+  const upd = () => { setCommand(t, cmdInput, build(conn)); mark.schedule(); };
   // This program does the connecting, so what it needs is an address, a user,
   // one way of proving who that is, and -- for the file panel -- where on the
   // far end to start looking. Everything below that is for the connections
@@ -10744,7 +10793,7 @@ function connectionFields(box, t, conn, build, cmdInput) {
   const sv = t.server || (t.server = {});
   // The unsaved mark is worked out by comparing what would be written, on a
   // timer, so nothing here has to remember to announce itself
-  const save = () => refreshSave();
+  const save = () => { refreshSave(); mark.schedule(); };
   // A star on the three it will not connect without. Said once, in the label,
   // rather than as a sentence under every field
   const must = label => el("span", {}, label,
@@ -10769,6 +10818,9 @@ function connectionFields(box, t, conn, build, cmdInput) {
     i.addEventListener("input", () => { conn.user = i.value.trim(); upd(); });
     return i;
   })()));
+  // Right under where it is: the name is what tells this server from the one
+  // like it, and it is decided when the connection is, not found later
+  box.append(mark.box);
 
   // Which credential this connection uses. Not a fallback chain: a key or a
   // password, so that "why did it ask me for a password" has one answer.
@@ -10903,6 +10955,255 @@ function connectionFields(box, t, conn, build, cmdInput) {
       said.style.color = r && r.ok ? "var(--live)" : "var(--warn)";
     }}, T["settings.server.test"]), said));
   box.append(el("div", {class:"hint"}, T["settings.ssh.builtin.hint"]));
+}
+
+// The colours a mark can be, as squares, and a last square that opens any
+// colour at all. Drawn into `box`, which is emptied first; `put` is told the
+// colour pressed. The chosen one wears the ring
+function swatchesInto(box, now, put) {
+  box.textContent = "";
+  const on = (now || "").toLowerCase();
+  for (const c of MARK_COLOURS) {
+    const sw = el("i", {class:(on === c.toLowerCase() ? "on" : ""), title:c, onclick:() => put(c)});
+    sw.style.background = c;
+    box.append(sw);
+  }
+  const any = el("input", {type:"color", value:now || "#888888"});
+  any.addEventListener("input", () => put(any.value));
+  const own = !!on && !MARK_COLOURS.some(c => c.toLowerCase() === on);
+  box.append(el("i", {class:"any" + (own ? " on" : ""), title:T["settings.server.mark.color.any"] || "",
+    onclick:() => any.click()}), any);
+}
+
+// The server's own name for the person ("Production", "Staging"), its colour,
+// and whether something that cannot be undone there waits for the name to be
+// typed.
+//
+// It belongs to the server, not to the tab it is typed on: every tab that
+// reaches the same machine wears it (config::ServerMark). So which server this
+// is has to be known first, and it is asked of the app -- the tab row looks a
+// name up by the spelling a launch builds, and a second spelling worked out
+// here would file names the row never finds. `from.ask` says what to ask
+// about (`{command, server}`, or null while there is nothing to ask);
+// `from.machine` is a server already known, spelled the app's way.
+//
+// `live` writes every change into the settings at once, for a page whose Save
+// is the page's. Otherwise nothing is written until `commit`, for a dialog
+// that can still be cancelled.
+function markFields(from, live) {
+  const box = el("div", {class:"markpart"});
+  // `unnamed`: the server this was opened on had no name, so any name in the
+  // draft was typed here and not read from the settings
+  let machine = null, draft = null, touched = false, unnamed = false, seq = 0, timer = null;
+  const marks = () => current.server_marks = isObj(current.server_marks) ? current.server_marks : {};
+  // Filed under the app's spelling; a hand-edited file may have used another case
+  const keyOf = m => Object.keys(marks()).find(k => k.toLowerCase() === (m || "").toLowerCase());
+  const read = m => {
+    const k = keyOf(m);
+    const had = k ? marks()[k] : null;
+    return {name: (had && had.name) || "", color: (had && had.color) || "", careful: !!(had && had.careful)};
+  };
+  const write = () => {
+    if (!machine || !draft) return;
+    const all = marks();
+    const k = keyOf(machine);
+    if (k) delete all[k];
+    if (draft.name.trim()) {
+      const m = {name: draft.name.trim()};
+      if (draft.color) m.color = draft.color;
+      if (draft.careful) m.careful = true;
+      all[machine] = m;
+    }
+    if (!Object.keys(all).length) delete current.server_marks;
+  };
+  const changed = () => {
+    touched = true;
+    if (live) { write(); refreshSave(); }
+  };
+
+  const nameIn = el("input", {type:"text", placeholder:T["settings.server.mark.name.ph"]});
+  const colours = el("div", {class:"swatches"});
+  const careful = el("input", {type:"checkbox"});
+  const more = el("div");
+  const drawColours = () => swatchesInto(colours, draft.color, c => { draft.color = c; changed(); drawColours(); });
+  nameIn.addEventListener("input", () => {
+    draft.name = nameIn.value;
+    // A name with no colour yet is given one no other server is wearing, so
+    // two servers named one after the other do not come out the same colour
+    if (draft.name.trim() && !draft.color) {
+      const worn = new Set(Object.values(marks()).map(m => (m.color || "").toLowerCase()));
+      draft.color = MARK_COLOURS.find(c => !worn.has(c.toLowerCase())) || MARK_COLOURS[0];
+    }
+    changed();
+    drawMore();
+  });
+  careful.addEventListener("change", () => { draft.careful = careful.checked; changed(); });
+  // The colour and the care are about the name, so they wait for one: a
+  // colour with no word beside it is not a mark anybody can read
+  const drawMore = () => {
+    more.hidden = !draft.name.trim();
+    if (!more.hidden) drawColours();
+  };
+  more.append(
+    sfield(T["settings.server.mark.color"], colours, T["settings.server.mark.color.hint"]),
+    el("div", {class:"field"},
+      el("label", {class:"check"}, careful, el("span", {}, T["settings.server.mark.careful"])),
+      el("div", {class:"hint"}, T["settings.server.mark.careful.hint"])));
+
+  const draw = () => {
+    box.textContent = "";
+    if (!machine) {
+      box.append(sfield(T["settings.server.mark.name"],
+        el("div", {class:"hint"}, T["settings.server.mark.no_address"])));
+      return;
+    }
+    nameIn.value = draft.name;
+    careful.checked = draft.careful;
+    box.append(
+      el("div", {class:"field"},
+        el("label", {}, T["settings.server.mark.name"]),
+        el("div", {class:"fieldctl"}, nameIn),
+        el("div", {class:"hint"}, T["settings.server.mark.name.hint"] + " ",
+          el("span", {class:"mono"}, machine))),
+      more);
+    drawMore();
+  };
+
+  // The last server this stood on and what was in the boxes for it. Kept
+  // through the moments the address is not one at all -- a host cleared to be
+  // typed again -- so what was typed survives the gap
+  let last = null;
+  const settle = now => {
+    if (now === machine && draft) return;
+    if (machine && draft) last = {machine, draft, typedHere: touched && unnamed};
+    machine = now;
+    draft = now ? read(now) : null;
+    unnamed = !!draft && !draft.name.trim();
+    // The address changed under a name typed a moment ago -- the host was
+    // still being finished, say. The name was meant for the server this
+    // address is becoming, so it goes with it, unless that server has a name
+    // of its own already. A name read from the settings is not carried: it
+    // belongs to the server it was read for, and is left there
+    if (now && last && last.machine !== now && last.typedHere
+        && last.draft.name.trim() && !draft.name.trim()) {
+      if (live) {
+        const k = keyOf(last.machine);
+        if (k) delete marks()[k];
+      }
+      draft = last.draft;
+      last = null;
+      if (live) { write(); refreshSave(); }
+    }
+    draw();
+  };
+  const refresh = async () => {
+    if (from.machine) return settle(from.machine);
+    const mine = ++seq;
+    const req = from.ask ? from.ask() : null;
+    const r = req ? await settingsApi("/api/server/machine", req).catch(() => null) : null;
+    if (mine !== seq) return;
+    settle((r && r.machine) || null);
+  };
+  draw();
+  refresh();
+  return {
+    box,
+    // Called whenever what the connection reaches may have changed
+    schedule: () => { clearTimeout(timer); timer = setTimeout(refresh, 250); },
+    // For a dialog: what was typed goes into the settings now
+    commit: () => { if (touched) write(); },
+    // Why this cannot be kept as it stands, if it cannot, and where to look
+    held: () => machine && draft && !draft.name.trim()
+      ? {why: T["settings.server.mark.name_required"], at: nameIn} : null,
+  };
+}
+
+// One server's name, opened from the list of named servers. Its address is
+// what it is filed under and is not changed here: a different address is a
+// different server, named from the tab that reaches it
+function markDialog(machine, redraw) {
+  const fields = markFields({machine}, false);
+  const shut = () => back.remove();
+  const save = el("button", {class:"primary"}, T["common.save"]);
+  const why = el("span", {class:"why"});
+  why.hidden = true;
+  const back = openModal(
+    el("div", {class:"mhead"},
+      el("h2", {}, T["settings.server.mark.title"]),
+      el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "\u2715")),
+    el("div", {class:"mbody"}, fields.box),
+    el("div", {class:"mfoot"},
+      el("button", {class:"danger", onclick: () => {
+        const all = current.server_marks || {};
+        for (const k of Object.keys(all)) if (k.toLowerCase() === machine.toLowerCase()) delete all[k];
+        if (!Object.keys(all).length) delete current.server_marks;
+        refreshSave(); shut(); redraw();
+      }}, T["settings.server.mark.drop"]),
+      why,
+      el("span", {class:"grow"}),
+      el("button", {class:"quiet", onclick: () => shut()}, T["common.cancel"]),
+      save));
+  back.firstChild.classList.add("framed");
+  // Grey while there is no name, and the reason follows what is in the box
+  const recheck = () => {
+    const h = fields.held();
+    save.classList.toggle("held", !!h);
+    if (!h) why.hidden = true;
+  };
+  back.addEventListener("input", recheck);
+  save.addEventListener("click", () => {
+    const h = fields.held();
+    if (h) {
+      why.textContent = fill(T["settings.secrets.cannot_save"], {why: h.why});
+      why.hidden = false;
+      h.at.classList.remove("lookhere");
+      void h.at.offsetWidth;
+      h.at.classList.add("lookhere");
+      h.at.focus();
+      return;
+    }
+    fields.commit();
+    refreshSave(); shut(); redraw();
+  });
+  back.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); shut(); return; }
+    if (e.key !== "Enter" || e.target.tagName !== "INPUT" || e.target.type !== "text") return;
+    e.preventDefault();
+    save.click();
+  });
+  recheck();
+  setTimeout(() => { const i = fields.box.querySelector("input[type=text]"); if (i) i.focus(); }, 0);
+}
+
+// Every server somebody has named, to find one again and change it or take
+// its name away -- including a server no tab reaches any more, whose name
+// would otherwise sit in the settings with nowhere to be seen
+function marksCard() {
+  const listBox = el("div");
+  const draw = () => {
+    listBox.textContent = "";
+    const all = isObj(current.server_marks) ? current.server_marks : {};
+    const named = Object.entries(all).filter(([, m]) => m && (m.name || "").trim())
+      .sort((a, b) => a[1].name.localeCompare(b[1].name));
+    if (!named.length) {
+      listBox.append(el("div", {class:"hint"}, T["settings.server.marks.none"]));
+      return;
+    }
+    const rows = el("div", {class:"rows"});
+    for (const [machine, m] of named) {
+      rows.append(el("div", {class:"listrow secretrow", onclick: () => markDialog(machine, draw)},
+        el("span", {class:"secretname markname"}, projectMark(m.color || null), el("span", {}, m.name)),
+        el("span", {class:"hint mono secretdesc"}, machine),
+        m.careful ? el("span", {class:"chip"}, T["settings.server.marks.careful"]) : null,
+        el("span", {class:"go"}, "\u203a")));
+    }
+    listBox.append(rows);
+  };
+  setTimeout(draw, 0);
+  const c = card(T["settings.server.marks"],
+    el("div", {class:"hint"}, T["settings.server.marks.hint"]),
+    listBox);
+  return c;
 }
 
 function kindPanel(t, cmdInput, rebuild, real) {
@@ -12449,6 +12750,26 @@ fn picker() -> Option<&'static dyn shikisha_shared::FilePicker> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A server's settings are read the way the page holds them, before they
+    /// are saved: a port as the text in its box. A bastion on port 2222 was
+    /// tested on 22 while the text went unread
+    #[test]
+    fn a_server_is_read_as_the_page_holds_it() {
+        let v = serde_json::json!({
+            "key": " ", "keepalive": 30, "file_command": "",
+            "jump": {"host": " gw.example.com ", "port": "2222", "user": "me", "key": ""},
+        });
+        let sv = super::server_of_page(&v);
+        let jump = sv.jump.as_ref().expect("the bastion was dropped");
+        assert_eq!((jump.host.as_str(), jump.port, jump.key.as_deref()), ("gw.example.com", Some(2222), None));
+        assert_eq!((sv.key.as_deref(), sv.keepalive, sv.file_command.as_deref()), (None, Some(30), None));
+        let spec = crate::view::server_spec("10.0.0.5", 22, "deploy", Some(&sv), &|_| None);
+        assert_eq!(spec.machine(), "gw.example.com:2222>10.0.0.5:22");
+        assert_eq!(super::port_of(Some(&serde_json::json!(22))), Some(22));
+        assert_eq!(super::port_of(Some(&serde_json::json!("70000"))), None);
+        assert_eq!(super::port_of(Some(&serde_json::json!(null))), None);
+    }
 
     /// An AI handed a picture is handed nothing else it could reach with.
     /// The picture is a screen, and a screen can say "read this file and
