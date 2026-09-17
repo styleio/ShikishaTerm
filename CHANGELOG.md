@@ -32,6 +32,13 @@ once it reaches its first tagged release.
   or shut stays that way.
 
 ### Fixed
+- **The lists of changes use the whole height of the right-hand column.** A width
+  set for the git tab's middle column (38%) was applied to it standing in the
+  column, where it became 38% of the height, and the two lists split what was
+  left evenly however many files each held. The lists now reach the bottom; when
+  they do not both fit, the shorter keeps its files in view (up to half the room)
+  and the longer scrolls. On a phone or in a browser, a git tab also no longer
+  stops a bar's height above the bottom after the input bar is put away.
 - **A change is read in an editor tab, and the list of changes stays where it
   is.** In the right-hand column, pressing a file replaced the list with that
   file's change, so after picking files the "Add picked" button was no longer on
