@@ -74,6 +74,13 @@ once it reaches its first tagged release.
   or shut stays that way.
 
 ### Fixed
+- **A worktree made in the app pushes under its own name.** A branch cut from
+  `origin/main` (a worktree made from an issue, for one) was set to follow
+  `origin/main`, so Push in the git panel stopped and said the branch follows one
+  of another name. A new branch now follows nothing until its first push, which
+  sends it to the remote under its own name and follows that. The same holds for
+  a branch made again where its folder had gone, and on an SSH host. Branches
+  already made this way still say how to send them (`git push -u origin HEAD`).
 - **A push git will not make because the branch follows one of another name says
   so.** A worktree's branch that follows `origin/main` could not be pushed, and the
   panel showed git's paragraph about `push.default`. It now says which branch
