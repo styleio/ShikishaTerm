@@ -789,6 +789,25 @@ pub fn project_folder(sources: &[Source], project: &str, folder: &str) -> Option
         .then_some(dir)
 }
 
+/// The folder on this PC where a pull request's branch is checked out: the
+/// project's checkout itself, or any worktree cut from it. None when no folder
+/// stands on that branch -- one is made for it first
+pub fn head_folder(checkout: &std::path::Path, head: &str) -> Option<std::path::PathBuf> {
+    let head = head.trim();
+    if head.is_empty() {
+        return None;
+    }
+    let main = crate::repo::main_checkout(checkout).unwrap_or_else(|| checkout.to_path_buf());
+    if crate::repo::branch_of(&main).as_deref() == Some(head) {
+        return Some(main);
+    }
+    let family = crate::repo::family_of(&main)?;
+    crate::repo::worktrees_of(&family)
+        .into_iter()
+        .find(|(_, b)| b.as_deref() == Some(head))
+        .map(|(folder, _)| folder)
+}
+
 /// What a pull request would carry, file by file: added and removed lines, from
 /// `origin/<base>` to the branch in front. A file git cannot count lines in
 /// (an image) is said to be binary
@@ -1152,6 +1171,30 @@ fn encode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The branch a pull request comes from is found where it is checked out:
+    /// in the checkout, or in a worktree cut from it, and nowhere else
+    #[test]
+    fn a_pull_requests_branch_is_found_in_the_folder_standing_on_it() {
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            std::process::Command::new("git").current_dir(dir).args(args).output().ok().filter(|o| o.status.success())
+        };
+        let root = std::env::temp_dir().join(format!("shikisha-head-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let main = root.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        if git(&main, &["init", "-q", "-b", "main"]).is_none() {
+            return;
+        }
+        git(&main, &["-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "one"]).unwrap();
+        let cut = root.join("cut");
+        git(&main, &["worktree", "add", "-q", "-b", "feature", &cut.display().to_string()]).unwrap();
+        assert!(super::head_folder(&main, "main").is_some_and(|f| crate::uistate::same_folder(&f, &main)));
+        assert!(super::head_folder(&cut, "feature").is_some_and(|f| crate::uistate::same_folder(&f, &cut)), "a worktree was not found from itself");
+        assert!(super::head_folder(&main, "feature").is_some_and(|f| crate::uistate::same_folder(&f, &cut)));
+        assert_eq!(super::head_folder(&main, "elsewhere"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
 
     fn repo() -> Repo {

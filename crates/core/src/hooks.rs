@@ -3557,9 +3557,11 @@ impl HookEngine {
             shikisha
                 .set(
                     "git_catch_up",
-                    lua.create_function(move |lua, (tab, base): (Value, String)| {
+                    // With a third argument, the branch as pushed is fetched too,
+                    // and a folder behind it refused -- a pull request's branch
+                    lua.create_function(move |lua, (tab, base, head): (Value, String, Option<String>)| {
                         let (dir, _, who) = git_as(&c, &o, &tab, &k, true)?;
-                        let taken = crate::git::catch_up(&dir, &base, &who)
+                        let taken = crate::git::catch_up_for(&dir, head.as_deref(), &base, &who)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
                         let row = lua.create_table()?;
                         row.set("taken", taken)?;
