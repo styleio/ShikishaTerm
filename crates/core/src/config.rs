@@ -6200,16 +6200,22 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("shikisha-putback-{}", crate::random_hex(6)));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("config.json");
+        let proj = crate::local_path("D:/work/proj");
+        let login = crate::local_path("D:/work/proj.branches/login");
+        let other = crate::local_path("D:/work/other");
         std::fs::write(
             &file,
             r#"{"desks": [{"name": "Demo", "folders": [
-                {"cwd": "D:/work/proj", "tabs": [{"name": "a", "command": "claude"}]},
-                {"cwd": "D:/work/proj.branches/login", "name": "login", "tabs": [{"name": "b", "command": "codex"}]},
-                {"cwd": "D:/work/other", "tabs": []}]}]}"#,
+                {"cwd": "<proj>", "tabs": [{"name": "a", "command": "claude"}]},
+                {"cwd": "<login>", "name": "login", "tabs": [{"name": "b", "command": "codex"}]},
+                {"cwd": "<other>", "tabs": []}]}]}"#
+                .replace("<proj>", &json_path(&proj))
+                .replace("<login>", &json_path(&login))
+                .replace("<other>", &json_path(&other)),
         )
         .unwrap();
         let before: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-        let taken = take_folder_at(&file, "Demo", Path::new("D:/work/proj.branches/login"))
+        let taken = take_folder_at(&file, "Demo", Path::new(&login))
             .unwrap()
             .expect("the folder is in the list");
         assert_eq!(taken.0, 1);
@@ -6224,7 +6230,7 @@ mod tests {
         let again: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(again, before, "put back twice, it is in the list twice");
         // A folder that is not in the list takes nothing
-        assert!(take_folder_at(&file, "Demo", Path::new("D:/nowhere")).unwrap().is_none());
+        assert!(take_folder_at(&file, "Demo", Path::new(&crate::local_path("D:/nowhere"))).unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
