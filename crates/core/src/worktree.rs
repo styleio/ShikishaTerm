@@ -97,6 +97,10 @@ impl Plan {
                 "-C".into(),
                 at.clone(),
                 "switch".into(),
+                // Following nothing, for the same reason as a worktree's
+                // branch (`argv`): grown from the clone's own branch, a
+                // setting of "always" would have it follow that one
+                "--no-track".into(),
                 "-c".into(),
                 self.branch.clone(),
             ],
@@ -140,6 +144,11 @@ impl Plan {
             "add".into(),
         ];
         if self.fresh {
+            // Following nothing. Grown from a remote branch, git would have it
+            // follow that one (`origin/main`), and a branch that follows a
+            // branch of another name is one a plain push refuses to send. With
+            // nothing followed, the first push sets one up under its own name
+            v.push("--no-track".into());
             v.push("-b".into());
             v.push(self.branch.clone());
         }
@@ -1898,7 +1907,7 @@ mod tests {
             steps[0],
             ["git", "clone", "--branch", "master", "https://example.test/p.git", "/home/user/polite-marmot"]
         );
-        assert_eq!(steps[1], ["git", "-C", "/home/user/polite-marmot", "switch", "-c", "polite-marmot"]);
+        assert_eq!(steps[1], ["git", "-C", "/home/user/polite-marmot", "switch", "--no-track", "-c", "polite-marmot"]);
         // Both of them are what the person reads
         assert_eq!(p.line().lines().count(), 2, "only one of them is visible: {}", p.line());
 
@@ -2137,7 +2146,7 @@ tools/conpty.ps1"));
         };
         assert_eq!(
             plan.argv(),
-            ["git", "-C", "D:/work/myproject", "worktree", "add", "-b", "feature/login",
+            ["git", "-C", "D:/work/myproject", "worktree", "add", "--no-track", "-b", "feature/login",
              "D:/work/myproject.worktrees/feature/login", "origin/main"]
         );
         assert_eq!(plan.line(), plan.argv().join(" "), "the line shown and the line run are the same");
@@ -2318,6 +2327,82 @@ tools/conpty.ps1"));
         assert!(!again.fresh, "an existing branch is not made again");
 
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A branch cut from `origin/main` follows nothing, so the git column's
+    /// push sends it under its own name. It used to follow `origin/main`,
+    /// and a plain push refused to choose between that and its own name.
+    /// A branch somebody sets to follow another name on purpose is still told
+    /// so in plain words.
+    #[test]
+    fn a_branch_cut_from_the_remote_pushes_under_its_own_name() {
+        let root = scratch("tracks");
+        let _ = std::fs::remove_dir_all(&root);
+        let seed = root.join("seed");
+        let far = root.join("far.git");
+        let main = root.join("proj");
+        std::fs::create_dir_all(&seed).unwrap();
+        let git = |at: &Path, args: &[&str]| -> String {
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(at).args(args);
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        // Whether git has a value, without failing the test when there is none
+        let has = |at: &Path, key: &str| {
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(at).args(["config", "--get", key]);
+            crate::detach_console(&mut run).output().unwrap().status.success()
+        };
+        git(&seed, &["init", "-q", "-b", "main"]);
+        git(&seed, &["config", "user.email", "t@example.com"]);
+        git(&seed, &["config", "user.name", "t"]);
+        std::fs::write(seed.join("readme.md"), "hi\n").unwrap();
+        git(&seed, &["add", "-A"]);
+        git(&seed, &["commit", "-qm", "first"]);
+        git(&seed, &["clone", "-q", "--bare", &seed.display().to_string(), &far.display().to_string()]);
+        git(&seed, &["clone", "-q", &far.display().to_string(), &main.display().to_string()]);
+        git(&main, &["config", "user.email", "t@example.com"]);
+        git(&main, &["config", "user.name", "t"]);
+        // What a plain push does is decided here rather than by the settings
+        // of the machine the tests run on
+        git(&main, &["config", "push.default", "simple"]);
+        let main_before = git(&far, &["rev-parse", "refs/heads/main"]);
+
+        // a. Cut the way the app cuts it: from origin/main, following nothing
+        let branch = "issue-3-tell-production-from-staging";
+        let cut = plan(&main, branch, Some("origin/main")).unwrap();
+        assert!(cut.fresh);
+        assert!(cut.argv().contains(&"--no-track".to_string()), "{:?}", cut.argv());
+        create(&cut).unwrap();
+        let made = cut.folder.clone();
+        assert!(!has(&made, &format!("branch.{branch}.merge")), "the new branch follows origin/main");
+        assert!(!has(&made, &format!("branch.{branch}.remote")), "the new branch follows a remote");
+        assert_eq!(git(&made, &["config", "--get", &format!("branch.{branch}.shikishaBase")]), "origin/main");
+
+        // b. A commit, and the git column's push: a branch of the same name
+        // appears on the remote and is followed from then on, and main stays put
+        std::fs::write(made.join("staging.md"), "which is which\n").unwrap();
+        git(&made, &["add", "-A"]);
+        git(&made, &["commit", "-qm", "say which is which"]);
+        crate::git::push(&made, &crate::git::As::default()).expect("the first push of a new branch goes through");
+        assert_eq!(git(&far, &["rev-parse", &format!("refs/heads/{branch}")]), git(&made, &["rev-parse", "HEAD"]));
+        assert_eq!(git(&made, &["rev-parse", "--abbrev-ref", "@{u}"]), format!("origin/{branch}"));
+        assert_eq!(git(&far, &["rev-parse", "refs/heads/main"]), main_before, "the remote's main moved");
+
+        // c. Following a branch of another name on purpose is still refused,
+        // in the words that say which and how
+        git(&made, &["branch", "--set-upstream-to", "origin/main"]);
+        std::fs::write(made.join("staging.md"), "which is which, again\n").unwrap();
+        git(&made, &["commit", "-qam", "again"]);
+        let err = crate::git::push(&made, &crate::git::As::default()).unwrap_err();
+        let said = err.downcast_ref::<crate::git::PushNameMismatch>().expect("the refusal is not recognised");
+        assert_eq!((said.branch.as_str(), said.target.as_str()), (branch, "main"));
+        assert_eq!(git(&far, &["rev-parse", "refs/heads/main"]), main_before, "the refused push moved main");
+
+        let _ = discard(&made);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Made on a thread, a folder says how far it has got and ends in what
