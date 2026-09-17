@@ -604,6 +604,32 @@ impl Hub {
         Ok(json!({"number": v.get("number"), "url": v.get("html_url")}))
     }
 
+    /// Open a pull request from `head` into `base`, as a draft when asked.
+    /// Answers with its number and address
+    pub fn create_pull(
+        &self,
+        repo: &Repo,
+        title: &str,
+        body: &str,
+        head: &str,
+        base: &str,
+        draft: bool,
+    ) -> Result<Value> {
+        let title = title.trim();
+        if title.is_empty() {
+            bail!(crate::i18n::t("err.github.no_title"));
+        }
+        if head.trim().is_empty() || base.trim().is_empty() {
+            bail!(crate::i18n::t("err.github.no_branches"));
+        }
+        let v = self.call(
+            "POST",
+            &format!("repos/{}/pulls", repo.slug()),
+            Some(json!({"title": title, "body": body, "head": head.trim(), "base": base.trim(), "draft": draft})),
+        )?;
+        Ok(json!({"number": v.get("number"), "url": v.get("html_url")}))
+    }
+
     /// Say something on an issue or a pull request
     pub fn comment(&self, repo: &Repo, number: u64, body: &str) -> Result<Value> {
         if body.trim().is_empty() {
@@ -761,6 +787,9 @@ pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
         ("detail", true) => "github_pr",
         ("options", _) => "github_labels",
         ("create", _) => "github_issue_create",
+        ("create_pr", _) => "github_pr_create",
+        // The branches a pull request can go into are read off this PC's copy
+        ("pr_bases", _) => "git_branches",
         ("comment", _) => "github_comment",
         ("issue_state", _) => "github_issue_state",
         ("pr_state", _) => "github_pr_state",
@@ -864,6 +893,20 @@ pub fn answer(
             .filter_map(|x| x.as_str().map(str::to_string))
             .collect()
     };
+    // Read here, not asked of GitHub: the branches this PC knows the server
+    // has, the one its server calls the default first
+    if act == "pr_bases" {
+        let mut bases: Vec<String> = Vec::new();
+        for b in crate::worktree::bases(&source.dir) {
+            if let Some(name) = b.strip_prefix("origin/")
+                && name != "HEAD"
+                && !bases.iter().any(|x| x == name)
+            {
+                bases.push(name.to_string());
+            }
+        }
+        return with(base, json!({"ok": true, "data": {"bases": bases}}));
+    }
     let done = hub_for(source).and_then(|(repo, hub)| match act {
         "detail" if pulls => hub.pull(&repo, number),
         "detail" => hub.issue(&repo, number),
@@ -874,6 +917,14 @@ pub fn answer(
             &s("body"),
             &list("labels"),
             &list("assignees"),
+        ),
+        "create_pr" => hub.create_pull(
+            &repo,
+            &s("title"),
+            &s("body"),
+            &s("head"),
+            &s("base"),
+            args.get("draft").and_then(|d| d.as_bool()).unwrap_or(false),
         ),
         "comment" => hub.comment(&repo, number, &s("body")),
         "issue_state" => hub

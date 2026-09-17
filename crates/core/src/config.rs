@@ -2814,6 +2814,10 @@ impl GitSpec {
             None => base,
         }
     }
+    /// The prompt a pull request is drafted with: the one written, else the default
+    pub fn pr_prompt(&self) -> String {
+        self.pr_prompt.clone().unwrap_or_else(|| crate::i18n::t("ai.pr.default_prompt"))
+    }
     /// The prompt an issue is drafted with: the one written, else the default
     pub fn issue_prompt(&self) -> String {
         self.issue_prompt.clone().unwrap_or_else(|| crate::i18n::t("ai.issue.default_prompt"))

@@ -1369,6 +1369,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #issuespanel .lchip.on { color:var(--text); background:var(--raise); cursor:default; }
   #issuespanel .lchip.on button { border:0; background:transparent; color:var(--dim); cursor:pointer; padding:0 2px; font-size:11px; }
   #issuespanel .lchip.on button:hover { color:var(--text); }
+  /* A tick box and its words, beside each other (5.1) */
+  #issuespanel .tick { display:flex; align-items:center; gap:var(--s2); font-size:13px; color:var(--text); cursor:pointer; }
+  #issuespanel .tick input { width:15px; height:15px; margin:0; flex:none; }
   #issuespanel .write { padding:0 var(--s3) var(--s3); max-width:760px; }
   #issuespanel .foot { display:flex; align-items:center; gap:var(--s2); justify-content:flex-end; }
   /* A narrow pane or a phone: the title keeps the whole first line, and the
@@ -3583,7 +3586,11 @@ function drawTabs() {
 let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:1,
           list:null, problems:[], total:0, busy:"", said:"", bad:false,
           view:"list", detail:null, options:{}, armed:"", dupOf:"", want:{list:0, detail:0},
-          create:{project:"", title:"", body:"", labels:[], assignee:"", kept:""} };
+          create:{project:"", title:"", body:"", labels:[], assignee:"", kept:""},
+          // A pull request being written: the folder and branch it comes from,
+          // what it goes into, and the issue it closes when there is one
+          pr:{project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false,
+              close:false, issue:null, kept:""} };
 let issuesSig = "";
 let issuesSeq = 0;
 
@@ -3592,7 +3599,7 @@ const ISSUE_PRESETS = {
   pr: [["open", {}], ["mine", {mine:true}], ["review", {review:true}], ["merged", {state:"merged"}], ["closed", {state:"closed"}], ["all", {state:"all"}]],
 };
 function issuesAsk(act, args) {
-  if (act !== "projects" && act !== "options") { I.busy = act; I.said = ""; I.bad = false; }
+  if (act !== "projects" && act !== "options" && act !== "pr_bases") { I.busy = act; I.said = ""; I.bad = false; }
   // Only the newest list and the newest detail count: a slow answer to a
   // question since replaced (another project, another filter, back) is dropped
   const seq = ++issuesSeq;
@@ -3707,6 +3714,33 @@ window.__issues = function (d) {
       I.said = T["issues.draft.done"] || "";
       break;
     }
+    case "pr_bases": {
+      // What it can go into, the server's default first. The branch it comes
+      // from is not one of them
+      const p = I.pr;
+      p.bases = ((d.data || {}).bases || []).filter(b => b !== p.head);
+      if (!p.bases.includes(p.base)) p.base = p.bases[0] || "";
+      break;
+    }
+    case "pr_draft": {
+      const p = I.pr;
+      let got = null;
+      try { got = JSON.parse(d.data || ""); } catch (e) { got = null; }
+      if (!got || typeof got.title !== "string") { I.said = T["issues.draft.failed"] || ""; I.bad = true; break; }
+      p.title = got.title;
+      p.body = prFixes(typeof got.body === "string" ? got.body : p.body, p);
+      I.said = T["issues.pr.draft.done"] || "";
+      break;
+    }
+    case "create_pr": {
+      const n = (d.data || {}).number || "";
+      I.pr = {project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false, close:false, issue:null, kept:""};
+      I.kind = "pr";
+      I.said = (T["issues.pr.created"] || "").replace("{n}", n);
+      issuesAsk("detail", {project: d.project, number: n});
+      issuesList(1);
+      return;
+    }
     case "comment":
     case "issue_state":
     case "pr_state":
@@ -3774,6 +3808,7 @@ function drawIssues() {
   }
   if (I.view === "detail" && I.detail) return drawIssueDetail(box);
   if (I.view === "create") return drawIssueCreate(box);
+  if (I.view === "newpr") return drawPrCreate(box);
   drawIssueList(box);
 }
 
@@ -4010,42 +4045,17 @@ function drawIssueCreate(box) {
   const field = (label, control, hint) => form.append(el("div", {class:"field"},
     el("span", {class:"name"}, label), control, hint ? el("span", {class:"hint"}, hint) : null));
 
-  // What was written before the AI rewrote it, kept at the top until put away:
-  // an answer that misses is not allowed to cost somebody their own words
-  if (c.kept) {
-    form.append(el("div", {class:"kept"},
-      el("div", {class:"keptbar"},
-        el("span", {class:"name"}, T["issues.draft.kept"] || ""),
-        el("span", {class:"grow"}),
-        el("button", {class:"quiet", onclick:() => { c.body = c.kept; redraw(); }}, T["issues.draft.restore"] || ""),
-        el("button", {class:"quiet", title: T["issues.draft.dismiss"] || "", onclick:() => { c.kept = ""; redraw(); }}, "\u2715")),
-      el("div", {class:"kepttext"}, c.kept)));
-  }
-
   // The description first: it is what the AI works from. Its ✨ writes the
   // title, the description, the labels and the person from it
-  const body = el("textarea", {rows:"8", placeholder: T["issues.new.body.ph"] || ""});
-  body.value = c.body; body.oninput = () => { c.body = body.value; };
-  const drafting = I.busy === "draft";
-  body.disabled = drafting;
-  const ai = el("button", {class:"iai", type:"button", title: T["issues.draft.ai"] || "", onclick:() => {
-    if (I.busy) return;
-    if (!c.body.trim()) { I.said = T["issues.draft.need"] || ""; I.bad = true; redraw(); body.focus(); return; }
-    c.kept = c.body;
-    issuesAsk("draft", {project: c.project, text: c.body, labels: opts.labels || [], assignees: opts.assignees || []});
-  }}, pickIcon("sparkles"));
-  ai.disabled = !!I.busy;
-  // What the AI is told is written in the desk's settings
-  ai.addEventListener("contextmenu", e => {
-    e.preventDefault();
-    openList(ai, [el("div", {onclick:() => { closeFolderMenu(); openSettings("git-issue", true); }},
-      T["git.message.ai.edit"] || "")], false, e);
+  const body = draftFields(form, c, {
+    act: "draft", settings: "git-issue", title: T["issues.draft.ai"], placeholder: T["issues.new.body.ph"],
+    ask: () => {
+      if (!c.body.trim()) { I.said = T["issues.draft.need"] || ""; I.bad = true; redraw(); return false; }
+      issuesAsk("draft", {project: c.project, text: c.body, labels: opts.labels || [], assignees: opts.assignees || []});
+      return true;
+    },
   });
-  // In the corner above the box rather than inside it: a long description has
-  // a scrollbar where a button inside the box would sit
-  form.append(el("div", {class:"field"},
-    el("div", {class:"namerow"}, el("span", {class:"name"}, T["issues.new.body"] || ""), ai),
-    body, drafting ? el("span", {class:"hint"}, T["issues.draft.busy"] || "") : null));
+  const drafting = I.busy === "draft";
 
   const pick = el("select");
   for (const p of I.projects) pick.append(el("option", {value:p.name}, p.name + (p.repo ? "  (" + p.repo + ")" : "")));
@@ -4089,6 +4099,126 @@ function drawIssueCreate(box) {
     }}, T["issues.new.create"] || "")));
   box.append(form);
   setTimeout(() => { if (!c.body && !drafting) body.focus(); }, 30);
+}
+
+// The part of a form the AI writes from: what was written before it rewrote
+// it (kept at the top until put away -- an answer that misses is not allowed to
+// cost somebody their own words), then the description with its ✨ at the right
+// of its name. Shared by a new issue and a new pull request. `how.ask` sends
+// the request and says whether it went; right-clicking the ✨ opens the prompt
+function draftFields(form, c, how) {
+  const redraw = () => { issuesSig = ""; drawIssues(); };
+  if (c.kept) {
+    form.append(el("div", {class:"kept"},
+      el("div", {class:"keptbar"},
+        el("span", {class:"name"}, T["issues.draft.kept"] || ""),
+        el("span", {class:"grow"}),
+        el("button", {class:"quiet", onclick:() => { c.body = c.kept; redraw(); }}, T["issues.draft.restore"] || ""),
+        el("button", {class:"quiet", title: T["issues.draft.dismiss"] || "", onclick:() => { c.kept = ""; redraw(); }}, "\u2715")),
+      el("div", {class:"kepttext"}, c.kept)));
+  }
+  const body = el("textarea", {rows:"8", placeholder: how.placeholder || ""});
+  body.value = c.body; body.oninput = () => { c.body = body.value; };
+  const drafting = I.busy === how.act;
+  body.disabled = drafting;
+  const ai = el("button", {class:"iai", type:"button", title: how.title || "", onclick:() => {
+    if (I.busy) return;
+    // What is kept is what somebody wrote: a line the form put there itself
+    // (the one closing an issue) is not a draft worth keeping
+    const was = c.body;
+    const own = how.own ? how.own(was) : was;
+    if (how.ask() && own.trim()) c.kept = was;
+  }}, pickIcon("sparkles"));
+  ai.disabled = !!I.busy;
+  ai.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    openList(ai, [el("div", {onclick:() => { closeFolderMenu(); openSettings(how.settings, true); }},
+      T["git.message.ai.edit"] || "")], false, e);
+  });
+  // In the corner above the box rather than inside it: a long description has
+  // a scrollbar where a button inside the box would sit
+  form.append(el("div", {class:"field"},
+    el("div", {class:"namerow"}, el("span", {class:"name"}, T["issues.new.body"] || ""), ai),
+    body, drafting ? el("span", {class:"hint"}, T["issues.draft.busy"] || "") : null));
+  return body;
+}
+
+// The line that closes an issue when the pull request is merged, on the end
+// of the description while the box is ticked and gone when it is not. Written
+// with the repository when the issue lives in another one
+function prFixes(body, p) {
+  if (!p.issue) return body;
+  const ref = prIssueRef(p);
+  const line = "Fixes " + ref;
+  const kept = body.split("\n").filter(l => l.trim() !== line).join("\n").replace(/\s+$/, "");
+  return p.close ? (kept ? kept + "\n\n" : "") + line : kept;
+}
+function prIssueRef(p) {
+  const proj = issueProject(p.project);
+  const here = proj && proj.repo && proj.repo.toLowerCase() === p.issue.repo.toLowerCase();
+  return (here ? "" : p.issue.repo) + "#" + p.issue.number;
+}
+
+// A new pull request, opened from the git column for the branch in front
+function drawPrCreate(box) {
+  const p = I.pr;
+  const redraw = () => { issuesSig = ""; drawIssues(); };
+  box.append(el("div", {class:"bar"}, el("div", {class:"line"},
+    el("button", {class:"quiet", onclick:() => { I.view = "list"; redraw(); }}, "‹ " + (T["issues.back"] || "")),
+    el("span", {class:"crumb"}, T["issues.pr.new"] || ""))));
+  const said = issueSaid();
+  if (said) box.append(said);
+  const form = el("div", {class:"form"});
+  const field = (label, control, hint) => form.append(el("div", {class:"field"},
+    el("span", {class:"name"}, label), control, hint ? el("span", {class:"hint"}, hint) : null));
+
+  draftFields(form, p, {
+    act: "pr_draft", settings: "git-pr", title: T["issues.pr.draft.ai"], placeholder: T["issues.pr.body.ph"],
+    own: text => prFixes(text, Object.assign({}, p, {close: false})),
+    ask: () => {
+      if (!p.base) { I.said = T["issues.pr.need.base"] || ""; I.bad = true; redraw(); return false; }
+      issuesAsk("pr_draft", {project: p.project, folder: p.folder, head: p.head, base: p.base});
+      return true;
+    },
+  });
+
+  const title = el("input", {type:"text", placeholder: T["issues.new.title.ph"] || ""});
+  title.value = p.title; title.oninput = () => { p.title = title.value; };
+  field(T["issues.new.title"] || "", title);
+
+  // Where it goes: the branches the server has, its default first
+  const into = el("select");
+  for (const b of p.bases || []) into.append(el("option", {value:b}, b));
+  into.value = p.base;
+  into.disabled = !(p.bases || []).length;
+  into.onchange = () => { p.base = into.value; };
+  field(T["issues.pr.base"] || "", into,
+    p.bases === null ? "\u2026" : !p.bases.length ? (T["issues.pr.bases.none"] || "")
+      : (T["issues.pr.from"] || "").replace("{head}", p.head));
+
+  const tick = (on, label, set) => {
+    const box = el("input", {type:"checkbox"});
+    box.checked = on;
+    box.onchange = () => { set(box.checked); redraw(); };
+    return el("label", {class:"tick"}, box, el("span", {}, label));
+  };
+  // Only when the folder was made for an issue: ticked, the description ends
+  // with the line GitHub closes it by
+  if (p.issue) {
+    form.append(tick(p.close, (T["issues.pr.close"] || "").replace("{ref}", prIssueRef(p)), v => {
+      p.close = v; p.body = prFixes(p.body, p);
+    }));
+  }
+  form.append(tick(p.draft, T["issues.pr.draft"] || "", v => { p.draft = v; }));
+
+  form.append(el("div", {class:"foot"},
+    el("button", {class:"quiet", onclick:() => { I.view = "list"; redraw(); }}, T["issues.cancel"] || ""),
+    el("button", {class:"go", onclick:() => {
+      if (!p.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; redraw(); return; }
+      if (!p.base) { I.said = T["issues.pr.need.base"] || ""; I.bad = true; redraw(); return; }
+      issuesAsk("create_pr", {project: p.project, title: p.title, body: p.body, head: p.head, base: p.base, draft: p.draft});
+    }}, T["issues.pr.create"] || "")));
+  box.append(form);
 }
 
 // A tab that could not start: why, and what to do about it. Drawn only when
@@ -12660,7 +12790,47 @@ function gitNext() {
   if (b.behind) {
     return {icon:"down", label: (T["git.pull.n"] || "{n}").replace("{n}", b.behind), run:() => gitAsk("pull")};
   }
+  // Pushed, nothing waiting either way, and no pull request open for it: the
+  // next thing is to ask for it to be taken in. Not from a protected branch --
+  // that is where pull requests go, not where they come from
+  if (b.name && b.upstream && !b.protected && !gitPrOpen()) {
+    return {icon:"pr", label: T["git.pr.create"] || "", run: gitOpenPr};
+  }
   return {icon:"refresh", label: T["git.fetch"] || "", run:() => gitAsk("fetch")};
+}
+// The pull request the branch in front already has, as the column's line
+// says it ("#12", "#12 draft"), when it is still open
+function gitPrOpen() {
+  const t = gitTab();
+  const pr = t && t.place && t.place.pr;
+  return pr && !/merged|closed/.test(pr) ? pr : "";
+}
+// Why a pull request cannot be made from here yet, or nothing
+function gitPrWhy() {
+  const b = G.branch || {};
+  if (!b.name) return T["git.pr.why.branch"] || "";
+  if (b.protected) return T["git.pr.why.protected"] || "";
+  if (!b.upstream || b.ahead) return T["git.pr.why.push"] || "";
+  const open = gitPrOpen();
+  return open ? (T["git.pr.why.open"] || "").replace("{pr}", open) : "";
+}
+// The new pull request page, in the Issue tab, for the branch in front: its
+// folder, the project it belongs to, and the issue the folder was made for
+function gitOpenPr() {
+  const t = gitTab();
+  const g = t && t.group != null ? ((S && S.groups) || [])[t.group] : null;
+  const head = G.branch && G.branch.name;
+  if (!g || !head) return;
+  const made = /^issue:(.+)#(\d+)$/.exec(g.work_item || "");
+  I.pr = {project: g.project || "", folder: g.folder || "", head, base:"", bases:null, title:"", body:"",
+          draft:false, close: !!made, issue: made ? {repo: made[1], number: Number(made[2])} : null, kept:""};
+  I.pr.body = prFixes("", I.pr);
+  I.kind = "pr";
+  I.view = "newpr";
+  I.said = ""; I.bad = false;
+  issuesSig = "";
+  send({kind:"openissues"});
+  send({kind:"issues", act:"pr_bases", args:{kind:"pr", project: I.pr.project, seq: 0}});
 }
 // Everything else git is asked for from here. What cannot be done yet stays in
 // the list, grey, with what it is waiting for written under it
@@ -12682,6 +12852,8 @@ function gitMenu(anchor) {
     item(T["git.push"] || "", () => gitAsk("push")),
     item(T["git.pull"] || "", () => gitAsk("pull")),
     item(T["git.fetch"] || "", () => gitAsk("fetch")),
+    sep(),
+    item(T["git.pr.create"] || "", gitOpenPr, gitPrWhy()),
     sep(),
     item(T["git.branch.new"] || "", () => gitNewBranch()),
     item(G.pickBranch ? (T["git.merge"] || "") + " ← " + G.pickBranch : (T["git.merge"] || ""),
