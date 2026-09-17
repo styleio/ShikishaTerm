@@ -1502,7 +1502,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .branches { flex:0 0 170px; overflow:auto; min-width:0; }
   #gitpanel .mid { flex:0 0 38%; min-width:0; display:flex;
     flex-direction:column; min-height:0; }
-  #gitpanel .sec { flex:1 1 0; display:flex; flex-direction:column; min-height:0; }
+  /* Each list is as tall as what is in it, and scrolls only once the two
+     together outgrow the column: split evenly, one file staged took half the
+     height while twenty not yet added scrolled in the other half */
+  #gitpanel .sec { flex:0 1 auto; display:flex; flex-direction:column; min-height:0; }
   /* The border between two panes is the thing you drag. Wider than it looks:
      a one-pixel line is a one-pixel target, and nobody hits it twice */
   #gitpanel .grip { flex:0 0 5px; background:var(--line); position:relative;
@@ -11778,7 +11781,7 @@ function gitBuild(box) {
     diff, hist));
   gitUi = { bar, said, naming, name, branches, branchCol, staged, work, diff,
             hist, mid, log, about, commitDiff, remotes, chips, which, acct, acctPick, acctWhose, acctSig: "",
-            branchName, sync, msg, ai, main, more, split, stagedSec, workSec, stagedN, workN,
+            branchName, sync, msg, ai, main, more, split, commitBox, stagedSec, workSec, stagedN, workN,
             pick: {unstageAll, unstagePick, stageAll, stagePick} };
 }
 
@@ -11824,13 +11827,34 @@ function grip(vertical, key, unit, target) {
   });
   return g;
 }
+// The two lists share the height under the commit. Both whole when they fit;
+// when they do not, the shorter keeps all of itself up to half the room and the
+// longer scrolls in the rest -- so one staged file is not pressed down to a
+// sliver because twenty others are waiting beside it
+function gitFitLists(u) {
+  const secs = [u.stagedSec, u.workSec].filter(s => s.style.display !== "none");
+  secs.forEach(s => { s.style.flex = ""; });
+  if (secs.length < 2) return;
+  const room = u.mid.clientHeight - u.commitBox.offsetHeight;
+  if (room <= 0) return;
+  const whole = secs.map(s => s.firstChild.offsetHeight + s.lastChild.scrollHeight);
+  if (whole[0] + whole[1] <= room) return;
+  const short = whole[0] <= whole[1] ? 0 : 1;
+  const give = Math.min(whole[short], Math.floor(room / 2));
+  secs[short].style.flex = "0 0 " + give + "px";
+  secs[1 - short].style.flex = "0 0 " + (room - give) + "px";
+}
 function applyGitSize() {
   const u = gitUi;
   if (!u) return;
-  u.branchCol.style.flex = "0 0 " + gitSize.branches + "px";
-  u.mid.style.flex = "0 0 " + gitSize.mid + "%";
-  u.log.style.flex = "0 0 " + gitSize.log + "%";
-  u.about.style.flex = "0 0 " + gitSize.about + "%";
+  // The sizes are widths dragged across columns. Narrow, the panes stand one
+  // above the other, and a width of 38% set on them became a height of 38%:
+  // the lists stopped a third of the way down an empty column
+  const narrow = document.getElementById("gitpanel").classList.contains("narrow");
+  u.branchCol.style.flex = narrow ? "" : "0 0 " + gitSize.branches + "px";
+  u.mid.style.flex = narrow ? "" : "0 0 " + gitSize.mid + "%";
+  u.log.style.flex = narrow ? "" : "0 0 " + gitSize.log + "%";
+  u.about.style.flex = narrow ? "" : "0 0 " + gitSize.about + "%";
 }
 
 // A phone gets the same panel with one column in front at a time
@@ -13047,6 +13071,7 @@ function drawGit() {
   else if (conflicts.length && !conflicts.some(r => r.tangled)) {
     u.work.append(el("div", {class:"empty"}, T["git.settled"] || ""));
   }
+  gitFitLists(u);
 
   // In the column there is no pane for it: the change is read in an editor tab
   if (gitInSide()) return;
@@ -13343,6 +13368,10 @@ function closeBar() {
   if (castDock) castDock.style.display = "none";
   if (castInput) castInput.blur();
   syncPen();
+  // The room the bar stood on goes with it. Shut from the state handler (a phone
+  // looking at a git tab), it was left reserved, and every panel there stopped
+  // a bar-height above the bottom of an empty pane
+  if (typeof syncDockReserve === "function") syncDockReserve();
 }
 // Hand one line to a pane, the way THAT pane takes input: a message for a
 // model bridge, keystrokes and a submit for anything at a prompt. Everywhere a
