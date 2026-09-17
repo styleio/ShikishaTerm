@@ -926,7 +926,7 @@ fn project_by_family(family: &str) -> Option<String> {
 /// folder is then `<parent>/<name>/.git`. That is a guess about a folder
 /// nothing is running in yet, made without touching the disk; the moment a
 /// tab starts there, what git actually says takes over
-fn family_by_path(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+pub(crate) fn family_by_path(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
     let mut at = cwd;
     loop {
         let parent = at.parent()?;

@@ -8,6 +8,18 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **Ideas: write down what comes to mind, per project.** The 💡 at the foot of
+  the side column, left of the tools, opens a box of cards over the screen with
+  the caret already in the line to write in. Enter moves to the next card and
+  Shift+Enter starts a new line inside one; there is no Save, what is typed is
+  kept as it is typed. The list at the top chooses a project, or "No project",
+  and opens on the project of the folder in front. Ticking a card marks it done
+  and takes it out of the list until "Show done ideas" is pressed; its grip
+  carries it to another place; its copy button puts it on the clipboard. Cards
+  are kept in `config/ideas.json`, and a card whose project is taken out of
+  every desk goes to "No project". The same cards open from a phone.
+
 ### Changed
 - **The commit message prompt is written out whole in the settings, and can be
   changed or emptied.** The AI used to be given a prompt nobody could see, with

@@ -1144,10 +1144,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Where a command with no folder in front opens. Looked up once: it is
     // asked on every frame the launcher could be showing
     let home = home_folder();
-    // Whether the window's launcher is up. Pages placed in the window are
-    // windows of their own and nothing drawn can cover them, so they step
-    // aside while it is, the way they do for the help and the desk list
-    let mut quick_open = false;
+    // Whether the page has something up over everything (the quick commands,
+    // the ideas). Pages placed in the window are windows of their own and
+    // nothing drawn can cover them, so they step aside while it is, the way
+    // they do for the help and the desk list
+    let mut page_covered = false;
 
     let mut desk_open = false;
     let mut help_open = false;
@@ -2657,6 +2658,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::OpenIssues) => {
                         shell.mail().open_issues = true;
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Ideas { act, args }) => {
+                        shell.mail().ideas.push((act, args));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Files { panel, act, args }) => {
                         shell.mail().files.push((panel, act, args));
                     }
@@ -3645,7 +3649,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // over the screen, the browsers step aside. They keep their pages;
             // being given no rectangle is all that happens to them
             // The question a tab's ✕ asks is one of those things
-            let covered = help_open || desk_open || qr_open || quick_open || close_ask.is_some();
+            let covered = help_open || desk_open || qr_open || page_covered || close_ask.is_some();
             // The settings form is a screen, not a pane: it covers the content
             // area and the layout waits underneath. It asks about the whole
             // app, so seating it in one corner of the app made as little sense
@@ -3730,9 +3734,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
 
-        // The window's quick-command launcher went up or down (see `quick_open`)
-        if let Some(on) = shell.mail().take_quick_shown() {
-            quick_open = on;
+        // Something the page draws over everything went up or down (see `page_covered`)
+        if let Some(on) = shell.mail().take_covered() {
+            page_covered = on;
         }
         // Quick commands pressed, on the window or the phone. Each opens a tab
         // of its own (`quick_go`); what it sends is read from the settings here
@@ -4417,6 +4421,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let js = crate::github::answer(&act, &args, &sources, &|k| tokens.get(k).cloned());
                 let _ = tx.send(js.to_string());
             });
+        }
+        // What the ideas window asked for. Answered here: it is one small file
+        // on this machine, and every surface looking at the cards is told the
+        // result, so the window and a phone never show two different lists
+        for (act, args) in shell.mail().take_ideas() {
+            let projects = crate::ideas::projects(&desks);
+            let js = crate::ideas::answer(&crate::ideas::path(), &act, &args, &projects).to_string();
+            shell.push_ideas(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"ideas\":{js}}}"));
+            }
         }
         while let Ok(js) = issues_rx.try_recv() {
             shell.push_issues(&js);

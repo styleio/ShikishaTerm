@@ -214,7 +214,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .gearrow .sidebtn:hover { background:var(--hover); color:var(--text); }
   .gearrow .sidebtn.sel { background:var(--raise); color:var(--text); }
   .gearrow .gear { font-size:17px; }
-  .gearrow .snipbtn, .gearrow .quickbtn { font-size:16px; }
+  .gearrow .snipbtn, .gearrow .quickbtn, .gearrow .ideabtn { font-size:16px; }
   .gearrow .help > span { font-size:13px; width:20px; height:20px; border:1px solid var(--line);
     border-radius:50%; display:inline-flex; align-items:center; justify-content:center; }
   .gearrow .help:hover > span { border-color:var(--text); }
@@ -2015,6 +2015,81 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   @keyframes qin { from { opacity:0; transform:translateY(8px) scale(.94); } to { opacity:1; transform:none; } }
   @media (prefers-reduced-motion: reduce) { #quick, #quick .qbtn, #quick .qempty { animation:none; } }
 
+  /* The ideas: cards written in, on the same dimming as the quick commands but
+     in a box of their own, placed the way a dialog is (5.2). Nothing moves as it
+     opens: the quick commands' entrance is theirs alone (6) */
+  #ideas[hidden] { display:none !important; }
+  #ideas { position:fixed; inset:var(--titleh) 0 0 0; z-index:52; background:#00000099; display:flex;
+    justify-content:center; align-items:flex-start; box-sizing:border-box; padding:56px var(--s4) var(--s4); }
+  #ideas.noframe { top:0; padding-top:calc(var(--s4) + env(safe-area-inset-top, 0px));
+    padding-bottom:calc(var(--s4) + env(safe-area-inset-bottom, 0px)); }
+  #ideas .ibox { width:min(640px, 100%); max-height:100%; min-height:0; display:flex; flex-direction:column;
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card); box-shadow:0 8px 24px #0007; }
+  #ideas .ihead { flex:none; display:flex; align-items:center; flex-wrap:wrap; gap:var(--s3);
+    padding:var(--s4) var(--s5); border-bottom:1px solid var(--line); }
+  #ideas .ititle { font-size:13.5px; font-weight:600; color:var(--text); }
+  #ideas .grow { flex:1; }
+  #ideas select { height:36px; min-width:0; max-width:100%; font:inherit; font-size:13px; color:var(--text);
+    background:var(--bg); border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 var(--s3); cursor:pointer; }
+  #ideas select:hover { border-color:var(--edge-hi); }
+  #ideas select:focus-visible, #ideas .idone:focus-visible, #ideas .iclose:focus-visible, #ideas .itool:focus-visible {
+    outline:none; border-color:var(--brand); box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #ideas .idone { height:32px; display:inline-flex; align-items:center; gap:var(--s1); font:inherit; font-size:12.5px;
+    padding:0 var(--s3); border:1px solid var(--edge); border-radius:var(--r-ctl); background:var(--panel2);
+    color:var(--dim); cursor:pointer; }
+  #ideas .idone:hover { border-color:var(--edge-hi); color:var(--text); }
+  #ideas .idone .ico { display:none; }
+  #ideas .idone.on { background:var(--raise); color:var(--text); }
+  #ideas .idone.on .ico { display:inline-flex; }
+  #ideas .iclose { width:32px; height:32px; flex:none; border:1px solid transparent; background:transparent; color:var(--dim);
+    border-radius:var(--r-ctl); cursor:pointer; font:inherit; font-size:14px; }
+  #ideas .iclose:hover { background:var(--hover); color:var(--text); }
+  #ideas .isaid { flex:none; margin:var(--s3) var(--s5) 0; padding:var(--s2) var(--s3); border-radius:var(--r-ctl);
+    font-size:11.5px; line-height:1.5; color:var(--warn); overflow-wrap:anywhere;
+    background:color-mix(in srgb, var(--warn) 9%, transparent); border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+  #ideas .isaid[hidden] { display:none; }
+  #ideas .ibody { flex:1 1 auto; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:var(--s2);
+    padding:var(--s4) var(--s5); }
+  #ideas .ilist { display:flex; flex-direction:column; gap:var(--s2); }
+  #ideas .iempty { font-size:12px; color:var(--dim); padding:var(--s1) 0; }
+  #ideas .iempty[hidden] { display:none; }
+  /* A card is a thing typed into, so it wears the edge of one, and the ring
+     of one when the caret is in it (5.1) */
+  #ideas .icard { display:flex; align-items:flex-start; gap:var(--s2); padding:var(--s2) var(--s2) var(--s2) var(--s1);
+    background:var(--bg); border:1px solid var(--edge); border-radius:var(--r-ctl); }
+  #ideas .icard:hover { border-color:var(--edge-hi); }
+  #ideas .icard:focus-within { border-color:var(--brand); box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  /* Lifted off the list while it is carried: the one layer here that floats */
+  #ideas .icard.dragging { background:var(--raise); box-shadow:0 8px 24px #0007; }
+  #ideas .igrip, #ideas .iplus { flex:none; width:22px; height:22px; display:inline-flex; align-items:center;
+    justify-content:center; color:var(--faint); border-radius:var(--r-chip); }
+  #ideas .igrip { cursor:grab; touch-action:none; }
+  #ideas .igrip:hover, #ideas .icard.dragging .igrip { color:var(--text); background:var(--hover); }
+  #ideas .icard.dragging .igrip { cursor:grabbing; }
+  #ideas .icheck { flex:none; width:15px; height:15px; margin:var(--s1) 0 0; accent-color:var(--brand); cursor:pointer; }
+  #ideas .itext { flex:1; min-width:0; min-height:22px; resize:none; overflow:hidden; border:0; outline:none;
+    background:transparent; color:var(--text); font:inherit; font-size:13px; line-height:22px; padding:0; }
+  #ideas .itext::placeholder { color:var(--faint); }
+  #ideas .icard.done .itext { color:var(--dim); text-decoration:line-through; }
+  #ideas .itool { flex:none; width:22px; height:22px; padding:0; display:inline-flex; align-items:center;
+    justify-content:center; border:1px solid transparent; background:transparent; color:var(--dim);
+    border-radius:var(--r-chip); cursor:pointer; }
+  #ideas .itool:hover { background:var(--hover); color:var(--text); }
+  #ideas .ifoot { flex:none; padding:var(--s3) var(--s5); border-top:1px solid var(--line); font-size:11px;
+    color:var(--faint); line-height:1.5; }
+  @media (max-width:640px) {
+    #ideas { padding:var(--s2); }
+    #ideas .ihead { padding:var(--s3); }
+    /* The close stays at the end of the first line; the switch takes a line
+       of its own under it rather than pushing the close down beside it */
+    #ideas .ihead .grow { display:none; }
+    #ideas .iclose { order:1; margin-left:auto; }
+    #ideas .idone { order:2; }
+    #ideas .isaid { margin:var(--s2) var(--s3) 0; }
+    #ideas .ibody { padding:var(--s3); }
+    #ideas .ifoot { padding:var(--s2) var(--s3); }
+  }
+
   /* Behind the add-a-tab dialog. The dialog itself is the settings page placed
      over the board, so all the board draws is the dimming, and a press on it is
      the press outside a dialog: not adding after all */
@@ -2851,6 +2926,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
        shape as the Vault, a different list underneath -->
   <!-- The quick commands: buttons over everything, no box of their own -->
   <div id="quick" hidden tabindex="-1"></div>
+  <!-- The ideas: cards written from the side column's bulb, over everything -->
+  <div id="ideas" hidden></div>
   <div id="palette" hidden>
     <div class="vbox">
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
@@ -3109,6 +3186,8 @@ let lastFlash = null;
 // Whether the quick commands are up (see openQuick). Declared this early
 // because the sidebar, drawn from the very first state, marks its button by it
 let quickOpen = false;
+// Whether the ideas are up (see __openIdeas), for the same reason
+let ideasOpen = false;
 
 // The shared toast (src/toast.rs). Declared this early because the very first
 // state can arrive with a message already in it.
@@ -3456,6 +3535,9 @@ function drawTabs() {
           title:T["tui.help.site"] || "Manual"}, el("span", {}, "?"))
       : el("span", {class:"sidebtn help", title:T["tui.help.site"] || "Manual",
           onclick:() => send({kind:"help"})}, el("span", {}, "?")),
+    // The ideas: notes jotted down now and dealt with later, per project
+    el("span", {class:"sidebtn ideabtn" + (ideasOpen ? " sel" : ""), title:T["tui.ideas.open"] || "Ideas",
+        onclick:e => { e.stopPropagation(); window.__openIdeas(); }}, "💡"),
     // The tools that start from a picture (snip.rs). Here, beside settings
     // and help, because they are the app's own tools rather than something
     // said to an AI: what they give back goes to the clipboard or a file
@@ -5402,6 +5484,8 @@ const PICK_ICON = {
   open: '<path d="M8.5 2h3.5v3.5"/><path d="M6.5 7.5 12 2"/><path d="M10.5 8v3.5a.5.5 0 0 1-.5.5H2.5a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5H6"/>',
   sparkles: '<path d="M6 2.5 7 5.5 10 6.5 7 7.5 6 10.5 5 7.5 2 6.5 5 5.5z"/><path d="M11 1.5v3M9.5 3h3"/><path d="M11 9.5v2M10 10.5h2"/>',
   server: '<rect x="2" y="2" width="10" height="4" rx="1"/><rect x="2" y="8" width="10" height="4" rx="1"/><path d="M4.5 4h.01M4.5 10h.01"/>',
+  copy: '<rect x="4.5" y="4.5" width="7.5" height="7.5" rx="1"/><path d="M9.5 4.5V2.5a.5.5 0 0 0-.5-.5H2.5a.5.5 0 0 0-.5.5V9a.5.5 0 0 0 .5.5h2"/>',
+  grip: '<circle cx="5" cy="3.5" r=".7" fill="currentColor"/><circle cx="9" cy="3.5" r=".7" fill="currentColor"/><circle cx="5" cy="7" r=".7" fill="currentColor"/><circle cx="9" cy="7" r=".7" fill="currentColor"/><circle cx="5" cy="10.5" r=".7" fill="currentColor"/><circle cx="9" cy="10.5" r=".7" fill="currentColor"/>',
   refresh: '<path d="M12 7a5 5 0 0 1-8.7 3.4"/><path d="M2 7a5 5 0 0 1 8.7-3.4"/><path d="M11 1.5v2.5H8.5"/><path d="M3 12.5V10h2.5"/>',
 };
 function pickIcon(name) {
@@ -9395,6 +9479,8 @@ const focus = () => {
   // The quick commands hold the keyboard while they are up: arrows walk the
   // buttons, Enter presses one, Esc puts them away
   if (quickOpen) return;
+  // So do the ideas: the caret belongs in a card
+  if (ideasOpen) return;
   // The first-start setup holds the keyboard while it is up: Enter is its
   // Continue, and a letter must not reach the board's menu behind it
   if (setupUp()) return;
@@ -10033,7 +10119,7 @@ document.getElementById("rmore").addEventListener("click", () => rdShow());
 // below opened the bar on mouseup and the pen's own click toggled it shut again
 // The Issue tab is a page of its own controls: a press there is for them, and
 // a list that has just dropped open closed again the moment the button came up
-const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #ask, .pask, #pageui, #castdock, #composerfab, #reader, #issuespanel");
+const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #ask, .pask, #pageui, #castdock, #composerfab, #reader, #issuespanel, #ideas");
 document.addEventListener("mouseup", e => {
   if (inBar(e)) return;
   const s = window.getSelection();
@@ -10154,6 +10240,7 @@ if (REMOTE) {
     if (d.git) window.__git(d.git);
     if (d.files) window.__files(d.files);
     if (d.issues) window.__issues(d.issues);
+    if (d.ideas) window.__ideas(d.ideas);
     if (d.sftp) window.__sftp(d.sftp);
     if ("luadone" in d) window.__luaDone(d.luadone);
     if ("suggested" in d) window.__suggested(d.suggested);
@@ -10673,18 +10760,23 @@ function renderPalette() {
 // it, are looked up on the PC, so neither ever passes through this page.
 const quickWalk = {path: [], page: 0};
 let quickShape = "", quickFocusId = "";
+// Whether the page has something up over everything. Pages placed in the
+// window are windows of their own, over anything this page draws: they step
+// aside while it does. A phone has none
+function sayCovered() {
+  if (!REMOTE) send({kind:"covered", on: quickOpen || ideasOpen});
+}
 window.__openQuick = function () {
   const v = document.getElementById("quick");
   if (!v) return;
   if (quickOpen) { closeQuick(); return; }
+  if (ideasOpen) closeIdeas();
   quickOpen = true;
   quickWalk.path = []; quickWalk.page = 0; quickShape = ""; quickFocusId = "";
   v.classList.remove("still");
   v.classList.toggle("noframe", !!REMOTE);
   v.hidden = false;
-  // Pages placed in the window are windows of their own, over anything this
-  // page draws: they step aside while this is up. A phone has none
-  if (!REMOTE) send({kind:"quickshown", on:true});
+  sayCovered();
   drawQuickLauncher(true);
   drawTabs();
 };
@@ -10694,10 +10786,362 @@ function closeQuick() {
   quickOpen = false;
   v.hidden = true;
   v.textContent = "";
-  if (!REMOTE) send({kind:"quickshown", on:false});
+  sayCovered();
   drawTabs();
   focus();
 }
+
+// ── Ideas ─────────────────────────────────────────────────
+// Notes jotted down from the side column's bulb, a card each, kept by the app
+// in config/ideas.json (ideas.rs). The page keeps no truth of its own: every
+// change is sent, and every answer carries the whole list, which is drawn over
+// what is shown. Two things win over an answer until the file has them: the
+// words in the card being typed in, and edits sent but not yet answered.
+const IDEAS = {
+  items: [], projects: [],
+  // The project whose cards are shown, by key ("" is no project). null until
+  // the projects are known, and then the project of the folder in front
+  project: null, known: false,
+  showDone: false, said: "",
+  // The card the writing line at the foot is typing: {ref, id, text, sent}.
+  // Its id is null until the app has made it
+  own: null,
+  // Words for a card the writing line let go of before the app had made it
+  later: {},
+  // Edits not yet in the file, and the timers that will send them
+  pending: {}, timers: {},
+  dragging: false,
+};
+const ideasAsk = (act, args) => send({kind:"ideas", act, args: args || {}});
+// The project of the folder in front, when it is one of the projects
+function ideasFrontProject() {
+  const g = ((S && S.groups) || []).find(inFront);
+  if (!g) return "";
+  const p = IDEAS.projects.find(p => (p.folders || []).some(f => sameFolder(f, g.folder)));
+  return p ? p.key : "";
+}
+window.__openIdeas = function () {
+  const v = document.getElementById("ideas");
+  if (!v) return;
+  if (ideasOpen) { closeIdeas(); return; }
+  if (quickOpen) closeQuick();
+  ideasOpen = true;
+  IDEAS.project = IDEAS.known ? ideasFrontProject() : null;
+  IDEAS.said = "";
+  v.classList.toggle("noframe", !!REMOTE);
+  v.hidden = false;
+  sayCovered();
+  drawIdeas(true);
+  ideasAsk("list");
+  drawTabs();
+};
+function closeIdeas() {
+  const v = document.getElementById("ideas");
+  if (!ideasOpen || !v) return;
+  ideasLetGo();
+  // What is still waiting to be sent goes now, and a card left empty goes
+  for (const c of v.querySelectorAll(".ilist .icard[data-id]")) {
+    const id = Number(c.dataset.id);
+    if (!c.querySelector(".itext").value.trim()) ideasDrop(id);
+    else if (IDEAS.timers[id]) ideasEdit(id, IDEAS.pending[id], true);
+  }
+  ideasOpen = false;
+  v.hidden = true;
+  v.textContent = "";
+  sayCovered();
+  drawTabs();
+  focus();
+}
+// Words typed into a card: shown at once, sent once the typing pauses
+function ideasEdit(id, text, now) {
+  const it = IDEAS.items.find(i => i.id === id);
+  if (it) it.text = text;
+  IDEAS.pending[id] = text;
+  clearTimeout(IDEAS.timers[id]);
+  const go = () => { delete IDEAS.timers[id]; ideasAsk("edit", {id, text: IDEAS.pending[id]}); };
+  if (now) go(); else IDEAS.timers[id] = setTimeout(go, 400);
+}
+function ideasDrop(id) {
+  clearTimeout(IDEAS.timers[id]);
+  delete IDEAS.timers[id];
+  delete IDEAS.pending[id];
+  IDEAS.items = IDEAS.items.filter(i => i.id !== id);
+  ideasAsk("drop", {id});
+}
+// The writing line lets go of the card it was typing: the card joins the list
+// above it, and the line is empty for the next one
+function ideasLetGo() {
+  const own = IDEAS.own;
+  if (!own) return;
+  IDEAS.own = null;
+  const line = document.querySelector("#ideas .inew .itext");
+  if (line) { line.value = ""; ideasGrow(line); }
+  if (own.id != null) {
+    if (!own.text.trim()) ideasDrop(own.id);
+    else ideasEdit(own.id, own.text, true);
+  } else {
+    IDEAS.later[own.ref] = own.text;
+  }
+  if (ideasOpen) drawIdeas(false);
+}
+window.__ideas = function (d) {
+  if (!d) return;
+  IDEAS.said = d.ok ? "" : (d.error || "");
+  if (d.projects) IDEAS.projects = d.projects;
+  if (d.items) {
+    IDEAS.items = d.items.map(i => {
+      const want = IDEAS.pending[i.id];
+      if (want === undefined) return i;
+      if (want === i.text && !IDEAS.timers[i.id]) delete IDEAS.pending[i.id];
+      else i.text = want;
+      return i;
+    });
+  }
+  // The card this page asked to be made. An answer to another screen's
+  // request carries a ref this page never gave, and is only a new list
+  if (d.made != null && d.ref) {
+    const own = IDEAS.own;
+    if (own && own.ref === d.ref) {
+      own.id = d.made;
+      if (own.text !== own.sent) ideasEdit(own.id, own.text, false);
+    } else if (d.ref in IDEAS.later) {
+      const text = IDEAS.later[d.ref];
+      delete IDEAS.later[d.ref];
+      if (!text.trim()) ideasDrop(d.made);
+      else if (text !== (IDEAS.items.find(i => i.id === d.made) || {}).text) ideasEdit(d.made, text, true);
+    }
+  }
+  IDEAS.known = true;
+  if (IDEAS.project === null) IDEAS.project = ideasFrontProject();
+  // A project that has gone shows no project, where its cards went
+  if (IDEAS.project && !IDEAS.projects.some(p => p.key === IDEAS.project)) IDEAS.project = "";
+  if (ideasOpen) drawIdeas(false);
+};
+function ideasGrow(t) {
+  t.style.height = "auto";
+  t.style.height = t.scrollHeight + "px";
+}
+const ideasShown = () => IDEAS.items.filter(i => (i.project || "") === (IDEAS.project || "")
+  && (IDEAS.showDone || !i.done) && !(IDEAS.own && IDEAS.own.id === i.id));
+// Put the caret in a card, or in the writing line when there is none
+function ideasFocus(card, atEnd) {
+  const line = document.querySelector("#ideas .inew .itext");
+  const t = (card && card.querySelector(".itext")) || line;
+  if (!t) return;
+  t.focus();
+  const at = atEnd ? t.value.length : 0;
+  t.setSelectionRange(at, at);
+}
+function ideasNeighbour(card, by) {
+  const cards = [...document.querySelectorAll("#ideas .icard")];
+  return cards[cards.indexOf(card) + by] || null;
+}
+function ideasKey(e, card) {
+  if (typingIME(e)) return;
+  const t = e.target;
+  const writing = card.classList.contains("inew");
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeIdeas(); return; }
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    // The writing line hands its card to the list and stays where it is, for
+    // the next one. A card sends what it has and gives the caret to the next
+    if (writing) { ideasLetGo(); return; }
+    const id = Number(card.dataset.id);
+    if (IDEAS.timers[id]) ideasEdit(id, t.value, true);
+    ideasFocus(ideasNeighbour(card, 1), true);
+    return;
+  }
+  // A card emptied and pressed once more goes, and the caret goes up a card
+  if (e.key === "Backspace" && !writing && t.value === "") {
+    e.preventDefault();
+    const back = ideasNeighbour(card, -1) || ideasNeighbour(card, 1);
+    ideasDrop(Number(card.dataset.id));
+    card.remove();
+    drawIdeas(false);
+    ideasFocus(back, true);
+    return;
+  }
+  if (e.key === "ArrowUp" && t.selectionStart === 0 && t.selectionEnd === 0) {
+    const up = ideasNeighbour(card, -1);
+    if (up) { e.preventDefault(); ideasFocus(up, true); }
+  } else if (e.key === "ArrowDown" && t.selectionStart === t.value.length) {
+    const down = ideasNeighbour(card, 1);
+    if (down) { e.preventDefault(); ideasFocus(down, false); }
+  }
+}
+function ideaCard(it) {
+  const id = it.id;
+  const text = el("textarea", {class:"itext", rows:"1", spellcheck:"false"});
+  text.value = it.text;
+  const check = el("input", {type:"checkbox", class:"icheck"});
+  const grip = el("span", {class:"igrip", title:T["tui.ideas.drag"] || ""}, pickIcon("grip"));
+  const card = el("div", {class:"icard", "data-id":String(id)},
+    grip, check, text,
+    el("button", {type:"button", class:"itool", title:T["tui.ideas.copy"] || "",
+      onclick:() => copyText(text.value).then(() => toast(T["tui.ideas.copied"] || ""))}, pickIcon("copy")),
+    // What sending an idea to an Issue does is still to be decided: the
+    // button stands where it will be, and a press does nothing yet
+    el("button", {type:"button", class:"itool", title:T["tui.ideas.issue"] || ""}, pickIcon("issue")));
+  text.oninput = () => { ideasGrow(text); ideasEdit(id, text.value, false); };
+  text.onkeydown = e => ideasKey(e, card);
+  text.onblur = () => { if (IDEAS.timers[id]) ideasEdit(id, text.value, true); };
+  // Ticked off, it is done and out of the list unless done ones are shown.
+  // The caret goes back to the writing line rather than into a stranger
+  check.onchange = () => {
+    const i = IDEAS.items.find(x => x.id === id);
+    if (i) i.done = check.checked;
+    if (IDEAS.timers[id]) ideasEdit(id, text.value, true);
+    ideasAsk("done", {id, done: check.checked});
+    drawIdeas(false);
+    if (!IDEAS.showDone && check.checked) ideasFocus(null, true);
+  };
+  grip.addEventListener("pointerdown", e => ideasCarry(e, card));
+  return card;
+}
+// Carry a card by its grip to where it goes. The cards move out of its way as
+// it passes their middle, and the order is sent once it is put down
+function ideasCarry(e, card) {
+  if (e.button !== 0 || IDEAS.dragging) return;
+  e.preventDefault();
+  const list = card.parentElement, body = card.closest(".ibody");
+  const before = [...list.querySelectorAll(".icard[data-id]")].map(c => Number(c.dataset.id));
+  // Listened for on the window, not captured by the grip: moving the card
+  // takes it out of the page for an instant, and a capture does not survive that
+  IDEAS.dragging = true;
+  card.classList.add("dragging");
+  const move = ev => {
+    if (ev.pointerId !== e.pointerId) return;
+    const r = body.getBoundingClientRect();
+    if (ev.clientY < r.top + 24) body.scrollTop -= 12;
+    else if (ev.clientY > r.bottom - 24) body.scrollTop += 12;
+    const others = [...list.querySelectorAll(".icard[data-id]")].filter(c => c !== card);
+    const next = others.find(c => { const b = c.getBoundingClientRect(); return ev.clientY < b.top + b.height / 2; });
+    if (next) { if (card.nextElementSibling !== next) list.insertBefore(card, next); }
+    else if (others.length && others[others.length - 1].nextElementSibling !== card) {
+      others[others.length - 1].after(card);
+    }
+  };
+  const end = ev => {
+    if (ev.pointerId !== e.pointerId) return;
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", end);
+    card.classList.remove("dragging");
+    IDEAS.dragging = false;
+    const ids = [...list.querySelectorAll(".icard[data-id]")].map(c => Number(c.dataset.id));
+    if (ids.join() !== before.join()) {
+      // The same places, taken in the new order, so the cards of other
+      // projects stay where they were (as ideas.rs does)
+      const slots = IDEAS.items.map((i, n) => ids.includes(i.id) ? n : -1).filter(n => n >= 0);
+      const moved = ids.map(id => IDEAS.items.find(i => i.id === id)).filter(Boolean);
+      if (moved.length === slots.length) slots.forEach((n, k) => { IDEAS.items[n] = moved[k]; });
+      ideasAsk("order", {ids});
+    }
+    drawIdeas(false);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
+}
+// Built once when opened; after that only what changed is touched, so a caret
+// in a card, a list dropped open and a card being carried all survive an answer
+function drawIdeas(fresh) {
+  const v = document.getElementById("ideas");
+  if (!v || v.hidden) return;
+  let box = v.querySelector(".ibox");
+  if (fresh || !box) {
+    v.textContent = "";
+    const pick = el("select", {class:"iproj", title:T["tui.ideas.project"] || ""});
+    pick.onchange = () => {
+      ideasLetGo();
+      IDEAS.project = pick.value;
+      drawIdeas(false);
+      ideasFocus(null, true);
+    };
+    const done = el("button", {type:"button", class:"idone", "aria-pressed":"false", onclick:() => {
+      IDEAS.showDone = !IDEAS.showDone;
+      drawIdeas(false);
+    }}, pickIcon("check"), el("span", {}, T["tui.ideas.showdone"] || ""));
+    const line = el("textarea", {class:"itext", rows:"1", spellcheck:"false", placeholder:T["tui.ideas.new.ph"] || ""});
+    const writing = el("div", {class:"icard inew"}, el("span", {class:"iplus"}, pickIcon("plus")), line);
+    line.oninput = () => {
+      ideasGrow(line);
+      const text = line.value;
+      const own = IDEAS.own;
+      if (!own) {
+        if (!text.trim()) return;
+        const ref = "i" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        IDEAS.own = {ref, id: null, text, sent: text};
+        ideasAsk("add", {project: IDEAS.project || "", text, ref});
+        return;
+      }
+      own.text = text;
+      if (own.id != null) ideasEdit(own.id, text, false);
+    };
+    line.onkeydown = e => ideasKey(e, writing);
+    box = el("div", {class:"ibox", role:"dialog", "aria-label":T["tui.ideas.title"] || ""},
+      el("div", {class:"ihead"},
+        el("span", {class:"ititle"}, T["tui.ideas.title"] || ""),
+        pick, el("span", {class:"grow"}), done,
+        el("button", {type:"button", class:"iclose", title:T["tui.ideas.close"] || "", onclick:closeIdeas}, "✕")),
+      el("div", {class:"isaid", hidden:""}),
+      el("div", {class:"ibody"},
+        el("div", {class:"ilist"}),
+        el("div", {class:"iempty", hidden:""}, T["tui.ideas.empty"] || ""),
+        writing),
+      el("div", {class:"ifoot"}, T["tui.ideas.hint"] || ""));
+    v.append(box);
+    line.focus();
+  }
+  const pick = box.querySelector(".iproj");
+  const sig = JSON.stringify(IDEAS.projects.map(p => [p.key, p.name]));
+  if (pick.dataset.sig !== sig) {
+    pick.dataset.sig = sig;
+    pick.textContent = "";
+    pick.append(el("option", {value:""}, T["tui.ideas.none"] || ""));
+    for (const p of IDEAS.projects) pick.append(el("option", {value:p.key}, p.name));
+  }
+  if (pick.value !== (IDEAS.project || "")) pick.value = IDEAS.project || "";
+  const done = box.querySelector(".idone");
+  done.classList.toggle("on", IDEAS.showDone);
+  done.setAttribute("aria-pressed", IDEAS.showDone ? "true" : "false");
+  const said = box.querySelector(".isaid");
+  if (said.textContent !== IDEAS.said) said.textContent = IDEAS.said;
+  said.hidden = !IDEAS.said;
+  const list = box.querySelector(".ilist");
+  const shown = ideasShown();
+  box.querySelector(".iempty").hidden = shown.length > 0 || !IDEAS.known;
+  // Nothing moves under a card that is being carried
+  if (IDEAS.dragging) return;
+  const have = new Map([...list.querySelectorAll(".icard[data-id]")].map(c => [Number(c.dataset.id), c]));
+  const grow = [];
+  let prev = null;
+  for (const it of shown) {
+    let card = have.get(it.id);
+    have.delete(it.id);
+    if (!card) { card = ideaCard(it); grow.push(card); }
+    const t = card.querySelector(".itext");
+    if (document.activeElement !== t && t.value !== it.text) { t.value = it.text; grow.push(card); }
+    card.querySelector(".icheck").checked = !!it.done;
+    card.classList.toggle("done", !!it.done);
+    const want = prev ? prev.nextElementSibling : list.firstElementChild;
+    if (card !== want) list.insertBefore(card, want);
+    prev = card;
+  }
+  for (const card of have.values()) card.remove();
+  for (const card of grow) ideasGrow(card.querySelector(".itext"));
+  if (fresh) { const b = box.querySelector(".ibody"); b.scrollTop = b.scrollHeight; }
+}
+(function () {
+  const v = document.getElementById("ideas");
+  if (!v) return;
+  // A press on the dark, not on the box, puts them away. Where the press went
+  // down is what counts: a selection dragged out of a card is not a press outside
+  v.addEventListener("pointerdown", e => { if (e.target === v) closeIdeas(); });
+  v.addEventListener("keydown", e => {
+    if (e.key === "Escape" && !typingIME(e)) { e.preventDefault(); e.stopPropagation(); closeIdeas(); }
+  });
+})();
 // The grid being shown: the top, or the folder walked into. A folder that has
 // gone since (the settings were saved meanwhile) takes the walk back out
 function quickHere(q) {
@@ -14544,6 +14988,33 @@ mod tests {
             p.contains(r#"const base = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions"] : ["actions"];"#),
             "the phone's special keys have dropped out of the basic panels"
         );
+    }
+
+    /// The ideas: opened from the bulb left of the scissors, answered on both
+    /// surfaces, never rebuilt under a caret, and carried cards that survive
+    /// being moved in the page.
+    #[test]
+    fn the_ideas_are_one_box_on_every_surface() {
+        let p = super::page();
+        let bulb = p.find(r#"el("span", {class:"sidebtn ideabtn""#).expect("there is no bulb in the bottom row");
+        let scissors = p.find(r#"el("span", {class:"sidebtn snipbtn""#).expect("the scissors are gone");
+        assert!(bulb < scissors, "the bulb is not left of the scissors");
+        assert!(p.contains(r#"<div id="ideas" hidden></div>"#), "there is nowhere to draw the ideas");
+        // A phone is told the answers down its socket, like every other panel
+        assert!(p.contains("if (d.ideas) window.__ideas(d.ideas);"), "a phone never hears back from the ideas");
+        // One place says the page is covered, for both overlays
+        assert_eq!(p.matches(r#"send({kind:"covered""#).count(), 1, "more than one place says the page is covered");
+        assert!(!p.contains("quickshown"), "the quick commands still say they are shown in words of their own");
+        // Presses and selections inside are the box's own, and the board does not take the caret
+        assert!(p.contains("#issuespanel, #ideas\")"), "a selection in a card is copied and the caret thrown to the terminal");
+        assert!(p.contains("  if (ideasOpen) return;"), "the board takes the keyboard away from a card");
+        // A card being typed in keeps its words and its caret when an answer arrives
+        assert!(p.contains("if (document.activeElement !== t && t.value !== it.text)"), "an answer overwrites the card being typed in");
+        // Moving a card takes it out of the page for an instant: a pointer
+        // capture does not survive that, and the drop would never arrive
+        assert!(p.contains(r#"window.addEventListener("pointerup", end);"#), "a carried card's drop is listened for on the grip");
+        // The writing line is where the caret is on opening
+        assert!(p.contains("    line.focus();"), "the ideas open without the caret in the writing line");
     }
 
     /// Backspace in the empty input bar deletes in the pane it sends to, and
