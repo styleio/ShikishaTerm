@@ -1344,6 +1344,31 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #issuespanel .field { display:flex; flex-direction:column; gap:var(--s2); }
   #issuespanel .field > .name { font-size:12px; font-weight:500; color:var(--text); }
   #issuespanel .field > .hint { font-size:11.5px; color:var(--faint); }
+  /* The description's name, with its AI button at the right end of the same line */
+  #issuespanel .namerow { display:flex; align-items:center; justify-content:space-between; gap:var(--s2); }
+  #issuespanel .namerow .name { font-size:12px; font-weight:500; color:var(--text); }
+  #issuespanel .iai { width:28px; height:28px; padding:0;
+    display:flex; align-items:center; justify-content:center; border:0; border-radius:var(--r-ctl);
+    background:transparent; color:var(--dim); cursor:pointer; }
+  #issuespanel .iai:hover { color:var(--text); background:var(--hover); }
+  #issuespanel .iai[disabled] { color:var(--faint); background:transparent; cursor:default; }
+  /* The words written before the AI rewrote them */
+  #issuespanel .kept { border:1px solid var(--line); border-radius:var(--r-ctl); background:var(--sunk, var(--panel));
+    padding:var(--s2) var(--s3); display:flex; flex-direction:column; gap:var(--s2); }
+  #issuespanel .keptbar { display:flex; align-items:center; gap:var(--s2); }
+  #issuespanel .keptbar .name { font-size:12px; font-weight:500; color:var(--text); }
+  #issuespanel .keptbar .grow { flex:1; }
+  #issuespanel .kepttext { white-space:pre-wrap; font-size:12.5px; color:var(--dim); max-height:12em; overflow:auto; }
+  /* Labels: chosen with a ✕, offered to press */
+  #issuespanel .lpick { display:flex; flex-direction:column; gap:var(--s2); }
+  #issuespanel .chips { display:flex; flex-wrap:wrap; gap:var(--s2); }
+  #issuespanel .lchip { display:inline-flex; align-items:center; gap:var(--s1); height:24px; padding:0 var(--s2);
+    font:inherit; font-size:12px; border:1px solid var(--edge); border-radius:var(--r-chip); background:transparent;
+    color:var(--dim); cursor:pointer; }
+  #issuespanel .lchip:hover { color:var(--text); border-color:var(--edge-hi); }
+  #issuespanel .lchip.on { color:var(--text); background:var(--raise); cursor:default; }
+  #issuespanel .lchip.on button { border:0; background:transparent; color:var(--dim); cursor:pointer; padding:0 2px; font-size:11px; }
+  #issuespanel .lchip.on button:hover { color:var(--text); }
   #issuespanel .write { padding:0 var(--s3) var(--s3); max-width:760px; }
   #issuespanel .foot { display:flex; align-items:center; gap:var(--s2); justify-content:flex-end; }
   /* A narrow pane or a phone: the title keeps the whole first line, and the
@@ -3558,7 +3583,7 @@ function drawTabs() {
 let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:1,
           list:null, problems:[], total:0, busy:"", said:"", bad:false,
           view:"list", detail:null, options:{}, armed:"", dupOf:"", want:{list:0, detail:0},
-          create:{project:"", title:"", body:"", labels:"", assignees:""} };
+          create:{project:"", title:"", body:"", labels:[], assignee:"", kept:""} };
 let issuesSig = "";
 let issuesSeq = 0;
 
@@ -3661,11 +3686,27 @@ window.__issues = function (d) {
       I.armed = ""; I.dupOf = "";
       break;
     case "create":
-      I.create = {project: I.create.project, title:"", body:"", labels:"", assignees:""};
+      I.create = {project: I.create.project, title:"", body:"", labels:[], assignee:"", kept:""};
       I.said = (T["issues.created"] || "").replace("{n}", (d.data || {}).number || "");
       issuesAsk("detail", {project: d.project, number: (d.data || {}).number});
       issuesList(1);
       return;
+    case "draft": {
+      // The AI's issue, read into the form. Only labels and a person the
+      // project really has are taken; anything else it named is left out
+      const c = I.create;
+      const opts = I.options[c.project] || {};
+      let got = null;
+      try { got = JSON.parse(d.data || ""); } catch (e) { got = null; }
+      if (!got || typeof got.title !== "string") { I.said = T["issues.draft.failed"] || ""; I.bad = true; break; }
+      c.title = got.title;
+      if (typeof got.body === "string") c.body = got.body;
+      const known = opts.labels || [];
+      c.labels = (Array.isArray(got.labels) ? got.labels : []).filter(l => known.includes(l));
+      c.assignee = (opts.assignees || []).includes(got.assignee) ? got.assignee : "";
+      I.said = T["issues.draft.done"] || "";
+      break;
+    }
     case "comment":
     case "issue_state":
     case "pr_state":
@@ -3964,39 +4005,90 @@ function drawIssueCreate(box) {
   const said = issueSaid();
   if (said) box.append(said);
   const form = el("div", {class:"form"});
+  const redraw = () => { issuesSig = ""; drawIssues(); };
+  const opts = I.options[c.project] || {};
+  const field = (label, control, hint) => form.append(el("div", {class:"field"},
+    el("span", {class:"name"}, label), control, hint ? el("span", {class:"hint"}, hint) : null));
+
+  // What was written before the AI rewrote it, kept at the top until put away:
+  // an answer that misses is not allowed to cost somebody their own words
+  if (c.kept) {
+    form.append(el("div", {class:"kept"},
+      el("div", {class:"keptbar"},
+        el("span", {class:"name"}, T["issues.draft.kept"] || ""),
+        el("span", {class:"grow"}),
+        el("button", {class:"quiet", onclick:() => { c.body = c.kept; redraw(); }}, T["issues.draft.restore"] || ""),
+        el("button", {class:"quiet", title: T["issues.draft.dismiss"] || "", onclick:() => { c.kept = ""; redraw(); }}, "\u2715")),
+      el("div", {class:"kepttext"}, c.kept)));
+  }
+
+  // The description first: it is what the AI works from. Its ✨ writes the
+  // title, the description, the labels and the person from it
+  const body = el("textarea", {rows:"8", placeholder: T["issues.new.body.ph"] || ""});
+  body.value = c.body; body.oninput = () => { c.body = body.value; };
+  const drafting = I.busy === "draft";
+  body.disabled = drafting;
+  const ai = el("button", {class:"iai", type:"button", title: T["issues.draft.ai"] || "", onclick:() => {
+    if (I.busy) return;
+    if (!c.body.trim()) { I.said = T["issues.draft.need"] || ""; I.bad = true; redraw(); body.focus(); return; }
+    c.kept = c.body;
+    issuesAsk("draft", {project: c.project, text: c.body, labels: opts.labels || [], assignees: opts.assignees || []});
+  }}, pickIcon("sparkles"));
+  ai.disabled = !!I.busy;
+  // What the AI is told is written in the desk's settings
+  ai.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    openList(ai, [el("div", {onclick:() => { closeFolderMenu(); openSettings("git-issue", true); }},
+      T["git.message.ai.edit"] || "")], false, e);
+  });
+  // In the corner above the box rather than inside it: a long description has
+  // a scrollbar where a button inside the box would sit
+  form.append(el("div", {class:"field"},
+    el("div", {class:"namerow"}, el("span", {class:"name"}, T["issues.new.body"] || ""), ai),
+    body, drafting ? el("span", {class:"hint"}, T["issues.draft.busy"] || "") : null));
+
   const pick = el("select");
   for (const p of I.projects) pick.append(el("option", {value:p.name}, p.name + (p.repo ? "  (" + p.repo + ")" : "")));
   pick.value = c.project;
   pick.onchange = () => {
-    c.project = pick.value; c.labels = ""; c.assignees = "";
+    c.project = pick.value; c.labels = []; c.assignee = "";
     if (!I.options[c.project]) issuesAsk("options", {project: c.project});
-    issuesSig = ""; drawIssues();
+    redraw();
   };
-  const opts = I.options[c.project] || {};
-  const field = (label, control, hint) => form.append(el("label", {class:"field"},
-    el("span", {class:"name"}, label), control, hint ? el("span", {class:"hint"}, hint) : null));
+  field(T["issues.project"] || "", pick);
+
   const title = el("input", {type:"text", placeholder: T["issues.new.title.ph"] || ""});
   title.value = c.title; title.oninput = () => { c.title = title.value; };
-  const body = el("textarea", {rows:"8", placeholder: T["issues.new.body.ph"] || ""});
-  body.value = c.body; body.oninput = () => { c.body = body.value; };
-  const labels = el("input", {type:"text", placeholder: (opts.labels || []).slice(0, 4).join(", ")});
-  labels.value = c.labels; labels.oninput = () => { c.labels = labels.value; };
-  const people = el("input", {type:"text", placeholder: (opts.assignees || []).slice(0, 4).join(", ")});
-  people.value = c.assignees; people.oninput = () => { c.assignees = people.value; };
-  field(T["issues.project"] || "", pick);
   field(T["issues.new.title"] || "", title);
-  field(T["issues.new.body"] || "", body);
-  field(T["issues.labels"] || "", labels, T["issues.new.comma"] || "");
-  field(T["issues.assignees"] || "", people, T["issues.new.comma"] || "");
-  const split = v => v.split(/[\s,]+/).map(x => x.trim()).filter(Boolean);
+
+  // Labels the repository has: the chosen ones with a ✕, the rest under them
+  const chosen = el("div", {class:"chips"}, ...c.labels.map(l => el("span", {class:"lchip on"}, l,
+    el("button", {type:"button", title: T["issues.labels.remove"] || "", onclick:() => {
+      c.labels = c.labels.filter(x => x !== l); redraw();
+    }}, "\u2715"))));
+  const offered = (opts.labels || []).filter(l => !c.labels.includes(l));
+  const choices = el("div", {class:"chips"}, ...offered.map(l => el("button", {type:"button", class:"lchip",
+    onclick:() => { c.labels = c.labels.concat(l); redraw(); }}, "+ " + l)));
+  field(T["issues.labels"] || "", el("div", {class:"lpick"}, c.labels.length ? chosen : null, offered.length ? choices : null),
+    !(opts.labels || []).length ? (T["issues.labels.none"] || "") : null);
+
+  // One person, or nobody: the people GitHub says can be assigned here
+  const who = el("select");
+  who.append(el("option", {value:""}, T["issues.assignee.nobody"] || ""));
+  for (const p of opts.assignees || []) who.append(el("option", {value:p}, p));
+  who.value = c.assignee;
+  who.onchange = () => { c.assignee = who.value; };
+  field(T["issues.assignees"] || "", who);
+
   form.append(el("div", {class:"foot"},
     el("button", {class:"quiet", onclick:() => { I.view = "list"; drawIssues(); }}, T["issues.cancel"] || ""),
     el("button", {class:"go", onclick:() => {
-      if (!c.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; issuesSig = ""; drawIssues(); return; }
-      issuesAsk("create", {project: c.project, title: c.title, body: c.body, labels: split(c.labels), assignees: split(c.assignees)});
+      if (!c.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; redraw(); return; }
+      issuesAsk("create", {project: c.project, title: c.title, body: c.body, labels: c.labels,
+        assignees: c.assignee ? [c.assignee] : []});
     }}, T["issues.new.create"] || "")));
   box.append(form);
-  setTimeout(() => { if (!c.title) title.focus(); }, 30);
+  setTimeout(() => { if (!c.body && !drafting) body.focus(); }, 30);
 }
 
 // A tab that could not start: why, and what to do about it. Drawn only when

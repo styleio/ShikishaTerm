@@ -4232,14 +4232,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Answers from the Lua that was left running (the commit message)
         if let Some(eng) = engine.as_mut() {
             for (tag, said) in eng.take_snippets() {
+                // An issue draft goes to the Issue tab, everything else to git
+                let issue = tag == ISSUE_DRAFT_TAG;
+                let act = if issue { "draft" } else { tag.as_str() };
                 let payload = match said {
-                    Ok(text) => serde_json::json!({"act": tag, "ok": true, "data": text}),
-                    Err(why) => serde_json::json!({"act": tag, "ok": false, "error": why}),
+                    Ok(text) => serde_json::json!({"act": act, "ok": true, "data": text}),
+                    Err(why) => serde_json::json!({"act": act, "ok": false, "error": why}),
                 };
                 let js = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
-                shell.push_git(&js);
+                if issue {
+                    shell.push_issues(&js);
+                } else {
+                    shell.push_git(&js);
+                }
                 if let Some(r) = remote_ui.as_ref() {
-                    r.push_state(format!("{{\"git\":{js}}}"));
+                    r.push_state(format!("{{\"{}\":{js}}}", if issue { "issues" } else { "git" }));
                 }
             }
         }
@@ -4354,6 +4361,36 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if crate::github::openable_link(url) {
                     crate::webui::open_external(url);
                 }
+                continue;
+            }
+            // Notes turned into an issue by the AI: the desk's prompt, the notes,
+            // and the labels and people the page already knows for the project.
+            // Lua the same way the commit message is, so the window keeps drawing
+            if act == "draft" {
+                if engine.is_none() {
+                    engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+                }
+                let Some(eng) = engine.as_mut() else { continue };
+                let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).filter(|s| !s.is_empty());
+                let prompt = desk
+                    .git
+                    .issue_prompt()
+                    .replace("{ai}", crate::webui::local_ai_label(ai.as_deref()).unwrap_or("an AI"));
+                let list = |k: &str| args.get(k).cloned().filter(|v| v.is_array()).unwrap_or(serde_json::json!([]));
+                for (name, value) in [
+                    ("issue_prompt", serde_json::json!(prompt)),
+                    ("issue_text", args.get("text").cloned().unwrap_or(serde_json::json!(""))),
+                    ("issue_labels", list("labels")),
+                    ("issue_assignees", list("assignees")),
+                ] {
+                    let _ = eng.call_primitive_as(
+                        None,
+                        grants::Subject::Human,
+                        "set_var",
+                        &[serde_json::json!(name), value],
+                    );
+                }
+                eng.start_snippet(ISSUE_DRAFT_TAG, crate::hooks::ISSUE_DRAFT_LUA);
                 continue;
             }
             let sources = crate::github::desk_sources(desk);
@@ -8338,6 +8375,9 @@ pub fn save_replay_to_downloads() -> std::io::Result<Option<std::path::PathBuf>>
 /// press is somebody finding their place. With a tab of no folder in front
 /// (the Issue tab, a page), the folder is not what is being looked at, however
 /// recently it was
+/// The tag an issue draft's answer comes back under
+const ISSUE_DRAFT_TAG: &str = "issue_draft";
+
 pub fn folder_press_moves(front: Option<&std::path::Path>, want: &std::path::Path, covered: bool) -> bool {
     covered || !front.is_some_and(|f| crate::uistate::same_folder(f, want))
 }

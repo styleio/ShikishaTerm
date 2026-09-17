@@ -9,6 +9,20 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **A new issue can be written by the AI from what is in its description.** The
+  description now comes first, with a ✨ at the right of its name. Pressed, the AI
+  writes the title, the description, the labels and the assignee from what was
+  written, and what was written is kept at the top with a button that puts it
+  back. What the AI is told is Settings > desk > git > New issue from notes, shown
+  whole and changeable like the commit message prompt; after it, the shape of the
+  answer is always added (JSON, with the repository's labels and assignable
+  people), and an answer that cannot be read is asked for again, up to three
+  times. Right-clicking the ✨ opens that prompt.
+- **Labels and the assignee of a new issue are chosen, not typed.** The labels
+  the repository has are offered under the field and a chosen one has a ✕; the
+  assignee is a list of the people GitHub lets be assigned, with Nobody first.
+- **`shikisha.json_decode` and `shikisha.json_encode`** read JSON text into a
+  value and write a value back out.
 - **Ideas: write down what comes to mind, per project.** The 💡 at the foot of
   the side column, left of the tools, opens a box of cards over the screen with
   the caret already in the line to write in. Enter moves to the next card and

@@ -863,6 +863,8 @@ thought of.
 | `shikisha.now("%Y-%m-%d")` | The local date/time, formatted. Sorts chronologically by default — good in file names |
 | `shikisha.epoch_ms()` | Milliseconds since the epoch, as a number, for measuring elapsed time |
 | `shikisha.diff(before, after, opts)` | What changed between two texts, written the way git writes a diff. `""` when they are the same. `opts` is `{ name = "plan.md", context = 3 }`: the name goes on the header lines, and the context is how many unchanged lines are kept either side of a change |
+| `shikisha.json_decode(text)` | A JSON text as a Lua value (objects as tables, arrays numbered from 1). `nil, why` when it is not JSON -- the usual way to read an answer an AI was asked to give as JSON |
+| `shikisha.json_encode(value)` | A Lua value as JSON text: a table numbered 1..n becomes an array, any other table an object |
 
 It is handed the two texts and never told where to find them, so the same
 command serves a reply, a page, a file and a recording:

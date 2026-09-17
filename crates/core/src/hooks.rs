@@ -1476,6 +1476,45 @@ shikisha.set_progress(nil, "", at)
 /// one edits the added instruction, the other replaces this text. What it must
 /// do is return the message as a string; where that string goes is the panel's
 /// business, not this template's.
+/// An issue drafted from somebody's notes: the prompt written in the settings,
+/// then the shape of the answer -- JSON, with the labels and people it may
+/// name -- asked again with the reason when what comes back cannot be read.
+/// Returns the JSON text; the page fills the form from it
+pub const ISSUE_DRAFT_LUA: &str = r#"
+local prompt = shikisha.get_var("issue_prompt") or ""
+local text   = shikisha.get_var("issue_text") or ""
+local labels = shikisha.get_var("issue_labels") or {}
+local people = shikisha.get_var("issue_assignees") or {}
+if text == "" then error(shikisha.t("err.issue.nothing_to_draft")) end
+-- The notes go where the prompt says {text}, or after it
+local at = prompt:find("{text}", 1, true)
+if at then
+  prompt = prompt:sub(1, at - 1) .. text .. prompt:sub(at + #"{text}")
+elseif prompt == "" then
+  prompt = text
+else
+  prompt = prompt .. "\n\n" .. text
+end
+-- The shape of the answer is always asked for: the form is filled from it
+local shape = shikisha.tf("ai.issue.shape", {
+  labels = shikisha.json_encode(labels), assignees = shikisha.json_encode(people) })
+local ask = prompt .. "\n\n" .. shape
+for try = 1, 3 do
+  local said, why = shikisha.ai_ask(ask)
+  if not said then error(why) end
+  -- A fence around the answer is not part of it
+  local body = said:gsub("^%s*```%w*%s*", "")
+  body = body:gsub("%s*```%s*$", "")
+  local got, bad = shikisha.json_decode(body)
+  if type(got) == "table" and type(got.title) == "string" and got.title ~= "" then
+    return shikisha.json_encode(got)
+  end
+  ask = prompt .. "\n\n" .. shape .. "\n\n"
+    .. shikisha.tf("ai.issue.retry", { error = bad or "no title" })
+end
+error(shikisha.t("err.issue.draft_failed"))
+"#;
+
 pub const COMMIT_MESSAGE_LUA: &str = r#"
 local tab    = shikisha.get_var("git_tab")
 -- The whole prompt, as written in the settings
@@ -2495,6 +2534,28 @@ impl HookEngine {
                             .unwrap_or(0))
                     })
                     .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            // Text to a value and back. They reach nothing and change nothing:
+            // what an AI answers in JSON is read with the first, and a table
+            // handed to the page or put in a prompt is written with the second
+            shikisha
+                .set(
+                    "json_decode",
+                    lua.create_function(|lua, text: String| {
+                        match serde_json::from_str::<serde_json::Value>(text.trim()) {
+                            Ok(v) => Ok((json_to_lua(lua, &v)?, Value::Nil)),
+                            Err(e) => Ok((Value::Nil, Value::String(lua.create_string(e.to_string())?))),
+                        }
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            shikisha
+                .set(
+                    "json_encode",
+                    lua.create_function(|_, v: Value| Ok(lua_to_json(&v).to_string()))
+                        .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
             // What changed between two texts, written the way git writes a
@@ -5872,6 +5933,7 @@ mod tests {
         // folder for the first time
         for (what, code) in [
             ("commit message", super::COMMIT_MESSAGE_LUA),
+            ("issue draft", super::ISSUE_DRAFT_LUA),
             ("folder move", super::FOLDER_MOVE_LUA),
         ] {
             eng.lua
@@ -6983,6 +7045,26 @@ mod tests {
         // something rather than writing a name that is one letter
         let plain = out("return shikisha.diff('one', 'two')");
         assert!(plain.contains("a/text"), "{plain}");
+    }
+
+    /// JSON read into a value and written back, and text that is not JSON
+    /// answered with nil and why -- which is how an AI's answer is checked
+    #[test]
+    fn a_script_reads_and_writes_json() {
+        let e = HookEngine::new().unwrap();
+        let out = |src: &str| {
+            e.call_primitive("lua", &[serde_json::json!(src)]).unwrap()[1]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert_eq!(
+            out(r#"local v = shikisha.json_decode('{"title":"t","labels":["bug","ui"]}') return v.title .. "|" .. v.labels[2]"#),
+            "t|ui"
+        );
+        assert_eq!(out(r#"local v, why = shikisha.json_decode('not json') return tostring(v) .. "|" .. tostring(why ~= nil)"#), "nil|true");
+        let back: serde_json::Value = serde_json::from_str(&out(r#"return shikisha.json_encode({ title = "t", labels = { "a", "b" } })"#)).unwrap();
+        assert_eq!(back, serde_json::json!({"title": "t", "labels": ["a", "b"]}));
     }
 
     /// This machine's side of a transfer, walked from a script -- and stopping

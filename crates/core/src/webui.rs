@@ -3446,6 +3446,9 @@ const PAGE: &str = r##"<!doctype html>
    color:var(--dim); background:var(--panel2); border:1px solid var(--edge);
    border-radius:var(--r-chip); white-space:nowrap; }
  /* Nothing may use it yet: somebody has to say who before it does anything */
+ /* What is always added after a prompt, read-only */
+ .promptshape { white-space:pre-wrap; font-size:12px; color:var(--dim); background:var(--sunk, var(--panel2));
+   border:1px solid var(--line); border-radius:var(--r-ctl); padding:var(--s2) var(--s3); margin:var(--s2) 0 var(--s4); }
  /* The words a prompt can use, pressed to put one in */
  .promptvars { gap:var(--s2); margin-top:var(--s2); flex-wrap:wrap; align-items:center; }
  /* The label stays at the start of the row, not a line of its own */
@@ -6703,7 +6706,7 @@ function globalSections() {
 // Links that name one of a desk's settings (the git panel's gear asks for
 // "git"): the desk in view, at that entry, since there is no copy of the
 // program's to land on. Older names for the same places are kept here
-const DESK_LINKS = {git:"git", "git-message":"git", protect:"git", gitaccounts:"gitaccounts", providers:"providers",
+const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", protect:"git", gitaccounts:"gitaccounts", providers:"providers",
                     permissions:"permissions", caps:"caps", tools:"tools"};
 
 // ── Update ─────────────────────────────────────────────────────
@@ -7748,6 +7751,12 @@ function gitFields(owner) {
     el("h3", {}, T["settings.git.pr.title"]),
     el("div", {class:"hint"}, T["settings.git.pr.about"]),
     promptField(g, "pr_prompt", "ai.pr.default_prompt", "desk-git-pr", ["branch", "base", "commits", "diff", "ai"]),
+    el("h3", {}, T["settings.git.issue.title"]),
+    el("div", {class:"hint"}, T["settings.git.issue.about"]),
+    promptField(g, "issue_prompt", "ai.issue.default_prompt", "desk-git-issue", ["text", "ai"]),
+    // What is always added after it, shown rather than kept out of sight
+    el("div", {class:"hint"}, T["settings.git.issue.shape"]),
+    el("pre", {class:"mono promptshape"}, T["ai.issue.shape"] || ""),
   ];
 }
 
@@ -11787,6 +11796,7 @@ load().then(() => {
     goDeskSection(DESK_LINKS[sec], "center");
     // Asked for one field, not the card: that field, marked
     if (sec === "git-message") lookAtCard("desk-git-message", 50);
+    if (sec === "git-issue") lookAtCard("desk-git-issue", 50);
     return;
   }
   const wi = idx("addtab");

@@ -2781,6 +2781,11 @@ pub struct GitSpec {
     /// `{branch}`, `{base}`, `{commits}`, `{diff}` and `{ai}`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_prompt: Option<String>,
+    /// The prompt an issue is drafted from somebody's notes with, in the same
+    /// three states. Its words to fill in are `{text}` and `{ai}`; the shape of
+    /// the answer is always added after it (see `hooks::ISSUE_DRAFT_LUA`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_prompt: Option<String>,
     /// Lua that produces the message itself. When set, the built-in template is
     /// not used at all -- this is the whole of it
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2808,6 +2813,10 @@ impl GitSpec {
             Some(h) => format!("{base}\n\n{h}"),
             None => base,
         }
+    }
+    /// The prompt an issue is drafted with: the one written, else the default
+    pub fn issue_prompt(&self) -> String {
+        self.issue_prompt.clone().unwrap_or_else(|| crate::i18n::t("ai.issue.default_prompt"))
     }
     /// The branches to guard where nobody has said anything more specific.
     pub fn protected(&self) -> Vec<String> {
