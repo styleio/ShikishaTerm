@@ -2381,6 +2381,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #sdiff .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
     margin-bottom:var(--s1); }
   #sdiff .vsay { color:var(--dim); font-size:12px; line-height:1.5; }
+  #sdiff .vhead .genc { margin-left:auto; margin-right:var(--s3); }
   /* The two files being held up against each other, one to a line */
   #sdiff .bwhere { font-family:var(--mono); font-size:11.5px; color:var(--dim);
     background:var(--sunk); border:1px solid var(--line); border-radius:var(--r-ctl);
@@ -14804,18 +14805,26 @@ function askSend(which, files, there, go) {
 function sftpDiff(name) {
   // Which side the row was on does not come into it: there are two copies of
   // this name and both of them are read where they are
+  diffEnc = "";
+  sftpDiffAsk(name);
+  openDiff(name);
+}
+function sftpDiffAsk(name) {
   sftpAsk("diff", {
     name,
     here: ljoin(F.local.at, name),
     there: rjoin(F.remote.at, name),
+    encoding: diffEnc,
   });
-  openDiff(name);
 }
 
 let diffUi = null;
 // Which file this window is waiting on. An answer for anything else is one
 // somebody asked for, read, and closed before it arrived
 let diffFor = "";
+// The encoding chosen for it ("" works it out), and what the last answer was
+// read as, said on "Auto"
+let diffEnc = "", diffRead = "";
 function diffParts() {
   const box = document.getElementById("sdiff");
   if (!box) return null;
@@ -14827,9 +14836,23 @@ function diffParts() {
       where: box.querySelector(".bwhere"),
       body: box.querySelector(".dbody"),
       close: box.querySelector(".brow .quiet"),
+      // Chosen again: both files are read again in it
+      enc: encPicker(v => {
+        diffEnc = v; diffRead = "";
+        diffEncFill();
+        diffUi.body.textContent = "";
+        diffUi.body.append(el("div", {class:"dsay"}, T["sftp.diff.reading"] || ""));
+        diffUi.say.hidden = true;
+        sftpDiffAsk(diffFor);
+      }),
     };
+    diffUi.title.after(diffUi.enc);
   }
   return diffUi;
+}
+function diffEncFill() {
+  const auto = diffRead ? (T["git.enc.auto"] || "{enc}").replace("{enc}", diffRead) : (T["git.enc.auto.plain"] || "");
+  encPickerFill(diffUi.enc, [["", auto]].concat(ENCODINGS.map(e => [e, e])), diffEnc);
 }
 
 // Opened before the answer is back, saying what it is reading. A window that
@@ -14839,6 +14862,8 @@ function openDiff(name) {
   if (!u) return;
   u.box.hidden = false;
   diffFor = name;
+  diffRead = "";
+  diffEncFill();
   u.title.textContent = T["sftp.diff.title"] || "";
   u.say.textContent = T["sftp.diff.say"] || "";
   // What the two marks mean, while there are marks to explain
@@ -14861,6 +14886,11 @@ function showDiff(msg) {
   const u = diffParts();
   if (!u || u.box.hidden) return;
   if (msg.name && msg.name !== diffFor) return;
+  // An answer read in an encoding changed away from since. One that says
+  // nothing of it failed before any reading, and is still the answer
+  if (msg.asked != null && msg.asked !== diffEnc) return;
+  diffRead = msg.encoding || "";
+  diffEncFill();
   u.body.textContent = "";
   u.say.hidden = !(msg.ok && msg.text);
   if (!msg.ok) {
