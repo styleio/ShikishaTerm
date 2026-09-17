@@ -219,6 +219,15 @@ impl Layout {
         Layout { root: Node::leaf(1, surface), focus: 1, next_id: 2 }
     }
 
+    /// One surface on its own, undivided, in place of this arrangement.
+    ///
+    /// Pane ids go on counting from this one, as `restore` does, so the page
+    /// never sees an old id come back meaning a different pane
+    pub fn alone(&self, surface: usize) -> Layout {
+        let id = self.next_id;
+        Layout { root: Node::leaf(id, surface), focus: id, next_id: id + 1 }
+    }
+
     pub fn focus(&self) -> PaneId {
         self.focus
     }
@@ -609,6 +618,22 @@ mod tests {
 
     fn surfaces(l: &Layout) -> Vec<usize> {
         l.leaves().into_iter().map(|(_, s)| s).collect()
+    }
+
+    /// A folder opened on its own replaces the whole split, whichever side was
+    /// in front, and its pane is one the page has not seen before
+    #[test]
+    fn a_surface_alone_replaces_the_whole_split() {
+        let mut l = Layout::single(2);
+        let right = l.split(Dir::Row, 5);
+        l.focus_pane(right);
+        let before: Vec<PaneId> = l.leaves().into_iter().map(|(id, _)| id).collect();
+
+        let alone = l.alone(7);
+        assert_eq!(surfaces(&alone), [7], "the other side of the split stayed");
+        assert_eq!(alone.focused_surface(), 7);
+        let id = alone.leaves()[0].0;
+        assert!(!before.contains(&id), "a pane id came back meaning another pane");
     }
 
     #[test]

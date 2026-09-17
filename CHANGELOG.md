@@ -91,6 +91,9 @@ once it reaches its first tagged release.
 - **The Issue tab is called Issues & PRs.**
 
 ### Fixed
+- **Pressing a folder that has not been looked at yet shows it on its own.** With
+  the screen split, it went into the pane in front only, and the other pane went
+  on showing a folder of another project beside it.
 - **A folder whose contents a .gitignore line ignores is no longer offered to a
   new worktree beside them.** For `www/tmp/*` the dialog listed `www/tmp/` as
   well as each folder inside it, although git does not ignore `www/tmp` itself.

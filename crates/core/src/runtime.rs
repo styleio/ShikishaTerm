@@ -1433,7 +1433,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // last time that folder was the one being looked at. Kept by the names
         // of what each pane showed, so tabs opened or closed since elsewhere do
         // not turn it into somebody else's view. Never looked at this run, it
-        // opens on its first tab. Already the folder in front, nothing moves --
+        // opens on its first tab, undivided. Already the folder in front, nothing moves --
         // the press is somebody finding their place, not asking to be moved
         for want in shell.mail().take_folder_views() {
             let want = std::path::PathBuf::from(want);
@@ -1469,7 +1469,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             }
                             continue;
                         };
-                        pane_layout.show(n);
+                        // On its own, not into the pane in front. Put into
+                        // that one pane, the rest of the split stayed as it
+                        // was: a folder of another project on one side and
+                        // this one on the other, a screen belonging to neither
+                        pane_layout = pane_layout.alone(n);
                     }
                 }
                 active = pane_layout.focused_surface();
