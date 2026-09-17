@@ -6706,7 +6706,7 @@ function globalSections() {
 // Links that name one of a desk's settings (the git panel's gear asks for
 // "git"): the desk in view, at that entry, since there is no copy of the
 // program's to land on. Older names for the same places are kept here
-const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", protect:"git", gitaccounts:"gitaccounts", providers:"providers",
+const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", "git-pr":"git", protect:"git", gitaccounts:"gitaccounts", providers:"providers",
                     permissions:"permissions", caps:"caps", tools:"tools"};
 
 // ── Update ─────────────────────────────────────────────────────
@@ -7751,6 +7751,10 @@ function gitFields(owner) {
     el("h3", {}, T["settings.git.pr.title"]),
     el("div", {class:"hint"}, T["settings.git.pr.about"]),
     promptField(g, "pr_prompt", "ai.pr.default_prompt", "desk-git-pr", ["branch", "base", "commits", "diff", "ai"]),
+    el("details", {class:"promptmore"},
+      el("summary", {}, T["settings.git.prompt.more"]),
+      el("div", {class:"hint"}, T["settings.git.pr.shape"]),
+      el("pre", {class:"mono promptshape"}, T["ai.pr.shape"] || "")),
     el("h3", {}, T["settings.git.issue.title"]),
     el("div", {class:"hint"}, T["settings.git.issue.about"]),
     promptField(g, "issue_prompt", "ai.issue.default_prompt", "desk-git-issue", ["text", "ai"]),
@@ -11801,6 +11805,7 @@ load().then(() => {
     // Asked for one field, not the card: that field, marked
     if (sec === "git-message") lookAtCard("desk-git-message", 50);
     if (sec === "git-issue") lookAtCard("desk-git-issue", 50);
+    if (sec === "git-pr") lookAtCard("desk-git-pr", 50);
     return;
   }
   const wi = idx("addtab");

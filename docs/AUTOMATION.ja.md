@@ -1089,6 +1089,7 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | `shikisha.github_pr(タブ, 番号)` | プルリクエストを1件、全部: 上に加えて `head`・`base`・`fork`・`merged`・`mergeable`・`merge_state`・`additions`・`deletions`・`changed_files`・`reviewers`・`review`（`approved` / `changes_requested` / 空）・`checks`（`{failed, pending, passed, total, items}`） |
 | `shikisha.github_labels(タブ)` / `shikisha.github_assignees(タブ)` | Issue に付けられるラベルと、担当にできる人のログイン名 |
 | `shikisha.github_issue_create(タブ, {title=…, body=…, labels=…, assignees=…})` | Issue を作る。`{number, url}` を返す |
+| `shikisha.github_pr_create(タブ, {title=…, body=…, head=…, base=…, draft=…})` | ブランチ `head` から `base` へのプルリクエストを作る。`draft = true` なら下書き。`{number, url}` を返す |
 | `shikisha.github_comment(タブ, 番号, "本文")` | Issue やプルリクエストにコメントする。`{id, url}` を返す |
 | `shikisha.github_issue_state(タブ, 番号, 状態, {duplicate_of=…})` | `open`・`completed`・`not_planned`・`duplicate`（`duplicate_of` と一緒に。「Duplicate of #番号」のコメントも付く） |
 | `shikisha.github_pr_state(タブ, 番号, "open" か "closed")` | プルリクエストをマージせずに閉じる、または開き直す |

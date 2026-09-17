@@ -1080,6 +1080,7 @@ The issues and pull requests of the repository a tab works in, signed in as the 
 | `shikisha.github_pr(tab, number)` | One pull request in full, as above plus `head`, `base`, `fork`, `merged`, `mergeable`, `merge_state`, `additions`, `deletions`, `changed_files`, `reviewers`, `review` (`approved` / `changes_requested` / empty) and `checks` (`{failed, pending, passed, total, items}`) |
 | `shikisha.github_labels(tab)` / `shikisha.github_assignees(tab)` | The labels an issue can have, and the logins it can be assigned to |
 | `shikisha.github_issue_create(tab, {title=…, body=…, labels=…, assignees=…})` | Open an issue. Answers `{number, url}` |
+| `shikisha.github_pr_create(tab, {title=…, body=…, head=…, base=…, draft=…})` | Open a pull request from the branch `head` into `base`, as a draft when `draft = true`. Answers `{number, url}` |
 | `shikisha.github_comment(tab, number, "text")` | Comment on an issue or a pull request. Answers `{id, url}` |
 | `shikisha.github_issue_state(tab, number, state, {duplicate_of=…})` | `open`, `completed`, `not_planned`, or `duplicate` (with `duplicate_of`, which also posts "Duplicate of #n") |
 | `shikisha.github_pr_state(tab, number, "open" or "closed")` | Close a pull request without merging it, or open it again |

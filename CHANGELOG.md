@@ -9,6 +9,17 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **A pull request is made from the git column.** Once a branch is pushed and
+  has nothing waiting either way, the git column's button becomes Create pull
+  request (not on a protected branch, and not while the branch already has one
+  open); it is also under the arrow, greyed with the reason when it cannot be made
+  yet. It opens a New pull request page in the Issue tab: the description with its
+  ✨, the title, the branch it goes into (the server's default first), Create as a
+  draft, and -- for a folder made for an issue -- a tick that ends the description
+  with `Fixes #123`. The ✨ has the AI write the title and description from the
+  branch's commits and change, with the prompt in Settings > desk > git, the same
+  way a new issue is written. Once made, the pull request opens.
+- **`shikisha.github_pr_create`** opens a pull request from a script.
 - **A new issue can be written by the AI from what is in its description.** The
   description now comes first, with a ✨ at the right of its name. Pressed, the AI
   writes the title, the description, the labels and the assignee from what was

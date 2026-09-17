@@ -1469,35 +1469,15 @@ end
 shikisha.set_progress(nil, "", at)
 "#;
 
-/// What the commit-message button runs when nobody has written their own.
-///
-/// It is Lua rather than Rust so that "I want it in English" and "I want a
-/// ticket number from the database in front" are the same kind of change --
-/// one edits the added instruction, the other replaces this text. What it must
-/// do is return the message as a string; where that string goes is the panel's
-/// business, not this template's.
-/// An issue drafted from somebody's notes: the prompt written in the settings,
-/// then the shape of the answer -- JSON, with the labels and people it may
-/// name -- asked again with the reason when what comes back cannot be read.
-/// Returns the JSON text; the page fills the form from it
-pub const ISSUE_DRAFT_LUA: &str = r#"
-local prompt = shikisha.get_var("issue_prompt") or ""
-local text   = shikisha.get_var("issue_text") or ""
-local labels = shikisha.get_var("issue_labels") or {}
-local people = shikisha.get_var("issue_assignees") or {}
-if text == "" then error(shikisha.t("err.issue.nothing_to_draft")) end
--- The notes go where the prompt says {text}, or after it
-local at = prompt:find("{text}", 1, true)
-if at then
-  prompt = prompt:sub(1, at - 1) .. text .. prompt:sub(at + #"{text}")
-elseif prompt == "" then
-  prompt = text
-else
-  prompt = prompt .. "\n\n" .. text
-end
--- The shape of the answer is always asked for: the form is filled from it
-local shape = shikisha.tf("ai.issue.shape", {
-  labels = shikisha.json_encode(labels), assignees = shikisha.json_encode(people) })
+/// Something written by the AI in a shape a form can be filled from: an
+/// issue from somebody's notes, a pull request from a branch's commits. The
+/// prompt comes from the settings with its words already filled in, then the
+/// shape of the answer -- JSON -- and what comes back is asked for again, with
+/// the reason, when it cannot be read. Returns the JSON text; which fields
+/// beyond a title it must hold, and which of them are kept, the form decides
+pub const DRAFT_LUA: &str = r#"
+local prompt = shikisha.get_var("draft_prompt") or ""
+local shape  = shikisha.get_var("draft_shape") or ""
 local ask = prompt .. "\n\n" .. shape
 for try = 1, 3 do
   local said, why = shikisha.ai_ask(ask)
@@ -1510,11 +1490,18 @@ for try = 1, 3 do
     return shikisha.json_encode(got)
   end
   ask = prompt .. "\n\n" .. shape .. "\n\n"
-    .. shikisha.tf("ai.issue.retry", { error = bad or "no title" })
+    .. shikisha.tf("ai.draft.retry", { error = bad or "no title" })
 end
-error(shikisha.t("err.issue.draft_failed"))
+error(shikisha.t("err.draft.failed"))
 "#;
 
+/// What the commit-message button runs when nobody has written their own.
+///
+/// It is Lua rather than Rust so that "I want it in English" and "I want a
+/// ticket number from the database in front" are the same kind of change --
+/// one edits the added instruction, the other replaces this text. What it must
+/// do is return the message as a string; where that string goes is the panel's
+/// business, not this template's.
 pub const COMMIT_MESSAGE_LUA: &str = r#"
 local tab    = shikisha.get_var("git_tab")
 -- The whole prompt, as written in the settings
@@ -3619,6 +3606,18 @@ impl HookEngine {
                     &s("body"),
                     &strings(o.get("labels").unwrap_or(&none)),
                     &strings(o.get("assignees").unwrap_or(&none)),
+                )
+            });
+            github!("github_pr_create", |lua, repo, hub, args| {
+                let o = arg(&args, 0);
+                let s = |k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                hub.create_pull(
+                    &repo,
+                    &s("title"),
+                    &s("body"),
+                    &s("head"),
+                    &s("base"),
+                    o.get("draft").and_then(|d| d.as_bool()).unwrap_or(false),
                 )
             });
             github!("github_comment", |lua, repo, hub, args| {
@@ -5933,7 +5932,7 @@ mod tests {
         // folder for the first time
         for (what, code) in [
             ("commit message", super::COMMIT_MESSAGE_LUA),
-            ("issue draft", super::ISSUE_DRAFT_LUA),
+            ("draft", super::DRAFT_LUA),
             ("folder move", super::FOLDER_MOVE_LUA),
         ] {
             eng.lua

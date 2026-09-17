@@ -4232,9 +4232,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Answers from the Lua that was left running (the commit message)
         if let Some(eng) = engine.as_mut() {
             for (tag, said) in eng.take_snippets() {
-                // An issue draft goes to the Issue tab, everything else to git
-                let issue = tag == ISSUE_DRAFT_TAG;
-                let act = if issue { "draft" } else { tag.as_str() };
+                // A draft goes to the Issue tab under the act that asked for it,
+                // everything else to git
+                let issue = tag == DRAFT_ISSUE_TAG || tag == DRAFT_PR_TAG;
+                let act = if tag == DRAFT_ISSUE_TAG { "draft" } else if tag == DRAFT_PR_TAG { "pr_draft" } else { tag.as_str() };
                 let payload = match said {
                     Ok(text) => serde_json::json!({"act": act, "ok": true, "data": text}),
                     Err(why) => serde_json::json!({"act": act, "ok": false, "error": why}),
@@ -4363,34 +4364,75 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 continue;
             }
-            // Notes turned into an issue by the AI: the desk's prompt, the notes,
-            // and the labels and people the page already knows for the project.
+            // Something for the AI to write into a form: an issue from the notes
+            // in its description, or a pull request from a branch's commits. The
+            // desk's prompt with its words filled in, then the shape of the answer;
             // Lua the same way the commit message is, so the window keeps drawing
-            if act == "draft" {
+            if act == "draft" || act == "pr_draft" {
+                let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).filter(|s| !s.is_empty());
+                let label = crate::webui::local_ai_label(ai.as_deref()).unwrap_or("an AI");
+                let text = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                let list = |k: &str| args.get(k).cloned().filter(|v| v.is_array()).unwrap_or(serde_json::json!([]));
+                let (prompt, shape, tag) = if act == "draft" {
+                    let notes = text("text");
+                    if notes.trim().is_empty() {
+                        let js = serde_json::json!({"act": "draft", "ok": false, "error": i18n::t("err.issue.nothing_to_draft")}).to_string();
+                        shell.push_issues(&js);
+                        continue;
+                    }
+                    let shape = i18n::tp("ai.issue.shape", &[
+                        ("labels", &list("labels").to_string()),
+                        ("assignees", &list("assignees").to_string()),
+                    ]);
+                    (fill_or_append(&desk.git.issue_prompt(), &[("ai", label)], "text", &notes), shape, DRAFT_ISSUE_TAG)
+                } else {
+                    // The branch, what it goes into, its commits and its change,
+                    // read from the folder the pull request is for
+                    let dir = std::path::PathBuf::from(text("folder"));
+                    // Only a folder of the project it names: the page says which
+                    // folder, and git is not run anywhere it could point at
+                    let ours = crate::repo::family_of(&dir).is_some_and(|fam| {
+                        crate::github::desk_sources(desk).iter().any(|s| {
+                            s.name == text("project") && crate::repo::family_of(&s.dir).as_deref() == Some(fam.as_path())
+                        })
+                    });
+                    if !ours {
+                        let js = serde_json::json!({"act": "pr_draft", "ok": false, "error": i18n::t("err.github.no_project")}).to_string();
+                        shell.push_issues(&js);
+                        continue;
+                    }
+                    let (head, into) = (text("head"), text("base"));
+                    let against = format!("origin/{into}");
+                    let commits = crate::git::run(&dir, &["log", "--no-color", "--format=- %s", &format!("{against}..HEAD")])
+                        .unwrap_or_default();
+                    let mut change = crate::git::run(&dir, &["diff", "--no-color", &format!("{against}...HEAD")]).unwrap_or_default();
+                    // A change can be a megabyte. The shape of it is in the first pages
+                    if change.len() > 12000 {
+                        let cut = (0..=12000).rev().find(|&i| change.is_char_boundary(i)).unwrap_or(0);
+                        change.truncate(cut);
+                        change.push_str("\n...\n");
+                    }
+                    let prompt = fill_or_append(
+                        &desk.git.pr_prompt(),
+                        &[("ai", label), ("branch", &head), ("base", &into), ("commits", commits.trim())],
+                        "diff",
+                        &change,
+                    );
+                    (prompt, i18n::t("ai.pr.shape"), DRAFT_PR_TAG)
+                };
                 if engine.is_none() {
                     engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
                 }
                 let Some(eng) = engine.as_mut() else { continue };
-                let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).filter(|s| !s.is_empty());
-                let prompt = desk
-                    .git
-                    .issue_prompt()
-                    .replace("{ai}", crate::webui::local_ai_label(ai.as_deref()).unwrap_or("an AI"));
-                let list = |k: &str| args.get(k).cloned().filter(|v| v.is_array()).unwrap_or(serde_json::json!([]));
-                for (name, value) in [
-                    ("issue_prompt", serde_json::json!(prompt)),
-                    ("issue_text", args.get("text").cloned().unwrap_or(serde_json::json!(""))),
-                    ("issue_labels", list("labels")),
-                    ("issue_assignees", list("assignees")),
-                ] {
+                for (name, value) in [("draft_prompt", prompt), ("draft_shape", shape)] {
                     let _ = eng.call_primitive_as(
                         None,
                         grants::Subject::Human,
                         "set_var",
-                        &[serde_json::json!(name), value],
+                        &[serde_json::json!(name), serde_json::json!(value)],
                     );
                 }
-                eng.start_snippet(ISSUE_DRAFT_TAG, crate::hooks::ISSUE_DRAFT_LUA);
+                eng.start_snippet(tag, crate::hooks::DRAFT_LUA);
                 continue;
             }
             let sources = crate::github::desk_sources(desk);
@@ -8375,8 +8417,27 @@ pub fn save_replay_to_downloads() -> std::io::Result<Option<std::path::PathBuf>>
 /// press is somebody finding their place. With a tab of no folder in front
 /// (the Issue tab, a page), the folder is not what is being looked at, however
 /// recently it was
-/// The tag an issue draft's answer comes back under
-const ISSUE_DRAFT_TAG: &str = "issue_draft";
+/// The tags a draft's answer comes back under
+const DRAFT_ISSUE_TAG: &str = "issue_draft";
+const DRAFT_PR_TAG: &str = "pr_draft";
+
+/// A prompt with its words filled in: each `{name}` becomes its value, and
+/// `{main}` becomes the main material -- or, when the prompt does not say where
+/// it goes, the material follows it. An empty prompt is the material alone
+fn fill_or_append(prompt: &str, words: &[(&str, &str)], main: &str, material: &str) -> String {
+    let mut out = prompt.to_string();
+    for (name, value) in words {
+        out = out.replace(&format!("{{{name}}}"), value);
+    }
+    let mark = format!("{{{main}}}");
+    if out.contains(&mark) {
+        out.replace(&mark, material)
+    } else if out.trim().is_empty() {
+        material.to_string()
+    } else {
+        format!("{out}\n\n{material}")
+    }
+}
 
 pub fn folder_press_moves(front: Option<&std::path::Path>, want: &std::path::Path, covered: bool) -> bool {
     covered || !front.is_some_and(|f| crate::uistate::same_folder(f, want))
