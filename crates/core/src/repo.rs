@@ -195,15 +195,31 @@ fn real(p: PathBuf) -> PathBuf {
     let Ok(full) = std::fs::canonicalize(&p) else {
         return tidy(p);
     };
-    let said = full.to_string_lossy().to_string();
-    match said.strip_prefix(VERBATIM) {
-        Some(rest) => PathBuf::from(rest),
-        None => PathBuf::from(said),
+    plain(full.to_string_lossy().to_string())
+}
+
+/// A path as Windows resolved it, written the way everyone else writes one.
+///
+/// A folder on another machine comes back as `\\?\UNC\<server>\<share>\...`:
+/// the two slashes that start a network path have been swallowed by the
+/// prefix, so taking off only `\\?\` leaves `UNC\<server>\...`, a name that
+/// points nowhere. git was handed exactly that and said it could not change to
+/// it, which left a repository opened across the network unable to have a
+/// branch cut from it. The network form is put back together; everything else
+/// only loses the prefix
+fn plain(said: String) -> PathBuf {
+    match said.strip_prefix(VERBATIM_UNC) {
+        Some(rest) => PathBuf::from(format!("\\\\{rest}")),
+        None => PathBuf::from(said.strip_prefix(VERBATIM).unwrap_or(&said)),
     }
 }
 
 /// What Windows puts in front of a path it has resolved in full.
 const VERBATIM: &str = "\\\\?\\";
+
+/// The same, for a folder on another machine: what follows it is
+/// `<server>\<share>\...`, without the `\\` that says so.
+const VERBATIM_UNC: &str = "\\\\?\\UNC\\";
 
 /// The original checkout of whatever repository this folder belongs to.
 ///
@@ -764,6 +780,26 @@ mod tests {
         .unwrap();
         assert_eq!(origin_of(&side).as_deref(), Some("styleio/ShikishaTerm"));
         assert_eq!(origin_of(&side), origin_of(&main));
+    }
+
+    /// A repository kept on another machine is opened through its network name,
+    /// and Windows answers about it in a spelling nothing else accepts: taking
+    /// off only `\\?\` left `UNC\192.168.0.35\...`, and cutting a branch from
+    /// that project died with "cannot change to" (2026-09-18, a user's share).
+    #[test]
+    fn a_repository_on_another_machine_keeps_the_slashes_that_name_it() {
+        assert_eq!(
+            plain("\\\\?\\UNC\\192.168.0.35\\projects\\php7\\te0_main".to_string()),
+            PathBuf::from("\\\\192.168.0.35\\projects\\php7\\te0_main"),
+        );
+        // A folder on a drive of this machine loses the prefix and nothing else
+        assert_eq!(plain("\\\\?\\D:\\ShikishaTerm".to_string()), PathBuf::from("D:\\ShikishaTerm"));
+        // And a path that was never answered about is left as it is
+        assert_eq!(plain("D:\\ShikishaTerm".to_string()), PathBuf::from("D:\\ShikishaTerm"));
+        assert_eq!(
+            plain("\\\\192.168.0.35\\projects".to_string()),
+            PathBuf::from("\\\\192.168.0.35\\projects"),
+        );
     }
 
     #[test]
