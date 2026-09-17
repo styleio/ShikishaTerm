@@ -55,6 +55,8 @@ once it reaches its first tagged release.
   "Show done ideas", deleted takes it out of the file for good. Sending to an
   Issue brings the Issue tab to the front on a new issue whose description is
   the idea, in the idea's project; its ✨ writes the title and labels from it.
+  Once the issue is made the idea is done, and wears the issue's number (`#12`),
+  which opens it; a form put away without making one leaves the idea as it was.
 
 ### Changed
 - **Waiting in the Issue tab is shown plainly.** While GitHub or the AI is being
