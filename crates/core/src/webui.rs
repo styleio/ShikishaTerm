@@ -7755,8 +7755,12 @@ function gitFields(owner) {
     el("div", {class:"hint"}, T["settings.git.issue.about"]),
     promptField(g, "issue_prompt", "ai.issue.default_prompt", "desk-git-issue", ["text", "ai"]),
     // What is always added after it, shown rather than kept out of sight
-    el("div", {class:"hint"}, T["settings.git.issue.shape"]),
-    el("pre", {class:"mono promptshape"}, T["ai.issue.shape"] || ""),
+    // What is always added after it: shown, but folded -- it is there to be
+    // looked up, not read every time the page is opened
+    el("details", {class:"promptmore"},
+      el("summary", {}, T["settings.git.prompt.more"]),
+      el("div", {class:"hint"}, T["settings.git.issue.shape"]),
+      el("pre", {class:"mono promptshape"}, T["ai.issue.shape"] || "")),
   ];
 }
 
