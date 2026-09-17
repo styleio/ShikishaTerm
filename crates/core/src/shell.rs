@@ -3808,7 +3808,7 @@ window.__issues = function (d) {
     case "create_pr": {
       const n = (d.data || {}).number || "";
       I.pr = {project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false, close:false, issue:null, kept:"", files:null, open:{}, more:false};
-      I.kind = "pr";
+      I.kind = "pr"; I.preset = "open"; I.list = null;
       I.said = (T["issues.pr.created"] || "").replace("{n}", n);
       issuesAsk("detail", {project: d.project, number: n});
       issuesList(1);
@@ -13062,7 +13062,9 @@ function gitOpenPr() {
           draft:false, close: !!made, issue: made ? {repo: made[1], number: Number(made[2])} : null, kept:"",
           files:null, open:{}, more:false};
   I.pr.body = prFixes("", I.pr);
-  I.kind = "pr";
+  // The list behind it keeps the kind it was showing: switching it here left the
+  // list headed Pull requests over the issues it still held, and without the
+  // New issue button. It turns to pull requests once one has been made
   I.view = "newpr";
   I.said = ""; I.bad = false;
   issuesSig = "";

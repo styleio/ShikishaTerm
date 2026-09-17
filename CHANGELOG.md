@@ -99,6 +99,10 @@ once it reaches its first tagged release.
   or shut stays that way.
 
 ### Fixed
+- **The Issue tab keeps showing issues after a pull request page is opened from the
+  git column.** Opening it turned the list behind it to pull requests without
+  asking for them again, so the list was headed Pull requests over issues and the
+  New issue button was gone. The list turns to pull requests once one is made.
 - **A worktree made in the app pushes under its own name.** A branch cut from
   `origin/main` (a worktree made from an issue, for one) was set to follow
   `origin/main`, so Push in the git panel stopped and said the branch follows one
