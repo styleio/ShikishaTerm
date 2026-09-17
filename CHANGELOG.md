@@ -74,8 +74,12 @@ once it reaches its first tagged release.
   the idea, in the idea's project; its ✨ writes the title and labels from it.
   Once the issue is made the idea is done, and wears the issue's number (`#12`),
   which opens it; a form put away without making one leaves the idea as it was.
-  `Ctrl+B m` opens the ideas too, and the key can be changed under Settings >
-  Keys like any other.
+- **The quick commands and the ideas open with a combination of their own,
+  and any action can be given one.** `Ctrl+Shift+K` opens the quick commands and
+  `Ctrl+Shift+M` the ideas, with no prefix, and even while the caret is in the
+  input bar or another text box. Under Settings > Keys, choosing the box beside
+  an action and pressing a combination writes it there; Shift held with Ctrl now
+  makes a key of its own, so Ctrl+Shift+M is not taken for Ctrl+M.
 
 ### Changed
 - **Waiting in the Issue tab is shown plainly.** While GitHub or the AI is being
@@ -122,6 +126,9 @@ once it reaches its first tagged release.
   trust question.** The question was not taken for one, so the message and Enter
   went in and chose No, exit -- in every new worktree. The tab now waits until the
   question is answered.
+- **Esc puts away the quick commands before any are made.** The note saying
+  none exist yet did not take the keyboard, so opened from a text box the
+  launcher stayed up whatever was pressed.
 - **The Issue tab keeps showing issues after a pull request page is opened from the
   git column.** Opening it turned the list behind it to pull requests without
   asking for them again, so the list was headed Pull requests over issues and the

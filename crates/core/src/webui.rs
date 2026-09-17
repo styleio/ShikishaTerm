@@ -5877,6 +5877,23 @@ function hotkeysCard() {
   return box;
 }
 
+// A combination held down, written the way the keys list writes it
+// ("Ctrl+Shift+M", "Alt+F4", "F5"), or null for a press that is typing
+function pressedCombo(e) {
+  if (e.isComposing || ["Control", "Shift", "Alt", "Meta"].includes(e.key)) return null;
+  const letter = /^Key([A-Z])$/.exec(e.code || "");
+  const digit = /^Digit([0-9])$/.exec(e.code || "");
+  const names = {ArrowUp:"Up", ArrowDown:"Down", ArrowLeft:"Left", ArrowRight:"Right", PageUp:"PageUp",
+    PageDown:"PageDown", Home:"Home", End:"End", Insert:"Insert", Delete:"Delete", Enter:"Enter",
+    Escape:"Esc", Tab:"Tab", Backspace:"Backspace", " ":"Space"};
+  const fkey = /^F([1-9]|1[0-2])$/.test(e.key) ? e.key : "";
+  const held = e.ctrlKey || e.altKey;
+  // Nothing held and not a function key: typing, or walking between boxes
+  if (!held && !fkey) return null;
+  const key = letter ? letter[1] : digit ? digit[1] : fkey || names[e.key] || (e.key.length === 1 ? e.key : "");
+  if (!key) return null;
+  return (e.ctrlKey ? "Ctrl+" : "") + (e.altKey ? "Alt+" : "") + (e.shiftKey ? "Shift+" : "") + key;
+}
 function keysCard() {
   // Read without writing, like the card above: an empty section put in just by
   // opening the page marked every visit unsaved
@@ -5914,6 +5931,16 @@ function keysCard() {
         const v = inp.value.trim();
         if (v) k[r.name] = v; else delete k[r.name];
         attach();
+      });
+      // Pressed rather than spelled: a combination held down while the box
+      // has the caret is written into it the way the list shows keys. A bare
+      // character is still typed, since on its own it means "after the prefix"
+      inp.addEventListener("keydown", e => {
+        const combo = pressedCombo(e);
+        if (!combo) return;
+        e.preventDefault();
+        inp.value = combo;
+        inp.dispatchEvent(new Event("input"));
       });
       list.append(el("div", {class:"row pair"},
         el("label", {}, r.desc),
