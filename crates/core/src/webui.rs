@@ -3976,7 +3976,9 @@ const PAGE: &str = r##"<!doctype html>
    textarea { min-height:150px; }
    /* Paths, URLs and ids have no spaces to break at — break them anyway. */
    .hint, .event .name, code { overflow-wrap:anywhere; }
-   .modal-inner { width:96vw; max-height:92vh; padding:16px 14px; }
+   /* No ceiling on the height: the sheet around it is what scrolls (.modal),
+      and a box cut off at 92vh drew its last fields outside its own background */
+   .modal-inner { width:96vw; padding:16px 14px; }
    /* A row of facts becomes a small card: the name on its own line, the rest
       under it, and the way in still a whole-row press. */
    .secretrow { align-items:flex-start; padding:10px 0; row-gap:var(--s1); }
@@ -8811,7 +8813,11 @@ function deskBasic(desk) {
 // a git tab picks its own account on its page, and a project picks the one the
 // column beside its folders uses. The token is write-only -- it goes to the
 // secrets file under this desk and never comes back to the screen.
-function gitAccountsCard(desk) {
+// The parts of that card, built once and used twice: on the desk's own page,
+// and inside the window the account picker opens (gitAccountsWindow). One
+// list, so a way of adding an account cannot appear in one place and not the
+// other
+function gitAccountsParts(desk) {
   desk.git_accounts = desk.git_accounts || [];
   const listBox = el("div");
   const draw = () => {
@@ -8833,18 +8839,52 @@ function gitAccountsCard(desk) {
     }
     listBox.append(rows);
   };
-  const c = card(T["settings.gitacct.title"],
+  setTimeout(draw, 0);
+  return [
     el("div", {class:"hint"}, T["settings.gitacct.hint"]),
     listBox,
     el("div", {class:"row"},
       el("button", {onclick: () => gitAccountDialog(desk, null, draw)}, T["settings.gitacct.add"])),
     el("div", {class:"hint"}, T["settings.gitacct.where"]),
-    el("div", {class:"hint"}, T["settings.gitacct.terminal"]));
+    el("div", {class:"hint"}, T["settings.gitacct.terminal"]),
+  ];
+}
+
+function gitAccountsCard(desk) {
+  const c = card(T["settings.gitacct.title"], ...gitAccountsParts(desk));
   c.id = "desk-gitaccounts";
-  setTimeout(draw, 0);
   return c;
 }
+
+// The desk's git accounts, in a window over the page that asked for them.
+//
+// Opened from the account picker, where somebody holding a token is standing
+// when they find out there is nowhere on that page to put it. The page
+// underneath keeps everything typed into it, and `done` is called however this
+// window is closed -- the picker has to read the list again either way
+function gitAccountsWindow(desk, done) {
+  const shut = () => { back.remove(); done(); };
+  const back = openModal(
+    el("div", {class:"mhead"},
+      el("h2", {}, (desk.name || T["settings.nav.desk"]) + " › " + T["settings.dsec.gitaccounts"]),
+      el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
+    el("div", {class:"mbody"}, ...gitAccountsParts(desk)),
+    el("div", {class:"mfoot"},
+      el("span", {class:"grow"}),
+      el("button", {class:"primary", onclick: () => shut()}, T["common.close"])));
+  back.firstChild.classList.add("framed");
+  // A press on the backdrop takes the window away on its own (openModal), so
+  // the picker is told here rather than in shut()
+  back.addEventListener("mousedown", e => { if (e.target === back) done(); });
+  back.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); shut(); }
+  });
+}
 const GIT_HOST = "github.com";
+// The last line of the account picker, which adds an account instead of
+// choosing one. An account is named in letters, digits, _ and -, so this can
+// never be one -- the same way THIS_PC cannot
+const ADD_ACCOUNT = "@add";
 const isSshAccount = a => (a.method || "").trim().toLowerCase() === "ssh";
 // An account that signs in as whoever GitHub CLI (gh) is signed in as on this PC
 const isGhAccount = a => (a.method || "").trim().toLowerCase() === "gh";
@@ -8904,10 +8944,13 @@ function gitAccountDialog(desk, name, redraw) {
   const mailIn = input(a.user_email, {class:"mono", placeholder:"me@example.com"});
   const ownersIn = input((a.owners || []).join(", "), {class:"mono", placeholder:T["settings.gitacct.owners_ph"]});
   // Whether a token is already stored, so the field can say "only to change it"
-  // and a new token is not demanded of an account that has one
-  let hasToken = false;
-  if (editing && (desk.id || "").trim()) fetchSecrets().then(j => {
-    hasToken = ((j && j.secrets) || []).some(s => s.key === gitTokenKey(desk, name));
+  // and a new token is not demanded of an account that has one -- and how the
+  // store keeps what is typed, which is said beside the field before it is
+  let hasToken = false, storeMode = "";
+  fetchSecrets().then(j => {
+    storeMode = (j && j.mode) || "";
+    hasToken = editing && !!(desk.id || "").trim()
+      && ((j && j.secrets) || []).some(s => s.key === gitTokenKey(desk, name));
     tokenIn.placeholder = hasToken ? T["settings.gitacct.token_set_ph"] : T["settings.gitacct.token_ph"];
     recheck();
   });
@@ -8929,8 +8972,13 @@ function gitAccountDialog(desk, name, redraw) {
     hint ? el("div", {class:"hint"}, hint) : null);
   const loginField = field(T["settings.gitacct.login"], loginIn, T["settings.gitacct.login_hint"]);
   const tokenHint = el("div", {class:"hint"});
+  // Where the value ends up. A store nobody has given a master password keeps
+  // it as it stands, and that is said here, in the colour for danger, at the
+  // moment the token is about to be typed
+  const tokenPlain = el("div", {class:"warn"});
+  tokenPlain.hidden = true;
   const tokenField = el("div", {class:"field"}, el("label", {}, T["settings.gitacct.token"]),
-    el("div", {class:"fieldctl"}, tokenIn), tokenHint);
+    el("div", {class:"fieldctl"}, tokenIn), tokenHint, tokenPlain);
   const keyField = field(T["settings.gitacct.key"], keyIn, T["settings.gitacct.key_hint"]);
   // Nothing to fill in for a gh account: it signs in with what GitHub CLI has
   const ghNote = el("div", {class:"hint"}, T["settings.gitacct.gh_hint"]);
@@ -8942,6 +8990,11 @@ function gitAccountDialog(desk, name, redraw) {
     tokenField.hidden = gh;
     ghNote.hidden = !gh;
     tokenHint.textContent = ssh ? T["settings.gitacct.token_hint_ssh"] : T["settings.gitacct.token_hint"];
+    // "empty" is a store with nothing in it yet, which is written the same way
+    // the first time something is put in it
+    const plain = storeMode === "plaintext" || storeMode === "empty";
+    tokenPlain.textContent = plain ? T["settings.gitacct.token_plain"] : "";
+    tokenPlain.hidden = !plain || gh;
     const faults = [];
     const n = nameIn.value.trim();
     const nameWhy = !n ? T["settings.gitacct.name_required"]
@@ -9069,8 +9122,25 @@ function gitAccountSelect(desk, now, origin, pick) {
   if (chosen && chosen !== THIS_PC && !asPc && !list.some(x => x.a.name === chosen)) {
     s.append(el("option", {value:chosen}, fill(T["settings.gitacct.gone"], {name: chosen})));
   }
+  // Last, under every account there is: the way to add one, from the one place
+  // somebody looking for it is already standing
+  s.append(el("option", {value:ADD_ACCOUNT}, T["settings.gitacct.add_here"]));
   s.value = chosen;
-  s.addEventListener("change", () => pick(s.value));
+  s.addEventListener("change", () => {
+    if (s.value !== ADD_ACCOUNT) { pick(s.value); return; }
+    // Adding is not a choice: the menu goes back to what was chosen, and the
+    // account made in the window becomes the choice once it exists
+    const had = (desk.git_accounts || []).map(a => a.name);
+    s.value = chosen;
+    gitAccountsWindow(desk, () => {
+      const made = (desk.git_accounts || []).map(a => a.name).filter(n => !had.includes(n));
+      const v = made.length ? made[made.length - 1] : chosen;
+      // Set here as well, because a picker on a page that does not redraw
+      // itself would otherwise still be showing the old answer
+      s.value = v;
+      pick(v);
+    });
+  });
   return s;
 }
 
@@ -13001,6 +13071,58 @@ mod tests {
             "reading drops the git accounts, so the page shows none and a save erases them"
         );
         assert!(PAGE.contains("if (accts.length) o.git_accounts = accts;"), "writing drops the git accounts");
+    }
+
+    /// An account is added from the picker that wanted one.
+    ///
+    /// Everything about a git account was on the desk's own page, and the
+    /// place a person holds a token is the project's page, where the picker
+    /// only offers what already exists. The last line of the picker opens the
+    /// desk's list over the page, and closing it comes back to the picker with
+    /// the account that was made
+    #[test]
+    fn a_token_can_be_added_from_the_picker_that_wants_one() {
+        assert!(
+            PAGE.contains(r#"s.append(el("option", {value:ADD_ACCOUNT}, T["settings.gitacct.add_here"]));"#),
+            "the picker has no way to add an account"
+        );
+        assert!(PAGE.contains("function gitAccountsWindow(desk, done)"), "there is no window to add one in");
+        // The same list in both places, so a way of adding an account cannot
+        // appear on the desk's page and not in the window
+        assert_eq!(
+            PAGE.matches("...gitAccountsParts(desk)").count(),
+            2,
+            "the window and the desk's page draw the accounts from different code"
+        );
+        // Whatever the window is closed by, the picker reads the list again
+        assert!(
+            PAGE.contains(r#"back.addEventListener("mousedown", e => { if (e.target === back) done(); });"#),
+            "closing the window by the backdrop leaves the picker showing the old list"
+        );
+        // A name a person can type is letters, digits, _ and -, so the line
+        // that adds one can never be mistaken for an account
+        assert!(PAGE.contains(r#"const ADD_ACCOUNT = "@add";"#));
+        assert!(!crate::config::valid_secret_name("@add"));
+    }
+
+    /// The token field says what will become of the token.
+    ///
+    /// It used to say it was kept encrypted, full stop. That is true only
+    /// where somebody has set a master password; without one the store is
+    /// written as it stands. The screen now says which of the two this is,
+    /// and says the unsafe one in the colour for danger
+    #[test]
+    fn the_token_field_says_when_nothing_is_encrypting_it() {
+        assert!(PAGE.contains(r#"T["settings.gitacct.token_plain"]"#), "nothing is said about a store with no password");
+        assert!(
+            PAGE.contains(r#"const plain = storeMode === "plaintext" || storeMode === "empty";"#),
+            "a store yet to be written is not counted as one with no password"
+        );
+        let said = crate::i18n::t("settings.gitacct.token_hint");
+        assert!(
+            !said.to_lowercase().contains("encrypt"),
+            "the hint promises encryption that only a master password provides: {said}"
+        );
     }
 
     #[test]

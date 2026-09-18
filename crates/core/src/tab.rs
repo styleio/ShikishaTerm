@@ -61,6 +61,14 @@ pub struct TabOptions {
     /// own. The API key is minted under it, because that is the name every
     /// call is looked up by -- see [`TabOptions::called`]
     pub id: Option<String>,
+    /// Which git account a git typed in this terminal signs in as: this tab's
+    /// own choice when it made one, else its folder's project's.
+    ///
+    /// The choice, never the token. The value is fetched at the moment the tab
+    /// starts, through [`crate::git::use_secrets`] -- the same rule the rest of
+    /// the program follows, so a tab's settings can be read, written, exported
+    /// and looked at without a credential being in them
+    pub git: crate::config::GitUse,
 }
 
 impl TabOptions {
@@ -173,6 +181,7 @@ impl Default for TabOptions {
             log: false,
             model: None,
             held: None,
+            git: crate::config::GitUse::Unset,
         }
     }
 }
@@ -655,6 +664,30 @@ fn idle_argv() -> Vec<String> {
         // just as still, but a shell waiting on its input is the nearer thing
         // to what the Windows side does, and it goes when the terminal goes
         false => vec!["sh".into(), "-c".into(), "read _line".into()],
+    }
+}
+
+/// What a terminal is given so that a git typed in it signs in as the account
+/// its folder chose.
+///
+/// Nothing at all where nobody has chosen one: a terminal is where a person
+/// types git about anything, and it goes on signing in the way this machine
+/// already does. An account that cannot be signed in as -- its token never
+/// entered, or the store still locked -- is the same silence with a line in
+/// the log, because a shell that refused to open over it would be a far worse
+/// answer than one where `git push` asks who you are
+fn git_env(git: &crate::config::GitUse, title: &str) -> Vec<(String, String)> {
+    if matches!(git, crate::config::GitUse::Unset) {
+        return Vec::new();
+    }
+    match git.to_git(true, &crate::git::secret) {
+        Ok(who) => who.terminal_env(),
+        Err(why) => {
+            crate::append_hook_log(&format!(
+                "tab \"{title}\": git in this terminal signs in as this machine does ({why})"
+            ));
+            Vec::new()
+        }
     }
 }
 
@@ -2937,6 +2970,12 @@ impl Tab {
         // Done here because this is the one place a tab's process is born —
         // a CLI started anywhere else would silently have no way to call home
         for (k, v) in crate::api::child_env(opts.called(&title)) {
+            cmd.env(k, v);
+        }
+        // ...and who a git typed in here signs in as. Read at this moment
+        // rather than carried in the settings: the token is looked up now, so
+        // a tab opened after one was changed has the new one
+        for (k, v) in git_env(&opts.git, &title) {
             cmd.env(k, v);
         }
         // Where it runs. A folder that is not there is NOT quietly swapped for
@@ -5269,6 +5308,36 @@ mod codex_session_probe {
     }
 }
 
+
+#[cfg(test)]
+mod git_account_tests {
+    use crate::config::{GitAccountSpec, GitUse};
+
+    /// A terminal is handed the token at the moment it starts, by the name the
+    /// account files it under -- so a tab opened after a token was changed has
+    /// the new one, and the settings never hold the value themselves
+    #[test]
+    fn the_token_is_looked_up_as_the_tab_starts() {
+        let spec = GitAccountSpec {
+            name: "work".into(),
+            login: Some("octocat".into()),
+            ..Default::default()
+        };
+        let chosen = GitUse::Account { desk: "w".into(), spec };
+        // Nothing filed under that name yet: the terminal is left as it was
+        // rather than refusing to open
+        crate::git::use_secrets(Default::default());
+        assert!(super::git_env(&chosen, "Shell").is_empty(), "a terminal was changed with no token to change it for");
+
+        crate::git::use_secrets([("git/w/work".to_string(), "github_pat_x".to_string())].into());
+        let env: std::collections::HashMap<String, String> = super::git_env(&chosen, "Shell").into_iter().collect();
+        assert_eq!(env.get("SHIKISHA_GIT_TOKEN").map(String::as_str), Some("github_pat_x"));
+        assert_eq!(env.get("SHIKISHA_GIT_LOGIN").map(String::as_str), Some("octocat"));
+        // ...and a tab nobody chose an account for is not touched at all
+        assert!(super::git_env(&GitUse::Unset, "Shell").is_empty());
+        crate::git::use_secrets(Default::default());
+    }
+}
 
 #[cfg(test)]
 mod held_tests {

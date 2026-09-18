@@ -708,75 +708,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         ));
     }
-    // What was on screen when the app last closed. Two things are taken from
-    // it, and they are taken at different moments. The conversations are needed
-    // HERE, before the first process starts: carrying one over is a decision
-    // the launch itself makes, and asking afterwards would mean minting a
-    // conversation only to throw it away. The division of the screen is put
-    // back further down, once there are tabs for the panes to point at
-    // What the SSH tabs sign in with, handed to the connection thread before
-    // anything is launched: a tab that comes up before its password is known
-    // would be told there is none (the store lives on this thread, the
-    // connections on another -- see `ssh::use_secrets`)
-    if let Some(c) = cfg.as_ref() {
-        ssh::use_secrets(c.resolve_tokens(None));
-        // The sandbox service's key travels with the rest, under its own name
-        crate::e2b::use_key(c.resolve_tokens(None).get("e2b_api_key").cloned());
-    }
-    let mut last_session = crate::lastsession::Saved::load();
-    if !cmd_args.is_empty() {
-        tabs.push(Tab::spawn(
-            title_of(&cmd_args),
-            &cmd_args,
-            None,
-            rows,
-            cols,
-            tab::TabOptions::default(),
-        )?);
-    } else if let Some(w) = desks.get(desk_index) {
-        // If we're resuming where we left off, launch that same desk too.
-        // Hard-coding this to the first desk would restore only the name while
-        // showing a screen with different contents.
-        // This desk's model connections, before its tabs start. The full
-        // hand-over comes further down, once there is a notifier to hand. At
-        // this point an encrypted store is not open yet, so a key kept there
-        // reads as empty; the tabs are handed the real one once the password
-        // is in (reload_providers, below)
-        if let Some(c) = cfg.as_ref() {
-            let tokens = c.resolve_tokens(None);
-            bridge::use_desk(config::desk_providers(w, &|k| tokens.get(k).cloned()));
-        }
-        spawn_desk(w, rows, cols, &mut tabs, &mut startup_errors, Some(&last_session));
-    }
-    // No config yet = first run. Guide the user so the experience isn't just
-    // "a single shell opens and nothing else happens", leaving them unsure what to do.
-    let first_run = cmd_args.is_empty() && cfg.is_none();
-    if tabs.is_empty() && desks.is_empty() {
-        let argv = vec!["powershell.exe".to_string()];
-        tabs.push(Tab::spawn(
-            "SHELL".into(),
-            &argv,
-            None,
-            rows,
-            cols,
-            tab::TabOptions::default(),
-        )?);
-    }
-
-    // Re-fit the PTY size now that every tab exists
-    (rows, cols) = pty_dims(shell.size()?);
-    for t in &tabs {
-        let _ = t.resize(rows, cols);
-    }
-
-    // The Lua hook engine is per-desk (shared variables are scoped inside it too).
-    // Unused desks don't get one built; it's created on demand when switched to.
-    let mut max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
-    let mut done_confirm_ms = cfg
-        .as_ref()
-        .and_then(|c| c.done_confirm_ms)
-        .unwrap_or(profile::DEFAULT_DONE_CONFIRM_MS);
-    // If secrets are encrypted, ask for the master password at startup
+    // If secrets are encrypted, ask for the master password -- before anything
+    // that needs one is started. A tab is handed its git account's token as it
+    // is born and cannot be handed one afterwards, so a store still locked at
+    // that moment is a terminal that spends its whole life signing in as
+    // nobody. The same goes for the model connections below
     let mut password: Option<String> = None;
     if let Some(path) = cfg.as_ref().and_then(|c| c.secrets_path())
         && std::fs::read_to_string(&path)
@@ -821,23 +757,75 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
 
-    // ...and the connections, for the same reason and at the same moment: what
-    // was handed over before the prompt came from a store that could not be
-    // opened yet, so an encrypted one had nothing in it
+    // What was on screen when the app last closed. Two things are taken from
+    // it, and they are taken at different moments. The conversations are needed
+    // HERE, before the first process starts: carrying one over is a decision
+    // the launch itself makes, and asking afterwards would mean minting a
+    // conversation only to throw it away. The division of the screen is put
+    // back further down, once there are tabs for the panes to point at
+    // What the SSH tabs sign in with, handed to the connection thread before
+    // anything is launched: a tab that comes up before its password is known
+    // would be told there is none (the store lives on this thread, the
+    // connections on another -- see `ssh::use_secrets`)
     if let Some(c) = cfg.as_ref() {
-        ssh::use_secrets(c.resolve_tokens(password.as_deref()));
-        crate::e2b::use_key(c.resolve_tokens(password.as_deref()).get("e2b_api_key").cloned());
+        let tokens = c.resolve_tokens(password.as_deref());
+        ssh::use_secrets(tokens.clone());
+        // The sandbox service's key travels with the rest, under its own name
+        crate::e2b::use_key(tokens.get("e2b_api_key").cloned());
+        // ...and what a git typed in a terminal signs in with, for the same
+        // reason: the tab is handed its account's token as it starts
+        crate::git::use_secrets(tokens);
     }
-    // Resolve the model bridge's connection info again now that the password is confirmed
-    // (encrypted-secret keys get unlocked here too). Tabs spawned before the
-    // prompt hold keys that could not be decrypted yet, so they are handed the
-    // real ones here — otherwise they go on sending an empty bearer token (→ 401).
-    if let Some(c) = &cfg
-        && password.is_some() {
+    let mut last_session = crate::lastsession::Saved::load();
+    if !cmd_args.is_empty() {
+        tabs.push(Tab::spawn(
+            title_of(&cmd_args),
+            &cmd_args,
+            None,
+            rows,
+            cols,
+            tab::TabOptions::default(),
+        )?);
+    } else if let Some(w) = desks.get(desk_index) {
+        // If we're resuming where we left off, launch that same desk too.
+        // Hard-coding this to the first desk would restore only the name while
+        // showing a screen with different contents.
+        // This desk's model connections, before its tabs start. The full
+        // hand-over comes further down, once there is a notifier to hand
+        if let Some(c) = cfg.as_ref() {
             let tokens = c.resolve_tokens(password.as_deref());
-            reload_providers(&desks, desk_index, &|k| tokens.get(k).cloned(), &mut tabs, &mut []);
+            bridge::use_desk(config::desk_providers(w, &|k| tokens.get(k).cloned()));
         }
+        spawn_desk(w, rows, cols, &mut tabs, &mut startup_errors, Some(&last_session));
+    }
+    // No config yet = first run. Guide the user so the experience isn't just
+    // "a single shell opens and nothing else happens", leaving them unsure what to do.
+    let first_run = cmd_args.is_empty() && cfg.is_none();
+    if tabs.is_empty() && desks.is_empty() {
+        let argv = vec!["powershell.exe".to_string()];
+        tabs.push(Tab::spawn(
+            "SHELL".into(),
+            &argv,
+            None,
+            rows,
+            cols,
+            tab::TabOptions::default(),
+        )?);
+    }
 
+    // Re-fit the PTY size now that every tab exists
+    (rows, cols) = pty_dims(shell.size()?);
+    for t in &tabs {
+        let _ = t.resize(rows, cols);
+    }
+
+    // The Lua hook engine is per-desk (shared variables are scoped inside it too).
+    // Unused desks don't get one built; it's created on demand when switched to.
+    let mut max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
+    let mut done_confirm_ms = cfg
+        .as_ref()
+        .and_then(|c| c.done_confirm_ms)
+        .unwrap_or(profile::DEFAULT_DONE_CONFIRM_MS);
     // Notification destinations. Empty until the desk on screen is handed over
     // below: each desk registers its own, and there are none of the app's
     if let Some(e) = cfg.as_ref().and_then(|c| c.secrets_problem(password.as_deref())) {
@@ -1678,9 +1666,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     newcfg.resolve_tokens(password.as_deref()),
                     newcfg.resolve_secret_terms(password.as_deref()),
                 );
-                // ...and the same for the connections, which keep their own
-                // copy: a password taken out of the settings stops working
+                // ...and the same for the connections and the git accounts,
+                // which keep their own copy: a password taken out of the
+                // settings stops working, and so does a token
                 ssh::use_secrets(newcfg.resolve_tokens(password.as_deref()));
+                crate::git::use_secrets(newcfg.resolve_tokens(password.as_deref()));
         crate::e2b::use_key(newcfg.resolve_tokens(password.as_deref()).get("e2b_api_key").cloned());
                 // Everything that is the desk's rather than the app's, said
                 // again now that the settings have been read afresh. It has to
