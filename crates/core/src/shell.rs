@@ -833,9 +833,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* A folder git will not work in: the same waiting-for-a-person colour, since
      the branch is there and what is missing is one line in the person's own
      git settings */
-  .making.untrusted { border-color:color-mix(in srgb, var(--warn) 35%, transparent); }
-  .making.untrusted .mk, .making.untrusted .ms { color:var(--warn); }
-  .making.untrusted .ms { max-height:none; overflow:visible; white-space:normal; }
+  .making.asking { border-color:color-mix(in srgb, var(--warn) 35%, transparent); }
+  .making.asking .mk, .making.asking .ms { color:var(--warn); }
+  .making.asking .ms { max-height:none; overflow:visible; white-space:normal; }
   /* What would be written, laid out as it will sit in the file: the label
      above it, and the line itself across the whole width */
   #sask .blist .brow2.stacked { display:block; padding:8px 12px; }
@@ -5645,16 +5645,21 @@ function foundRow(d) {
 function makingRow(m) {
   const unremoved = m.stage === "unremoved";
   const untrusted = m.stage === "untrusted";
+  // What the branch was to share with its project and cannot: the folder is
+  // there and waiting to be told whether to hold its own copy instead
+  const unlinked = m.stage === "unlinked";
+  const asking = untrusted || unlinked;
   const failed = m.stage === "failed" || unremoved;
   const stopping = m.stage === "stopping";
   const leaving = unremoved || m.stage === "removing";
   const row = el("div", {class:"making" + (failed ? " failed" : "") + (unremoved ? " unremoved" : "")
-      + (untrusted ? " untrusted" : ""), title:m.folder || ""},
-    failed || untrusted ? el("span", {class:"mk"}, "⚠") : el("span", {class:"dot BUSY"}),
+      + (asking ? " asking" : ""), title:m.folder || ""},
+    failed || asking ? el("span", {class:"mk"}, "⚠") : el("span", {class:"dot BUSY"}),
     el("span", {class:"nm"}, m.name || ""),
-    failed || stopping || leaving || untrusted ? null : el("span", {class:"fx", title:T["tui.making.stop"] || "",
+    failed || stopping || leaving || asking ? null : el("span", {class:"fx", title:T["tui.making.stop"] || "",
       onclick:e => { e.stopPropagation(); send({kind:"making", id:m.id, act:"stop"}); }}, "✕"),
     el("span", {class:"ms"}, untrusted ? (T["worktree.trust.row"] || "")
+      : unlinked ? (T["worktree.nolink.row"] || "").replace("{names}", (m.unlinked || []).join(", "))
       : failed ? (m.error || T["tui.making.failed"] || "") : (T["tui.making.stage." + m.stage] || "")));
   // The branch is there and git will not go into it. The press is the same
   // one the question asks for, so a row answered here needs no dialog
@@ -5662,6 +5667,14 @@ function makingRow(m) {
     row.append(el("div", {class:"mbtns"},
       el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"trust"})}, T["worktree.trust.go"] || ""),
       el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"dismiss"})}, T["worktree.trust.leave"] || "")));
+    return row;
+  }
+  // The same two answers the question asks for, kept on the row for a question
+  // put away rather than answered
+  if (unlinked) {
+    row.append(el("div", {class:"mbtns"},
+      el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"copy_instead"})}, T["worktree.nolink.go"] || ""),
+      el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"dismiss"})}, T["worktree.nolink.leave"] || "")));
     return row;
   }
   if (unremoved) {
@@ -5709,6 +5722,28 @@ function askAboutTrust() {
     label: T["worktree.trust.go"] || "",
     go: () => { trustAsking = ""; send({kind:"making", id:m.id, act:"trust"}); },
     back: () => { trustAsking = ""; },
+  });
+}
+// What a branch cannot share with its project is asked about once, where it is
+// seen: which folders, and what copying them in means. Cancel leaves the row to
+// answer later, and the row's own buttons say the same two things
+const nolinkAsked = new Set();
+let nolinkAsking = 0;
+function askAboutUnlinked() {
+  const waiting = (S.making || []).filter(m => m.stage === "unlinked");
+  if (nolinkAsking && !waiting.some(m => m.id === nolinkAsking)) { nolinkAsking = 0; closeAsk(true); }
+  if (nolinkAsking) return;
+  const m = waiting.find(m => !nolinkAsked.has(m.id));
+  if (!m) return;
+  nolinkAsked.add(m.id);
+  nolinkAsking = m.id;
+  askQuestion({
+    title: T["worktree.nolink.title"] || "",
+    say: T["worktree.nolink.say"] || "",
+    what: (m.unlinked || []).join(", "),
+    label: T["worktree.nolink.go"] || "",
+    go: () => { nolinkAsking = 0; send({kind:"making", id:m.id, act:"copy_instead"}); },
+    back: () => { nolinkAsking = 0; },
   });
 }
 // A worktree whose folder would not delete is asked about once, where it is
@@ -8959,6 +8994,7 @@ window.__state = function (json) {
   }
   askAboutLeft();
   askAboutTrust();
+  askAboutUnlinked();
   paintPaneHeads();
 };
 
@@ -18282,6 +18318,29 @@ mod tests {
             "the row does not say why it is marked");
     }
 
+    /// A folder the branch cannot share with its project is said and asked
+    /// about, not quietly left out: the row keeps both answers, the question
+    /// is put once, and yes reaches the app as the copy it stands for
+    #[test]
+    fn a_folder_that_cannot_be_shared_is_asked_about() {
+        assert!(PAGE.matches("askAboutUnlinked();").count() == 1, "the question is never put, or put from two places");
+        assert!(PAGE.contains(r#"const waiting = (S.making || []).filter(m => m.stage === "unlinked");"#), "it asks about the wrong rows");
+        assert!(PAGE.contains("if (nolinkAsking && !waiting.some(m => m.id === nolinkAsking)) { nolinkAsking = 0; closeAsk(true); }"),
+            "answered elsewhere, the question stays open here");
+        assert!(PAGE.contains("nolinkAsked.add(m.id);"), "it asks again on every frame");
+        // Which folders, by name: "some folders" is not something anyone can
+        // weigh a copy against
+        assert!(PAGE.contains(r#"what: (m.unlinked || []).join(", "),"#), "the question does not say which folders");
+        assert!(PAGE.contains(r#"go: () => { nolinkAsking = 0; send({kind:"making", id:m.id, act:"copy_instead"}); },"#),
+            "yes does not reach the app");
+        assert!(PAGE.contains(r#"send({kind:"making", id:m.id, act:"copy_instead"})}, T["worktree.nolink.go"] || "")"#),
+            "the row cannot answer the question it carries");
+        assert!(PAGE.contains(r#"T["worktree.nolink.leave"] || "")));"#), "the row cannot leave it alone");
+        // And it is marked and readable the way the other question is
+        assert!(PAGE.contains(r#"const asking = untrusted || unlinked;"#), "a question with no mark on its row");
+        assert!(PAGE.contains(".making.asking .ms { max-height:none;"), "the row cannot show what it is asking about");
+    }
+
     /// A worktree whose folder would not delete is said and asked about, not
     /// only written to a log: the row stays with its reason, the question is
     /// put once, and each answer reaches the app
@@ -18297,7 +18356,7 @@ mod tests {
         for act in ["retry", "restore", "forget"] {
             assert!(PAGE.contains(&format!(r#"send({{kind:"making", id:m.id, act:"{act}"}})"#)), "the row cannot {act}");
         }
-        assert!(PAGE.contains("failed || stopping || leaving || untrusted ? null"), "a folder being deleted offers a ✕ that cannot stop it");
+        assert!(PAGE.contains("failed || stopping || leaving || asking ? null"), "a folder being deleted offers a ✕ that cannot stop it");
     }
 
     #[test]

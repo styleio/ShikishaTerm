@@ -895,7 +895,9 @@ pub struct MakingState {
     /// Being made: `preparing`, `creating`, `setting_up` or `stopping`,
     /// and `failed` once it failed. Being deleted: `removing`, and
     /// `unremoved` once its folder would not go. `untrusted` is the made
-    /// folder git will not work in until it is written down as trusted
+    /// folder git will not work in until it is written down as trusted, and
+    /// `unlinked` the made folder waiting to be told whether to copy in what
+    /// could not be shared with the project
     pub stage: String,
     /// Why it failed, in git's words where git said
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -910,6 +912,10 @@ pub struct MakingState {
     /// The file it would be written into: the person's own git settings
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub trust_file: String,
+    /// The folders that could not be given a second name here, waiting for
+    /// the person to say whether to copy them in instead. Empty nearly always
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unlinked: Vec<String>,
 }
 
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]

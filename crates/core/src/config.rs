@@ -348,6 +348,18 @@ impl Desk {
         }
     }
 
+    /// The account a tab signs in as: its own choice when it made one, else
+    /// the one its folder's project chose.
+    ///
+    /// Asked in one place because more than one thing in a tab signs in -- the
+    /// git column beside it, and a git the person types in the terminal -- and
+    /// two of them working out the answer separately is two answers
+    pub fn git_use_here(&self, chosen: Option<&str>, cwd: Option<&std::path::Path>) -> GitUse {
+        match (chosen, cwd) {
+            (None, Some(cwd)) => self.git_use_of_folder(cwd).0,
+            (chosen, _) => self.git_use(chosen),
+        }
+    }
 }
 
 /// A desk's accounts in the order to offer them for a repository of `owner`
