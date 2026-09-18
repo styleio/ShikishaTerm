@@ -6373,12 +6373,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("shikisha-move-{}", crate::random_hex(6)));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("config.json");
+        // Spelled the way this machine spells it: a settings file names real
+        // folders, and the test is about finding the one that is already there
+        let (proj, other) = (crate::local_path("D:/work/proj"), crate::local_path("D:/work/other"));
         std::fs::write(
             &file,
-            r#"{"desks": [{"name": "W", "folders": [
-                {"tabs": [{"name": "aaa", "command": "sh", "id": "squid"}]},
-                {"cwd": "D:/work/proj", "tabs": [{"name": "sh", "command": "sh"}]}
-            ]}]}"#,
+            format!(
+                r#"{{"desks": [{{"name": "W", "folders": [
+                {{"tabs": [{{"name": "aaa", "command": "sh", "id": "squid"}}]}},
+                {{"cwd": "{}", "tabs": [{{"name": "sh", "command": "sh"}}]}}
+            ]}}]}}"#,
+                proj
+            ),
         )
         .unwrap();
         let read = |at: &Path| {
@@ -6392,25 +6398,25 @@ mod tests {
         // Into a folder the desk already has: it joins that one, and no second
         // folder of the same path turns up beside it
         let mark = TabMark::of(&desk, ft);
-        move_tab_to_folder_at(&file, "W", 0, &mark, Path::new(&crate::local_path("D:/work/proj"))).unwrap();
+        move_tab_to_folder_at(&file, "W", 0, &mark, Path::new(&proj)).unwrap();
         let desk = read(&file);
         assert_eq!(desk.folders.len(), 2, "the desk grew a folder it already had");
         let moved = desk.tabs.iter().find(|t| t.cfg.name.as_deref() == Some("aaa")).expect("the tab is gone");
         assert_eq!(
             desk.folder_of(moved).and_then(|f| f.cwd.clone()),
-            Some(std::path::PathBuf::from(crate::local_path("D:/work/proj"))),
+            Some(std::path::PathBuf::from(&proj)),
             "the tab did not move"
         );
 
         // And into one it does not have, which it gains
         let mark = TabMark::of(&desk, moved);
         let written = desk.tabs.iter().position(|t| t.cfg.name.as_deref() == Some("aaa")).unwrap();
-        move_tab_to_folder_at(&file, "W", written, &mark, Path::new(&crate::local_path("D:/work/other"))).unwrap();
+        move_tab_to_folder_at(&file, "W", written, &mark, Path::new(&other)).unwrap();
         let desk = read(&file);
         let moved = desk.tabs.iter().find(|t| t.cfg.name.as_deref() == Some("aaa")).expect("the tab is gone");
         assert_eq!(
             desk.folder_of(moved).and_then(|f| f.cwd.clone()),
-            Some(std::path::PathBuf::from(crate::local_path("D:/work/other"))),
+            Some(std::path::PathBuf::from(&other)),
             "a folder the desk did not have was refused instead of added"
         );
         assert_eq!(desk.tabs.len(), 2, "the tab was copied rather than moved");
