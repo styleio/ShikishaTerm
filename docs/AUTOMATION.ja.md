@@ -1094,7 +1094,7 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | `shikisha.git_diff(タブ, {path=…, staged=…, encoding=…})` | 差分をそのまま文字列で。`staged=true` でステージ済みの側、`path` で1ファイルに絞る。ファイルごとに保存されている文字コード（UTF-8・Shift_JIS・EUC-JP など）で読む。`encoding` で指定もできる |
 | `shikisha.git_log(タブ, 件数)` | 最近のコミット。`{hash, short, author, date, subject}`。既定20件 |
 | `shikisha.git_conflicts(タブ)` | 衝突しているファイルのパスだけ |
-| `shikisha.git_branch(タブ)` | 今のブランチ `{name, protected, upstream, ahead, behind, base, base_behind, catch_up, catching_up}`。`protected` は「このフォルダが守っているので直接コミットしない方がよい」の印。`upstream` は追いかけているブランチ（`origin/main`）、`ahead` はここにあって向こうにまだ無いコミットの数、`behind` はその逆で、どちらも最後にフェッチした時点の数。何も追いかけていなければ3つとも無い。`base` は書き留めてある起点、`base_behind` は最後にフェッチした時点で起点より遅れているコミット数、`catch_up` はその最新を取り込むときに実行するコマンド、`catching_up` はその起点のマージが途中で止まっているときの起点名。detached なら `nil` |
+| `shikisha.git_branch(タブ)` | 今のブランチ `{name, protected, upstream, ahead, behind, base, base_behind, catch_up, catching_up}`。`protected` は「このフォルダが守っているので直接コミットしない方がよい」の印。`upstream` は数を比べる相手のブランチ（`origin/main`）、`ahead` はここにあって向こうにまだ無いコミットの数、`behind` はその逆で、どちらも最後にフェッチした時点の数。比べる相手が1つも無ければ3つとも無い。相手は、このブランチが追いかけているブランチ、それが無ければプッシュ先のサーバーにある同じ名前のブランチで、後者のときだけ `by_name` が true になる（作業はサーバーにあり、追いかける設定だけが無い状態。`--set-upstream` を付けずに端末からプッシュするとこうなる）。`base` は書き留めてある起点、`base_behind` は最後にフェッチした時点で起点より遅れているコミット数、`catch_up` はその最新を取り込むときに実行するコマンド、`catching_up` はその起点のマージが途中で止まっているときの起点名。detached なら `nil` |
 | `shikisha.git_graph(タブ, {all=…, remotes=…, count=…})` | 履歴。`{graph, hash, short, author, date, subject}`。`graph` は git が描いた枝の絵で、コミットの無い行（マージの合流）もそのまま入る |
 | `shikisha.git_detail(タブ, ハッシュ)` | そのコミットの全部。`{hash, parents, author, author_date, committer, commit_date, subject, body, files}` |
 | `shikisha.git_branches(タブ)` | ブランチの一覧。`{name, current, protected}` |
