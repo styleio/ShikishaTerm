@@ -15443,15 +15443,20 @@ function gitNext() {
   const stuck = open.find(p => gitPrAction(p) && p.merge_state === "dirty");
   if (stuck) return Object.assign({icon:"sparkles", edit:"git-merge", pr: stuck.number}, gitPrAction(stuck),
     {label: (T["git.prs.resolve"] || "").replace("{base}", stuck.base || "")});
-  if (gitPrFormShown()) {
-    const p = I.pr || {};
-    return {icon:"pr", label: T["git.pr.create"] || "", held: !(p.title || "").trim() || !p.base,
-            run:() => gitPrCreate(false)};
-  }
-  // CI that failed on the commit they are at: fixed before anything is merged
-  if (open.length && G.checks && G.checks.failed) {
+  const form = gitPrFormShown()
+    ? (() => { const p = I.pr || {};
+        return {icon:"pr", label: T["git.pr.create"] || "", held: !(p.title || "").trim() || !p.base,
+                run:() => gitPrCreate(false)}; })()
+    : null;
+  // A form somebody opened themselves: their press is the one being answered
+  if (form && G.prForm) return form;
+  // CI that failed on the commit the server has, before it is merged and
+  // before anybody is asked to look at it: the form stands for a branch with
+  // no pull request yet, and a red CI is worth fixing before opening one
+  if (G.checks && G.checks.failed) {
     return {icon:"sparkles", label: T["git.ci.fix"] || "", edit:"git-ci", run: gitCiFix};
   }
+  if (form) return form;
   const ready = open.find(p => gitPrAction(p));
   if (ready) return Object.assign({icon:"check", pr: ready.number}, gitPrAction(ready),
     G.armed === ready.number ? {} : {label: (T["git.prs.merge"] || "").replace("{base}", ready.base || "")});
@@ -15603,14 +15608,17 @@ function gitPrMerge(p) {
 }
 // The failed checks and the ends of their logs, handed to an AI tab in the
 // middle, for the newest open pull request
+// The failed checks handed to an AI. The pull request when the branch is on
+// one, and the commit itself when it is not: CI runs on the push, so a branch
+// nobody has opened a pull request for can have failed just the same
 function gitCiFix() {
   const g = gitGroup();
-  const p = gitPrsOpen()[0];
-  if (!g || !p || !G.checks || G.busy || !G.branch) return;
+  const p = gitPrsOpen()[0] || null;
+  if (!g || !G.checks || G.busy || !G.branch) return;
   G.busy = "ci_fix"; G.said = ""; G.armed = 0;
   drawGit();
-  gitIssuesAsk("ci_fix", {project: g.project, number: p.number, head: G.branch.name, sha: G.checks.sha || p.sha || "",
-    title: p.title || "", url: p.url || ""});
+  gitIssuesAsk("ci_fix", {project: g.project, number: p ? p.number : 0, head: G.branch.name,
+    sha: G.checks.sha || (p && p.sha) || "", title: p ? (p.title || "") : "", url: p ? (p.url || "") : ""});
 }
 // Its base brought into this folder; a conflict opens an AI tab in the middle
 function gitPrResolve(p) {
@@ -19470,6 +19478,27 @@ mod tests {
         assert!(
             answered.contains("(G.prsWatch && !G.checks)"),
             "CI that arrives a moment after the push is never asked for again: {answered}"
+        );
+        // A failure is handed to an AI from either place: the button is
+        // offered for the checks, not for a pull request that may not exist,
+        // and what it sends stands without one
+        let next = PAGE.split("function gitNext() {").nth(1)
+            .and_then(|r| r.split("
+}
+").next()).expect("there is no gitNext");
+        let at = next.find(r#"T["git.ci.fix"]"#).expect("the failed CI is never handed to an AI");
+        let line = next[..at].rsplit("if (").next().unwrap_or_default();
+        assert!(
+            !line.contains("open.length"),
+            "the AI is offered the failure only where a pull request is open: {line}"
+        );
+        let fix = PAGE.split("function gitCiFix() {").nth(1)
+            .and_then(|r| r.split("
+}
+").next()).expect("there is no gitCiFix");
+        assert!(
+            fix.contains("number: p ? p.number : 0") && fix.contains("sha: G.checks.sha"),
+            "what is handed to the AI needs a pull request: {fix}"
         );
     }
 
