@@ -5318,6 +5318,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .map(|c| crate::vault::here(t.program(), c, 12))
                     .unwrap_or_default(),
             });
+            // Asking is the moment the loss has been seen, so the caption goes
+            // back to its ordinary manners: the offer stands while nobody has
+            // spoken here, and no longer holds itself open past that
+            if let Some(t) = tabs.get_mut(at) {
+                t.lost = false;
+            }
         }
         // One of them chosen: that tab is relaunched into it, the way every
         // other resume relaunches a tab
@@ -11109,24 +11115,26 @@ mod tests {
         let known = remembered("claude", "11111111-1111-4111-8111-111111111111");
         let mut off = cfg.clone();
         off.restore_conversation = Some(false);
+        let told = carried_conversation(Some(&known), &desk, &argv, &off, &here, "AGENT");
         assert_eq!(
-            carried_conversation(Some(&known), &desk, &argv, &off, &here, "AGENT"),
+            told.plan,
             tab::Resume::Fresh,
             "it carries the conversation over even with the setting off"
         );
+        assert!(!told.lost, "a tab told to start clean has lost nothing");
 
         // A conversation that is no longer on this machine. Handing the CLI an
         // id it has never heard of makes it refuse to start, in red, in its own
         // words -- which is not an answer to "I reopened the app"
-        assert_eq!(plan(&known), tab::Resume::Fresh, "it hands over a conversation that is gone");
+        let gone = plan(&known);
+        assert_eq!(gone.plan, tab::Resume::Fresh, "it hands over a conversation that is gone");
+        assert!(gone.lost, "a tab whose conversation is gone comes up saying nothing about it");
 
         // Remembered under another program: the same name a year later can be
         // a different CLI, and resuming a conversation into one is nonsense
-        assert_eq!(
-            plan(&remembered("codex", "11111111-1111-4111-8111-111111111111")),
-            tab::Resume::Fresh,
-            "it hands over another CLI's conversation"
-        );
+        let other = plan(&remembered("codex", "11111111-1111-4111-8111-111111111111"));
+        assert_eq!(other.plan, tab::Resume::Fresh, "it hands over another CLI's conversation");
+        assert!(!other.lost, "another CLI's conversation was never this tab's to lose");
 
         // A CLI with no way of being told which conversation to resume. Gemini
         // can be handed a new id and can be told "the latest", but not "that
@@ -11140,14 +11148,17 @@ mod tests {
                 cfg,
                 &here,
                 "AGENT",
-            ),
+            )
+            .plan,
             tab::Resume::Fresh,
             "it hands a conversation to a CLI that cannot be told one"
         );
 
         // Nothing remembered at all -- a tab that is new since last time
         let empty = crate::lastsession::Saved { version: 1, desks: Vec::new() };
-        assert_eq!(plan(&empty), tab::Resume::Fresh);
+        let fresh = plan(&empty);
+        assert_eq!(fresh.plan, tab::Resume::Fresh);
+        assert!(!fresh.lost, "a tab that is new since last time has lost nothing");
     }
 
     /// The Vault's choice outranks what the tab was saying last time.

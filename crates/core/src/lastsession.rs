@@ -184,17 +184,7 @@ impl Saved {
         id: Option<&str>,
         title: &str,
     ) -> Option<Session> {
-        let desk = self.desk(desk)?;
-        let saved = desk.tabs.iter().find(|s| {
-            s.program == program
-                && same_folder(s.cwd.as_deref(), cwd)
-                && match (&s.id, id) {
-                    // An automation name is the handle that survives renaming,
-                    // so when there is one it is the whole test
-                    (Some(a), Some(b)) => a == b,
-                    _ => s.title == title,
-                }
-        })?;
+        let saved = self.remembered_of(desk, program, cwd, id, title)?;
         Some(Session {
             id: saved.session.clone(),
             source: match saved.source.as_str() {
@@ -203,6 +193,81 @@ impl Saved {
                 _ => SessionSource::Store,
             },
         })
+    }
+
+    /// Which remembered tab this one is.
+    ///
+    /// **A tab is its program and its folder.** Both are chosen deliberately,
+    /// both are written down as they are, and neither changes on its own --
+    /// so when one conversation was remembered for this CLI in this folder,
+    /// it is this tab's, whatever either of them is called today.
+    ///
+    /// The name used to be part of the test, and it is not a name a person
+    /// gave: a tab without one of its own is handed the one its title
+    /// suggests, and a second tab of the same name gets `-2` after it
+    /// (`config::unique_id`). That makes the names positional. Close the first
+    /// of three `claude` tabs and the other two are renamed under the
+    /// remembered file, which then matches nothing -- every one of that desk's
+    /// conversations dropped at the next start, silently, because one tab was
+    /// closed.
+    ///
+    /// The name is kept for the one thing it can honestly settle: two tabs of
+    /// one CLI in one folder, where nothing else tells them apart. When it
+    /// cannot settle that either, nothing is handed over -- resuming the wrong
+    /// conversation is worse than starting a new one
+    fn remembered_of(
+        &self,
+        desk: &crate::config::Desk,
+        program: &str,
+        cwd: Option<&str>,
+        id: Option<&str>,
+        title: &str,
+    ) -> Option<&SavedTab> {
+        let desk = self.desk(desk)?;
+        let here: Vec<&SavedTab> = desk
+            .tabs
+            .iter()
+            .filter(|s| s.program == program && same_folder(s.cwd.as_deref(), cwd))
+            .collect();
+        if let [only] = here.as_slice() {
+            return Some(only);
+        }
+        // More than one, so a name is all that is left. Asked twice because
+        // the two names answer different questions: the automation name is the
+        // handle that survives a rename, and the title is what a person reads.
+        // Either only answers when it picks out exactly one
+        let mut by_id =
+            here.iter().copied().filter(|s| matches!((&s.id, id), (Some(a), Some(b)) if a == b));
+        if let (Some(only), None) = (by_id.next(), by_id.next()) {
+            return Some(only);
+        }
+        let mut by_title = here.iter().copied().filter(|s| s.title == title);
+        match (by_title.next(), by_title.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
+    }
+
+    /// How many conversations this desk remembers for one CLI in one folder.
+    ///
+    /// Asked by a launch that is about to start clean, so that it can tell the
+    /// ordinary case -- a tab that is new since last time, and nothing was
+    /// ever written down for it -- from the one worth saying out loud: there
+    /// were conversations here and none of them could be given to this tab
+    pub fn remembered_here(
+        &self,
+        desk: &crate::config::Desk,
+        program: &str,
+        cwd: Option<&str>,
+    ) -> usize {
+        self.desk(desk)
+            .map(|d| {
+                d.tabs
+                    .iter()
+                    .filter(|s| s.program == program && same_folder(s.cwd.as_deref(), cwd))
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     /// The division of the screen this desk had last time.
@@ -340,6 +405,95 @@ mod tests {
             .is_none());
         assert!(saved.panes_for(&named("work")).is_none());
         assert!(saved.panes_for(&named("elsewhere")).is_none());
+    }
+
+    /// Closing one tab does not take the other tabs' conversations with it.
+    ///
+    /// A tab without an automation name of its own is given one: the slug of
+    /// its title, and `-2`, `-3`... after that when the name is taken
+    /// (`config::unique_id`). So the names are positional. Close the first of
+    /// three `claude` tabs and the remaining two are renamed -- under a file
+    /// that still calls them by the names they had -- and a test that turned on
+    /// those names matched nothing at the next start. Every conversation on the
+    /// desk was dropped at once, silently, because one tab was closed.
+    ///
+    /// The folder and the program do not move like that. One conversation
+    /// remembered for this CLI in this folder is this tab's, whatever either of
+    /// them is called today
+    #[test]
+    fn closing_one_tab_leaves_the_others_their_conversations() {
+        let tab = |id: &str, cwd: &str, session: &str| SavedTab {
+            title: "claude".into(),
+            id: Some(id.into()),
+            cwd: Some(cwd.into()),
+            program: "claude".into(),
+            session: session.into(),
+            source: "Minted".into(),
+        };
+        let saved = Saved {
+            version: VERSION,
+            desks: vec![SavedWs {
+                name: "work".into(),
+                id: None,
+                panes: None,
+                tabs: vec![
+                    tab("claude", "D:\\Gone", "one"),
+                    tab("claude-2", "D:\\Left", "two"),
+                    tab("claude-3", "D:\\Right", "three"),
+                ],
+            }],
+        };
+        // The first tab is closed, so the two behind it are renamed one step
+        // forward. What they are is what they were: same CLI, same folders
+        let found = |cwd, id| {
+            saved
+                .conversation_of(&named("work"), "claude", Some(cwd), Some(id), "claude")
+                .map(|s| s.id)
+        };
+        assert_eq!(found("D:\\Left", "claude"), Some("two".into()));
+        assert_eq!(found("D:\\Right", "claude-2"), Some("three".into()));
+        // A tab added since is not handed somebody else's conversation
+        assert_eq!(found("D:\\New", "claude-3"), None);
+        // And the launch can tell "nothing was ever written down here" from
+        // "something was, and it could not be given to this tab"
+        assert_eq!(saved.remembered_here(&named("work"), "claude", Some("D:\\Left")), 1);
+        assert_eq!(saved.remembered_here(&named("work"), "claude", Some("D:\\New")), 0);
+    }
+
+    /// Two tabs of one CLI in one folder: the name is all there is, and when it
+    /// does not answer either, nothing is handed over. Putting the wrong
+    /// conversation back is worse than starting a new one
+    #[test]
+    fn two_tabs_in_one_folder_are_told_apart_by_name_or_not_at_all() {
+        let tab = |id: &str, title: &str, session: &str| SavedTab {
+            title: title.into(),
+            id: Some(id.into()),
+            cwd: Some("D:\\Work".into()),
+            program: "claude".into(),
+            session: session.into(),
+            source: "Minted".into(),
+        };
+        let saved = Saved {
+            version: VERSION,
+            desks: vec![SavedWs {
+                name: "work".into(),
+                id: None,
+                panes: None,
+                tabs: vec![tab("coder", "build", "one"), tab("reviewer", "review", "two")],
+            }],
+        };
+        let found = |id, title| {
+            saved
+                .conversation_of(&named("work"), "claude", Some("D:\\Work"), id, title)
+                .map(|s| s.id)
+        };
+        // The automation name settles it, and the title settles it when there
+        // is no automation name
+        assert_eq!(found(Some("reviewer"), "何とでも"), Some("two".into()));
+        assert_eq!(found(None, "build"), Some("one".into()));
+        // Neither answers: nothing is handed over rather than a guess
+        assert_eq!(found(Some("nobody"), "nothing"), None);
+        assert_eq!(saved.remembered_here(&named("work"), "claude", Some("D:\\Work")), 2);
     }
 
     /// A desk renamed since the app closed brings its conversations back.

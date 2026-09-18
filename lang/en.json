@@ -758,6 +758,7 @@
   "tui.pane.restart_fresh": "Restart on a new conversation (Ctrl+B R) — press twice while it is running",
   "tui.pane.past": "Earlier conversation",
   "tui.pane.past_hint": "This tab started a new conversation. Go back to an earlier one from this folder",
+  "tui.pane.past_lost": "The conversation this tab was having did not come back. Press to pick it out of what was said in this folder",
   "tui.pane.divider": "Drag to resize, double-click for even halves",
   "tui.pane.add": "+ Add a tab",
   "tui.tabbar.grip": "Drag to resize the tab bar, drag it shut to put it away, double-click for the default width",

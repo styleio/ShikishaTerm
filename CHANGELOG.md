@@ -8,6 +8,31 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **Closing one tab no longer takes the other tabs' conversations with it.** A tab
+  without an automation name of its own is given one -- the second `claude` on a desk
+  is `claude-2`, the third `claude-3` -- so closing the first renamed the ones behind
+  it. What the app had written down still called them by their old names, matched
+  nothing at the next start, and every AI tab on that desk came up on a new
+  conversation at once, without a word. A tab is now recognised by what it is, its CLI
+  and its folder, which is what a person chose and what does not move; the names are
+  kept for the one thing they can settle, two tabs of one CLI in one folder, and when
+  they cannot settle that either, nothing is resumed rather than the wrong thing.
+
+### Changed
+- **A tab that lost the conversation written down for it says so, and keeps saying
+  it.** "Earlier conversation" in the caption used to go the moment you typed --
+  which is usually a moment before you notice your conversation is not there. On a
+  tab that lost one, the offer now stays until it is taken up, and it is in the
+  warning colour rather than grey. A tab that simply starts clean in a folder that has
+  been worked in before is unchanged: a remark, in grey, until somebody speaks.
+- **A tab that comes up clean although it could have carried a conversation writes
+  down why.** The log said so when the record had gone and said nothing in the other
+  cases -- which is what made a whole desk's worth of lost conversations impossible to
+  explain afterwards. Every reason is written now: the settings said to, the record is
+  gone, or conversations were remembered for that CLI in that folder and none could be
+  told to be this tab's.
+
 ## [0.17.0] - 2026-09-18
 
 A branch goes all the way in from the git column, an AI client is handed this
