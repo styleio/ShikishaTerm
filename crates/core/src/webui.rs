@@ -13016,8 +13016,12 @@ mod tests {
             PAGE.contains(r#"PC_ACCOUNTS_READ.then(() => lookAtCard("project-gitacct", 50))"#),
             "the link does not bring the card into view"
         );
+        // The folder as the settings spell it, not as the disk answers about
+        // it: a project on a mapped network drive is written down under the
+        // drive letter, and the page it is on cannot be found by the path the
+        // drive points at
         assert!(
-            crate::shell::page().contains(r#"openSettings("project-gitacct", true, proj.dir)"#),
+            crate::shell::page().contains(r#"openSettings("project-gitacct", true, proj.at || proj.dir)"#),
             "the Issue tab sends people to the folder instead of its project's account"
         );
     }

@@ -4951,6 +4951,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         serde_json::json!({
                             "name": s.name,
                             "dir": s.dir.display().to_string(),
+                            // The folder of this desk it was found through, for
+                            // the places that point back at a line of the
+                            // settings or ask which project a folder is in
+                            "at": s.at.display().to_string(),
                             "repo": s.repo,
                             "account": s.git.written(),
                             "unset": matches!(s.git, config::GitUse::Unset),
