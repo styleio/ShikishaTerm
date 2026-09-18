@@ -51,7 +51,7 @@ in a name is there so the folder can be read at a glance.
 
 | Tool | Runs on | What it is for | How to run it |
 |---|---|---|---|
-| `tools/debug/instance.win.ps1` | Windows | A copy of the app that is nobody's: its own folder, settings, state, door and port, started from this checkout's build. What makes two agents debugging at once possible -- one running copy per folder is the rule, so a copy of its own is the only way to have a second. Prints its process id, its key's file and the `--mcp` command to point a client at it; nothing of a copy somebody is using is read, written or stopped | `cargo build`, then `tools/debug/instance.win.ps1 [-Port <board>] [-Cdp <devtools>]`, and `-Stop` when done |
+| `tools/debug/instance.win.ps1` | Windows | A copy of the app that is nobody's: its own folder, settings, state, door and ports, started from this checkout's build. What makes two agents debugging at once possible -- one running copy per folder is the rule, so a copy of its own is the only way to have a second. **Ports come from 9400-9499, two at a time** (even: the board, odd: the window's DevTools port), the first free pair, so two of these cannot land on each other. It writes the client's MCP settings and prints where, along with the process id and the key's file; nothing of a copy somebody is using is read, written or stopped | `cargo build`, then `tools/debug/instance.win.ps1 [-At <folder>] [-Mcp <path to .mcp.json>] [-Port <n>] [-Cdp <n>]`, and `-Stop` when done |
 | `SHIKISHA-TERM.exe --mcp` | anywhere | Not a debugging tool but the way to drive one: the app's own automation primitives, spoken as MCP tools, against a copy that is already running. `tools/list` is the app's own `list`, so it answers for what can really be called. The instance above prints the command | in a client's MCP settings: `<exe> --mcp --pid <its process id> --token-file <its root>\data\api-token` |
 | `tools/debug/shoot.mjs` | anywhere, with Chrome | Photographs the board page in both languages, both colour schemes and at window and phone width, into `target/shots`. This is how section 9 of [the screen rules](../../docs/design/STYLEGUIDE.md) is marked: nothing has to be running, so the screen being judged is never the one on the way to it | `node tools/debug/shoot.mjs tools/debug/scenes/files.mjs [--only <scene>]` |
 | `tools/debug/scenes/` | — | Which screens `shoot.mjs` puts up, a line each. How to write one is at the top of `files.mjs` | — |
@@ -67,3 +67,23 @@ in a name is there so the folder can be read at a glance.
 | `tools/debug/shot-window.win.ps1` | Windows | Photographs one copy of the app's window, picked by the folder it runs from — so a copy somebody is using, sitting on top, is not what gets taken | `tools/debug/shot-window.win.ps1 -Under <folder> -Out <file.png>` |
 | `live_sftp` tests in `crates/core/src/hooks.rs` | anywhere | The file commands, Lua, the panel's folder template and Compare, all through the code the app runs, against the server above. Ignored unless `SHIKISHA_LIVE_SFTP` names a server | See the top of `sftp-server.wsl.sh` |
 | `tools/sandbox.ps1` | Windows | The package on a Windows that has never seen this project (Windows Sandbox): a new install, the Store package, or an upgrade over the version before. It stays in `tools/`, where it was written, so that what already points at it still finds it | `tools/sandbox.ps1 [-App <folder> \| -Msix <path> [-From <old>]]` |
+
+## Pointing a client at a copy
+
+`instance.win.ps1` writes the settings itself, because the door's name carries
+the copy's process id and that is new at every start. By default they land at
+`<the copy's folder>\mcp.json`; `-Mcp` puts them where the client will look --
+an agent's own worktree, as `.mcp.json`, is the usual answer. The file is
+merged, so other servers already in it stay, and a file that is not JSON is
+refused rather than replaced.
+
+    {"mcpServers": {"shikisha": {"command": "<exe>", "args": ["--mcp", "--pid", "1234",
+                                                             "--token-file", "<root>\\data\\api-token"]}}}
+
+Claude Code reads `.mcp.json` from the folder it is started in, or takes the
+file outright with `--mcp-config <path>`. Gemini's CLI keeps the same shape
+under `mcpServers` in its own settings. Codex wants TOML, so the `mcp=` line
+this prints is the one to translate by hand.
+
+`-Name` changes what the server is called, for registering two copies with one
+client.
