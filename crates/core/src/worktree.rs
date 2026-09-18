@@ -887,8 +887,10 @@ fn clean_inside(to: &str) -> String {
 pub struct Brought {
     /// What could not be put there at all
     pub missed: Vec<String>,
-    /// Files asked to be linked that were copied instead, because this machine
-    /// does not let a file be linked without rights nobody gave
+    /// Things asked to be linked that were copied instead, because no second
+    /// name for them could be made: a file needs rights nobody gave, and a
+    /// folder on another machine's share cannot have one of the kind that
+    /// needs none
     pub copied: Vec<String>,
     /// Replacements that could not be made, each with why: the file is there,
     /// copied as it was
@@ -930,15 +932,29 @@ pub fn carry_into(plan: &Plan, items: &[Carry]) -> Brought {
         if let Some(parent) = to.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
+        // A second name that cannot be made is not a reason to arrive without
+        // the folder: it is copied instead, and named as copied. A project on
+        // another machine's share is where this happens -- the kind of link
+        // this needs no rights for cannot point off this machine
         let done = match (c.how.as_str(), from.is_dir()) {
-            ("link", true) => link_folder(&from, &to),
-            ("link", false) => match link_file(&from, &to) {
-                true => true,
-                false => {
-                    said.copied.push(c.name.clone());
-                    std::fs::copy(&from, &to).is_ok()
+            ("link", true) => {
+                link_folder(&from, &to) || {
+                    let copied = copy_folder(&from, &to).is_ok();
+                    if copied {
+                        said.copied.push(c.name.clone());
+                    }
+                    copied
                 }
-            },
+            }
+            ("link", false) => {
+                link_file(&from, &to) || {
+                    let copied = std::fs::copy(&from, &to).is_ok();
+                    if copied {
+                        said.copied.push(c.name.clone());
+                    }
+                    copied
+                }
+            }
             (_, true) => copy_folder(&from, &to).is_ok(),
             (how, false) => {
                 let copied = std::fs::copy(&from, &to).is_ok();
@@ -1108,9 +1124,16 @@ pub fn untrack(main: &Path, paths: &[String]) -> Result<()> {
 
 /// A second name for one folder, made the way this system lets anyone make one.
 ///
-/// On Windows that is a junction: a symbolic link there needs rights most
-/// people running this do not have. Everywhere else a symbolic link is the
-/// ordinary thing and needs nothing.
+/// On Windows that is a junction, because a symbolic link there needs rights
+/// most people running this do not have. A junction, though, is a name for a
+/// place on this machine and nothing else: asked for a folder on another
+/// machine's share it answers "local volumes are required", and it answers
+/// that however the share was reached, a mapped drive letter included. So a
+/// folder it refuses is asked for again as a symbolic link, which is the one
+/// kind that can point at another machine -- and where nobody turned that
+/// right on, both fail and the caller copies the folder instead.
+///
+/// Everywhere else a symbolic link is the ordinary thing and needs nothing.
 fn link_folder(from: &Path, to: &Path) -> bool {
     #[cfg(windows)]
     {
@@ -1118,16 +1141,19 @@ fn link_folder(from: &Path, to: &Path) -> bool {
         // forward slash as the start of a switch, and a name like
         // `web/node_modules` would be a folder it refuses rather than a path
         let told = |p: &Path| p.display().to_string().replace('/', "\\");
-        let mut link = std::process::Command::new("cmd");
-        link.args(["/c", "mklink", "/J"])
-            .arg(told(to))
-            .arg(told(from))
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        crate::detach_console(&mut link)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        let made = |kind: &str| {
+            let mut link = std::process::Command::new("cmd");
+            link.args(["/c", "mklink", kind])
+                .arg(told(to))
+                .arg(told(from))
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            crate::detach_console(&mut link)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        made("/J") || made("/D")
     }
     #[cfg(unix)]
     {
@@ -2762,6 +2788,56 @@ tools/conpty.ps1"));
         // would walk into it and take the original's contents with it
         let mut unhook = std::process::Command::new("cmd");
         unhook.args(["/c", "rmdir"]).arg(cut.folder.join("node_modules"));
+        let _ = crate::detach_console(&mut unhook).status();
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A folder that cannot be given a second name is copied instead, and
+    /// only what really landed is said to have been copied.
+    ///
+    /// The case this is for is a project on another machine's share: the kind
+    /// of link Windows makes without asking anyone for rights is a name for a
+    /// place on this machine only, so every folder a branch was to link came
+    /// out as "could not be brought" and nothing arrived (2026-09-18, a
+    /// project on a mapped drive). Held here with a destination no folder can
+    /// be written to, which is the one way to refuse a link on any machine
+    #[test]
+    fn a_folder_that_cannot_be_linked_is_copied_and_only_then_called_copied() {
+        let main = repo("carry-nolink");
+        let there = main.join("vendor").join("left-pad");
+        std::fs::create_dir_all(&there).unwrap();
+        std::fs::write(there.join("index.js"), "x").unwrap();
+        let cut = plan(&main, "feature/nolink", None).unwrap();
+        std::fs::create_dir_all(&cut.folder).unwrap();
+        // Nothing can be made under a name a file already holds, so neither
+        // the link nor the copy behind it can be
+        std::fs::write(cut.folder.join("gone"), "in the way").unwrap();
+        let carry = |name: &str| Carry {
+            name: name.into(),
+            folder: true,
+            how: "link".into(),
+            from: Some(main.join("vendor").display().to_string()),
+            replace: Vec::new(),
+            line: None,
+        };
+        let said = carry_into(&cut, &[carry("gone/vendor")]);
+        assert_eq!(said.missed, ["gone/vendor"], "a folder that never arrived was not said to be missing");
+        assert!(said.copied.is_empty(), "it was called copied although nothing was copied: {said:?}");
+
+        // And where it can be written, it arrives -- as a link or as a copy,
+        // whichever this machine allows, and the copy is the one that is named
+        let said = carry_into(&cut, &[carry("vendor")]);
+        assert!(said.missed.is_empty(), "the folder did not arrive at all: {said:?}");
+        assert!(
+            cut.folder.join("vendor").join("left-pad").join("index.js").exists(),
+            "what came along cannot be read",
+        );
+        assert!(
+            said.copied.is_empty() || said.copied == ["vendor"],
+            "a copy was made without saying so: {said:?}",
+        );
+        let mut unhook = std::process::Command::new("cmd");
+        unhook.args(["/c", "rmdir"]).arg(cut.folder.join("vendor"));
         let _ = crate::detach_console(&mut unhook).status();
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
