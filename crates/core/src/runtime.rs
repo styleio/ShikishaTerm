@@ -144,6 +144,15 @@ struct Pending {
     /// afterwards -- a project on another machine's share is owned over there,
     /// and git stops at both
     trust: Option<String>,
+    /// The folders that were to be shared with the project and could not be,
+    /// waiting for the person to say whether to copy them in instead. A
+    /// project on another machine's share is where this happens: what the
+    /// branch would have pointed at cannot be pointed at from here
+    unlinked: Vec<String>,
+    /// Copying those in, once the person said to, and which ones. Runs on a
+    /// thread of its own, because a folder on a share takes as long to copy as
+    /// the branch took to make
+    copying: Option<(crate::worktree::Making, Vec<String>)>,
     /// When it was written into the settings. The row stays until the desk
     /// that was read back lists the folder, so a card takes its place in the
     /// same frame the row goes
@@ -167,6 +176,14 @@ impl Pending {
                 // The folder is there and git will not go into it: not a
                 // failure, and not something to leave unsaid either
                 (None, Some(_), _) => "untrusted".into(),
+                // ...and the same for what the branch was to share with the
+                // project and could not. Asked after git, which is the one
+                // that stops everything else
+                (None, None, _) if !self.unlinked.is_empty() => "unlinked".into(),
+                // While the answer is being carried out, the row says so
+                (None, None, _) if self.copying.is_some() => {
+                    crate::worktree::Stage::SettingUp.key().into()
+                }
                 (None, None, true) => crate::worktree::Stage::SettingUp.key().into(),
                 (None, None, false) => self.making.stage().key().into(),
             },
@@ -177,6 +194,7 @@ impl Pending {
                 true => crate::trust::file().display().to_string(),
                 false => String::new(),
             },
+            unlinked: self.unlinked.clone(),
         }
     }
 
@@ -696,75 +714,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         ));
     }
-    // What was on screen when the app last closed. Two things are taken from
-    // it, and they are taken at different moments. The conversations are needed
-    // HERE, before the first process starts: carrying one over is a decision
-    // the launch itself makes, and asking afterwards would mean minting a
-    // conversation only to throw it away. The division of the screen is put
-    // back further down, once there are tabs for the panes to point at
-    // What the SSH tabs sign in with, handed to the connection thread before
-    // anything is launched: a tab that comes up before its password is known
-    // would be told there is none (the store lives on this thread, the
-    // connections on another -- see `ssh::use_secrets`)
-    if let Some(c) = cfg.as_ref() {
-        ssh::use_secrets(c.resolve_tokens(None));
-        // The sandbox service's key travels with the rest, under its own name
-        crate::e2b::use_key(c.resolve_tokens(None).get("e2b_api_key").cloned());
-    }
-    let mut last_session = crate::lastsession::Saved::load();
-    if !cmd_args.is_empty() {
-        tabs.push(Tab::spawn(
-            title_of(&cmd_args),
-            &cmd_args,
-            None,
-            rows,
-            cols,
-            tab::TabOptions::default(),
-        )?);
-    } else if let Some(w) = desks.get(desk_index) {
-        // If we're resuming where we left off, launch that same desk too.
-        // Hard-coding this to the first desk would restore only the name while
-        // showing a screen with different contents.
-        // This desk's model connections, before its tabs start. The full
-        // hand-over comes further down, once there is a notifier to hand. At
-        // this point an encrypted store is not open yet, so a key kept there
-        // reads as empty; the tabs are handed the real one once the password
-        // is in (reload_providers, below)
-        if let Some(c) = cfg.as_ref() {
-            let tokens = c.resolve_tokens(None);
-            bridge::use_desk(config::desk_providers(w, &|k| tokens.get(k).cloned()));
-        }
-        spawn_desk(w, rows, cols, &mut tabs, &mut startup_errors, Some(&last_session));
-    }
-    // No config yet = first run. Guide the user so the experience isn't just
-    // "a single shell opens and nothing else happens", leaving them unsure what to do.
-    let first_run = cmd_args.is_empty() && cfg.is_none();
-    if tabs.is_empty() && desks.is_empty() {
-        let argv = vec!["powershell.exe".to_string()];
-        tabs.push(Tab::spawn(
-            "SHELL".into(),
-            &argv,
-            None,
-            rows,
-            cols,
-            tab::TabOptions::default(),
-        )?);
-    }
-
-    // Re-fit the PTY size now that every tab exists
-    (rows, cols) = pty_dims(shell.size()?);
-    for t in &tabs {
-        let _ = t.resize(rows, cols);
-    }
-
-    // The Lua hook engine is per-desk (shared variables are scoped inside it too).
-    // Unused desks don't get one built; it's created on demand when switched to.
-    let mut max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
-    let mut done_confirm_ms = cfg
-        .as_ref()
-        .and_then(|c| c.done_confirm_ms)
-        .unwrap_or(profile::DEFAULT_DONE_CONFIRM_MS);
-    // If secrets are encrypted, ask for the master password at startup
+    // If secrets are encrypted, ask for the master password -- before anything
+    // that needs one is started. A tab is handed its git account's token as it
+    // is born and cannot be handed one afterwards, so a store still locked at
+    // that moment is a terminal that spends its whole life signing in as
+    // nobody. The same goes for the model connections below
     let mut password: Option<String> = None;
     if let Some(path) = cfg.as_ref().and_then(|c| c.secrets_path())
         && std::fs::read_to_string(&path)
@@ -809,23 +763,75 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
 
-    // ...and the connections, for the same reason and at the same moment: what
-    // was handed over before the prompt came from a store that could not be
-    // opened yet, so an encrypted one had nothing in it
+    // What was on screen when the app last closed. Two things are taken from
+    // it, and they are taken at different moments. The conversations are needed
+    // HERE, before the first process starts: carrying one over is a decision
+    // the launch itself makes, and asking afterwards would mean minting a
+    // conversation only to throw it away. The division of the screen is put
+    // back further down, once there are tabs for the panes to point at
+    // What the SSH tabs sign in with, handed to the connection thread before
+    // anything is launched: a tab that comes up before its password is known
+    // would be told there is none (the store lives on this thread, the
+    // connections on another -- see `ssh::use_secrets`)
     if let Some(c) = cfg.as_ref() {
-        ssh::use_secrets(c.resolve_tokens(password.as_deref()));
-        crate::e2b::use_key(c.resolve_tokens(password.as_deref()).get("e2b_api_key").cloned());
+        let tokens = c.resolve_tokens(password.as_deref());
+        ssh::use_secrets(tokens.clone());
+        // The sandbox service's key travels with the rest, under its own name
+        crate::e2b::use_key(tokens.get("e2b_api_key").cloned());
+        // ...and what a git typed in a terminal signs in with, for the same
+        // reason: the tab is handed its account's token as it starts
+        crate::git::use_secrets(tokens);
     }
-    // Resolve the model bridge's connection info again now that the password is confirmed
-    // (encrypted-secret keys get unlocked here too). Tabs spawned before the
-    // prompt hold keys that could not be decrypted yet, so they are handed the
-    // real ones here — otherwise they go on sending an empty bearer token (→ 401).
-    if let Some(c) = &cfg
-        && password.is_some() {
+    let mut last_session = crate::lastsession::Saved::load();
+    if !cmd_args.is_empty() {
+        tabs.push(Tab::spawn(
+            title_of(&cmd_args),
+            &cmd_args,
+            None,
+            rows,
+            cols,
+            tab::TabOptions::default(),
+        )?);
+    } else if let Some(w) = desks.get(desk_index) {
+        // If we're resuming where we left off, launch that same desk too.
+        // Hard-coding this to the first desk would restore only the name while
+        // showing a screen with different contents.
+        // This desk's model connections, before its tabs start. The full
+        // hand-over comes further down, once there is a notifier to hand
+        if let Some(c) = cfg.as_ref() {
             let tokens = c.resolve_tokens(password.as_deref());
-            reload_providers(&desks, desk_index, &|k| tokens.get(k).cloned(), &mut tabs, &mut []);
+            bridge::use_desk(config::desk_providers(w, &|k| tokens.get(k).cloned()));
         }
+        spawn_desk(w, rows, cols, &mut tabs, &mut startup_errors, Some(&last_session));
+    }
+    // No config yet = first run. Guide the user so the experience isn't just
+    // "a single shell opens and nothing else happens", leaving them unsure what to do.
+    let first_run = cmd_args.is_empty() && cfg.is_none();
+    if tabs.is_empty() && desks.is_empty() {
+        let argv = vec!["powershell.exe".to_string()];
+        tabs.push(Tab::spawn(
+            "SHELL".into(),
+            &argv,
+            None,
+            rows,
+            cols,
+            tab::TabOptions::default(),
+        )?);
+    }
 
+    // Re-fit the PTY size now that every tab exists
+    (rows, cols) = pty_dims(shell.size()?);
+    for t in &tabs {
+        let _ = t.resize(rows, cols);
+    }
+
+    // The Lua hook engine is per-desk (shared variables are scoped inside it too).
+    // Unused desks don't get one built; it's created on demand when switched to.
+    let mut max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
+    let mut done_confirm_ms = cfg
+        .as_ref()
+        .and_then(|c| c.done_confirm_ms)
+        .unwrap_or(profile::DEFAULT_DONE_CONFIRM_MS);
     // Notification destinations. Empty until the desk on screen is handed over
     // below: each desk registers its own, and there are none of the app's
     if let Some(e) = cfg.as_ref().and_then(|c| c.secrets_problem(password.as_deref())) {
@@ -1666,9 +1672,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     newcfg.resolve_tokens(password.as_deref()),
                     newcfg.resolve_secret_terms(password.as_deref()),
                 );
-                // ...and the same for the connections, which keep their own
-                // copy: a password taken out of the settings stops working
+                // ...and the same for the connections and the git accounts,
+                // which keep their own copy: a password taken out of the
+                // settings stops working, and so does a token
                 ssh::use_secrets(newcfg.resolve_tokens(password.as_deref()));
+                crate::git::use_secrets(newcfg.resolve_tokens(password.as_deref()));
         crate::e2b::use_key(newcfg.resolve_tokens(password.as_deref()).get("e2b_api_key").cloned());
                 // Everything that is the desk's rather than the app's, said
                 // again now that the settings have been read afresh. It has to
@@ -5505,10 +5513,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         Err(e) => p.error = Some(format!("{e:#}")),
                     }
                 }
-                "dismiss" if p.error.is_some() || p.trust.is_some() => {
+                // The person said yes to copying in what could not be shared
+                // with the project. The same carrying, asked for as a copy
+                "copy_instead" if !p.unlinked.is_empty() => {
+                    let names = std::mem::take(&mut p.unlinked);
+                    let carry: Vec<crate::worktree::Carry> = p
+                        .carry
+                        .iter()
+                        .filter(|c| names.contains(&c.name))
+                        .map(|c| crate::worktree::Carry { how: "copy".into(), ..c.clone() })
+                        .collect();
+                    let job = crate::worktree::Making::carrying(p.making.plan.clone(), carry);
+                    p.copying = Some((job, names));
+                }
+                "dismiss" if p.error.is_some() || p.trust.is_some() || !p.unlinked.is_empty() => {
                     // Left as it is, on purpose. The folder stays; git will
-                    // say the same thing in it until somebody says otherwise
+                    // say the same thing in it until somebody says otherwise,
+                    // and what was to be shared is simply not there
                     p.trust = None;
+                    p.unlinked.clear();
                     p.gone = p.error.is_some();
                 }
                 _ => {}
@@ -5546,6 +5569,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             p.trust = crate::trust::refused(&p.making.plan.folder)
                                 .map(|v| crate::trust::spread(&v));
                         }
+                        // What has no second name here is not said in passing:
+                        // the row asks, and the answer is a press
+                        p.unlinked = brought.unlinked.clone();
                         let said = brought_note(&p.making.plan.branch, &brought);
                         said_before_reload = Some((Instant::now(), said.clone()));
                         flash = Some(said);
@@ -5560,6 +5586,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Err(e) => p.error = Some(format!("{e:#}")),
             }
         }
+        // Copying in what the branch could not share with the project, once
+        // the person said to. Its row waits on it and says how it went
+        for p in makings.iter_mut().filter(|p| p.copying.is_some()) {
+            let Some(done) = p.copying.as_ref().and_then(|(job, _)| job.outcome()) else {
+                continue;
+            };
+            let Some((_, names)) = p.copying.take() else { continue };
+            let missed = match done {
+                Ok(b) => b.missed,
+                Err(why) => {
+                    append_hook_log(&format!("could not copy into {}: {why}", p.making.plan.folder.display()));
+                    names.clone()
+                }
+            };
+            flash = Some(match missed.is_empty() {
+                true => i18n::tp("msg.branch.copied_in", &[("names", &names.join(", "))]),
+                false => i18n::tp("msg.branch.copy_failed", &[("names", &missed.join(", "))]),
+            });
+        }
         makings.retain(|p| {
             let listed = || {
                 desks.iter().filter(|d| d.name == p.desk).any(|d| {
@@ -5570,8 +5615,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             };
             // A row with a question on it stays until the question is
             // answered: the folder is on the desk already, and nothing else on
-            // screen would say that git will not work in it
-            !p.gone && (p.trust.is_some() || !p.written.is_some_and(|at| at.elapsed() > MAKING_CARD_WAIT || listed()))
+            // screen would say that git will not work in it, or that what the
+            // branch was to share with the project is not there. A row doing
+            // what an answer asked for stays until that is done
+            !p.gone
+                && (p.trust.is_some()
+                    || !p.unlinked.is_empty()
+                    || p.copying.is_some()
+                    || !p.written.is_some_and(|at| at.elapsed() > MAKING_CARD_WAIT || listed()))
         });
         // The worktrees being deleted. Gone is said then and not before; a
         // folder that stayed keeps its row and asks
@@ -6143,6 +6194,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 made: false,
                                 error: None,
                                 trust: None,
+                                unlinked: Vec::new(),
+                                copying: None,
                                 written: None,
                                 gone: false,
                             }); }
@@ -6202,6 +6255,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             made: false,
                             error: None,
                             trust: None,
+                            unlinked: Vec::new(),
+                            copying: None,
                             written: None,
                             gone: false,
                         });

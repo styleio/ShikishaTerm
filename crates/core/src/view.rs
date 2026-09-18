@@ -916,10 +916,7 @@ pub fn surfaces_written(
                         protect: desk.folder_of(ft).map(|f| f.protect.clone()).unwrap_or_default(),
                         // Its own choice when it made one, else its folder's
                         // project's -- the one the column beside that folder uses
-                        git: match (ft.cfg.git_account.as_deref(), desk.cwd_of(ft)) {
-                            (None, Some(cwd)) => desk.git_use_of_folder(&cwd).0,
-                            (chosen, _) => desk.git_use(chosen),
-                        },
+                        git: desk.git_use_here(ft.cfg.git_account.as_deref(), desk.cwd_of(ft).as_deref()),
                         key,
                         name,
                     },
