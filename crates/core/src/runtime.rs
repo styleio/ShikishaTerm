@@ -140,6 +140,15 @@ struct Pending {
     /// afterwards -- a project on another machine's share is owned over there,
     /// and git stops at both
     trust: Option<String>,
+    /// The folders that were to be shared with the project and could not be,
+    /// waiting for the person to say whether to copy them in instead. A
+    /// project on another machine's share is where this happens: what the
+    /// branch would have pointed at cannot be pointed at from here
+    unlinked: Vec<String>,
+    /// Copying those in, once the person said to, and which ones. Runs on a
+    /// thread of its own, because a folder on a share takes as long to copy as
+    /// the branch took to make
+    copying: Option<(crate::worktree::Making, Vec<String>)>,
     /// When it was written into the settings. The row stays until the desk
     /// that was read back lists the folder, so a card takes its place in the
     /// same frame the row goes
@@ -161,6 +170,14 @@ impl Pending {
                 // The folder is there and git will not go into it: not a
                 // failure, and not something to leave unsaid either
                 (None, Some(_), _) => "untrusted".into(),
+                // ...and the same for what the branch was to share with the
+                // project and could not. Asked after git, which is the one
+                // that stops everything else
+                (None, None, _) if !self.unlinked.is_empty() => "unlinked".into(),
+                // While the answer is being carried out, the row says so
+                (None, None, _) if self.copying.is_some() => {
+                    crate::worktree::Stage::SettingUp.key().into()
+                }
                 (None, None, true) => crate::worktree::Stage::SettingUp.key().into(),
                 (None, None, false) => self.making.stage().key().into(),
             },
@@ -171,6 +188,7 @@ impl Pending {
                 true => crate::trust::file().display().to_string(),
                 false => String::new(),
             },
+            unlinked: self.unlinked.clone(),
         }
     }
 
@@ -5499,10 +5517,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         Err(e) => p.error = Some(format!("{e:#}")),
                     }
                 }
-                "dismiss" if p.error.is_some() || p.trust.is_some() => {
+                // The person said yes to copying in what could not be shared
+                // with the project. The same carrying, asked for as a copy
+                "copy_instead" if !p.unlinked.is_empty() => {
+                    let names = std::mem::take(&mut p.unlinked);
+                    let carry: Vec<crate::worktree::Carry> = p
+                        .carry
+                        .iter()
+                        .filter(|c| names.contains(&c.name))
+                        .map(|c| crate::worktree::Carry { how: "copy".into(), ..c.clone() })
+                        .collect();
+                    let job = crate::worktree::Making::carrying(p.making.plan.clone(), carry);
+                    p.copying = Some((job, names));
+                }
+                "dismiss" if p.error.is_some() || p.trust.is_some() || !p.unlinked.is_empty() => {
                     // Left as it is, on purpose. The folder stays; git will
-                    // say the same thing in it until somebody says otherwise
+                    // say the same thing in it until somebody says otherwise,
+                    // and what was to be shared is simply not there
                     p.trust = None;
+                    p.unlinked.clear();
                     p.gone = p.error.is_some();
                 }
                 _ => {}
@@ -5540,6 +5573,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             p.trust = crate::trust::refused(&p.making.plan.folder)
                                 .map(|v| crate::trust::spread(&v));
                         }
+                        // What has no second name here is not said in passing:
+                        // the row asks, and the answer is a press
+                        p.unlinked = brought.unlinked.clone();
                         let said = brought_note(&p.making.plan.branch, &brought);
                         said_before_reload = Some((Instant::now(), said.clone()));
                         flash = Some(said);
@@ -5554,6 +5590,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Err(e) => p.error = Some(format!("{e:#}")),
             }
         }
+        // Copying in what the branch could not share with the project, once
+        // the person said to. Its row waits on it and says how it went
+        for p in makings.iter_mut().filter(|p| p.copying.is_some()) {
+            let Some(done) = p.copying.as_ref().and_then(|(job, _)| job.outcome()) else {
+                continue;
+            };
+            let Some((_, names)) = p.copying.take() else { continue };
+            let missed = match done {
+                Ok(b) => b.missed,
+                Err(why) => {
+                    append_hook_log(&format!("could not copy into {}: {why}", p.making.plan.folder.display()));
+                    names.clone()
+                }
+            };
+            flash = Some(match missed.is_empty() {
+                true => i18n::tp("msg.branch.copied_in", &[("names", &names.join(", "))]),
+                false => i18n::tp("msg.branch.copy_failed", &[("names", &missed.join(", "))]),
+            });
+        }
         makings.retain(|p| {
             let listed = || {
                 desks.iter().filter(|d| d.name == p.desk).any(|d| {
@@ -5564,8 +5619,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             };
             // A row with a question on it stays until the question is
             // answered: the folder is on the desk already, and nothing else on
-            // screen would say that git will not work in it
-            !p.gone && (p.trust.is_some() || !p.written.is_some_and(|at| at.elapsed() > MAKING_CARD_WAIT || listed()))
+            // screen would say that git will not work in it, or that what the
+            // branch was to share with the project is not there. A row doing
+            // what an answer asked for stays until that is done
+            !p.gone
+                && (p.trust.is_some()
+                    || !p.unlinked.is_empty()
+                    || p.copying.is_some()
+                    || !p.written.is_some_and(|at| at.elapsed() > MAKING_CARD_WAIT || listed()))
         });
         // The worktrees being deleted. Gone is said then and not before; a
         // folder that stayed keeps its row and asks
@@ -6126,6 +6187,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 made: false,
                                 error: None,
                                 trust: None,
+                                unlinked: Vec::new(),
+                                copying: None,
                                 written: None,
                                 gone: false,
                             }); }
@@ -6182,6 +6245,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             made: false,
                             error: None,
                             trust: None,
+                            unlinked: Vec::new(),
+                            copying: None,
                             written: None,
                             gone: false,
                         });
