@@ -93,7 +93,7 @@ impl Target {
         I: IntoIterator<Item = String>,
     {
         let mut pipe = std::env::var(crate::api::ENV_PIPE).ok();
-        let mut token = std::env::var("SHIKISHA_TOKEN").ok();
+        let mut token = std::env::var(crate::api::ENV_TOKEN).ok();
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             let mut value = || {
@@ -449,9 +449,17 @@ fn failure(id: &Value, code: i32, message: &str) -> Value {
 /// parse error at the other end; what has to be said goes to stderr, where
 /// clients show it.
 pub fn run() -> Result<()> {
-    let target = Target::decide(std::env::args().skip(2)).inspect_err(|e| {
-        eprintln!("shikisha-term --mcp: {e}");
-    })?;
+    let target = match Target::decide(std::env::args().skip(2)) {
+        Ok(target) => target,
+        Err(e) => {
+            // Said once, by name, on stderr -- which is where a client shows
+            // what a server it started had to say. Not returned: the runtime
+            // prints what main gives back, and the same sentence twice reads
+            // like two things went wrong
+            eprintln!("shikisha-term --mcp: {e}");
+            std::process::exit(1);
+        }
+    };
     let mut door = Door::to(target);
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
