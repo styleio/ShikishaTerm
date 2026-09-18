@@ -72,6 +72,26 @@ fn path() -> PathBuf {
     crate::config::state_path(FILE)
 }
 
+/// Whether two written-down folders are the same folder.
+///
+/// Compared the way every other place-comparison in this app is, because
+/// Windows hands the same folder back in whatever spelling it likes and none
+/// of the differences mean anything: the settings keep whatever was typed, and
+/// a path that came back from somewhere else may carry the other slash, other
+/// case or a separator on the end. Compared as written, one rewriting of the
+/// settings turned every conversation on a desk into a stranger, all at once
+/// and without a word -- a tab is matched to a running process by this same
+/// question (`TabOptions::same_place`), and only what is remembered asked it
+/// more strictly than the rest
+fn same_folder(a: Option<&str>, b: Option<&str>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            crate::uistate::same_folder(std::path::Path::new(a), std::path::Path::new(b))
+        }
+        (a, b) => a == b,
+    }
+}
+
 /// Whether the CLI's own record of this conversation is still on this computer.
 ///
 /// A CLI that keeps no record we know how to find is taken at its word: there
@@ -167,7 +187,7 @@ impl Saved {
         let desk = self.desk(desk)?;
         let saved = desk.tabs.iter().find(|s| {
             s.program == program
-                && s.cwd.as_deref() == cwd
+                && same_folder(s.cwd.as_deref(), cwd)
                 && match (&s.id, id) {
                     // An automation name is the handle that survives renaming,
                     // so when there is one it is the whole test
@@ -397,6 +417,44 @@ mod tests {
             Some("abc".into()),
             "the conversation that tab was having comes back"
         );
+    }
+
+    /// One folder written two ways is still one folder.
+    ///
+    /// Windows opens `C:\x`, `C:/x` and `c:\x\` as the same folder, and the
+    /// settings keep whatever was typed. What is remembered used to be looked
+    /// up by the spelling alone, so one rewriting of the settings turned every
+    /// conversation on a desk into a stranger, all at once and in silence
+    #[test]
+    fn a_folder_written_the_other_way_round_is_still_that_folder() {
+        let saved = Saved {
+            version: VERSION,
+            desks: vec![SavedWs {
+                name: "work".into(),
+                id: None,
+                panes: None,
+                tabs: vec![SavedTab {
+                    title: "claude".into(),
+                    id: Some("claude".into()),
+                    cwd: Some(r"C:\Users\me\Work".into()),
+                    program: "claude".into(),
+                    session: "abc".into(),
+                    source: "Minted".into(),
+                }],
+            }],
+        };
+        let found = |cwd: &str| {
+            saved
+                .conversation_of(&named("work"), "claude", Some(cwd), Some("claude"), "claude")
+                .map(|s| s.id)
+        };
+        assert_eq!(found(r"C:\Users\me\Work"), Some("abc".into()));
+        if cfg!(windows) {
+            assert_eq!(found("C:/Users/me/Work"), Some("abc".into()), "the other slash");
+            assert_eq!(found(r"c:\users\me\work"), Some("abc".into()), "another case");
+            assert_eq!(found(r"C:\Users\me\Work\"), Some("abc".into()), "a separator on the end");
+        }
+        assert_eq!(found(r"C:\Users\me\Elsewhere"), None, "another folder is another folder");
     }
 
     /// An empty conversation does not take a real one's place.
