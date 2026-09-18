@@ -803,6 +803,18 @@ pub struct Source {
     pub name: String,
     /// The checkout the project's worktrees are cut from
     pub dir: std::path::PathBuf,
+    /// The desk folder this project was found through, spelled the way the
+    /// settings spell it.
+    ///
+    /// Not the same string as `dir`, and the difference is the whole point. A
+    /// checkout is worked out by asking the disk, which answers with the place
+    /// itself: a project opened as `P:\php7\te0_main` comes back as
+    /// `\\192.168.0.35\projects\php7\te0_main`, because that is where the
+    /// mapped drive goes. That answer is right for running git and wrong for
+    /// pointing at a line of the settings, which holds what the person typed --
+    /// so the Issue tab's "open the settings" button led nowhere, and the
+    /// branch dialog could not tell which project it was standing in
+    pub at: std::path::PathBuf,
     /// `owner/name` on GitHub, when that is where it lives
     pub repo: Option<String>,
     pub git: crate::config::GitUse,
@@ -836,6 +848,7 @@ pub fn desk_sources(desk: &crate::config::Desk) -> Vec<Source> {
             }),
             repo: crate::repo::origin_of(&main),
             dir: main,
+            at: cwd.to_path_buf(),
             git,
         });
     }
@@ -1356,6 +1369,52 @@ mod tests {
         assert!(is(super::head_folder(&cut, "feature"), &cut), "a worktree was not found from itself");
         assert!(is(super::head_folder(&main, "feature"), &cut), "a worktree was not found from the checkout");
         assert_eq!(super::head_folder(&main, "elsewhere"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A project keeps both names of the one place it is in.
+    ///
+    /// The checkout is what the disk answers, because that is where git runs.
+    /// The folder is what the settings hold, because that is what the settings
+    /// can be searched for. The two are the same string for a folder on this
+    /// PC and different ones as soon as the way in is a name for somewhere
+    /// else -- a drive mapped to another machine's share answers as that
+    /// machine (`P:\php7\te0_main` -> `\\192.168.0.35\projects\php7\te0_main`),
+    /// and the Issue tab's "open the settings" button, which looks the folder
+    /// up in the desk's list, then found nothing and dropped the person on the
+    /// desk's own page (2026-09-18, a user's share). Written here with a path
+    /// that walks back up, because that is the one spelling every machine
+    /// resolves the same way
+    #[test]
+    fn a_project_keeps_the_folder_the_settings_wrote() {
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            std::process::Command::new("git").current_dir(dir).args(args).output().ok().filter(|o| o.status.success())
+        };
+        let root = std::env::temp_dir().join(format!("shikisha-source-at-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let main = root.join("proj");
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(root.join("nest")).unwrap();
+        if git(&main, &["init", "-q", "-b", "main"]).is_none() {
+            return;
+        }
+        // The same folder, named the long way round
+        let written = root.join("nest").join("..").join("proj");
+        let desk = crate::config::Desk {
+            folders: vec![crate::config::Folder { cwd: Some(written.clone()), ..Default::default() }],
+            ..Default::default()
+        };
+        let found = super::desk_sources(&desk);
+        assert_eq!(found.len(), 1, "the desk's one repository was not found");
+        let s = &found[0];
+        assert_eq!(s.at, written, "the folder the settings wrote was not kept");
+        assert_eq!(
+            std::fs::canonicalize(&s.dir).ok(),
+            std::fs::canonicalize(&main).ok(),
+            "the checkout is not the folder git would run in",
+        );
+        assert_ne!(s.dir, s.at, "the two spellings were not told apart, so this proves nothing");
+        assert_eq!(s.name, "proj", "the project is not named after its checkout");
         let _ = std::fs::remove_dir_all(&root);
     }
 

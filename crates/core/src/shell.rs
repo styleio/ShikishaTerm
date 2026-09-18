@@ -3903,6 +3903,15 @@ function issuesList(page) {
   issuesAsk("list", Object.assign({project: I.project, text: I.text, page: I.page}, preset));
 }
 function issueProject(name) { return (I.projects || []).find(p => p.name === name) || null; }
+// The project standing at a folder. Two spellings answer for one project: the
+// checkout as the disk gives it, and the folder of the desk it was found
+// through. They are the same string for a folder on this PC and different ones
+// for a project on a network drive, where the disk answers with the machine it
+// is really on and the settings hold the drive letter the person mapped
+function projectAt(path) {
+  if (!path) return null;
+  return ((I && I.projects) || []).find(p => sameFolder(p.dir, path) || sameFolder(p.at, path)) || null;
+}
 // How long ago, in the words of the language on screen: "3 days ago", not "3d"
 function issueAgo(iso) {
   const t = Date.parse(iso || "");
@@ -4243,7 +4252,7 @@ function drawIssueList(box) {
     const proj = issueProject(p.project);
     box.append(el("div", {class:"warn"},
       el("span", {}, p.project + ": " + p.error),
-      proj && p.settings ? el("button", {onclick:() => openSettings("project-gitacct", true, proj.dir)}, T["issues.open_settings"] || "") : null));
+      proj && p.settings ? el("button", {onclick:() => openSettings("project-gitacct", true, proj.at || proj.dir)}, T["issues.open_settings"] || "") : null));
   }
   const rows = el("div", {class:"irows"});
   if (I.list === null) rows.append(el("div", {class:"empty"}, T["issues.busy"] || "…"));
@@ -4416,7 +4425,7 @@ function drawIssueCreate(box) {
   // Sent from an idea: its project, by where the checkout is, once the
   // projects are known. Asked once, and whatever is chosen after is the person's
   if (c.at && I.projects) {
-    const p = I.projects.find(p => sameFolder(p.dir, c.at));
+    const p = projectAt(c.at);
     if (p) {
       c.project = p.name;
       if (!I.options[p.name]) send({kind:"issues", act:"options", args:{kind: I.kind, project: p.name}});
@@ -7042,7 +7051,7 @@ function chooseBranchResult(r) {
 
 // The Issue tab's project this worktree's project is, by its folder
 function ghProject() {
-  return ((I && I.projects) || []).find(p => sameFolder(p.dir, branchFrom)) || null;
+  return projectAt(branchFrom);
 }
 // Ask GitHub, a moment after the last letter. The open ones when nothing is
 // typed. Asked of the same questions the Issue tab asks, under a number of
@@ -17018,7 +17027,7 @@ mod tests {
         for want in [r#"I.view = "create";"#, "body:text", r#"send({kind:"openissues"});"#] {
             assert!(to_issue.contains(want), "sending an idea to an Issue lost {want}");
         }
-        assert!(p.contains("const p = I.projects.find(p => sameFolder(p.dir, c.at));"), "the idea's project is not chosen on the new issue");
+        assert!(p.contains("const p = projectAt(c.at);"), "the idea's project is not chosen on the new issue");
         // Done, and named by its issue, only once GitHub has made the issue
         assert!(p.contains(r#"if (idea && made.number) ideasAsk("issued", {id: idea, number: made.number, url: made.url || ""});"#),
             "an idea is not marked done by the issue made from it");
