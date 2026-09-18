@@ -2980,13 +2980,6 @@ pub struct FlatTab {
 /// (`hash5` there) so that what it offers while you type is what the app
 /// settles on when it reads the file; changing one means changing both.
 fn hash5(s: &str) -> String {
-    let mut h: u32 = 0x811c_9dc5;
-    // The screen hashes UTF-16 code units, because that is what a JavaScript
-    // string is made of. Matching it is the whole point of this function
-    for u in s.encode_utf16() {
-        h ^= u as u32;
-        h = h.wrapping_mul(0x0100_0193);
-    }
     let base36 = |mut n: u32| {
         let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
         let mut out = Vec::new();
@@ -3000,8 +2993,22 @@ fn hash5(s: &str) -> String {
         out.reverse();
         String::from_utf8(out).expect("base-36 digits are ASCII")
     };
-    let s = format!("{:0>5}", base36(h));
+    let s = format!("{:0>5}", base36(fnv1a(s)));
     s[s.len() - 5..].to_string()
+}
+
+/// FNV-1a over a name, as the settings screen computes it.
+///
+/// The screen hashes UTF-16 code units, because that is what a JavaScript
+/// string is made of. Matching it is the whole point: what the screen offers
+/// while you type has to be what the app settles on when it reads the file
+fn fnv1a(s: &str) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    for u in s.encode_utf16() {
+        h ^= u as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h
 }
 
 /// The name automation would call something, inferred from the name on screen.
@@ -3048,6 +3055,249 @@ pub fn unique_id(base: &str, used: &std::collections::HashSet<String>) -> String
         .expect("some suffix is free sooner or later")
 }
 
+/// The characters an automation name is made of: POSIX's portable filename
+/// character set -- the Latin letters, the digits, and `.`, `_`, `-`.
+///
+/// A name made only of these is one every shell, every file system and every
+/// script can say as it stands, which is what an automation name is for
+fn portable_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')
+}
+
+/// The automation name a display name gives, or `None` when it gives none and
+/// one has to be drawn ([`pet_name`]):
+///
+/// - all of it portable (`claude`, `PowerShell`, `review-2`): the name itself,
+///   letter for letter -- nothing is lowercased or rewritten
+/// - portable and other characters mixed (`AI 2`, `実装claude`): the others
+///   taken out, if three characters or more are left
+/// - none of it portable (`レビュー`), or nothing written at all: drawn
+///
+/// Three characters, because `AI 2` -> `AI2` still says which tab it is while
+/// the one letter left over from `実装2` says nothing. A name with no letter
+/// and no digit in it (`...`) is no name either, and is drawn for as well
+pub fn id_from_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    let kept: String = name.chars().filter(|c| portable_char(*c)).collect();
+    if !kept.chars().any(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let whole = kept.chars().count() == name.chars().count();
+    (whole || kept.chars().count() >= 3).then_some(kept)
+}
+
+/// The words an automation name is drawn from when the display name gives
+/// none.
+///
+/// The short nouns of the list branch names are drawn from, and only the ones
+/// that are already a name automation accepts as they stand -- lower-case
+/// letters, three to six of them -- so a draw never has to be tidied into
+/// something else before it can be used
+pub fn pet_nouns() -> Vec<&'static str> {
+    petname::Petnames::small()
+        .nouns
+        .iter()
+        .copied()
+        .filter(|w| (3..=6).contains(&w.len()) && w.bytes().all(|b| b.is_ascii_lowercase()))
+        .filter(|w| !NOT_A_TAB_NAME.contains(w))
+        .collect()
+}
+
+/// Words in that list a tab should not be called. Some name a person rather
+/// than an animal, some are pests nobody wants to see their work filed under,
+/// and some are not animals at all
+const NOT_A_TAB_NAME: &[&str] = &[
+    "man", "kid", "stud", "lab", "dane", "boxer", "racer", "hermit", "tomcat", "chow",
+    "louse", "maggot", "leech", "bedbug", "tick", "flea", "worm", "grub", "slug", "mite",
+    "gnat", "weevil", "earwig", "amoeba", "insect", "mammal", "rodent", "cattle",
+    "ghost", "ghoul", "alien", "troll", "goblin", "satyr", "yeti", "elf", "imp",
+    "drum", "sole", "shiner", "roughy", "jennet", "glider", "guinea", "bengal", "sponge",
+];
+
+/// One of those words for a line whose display name gives no name.
+///
+/// Decided by what the line holds -- its display name, else the program it
+/// runs -- and never by where it stands in the list, because three separate
+/// places have to arrive at the same word: loading, the writer that makes the
+/// line, and the step that writes the names of an older file. Drawn from a
+/// position, a name would move again the next time a line was added above it,
+/// which is the fault this whole rule is here to end
+pub fn pet_name(of: &str) -> String {
+    let nouns = pet_nouns();
+    match nouns.is_empty() {
+        true => "tab".to_string(),
+        false => nouns[fnv1a(of) as usize % nouns.len()].to_string(),
+    }
+}
+
+/// The name automation would call a tab whose line says none of its own.
+///
+/// One rule, in one place, because three places need the same answer: loading
+/// derives it for a line that has no name written, a writer that makes a line
+/// writes it down ([`name_tab_line`]), and the first start of 0.16.0 writes
+/// down the ones an older file never said. If those disagreed, the name a tab
+/// answers to would change the moment somebody edited the file
+pub fn id_base(name: &str, program: &str) -> String {
+    id_from_name(name).unwrap_or_else(|| {
+        // Not the program: a tab that started as Claude and was turned into
+        // something else went on being called `claude-2`
+        pet_name(match name.trim() {
+            "" => program,
+            n => n,
+        })
+    })
+}
+
+/// The program a written tab line runs, read the way launching reads it, so
+/// the name derived from it here is the one launching would derive
+fn program_of_line(line: &serde_json::Value) -> String {
+    line.get("command")
+        .cloned()
+        .and_then(|c| serde_json::from_value::<CommandSpec>(c).ok())
+        .and_then(|c| c.argv().first().cloned())
+        .unwrap_or_default()
+}
+
+/// Every automation name the tab lines under `tabs` already say, tabs nested
+/// under other tabs included
+fn ids_in_tabs(tabs: &serde_json::Value, used: &mut std::collections::HashSet<String>) {
+    for t in tabs.as_array().into_iter().flatten() {
+        if let Some(id) = t.get("id").and_then(|i| i.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
+            used.insert(id.to_string());
+        }
+        if let Some(kids) = t.get("children") {
+            ids_in_tabs(kids, used);
+        }
+    }
+}
+
+/// Every automation name the tabs of these working folders already say
+pub(crate) fn ids_in_folders(folders: &[serde_json::Value]) -> std::collections::HashSet<String> {
+    let mut used = std::collections::HashSet::new();
+    for g in folders {
+        if let Some(tabs) = g.get("tabs") {
+            ids_in_tabs(tabs, &mut used);
+        }
+    }
+    used
+}
+
+/// Every automation name one desk's settings already say. The whole desk,
+/// because automation reaches across folders: two folders holding a "claude"
+/// each is the same collision as two in one
+pub(crate) fn ids_in_desk(desk: &serde_json::Value) -> std::collections::HashSet<String> {
+    let mut used = desk
+        .get("folders")
+        .and_then(|f| f.as_array())
+        .map(|a| ids_in_folders(a))
+        .unwrap_or_default();
+    // Tabs written the old way, beside the folders rather than inside one
+    if let Some(tabs) = desk.get("tabs") {
+        ids_in_tabs(tabs, &mut used);
+    }
+    used
+}
+
+/// Write the automation name onto one tab line being put into the settings,
+/// and onto the tabs under it.
+///
+/// A line that already says one keeps it. A line that says none gets the name
+/// loading would have derived for it -- written down, where nothing can move
+/// it again. Derived names moved: they were handed out in the order the lines
+/// happened to stand in, so taking a folder out of the settings passed the
+/// name of a tab still running to a different line, and two live tabs then
+/// answered to one name
+pub(crate) fn name_tab_line(line: &mut serde_json::Value, used: &mut std::collections::HashSet<String>) {
+    let written = line
+        .get("id")
+        .and_then(|i| i.as_str())
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if written.is_empty() {
+        let name = line.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string();
+        let id = unique_id(&id_base(&name, &program_of_line(line)), used);
+        if !id.is_empty() {
+            used.insert(id.clone());
+            line["id"] = serde_json::json!(id);
+        }
+    } else {
+        used.insert(written);
+    }
+    if let Some(kids) = line.get_mut("children") {
+        name_tab_lines(kids, used);
+    }
+}
+
+/// The same over a whole list of tab lines, in the order loading reads them
+pub(crate) fn name_tab_lines(tabs: &mut serde_json::Value, used: &mut std::collections::HashSet<String>) {
+    for t in tabs.as_array_mut().into_iter().flatten() {
+        name_tab_line(t, used);
+    }
+}
+
+/// The same over the tabs of a desk's working folders, in the order loading
+/// reads them
+pub(crate) fn name_folder_tabs(
+    folders: &mut [serde_json::Value],
+    used: &mut std::collections::HashSet<String>,
+) {
+    for g in folders.iter_mut() {
+        if let Some(tabs) = g.get_mut("tabs") {
+            name_tab_lines(tabs, used);
+        }
+    }
+}
+
+/// Write down the automation name of every tab in one desk that has none, and
+/// answer every name the desk holds afterwards.
+///
+/// Walked the way loading reads a desk (`foldered_with` and `flatten`: the
+/// folders in order, the first folder's own tabs before the ones written
+/// beside the folders, children under their parent), so what is written here
+/// is what was being derived until now -- nothing a script or an API key
+/// already says changes.
+///
+/// Every line, not only the one somebody is adding: a name is only safe to
+/// hand out once the names of the lines that have never said one are settled
+/// too. Written alongside a still-nameless line, a new tab could be given the
+/// very name that line's running tab is answering to
+pub(crate) fn name_desk_tabs(desk: &mut serde_json::Value) -> std::collections::HashSet<String> {
+    let mut used = ids_in_desk(desk);
+    // Taken out of the desk to be walked, because the tabs written the old way
+    // are read as the first folder's and the two lists sit side by side in the
+    // file. Put back afterwards, and only where they came from: a desk that
+    // never had a key does not grow one here
+    let mut folders = desk.get("folders").cloned();
+    let mut legacy = desk.get("tabs").cloned();
+    let mut old_way = |used: &mut std::collections::HashSet<String>| {
+        if let Some(tabs) = legacy.as_mut() {
+            name_tab_lines(tabs, used);
+        }
+    };
+    match folders.as_mut().and_then(|f| f.as_array_mut()) {
+        Some(list) if !list.is_empty() => {
+            for (at, g) in list.iter_mut().enumerate() {
+                if let Some(tabs) = g.get_mut("tabs") {
+                    name_tab_lines(tabs, &mut used);
+                }
+                if at == 0 {
+                    old_way(&mut used);
+                }
+            }
+        }
+        // No folders written: loading makes the one every tab lands in
+        _ => old_way(&mut used),
+    }
+    if let (Some(f), Some(at)) = (folders, desk.get_mut("folders")) {
+        *at = f;
+    }
+    if let (Some(t), Some(at)) = (legacy, desk.get_mut("tabs")) {
+        *at = t;
+    }
+    used
+}
+
 /// Give every tab a name automation can say, and make sure no two are the same.
 ///
 /// Automation addresses a tab by this name and by nothing else, so a tab
@@ -3056,6 +3306,12 @@ pub fn unique_id(base: &str, used: &std::collections::HashSet<String>) -> String
 /// after a reorder. Both are settled here, once, on the way in: a tab with no
 /// name of its own is given the one its display name suggests, and a name
 /// already taken gets `-2` on the end.
+///
+/// A name derived here is written back into the settings on the first start of
+/// the version that began doing so (`migrate`), and every writer that makes a
+/// line writes one ([`name_tab_line`]), so this is the answer for a line that
+/// has never been through either: hand-written settings, and a desk brought in
+/// from somewhere else.
 ///
 /// Returns the names that had to be moved aside, so startup can say so. The
 /// settings screen fills the same field as you type; this is for the files it
@@ -3077,19 +3333,10 @@ fn settle_tab_ids(tabs: &mut [FlatTab]) -> Vec<String> {
         // Either nothing was written, or this is the second tab to claim it
         let base = match written.is_empty() {
             false => written.clone(),
-            true => {
-                let name = t.cfg.name.clone().unwrap_or_default();
-                let from = match name.trim().is_empty() {
-                    false => name,
-                    // No name on screen either: the command is what the tab
-                    // will be called, so it is what the id comes from
-                    true => t.cfg.command.argv().first().cloned().unwrap_or_default(),
-                };
-                match slug_id(&from).is_empty() {
-                    false => slug_id(&from),
-                    true => "tab".into(),
-                }
-            }
+            true => id_base(
+                t.cfg.name.as_deref().unwrap_or_default(),
+                t.cfg.command.argv().first().map(String::as_str).unwrap_or_default(),
+            ),
         };
         let id = unique_id(&base, &used);
         if !written.is_empty() {
@@ -3458,6 +3705,17 @@ pub fn append_folder_at(
             .unwrap_or_default();
         let mut folder =
             serde_json::json!({ "cwd": cwd.display().to_string(), "tabs": retag(tabs, &mark) });
+        // The name automation will call each of these tabs by, written here,
+        // now, against every name the desk already holds -- including the ones
+        // its older lines have only ever had derived for them. Left for loading
+        // to derive, a name was handed out by the order the lines stood in, and
+        // a folder taken out of the settings later passed the name of a tab
+        // still running to a different line
+        {
+            let mut used = ids_in_folders(folders);
+            name_folder_tabs(folders, &mut used);
+            name_tab_lines(&mut folder["tabs"], &mut used);
+        }
         if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
             folder["name"] = serde_json::json!(n);
         }
@@ -4173,9 +4431,14 @@ fn folder_tabs_at<'a>(holder: &'a mut serde_json::Value, cwd: Option<&Path>) -> 
 /// Copies of tabs need names automation can still tell apart. The one it uses
 /// is the id, so that is the one that takes the folder's mark; the name on
 /// screen is left alone, because the heading above it already says which
-/// branch this is
+/// branch this is.
+///
+/// The mark goes through the same rule as any other name ([`id_from_name`]):
+/// a branch called `機能追加` put its own characters into an automation name,
+/// which is a name a shell and a script then had to carry
 fn retag(tabs: serde_json::Value, mark: &str) -> serde_json::Value {
     let mut out = tabs;
+    let mark = &id_from_name(mark).unwrap_or_else(|| pet_name(mark));
     fn walk(v: &mut serde_json::Value, mark: &str) {
         let Some(list) = v.as_array_mut() else { return };
         for t in list {
@@ -4703,26 +4966,48 @@ pub fn save_last_desk(id: &str) {
 /// Returns whether it was written. A desk that has vanished since the
 /// page listed it is a false rather than a new tab in the wrong place.
 pub fn append_tab(desk: &str, tab: serde_json::Value, cwd: Option<&Path>) -> bool {
+    append_tab_named(desk, tab, cwd).is_some()
+}
+
+/// The same, answering the name automation will call the new tab by: its own
+/// when the line said one, else the one written for it here.
+///
+/// Whoever opens a tab and then waits for it -- a quick command, the git
+/// panel's "Resolve" -- needs that name, and it has to be the name the
+/// settings will hold. Worked out twice, by two rules, it was a name the app
+/// waited under and nothing ever answered to
+pub fn append_tab_named(
+    desk: &str,
+    mut tab: serde_json::Value,
+    cwd: Option<&Path>,
+) -> Option<String> {
     let path = config_file_path();
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
     let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
     else {
         crate::append_hook_log("could not reopen into a tab: settings are not readable");
-        return false;
+        return None;
     };
     let Some(list) = doc.get_mut("desks").and_then(|w| w.as_array_mut()) else {
-        return false;
+        return None;
     };
     let Some(desk) = list
         .iter_mut()
         .find(|w| w.get("name").and_then(|n| n.as_str()) == Some(desk))
     else {
-        return false;
+        return None;
     };
+    // Every line of the desk says the name automation calls it by before this
+    // one is given its own, so the new tab cannot be handed the name a tab
+    // already running is answering to
+    ensure_folders(desk);
+    let mut used = name_desk_tabs(desk);
+    name_tab_line(&mut tab, &mut used);
+    let called = tab.get("id").and_then(|i| i.as_str()).unwrap_or_default().to_string();
     folder_tabs_at(desk, cwd).push(tab);
     match serde_json::to_string_pretty(&doc) {
-        Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok(),
-        Err(_) => false,
+        Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok().then_some(called),
+        Err(_) => None,
     }
 }
 
@@ -5501,6 +5786,51 @@ mod tests {
         assert_eq!(desks[1].send_pictures_to, None);
     }
 
+    /// What automation calls a tab, from what it is called on screen. The rule
+    /// in one table: the characters an automation name is made of are POSIX's
+    /// portable filename set, and a display name that cannot give three of them
+    /// is drawn for instead of being turned into something unreadable
+    #[test]
+    fn what_automation_calls_a_tab_comes_from_what_it_is_called_on_screen() {
+        for (name, want) in [
+            // All of it portable: the name itself, letter for letter. Nothing
+            // is lowercased -- the name a person typed is the name they get
+            ("claude", Some("claude")),
+            ("PowerShell", Some("PowerShell")),
+            ("review-2", Some("review-2")),
+            ("api.v2_old", Some("api.v2_old")),
+            ("a", Some("a")),
+            // Mixed: the rest taken out, when three characters or more remain
+            ("My Tab", Some("MyTab")),
+            ("Run tests!", Some("Runtests")),
+            ("AI 2 番", Some("AI2")),
+            ("実装claude", Some("claude")),
+            // ...and drawn for when fewer do
+            ("実装2", None),
+            ("デスクA", None),
+            // None of it portable, or nothing at all, or nothing with a letter
+            // or a digit in it
+            ("実装", None),
+            ("レビュー", None),
+            ("", None),
+            ("   ", None),
+            ("...", None),
+            ("--_-", None),
+        ] {
+            assert_eq!(id_from_name(name).as_deref(), want, "the automation name for {name:?}");
+        }
+        // Drawn: a short word, one automation takes as it stands, and the same
+        // word every time for the same tab -- three places have to agree on it
+        let drawn = id_base("レビュー", "codex");
+        assert_eq!(drawn, id_base("レビュー", "codex"));
+        assert_eq!(id_from_name(&drawn).as_deref(), Some(drawn.as_str()));
+        assert!((3..=6).contains(&drawn.len()), "{drawn} is not a short word");
+        // A tab with no name of its own is drawn for as well, rather than
+        // being called after the program it happens to run today
+        assert_ne!(id_base("", "claude"), "claude");
+        assert_eq!(id_base("", "claude"), pet_name("claude"));
+    }
+
     /// The screen offers an automation name while you type; the app settles on
     /// one when it reads a file nobody typed into. They have to be the same
     /// name, or a desk would arrive under one spelling and be filed under
@@ -5544,15 +5874,16 @@ mod tests {
         .unwrap();
         let (desk, errs) = cfg.resolve_desks();
         let ids: Vec<String> = desk[0].tabs.iter().map(|t| t.cfg.id.clone().unwrap()).collect();
+        let drawn = pet_name("実装");
         assert_eq!(
             ids,
             [
-                "orgq9",   // a name in Japanese, with no ASCII to make an id from
-                "my-tab",  // My Tab
-                "bash",    // with no name, from the command
-                "orgq9-2", // the same Japanese name again. A different folder does not make it reusable
-                "rev",
-                "rev-2", // a duplicate written by hand is shifted
+                drawn.clone(),            // 実装: no character an automation name is made of, so a word is drawn
+                "My Tab".replace(' ', ""), // My Tab: the space taken out, the letters left as they are
+                pet_name("bash"),         // no name at all: a word of its own, not its command
+                format!("{drawn}-2"),     // 実装 again. Another folder does not make the name reusable
+                "rev".into(),
+                "rev-2".into(),           // a duplicate written by hand is shifted
             ]
         );
         assert!(
@@ -5939,6 +6270,17 @@ mod tests {
             .map(|t| t.cfg.id.clone().unwrap_or_default())
             .collect::<Vec<_>>();
         assert_eq!(ids, ["coder@feature-login", "rev@feature-login"]);
+        // A branch named in Japanese leaves its own characters out of the
+        // mark, the way every other name goes through the rule
+        let jp = crate::local_path("D:/work/proj.worktrees/機能追加");
+        append_folder_at(&file, "Demo", Some(Path::new(&proj)), Path::new(&jp), Some("機能追加"),
+                         &Start::Same, None).unwrap();
+        let cfg: Config = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let desk = &cfg.resolve_desks().0[0];
+        let marked: Vec<String> = desk.tabs.iter().filter(|t| t.folder == 2)
+            .map(|t| t.cfg.id.clone().unwrap_or_default()).collect();
+        let word = pet_name("機能追加");
+        assert_eq!(marked, [format!("coder@{word}"), format!("rev@{word}")]);
         // ...and no two of them are the same, so automation can address each
         let all: Vec<String> = desk.tabs.iter().filter_map(|t| t.cfg.id.clone()).collect();
         let unique: std::collections::HashSet<&String> = all.iter().collect();
@@ -5990,6 +6332,93 @@ mod tests {
         assert_eq!(one[0].cfg.command.argv(), ["codex", "--flag"]);
         assert!(in_folder(2).is_empty(), "it should start nothing, but there are tabs");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder written into the settings says what automation calls its tabs,
+    /// and so do the folders that were there before it.
+    ///
+    /// What went wrong: nothing wrote the name down. It was worked out on every
+    /// start from the order the lines stood in -- the second "claude" of a desk
+    /// was `claude-2` -- while a tab already running kept the name it was
+    /// launched with. Take one folder out, and the name that running tab still
+    /// answers to belongs to another line: two live tabs answered to one name,
+    /// and a press on the second folder's name showed the first folder's tab.
+    #[test]
+    fn every_folder_written_says_what_automation_calls_its_tabs() {
+        let dir = std::env::temp_dir().join(format!("shikisha-tabnames-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        // As the settings looked before: a tab with no name of its own, which
+        // only loading ever gave one
+        std::fs::write(
+            &file,
+            r#"{"desks": [{"name": "Demo", "folders": [
+                {"cwd": "D:/work/proj", "tabs": [{"name": "claude", "command": "claude"}]}]}]}"#,
+        )
+        .unwrap();
+        let ai = Start::One { name: "claude".into(), command: "claude --go".into() };
+        for branch in ["first", "second"] {
+            append_folder_at(
+                &file,
+                "Demo",
+                Some(Path::new("D:/work/proj")),
+                Path::new(&format!("D:/work/proj.worktrees/{branch}")),
+                Some(branch),
+                &ai,
+                None,
+            )
+            .unwrap();
+        }
+
+        // Written in the file, not worked out from it -- the older line too
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let id = |folder: usize| raw["desks"][0]["folders"][folder]["tabs"][0]["id"].clone();
+        assert_eq!(id(0), "claude", "the line that was there first was left nameless");
+        assert_eq!(id(1), "claude-2");
+        assert_eq!(id(2), "claude-3");
+
+        // And taking a folder out leaves every other name exactly as it was,
+        // which is the whole point of writing them down
+        let mut cut = raw.clone();
+        cut["desks"][0]["folders"].as_array_mut().unwrap().remove(1);
+        let cfg: Config = serde_json::from_value(cut).unwrap();
+        let desk = &cfg.resolve_desks().0[0];
+        let ids: Vec<String> = desk.tabs.iter().filter_map(|t| t.cfg.id.clone()).collect();
+        assert_eq!(ids, ["claude", "claude-3"], "a name moved when a folder was taken out");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The name written down is the one loading was deriving, so nothing a
+    /// script or an API key already says changes on the way past
+    #[test]
+    fn a_written_name_is_the_one_loading_was_deriving() {
+        let desk = serde_json::json!({"name": "Demo", "folders": [
+            {"cwd": "D:/a", "tabs": [
+                {"name": "claude", "command": "claude"},
+                {"name": "レビュー", "command": "codex", "children": [{"command": "git"}]}]},
+            {"cwd": "D:/b", "tabs": [{"name": "claude", "command": "claude"},
+                                     {"name": "shell", "id": "claude-2", "command": "pwsh"}]}]});
+        let ids_of = |doc: &serde_json::Value| -> Vec<String> {
+            let cfg: Config = serde_json::from_value(serde_json::json!({"desks": [doc]})).unwrap();
+            cfg.resolve_desks().0[0].tabs.iter().filter_map(|t| t.cfg.id.clone()).collect()
+        };
+        let derived = ids_of(&desk);
+        let mut written = desk.clone();
+        name_desk_tabs(&mut written);
+        assert_eq!(ids_of(&written), derived, "a name changed on the way into the file");
+        assert_ne!(written, desk, "nothing was written down");
+        // A name somebody wrote stands ("claude-2" on a tab called shell), and
+        // the rest are settled around it. A name with nothing an automation
+        // name is made of, and a tab with no name at all, are drawn for
+        assert_eq!(derived[0], "claude");
+        assert_eq!(&derived[3..], ["claude-3", "claude-2"]);
+        assert_eq!(derived[1], pet_name("レビュー"), "a name in Japanese was not drawn for");
+        assert_eq!(derived[2], pet_name("git"), "a tab with no name was not drawn for");
+        // Written a second time, nothing moves
+        let once = written.clone();
+        name_desk_tabs(&mut written);
+        assert_eq!(written, once, "it wrote something different the second time");
     }
 
     /// A settings file of its own, for the close-and-reopen tests

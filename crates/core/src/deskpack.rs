@@ -535,6 +535,10 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
         },
     };
     desk["id"] = Value::String(free_ws_id(&list, &want_id));
+    // And what automation calls each of its tabs, for the same reason: a name
+    // the loader works out from the order the lines stand in moves the next
+    // time a line is added or taken away
+    crate::config::name_desk_tabs(&mut desk);
     list.push(desk);
     cfg["desks"] = Value::Array(list);
     // Now that it's moved into desks, the folders and tabs written

@@ -1446,19 +1446,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 view_touched_ms = start.elapsed().as_millis() as u64;
             }
         // A working folder's name was pressed: back to what was on screen the
-        // last time that folder was the one being looked at. Kept by the names
-        // of what each pane showed, so tabs opened or closed since elsewhere do
-        // not turn it into somebody else's view. Never looked at this run, it
+        // last time that folder was the one being looked at. Kept by what each
+        // pane held (`surface_handles`), so tabs opened or closed since
+        // elsewhere do not turn it into somebody else's view. Never looked at this run, it
         // opens on its first tab, undivided. Already the folder in front, nothing moves --
         // the press is somebody finding their place, not asking to be moved
         for want in shell.mail().take_folder_views() {
             let want = std::path::PathBuf::from(want);
             let is_want = |f: &std::path::Path| crate::uistate::same_folder(f, &want);
             if folder_press_moves(surface_folder(&surfaces, &tabs, active), &want, board_open || settings_open) {
-                let keyed = surface_keys(&surfaces, &tabs);
+                let held = surface_handles(&surfaces, &tabs);
                 let back = folder_views.iter().find(|(f, _)| is_want(f)).and_then(|(_, kept)| {
                     crate::layout::Layout::restore(kept, &pane_layout, |k| {
-                        keyed.iter().position(|t| t.matches(k)).map(|i| i + 1)
+                        held.iter().position(|h| h.as_deref() == Some(k)).map(|i| i + 1)
                     })
                 });
                 match back {
@@ -1525,8 +1525,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // for it became that tab: pressing the folder brought the Issue
             // tab back instead of the folder's own
             if view_folder.is_some() && surface_folder(&surfaces, &tabs, active).is_some() {
-                let keyed = surface_keys(&surfaces, &tabs);
-                view_kept = Some(pane_layout.keep(|s| keyed.get(s - 1).and_then(|k| k.id.clone())));
+                let held = surface_handles(&surfaces, &tabs);
+                view_kept = Some(pane_layout.keep(|s| held.get(s - 1).cloned().flatten()));
             }
         }
         // Who the terminals are cut to, settled once per pass rather than by
@@ -4125,14 +4125,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 Ok(serde_json::json!({"already": true}))
                             }
                             None => {
-                                let (title, id) = quick_tab_names("Git", "Git", &tabs);
-                                let line = serde_json::json!({"name": title, "id": id, "command": "git"});
-                                if config::append_tab(&desk.name, line, Some(&place.dir)) {
-                                    reveal = Some((id, Instant::now() + Duration::from_secs(20)));
-                                    watcher.poke();
-                                    Ok(serde_json::json!({"already": false}))
-                                } else {
-                                    Err(i18n::tp("msg.quick.open_failed", &[("label", "Git")]))
+                                let title = quick_tab_title("Git", "Git", &tabs);
+                                let line = serde_json::json!({"name": title, "command": "git"});
+                                match config::append_tab_named(&desk.name, line, Some(&place.dir)) {
+                                    Some(id) => {
+                                        reveal = Some((id, Instant::now() + Duration::from_secs(20)));
+                                        watcher.poke();
+                                        Ok(serde_json::json!({"already": false}))
+                                    }
+                                    None => Err(i18n::tp("msg.quick.open_failed", &[("label", "Git")])),
                                 }
                             }
                         }
@@ -8958,29 +8959,20 @@ pub fn home_folder() -> Option<std::path::PathBuf> {
         .filter(|p| p.is_dir())
 }
 
-/// A name for a tab a quick command opens: the button's, made one of a kind
-/// in the desk, with an automation name to match
-pub fn quick_tab_names(label: &str, fallback: &str, tabs: &[Tab]) -> (String, String) {
+/// What a tab a quick command opens is called on screen: the button's own
+/// name, made one of a kind in the desk.
+///
+/// What automation calls it is not decided here. That name is written into the
+/// settings with the line, by the one rule everything else uses
+/// (`config::append_tab_named`), and answered back: a name minted here as well
+/// was a second rule, and a name the app then waited under was one no tab ever
+/// answered to
+pub fn quick_tab_title(label: &str, fallback: &str, tabs: &[Tab]) -> String {
     let base = if label.trim().is_empty() { fallback.to_string() } else { label.trim().to_string() };
-    let title = (1..)
+    (1..)
         .map(|n| if n == 1 { base.clone() } else { format!("{base} {n}") })
         .find(|t| !tabs.iter().any(|x| &x.title == t))
-        .unwrap_or(base);
-    let slug: String = title
-        .to_ascii_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    let stem = if slug.is_empty() { "quick".to_string() } else { slug };
-    let id = (1..)
-        .map(|n| if n == 1 { stem.clone() } else { format!("{stem}-{n}") })
-        .find(|i| !tabs.iter().any(|x| x.id.as_deref() == Some(i.as_str())))
-        .unwrap_or(stem);
-    (title, id)
+        .unwrap_or(base)
 }
 
 /// The AI a prompt with none named starts, in the order the tab form offers
@@ -9037,11 +9029,11 @@ fn open_and_say(
     pending: &mut Vec<PendingQuick>,
     reveal: &mut Option<(String, Instant)>,
 ) -> Option<String> {
-    let (title, tab_id) = quick_tab_names(label, program, tabs);
-    let line = serde_json::json!({"name": title, "id": tab_id, "command": command});
-    if !config::append_tab(desk, line, Some(cwd)) {
+    let title = quick_tab_title(label, program, tabs);
+    let line = serde_json::json!({"name": title, "command": command});
+    let Some(tab_id) = config::append_tab_named(desk, line, Some(cwd)) else {
         return None;
-    }
+    };
     *reveal = Some((tab_id.clone(), Instant::now() + Duration::from_secs(20)));
     pending.push(PendingQuick {
         id: tab_id,
@@ -9137,7 +9129,7 @@ struct CiFix {
 /// way there: its title and the name to bring it forward by. Pressing again
 /// shows that one, rather than setting a second AI on the same work
 pub fn opened_for(label: &str, dir: &std::path::Path, tabs: &[Tab], pending: &[PendingQuick]) -> Option<(String, String)> {
-    // The title `quick_tab_names` gives: the label, or the label and a number
+    // The title `quick_tab_title` gives: the label, or the label and a number
     let named = |title: &str| {
         title == label
             || title
@@ -9417,6 +9409,33 @@ pub fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
             | Surface::Editor { key, .. }
             | Surface::Failed { key, .. }
             | Surface::Issues { key } => hooks::TabKey { id: Some(key.clone()) },
+        })
+        .collect()
+}
+
+/// What each pane is written down as while the app runs, so an arrangement put
+/// aside comes back to the very things it held.
+///
+/// Not the name automation says. That name is the person's to write and to
+/// change, a tab that has never been named has none at all, and two tabs can
+/// still end up answering to one -- a desk brought in from elsewhere, settings
+/// written by hand. Looked up by it, a folder's kept view came back to
+/// whichever tab held the name first, which was somebody else's folder.
+///
+/// A session is written down as the serial it carries for this run, which
+/// nothing else shares and nobody can edit; a panel or a page as its kind and
+/// key together, so two folders' git panels are never the same note
+pub fn surface_handles(surfaces: &[Surface], tabs: &[Tab]) -> Vec<Option<String>> {
+    surfaces
+        .iter()
+        .map(|p| match p {
+            Surface::Session(i) => tabs.get(*i).map(|t| format!("tab#{}", t.serial())),
+            Surface::Browser { key, .. } => Some(format!("page:{key}")),
+            Surface::Git { key, .. } => Some(format!("git:{key}")),
+            Surface::Sftp { key, .. } => Some(format!("files:{key}")),
+            Surface::Editor { key, .. } => Some(format!("editor:{key}")),
+            Surface::Failed { key, .. } => Some(format!("failed:{key}")),
+            Surface::Issues { key } => Some(format!("issues:{key}")),
         })
         .collect()
 }
@@ -10322,9 +10341,13 @@ mod tests {
     /// name has no letters a name can be made of
     #[test]
     fn a_tab_a_quick_command_opens_has_names_of_its_own() {
-        assert_eq!(quick_tab_names("Run tests!", "PowerShell", &[]), ("Run tests!".into(), "run-tests".into()));
-        assert_eq!(quick_tab_names("一覧", "PowerShell", &[]), ("一覧".into(), "quick".into()));
-        assert_eq!(quick_tab_names("  ", "Claude Code", &[]), ("Claude Code".into(), "claude-code".into()));
+        assert_eq!(quick_tab_title("Run tests!", "PowerShell", &[]), "Run tests!");
+        assert_eq!(quick_tab_title("一覧", "PowerShell", &[]), "一覧");
+        assert_eq!(quick_tab_title("  ", "Claude Code", &[]), "Claude Code");
+        // And what automation calls it is the settings' own rule, not a second
+        // one: the characters an automation name is made of, kept as they are
+        assert_eq!(crate::config::id_base("Run tests!", "powershell.exe"), "Runtests");
+        assert_eq!(crate::config::id_base("", "Claude Code"), crate::config::pet_name("Claude Code"));
     }
 
     /// With no AI named, a prompt starts the one the tab form offers first,
@@ -11997,6 +12020,48 @@ mod tests {
             wheel_bytes(true, 0, 0, E::Default),
             vec![0x1b, b'[', b'M', 96, 33, 33]
         );
+    }
+
+    /// A folder's kept view comes back to the tab it was left on, even when
+    /// another tab answers to the same automation name.
+    ///
+    /// What went wrong: the arrangement a folder was last looked at in was
+    /// written down by the name automation says, and two tabs in different
+    /// folders both answered to "claude-2" -- a running tab keeps the name it
+    /// launched with, and the settings had since handed that name to another
+    /// line. Pressing the second folder's name brought up the first folder's
+    /// tab, so the card said one folder and the screen showed another
+    #[test]
+    fn a_kept_view_comes_back_to_its_own_tab_when_two_answer_to_one_name() {
+        let opts = || tab::TabOptions {
+            cwd: Some(std::env::temp_dir()),
+            id: Some("claude-2".into()),
+            ..Default::default()
+        };
+        let mut tabs = vec![
+            Tab::spawn("claude".into(), &[crate::test_shell()], None, 10, 40, opts()).unwrap(),
+            Tab::spawn("claude".into(), &[crate::test_shell()], None, 10, 40, opts()).unwrap(),
+        ];
+        let surfaces = vec![Surface::Session(0), Surface::Session(1)];
+
+        // The name cannot tell them apart -- which is why it is not what a
+        // pane is written down as
+        let keys = surface_keys(&surfaces, &tabs);
+        assert_eq!(hooks::TabRef::Name("claude-2".into()).resolve(&keys), Some(1));
+
+        let held = surface_handles(&surfaces, &tabs);
+        assert_ne!(held[0], held[1], "two tabs of one name are written down as one thing");
+        // Left looking at the second tab, and pressed for again later
+        let kept = crate::layout::Layout::single(2).keep(|s| held.get(s - 1).cloned().flatten());
+        let back = crate::layout::Layout::restore(&kept, &crate::layout::Layout::single(1), |k| {
+            held.iter().position(|h| h.as_deref() == Some(k)).map(|i| i + 1)
+        })
+        .expect("the view was not put back at all");
+        assert_eq!(back.focused_surface(), 2, "it came back to the other tab of that name");
+
+        for t in tabs.iter_mut() {
+            t.kill();
+        }
     }
 
     /// A browser in the row must not hide the tabs behind it.

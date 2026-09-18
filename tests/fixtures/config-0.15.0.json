@@ -1,0 +1,46 @@
+{
+  "//about": "0.15.0 の設定。作業フォルダごとに同じ名前のタブが並び、automation が呼ぶ名前 (id) はどこにも書かれていない —— 起動のたびに並び順から作られていた形",
+  "language": "ja",
+  "tab_bar_width": 290,
+  "remote": {
+    "enabled": true,
+    "bind": "auto",
+    "port": 8787
+  },
+  "desks": [
+    {
+      "name": "ワイアード＆エコ",
+      "id": "default",
+      "folders": [
+        {
+          "tabs": []
+        },
+        {
+          "cwd": "D:\\ShikishaTerm",
+          "tabs": [
+            { "name": "コマンド", "command": "", "id": "mouse" },
+            { "name": "PowerShell", "command": "powershell.exe", "id": "powershell" }
+          ]
+        },
+        {
+          "cwd": "D:\\branches\\ShikishaTerm\\fragrant-sheepshead",
+          "name": "fragrant-sheepshead",
+          "tabs": [{ "name": "claude", "command": "claude --dangerously-skip-permissions" }]
+        },
+        {
+          "cwd": "D:\\branches\\ShikishaTerm\\promoting-hyena",
+          "name": "promoting-hyena",
+          "tabs": [
+            { "name": "claude", "command": "claude --dangerously-skip-permissions" },
+            { "name": "レビュー", "command": "codex" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "各種AI",
+      "id": "jh6ti",
+      "tabs": [{ "name": "claude", "command": "claude" }]
+    }
+  ]
+}

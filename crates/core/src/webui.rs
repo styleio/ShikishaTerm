@@ -1241,32 +1241,12 @@ fn secure<R: std::io::Read>(resp: Response<R>) -> Response<R> {
         .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
 }
 
-/// The words a new tab's automation name is drawn from, as the page reads them.
-///
-/// The short nouns of the list branch names are drawn from, and only the ones
-/// that are already a name automation accepts as they stand -- lower-case
-/// letters, three to six of them -- so a draw never has to be tidied into
-/// something else before it can be used
+/// The words a new tab's automation name is drawn from, as the page reads
+/// them. The list is the settings' own (`config::pet_nouns`), so the name the
+/// screen offers is one the app would have arrived at itself
 fn pet_nouns() -> Vec<&'static str> {
-    petname::Petnames::small()
-        .nouns
-        .iter()
-        .copied()
-        .filter(|w| (3..=6).contains(&w.len()) && w.bytes().all(|b| b.is_ascii_lowercase()))
-        .filter(|w| !NOT_A_TAB_NAME.contains(w))
-        .collect()
+    crate::config::pet_nouns()
 }
-
-/// Words in that list a tab should not be called. Some name a person rather
-/// than an animal, some are pests nobody wants to see their work filed under,
-/// and some are not animals at all
-const NOT_A_TAB_NAME: &[&str] = &[
-    "man", "kid", "stud", "lab", "dane", "boxer", "racer", "hermit", "tomcat", "chow",
-    "louse", "maggot", "leech", "bedbug", "tick", "flea", "worm", "grub", "slug", "mite",
-    "gnat", "weevil", "earwig", "amoeba", "insect", "mammal", "rodent", "cattle",
-    "ghost", "ghoul", "alien", "troll", "goblin", "satyr", "yeti", "elf", "imp",
-    "drum", "sole", "shiner", "roughy", "jennet", "glider", "guinea", "bengal", "sponge",
-];
 
 fn pet_nouns_json() -> String {
     serde_json::to_string(&pet_nouns()).unwrap_or_else(|_| "[]".into())
@@ -4562,17 +4542,25 @@ function uniqueWsId(base, self) {
   return freeId(base, new Set(desks
     .filter(w => w !== self).map(w => (w.id || "").trim()).filter(Boolean)));
 }
-// What a tab would be called by automation if nobody says otherwise: its
-// display name, or -- for a tab that has none, and is therefore shown by its
-// command -- the command. config.rs settles unnamed tabs the same way, and the
-// two have to agree: a desk opened in the settings screen must not come
-// out under a different name than the one the app filed its secrets beside
-function inferredTabId(t) {
-  // The program, not the whole command line: two browser tabs become "browser"
-  // and "browser-2" rather than two mouthfuls of URL. config.rs reads argv()[0]
-  // here, which is the same token for every command written as one line
-  const prog = cmdToText(t.command).trim().split(/\s+/)[0] || "";
-  return slugId(t.name) || slugId(prog) || "tab";
+// The automation name a display name gives, or "" when it gives none and one
+// has to be drawn. config.rs holds the same rule (`id_from_name`) and the two
+// have to agree: a desk opened in the settings screen must not come out under
+// a different name than the one the app filed its secrets beside
+//  - all of it POSIX's portable filename characters (letters, digits, . _ -):
+//    the name itself, letter for letter
+//  - those and others mixed: the others taken out, if three characters remain
+//  - none of them, or nothing written: drawn from the word list
+function idFromName(name) {
+  const s = (name || "").trim();
+  const kept = s.replace(/[^A-Za-z0-9._-]/g, "");
+  if (!/[A-Za-z0-9]/.test(kept)) return "";
+  return kept.length === s.length || kept.length >= 3 ? kept : "";
+}
+// What a tab would be called by automation if nobody says otherwise: what its
+// display name gives, else a word of its own -- never its command, because a
+// tab that started as Claude and was turned into SSH went on being "claude-2"
+function inferredTabId(t, desk) {
+  return idFromName(t.name) || petId(desk || {tabs: []}, t);
 }
 // Fills in an id for every tab that has none, a safety net at save time: a tab
 // with no id at all cannot be pointed at -- not by automation, and not by the
@@ -4582,7 +4570,7 @@ function ensureIds(desk) {
   const used = new Set(tabs.map(t => (t.id || "").trim()).filter(Boolean));
   for (const t of tabs) {
     if ((t.id || "").trim()) continue;
-    const id = freeId(inferredTabId(t), used);
+    const id = freeId(idFromName(t.name) || petFrom(used), used);
     t.id = id; used.add(id);
   }
 }
@@ -4942,8 +4930,11 @@ function followKind(t, before) {
 // Claude and was turned into SSH went on being "claude-2" -- and not a counter,
 // which says nothing about which tab is which
 function petId(desk, self) {
-  const used = new Set((desk.tabs || []).filter(t => t !== self)
-    .map(t => (t.id || "").trim()).filter(Boolean));
+  return petFrom(new Set((desk.tabs || []).filter(t => t !== self)
+    .map(t => (t.id || "").trim()).filter(Boolean)));
+}
+// The same, told outright which names are taken
+function petFrom(used) {
   for (let i = 0; i < 40 && PET_NOUNS.length; i++) {
     const n = PET_NOUNS[Math.floor(Math.random() * PET_NOUNS.length)];
     if (!used.has(n)) return n;
@@ -10407,12 +10398,15 @@ function tabPane(desk, t) {
   // one, else a unique string -- so the field is never blank and the tab can
   // always be pointed at. The person can change it; it is a normal field.
   if (!(t.id || "").trim()) {
-    t.id = uniqueId(desk, inferredTabId(t), t);
+    t.id = uniqueId(desk, inferredTabId(t, desk), t);
     refreshSave(); renderNav();
   }
   const idInput = field(t, "id", "", {grow:false, width:280, mono:true});
+  // The word a nameless tab would be called by is drawn once, so the hint
+  // under the field does not change to another animal on every keystroke
+  const drawn = petId(desk, t);
   const refreshIdPh = () => {
-    idInput.placeholder = uniqueId(desk, inferredTabId(t), t);
+    idInput.placeholder = uniqueId(desk, idFromName(t.name) || drawn, t);
   };
   const nameInput = field(t, "name", T["settings.tab.name.ph"], {grow:false, width:280,
     onInput:() => { renderNav(); refreshIdPh(); }});
@@ -10420,7 +10414,7 @@ function tabPane(desk, t) {
   const refreshNamePh = () => { nameInput.placeholder = kindName(t.command) || T["settings.tab.name.ph"]; };
   nameInput.addEventListener("blur", () => {
     if (!(t.id || "").trim()) {
-      const sug = uniqueId(desk, inferredTabId(t), t);
+      const sug = uniqueId(desk, idFromName(t.name) || drawn, t);
       t.id = sug; idInput.value = sug; refreshSave(); renderNav();
     }
   });
@@ -13234,6 +13228,34 @@ mod tests {
         }
     }
 
+    /// The screen works out an automation name from a display name by the same
+    /// rule the app does. Two rules, and a desk edited on the screen would come
+    /// out under a name other than the one the app filed its secrets beside
+    #[test]
+    fn the_screen_reads_a_display_name_the_way_the_app_does() {
+        let js = PAGE
+            .split("function idFromName(name) {")
+            .nth(1)
+            .expect("the screen no longer works out a name from a display name");
+        let js = &js[..js.find("
+}
+").expect("idFromName does not end")];
+        // The same characters, the same floor, the same "nothing to make a
+        // name from" answer as `config::id_from_name`
+        assert!(js.contains("[^A-Za-z0-9._-]"), "another set of characters: {js}");
+        assert!(js.contains("[A-Za-z0-9]"), "a name of dots and dashes would be taken: {js}");
+        assert!(
+            js.contains("kept.length === s.length || kept.length >= 3"),
+            "another floor than three characters: {js}"
+        );
+        // And a name it cannot make is drawn for, not turned into a hash
+        let ensure = PAGE.split("function ensureIds(desk) {").nth(1).expect("ensureIds is gone");
+        let ensure = &ensure[..ensure.find("
+}
+").expect("ensureIds does not end")];
+        assert!(ensure.contains("idFromName(t.name) || petFrom(used)"), "{ensure}");
+    }
+
     /// Every word a new tab's automation name can be drawn as is one automation
     /// accepts as it stands, and there are enough of them that a desk of tabs
     /// does not run out.
@@ -13245,8 +13267,7 @@ mod tests {
             assert!((3..=6).contains(&w.len()), "{w} is not a short word");
             assert!(w.bytes().all(|b| b.is_ascii_lowercase()), "{w} is not a name automation takes as it is");
             // The name the settings screen settles on for it is itself
-            assert_eq!(crate::config::slug_id(w), *w, "{w} would be tidied into something else");
-            assert!(!super::NOT_A_TAB_NAME.contains(w), "{w} is on the list of words a tab is not called");
+            assert_eq!(crate::config::id_from_name(w).as_deref(), Some(*w), "{w} would be tidied into something else");
         }
         let json: Vec<String> = serde_json::from_str(&super::pet_nouns_json()).expect("the list is not JSON");
         assert_eq!(json.len(), words.len());
