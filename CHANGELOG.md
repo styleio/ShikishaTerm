@@ -105,6 +105,13 @@ once it reaches its first tagged release.
   tab reaches any more.
 
 ### Changed
+- **The bar across the top of a narrow screen says the same things in fewer
+  letters.** Under 700px wide -- a phone, or a window dragged that small -- AUTO
+  and REMOTE are drawn as one letter each, in the same green for on and grey for
+  off; Claude's name becomes the mark its own tabs wear; and how much of the
+  subscription is gone reads "5h(5%) 7d(51%)". The whole word is still in the
+  page for anything that reads it aloud, and in the tooltip. A screen with room
+  for the words is unchanged, a tall one included: what decides is width alone.
 - **The master password is asked for before the first tab starts**, so that everything
   a tab is handed as it is born -- its git account's token, a model connection's key --
   comes from a store that is open.
