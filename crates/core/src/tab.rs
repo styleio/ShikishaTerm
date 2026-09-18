@@ -69,6 +69,11 @@ pub struct TabOptions {
     /// the program follows, so a tab's settings can be read, written, exported
     /// and looked at without a credential being in them
     pub git: crate::config::GitUse,
+    /// Whether this tab is starting clean although a conversation was written
+    /// down for it. Decided where the launch is planned
+    /// (`desk::carried_conversation`) and carried in here because it is a fact
+    /// about how this tab was born, which is where the caption reads it from
+    pub lost: bool,
 }
 
 impl TabOptions {
@@ -182,6 +187,7 @@ impl Default for TabOptions {
             model: None,
             held: None,
             git: crate::config::GitUse::Unset,
+            lost: false,
         }
     }
 }
@@ -2329,6 +2335,18 @@ fn plan_launch(
 /// Asked at startup, before any tab exists, which is why it takes the command
 /// rather than a `Tab`. `main::resume_plan` asks the same two questions of a
 /// tab that is already running.
+/// Whether this command could come back to a conversation at all.
+///
+/// [`resumable`] asks about one conversation; this asks about the CLI, which
+/// is the question when there is no id in hand -- a tab starting clean, and
+/// whether that is a thing worth saying anything about. A shell has no
+/// conversation to lose
+pub fn carries_conversations(argv: &[String], profile_spec: &Option<String>) -> bool {
+    Tab::resolve_profile(argv, profile_spec)
+        .resume
+        .is_some_and(|spec| !spec.with_id.is_empty())
+}
+
 pub fn resumable(argv: &[String], profile_spec: &Option<String>, id: &str) -> bool {
     let Some(spec) = Tab::resolve_profile(argv, profile_spec).resume else {
         return false;
@@ -2636,6 +2654,15 @@ pub struct Tab {
     /// gone from what the app remembers, and what is left is the CLI's own
     /// records. It is what the caption offers a way back from
     pub past_here: bool,
+    /// Whether this tab came up clean although a conversation had been written
+    /// down for it -- the record is gone, or two tabs of one CLI in one folder
+    /// left nothing to say which conversation is whose.
+    ///
+    /// The offer of the way back is held open past the first thing the person
+    /// types while this is true, because that is when they notice. Cleared
+    /// when they take the offer up (`Ev::PastList`), which is the moment it has
+    /// been seen
+    pub lost: bool,
     /// Whether anything has been said in this tab since it started. Set from
     /// the writing side, which is shared, hence the atomic
     spoke: AtomicBool,
@@ -3225,6 +3252,7 @@ impl Tab {
             keyboard,
             previous: None,
             past_here,
+            lost: opts.lost,
             spoke: AtomicBool::new(false),
             status: Vec::new(),
             progress: None,
@@ -3496,6 +3524,11 @@ impl Tab {
         // it started. Without this the restart button on a held tab put back
         // the same held tab, for ever
         self.opts.held = Held::of(self.opts.cwd.as_deref());
+        // A restart is a birth of its own, and its conversation is the plan
+        // right here: one that carries has lost nothing, and one that starts
+        // clean was asked to. Either way the loss the tab was born with is not
+        // this tab's news any more
+        self.opts.lost = false;
         let mut fresh = Tab::spawn_as(
             self.title.clone(),
             &self.argv.clone(),

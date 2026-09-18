@@ -13,6 +13,12 @@
  * that the caption offers the way back, that pressing it lists what was said
  * here newest first, and that picking one relaunches the tab resuming it.
  *
+ * Then it starts the copy again over a conversation that was written down and
+ * is not on the machine any more -- the loss itself, which used to happen
+ * without a word -- and checks that the tab says so, that saying so outlasts
+ * the first thing the person types, and that it stops once it has been taken
+ * up.
+ *
  *     cargo build
  *     node tools/debug/past-back.win.mjs
  *
@@ -116,41 +122,67 @@ fs.writeFileSync(starter, [
   'foreach ($e in @(Get-ChildItem env: | Where-Object { $_.Name -match "^(CLAUDE|ANTHROPIC)" })) { Remove-Item ("env:" + $e.Name) }',
   `Start-Process -FilePath "${path.join(APP, 'SHIKISHA-TERM.exe')}" -WorkingDirectory "${APP}"`,
 ].join('\r\n') + '\r\n');
-const started = ps('-File', starter);
-if (started.status !== 0) die('the copy did not start:\n' + started.stdout + started.stderr);
-
-// The window opens its own page and then its DevTools port, and on a cold
-// profile that is tens of seconds. Every turn of this waits, including the one
-// where the port answers with no page yet -- a loop that only sleeps on a
-// refused connection spends its whole budget in a few milliseconds
-let targets;
-for (let i = 0; i < 240 && !targets; i++) {
-  try {
-    const found = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
-    targets = found.filter((t) => t.type === 'page');
-  } catch { /* not up yet */ }
-  if (targets && !targets.length) targets = null;
-  if (!targets) await sleep(500);
-}
-if (!targets) { stopApp(); die('the app\'s page never opened its DevTools port'); }
-const ws = new WebSocket(targets[0].webSocketDebuggerUrl);
-await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-let id = 0;
-const waiting = new Map();
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-});
-const call = (method, params = {}) => new Promise((res, rej) => {
-  const n = ++id;
-  waiting.set(n, (m) => (m.error ? rej(new Error(method + ': ' + JSON.stringify(m.error))) : res(m.result)));
-  ws.send(JSON.stringify({ id: n, method, params }));
-});
-const run = async (expression) => {
-  const r = await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-  if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-  return r.result.value;
+// Started and talked to more than once: this check watches a tab come up
+// twice, once knowing nothing and once having lost something, and the second
+// is a different copy of the window with a page of its own
+const startApp = () => {
+  const started = ps('-File', starter);
+  if (started.status !== 0) die('the copy did not start:\n' + started.stdout + started.stderr);
 };
+/** The window's page, once it has one: its DevTools targets, or nothing. */
+const page = async (seconds) => {
+  // Every turn waits, including the one where the port answers with no page
+  // yet: a loop that only sleeps on a refused connection spends its whole
+  // budget in a few milliseconds
+  for (let i = 0; i < seconds * 2; i++) {
+    try {
+      const found = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
+      const pages = found.filter((t) => t.type === 'page');
+      if (pages.length) return pages;
+    } catch { /* not up yet */ }
+    await sleep(500);
+  }
+  return null;
+};
+/** Start the copy and answer with a way to run things in its page. */
+const connect = async () => {
+  // A copy started over a folder that was made a moment ago comes up now and
+  // then with its window drawn and no debugging port behind it -- the argument
+  // that opens one reaches the window through the environment it is created
+  // with, and on that first start it sometimes does not. Started again rather
+  // than waited on: the second start has never failed to answer, and waiting
+  // out a port that is not coming costs the whole run
+  let targets;
+  for (let attempt = 1; attempt <= 3 && !targets; attempt++) {
+    startApp();
+    targets = await page(45);
+    if (!targets) {
+      console.log(`  (start ${attempt} came up without its DevTools port -- starting it again)`);
+      stopApp();
+      await sleep(2000);
+    }
+  }
+  if (!targets) { stopApp(); die('the app\'s page never opened its DevTools port'); }
+  const ws = new WebSocket(targets[0].webSocketDebuggerUrl);
+  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
+  let id = 0;
+  const waiting = new Map();
+  ws.addEventListener('message', (e) => {
+    const m = JSON.parse(e.data);
+    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
+  });
+  const call = (method, params = {}) => new Promise((res, rej) => {
+    const n = ++id;
+    waiting.set(n, (m) => (m.error ? rej(new Error(method + ': ' + JSON.stringify(m.error))) : res(m.result)));
+    ws.send(JSON.stringify({ id: n, method, params }));
+  });
+  return async (expression) => {
+    const r = await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
+    return r.result.value;
+  };
+};
+let run = await connect();
 const until = async (test, what, ms = 40000) => {
   const end = Date.now() + ms;
   while (Date.now() < end) { if (await test().catch(() => false)) return true; await sleep(300); }
@@ -186,7 +218,7 @@ try {
 
   console.log('3. picking one puts that tab back into it');
   await run('document.querySelectorAll("#past .vrow")[0].click(); true');
-  await until(() => Promise.resolve(new RegExp('--resume\\\\s+' + NEWER).test(launched())),
+  await until(() => Promise.resolve(new RegExp('--resume\\s+' + NEWER).test(launched())),
     'the CLI to be relaunched resuming it');
   check(new RegExp('--resume\\s+' + NEWER).test(launched()),
     'the tab was relaunched resuming the conversation picked: ' + launched());
@@ -196,6 +228,49 @@ try {
   await until(() => run('!!(S && S.tabs && !S.tabs.some(t => t.past))'), 'the offer to go');
   check(await run('!document.querySelector("#panes .pane .past:not([hidden])")'),
     'the caption no longer offers it');
+
+  // The case that costs the day, and the one this app used to be silent about:
+  // the tab WAS having a conversation, it is written down, and it does not come
+  // back. Set up by remembering one whose record is not on this machine, which
+  // is what a thrown-away record, a renamed folder or a shifted tab name all
+  // come to in the end
+  console.log('5. a tab that lost the conversation written down for it says so');
+  stopApp();
+  await sleep(1500);
+  fs.writeFileSync(path.join(APP, 'data', 'last-session'), JSON.stringify({
+    version: 1,
+    desks: [{
+      name: 'Check', id: 'check',
+      tabs: [{
+        title: 'claude', id: 'claude', cwd: WORK, program: 'claude',
+        session: '44444444-4444-4444-8444-444444444444', source: 'Minted',
+      }],
+    }],
+  }, null, 2));
+  fs.rmSync(ARGV, { force: true });
+  run = await connect();
+  await until(() => Promise.resolve(/--session-id/.test(launched())), 'the CLI to be launched');
+  check(!/--resume/.test(launched()), 'it could not be resumed, so it starts clean: ' + launched());
+  await until(() => run('!!(S && S.tabs && S.tabs.some(t => t.past && t.lost))'),
+    'the offer to appear, saying what happened');
+  check(await run('!!document.querySelector("#panes .pane .past.lost:not([hidden])")'),
+    'the caption says the conversation did not come back');
+  check(hookLog().includes('"claude" starts clean:'),
+    'the log says why this tab came up clean');
+
+  console.log('6. and it is still offered after the person has typed');
+  await run('send({kind:"key", text:"hello"}); send({kind:"key", named:"enter"}); true');
+  await sleep(1500);
+  check(await run('!!document.querySelector("#panes .pane .past.lost:not([hidden])")'),
+    'typing does not take the way back away');
+
+  console.log('7. until it is taken up, which is when it has been seen');
+  await run('document.querySelector("#panes .pane .past").click(); true');
+  await until(() => run('!!(S && S.past && S.past.hits && S.past.hits.length)'), 'the list');
+  await run('document.querySelector("#past .vclose").click(); true');
+  await until(() => run('!!(S && S.tabs && !S.tabs.some(t => t.past))'), 'the offer to go');
+  check(await run('!document.querySelector("#panes .pane .past:not([hidden])")'),
+    'the caption is an ordinary caption again');
 } catch (e) {
   console.error(e.message);
   const tail = hookLog().split('\n').slice(-12).join('\n');

@@ -919,6 +919,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     padding:1px 6px; border:1px solid var(--line); border-radius:4px;
     color:var(--dim); font-size:11px; line-height:14px; cursor:pointer; }
   .pane .phead .past:hover { color:var(--brand); border-color:var(--brand); }
+  /* A conversation that did not come back is news, not a remark: it is said in
+     the warning colour, and it keeps saying it until it is pressed */
+  .pane .phead .past.lost { color:var(--warn); border-color:var(--warn); }
   .pane .phead .past[hidden] { display:none; }
   .pane .phead .rs { opacity:.55; padding:0 2px; font-size:12px; line-height:1; }
   .pane .phead .rs:hover { opacity:1; color:var(--brand); }
@@ -2892,6 +2895,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab .back { flex:none; display:flex; align-items:center; justify-content:center;
     min-width:22px; min-height:22px; color:var(--dim); font-size:13px; cursor:pointer; }
   .tab .back:hover { color:var(--brand); }
+  .tab .back.lost { color:var(--warn); }
   .tab.folder .drift .beh { color:var(--warn, #e0a80a); }
   .tab.folder .drift .ahd { color:var(--dim); }
   /* The + keeps its place at the very end */
@@ -6083,7 +6087,8 @@ function tabRow(t, g, deep, head) {
     // is in the pane's caption too, and a phone has no captions -- this row is
     // the one place both surfaces draw
     t.past
-      ? el("span", {class:"back", title:T["tui.pane.past_hint"] || "",
+      ? el("span", {class:t.lost ? "back lost" : "back",
+          title:T[t.lost ? "tui.pane.past_lost" : "tui.pane.past_hint"] || "",
           onclick:(e) => { e.stopPropagation(); window.__openPast(t.index, t.name); }}, "\u21A9")
       : null,
     // Beside the name rather than on the line under it: "which server" is the
@@ -9297,7 +9302,11 @@ function paintPaneHeads() {
     back.hidden = !(t && t.past);
     if (t && t.past) {
       back.querySelector(".pwd").textContent = T["tui.pane.past"] || "Earlier conversation";
-      back.title = T["tui.pane.past_hint"] || "";
+      // A tab that lost the conversation written down for it says so, and in
+      // the colour the app warns in: "this folder has been worked in before"
+      // is a remark, while "what you were saying did not come back" is news
+      back.classList.toggle("lost", !!t.lost);
+      back.title = T[t.lost ? "tui.pane.past_lost" : "tui.pane.past_hint"] || "";
     }
     // The Issue tab is a page that takes its pane whole: dividing it from its
     // own caption is not something it is for

@@ -98,7 +98,20 @@ fn main() {
                 &title,
             );
             match &found {
-                None => println!("    -> fresh: nothing remembered matches this tab"),
+                None => {
+                    let near = saved.remembered_here(
+                        d,
+                        &program,
+                        cwd.as_ref().map(|c| c.display().to_string()).as_deref(),
+                    );
+                    match near {
+                        0 => println!("    -> fresh: nothing remembered matches this tab"),
+                        n => println!(
+                            "    -> fresh: {n} conversation(s) remembered for {program} in this \
+                             folder, and none of them could be told to be this tab's"
+                        ),
+                    }
+                }
                 Some(s) => {
                     let ok = tab::resumable(&argv, &ft.cfg.profile, &s.id);
                     println!(
@@ -112,10 +125,13 @@ fn main() {
                     );
                 }
             }
-            let plan = desk::carried_conversation(Some(&saved), d, &argv, &ft.cfg, &cwd, &title);
-            match plan {
+            let carried = desk::carried_conversation(Some(&saved), d, &argv, &ft.cfg, &cwd, &title);
+            match carried.plan {
                 tab::Resume::Id(s) => println!("    -> carries {}", s.id),
                 other => println!("    -> {other:?}"),
+            }
+            if carried.lost {
+                println!("    -> and says so: the tab keeps the offer of the way back");
             }
         }
     }
