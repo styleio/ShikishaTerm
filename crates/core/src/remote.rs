@@ -249,7 +249,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // The rows under a project's heading that answer for what the same
         // dialog began: a worktree being made, stopped or tried again, and
         // worktrees git knows put on the desk or kept hidden. No further than
-        // `Ev::Branch`, which is what started them
+        // `Ev::Branch`, which is what started them -- including the one line
+        // git asks for before it will work in a folder owned elsewhere, which
+        // is part of cutting the branch and is shown in full before it is
+        // pressed
         Ev::Making { .. } | Ev::Found { .. } => true,
         // Choosing, in that same dialog, how what each ignore line matches
         // comes along, and keeping it as the project's. The settings page

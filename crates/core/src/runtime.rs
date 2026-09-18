@@ -134,6 +134,12 @@ struct Pending {
     made: bool,
     /// Why it failed, once it has
     error: Option<String>,
+    /// The folder git will not touch until it is written down as one to trust,
+    /// spelled as git asked for it. Set when git refused the project the
+    /// branch is cut from, and when it refuses the branch's own folder
+    /// afterwards -- a project on another machine's share is owned over there,
+    /// and git stops at both
+    trust: Option<String>,
     /// When it was written into the settings. The row stays until the desk
     /// that was read back lists the folder, so a card takes its place in the
     /// same frame the row goes
@@ -150,12 +156,21 @@ impl Pending {
             family: self.family.clone(),
             name: plan.branch.clone(),
             folder: plan.folder.display().to_string(),
-            stage: match (&self.error, self.made || self.written.is_some()) {
-                (Some(_), _) => "failed".into(),
-                (None, true) => crate::worktree::Stage::SettingUp.key().into(),
-                (None, false) => self.making.stage().key().into(),
+            stage: match (&self.error, &self.trust, self.made || self.written.is_some()) {
+                (Some(_), _, _) => "failed".into(),
+                // The folder is there and git will not go into it: not a
+                // failure, and not something to leave unsaid either
+                (None, Some(_), _) => "untrusted".into(),
+                (None, None, true) => crate::worktree::Stage::SettingUp.key().into(),
+                (None, None, false) => self.making.stage().key().into(),
             },
             error: self.error.clone().unwrap_or_default(),
+            trust: self.trust.clone().unwrap_or_default(),
+            trust_line: self.trust.as_deref().map(crate::trust::line).unwrap_or_default(),
+            trust_file: match self.trust.is_some() {
+                true => crate::trust::file().display().to_string(),
+                false => String::new(),
+            },
         }
     }
 
@@ -215,6 +230,7 @@ impl Leaving {
                 None => "removing".into(),
             },
             error: self.error.clone().unwrap_or_default(),
+            ..Default::default()
         }
     }
 }
@@ -5452,13 +5468,39 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 "stop" if p.error.is_none() && !p.made && p.written.is_none() => p.making.stop(),
                 "retry" if p.error.is_some() => {
                     p.error = None;
+                    p.trust = None;
                     // Made already, and only writing it down failed: that
                     // is what is tried again, since the folder is there
                     if !p.made {
                         p.making = crate::worktree::Making::start(p.making.plan.clone(), p.carry.clone());
                     }
                 }
-                "dismiss" if p.error.is_some() => p.gone = true,
+                // The person said yes to the line git asked for. It goes into
+                // their own git settings and nowhere else, and what stopped
+                // for want of it goes on: a branch that was refused is cut
+                // again, and one that was made is simply usable
+                "trust" => {
+                    let Some(value) = p.trust.clone() else { continue };
+                    match crate::trust::add(&value) {
+                        Ok(()) => {
+                            p.trust = None;
+                            flash = Some(i18n::tp("msg.trust.added", &[("what", &value)]));
+                            if p.error.take().is_some() && !p.made {
+                                p.making = crate::worktree::Making::start(
+                                    p.making.plan.clone(),
+                                    p.carry.clone(),
+                                );
+                            }
+                        }
+                        Err(e) => p.error = Some(format!("{e:#}")),
+                    }
+                }
+                "dismiss" if p.error.is_some() || p.trust.is_some() => {
+                    // Left as it is, on purpose. The folder stays; git will
+                    // say the same thing in it until somebody says otherwise
+                    p.trust = None;
+                    p.gone = p.error.is_some();
+                }
                 _ => {}
             }
         }
@@ -5474,11 +5516,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     Some(Err(why)) => {
                         append_hook_log(&format!("could not make {}: {why}", p.making.plan.branch));
+                        // Git refuses a project whose files belong to another
+                        // account -- a share on another machine is exactly
+                        // that -- and says which folder it wants written down
+                        // as one to trust. Its own words are kept as the
+                        // reason; the row turns them into the one press that
+                        // answers them
+                        p.trust = crate::trust::asked_for(&why).map(|v| crate::trust::spread(&v));
                         p.error = Some(why);
                         continue;
                     }
                     Some(Ok(brought)) => {
                         p.made = true;
+                        // The branch's own folder is the second place git
+                        // stops: the folder is here, and the git folder it
+                        // belongs to is on the share. Asked of git rather than
+                        // assumed, and only about a folder on this machine
+                        if p.making.plan.host.is_none() {
+                            p.trust = crate::trust::refused(&p.making.plan.folder)
+                                .map(|v| crate::trust::spread(&v));
+                        }
                         let said = brought_note(&p.making.plan.branch, &brought);
                         said_before_reload = Some((Instant::now(), said.clone()));
                         flash = Some(said);
@@ -5501,7 +5558,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &p.making.plan.folder)))
                 })
             };
-            !p.gone && !p.written.is_some_and(|at| at.elapsed() > MAKING_CARD_WAIT || listed())
+            // A row with a question on it stays until the question is
+            // answered: the folder is on the desk already, and nothing else on
+            // screen would say that git will not work in it
+            !p.gone && (p.trust.is_some() || !p.written.is_some_and(|at| at.elapsed() > MAKING_CARD_WAIT || listed()))
         });
         // The worktrees being deleted. Gone is said then and not before; a
         // folder that stayed keeps its row and asks
@@ -6061,6 +6121,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 carry: carryable.clone(),
                                 made: false,
                                 error: None,
+                                trust: None,
                                 written: None,
                                 gone: false,
                             }); }
@@ -6116,6 +6177,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             carry: carryable.clone(),
                             made: false,
                             error: None,
+                            trust: None,
                             written: None,
                             gone: false,
                         });
