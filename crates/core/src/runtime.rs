@@ -1130,6 +1130,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
     let mut thanks_asked = config::state_path("thanks-asked").exists();
+    // Whether this machine has been told what a tab that was opened as a shell
+    // does not do with the conversation an AI started in it
+    let mut guest_told = config::state_path("guest-told").exists();
     // The first-start setup: up on a first start until it is answered, and
     // never on a machine that already had settings. Which AIs are installed is
     // asked once, here, like the list above
@@ -1889,6 +1892,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         && new.turn_ended()
                         && tabs.get(idx - 1).is_some_and(|t| t.is_ai())
                 });
+            }
+            // The first time an AI turns up in a tab that was opened as a
+            // shell, say what that tab will and will not do afterwards. Once
+            // on this machine: it is the same answer every time, and a notice
+            // that comes back is a notice people learn to look past
+            if !guest_told
+                && let Some(t) = tabs.iter().find(|t| t.guest().is_some())
+            {
+                guest_told = true;
+                let _ = crate::crypto::write_atomic(&config::state_path("guest-told"), "1");
+                flash = Some(i18n::tp("msg.guest.found", &[("name", t.profile_name())]));
             }
 
             // A tab whose launch command changed in settings is flagged for

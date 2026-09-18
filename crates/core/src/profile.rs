@@ -17,6 +17,32 @@ pub struct ProfileFile {
     /// Applied when the command name contains this string (case-insensitive)
     #[serde(default)]
     pub command_match: Vec<String>,
+    /// Where this CLI's own file lives inside the package it is installed as,
+    /// for the CLIs that are a script rather than a program.
+    ///
+    /// `codex` and `gemini` are both `node` with a file to run, so their
+    /// processes are called `node` and the name says nothing. The file does:
+    /// `node_modules/@openai/codex/` is that package and nothing else. Written
+    /// as a piece of the path, with either slash -- the comparison makes them
+    /// agree (see `guest::of_script`)
+    #[serde(default)]
+    pub script_match: Vec<String>,
+    /// Marks in the *window title* that say this CLI is the one running.
+    ///
+    /// Separate from `title_busy`, which says a turn is running: this says who
+    /// is there. Kept in the profile rather than guessed from the CLI's name
+    /// because a title is written by whatever is in the tab, and a word that
+    /// appears in somebody's question must not rename their tab. Measured:
+    /// Claude Code writes `✳ Claude Code` when it starts
+    #[serde(default)]
+    pub title_match: Vec<String>,
+    /// The flags that mean "print one answer and exit" — `claude -p`.
+    ///
+    /// A one-shot run is a command somebody ran, not a conversation. Without
+    /// this, a tab would be marked as an AI for the second one takes, and the
+    /// notice that comes with the first AI seen in a tab would fire on it
+    #[serde(default)]
+    pub one_shot: Vec<String>,
     /// Regex: if it matches the screen, treat as BUSY (in progress)
     #[serde(default)]
     pub busy_patterns: Vec<String>,
