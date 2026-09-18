@@ -74,9 +74,18 @@ pub struct TabState {
     /// Whether this tab came up on a conversation of nobody's while its folder
     /// has been worked in before. The caption offers the way back while it is
     /// true, which is until somebody speaks here: from then on this tab has a
-    /// conversation of its own, and the past is the Vault's business
+    /// conversation of its own, and the past is the Vault's business.
+    ///
+    /// Except on a tab that lost one (`lost`), where the offer stays: somebody
+    /// whose conversation did not come back usually notices after they have
+    /// typed, and an offer that goes away exactly then is not an offer
     #[serde(default)]
     pub past: bool,
+    /// Whether the conversation written down for this tab is the one it did
+    /// NOT come back to. Said in the caption's colour and in what it offers,
+    /// because a tab that lost one is not the same as a tab that never had one
+    #[serde(default)]
+    pub lost: bool,
     /// Whether relaunching this makes any sense. A session always can be; a
     /// placed page can be reopened at the URL it started on; the app's own
     /// furniture (the settings form, the result view) cannot, because there is
@@ -1912,7 +1921,8 @@ impl TabState {
             group: None,
             kind: "pty".into(),
             restartable: true,
-            past: t.past_here && !t.spoke(),
+            past: t.past_here && (!t.spoke() || t.lost),
+            lost: t.lost,
             model: t.is_model(),
             busy: t.is_generating(),
             settings: false,
@@ -2032,6 +2042,7 @@ impl TabState {
             kind: "browser".into(),
             // A page has no conversation to have been having
             past: false,
+            lost: false,
             // The same two keys `main::restartable_page` refuses, and for the
             // same reason: they are opened and closed by the app, so "open it
             // again" is not a thing a person can want from them
@@ -2433,6 +2444,7 @@ mod tests {
             since: None,
             profile: "GENERIC".into(),
             past: false,
+            lost: false,
             locked: false,
             depth: 0,
             activity: vec![0; 4],

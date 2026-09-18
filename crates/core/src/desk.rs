@@ -352,41 +352,51 @@ pub fn apply_ws_config(
                 }
                 ordered.push(t);
             }
-            None => match Tab::spawn_as(
-                title.clone(),
-                &argv,
-                ft.cfg.profile.clone(),
-                rows,
-                cols,
-                opts,
-                match ft.cfg.id.as_deref().and_then(|id| resume.remove(id)) {
-                    Some(s) if tab::resumable(&argv, &ft.cfg.profile, &s.id) => tab::Resume::Id(s),
+            None => {
+                // Worked out before the tab is built, because how it is
+                // starting is part of what it comes up as: a tab that lost the
+                // conversation it was having keeps the offer of the way back
+                let carried = match ft.cfg.id.as_deref().and_then(|id| resume.remove(id)) {
+                    Some(s) if tab::resumable(&argv, &ft.cfg.profile, &s.id) => {
+                        Carried { plan: tab::Resume::Id(s), lost: false }
+                    }
                     _ => launch_plan(carry, desk, &argv, &ft.cfg, &said.cwd, &title),
-                },
-            ) {
-                Ok(mut t) => {
-                    forget_failure(&desk.name, &title);
-                    t.locked = ft.cfg.locked;
-                    t.auto_restart = ft.cfg.auto_restart;
-                    t.depth = ft.depth;
-                    t.id = ft.cfg.id.clone();
-                    t.notify_on_done = ft.cfg.notify_on_done.clone();
-                    t.notify_reply = ft.cfg.notify_reply;
-                    // What this tab was having, whether or not it was carried:
-                    // the key that means "carry the conversation over" reaches
-                    // for it, and it is what the app goes on remembering for a
-                    // tab nobody has spoken to yet
-                    t.previous = carry.and_then(|last| last.conversation_for(desk, &t));
-                    ordered.push(t);
-                    added += 1;
+                };
+                let mut opts = opts;
+                opts.lost = carried.lost;
+                match Tab::spawn_as(
+                    title.clone(),
+                    &argv,
+                    ft.cfg.profile.clone(),
+                    rows,
+                    cols,
+                    opts,
+                    carried.plan,
+                ) {
+                    Ok(mut t) => {
+                        forget_failure(&desk.name, &title);
+                        t.locked = ft.cfg.locked;
+                        t.auto_restart = ft.cfg.auto_restart;
+                        t.depth = ft.depth;
+                        t.id = ft.cfg.id.clone();
+                        t.notify_on_done = ft.cfg.notify_on_done.clone();
+                        t.notify_reply = ft.cfg.notify_reply;
+                        // What this tab was having, whether or not it was carried:
+                        // the key that means "carry the conversation over" reaches
+                        // for it, and it is what the app goes on remembering for a
+                        // tab nobody has spoken to yet
+                        t.previous = carry.and_then(|last| last.conversation_for(desk, &t));
+                        ordered.push(t);
+                        added += 1;
+                    }
+                    Err(e) => {
+                        let prog = argv.first().map(String::as_str).unwrap_or("");
+                        let why = tab::launch_problem_for(&title, prog, &said, &e.to_string());
+                        remember_failure(&desk.name, &title, prog, &why);
+                        errors.push(why);
+                    }
                 }
-                Err(e) => {
-                    let prog = argv.first().map(String::as_str).unwrap_or("");
-                    let why = tab::launch_problem_for(&title, prog, &said, &e.to_string());
-                    remember_failure(&desk.name, &title, prog, &why);
-                    errors.push(why);
-                }
-            },
+            }
         }
     }
     // Close whatever's left that isn't in config
@@ -552,7 +562,8 @@ pub fn spawn_desk(
         // Kept for the message, because the options are moved into the tab and
         // the message is only wanted when that did not happen
         let said = opts.clone();
-        let plan = launch_plan(carry, desk, &argv, &ft.cfg, &cwd, &title);
+        let carried = launch_plan(carry, desk, &argv, &ft.cfg, &cwd, &title);
+        opts.lost = carried.lost;
         match Tab::spawn_as(
             title.clone(),
             &argv,
@@ -560,7 +571,7 @@ pub fn spawn_desk(
             rows,
             cols,
             opts,
-            plan,
+            carried.plan,
         ) {
             Ok(mut tab) => {
                 forget_failure(&desk.name, &title);
@@ -957,6 +968,10 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
         // Filled in by `resolve_launch`, which is where the desk holding the
         // accounts is known
         git: crate::config::GitUse::Unset,
+        // Filled in where the launch is planned: whether this tab is starting
+        // clean although something was written down for it is not a thing the
+        // folder knows
+        lost: false,
     }
 }
 
@@ -1279,18 +1294,44 @@ pub fn open_declared_browsers(desk: &config::Desk, caps: &hooks::Caps, errors: &
     apply_browser_chrome(desk, caps);
 }
 
+/// How a tab is starting: on the conversation it was having, or clean -- and
+/// whether starting clean cost it one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Carried {
+    pub plan: tab::Resume,
+    /// Whether a conversation that was written down for this tab is not being
+    /// brought back. The tab comes up looking exactly like every other clean
+    /// tab, so this is what the caption holds its offer of the way back open
+    /// for -- past the first thing the person types, which is usually when
+    /// they notice
+    pub lost: bool,
+}
+
+impl Carried {
+    fn fresh() -> Self {
+        Self { plan: tab::Resume::Fresh, lost: false }
+    }
+    fn lost(why: String, title: &str) -> Self {
+        append_hook_log(&format!("\"{title}\" starts clean: {why}"));
+        Self { plan: tab::Resume::Fresh, lost: true }
+    }
+}
+
 /// The conversation a tab should be launched back into, if there is one.
 ///
-/// Three things all have to hold, and two of them failing are ordinary rather
-/// than exceptional: this tab may have been told to start clean, and it may be
-/// new since last time. Neither is worth a word — a tab that starts fresh is
-/// what a tab normally does, and saying so on every launch would be noise. The
-/// third is not ordinary and is written down: the tab was having a conversation
-/// and the record of it has gone, which is the one case where a tab that looks
-/// like every other fresh tab has lost something.
+/// Three things all have to hold, and one of them failing is ordinary rather
+/// than exceptional: a tab that is new since last time has nothing to come
+/// back to, and saying so on every launch would be noise. The others are not
+/// ordinary and are written down, because each leaves a tab looking exactly
+/// like every other fresh one while something has gone:
 ///
-/// The tab is recognised by the same four things `lastsession` writes down, in
-/// the same spelling: the program is `argv[0]` and the folder is the resolved
+/// * the record of the conversation it was having is no longer on this machine
+/// * this desk remembers conversations for this CLI in this folder, and none
+///   of them could be told to be this tab's
+/// * this tab was told to start clean although its CLI could have carried one
+///
+/// The tab is recognised by the same things `lastsession` writes down, in the
+/// same spelling: the program is `argv[0]` and the folder is the resolved
 /// `cwd`, exactly as a running tab would report them.
 pub fn carried_conversation(
     carry: Option<&crate::lastsession::Saved>,
@@ -1299,37 +1340,47 @@ pub fn carried_conversation(
     cfg: &config::TabConfig,
     cwd: &Option<std::path::PathBuf>,
     title: &str,
-) -> tab::Resume {
+) -> Carried {
+    // Whether any of this is worth a word at all. A shell has no conversation
+    // to lose, and "this one starts clean" said about one is a sentence about
+    // something that was never there
+    let carries = tab::carries_conversations(argv, &cfg.profile);
     if cfg.restore_conversation == Some(false) {
-        return tab::Resume::Fresh;
+        if carries {
+            append_hook_log(&format!("\"{title}\" starts clean: its settings say so"));
+        }
+        return Carried::fresh();
     }
     let Some(saved) = carry else {
-        return tab::Resume::Fresh;
+        return Carried::fresh();
     };
     let cwd = cwd.as_ref().map(|c| c.display().to_string());
-    let Some(session) = saved.conversation_of(
-        desk,
-        argv.first().map(String::as_str).unwrap_or_default(),
-        cwd.as_deref(),
-        cfg.id.as_deref(),
-        title,
-    ) else {
-        return tab::Resume::Fresh;
+    let program = argv.first().map(String::as_str).unwrap_or_default();
+    let Some(session) =
+        saved.conversation_of(desk, program, cwd.as_deref(), cfg.id.as_deref(), title)
+    else {
+        // Nothing was remembered for this tab. Ordinary when nothing was
+        // remembered in this folder either -- but when something was, a
+        // conversation that exists has just stopped belonging to anybody, and
+        // the next start would remember the empty one this tab opens instead
+        let near = saved.remembered_here(desk, program, cwd.as_deref());
+        if near == 0 || !carries {
+            return Carried::fresh();
+        }
+        return Carried::lost(
+            format!(
+                "this desk remembers {near} conversation(s) for {program} in this folder \
+                 and nothing says which is this tab's"
+            ),
+            title,
+        );
     };
     match tab::resumable(argv, &cfg.profile, &session.id) {
-        true => tab::Resume::Id(session),
-        // The one failure that is not ordinary: this tab was having a
-        // conversation, and what is left of it on this computer is nothing.
-        // Said out loud because the tab comes up looking like any other fresh
-        // one, and because the app is about to remember the empty conversation
-        // it starts instead
-        false => {
-            append_hook_log(&format!(
-                "\"{title}\" starts clean: {} is not on this computer any more",
-                session.short()
-            ));
-            tab::Resume::Fresh
-        }
+        true => Carried { plan: tab::Resume::Id(session), lost: false },
+        false => Carried::lost(
+            format!("{} is not on this computer any more", session.short()),
+            title,
+        ),
     }
 }
 
@@ -1347,15 +1398,15 @@ fn launch_plan(
     cfg: &config::TabConfig,
     cwd: &Option<std::path::PathBuf>,
     title: &str,
-) -> tab::Resume {
-    let plan = match resume_plan_of(cfg.resume.as_deref()) {
-        named @ tab::Resume::Id(_) => named,
+) -> Carried {
+    let carried = match resume_plan_of(cfg.resume.as_deref()) {
+        named @ tab::Resume::Id(_) => Carried { plan: named, lost: false },
         _ => carried_conversation(carry, desk, argv, cfg, cwd, title),
     };
-    if let tab::Resume::Id(s) = &plan {
+    if let tab::Resume::Id(s) = &carried.plan {
         append_hook_log(&format!("launching \"{title}\" carrying {}", s.short()));
     }
-    plan
+    carried
 }
 
 #[cfg(test)]
