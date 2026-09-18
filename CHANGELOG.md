@@ -45,15 +45,17 @@ once it reaches its first tagged release.
   theirs, and the choice becomes the project's default for the worktrees after it.
 - **CI is shown in the git column, and a failure is handed to an AI.** Under a
   branch's pull requests, one line counts its checks as passed, failed and
-  running -- once for the branch, since they run on the commit whichever base it
-  went to -- and opens to list each with a link to its page. While one is still
-  running the column asks again every 30 seconds. A project with no CI shows
-  nothing. When a check has failed, the button becomes Have the AI fix the failed
-  CI: the failed checks and the end of each GitHub Actions log are read, and an AI
-  tab opens in the middle in the branch's folder, told to fix only what the
-  branch broke, ask about the rest, commit, and say to press Push. What it is told
-  is in Settings > desk > git, with `{pr}`, `{title}`, `{url}`, `{branch}`,
-  `{folder}`, `{checks}` and `{language}`.
+  running -- once for the branch, since they run on the commit the server has,
+  whether a pull request was made from it or not -- and opens to list each with a
+  link to its page. While one is still running the column asks again every 30
+  seconds. A project with no CI shows nothing. When a check has failed, the button
+  becomes Have the AI fix the failed CI, ahead of opening a pull request: the
+  failed checks and the end of each GitHub Actions log are read, and an AI tab
+  opens in the middle in the branch's folder, told to fix only what the branch
+  broke, ask about the rest, commit, and say to press Push. What it is told is in
+  Settings > desk > git, with `{ci}` for what CI ran on -- the pull request, or
+  the commit on a branch that has none -- and `{pr}`, `{title}`, `{url}`,
+  `{branch}`, `{folder}`, `{checks}` and `{language}`.
 - **A branch goes all the way in from the git column: commit, push, pull request,
   merge.** A row of steps at the top of the column says which one the branch is
   on. Once it is pushed and has no pull request, the column is the new one's form:
@@ -104,6 +106,13 @@ once it reaches its first tagged release.
 - **The Issue tab is called Issues & PRs.**
 
 ### Fixed
+- **A failed CI is handed to an AI from a branch that has no pull request.** The
+  button was offered only where one was open, and what it sent named it, so a
+  branch whose CI had failed before anybody opened one had no way to hand the
+  failure over. It is offered for the checks themselves now, ahead of the button
+  that opens a pull request -- what CI says is broken is worth fixing before
+  anybody is asked to look at it -- and the prompt names the commit and the
+  branch when there is no pull request to name (`{ci}`).
 - **CI is shown in the git column again, and for the branch rather than only for
   a pull request made from it.** Two things were in the way. The column tells a
   folder whose server is GitHub from one whose server is not by the repository the

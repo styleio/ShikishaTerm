@@ -4606,7 +4606,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // The failed checks of a pull request's commit, read: handed to an AI tab
         // in the folder its branch is in, told what the desk's CI prompt says
         while let Ok(done) = ci_rx.try_recv() {
-            let CiFix { project, number, seq, title, url, head, dir, result } = done;
+            let CiFix { project, number, seq, title, url, head, sha, dir, result } = done;
             let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
             let mut js = match (result, desks.get(desk_index), quick_ai_choice(&ai, &ai_choices)) {
                 (Err(e), ..) => serde_json::json!({"ok": false, "error": plain_error(&format!("{e:#}"))}),
@@ -4617,12 +4617,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 (Ok(_), _, None) => serde_json::json!({"ok": false, "error": i18n::t("msg.quick.no_ai")}),
                 (Ok(failed), Some(desk), Some(choice)) => {
                     let label = i18n::t("git.ci.tab");
+                    let ci = ci_ran_on(number, &title, &url, &head, &sha);
                     let opened = hand_to_ai_tab(desk, &dir, &label, choice, &tabs, &mut pending_quicks, &mut reveal, || {
                         // What came from GitHub -- the title, the logs -- goes in last,
                         // so nothing in it is taken for a word to fill in
                         desk.git
                             .ci_prompt()
-                            .replace("{pr}", &number.to_string())
+                            .replace("{ci}", &ci)
+                            // Empty rather than "0" for a branch with no pull
+                            // request: a prompt somebody wrote their own way
+                            // may still name it
+                            .replace("{pr}", &match number {
+                                0 => String::new(),
+                                n => n.to_string(),
+                            })
                             .replace("{branch}", &head)
                             .replace("{folder}", &dir.display().to_string())
                             .replace("{language}", &i18n::t("lang.self"))
@@ -5028,7 +5036,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let tx = ci_tx.clone();
                         std::thread::spawn(move || {
                             let result = crate::github::ci_failures(&sources, &project, &sha, &|k| tokens.get(k).cloned());
-                            let _ = tx.send(CiFix { project, number, seq, title, url, head, dir, result });
+                            let _ = tx.send(CiFix { project, number, seq, title, url, head, sha, dir, result });
                         });
                     }
                 }
@@ -9121,6 +9129,9 @@ struct CiFix {
     title: String,
     url: String,
     head: String,
+    /// The commit the checks ran on. What the prompt names when there is no
+    /// pull request to name
+    sha: String,
     dir: std::path::PathBuf,
     result: anyhow::Result<serde_json::Value>,
 }
@@ -9363,6 +9374,22 @@ struct LabelJob {
 /// The tags a draft's answer comes back under
 const DRAFT_ISSUE_TAG: &str = "issue_draft";
 const DRAFT_PR_TAG: &str = "pr_draft";
+
+/// What CI ran on, in one phrase for the prompt to name.
+///
+/// The pull request when the branch is on one, and the commit itself when it
+/// is not: the checks run on the push, so a branch nobody has opened a pull
+/// request for can have failed just the same, and the words that name it
+/// cannot then say "pull request" at all
+pub fn ci_ran_on(number: u64, title: &str, url: &str, head: &str, sha: &str) -> String {
+    match number {
+        0 => i18n::tp(
+            "ai.ci.on_commit",
+            &[("sha", &sha.chars().take(7).collect::<String>()), ("branch", head)],
+        ),
+        n => i18n::tp("ai.ci.on_pr", &[("n", &n.to_string()), ("title", title), ("url", url)]),
+    }
+}
 
 /// A prompt with its words filled in: each `{name}` becomes its value, and
 /// `{main}` becomes the main material -- or, when the prompt does not say where
@@ -12020,6 +12047,42 @@ mod tests {
             wheel_bytes(true, 0, 0, E::Default),
             vec![0x1b, b'[', b'M', 96, 33, 33]
         );
+    }
+
+    /// The failed CI handed to an AI names what it ran on, whether that is a
+    /// pull request or a commit on a branch that has none yet.
+    ///
+    /// The prompt used to open with "pull request #{pr}", so a branch with no
+    /// pull request could not be handed over at all: the words would have said
+    /// "pull request #0"
+    #[test]
+    fn the_failed_ci_names_what_it_ran_on() {
+        crate::i18n::init(Some("en"), &[crate::repo_root()]);
+        let on_pr = ci_ran_on(12, "Fix the thing", "https://x/pull/12", "feature", "abc1234def");
+        assert!(on_pr.contains("#12") && on_pr.contains("Fix the thing") && on_pr.contains("https://x/pull/12"), "{on_pr}");
+        let on_commit = ci_ran_on(0, "", "", "feature", "abc1234def5678");
+        assert!(on_commit.contains("abc1234") && on_commit.contains("feature"), "{on_commit}");
+        assert!(!on_commit.contains("abc1234def"), "the whole commit is spelled out: {on_commit}");
+        assert!(!on_commit.contains('#'), "a branch with no pull request is given a number: {on_commit}");
+
+        // And the prompt it goes into is left with nothing to fill in
+        let filled = |number: u64, ci: &str| {
+            crate::config::GitSpec::default()
+                .ci_prompt()
+                .replace("{ci}", ci)
+                .replace("{pr}", &match number { 0 => String::new(), n => n.to_string() })
+                .replace("{branch}", "feature")
+                .replace("{folder}", "D:/work")
+                .replace("{language}", "English")
+                .replace("{url}", "")
+                .replace("{title}", "")
+                .replace("{checks}", "[]")
+        };
+        for (number, ci) in [(12, on_pr.as_str()), (0, on_commit.as_str())] {
+            let text = filled(number, ci);
+            assert!(!text.contains('{'), "a word was left unfilled for {number}: {text}");
+            assert!(text.contains(ci), "the prompt does not say what CI ran on: {text}");
+        }
     }
 
     /// A folder's kept view comes back to the tab it was left on, even when
