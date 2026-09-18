@@ -9,6 +9,17 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **A git typed in a terminal tab signs in as the account its project chose.** Fetching,
+  pulling and pushing from a tab's own command line no longer ask who you are, and a
+  commit made there carries the account's name and email. The tab is started with the
+  settings for it, so an AI working in that tab signs in as the account too. It is
+  added, never taken away: a repository on another server goes on signing in the way
+  git on this PC already does, and a tab with no account chosen is left exactly as it
+  was. A tab picks a change of account up the next time it opens.
+- **A git account can be added from the picker that wants one.** The last line of
+  Account to use, on a project's page and on a git tab's, is "+ Add a PAT (git
+  account)": it opens the desk's git accounts over the page, and closing it comes back
+  with the account that was made already chosen.
 - **Working folders are named and described from what their AIs are asked.** With
   Auto on, an AI writes a folder's name and a summary of a few sentences from the
   requests sent to the AIs in it -- sent from the input bar, or typed straight into
@@ -85,6 +96,12 @@ once it reaches its first tagged release.
   tab reaches any more.
 
 ### Changed
+- **The master password is asked for before the first tab starts**, so that everything
+  a tab is handed as it is born -- its git account's token, a model connection's key --
+  comes from a store that is open.
+- **The token field says what becomes of the token.** With no master password set it
+  says, in red, that the token is stored as it stands and where to set one. It used to
+  promise encryption that only a master password provides.
 - **The branches and the history open as a Git tab in the middle**, from the arrow
   in the git column, rather than being a pane of the column. The column keeps what
   is done every day. A Git tab with no account of its own uses its project's.

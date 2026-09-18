@@ -894,6 +894,12 @@ pub fn resolve_launch(
         // (see Tab::set_brain)
         opts.model = Some(conn);
     }
+    // Who a git typed in this tab signs in as. Worked out here because this is
+    // where the desk is known: the account is the desk's, and the choice is
+    // this tab's own or its folder's project's
+    if let Some(w) = desk {
+        opts.git = w.git_use_here(cfg.git_account.as_deref(), opts.cwd.as_deref());
+    }
     argv
 }
 
@@ -941,6 +947,9 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
         // over there starts where the far end puts it and there is nowhere to
         // pass a folder in the asking
         remote_cwd: elsewhere.and(cwd_string(folder)),
+        // Filled in by `resolve_launch`, which is where the desk holding the
+        // accounts is known
+        git: crate::config::GitUse::Unset,
     }
 }
 
@@ -977,6 +986,36 @@ mod calling_home_tests {
         // ...is the one a call is looked up by
         let key = hooks::TabKey { id: opts.id.clone() };
         assert!(key.matches(opts.called("Gemini")), "it cannot be looked up by the name it was made under");
+    }
+
+    /// A terminal knows which account a git typed in it signs in as.
+    ///
+    /// The choice is the project's, made once beside its folders, and a tab
+    /// that made its own outranks it. Worked out at launch, where the desk
+    /// holding the accounts is known -- the tab itself only carries the name,
+    /// never the token
+    #[test]
+    fn a_terminal_is_born_knowing_which_account_to_sign_in_as() {
+        let json = r#"{
+          "desks": [ { "name":"w", "id":"w",
+            "git_accounts": [ {"name":"work","login":"octocat"}, {"name":"home"} ],
+            "projects": [ {"name":"p","git_account":"work"} ],
+            "folders": [ {"name":"here","cwd":".","project":"p",
+              "tabs": [ {"id":"sh","name":"Shell","command":"sh"},
+                        {"id":"own","name":"Own","command":"sh","git_account":"home"} ]} ] } ]
+        }"#;
+        let cfg: config::Config = serde_json::from_str(json).expect("the settings cannot be read");
+        let (desks, errs) = cfg.resolve_desks();
+        assert!(errs.is_empty(), "{errs:?}");
+        let desk = desks.first().expect("there is no desk");
+        let of = |i: usize| {
+            let ft = &desk.tabs[i];
+            let mut opts = tab_options(&ft.cfg, desk.folder_of(ft));
+            resolve_launch(ft.cfg.command.argv(), &mut opts, Some(desk), &ft.cfg);
+            opts.git
+        };
+        assert_eq!(of(0).written(), "work", "the project's choice did not reach its terminal");
+        assert_eq!(of(1).written(), "home", "the tab's own choice was overruled");
     }
 
     /// A folder renamed while its tabs run shows the new name for good.

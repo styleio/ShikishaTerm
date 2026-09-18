@@ -132,57 +132,171 @@ while IFS= read -r l && test -n \"$l\"; do case \"$l\" in host=*) h=\"${l#host=}
 test \"$h\" = \"$SHIKISHA_GIT_HOST\" || return 0; \
 printf 'username=%s\\npassword=%s\\n' \"$SHIKISHA_GIT_LOGIN\" \"$SHIKISHA_GIT_TOKEN\"; }; f";
 
+/// The git accounts' tokens, handed over whenever the settings are read.
+///
+/// A copy, and deliberately a small one: only the `git/` names. The store
+/// itself is reached through the desk on screen and the master password held
+/// with it, and a tab is started from places that have neither to hand -- the
+/// same reason `ssh::use_secrets` exists. A reload replaces the lot rather
+/// than adding to it, so a token taken out of the settings stops being handed
+/// to anything started afterwards
+static SECRETS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+    std::sync::OnceLock::new();
+
+fn store() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    SECRETS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Tell this module what the git accounts' tokens are now. Called when the
+/// settings are read and again whenever they are read afresh
+pub fn use_secrets(mut all: std::collections::HashMap<String, String>) {
+    all.retain(|k, _| k.starts_with("git/"));
+    if let Ok(mut m) = store().lock() {
+        *m = all;
+    }
+}
+
+/// One account's token, by the name it is filed under
+/// ([`crate::config::git_token_key`]). None where nothing is filed under it,
+/// which is also what a store nobody has unlocked yet says
+pub fn secret(key: &str) -> Option<String> {
+    store().lock().ok()?.get(key).cloned()
+}
+
+/// Whose git these settings are being put on.
+///
+/// The same account, told to two very different gits. One is a command this
+/// program runs and watches: it lasts a moment, nobody can answer a prompt in
+/// it, and what this machine would otherwise do is a hazard rather than a
+/// help. The other is a terminal a person is typing in, which was theirs
+/// before the account was chosen and stays theirs afterwards
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Whose {
+    /// A git this program starts. Every other way of signing in is set aside,
+    /// so only the chosen account can reach a server
+    Ours,
+    /// A git the person types. The account is added for its own server alone,
+    /// and everything else this machine is set up to do is left where it is
+    Terminal,
+}
+
 impl As {
     /// Nothing to sign in with, and git's own name on commits
     pub fn sealed() -> As {
         As { auth: Auth::Sealed, ..Default::default() }
     }
 
-    /// Put this on a git about to start: `-c` settings go before the
-    /// subcommand, which is why this is given the command before its args
-    fn apply(&self, cmd: &mut std::process::Command) {
+    /// The git settings and the environment this sign-in needs.
+    ///
+    /// One answer for both kinds of git, because two spellings of the same
+    /// credential is two chances to be signed in as somebody else. What
+    /// differs is written out here, in the one place, rather than in two
+    /// lists that have to be kept alike
+    fn settings(&self, whose: Whose) -> (Vec<(String, String)>, Vec<(&'static str, String)>) {
+        let mut cfg: Vec<(String, String)> = Vec::new();
+        let mut env: Vec<(&'static str, String)> = Vec::new();
         if let Some(n) = &self.name {
-            cmd.arg("-c").arg(format!("user.name={n}"));
+            cfg.push(("user.name".into(), n.clone()));
         }
         if let Some(e) = &self.email {
-            cmd.arg("-c").arg(format!("user.email={e}"));
+            cfg.push(("user.email".into(), e.clone()));
         }
         let quote = |p: &Path| format!("'{}'", p.display().to_string().replace('\\', "/").replace('\'', "'\\''"));
+        // How far a credential setting reaches. Over the whole of a git of
+        // ours, because that git is here to do one thing for one account; over
+        // the account's own server alone in a terminal, where the next command
+        // may well be about somebody else's repository on another server
+        let scope = |host: &str, key: &str| match whose {
+            Whose::Ours => format!("credential.{key}"),
+            Whose::Terminal => format!("credential.https://{host}.{key}"),
+        };
         match &self.auth {
             Auth::Own => {}
             // Only for that server: the name a helper is handed for any other
             // one stays whatever git on this machine would hand it
             Auth::PcAs { host, login } => {
-                cmd.arg("-c").arg(format!("credential.https://{host}.username={login}"));
+                cfg.push((format!("credential.https://{host}.username"), login.clone()));
             }
             // An empty helper throws away every helper configured before it --
             // the machine's, the user's, a per-server one -- so what follows is
-            // the whole list
+            // the whole list. Nothing of this belongs in a terminal: a person
+            // types git there about all sorts of repositories, and one that
+            // could not sign in to any of them would be broken, not sealed
             Auth::Sealed => {
-                cmd.arg("-c").arg("credential.helper=");
-                cmd.env("GIT_SSH_COMMAND", "false");
+                if whose == Whose::Ours {
+                    cfg.push(("credential.helper".into(), String::new()));
+                    env.push(("GIT_SSH_COMMAND", "false".into()));
+                }
             }
             Auth::Token { host, login, token } => {
-                cmd.arg("-c").arg("credential.helper=");
-                cmd.arg("-c").arg(format!("credential.helper={TOKEN_HELPER}"));
-                cmd.env("SHIKISHA_GIT_HOST", host)
-                    .env("SHIKISHA_GIT_LOGIN", login)
-                    .env("SHIKISHA_GIT_TOKEN", token)
+                cfg.push((scope(host, "helper"), String::new()));
+                cfg.push((scope(host, "helper"), TOKEN_HELPER.into()));
+                env.push(("SHIKISHA_GIT_HOST", host.clone()));
+                env.push(("SHIKISHA_GIT_LOGIN", login.clone()));
+                env.push(("SHIKISHA_GIT_TOKEN", token.clone()));
+                match whose {
                     // An HTTPS account does not quietly go out over SSH as
                     // whoever this machine's keys belong to
-                    .env("GIT_SSH_COMMAND", "false");
+                    Whose::Ours => env.push(("GIT_SSH_COMMAND", "false".into())),
+                    // So that git does not stop to ask who this is before the
+                    // helper is even reached
+                    Whose::Terminal => cfg.push((scope(host, "username"), login.clone())),
+                }
             }
             Auth::Ssh { key } => {
-                cmd.arg("-c").arg("credential.helper=");
-                cmd.env(
+                if whose == Whose::Ours {
+                    cfg.push(("credential.helper".into(), String::new()));
+                }
+                // A git of ours is watched by nobody, so it must fail rather
+                // than wait for a passphrase. In a terminal the person is
+                // right there and can type one
+                let batch = match whose {
+                    Whose::Ours => " -o BatchMode=yes",
+                    Whose::Terminal => "",
+                };
+                env.push((
                     "GIT_SSH_COMMAND",
                     format!(
-                        "ssh -i {} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+                        "ssh -i {}{batch} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new",
                         quote(key)
                     ),
-                );
+                ));
             }
         }
+        (cfg, env)
+    }
+
+    /// Put this on a git about to start: `-c` settings go before the
+    /// subcommand, which is why this is given the command before its args
+    fn apply(&self, cmd: &mut std::process::Command) {
+        let (cfg, env) = self.settings(Whose::Ours);
+        for (k, v) in cfg {
+            cmd.arg("-c").arg(format!("{k}={v}"));
+        }
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+
+    /// What to put in a terminal's environment so that a git typed there signs
+    /// in as this account.
+    ///
+    /// Settings travel as `GIT_CONFIG_*`, which every git started in that
+    /// terminal reads -- the person's own, and the ones an AI working in that
+    /// tab runs. Nothing is taken away: a repository on another server goes on
+    /// signing in the way this machine already signs in to it
+    pub fn terminal_env(&self) -> Vec<(String, String)> {
+        let (cfg, env) = self.settings(Whose::Terminal);
+        let mut out: Vec<(String, String)> =
+            env.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        if !cfg.is_empty() {
+            out.push(("GIT_CONFIG_COUNT".into(), cfg.len().to_string()));
+            for (i, (k, v)) in cfg.into_iter().enumerate() {
+                out.push((format!("GIT_CONFIG_KEY_{i}"), k));
+                out.push((format!("GIT_CONFIG_VALUE_{i}"), v));
+            }
+        }
+        out
     }
 }
 
@@ -1369,6 +1483,104 @@ pub fn split_args(line: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The settings a terminal is given, as a map, so a test can ask for one
+    fn terminal(who: &As) -> std::collections::HashMap<String, String> {
+        who.terminal_env().into_iter().collect()
+    }
+
+    /// The config pairs in a terminal's environment, as key and value together
+    fn written(env: &std::collections::HashMap<String, String>) -> Vec<(String, String)> {
+        let n: usize = env.get("GIT_CONFIG_COUNT").map(|v| v.parse().unwrap()).unwrap_or(0);
+        (0..n)
+            .map(|i| {
+                (
+                    env[&format!("GIT_CONFIG_KEY_{i}")].clone(),
+                    env[&format!("GIT_CONFIG_VALUE_{i}")].clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// A git the person types signs in as the account -- for that server only.
+    ///
+    /// The helper list is emptied and refilled under the account's own server,
+    /// so this machine's own sign-in (a credential manager holding another
+    /// GitHub account, a work token for some other host) is untouched
+    /// everywhere else. A git of ours empties the list outright, because that
+    /// one command is here for this account and nothing else.
+    #[test]
+    fn a_terminal_signs_in_as_the_account_for_that_server_alone() {
+        let who = As {
+            auth: Auth::Token {
+                host: "github.com".into(),
+                login: "octocat".into(),
+                token: "github_pat_x".into(),
+            },
+            account: Some("work".into()),
+            name: Some("Alex Doe".into()),
+            email: Some("alex@example.com".into()),
+        };
+        let env = terminal(&who);
+        assert_eq!(env.get("SHIKISHA_GIT_TOKEN").map(String::as_str), Some("github_pat_x"));
+        assert_eq!(env.get("GIT_SSH_COMMAND"), None, "a terminal keeps its own ssh");
+        let pairs = written(&env);
+        assert!(
+            pairs.contains(&("credential.https://github.com.helper".into(), String::new())),
+            "the machine's helpers are not cleared for that server: {pairs:?}"
+        );
+        assert!(
+            pairs.iter().any(|(k, v)| k == "credential.https://github.com.helper" && v == TOKEN_HELPER),
+            "the account's own helper is not there: {pairs:?}"
+        );
+        assert!(
+            !pairs.iter().any(|(k, _)| k == "credential.helper"),
+            "a helper with no server named would answer for every server: {pairs:?}"
+        );
+        assert!(pairs.contains(&("user.name".into(), "Alex Doe".into())));
+        assert!(pairs.contains(&("user.email".into(), "alex@example.com".into())));
+    }
+
+    /// Nobody chose: the terminal is left exactly as it was.
+    ///
+    /// A terminal is where a person types git about anything at all, so an
+    /// unanswered question must not turn into "this shell cannot sign in to
+    /// anything"
+    #[test]
+    fn a_terminal_with_no_account_is_left_alone() {
+        assert!(As::default().terminal_env().is_empty(), "git's own settings were touched");
+        assert!(As::sealed().terminal_env().is_empty(), "a terminal was sealed off");
+    }
+
+    /// An SSH account reaches a terminal as its key, and there a passphrase
+    /// can be typed. A git of ours must fail instead of waiting for one
+    #[test]
+    fn a_key_in_a_terminal_may_ask_for_its_passphrase() {
+        let who = As { auth: Auth::Ssh { key: "C:/keys/id_ed25519".into() }, ..Default::default() };
+        let env = terminal(&who);
+        let ssh = env.get("GIT_SSH_COMMAND").cloned().unwrap_or_default();
+        assert!(ssh.contains("-i 'C:/keys/id_ed25519'"), "the key is not the one chosen: {ssh}");
+        assert!(!ssh.contains("BatchMode"), "a person at the keyboard cannot answer: {ssh}");
+        assert!(
+            who.settings(Whose::Ours).1.iter().any(|(k, v)| *k == "GIT_SSH_COMMAND" && v.contains("BatchMode=yes")),
+            "a git nobody is watching would sit waiting for a passphrase"
+        );
+    }
+
+    /// The PC's git, told which of its GitHub accounts to be. Nothing is
+    /// emptied: this is the machine's own sign-in, pointed at one of the
+    /// accounts it holds
+    #[test]
+    fn this_pc_as_one_of_its_accounts_only_names_the_user() {
+        let who = As {
+            auth: Auth::PcAs { host: "github.com".into(), login: "octocat".into() },
+            ..Default::default()
+        };
+        assert_eq!(
+            written(&terminal(&who)),
+            vec![("credential.https://github.com.username".to_string(), "octocat".to_string())]
+        );
+    }
 
     #[test]
     fn a_command_line_is_split_without_a_shell() {
