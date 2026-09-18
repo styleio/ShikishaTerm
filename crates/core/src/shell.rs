@@ -2064,8 +2064,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     padding:5px 12px; border-top:1px solid var(--line); background:var(--panel);
     font-size:12px; color:var(--dim); flex-wrap:nowrap; min-width:0; overflow:hidden; }
   #status .grow { flex:1; }
+  /* The desk name and the pills, in a box of their own, so that the three
+     controls at the ends of the bar (☰, RESTART, STOP) and the readings
+     between them are two separate things to lay out. In a window the box
+     behaves as the row did before it existed: it is the part that gives up
+     width, and its contents are cut short. On a phone the same box is what
+     scrolls sideways (see the narrow layout below) */
+  #status .stmid { display:flex; align-items:center; gap:var(--s3);
+    flex:0 1 auto; min-width:0; overflow:hidden; }
   /* Only the desk name gets truncated when space is tight — pills and STOP never shrink */
-  #status > span:first-child { min-width:0; white-space:nowrap;
+  #status .desklink { min-width:0; white-space:nowrap;
     overflow:hidden; text-overflow:ellipsis; }
   #status .pill, #stop, #restart { flex:none; white-space:nowrap; }
   /* The build stamp gives way first: it is for whoever built this, and the
@@ -3072,6 +3080,23 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #restart::after { content:"\21BB"; font-size:15px; }
     /* Hide the build stamp — it takes up space, and STOP must stay visible */
     #status .build { display:none; }
+    /* ☰, ↻ and ■ keep their places at the two ends of the bar. Everything
+       between them is one row that scrolls sideways under a finger, the same
+       way the rows over the composer do: what does not fit is out of sight
+       rather than squeezed under a button, and a flick brings it back */
+    #status .stmid { flex:1 1 0; overflow-x:auto; overflow-y:hidden;
+      white-space:nowrap; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+    #status .stmid::-webkit-scrollbar { display:none; }
+    /* In a row that scrolls there is no width to share, so nothing in it
+       gives any up: each reading keeps the width of its own words, and the
+       flick is what reaches the rest */
+    #status .stmid > * { flex:none; }
+    #status .desklink { overflow:visible; text-overflow:clip; }
+    #status .usage { flex:none; }
+    #status .usage .wsay { flex:none; overflow:visible; text-overflow:clip; }
+    #status .pill.limit { max-width:none; }
+    /* The spacer would take the width the scrolling row is there to use */
+    #status .grow { display:none; }
 
     /* Drawer-style tab bar */
     #tabs { position:fixed; top:0; left:0; bottom:0; z-index:30; width:240px;
@@ -8431,7 +8456,15 @@ function usagePill() {
 }
 function drawStatus() {
   const s = document.getElementById("status");
+  // On a phone the middle of this bar is a row that scrolls sideways, and the
+  // bar is rebuilt several times a second. Carry where it was scrolled to
+  // across the rebuild, or a flick snaps back to the left on the next state
+  const wasMid = s.querySelector(".stmid");
+  const wasAt = wasMid ? wasMid.scrollLeft : 0;
   s.textContent = "";
+  // The desk name and the readings go in one box, between the controls that
+  // hold their places at the ends of the bar
+  const mid = el("span", {class:"stmid"});
   // Passing null to append renders it as the literal string "null".
   // el() filters that out internally, but this is a raw append, so filter it out here too
   [
@@ -8459,12 +8492,16 @@ function drawStatus() {
     // said "Claude" over a Codex tab would be a bar nobody believed
     limitPill(),
     usagePill(),
+  ].forEach(x => { if (x) mid.append(x); });
+  [
+    mid,
     el("span", {class:"grow"}),
     el("span", {class:"build"}, BUILD),
     restartBtn(),
     el("span", {id:"stop", onclick:() => send({kind:"stop"})},
       T["tui.stop"] || "STOP"),
   ].forEach(x => { if (x) s.append(x); });
+  if (wasAt) mid.scrollLeft = wasAt;
 }
 
 // ── Receiving surface ──────────────────────────────────
@@ -18065,11 +18102,34 @@ mod tests {
         assert!(PAGE.contains(r#"fill.style.width = Math.max(0, Math.min(100, w.pct)) + "%";"#), "there is no bar");
         assert!(PAGE.contains(r#"el("span", {class:"wsay"}, w.used + (w.resets ? " " + w.resets : ""))"#), "there are no words");
         assert!(PAGE.contains(r#"#status .usage .win + .win::before { content:"·";"#), "there is no dot between the windows");
-        assert!(PAGE.contains("    limitPill(),\n    usagePill(),"), "it is not in the lower row");
+        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n  ].forEach(x => { if (x) mid.append(x); });"), "it is not in the lower row");
         // The row must stay the width of its column, or the reading pushes
         // STOP off the right edge (it did, at 1280px, on 2026-09-09)
         assert!(PAGE.contains("flex-wrap:nowrap; min-width:0; overflow:hidden; }"), "the lower row grows wider than the window");
         assert!(PAGE.contains("#status .usage .wsay { overflow:hidden; text-overflow:ellipsis; min-width:0;"), "the words do not shrink");
+    }
+
+    /// On a phone the top bar carries more than fits: the desk, AUTO, REMOTE
+    /// and the subscription's two windows. The three controls -- the drawer,
+    /// RESTART and STOP -- hold their places at the ends, and everything
+    /// between them is one row reached by flicking sideways.
+    #[test]
+    fn the_readings_in_the_phone_bar_scroll_sideways() {
+        // They are in a box of their own, or there is nothing to scroll
+        assert!(PAGE.contains(r#"const mid = el("span", {class:"stmid"});"#), "the readings are not in a box of their own");
+        assert!(PAGE.contains("    mid,\n    el(\"span\", {class:\"grow\"}),"), "the box is not where the readings were");
+        assert!(PAGE.contains("#status .stmid { flex:1 1 0; overflow-x:auto; overflow-y:hidden;"), "the row does not scroll on a phone");
+        assert!(PAGE.contains("#status .stmid::-webkit-scrollbar { display:none; }"), "a scrollbar sits in the bar");
+        // Nothing inside it may shrink, or the words are cut short instead of
+        // being reachable
+        assert!(PAGE.contains("#status .stmid > * { flex:none; }"), "the readings still give up width");
+        assert!(PAGE.contains("#status .desklink { overflow:visible; text-overflow:clip; }"), "the desk name is still cut short");
+        assert!(PAGE.contains("#status .usage .wsay { flex:none; overflow:visible; text-overflow:clip; }"), "the usage words are still cut short");
+        assert!(PAGE.contains("#status .pill.limit { max-width:none; }"), "the limit notice is still cut short");
+        assert!(PAGE.contains("    #status .grow { display:none; }"), "the spacer still takes the width the row needs");
+        // The bar is rebuilt several times a second; a flick must survive it
+        assert!(PAGE.contains("const wasMid = s.querySelector(\".stmid\");")
+            && PAGE.contains("if (wasAt) mid.scrollLeft = wasAt;"), "a flick snaps back to the left on the next state");
     }
 
     /// A usage-limit notice is the tab's own, so it is shown only over the
@@ -18078,7 +18138,7 @@ mod tests {
     fn the_limit_notice_follows_the_tab_in_view() {
         assert!(PAGE.contains("const t = (S && S.tabs || []).find(t => t.index === S.active);\n  if (!t || !t.limit) return null;"), "it shows notices for tabs other than the one being looked at");
         assert!(PAGE.contains(r#"send({kind:"limit_ack", tab:t.index})"#), "pressing it does not make it go away");
-        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n    el(\"span\", {class:\"grow\"}),"), "there is no pill in the lower row");
+        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n  ].forEach(x => { if (x) mid.append(x); });"), "there is no pill in the lower row");
     }
 
     /// Two pointers and no more, each beside the thing it names, closed by

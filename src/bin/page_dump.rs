@@ -8,18 +8,38 @@
 //! writes the same page to a file, where a browser can open it and a script can
 //! put it into the state being judged. tools/debug/shoot.mjs is that script.
 //!
-//!     cargo run --bin page_dump -- ja        the page in Japanese
-//!     cargo run --bin page_dump -- ja light  ...in the light scheme
+//!     cargo run --bin page_dump -- ja         the page in Japanese
+//!     cargo run --bin page_dump -- ja light   ...in the light scheme
+//!     cargo run --bin page_dump -- ja remote  ...as a phone is served it
+//!
+//! `light` and `remote` are words, in any order, after the language. `remote`
+//! matters because the page a phone gets is not the window's page at a narrow
+//! width: it carries controls the window does not have (RESTART in the bar)
+//! and leaves out ones only the window can act on.
 //!
 //! It is a tool for whoever is building this, not part of what is handed out.
 fn main() {
-    let lang = std::env::args().nth(1).unwrap_or_else(|| "en".into());
-    let light = std::env::args().nth(2).as_deref() == Some("light");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let flag = |w: &str| args.iter().any(|a| a == w);
+    let light = flag("light");
+    let remote = flag("remote");
+    let lang = args
+        .iter()
+        .find(|a| a.as_str() != "light" && a.as_str() != "remote")
+        .cloned()
+        .unwrap_or_else(|| "en".into());
     shikisha_core::i18n::init(
         Some(&lang),
         &[std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))],
     );
-    let mut html = shikisha_core::shell::page();
+    let mut html = shikisha_core::shell::served_page(
+        false,
+        if remote {
+            shikisha_core::shell::Served::Remote
+        } else {
+            shikisha_core::shell::Served::Window
+        },
+    );
     // The scheme is the one in the settings, and a person's own settings are
     // not a test fixture. Asked for by name instead, so both halves of "check
     // it in the light scheme too" can be photographed on any machine
