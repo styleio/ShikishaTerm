@@ -104,6 +104,17 @@ once it reaches its first tagged release.
 - **The Issue tab is called Issues & PRs.**
 
 ### Fixed
+- **CI is shown in the git column again, and for the branch rather than only for
+  a pull request made from it.** Two things were in the way. The column tells a
+  folder whose server is GitHub from one whose server is not by the repository the
+  folder pushes to, and that was never sent to the screen -- so it asked GitHub
+  nothing at all, and neither the pull requests nor CI ever appeared. And the
+  checks were read off an open pull request's commit only, although they run when
+  the commit is pushed: a red CI on a pushed branch, or on a protected branch
+  where no pull request is ever made, was on GitHub's pages and nowhere in the
+  app. The checks are now read for the commit the server has, whether a pull
+  request exists or not, and a push whose runs GitHub has not made yet is asked
+  for again a few times rather than once.
 - **The git column says "Not pushed yet" only when there is nothing on the server
   to compare with.** It asked git what the branch follows and nothing else, so a
   branch sent from a terminal without `--set-upstream` -- which follows nothing --

@@ -14053,14 +14053,19 @@ function gitOnGithub() {
   const t = gitTab();
   return !!(t && t.place && t.place.repo);
 }
-// The branch's pull requests. Not for a protected branch, which is where they
-// go, and not where the server is not GitHub
+// The branch's pull requests, and what CI says of the commit the server has.
+// Not where the server is not GitHub.
+//
+// Asked for a protected branch as well, which has no pull requests of its own
+// -- it is where they go -- because CI runs on it and a red one there is the
+// most worth knowing about. The commit is the one on the server, so a branch
+// pushed but never made into a pull request still has its CI read
 function gitAskPrs() {
   const g = gitGroup();
   const b = G.branch || {};
   G.prsAsked = true;
-  if (!g || !g.project || !b.name || b.protected || !gitOnGithub()) { G.prs = null; G.prsWhy = ""; return; }
-  gitIssuesAsk("branch_prs", {project: g.project, head: b.name});
+  if (!g || !g.project || !b.name || !gitOnGithub()) { G.prs = null; G.checks = null; G.prsWhy = ""; return; }
+  gitIssuesAsk("branch_prs", {project: g.project, head: b.name, sha: b.upstream_sha || ""});
 }
 function gitPrsOpen() {
   return (Array.isArray(G.prs) ? G.prs : []).filter(p => p.state === "open");
@@ -14204,7 +14209,10 @@ function gitIssues(d) {
       const where = G.where;
       G.ciWait = setTimeout(() => { G.ciWait = 0; if (G.where === where) gitAskPrs(); }, 30000);
     }
-    if (G.prsTries > 0 && G.prs.some(gitPrChecking)) {
+    // Just pushed and CI is not there yet: GitHub takes a moment to make the
+    // runs, and a column that asked once would show nothing until the next
+    // time somebody touched it
+    if (G.prsTries > 0 && (G.prs.some(gitPrChecking) || (G.prsWatch && !G.checks))) {
       G.prsTries--;
       setTimeout(gitAskPrs, 3000);
     } else {
@@ -14518,10 +14526,11 @@ function drawGitPrs(u, next) {
     }
     u.prs.append(row);
   }
-  // CI, once for the branch: the checks run on the commit, whichever base it
-  // was sent to. Counted on one line, listed when opened, each one's page a
-  // press away
-  const c = gitPrsOpen().length ? G.checks : null;
+  // CI, once for the branch: the checks run on the commit the server has,
+  // whichever base it was sent to and whether a pull request was made from it
+  // or not. Counted on one line, listed when opened, each one's page a press
+  // away
+  const c = G.checks;
   if (c) {
     const count = (n, verdict) => n ? el("span", {class:"ci v-" + verdict}, el("span", {class:"dot"}), String(n)) : null;
     u.prs.append(el("button", {type:"button", class:"gci", onclick:() => { G.ciOpen = !G.ciOpen; drawGit(); }},
@@ -17662,6 +17671,58 @@ mod tests {
             last = at;
         }
         assert!(!next.contains("send("), "a step talks to the app other than through gitAsk");
+    }
+
+    /// CI is shown for the branch itself, not only for a pull request made
+    /// from it.
+    ///
+    /// The checks run when the commit is pushed, which is before anybody opens
+    /// a pull request and on a protected branch where nobody ever will. The
+    /// column read them only off an open pull request's commit, so a red CI on
+    /// a pushed branch was on GitHub's pages and nowhere in the app
+    #[test]
+    fn ci_is_shown_for_the_branch_and_not_only_for_a_pull_request() {
+        // The column asks GitHub nothing at all unless it is told the folder
+        // pushes to GitHub, and what it reads for that is sent (`PlaceState`)
+        let on = PAGE.split("function gitOnGithub() {").nth(1)
+            .and_then(|r| r.split("
+}
+").next()).expect("there is no gitOnGithub");
+        assert!(on.contains("t.place.repo"), "the column tells GitHub apart by something else: {on}");
+        assert!(
+            serde_json::to_value(crate::uistate::PlaceState {
+                repo: Some("owner/name".into()),
+                ..Default::default()
+            })
+            .unwrap()
+            .get("repo")
+            .is_some(),
+            "the screen reads a repository that is never sent to it"
+        );
+        let ask = PAGE.split("function gitAskPrs() {").nth(1)
+            .and_then(|r| r.split("
+}
+").next()).expect("there is no gitAskPrs");
+        assert!(
+            ask.contains("sha: b.upstream_sha") && !ask.contains("b.protected"),
+            "CI is not asked for with the commit the server has, or not for a protected branch: {ask}"
+        );
+        let draw = PAGE.split("function drawGitPrs(u, next) {").nth(1)
+            .and_then(|r| r.split("
+}
+").next()).expect("there is no drawGitPrs");
+        assert!(
+            draw.contains("const c = G.checks;"),
+            "the CI line is drawn only where a pull request is open: {draw}"
+        );
+        // And a push that has not made its runs yet is asked for again
+        let answered = PAGE.split("if (d.act === \"branch_prs\") {").nth(1)
+            .and_then(|r| r.split("
+  }").next()).expect("nothing answers branch_prs");
+        assert!(
+            answered.contains("(G.prsWatch && !G.checks)"),
+            "CI that arrives a moment after the push is never asked for again: {answered}"
+        );
     }
 
     /// The git column says "not pushed yet" only when there is nothing on the
