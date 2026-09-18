@@ -11,6 +11,9 @@
  *   langs    default ["en", "ja"]
  *   looks    default ["dark", "light"]
  *   sizes    default [["wide", 1280, 860], ["phone", 390, 820]]
+ *   served   "window" (default) or "remote" -- which page the app would be
+ *            serving. A phone's page is not the window's at a narrow width:
+ *            it carries controls the window has no use for
  *   settle   milliseconds to let the page finish loading. Default 900
  *
  * Every scene runs against a page that has just loaded, so none of them can be
