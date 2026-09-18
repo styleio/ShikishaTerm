@@ -3105,6 +3105,124 @@ pub fn unique_id(base: &str, used: &std::collections::HashSet<String>) -> String
         .expect("some suffix is free sooner or later")
 }
 
+/// The words a tab with no name of its own is called by.
+///
+/// The short nouns of the list branch names are drawn from, and only the ones
+/// that are already a name automation accepts as they stand -- lower-case
+/// letters, three to six of them -- so a draw never has to be tidied into
+/// something else before it can be used
+pub fn pet_nouns() -> Vec<&'static str> {
+    petname::Petnames::small()
+        .nouns
+        .iter()
+        .copied()
+        .filter(|w| (3..=6).contains(&w.len()) && w.bytes().all(|b| b.is_ascii_lowercase()))
+        .filter(|w| !NOT_A_TAB_NAME.contains(w))
+        .collect()
+}
+
+/// Words in that list a tab should not be called. Some name a person rather
+/// than an animal, some are pests nobody wants to see their work filed under,
+/// and some are not animals at all
+pub(crate) const NOT_A_TAB_NAME: &[&str] = &[
+    "man", "kid", "stud", "lab", "dane", "boxer", "racer", "hermit", "tomcat", "chow",
+    "louse", "maggot", "leech", "bedbug", "tick", "flea", "worm", "grub", "slug", "mite",
+    "gnat", "weevil", "earwig", "amoeba", "insect", "mammal", "rodent", "cattle",
+    "ghost", "ghoul", "alien", "troll", "goblin", "satyr", "yeti", "elf", "imp",
+    "drum", "sole", "shiner", "roughy", "jennet", "glider", "guinea", "bengal", "sponge",
+];
+
+/// A name for a tab that has none: a word from that list nothing on this desk
+/// answers to yet.
+///
+/// Drawn rather than derived, because a name derived from what is on screen is
+/// a name that moves. `claude`, `claude-2`, `claude-3` are handed out in the
+/// order the tabs are read, so closing the first renames the two behind it --
+/// and everything that addresses a tab by name, from automation to the
+/// conversation it comes back to, is then addressing somebody else. A word
+/// picked out of a bag belongs to the tab it was picked for and to nothing
+/// else.
+///
+/// Draws again while the word is taken, and falls back to the numbered walk
+/// when the whole bag is: a desk of two hundred tabs is not a thing, but a
+/// name that is somebody else's would be
+pub fn pet_id(used: &std::collections::HashSet<String>) -> String {
+    let bag = pet_nouns();
+    for _ in 0..40 {
+        let Some(byte) = crate::random_bytes(2) else { break };
+        let at = (u16::from_le_bytes([byte[0], byte[1]]) as usize) % bag.len().max(1);
+        match bag.get(at) {
+            Some(w) if !used.contains(*w) => return w.to_string(),
+            _ => continue,
+        }
+    }
+    unique_id(bag.first().copied().unwrap_or("tab"), used)
+}
+
+/// Every automation name written down under this desk, folders, tabs and the
+/// children of tabs alike. What a new one has to steer clear of
+pub fn tab_ids_in(v: &serde_json::Value) -> std::collections::HashSet<String> {
+    fn walk(v: &serde_json::Value, out: &mut std::collections::HashSet<String>) {
+        match v {
+            serde_json::Value::Array(list) => list.iter().for_each(|i| walk(i, out)),
+            serde_json::Value::Object(obj) => {
+                if let Some(id) = obj.get("id").and_then(|i| i.as_str()).map(str::trim)
+                    && !id.is_empty()
+                    && obj.get("command").is_some()
+                {
+                    out.insert(id.to_string());
+                }
+                for (k, child) in obj {
+                    if matches!(k.as_str(), "folders" | "tabs" | "children") {
+                        walk(child, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    walk(v, &mut out);
+    out
+}
+
+/// Give every tab written here that has no automation name one of its own,
+/// and write it down.
+///
+/// Called where a tab is added to the settings file rather than where one is
+/// read, because a name that is only worked out while reading is worked out
+/// again next time -- from the order the tabs happen to be in. Written once,
+/// at the moment the tab is made, it is the tab's for as long as the tab
+/// exists.
+///
+/// `used` grows as names are handed out, so several tabs added at once cannot
+/// be given the same one
+pub fn name_new_tabs(v: &mut serde_json::Value, used: &mut std::collections::HashSet<String>) {
+    match v {
+        serde_json::Value::Array(list) => list.iter_mut().for_each(|i| name_new_tabs(i, used)),
+        serde_json::Value::Object(obj) => {
+            let blank = obj
+                .get("id")
+                .and_then(|i| i.as_str())
+                .map(str::trim)
+                .is_none_or(str::is_empty);
+            // A tab is a line with something to run in it; a folder holding
+            // tabs is not one, and has no automation name to be given
+            if blank && obj.get("command").is_some() {
+                let id = pet_id(used);
+                used.insert(id.clone());
+                obj.insert("id".into(), serde_json::Value::String(id));
+            }
+            for (k, child) in obj.iter_mut() {
+                if matches!(k.as_str(), "folders" | "tabs" | "children") {
+                    name_new_tabs(child, used);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Give every tab a name automation can say, and make sure no two are the same.
 ///
 /// Automation addresses a tab by this name and by nothing else, so a tab
@@ -3522,6 +3640,14 @@ pub fn append_folder_at(
             .unwrap_or_default();
         let mut folder =
             serde_json::json!({ "cwd": cwd.display().to_string(), "tabs": retag(tabs, &mark) });
+        // A copy whose original had no automation name would have none either,
+        // and a name worked out while reading is worked out from the order the
+        // tabs are in -- so this folder's tabs would be renamed by somebody
+        // closing a tab in another folder. Named here, once, against the whole
+        // desk: the copies came from a folder that is still in it
+        let mut used: std::collections::HashSet<String> =
+            folders.iter().flat_map(tab_ids_in).collect();
+        name_new_tabs(&mut folder, &mut used);
         if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
             folder["name"] = serde_json::json!(n);
         }
@@ -4842,8 +4968,18 @@ pub fn save_last_desk(id: &str) {
 /// Returns whether it was written. A desk that has vanished since the
 /// page listed it is a false rather than a new tab in the wrong place.
 pub fn append_tab(desk: &str, tab: serde_json::Value, cwd: Option<&Path>) -> bool {
-    let path = config_file_path();
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+    append_tab_at(&config_file_path(), desk, tab, cwd)
+}
+
+/// The same, told which settings file to write. Split out so it can be checked
+/// against a file of its own rather than against whatever this machine has
+pub fn append_tab_at(
+    path: &Path,
+    desk: &str,
+    tab: serde_json::Value,
+    cwd: Option<&Path>,
+) -> bool {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
     let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
     else {
         crate::append_hook_log("could not reopen into a tab: settings are not readable");
@@ -4858,9 +4994,15 @@ pub fn append_tab(desk: &str, tab: serde_json::Value, cwd: Option<&Path>) -> boo
     else {
         return false;
     };
+    // Named before it is put in, and against everything this desk already
+    // holds. Every road that adds a tab to the settings comes through here, so
+    // this is the one place that has to remember it
+    let mut used = tab_ids_in(desk);
+    let mut tab = tab;
+    name_new_tabs(&mut tab, &mut used);
     folder_tabs_at(desk, cwd).push(tab);
     match serde_json::to_string_pretty(&doc) {
-        Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok(),
+        Ok(out) => crate::crypto::write_atomic(path, &out).is_ok(),
         Err(_) => false,
     }
 }
@@ -6129,6 +6271,116 @@ mod tests {
         assert_eq!(one[0].cfg.command.argv(), ["codex", "--flag"]);
         assert!(in_folder(2).is_empty(), "it should start nothing, but there are tabs");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tab is named where it is written down, not where it is read.
+    ///
+    /// A name worked out while reading is worked out again at the next start,
+    /// from the order the tabs are in -- so closing one tab renamed the ones
+    /// behind it, and everything that addresses a tab by name was addressing
+    /// somebody else. This is the file itself being read, not the settings as
+    /// the program resolves them, because that is the difference
+    #[test]
+    fn a_tab_added_to_the_settings_is_given_a_name_of_its_own() {
+        let dir = std::env::temp_dir().join(format!("shikisha-named-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        // A project folder whose tab was never given a name of its own
+        std::fs::write(
+            &file,
+            r#"{"desks": [{"name": "Demo", "folders": [
+                {"cwd": "D:/work/proj", "tabs": [{"name": "claude", "command": "claude"}]}]}]}"#,
+        )
+        .unwrap();
+        // Same faces, new branch: the copy is named, and so is the original it
+        // was copied from, which is still nobody's
+        append_folder_at(
+            &file,
+            "Demo",
+            Some(Path::new("D:/work/proj")),
+            Path::new("D:/work/proj.worktrees/blue"),
+            Some("blue"),
+            &Start::Same,
+            None,
+        )
+        .unwrap();
+        // ...and one told what to run is named the same way
+        append_folder_at(
+            &file,
+            "Demo",
+            Some(Path::new("D:/work/proj")),
+            Path::new("D:/work/proj.worktrees/green"),
+            Some("green"),
+            &Start::One { name: "codex".into(), command: "codex".into() },
+            None,
+        )
+        .unwrap();
+
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let folders = doc["desks"][0]["folders"].as_array().expect("folders");
+        assert_eq!(folders.len(), 3);
+        let names: Vec<&str> = folders[1..]
+            .iter()
+            .flat_map(|g| g["tabs"].as_array().expect("tabs"))
+            .map(|t| t["id"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(names.len(), 2, "both new folders have their tab: {names:?}");
+        for n in &names {
+            assert!(!n.is_empty(), "a tab was written down with no name: {names:?}");
+            assert!(
+                pet_nouns().contains(n) || n.contains('@'),
+                "{n} is not a name this app hands out"
+            );
+        }
+        let all = tab_ids_in(&doc["desks"][0]);
+        assert_eq!(all.len(), 2, "two named tabs, and no two the same: {all:?}");
+        // The tab that was already there is left as it was: naming it now
+        // would be renaming it, and it is the settings file's own line
+        assert!(folders[0]["tabs"][0].get("id").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other road a tab reaches the settings by -- a conversation reopened
+    /// from the Vault, a shell opened in a folder -- names it too
+    #[test]
+    fn a_tab_appended_by_itself_is_named_as_well() {
+        let dir = std::env::temp_dir().join(format!("shikisha-append-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        std::fs::write(
+            &file,
+            r#"{"desks": [{"name": "Demo", "folders": [
+                {"cwd": "D:/work/proj", "tabs": [{"name": "claude", "id": "coder", "command": "claude"}]}]}]}"#,
+        )
+        .unwrap();
+        let reopened = serde_json::json!({
+            "name": "what we were saying", "command": "claude", "resume": "abc-123",
+        });
+        assert!(append_tab_at(&file, "Demo", reopened, Some(Path::new("D:/work/proj"))));
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let line = &doc["desks"][0]["folders"][0]["tabs"][1];
+        let id = line["id"].as_str().unwrap_or("");
+        assert!(!id.is_empty(), "it was written down with no name: {line}");
+        assert_ne!(id, "coder", "it took the name of the tab already there");
+        assert_eq!(line["resume"], "abc-123", "the rest of the line is left alone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A drawn name is never one something else on the desk answers to, even
+    /// when nearly every word is taken -- the draw gives up and walks instead
+    #[test]
+    fn a_drawn_name_is_one_nothing_else_answers_to() {
+        let bag = pet_nouns();
+        assert!(bag.len() > 100, "the bag is too small to draw from: {}", bag.len());
+        let mut used: std::collections::HashSet<String> =
+            bag.iter().map(|w| w.to_string()).collect();
+        // Every word is taken: it has to come back with something all the same
+        let drawn = pet_id(&used);
+        assert!(!used.contains(&drawn), "{drawn} is another tab's name");
+        used.insert(drawn.clone());
+        assert_ne!(pet_id(&used), drawn, "it handed out the same name twice");
     }
 
     /// A settings file of its own, for the close-and-reopen tests

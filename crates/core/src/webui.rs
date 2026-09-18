@@ -1318,35 +1318,11 @@ fn secure<R: std::io::Read>(resp: Response<R>) -> Response<R> {
         .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
 }
 
-/// The words a new tab's automation name is drawn from, as the page reads them.
-///
-/// The short nouns of the list branch names are drawn from, and only the ones
-/// that are already a name automation accepts as they stand -- lower-case
-/// letters, three to six of them -- so a draw never has to be tidied into
-/// something else before it can be used
-fn pet_nouns() -> Vec<&'static str> {
-    petname::Petnames::small()
-        .nouns
-        .iter()
-        .copied()
-        .filter(|w| (3..=6).contains(&w.len()) && w.bytes().all(|b| b.is_ascii_lowercase()))
-        .filter(|w| !NOT_A_TAB_NAME.contains(w))
-        .collect()
-}
-
-/// Words in that list a tab should not be called. Some name a person rather
-/// than an animal, some are pests nobody wants to see their work filed under,
-/// and some are not animals at all
-const NOT_A_TAB_NAME: &[&str] = &[
-    "man", "kid", "stud", "lab", "dane", "boxer", "racer", "hermit", "tomcat", "chow",
-    "louse", "maggot", "leech", "bedbug", "tick", "flea", "worm", "grub", "slug", "mite",
-    "gnat", "weevil", "earwig", "amoeba", "insect", "mammal", "rodent", "cattle",
-    "ghost", "ghoul", "alien", "troll", "goblin", "satyr", "yeti", "elf", "imp",
-    "drum", "sole", "shiner", "roughy", "jennet", "glider", "guinea", "bengal", "sponge",
-];
-
+/// The words a new tab's automation name is drawn from, as the page reads
+/// them. Drawn from `config::pet_nouns` so that a name minted in the page and
+/// one minted here come out of the same bag
 fn pet_nouns_json() -> String {
-    serde_json::to_string(&pet_nouns()).unwrap_or_else(|_| "[]".into())
+    serde_json::to_string(&crate::config::pet_nouns()).unwrap_or_else(|_| "[]".into())
 }
 
 /// What the quick-command editor has to know that `quick.rs` decides: the
@@ -13969,14 +13945,14 @@ mod tests {
     /// does not run out.
     #[test]
     fn a_new_tab_is_named_from_words_automation_accepts() {
-        let words = super::pet_nouns();
+        let words = crate::config::pet_nouns();
         assert!(words.len() >= 100, "too few words to draw from: {}", words.len());
         for w in &words {
             assert!((3..=6).contains(&w.len()), "{w} is not a short word");
             assert!(w.bytes().all(|b| b.is_ascii_lowercase()), "{w} is not a name automation takes as it is");
             // The name the settings screen settles on for it is itself
             assert_eq!(crate::config::slug_id(w), *w, "{w} would be tidied into something else");
-            assert!(!super::NOT_A_TAB_NAME.contains(w), "{w} is on the list of words a tab is not called");
+            assert!(!crate::config::NOT_A_TAB_NAME.contains(w), "{w} is on the list of words a tab is not called");
         }
         let json: Vec<String> = serde_json::from_str(&super::pet_nouns_json()).expect("the list is not JSON");
         assert_eq!(json.len(), words.len());

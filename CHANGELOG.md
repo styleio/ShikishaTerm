@@ -73,6 +73,16 @@ once it reaches its first tagged release.
   remembered under the conversation it had at eleven, and that dead id is what the next
   start handed the CLI, which came up on nothing. It is worked out every few seconds now,
   and written only when it says something different from the file already there.
+- **A tab is named when it is written down, not when it is read.** The settings screen
+  has always drawn a new tab a name of its own -- `otter`, `heron` -- but the roads that
+  add a tab without it did not: a working folder cut from another, a conversation
+  reopened from the Vault, a shell opened in a folder, a desk brought in from somewhere
+  else. A tab with no name written down is given one while the settings are read, out of
+  its title and its place in the list, so closing one tab renamed the ones behind it and
+  everything that addresses a tab by name -- automation, the key it calls home with, the
+  conversation it comes back to -- was suddenly addressing somebody else. Every road
+  that adds a tab now draws it a name and writes it in the file, unique on that desk.
+  Tabs already in a settings file are left exactly as they are.
 - **Closing one tab no longer takes the other tabs' conversations with it.** A tab
   without an automation name of its own is given one -- the second `claude` on a desk
   is `claude-2`, the third `claude-3` -- so closing the first renamed the ones behind
