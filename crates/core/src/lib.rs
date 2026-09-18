@@ -83,6 +83,7 @@ pub mod tailscale;
 pub mod theme;
 pub mod toast;
 pub mod transfer;
+pub mod trust;
 pub mod tunnel;
 pub mod uistate;
 pub mod update;

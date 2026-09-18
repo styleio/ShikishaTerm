@@ -894,11 +894,22 @@ pub struct MakingState {
     pub folder: String,
     /// Being made: `preparing`, `creating`, `setting_up` or `stopping`,
     /// and `failed` once it failed. Being deleted: `removing`, and
-    /// `unremoved` once its folder would not go
+    /// `unremoved` once its folder would not go. `untrusted` is the made
+    /// folder git will not work in until it is written down as trusted
     pub stage: String,
     /// Why it failed, in git's words where git said
     #[serde(skip_serializing_if = "String::is_empty")]
     pub error: String,
+    /// The folder git asked to have written down as one to trust, spelled the
+    /// way git asked for it. Empty when git is happy, which is nearly always
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub trust: String,
+    /// What would be written, exactly as it will appear in the file
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub trust_line: String,
+    /// The file it would be written into: the person's own git settings
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub trust_file: String,
 }
 
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
