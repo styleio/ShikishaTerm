@@ -53,7 +53,84 @@ pub struct Step {
 /// the shape of a settings file adds one line here, and a fixture of a real
 /// file from the version before it under `tests/fixtures/`, so the test that
 /// walks every fixture to the present keeps walking.
-const STEPS: &[Step] = &[Step { to: "0.10.0", apply: to_0_10_0 }];
+const STEPS: &[Step] =
+    &[Step { to: "0.10.0", apply: to_0_10_0 }, Step { to: "0.16.0", apply: to_0_16_0 }];
+
+/// A group that runs programs says which folder it runs them in.
+///
+/// A group with no folder written in it used to mean "wherever the app itself
+/// is", which was never a place anybody chose: it was the folder the app
+/// happened to be started from, so the same tab worked in one place from the
+/// shortcut and another from a script, and no screen ever said which. Tabs
+/// like that are now held rather than started, which would stop a setup that
+/// has been working for months -- so the folder those tabs were already using
+/// is written down here, before the version that holds them ever reads the
+/// file. Nothing moves; what was implied becomes visible, and can be changed.
+///
+/// `"."` rather than a full path, because settings travel between machines:
+/// a relative folder is resolved against the app's own on whichever machine
+/// reads it, which is exactly what the old empty field meant.
+///
+/// Only groups that actually start something here are touched. A group of
+/// pages, file panels or terminals on other machines needs no folder of ours,
+/// and giving it one would put a folder on the screen that nobody asked for
+fn to_0_16_0(doc: &mut serde_json::Value) -> Result<()> {
+    match doc.get_mut("desks").and_then(|d| d.as_array_mut()) {
+        // The settings file: every desk written inside it
+        Some(desks) => desks.iter_mut().for_each(name_the_folder_in_use),
+        // A desk file, or the shape from before desks existed: the tabs and
+        // groups are the document's own
+        None => name_the_folder_in_use(doc),
+    }
+    Ok(())
+}
+
+/// The folder a desk's group-less tabs were already running in, written into
+/// the group they run in. Nothing to write when nothing there runs a program
+fn name_the_folder_in_use(holder: &mut serde_json::Value) {
+    let Some(obj) = holder.as_object() else { return };
+    let runs = |v: Option<&serde_json::Value>| {
+        v.and_then(|t| t.as_array()).is_some_and(|tabs| tabs.iter().any(starts_a_program))
+    };
+    let named = |g: &serde_json::Value| {
+        g.get("cwd").and_then(|c| c.as_str()).is_some_and(|c| !c.trim().is_empty())
+    };
+    let folders = obj.get("folders").and_then(|f| f.as_array());
+    // Tabs written beside the groups rather than inside one land in the first
+    // group, whether that group is already there or has to be made
+    let first_named = folders.and_then(|f| f.first()).is_some_and(named);
+    let legacy = runs(obj.get("tabs")) && !first_named;
+    let homeless = folders.into_iter().flatten().any(|g| !named(g) && runs(g.get("tabs")));
+    if !legacy && !homeless {
+        return;
+    }
+    crate::config::ensure_folders(holder);
+    let Some(folders) = holder.get_mut("folders").and_then(|f| f.as_array_mut()) else { return };
+    for g in folders.iter_mut() {
+        if !named(g) && runs(g.get("tabs")) {
+            g["cwd"] = serde_json::json!(".");
+        }
+    }
+}
+
+/// Whether this tab, or one nested under it, starts a program on this PC.
+///
+/// A page, a git panel, a file panel and the editor are drawn by the app; a
+/// terminal on another machine and a conversation with a model run nothing
+/// here either. Everything else is a program, and a program runs in a folder
+fn starts_a_program(tab: &serde_json::Value) -> bool {
+    let argv = tab
+        .get("command")
+        .cloned()
+        .and_then(|c| serde_json::from_value::<crate::config::CommandSpec>(c).ok())
+        .map(|c| c.argv())
+        .unwrap_or_default();
+    let here = !argv.is_empty()
+        && !crate::config::is_app_panel(&argv)
+        && crate::config::ssh_endpoint(&argv).is_none()
+        && !crate::bridge::is_model_line(&argv);
+    here || tab.get("children").and_then(|c| c.as_array()).is_some_and(|c| c.iter().any(starts_a_program))
+}
 
 /// The unit a person switches between is called a desk.
 ///
@@ -480,6 +557,56 @@ mod tests {
         let once = doc.clone();
         to_0_10_0(&mut doc).unwrap();
         assert_eq!(doc, once);
+    }
+
+    /// The folder those tabs were already working in is written down, so that
+    /// the version which holds folderless terminals does not stop a setup that
+    /// has been running for months
+    #[test]
+    fn the_folder_a_group_was_already_using_is_written_down() {
+        let mut doc = serde_json::json!({"desks": [
+            // A terminal with nowhere written: it was working beside the app,
+            // and now says so
+            {"name": "W", "folders": [
+                {"tabs": [{"name": "aaa", "command": "claude --dangerously-skip-permissions"}]},
+                {"cwd": "D:/work/proj", "tabs": [{"command": "powershell.exe"}]}
+            ]},
+            // Nothing here runs a program on this PC, so nothing needs a
+            // folder here and none is invented
+            {"name": "R", "folders": [{"tabs": [
+                {"command": "browser https://example.com/"},
+                {"command": "sftp://me@example.test:22"},
+                {"command": "ssh://me@example.test:22"},
+                {"command": "model acme/big"},
+                {"command": "git"}
+            ]}]},
+            // The old shape: tabs beside the groups rather than inside one
+            {"name": "C", "tabs": [{"command": "powershell.exe"}]}
+        ]});
+        to_0_16_0(&mut doc).unwrap();
+
+        assert_eq!(doc["desks"][0]["folders"][0]["cwd"], ".", "the terminal has nowhere to work");
+        assert_eq!(doc["desks"][0]["folders"][1]["cwd"], "D:/work/proj", "a folder somebody chose was rewritten");
+        assert!(doc["desks"][1]["folders"][0].get("cwd").is_none(), "a desk of pages and panels was given a folder");
+        assert_eq!(doc["desks"][2]["folders"][0]["cwd"], ".", "the old shape was left without a folder");
+        assert_eq!(doc["desks"][2]["folders"][0]["tabs"][0]["command"], "powershell.exe", "the tab did not come with it");
+
+        // ...and a file already carrying the answer is left exactly as it is
+        let once = doc.clone();
+        to_0_16_0(&mut doc).unwrap();
+        assert_eq!(doc, once);
+    }
+
+    /// A desk file holds one desk, not a list of them, and is carried over
+    /// the same way
+    #[test]
+    fn a_desk_of_its_own_file_is_carried_over_too() {
+        let mut doc = serde_json::json!({
+            "name": "W",
+            "folders": [{"tabs": [{"command": "sh"}]}]
+        });
+        to_0_16_0(&mut doc).unwrap();
+        assert_eq!(doc["folders"][0]["cwd"], ".");
     }
 
     /// A layout with settings and no stamp is backed up before anything

@@ -149,6 +149,12 @@ pub struct TabState {
     /// install what it needs
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<FailedState>,
+    /// For a tab that is waiting for somewhere to work: what is the matter, in
+    /// the words its own screen says it. The page turns it into the folder to
+    /// pick and the button that moves the tab there, because being told what
+    /// is wrong and left to find the settings is not being helped
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<HoldState>,
     /// What this row is, whatever number it has (`view::surface_key`). Sent
     /// back with a press on its ✕, so a press cannot land on the tab that slid
     /// into its place in the meantime
@@ -200,6 +206,20 @@ pub struct FailedState {
     pub why: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_url: Option<String>,
+}
+
+/// A tab held back for want of a folder, as the page draws it.
+///
+/// Both lines come from the tab itself (`tab::Held`), so the card on its screen
+/// and the panel over it cannot say two different things. `folder` is the
+/// folder it was given and could not have, which is what the picker starts
+/// from -- somewhere near it is usually the answer
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct HoldState {
+    pub head: String,
+    pub say: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
 }
 
 /// The git account menu at the top of the git column.
@@ -1862,6 +1882,11 @@ impl TabState {
             away: None,
             git_acct: None,
             failed: None,
+            hold: t.held().map(|h| HoldState {
+                head: h.header(),
+                say: h.say(),
+                folder: h.folder().map(|f| f.display().to_string()),
+            }),
             draft: None,
             // Filled in by `view::ui_state_of`, which knows the rows
             key: String::new(),
@@ -1981,6 +2006,7 @@ impl TabState {
             away: None,
             git_acct: None,
             failed: None,
+            hold: None,
             draft: None,
             key: String::new(),
             // Filled in by `view::ui_state_of` too: which server a tab is on
@@ -2371,6 +2397,7 @@ mod tests {
             away: None,
             git_acct: None,
             failed: None,
+            hold: None,
             draft: None,
             file: None,
             file_stamp: None,

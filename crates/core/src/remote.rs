@@ -297,6 +297,7 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // tasks inside them; what was missing was tidying up afterwards
         Ev::FolderName { .. }
         | Ev::TabName { .. }
+        | Ev::TabFolder { .. }
         | Ev::FolderClose { .. }
         | Ev::FolderDiscard { .. }
         | Ev::FolderColor { .. } => true,

@@ -266,10 +266,19 @@ pub fn reaching() -> Vec<String> {
     names
 }
 
+/// Whether this command line is a conversation with a model rather than a
+/// program to run: `model <provider>/<model>`.
+///
+/// A tab of these runs nothing on this PC -- the turn is an exchange with a
+/// server -- which is why it needs no working folder and starts no process
+pub fn is_model_line(argv: &[String]) -> bool {
+    argv.first().map(String::as_str) == Some("model")
+}
+
 /// Why a `model <provider>/<model>` line has no connection, in the words the
 /// person reads. `None` when it is not such a line, or when it has one.
 pub fn why_not(argv: &[String]) -> Option<String> {
-    if argv.first().map(String::as_str) != Some("model") {
+    if !is_model_line(argv) {
         return None;
     }
     let line = argv.get(1).map(|s| s.trim()).unwrap_or_default();
@@ -297,7 +306,7 @@ pub fn conn_in(
     conns: &HashMap<String, crate::config::ProviderConn>,
     argv: &[String],
 ) -> Option<ModelConn> {
-    if argv.first().map(String::as_str) != Some("model") {
+    if !is_model_line(argv) {
         return None;
     }
     let (provider, model) = argv.get(1)?.trim().split_once('/')?;

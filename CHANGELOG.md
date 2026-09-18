@@ -85,6 +85,21 @@ once it reaches its first tagged release.
   tab reaches any more.
 
 ### Changed
+- **A tab says which folder it works in, or it waits -- with the folder to give it
+  on the same screen.** A working folder left empty used to mean "beside the app",
+  which came to whichever folder the app itself had been started from: the same tab
+  worked in one place from the shortcut and another from a script, no screen said
+  which, and an AI allowed to run without confirmation went to work there. Such a
+  tab now waits instead, and its screen carries every folder this desk has, the
+  button that moves it into the one chosen, and "another folder" for one the desk
+  has never heard of -- so the answer is given where the question is asked, rather
+  than in the settings. The tab bar's + asks for a folder while the tab is being
+  made, for the same reason. Pages, file panels, the git panel and the editor need
+  none, and neither does a terminal on another machine or a conversation with a
+  model. Settings written before this keep working: the first start writes `"."` --
+  the app's own folder, relative so it still means that on another PC -- into the
+  groups that were relying on it, and the folder they were already using is now on
+  screen and can be changed.
 - **The branches and the history open as a Git tab in the middle**, from the arrow
   in the git column, rather than being a pane of the column. The column keeps what
   is done every day. A Git tab with no account of its own uses its project's.

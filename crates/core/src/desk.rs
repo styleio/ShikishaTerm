@@ -894,25 +894,23 @@ pub fn resolve_launch(
         // (see Tab::set_brain)
         opts.model = Some(conn);
     }
+    // Everything the answer needs is in now -- the folder from the group, the
+    // machine and the connection from the command -- so the one question is
+    // asked once, here, for every launch site at once
+    opts.held = opts.hold();
     argv
 }
 
 /// Where it runs comes from the tab's group, the only thing that has a folder.
 ///
-/// And whether that folder is on this machine at all, which is asked here
-/// rather than at each launch site: a tab whose folder is not here is held
-/// back instead of started, and there is more than one place tabs are started
-/// from. One answer, so the two cannot disagree.
+/// Whether the tab can be started there at all is settled a step later, at the
+/// end of [`resolve_launch`], which every launch site goes through: by then the
+/// command has been read, and a terminal on another machine is no longer
+/// mistaken for one with a folder it cannot reach. One answer, so the several
+/// launch sites cannot disagree.
 pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> tab::TabOptions {
     let cwd = folder.and_then(|f| f.cwd.clone());
-    // A folder on another machine is not missing from this one: it was never
-    // meant to be here. Asking this machine whether that path exists would
-    // hold every one of those tabs back for a reason that is not true
     let elsewhere = folder.and_then(|f| f.host.as_ref());
-    let held = match elsewhere {
-        Some(_) => None,
-        None => tab::Held::of(cwd.as_deref()),
-    };
     tab::TabOptions {
         cwd,
         group: folder.and_then(|f| f.name.clone()),
@@ -924,10 +922,17 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
         encoding: tab::TabOptions::encoding_from_name(cfg.encoding.as_deref()),
         log: cfg.log,
         model: None,
-        held,
+        // Settled at the end of `resolve_launch`, once the command has said
+        // whether this tab runs anything on this PC at all. Answering it here
+        // would hold back a terminal on another machine for the folder it was
+        // never going to use
+        held: None,
         // A folder that lives on another machine makes every tab in it a
         // terminal on that machine, whatever the command says. Settled here
-        // rather than at each launch site, the same as the hold above.
+        // rather than at each launch site, so that a folder on another machine
+        // is never read as one missing from this one: it was never meant to be
+        // here, and holding its tabs back for that would be a true sentence
+        // about the wrong machine.
         // A tab whose own command is an ssh address still wins: that is
         // somebody naming a machine for that tab, and the folder does not
         // overrule it (resolve_launch fills this in after)
@@ -1116,6 +1121,82 @@ mod remote_folder_tests {
         let mine = tab_options(&cfg, Some(&here));
         assert!(mine.remote.is_none());
         assert!(mine.remote_cwd.is_none());
+    }
+}
+
+#[cfg(test)]
+mod a_folder_to_work_in_tests {
+    use super::*;
+
+    fn desk_of(json: &str) -> config::Desk {
+        let cfg: config::Config = serde_json::from_str(json).expect("the settings cannot be read");
+        let (mut desks, errs) = cfg.resolve_desks();
+        assert!(errs.is_empty(), "{errs:?}");
+        desks.remove(0)
+    }
+
+    /// What the settings ask for, launched exactly the way the app launches it.
+    fn launched(desk: &config::Desk, id: &str) -> tab::TabOptions {
+        let ft = desk.tabs.iter().find(|t| t.cfg.id.as_deref() == Some(id)).expect("no such tab");
+        let mut opts = tab_options(&ft.cfg, desk.folder_of(ft));
+        resolve_launch(ft.cfg.command.argv(), &mut opts, Some(desk), &ft.cfg);
+        opts
+    }
+
+    /// A group with no folder written in it does not send its terminals to
+    /// whatever folder the app itself was started from.
+    ///
+    /// That was the old answer, and it was invisible three ways over: it
+    /// depended on how the app had been started, no screen said which folder
+    /// it had picked, and the tab looked exactly like a tab that was working
+    /// where it was told to. On the machine this was found on, it meant an AI
+    /// running without confirmation, in the folder the app is installed in
+    #[test]
+    fn a_terminal_in_a_group_with_no_folder_is_held() {
+        let desk = desk_of(
+            r#"{"desks":[{"name":"w","id":"w","folders":[{"tabs":[
+                {"id":"plain","command":"sh"},
+                {"id":"there","command":"ssh://me@example.test:22"}
+            ]}]}]}"#,
+        );
+        assert_eq!(
+            launched(&desk, "plain").held,
+            Some(tab::Held::NoFolder),
+            "it would have run wherever the app was started from"
+        );
+        // A terminal on another machine works where that machine puts it, so
+        // it is not waiting on a folder of ours
+        assert_eq!(launched(&desk, "there").held, None, "a terminal on another machine was held");
+    }
+
+    /// A group that says where it works launches there, as it always did
+    #[test]
+    fn a_group_with_a_folder_launches_in_it() {
+        let here = std::env::temp_dir().display().to_string().replace('\\', "/");
+        let desk = desk_of(&format!(
+            r#"{{"desks":[{{"name":"w","id":"w","folders":[
+                {{"cwd":"{here}","tabs":[{{"id":"plain","command":"sh"}}]}}
+            ]}}]}}"#
+        ));
+        let opts = launched(&desk, "plain");
+        assert_eq!(opts.held, None, "a folder that is right there held its tab back");
+        assert!(opts.cwd.is_some());
+    }
+
+    /// A conversation with a model runs nothing on this PC, so it is not
+    /// waiting on a folder here either
+    #[test]
+    fn a_model_tab_needs_no_folder() {
+        let desk = desk_of(
+            r#"{"desks":[{"name":"w","id":"w",
+                "providers":{"acme":{"base_url":"https://api.example.test/v1/chat"}},
+                "folders":[{"tabs":[{"id":"talk","command":"model acme/big"}]}]}]}"#,
+        );
+        crate::bridge::use_desk(config::desk_providers(&desk, &|_| None));
+        let opts = launched(&desk, "talk");
+        assert!(opts.model.is_some(), "the connection never reached the tab");
+        assert_eq!(opts.held, None, "a conversation with a model was held for want of a folder");
+        crate::bridge::use_desk(Default::default());
     }
 }
 
