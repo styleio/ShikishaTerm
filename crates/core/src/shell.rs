@@ -6032,12 +6032,19 @@ function ailMark(g) {
 // default command there again (Basic > Default command), and there is no line
 // under it. A worktree shown from the ones git found starts with nothing, and
 // what to run in it is a choice -- so it keeps the line that adds its first tab
+// and its row asks the same question, rather than running a shell nobody chose.
+//
+// The row and the line under it are one door said twice, which a + is never
+// allowed to be. A row is not a +: it wears a pointer and lights under the
+// hand like every other row in the column, and a row that does that and then
+// does nothing is the one thing worse than saying it twice. It was pressed and
+// nothing happened (2026-09-19).
 function emptyRow(g, card) {
   const box = el("div", {class:"fempty"});
   const next = (S.coach || 0) === 2 ? " pulse" : "";
   const own = !g.linked;
   const row = el("div", {class:"tab folder empty" + (g.linked ? " cut" : "") + (card ? " wcard" : "") + (own ? next : ""), title:folderAbout(g),
-      onclick:() => { if (own) send({kind:"folderview", folder:g.folder || ""}); }},
+      onclick:() => { if (own) send({kind:"folderview", folder:g.folder || ""}); else addTabHere(g); }},
     card ? el("span", {class:"dot"}) : g.linked ? cutMark() : el("span", {class:"chip"}),
     ailMark(g),
     nameSlot("tabs", "f:" + g.folder, g.name || "", v => send({kind:"foldername", folder:g.folder, name:v}), folderNameClass(g)),
@@ -17977,8 +17984,11 @@ mod tests {
         assert!(!PAGE.contains("function addMenu("), "the old menu that offers worktree and working folder side by side is still there");
         // Nothing to cut a worktree from, so no + that can only fail
         assert!(PAGE.contains("if (!g.color) return null;"), "a working folder that is not a repository shows the worktree +");
-        // And the empty folder still has a way to its first tab: pressed, it opens the default command
-        assert!(PAGE.contains(r#"onclick:() => { if (own) send({kind:"folderview", folder:g.folder || ""}); }},"#)
+        // And the empty folder still has a way to its first tab: a project's own
+        // folder opens the default command, a worktree asks which tab -- the same
+        // question the line under it asks, because a row that lights under the
+        // hand and then does nothing is not an answer
+        assert!(PAGE.contains(r#"onclick:() => { if (own) send({kind:"folderview", folder:g.folder || ""}); else addTabHere(g); }},"#)
             && PAGE.contains(r#"if (!own) box.append(el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)},"#),
                 "there is no way to put the first tab in an empty working folder");
         assert!(PAGE.contains(r##"step === 2 ? document.querySelector("#tabs .tab.fnew, #tabs .tab.folder.empty")"##),

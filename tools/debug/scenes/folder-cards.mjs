@@ -31,6 +31,11 @@ const state = (active) => JSON.stringify({
       family: site, branch: 'login', health: { as: 'fine' }, drift: { behind: 0, ahead: 0 } },
     { name: 'pricing-page', folder: 'C:/Users/me/SHIKISHA-TERM/branches/site/pricing-page', color: '#4285f4',
       linked: true, family: site, branch: 'pricing-page', health: { as: 'fine' }, drift: { behind: 0, ahead: 0 } },
+    // A worktree nothing has been started in yet: its card carries no tab, so
+    // the row and the line under it are the only way in
+    { name: 'search-box', folder: 'C:/Users/me/SHIKISHA-TERM/branches/site/search-box', color: '#4285f4',
+      linked: true, family: site, branch: 'search-box', empty: true,
+      health: { as: 'fine' }, drift: { behind: 0, ahead: 0 } },
     { name: 'api', folder: 'D:/work/api', color: '#19c37d', linked: false, family: api, branch: 'main',
       health: { as: 'fine' }, drift: { behind: 0, ahead: 0 } },
     { name: 'notes', folder: 'D:/notes', linked: false, health: { as: 'fine' }, drift: { behind: 0, ahead: 0 } },
@@ -41,8 +46,8 @@ const state = (active) => JSON.stringify({
     tab(2, 'codex', 1, { ai: 'codex', state: 'DONE', state_label: 'Done' }),
     tab(3, 'shell', 1),
     tab(4, 'gemini', 2, { ai: 'gemini', state: 'QUESTION', state_label: 'Needs you' }),
-    tab(5, 'claude', 3, { ai: 'claude' }),
-    tab(6, 'shell', 4),
+    tab(5, 'claude', 4, { ai: 'claude' }),
+    tab(6, 'shell', 5),
   ],
   ball: { holder: 0, from: 0, depth: 0, max: 0, phase: '', progress: 0, awaiting_human: false },
   auto_enabled: true, build: '', help_rows: [], ais: [],
@@ -59,6 +64,9 @@ export default {
     // inside the same box as their folder
     opened: `window.__state(${JSON.stringify(state(2))});`
       + ` putTabsAway("C:/Users/me/SHIKISHA-TERM/branches/site/login", false); "ok"`,
+    // The worktree nothing runs in yet, with its project's other cards around
+    // it: whether the card says on sight that it is waiting to be filled
+    empty: `window.__state(${JSON.stringify(state(0))}); "ok"`,
     // The same on a phone, with the drawer the list lives in pulled out
     drawer: {
       run: `window.__state(${JSON.stringify(state(2))});`
