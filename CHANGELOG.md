@@ -9,6 +9,15 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **A tab that comes up on a conversation of nobody's offers the way back.** When an AI
+  tab starts clean although its folder has been worked in before, its caption and its row
+  in the list carry "Earlier conversation". Pressing it lists what was said in that folder,
+  newest first, each line being what was asked first in it and how long ago; picking one
+  relaunches that tab resuming it. The list is read from the CLI's own records, which say
+  which folder each conversation belongs to, so it is there whatever the app remembers --
+  and nothing is resumed without being asked, because two tabs of one CLI in one folder
+  leave two conversations that look alike. Claude Code and Codex CLI both, from the window
+  and from a phone.
 - **A git typed in a terminal tab signs in as the account its project chose.** Fetching,
   pulling and pushing from a tab's own command line no longer ask who you are, and a
   commit made there carries the account's name and email. The tab is started with the

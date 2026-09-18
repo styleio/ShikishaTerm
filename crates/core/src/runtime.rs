@@ -610,6 +610,22 @@ pub fn only_one_here(tabs: &[Tab], index: usize) -> bool {
 /// answer with what to tell the person.
 pub fn restart_tab(t: &mut Tab, alone: bool, keep: bool, rows: u16, cols: u16) -> String {
     let (plan, why) = resume_plan(t, alone, keep);
+    restarted(t, plan, why, rows, cols)
+}
+
+/// Put one tab into a conversation somebody picked for it.
+///
+/// The same restart, with the conversation named rather than worked out: the
+/// person is looking at a list of what was said in this folder and has chosen
+/// one. Down the same road, so a tab put back this way is an ordinary resumed
+/// tab in every other respect
+pub fn resume_tab_into(t: &mut Tab, id: String, rows: u16, cols: u16) -> String {
+    let s = tab::Session { id, source: tab::SessionSource::Store };
+    restarted(t, tab::Resume::Id(s), None, rows, cols)
+}
+
+/// The restart itself, and what to say about it.
+fn restarted(t: &mut Tab, plan: tab::Resume, why: Option<&'static str>, rows: u16, cols: u16) -> String {
     let carried = matches!(plan, tab::Resume::Id(_) | tab::Resume::NewestHere);
     match t.restart_as(rows, cols, plan) {
         Ok(()) => {
@@ -1153,6 +1169,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // hits. Kept across frames so the results stay put until the next search,
     // and dropped from the state entirely while the overlay is closed
     let mut vault_view: Option<crate::uistate::VaultState> = None;
+    // What was said before in one tab's folder, for the tab that came up on a
+    // conversation of nobody's. Held the same way, and for the same reason:
+    // the list stays put while the person reads it
+    let mut past_view: Option<crate::uistate::PastState> = None;
     // What making a branch would do. Answered while the name is being typed,
     // and cleared once the folder exists so the dialog can close itself
     let mut branch_view: Option<crate::uistate::BranchPlan> = None;
@@ -2820,8 +2840,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         shell.mail().presses.push(name);
                     }
                     remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultSearch { .. })
-                    | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultOpen { .. }) => {
-                        shell.queue_vault(ev);
+                    | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultOpen { .. })
+                    | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::PastList { .. })
+                    | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::PastResume { .. }) => {
+                        shell.queue_ui(ev);
                     }
                     // Giving a branch its own folder, and putting a working
                     // folder back on this machine. Neither is a keystroke, so
@@ -3197,6 +3219,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         });
         let ui = Ui {
             ais: ai_choices.clone(),
+            past: past_view.clone(),
             // The pointer waits behind the setup: it points at the list, and
             // the setup is in front of the list
             coach: coach.filter(|_| setup_view.is_none()),
@@ -5282,6 +5305,29 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // the overlay is open. Reopening writes a tab into the active
         // desk's settings; the change-watcher then launches it, resumed,
         // through the ordinary reload -- the one place a tab is safely made
+        // What was said in one tab's folder before. Asked by a tab that came
+        // up on a conversation of nobody's, and answered from the CLI's own
+        // records -- the app's memory of that tab is exactly what is missing
+        for which in shell.mail().take_past_lists() {
+            let at = (which as usize).saturating_sub(1);
+            past_view = tabs.get(at).map(|t| crate::uistate::PastState {
+                tab: which as usize,
+                name: t.title.clone(),
+                hits: t
+                    .cwd()
+                    .map(|c| crate::vault::here(t.program(), c, 12))
+                    .unwrap_or_default(),
+            });
+        }
+        // One of them chosen: that tab is relaunched into it, the way every
+        // other resume relaunches a tab
+        for (which, id) in shell.mail().take_past_resumes() {
+            let at = (which as usize).saturating_sub(1);
+            if let Some(t) = tabs.get_mut(at) {
+                flash = Some(resume_tab_into(t, id, rows, cols));
+            }
+            past_view = None;
+        }
         for query in shell.mail().take_vault_queries() {
             // The present, then the past. What is on screen right now across
             // every open tab comes first -- a live match is more likely the

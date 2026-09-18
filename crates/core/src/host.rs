@@ -55,7 +55,7 @@ pub trait Shell {
     fn push_ideas(&self, json: &str);
     fn push_sftp(&self, json: &str);
     fn push_recorded(&self, line_json: &str);
-    fn queue_vault(&mut self, ev: shikisha_shared::Ev);
+    fn queue_ui(&mut self, ev: shikisha_shared::Ev);
     fn push_suggested(&self, json: &str);
     fn push_surveyed(&self, json: &str);
     fn push_lua_done(&self, err_json: &str);
@@ -202,7 +202,7 @@ impl Shell for Headless {
     fn push_ideas(&self, json: &str) { let _ = json; }
     fn push_sftp(&self, json: &str) { let _ = json; }
     fn push_recorded(&self, line_json: &str) { let _ = line_json; }
-    fn queue_vault(&mut self, ev: shikisha_shared::Ev) { let _ = ev; }
+    fn queue_ui(&mut self, ev: shikisha_shared::Ev) { let _ = ev; }
     fn push_suggested(&self, json: &str) { let _ = json; }
     fn push_surveyed(&self, json: &str) { let _ = json; }
     fn push_lua_done(&self, err_json: &str) { let _ = err_json; }

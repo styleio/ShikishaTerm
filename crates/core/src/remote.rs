@@ -218,6 +218,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // for a tab it could have asked for by hand -- the same reach as adding
         // a tab, which the person does from their own device all the time
         Ev::VaultSearch { .. } | Ev::VaultOpen { .. } => true,
+        // Asking what was said in a folder before is a read, and putting a tab
+        // back into one of those conversations is the restart the phone can
+        // already ask for, with the conversation named
+        Ev::PastList { .. } | Ev::PastResume { .. } => true,
         // The command palette runs an action by name -- no more reach than
         // pressing the key it stands for, which the phone can already do
         Ev::RunKey { .. } => true,

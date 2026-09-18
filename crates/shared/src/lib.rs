@@ -324,6 +324,13 @@ pub enum Ev {
     /// a hit carries, so the window can build the tab without holding the last
     /// search
     VaultOpen { program: String, id: String, cwd: Option<String>, title: String },
+    /// What has been said in one tab's folder before. Asked when a tab came up
+    /// on a conversation of nobody's although that folder has been worked in:
+    /// the answer is the list the person chooses from
+    PastList { tab: u32 },
+    /// Put one tab back into a conversation from its folder's past. The tab is
+    /// relaunched resuming that id -- the same resume every other road uses
+    PastResume { tab: u32, id: String },
     /// Emergency stop
     Stop,
     /// Relaunch the tab being viewed. `keys_for` turns it into the Ctrl+B r that
@@ -1001,6 +1008,13 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("vaultsearch") => Ev::VaultSearch {
             query: v.get("query").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
+        Some("pastlist") => Ev::PastList {
+            tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+        },
+        Some("pastresume") => Ev::PastResume {
+            tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+            id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("vaultopen") => Ev::VaultOpen {
             program: v.get("program").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

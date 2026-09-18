@@ -506,6 +506,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         help_open: ui.help_open,
         help_rows: ui.help_rows.clone(),
         vault: ui.vault.clone(),
+        past: ui.past.clone(),
         self_cost: ui.self_cost.clone(),
         desk_open: ui.desk_open,
         // The link, its picture and the badge under it are decided together, in
@@ -1070,6 +1071,8 @@ pub struct Ui {
     pub help_rows: Vec<(String, String)>,
     /// The Vault's current search, when its overlay is open
     pub vault: Option<uistate::VaultState>,
+    /// What was said before in one tab's folder, while that overlay is open
+    pub past: Option<uistate::PastState>,
     /// What this whole app is costing the machine, for the board header
     pub self_cost: Option<String>,
     /// The connection URL, if the QR code is being shown
