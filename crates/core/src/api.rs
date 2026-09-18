@@ -45,7 +45,7 @@ use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 /// A CLI in a tab finds the door and its key here, and learns which tab it is
 /// sitting in — the answer to "where am I?" that it otherwise has no way to ask
 pub const ENV_PIPE: &str = "SHIKISHA_PIPE";
-const ENV_TOKEN: &str = "SHIKISHA_TOKEN";
+pub const ENV_TOKEN: &str = "SHIKISHA_TOKEN";
 const ENV_TAB: &str = "SHIKISHA_TAB";
 
 /// Where `access: "user"` leaves the token. Rewritten at every launch
