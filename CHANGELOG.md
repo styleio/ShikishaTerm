@@ -85,6 +85,15 @@ once it reaches its first tagged release.
   tab reaches any more.
 
 ### Changed
+- **A worktree's branch and folder are named in letters every machine can hold.**
+  What is typed into the worktree dialog is kept as far as it goes -- `ログイン画面 login`
+  makes `login` -- and a name with too little left of it, such as one written
+  entirely in Japanese, is given a drawn one (`polite-marmot`) instead. What was
+  typed is not lost: it stays as the folder's name in the list, which is this app's
+  own and goes nowhere near git or the disk. The name that will be made is said
+  under the box while it is typed, and only when it differs from what is in it.
+  Renaming a branch from the settings follows the same rule, with the line that
+  will run under the box as before.
 - **The branches and the history open as a Git tab in the middle**, from the arrow
   in the git column, rather than being a pane of the column. The column keeps what
   is done every day. A Git tab with no account of its own uses its project's.
