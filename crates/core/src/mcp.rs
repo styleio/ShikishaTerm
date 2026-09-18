@@ -60,8 +60,14 @@ const PREFIX: &str = "shikisha_";
 /// nothing at all.
 const MANUAL: &str = include_str!("../../../docs/AUTOMATION.md");
 
-/// The revision of the protocol this speaks, when the client does not say.
+/// The revision of the protocol this speaks, when the client asks for none --
+/// or for one this does not know.
 const PROTOCOL: &str = "2025-06-18";
+
+/// The revisions a client may ask for and be answered in its own terms. What
+/// this server does is the same under all of them; the list exists so that a
+/// version nobody has heard of is not simply repeated back as agreed.
+const SPOKEN: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
 
 /// What a client is told this server is for, once, at the start.
 const INSTRUCTIONS: &str = "\
@@ -169,51 +175,83 @@ pub struct Door {
     client: Option<ApiClient>,
 }
 
+/// Why a call did not come back with an answer.
+///
+/// The difference decides whether it may be tried again, so it is kept rather
+/// than flattened into a message: **a call the app answered must never be sent
+/// twice.** It may have committed, sent, or restarted something before it said
+/// no, and a second attempt would do that part again.
+#[derive(Debug, PartialEq, Eq)]
+enum Wrong {
+    /// The line: not open, or it stopped mid-call. Nothing was answered, so
+    /// nothing has been done twice by asking again
+    Line(String),
+    /// The app answered, and the answer was no
+    Refused(String),
+}
+
+impl Wrong {
+    fn what(self) -> String {
+        match self {
+            Wrong::Line(e) | Wrong::Refused(e) => e,
+        }
+    }
+}
+
+/// Whether a failure is worth opening the door again for.
+fn worth_reopening(wrong: &Wrong) -> bool {
+    matches!(wrong, Wrong::Line(_))
+}
+
 impl Door {
     pub fn to(target: Target) -> Self {
         Self { target, client: None }
     }
 
-    fn client(&mut self) -> Result<&mut ApiClient, String> {
+    fn client(&mut self) -> Result<&mut ApiClient, Wrong> {
         if self.client.is_none() {
-            self.client = Some(
-                ApiClient::connect(&self.target.pipe, &self.target.token)
-                    .map_err(|e| format!("{} could not be opened: {e}", self.target.pipe))?,
-            );
+            self.client = Some(ApiClient::connect(&self.target.pipe, &self.target.token).map_err(
+                |e| Wrong::Line(format!("{} could not be opened: {e}", self.target.pipe)),
+            )?);
         }
         Ok(self.client.as_mut().expect("just opened"))
     }
 
     /// One call, and the envelope taken off the answer.
-    fn once(&mut self, method: &str, params: Vec<Value>) -> Result<Value, String> {
+    fn once(&mut self, method: &str, params: Vec<Value>) -> Result<Value, Wrong> {
         let answer = self
             .client()?
             .call(method, params)
-            .map_err(|e| format!("the app stopped answering: {e}"))?;
+            .map_err(|e| Wrong::Line(format!("the app stopped answering: {e}")))?;
         if answer.get("ok").and_then(Value::as_bool) == Some(true) {
             return Ok(answer.get("result").cloned().unwrap_or(Value::Null));
         }
-        Err(answer
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("the app refused the call without saying why")
-            .to_string())
+        Err(Wrong::Refused(
+            answer
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("the app refused the call without saying why")
+                .to_string(),
+        ))
     }
 }
 
 impl Asks for Door {
     fn ask(&mut self, method: &str, params: Vec<Value>) -> Result<Value, String> {
         match self.once(method, params.clone()) {
-            Err(e) if self.client.is_some() => {
-                // The line may simply be old. Drop it and try the call once on
-                // a fresh one -- and if that fails too, say what the second
-                // attempt said, which is the state of things now
+            Err(wrong) if worth_reopening(&wrong) && self.client.is_some() => {
+                // The line may simply be old -- the app being debugged was
+                // restarted while a client held this server open. Drop it and
+                // try once on a fresh one; if that fails too, say what the
+                // second attempt said, since that is the state of things now
                 self.client = None;
-                self.once(method, params).map_err(|again| {
-                    if again == e { again } else { format!("{again} (before that: {e})") }
+                let first = wrong.what();
+                self.once(method, params).map_err(|wrong| {
+                    let again = wrong.what();
+                    if again == first { again } else { format!("{again} (before that: {first})") }
                 })
             }
-            other => other,
+            other => other.map_err(Wrong::what),
         }
     }
 }
@@ -344,6 +382,7 @@ pub fn respond(req: &Value, door: &mut impl Asks) -> Option<Value> {
                 .get("params")
                 .and_then(|p| p.get("protocolVersion"))
                 .and_then(Value::as_str)
+                .filter(|v| SPOKEN.contains(v))
                 .unwrap_or(PROTOCOL);
             answer(
                 &id,
@@ -560,6 +599,27 @@ mod tests {
         assert_eq!(out["result"]["protocolVersion"], "2024-11-05");
         assert!(out["result"]["capabilities"]["tools"].is_object());
         assert_eq!(out["result"]["serverInfo"]["name"], "shikisha-term");
+    }
+
+    /// A call the app answered must not be sent twice. It may have committed
+    /// or restarted something before saying no, and asking again would do that
+    /// part a second time
+    #[test]
+    fn only_a_broken_line_is_worth_asking_again() {
+        assert!(worth_reopening(&Wrong::Line("the app stopped answering".into())));
+        assert!(!worth_reopening(&Wrong::Refused("not allowed here".into())));
+    }
+
+    /// A revision this does not know is not agreed to by repeating it back
+    #[test]
+    fn a_version_nobody_has_heard_of_is_not_agreed_to() {
+        let mut door = Fake::saying(vec![]);
+        let out = respond(
+            &req(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"banana"}}"#),
+            &mut door,
+        )
+        .unwrap();
+        assert_eq!(out["result"]["protocolVersion"], PROTOCOL);
     }
 
     /// Nothing goes back to a notification. An answer to one is a protocol
