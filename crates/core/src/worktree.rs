@@ -1432,9 +1432,15 @@ pub fn rename_plan(folder: &Path, to: &str) -> Result<Rename> {
     if to.is_empty() {
         bail!(crate::i18n::t("err.worktree.no_branch"));
     }
-    if !name_is_usable(&to) {
+    // The letters a new branch is held to, for the same reasons. A rename
+    // draws no name of its own -- there is a branch here already, and putting
+    // a drawn name on it is not what anybody opened this to do -- so a name
+    // with nothing usable left is refused, as it always was. What will run is
+    // under the box while it is typed, so the tidied name is read before it
+    // is pressed
+    let Some(to) = tidy(&to) else {
         bail!(crate::i18n::tp("err.worktree.bad_branch", &[("name", &to)]));
-    }
+    };
     if !crate::repo::is_linked(folder) {
         bail!(crate::i18n::t("err.worktree.not_a_branch"));
     }
@@ -1894,6 +1900,90 @@ fn ref_exists(git: &Path, full: &str) -> bool {
             .lines()
             .any(|l| l.split_once(' ').is_some_and(|(_, r)| r.trim() == full)),
         Err(_) => false,
+    }
+}
+
+/// How much of a typed name has to survive before it is worth keeping.
+///
+/// Three. Two lets `API連携` keep `API` and `図1` keep `1`, and a branch
+/// called `1` says nothing at all; three keeps the first and draws a name for
+/// the second
+const ENOUGH: usize = 3;
+
+/// Whether a character can be in a folder name on every machine and a branch
+/// name in every git.
+///
+/// POSIX calls these the Portable Filename Character Set. Everything else --
+/// Japanese, accents, emoji, brackets, spaces -- goes, because the name ends
+/// up as a folder that other programs are handed and as a branch that is
+/// pushed to a server
+fn portable(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-'
+}
+
+/// Names Windows keeps for devices, which no folder can be called.
+///
+/// With or without an ending: `NUL.txt` is the same refusal as `NUL`
+fn reserved_on_windows(part: &str) -> bool {
+    const DEVICES: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let stem = part.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    DEVICES.contains(&stem.as_str())
+}
+
+/// One piece of a name -- what stands between two slashes -- made safe.
+fn tidy_part(part: &str) -> String {
+    let mut out = String::new();
+    for c in part.chars().filter(|c| portable(*c)) {
+        // Two dots in a row are a step up out of the folder this app chose,
+        // and a name git refuses as well. The dot is in the portable set, so
+        // dropping the letters we will not keep does not drop these
+        if c == '.' && out.ends_with('.') {
+            continue;
+        }
+        out.push(c);
+    }
+    // git takes no piece that starts or ends with a dot, and Windows drops a
+    // trailing dot from a folder name without saying it did
+    let mut out = out.trim_matches(['.', '-']).to_string();
+    // A loose ref is written beside a file of the same name with this on the
+    // end, so git keeps the ending for itself. Twice over, for `a.lock.lock`
+    while let Some(shorter) = out.strip_suffix(".lock") {
+        out = shorter.trim_matches(['.', '-']).to_string();
+    }
+    match reserved_on_windows(&out) {
+        true => String::new(),
+        false => out,
+    }
+}
+
+/// What a name somebody typed will really be, as a branch and as a folder.
+///
+/// `None` when nothing worth keeping is left -- a name written entirely in
+/// Japanese, or nothing typed at all -- and the caller draws one with
+/// `suggest` instead. What was typed is not lost: it stays on the folder's
+/// card, which is this app's own label and goes nowhere near git or the disk.
+///
+/// `/` survives, because a branch is allowed to carry it and this app writes
+/// it out as folders (`feature/login` is `feature` with `login` inside), which
+/// is what stops two branches from wanting one folder. Dropping it would turn
+/// `feature/login` into `featurelogin` -- a different branch, and one nobody
+/// asked for. It cannot lead anywhere else on its own: a piece can hold no
+/// `\`, no `:` and no `..` by the time this is done with it
+pub fn tidy(typed: &str) -> Option<String> {
+    let name = typed
+        .split('/')
+        .map(tidy_part)
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    // Counted without the separators: `a/b/c` is three names of one letter,
+    // not one name of five
+    match name.chars().filter(|c| *c != '/').count() >= ENOUGH {
+        true => Some(name),
+        false => None,
     }
 }
 
@@ -2365,6 +2455,50 @@ tools/conpty.ps1"));
         );
     }
 
+    /// What somebody types is not what git and the disk are handed. A name
+    /// made of letters they can both hold stands; anything else is dropped,
+    /// and a name with too little left draws one instead (`None` here)
+    #[test]
+    fn a_typed_name_is_cut_down_to_what_a_branch_and_a_folder_can_both_hold() {
+        // Nothing to do: already the letters both will take
+        for same in ["main", "feature/login", "fix/crash-on-open", "work-2", "release/1.2.3"] {
+            assert_eq!(tidy(same).as_deref(), Some(same), "an ordinary name was changed: {same:?}");
+        }
+        // The slash stays, because the folders this app writes out come from it
+        assert_eq!(tidy("機能/ログイン").as_deref(), None, "nothing was left to keep");
+        assert_eq!(tidy("機能/login-page").as_deref(), Some("login-page"));
+        assert_eq!(tidy("feature/ログイン").as_deref(), Some("feature"));
+        // Mixed: what is left is kept when there is enough of it
+        assert_eq!(tidy("API連携").as_deref(), Some("API"));
+        assert_eq!(tidy("ログイン画面 login").as_deref(), Some("login"));
+        // Too little left to mean anything, so nothing is kept
+        assert_eq!(tidy("図1").as_deref(), None);
+        assert_eq!(tidy("ロ2").as_deref(), None);
+        assert_eq!(tidy("").as_deref(), None);
+        assert_eq!(tidy("   ").as_deref(), None);
+        // The separators do not count toward the three: `a/b` is two letters
+        // with a slash in the middle, not a name of three
+        assert_eq!(tidy("あa/いb").as_deref(), None);
+        // A step up out of the folder this app chose, which survives dropping
+        // the letters we will not keep because the dot is one we do keep
+        assert_eq!(tidy("日..本..語").as_deref(), None, "it kept a way out of the folder");
+        assert_eq!(tidy("../../windows/system32").as_deref(), Some("windows/system32"));
+        assert_eq!(tidy("up..down").as_deref(), Some("up.down"));
+        // The endings git and Windows keep for themselves
+        assert_eq!(tidy("branchname.lock").as_deref(), Some("branchname"));
+        assert_eq!(tidy(".hidden-branch").as_deref(), Some("hidden-branch"));
+        assert_eq!(tidy("trailing.").as_deref(), Some("trailing"));
+        assert_eq!(tidy("NUL").as_deref(), None);
+        assert_eq!(tidy("logs/nul.txt").as_deref(), Some("logs"));
+        // Whatever comes out, git and this app both take it
+        for typed in ["機能/ログイン", "API連携", "../../windows", "日..本", "a b\tc",
+                      "star*name", "colon:here", "back\\slash", "x.lock", "~^?[", "CON.txt",
+                      "//leading", "trailing//"] {
+            let Some(name) = tidy(typed) else { continue };
+            assert!(name_is_usable(&name), "{typed:?} became a name git refuses: {name:?}");
+        }
+    }
+
     #[test]
     fn a_name_git_would_refuse_is_refused_here_first() {
         for bad in ["", " ", "/leading", "trailing/", "two//slashes", "up..down",
@@ -2406,8 +2540,15 @@ tools/conpty.ps1"));
         // The folder stays put: it was named on the first day and nothing moves
         assert!(folder.exists(), "the folder moved");
 
-        // A name git would refuse never reaches git
-        assert!(rename_plan(&folder, "two words").is_err());
+        // A name git would refuse never reaches git: what a folder and a
+        // branch can both hold is kept, and the rest goes
+        assert_eq!(
+            rename_plan(&folder, "two words").expect("it is tidied, not refused").to,
+            "twowords"
+        );
+        // Nothing left to rename it to, and a rename has no name of its own
+        // to draw -- unlike making one, there is already a branch here
+        assert!(rename_plan(&folder, "ログイン").is_err());
         assert!(rename_plan(&folder, "").is_err());
         // The project's own folder is not a branch cut from it
         assert!(rename_plan(&main, "whatever").is_err(), "the main checkout's branch can be renamed");

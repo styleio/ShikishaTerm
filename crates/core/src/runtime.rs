@@ -122,6 +122,10 @@ struct Pending {
     desk: String,
     /// The folder the dialog was opened on
     from: std::path::PathBuf,
+    /// What the folder's card is called. What the person wrote, in whatever
+    /// letters they wrote it in -- this label is the app's own and never
+    /// reaches git or the disk, so it is not held to the branch's letters
+    label: String,
     /// The project's shared git folder, which puts its row under its heading
     family: String,
     start: config::Start,
@@ -154,7 +158,9 @@ impl Pending {
         crate::uistate::MakingState {
             id: self.id,
             family: self.family.clone(),
-            name: plan.branch.clone(),
+            // What the card it turns into will be called, so the name does
+            // not change under the person at the moment the row becomes a card
+            name: self.label.clone(),
             folder: plan.folder.display().to_string(),
             stage: match (&self.error, &self.trust, self.made || self.written.is_some()) {
                 (Some(_), _, _) => "failed".into(),
@@ -182,7 +188,7 @@ impl Pending {
             &self.desk,
             Some(plan.like(&self.from)),
             &plan.folder,
-            Some(&plan.branch),
+            Some(&self.label),
             &self.start,
             plan.host.as_ref().map(|h| h.name.as_str()),
         )?;
@@ -5943,15 +5949,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .unwrap_or_default(),
                 false => ask.base.clone(),
             };
-            // Nothing typed yet: propose one, so the dialog opens with a
-            // complete answer and pressing the button is enough.
+            // What was typed, in the letters a branch and a folder can both
+            // hold on any machine. A name written in Japanese leaves nothing
+            // to keep, and so does an empty box -- both draw a name here.
             //
             // The same one every time this dialog asks, while it is still free.
             // Drawn afresh on each ask, the name changed with every keystroke
             // in another field -- and on the press itself, so the folder that
             // was made was not the one on screen when the button was pressed
-            let wanted = match (name.trim().is_empty(), repo.as_deref()) {
-                (true, Some(main)) => match drawn_names.get(&ask.from) {
+            let wanted = match (crate::worktree::tidy(&name), repo.as_deref()) {
+                (Some(kept), _) => kept,
+                (None, Some(main)) => match drawn_names.get(&ask.from) {
                     Some(kept) if crate::worktree::is_free(main, kept) => kept.clone(),
                     _ => {
                         let fresh = crate::worktree::suggest(main);
@@ -5959,8 +5967,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         fresh
                     }
                 },
-                (true, None) => String::new(),
-                (false, _) => name.clone(),
+                (None, None) => String::new(),
+            };
+            // What the folder's card will be called. This app's own label: it
+            // goes in the settings and nowhere near git or the disk, so it
+            // keeps what the person wrote, whatever letters they wrote it in.
+            // Nothing written means there is nothing of theirs to keep, and
+            // the drawn name is what they saw in the empty box
+            let label = match name.trim() {
+                "" => wanted.clone(),
+                typed => typed.to_string(),
             };
             let desk = desks
                 .get(desk_index)
@@ -6118,6 +6134,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 making: crate::worktree::Making::start(plan, carryable.clone()),
                                 desk: desk.clone(),
                                 from: from.clone(),
+                                label: label.clone(),
                                 family: crate::repo::family_of(&from).map(|f| f.display().to_string()).unwrap_or_default(),
                                 start: start.clone(),
                                 link: ask.link.clone(),
@@ -6174,6 +6191,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             making: crate::worktree::Making::start(plan, carryable.clone()),
                             desk: desk.clone(),
                             from: from.clone(),
+                            // The AI on the end, the same way its branch has
+                            // it, so a card and its branch read as one pair
+                            label: format!("{label}-{ai}"),
                             family: crate::repo::family_of(&from).map(|f| f.display().to_string()).unwrap_or_default(),
                             start: start_of(&ai, &ai_choices),
                             link: ask.link.clone(),

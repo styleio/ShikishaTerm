@@ -2550,6 +2550,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bchip .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #branch .bchip button.bicon { width:24px; min-height:24px; }
   #branch .bfrom { font-size:11.5px; color:var(--faint); }
+  /* What the name in the box will really be, said while it is being typed and
+     only when it is not what was typed. The same voice as the line beside it
+     that names what this grows from (5.1: the description under a field), so
+     the two read as one field and not as two announcements */
+  #branch .bname { font-size:11.5px; color:var(--faint); }
+  #branch .bname:empty { display:none; }
   /* What the Auto tab does, in the place the other tabs put what they ask */
   #branch .bautosay { font-size:11.5px; color:var(--dim); line-height:1.5; }
   #branch .bfrom:empty { display:none; }
@@ -3252,6 +3258,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <div class="bchip" hidden></div>
         <div class="bresults" hidden></div>
         <div class="brow2"><div id="bbase" class="bpick" tabindex="0"></div><input id="bq" type="text" autocomplete="off" spellcheck="false"></div>
+        <div class="bname"></div>
         <div class="bautosay" hidden></div>
         <div class="bfrom"></div>
       </div>
@@ -7261,6 +7268,17 @@ function drawBranch() {
   if (q && mine && !typed.trim() && p.branch) {
     q.placeholder = (T["tui.branch.asis"] || "{name}").replace("{name}", p.branch);
   }
+  // A branch and a folder are held to the letters every machine can hold, so
+  // what was typed is not always what gets made. Said here, under the box,
+  // while it is typed: the whole command is under the fold, and the one answer
+  // wanted at this moment is the name. Silent when the two are the same,
+  // because repeating what is already in the box says nothing -- and silent
+  // under the other tabs, where the box it would be talking about is away
+  const becomes = b.querySelector(".bname");
+  becomes.textContent = branchTab === "name" && mine && !p.error
+      && typed.trim() && p.branch && p.branch !== typed.trim()
+    ? (T["tui.branch.becomes"] || "{name}").replace("{name}", p.branch)
+    : "";
   // The lists belong to the folder, not to the name: an answer for this folder
   // fills them whatever was typed when it was asked
   const here = p && p.from === branchFrom;
