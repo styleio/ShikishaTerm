@@ -591,6 +591,30 @@ impl Making {
         making
     }
 
+    /// The same thread, for a folder that is already there: only what comes
+    /// into it is done.
+    ///
+    /// What this is for is the answer to a question the first run asked --
+    /// copying in a folder that could not be linked. Copying a folder off a
+    /// share takes as long as making the branch did, so it happens here rather
+    /// than in the middle of a frame, and it is read back the same way
+    pub fn carrying(plan: Plan, carry: Vec<Carry>) -> Making {
+        use std::sync::atomic::Ordering;
+        let making = Making {
+            plan: plan.clone(),
+            stage: Default::default(),
+            stopping: Default::default(),
+            outcome: Default::default(),
+        };
+        making.stage.store(Stage::SettingUp as u8, Ordering::Relaxed);
+        let outcome = making.outcome.clone();
+        std::thread::spawn(move || {
+            let said = carry_into(&plan, &carry);
+            *outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(Ok(said));
+        });
+        making
+    }
+
     pub fn stage(&self) -> Stage {
         Stage::of(self.stage.load(std::sync::atomic::Ordering::Relaxed))
     }
@@ -887,11 +911,19 @@ fn clean_inside(to: &str) -> String {
 pub struct Brought {
     /// What could not be put there at all
     pub missed: Vec<String>,
-    /// Things asked to be linked that were copied instead, because no second
-    /// name for them could be made: a file needs rights nobody gave, and a
-    /// folder on another machine's share cannot have one of the kind that
-    /// needs none
+    /// Files asked to be linked that were copied instead, because this machine
+    /// does not let a file be linked without rights nobody gave
     pub copied: Vec<String>,
+    /// Folders asked for as a second name that could not have one, and are
+    /// waiting to be told what to do about it.
+    ///
+    /// Neither brought nor lost. A folder on another machine's share cannot
+    /// have the kind of second name this needs no rights for, and copying it
+    /// instead is a different thing from sharing it -- the branch would get
+    /// its own copy of something that may be very large, and writing in it
+    /// would no longer reach the project's own. That is the person's call, so
+    /// it is carried back to be asked rather than decided here
+    pub unlinked: Vec<String>,
     /// Replacements that could not be made, each with why: the file is there,
     /// copied as it was
     pub unreplaced: Vec<String>,
@@ -932,20 +964,16 @@ pub fn carry_into(plan: &Plan, items: &[Carry]) -> Brought {
         if let Some(parent) = to.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        // A second name that cannot be made is not a reason to arrive without
-        // the folder: it is copied instead, and named as copied. A project on
-        // another machine's share is where this happens -- the kind of link
-        // this needs no rights for cannot point off this machine
         let done = match (c.how.as_str(), from.is_dir()) {
-            ("link", true) => {
-                link_folder(&from, &to) || {
-                    let copied = copy_folder(&from, &to).is_ok();
-                    if copied {
-                        said.copied.push(c.name.clone());
-                    }
-                    copied
+            // A folder that cannot be given a second name is carried back as a
+            // question rather than counted as lost: see [`Brought::unlinked`]
+            ("link", true) => match link_folder(&from, &to) {
+                true => true,
+                false => {
+                    said.unlinked.push(c.name.clone());
+                    continue;
                 }
-            }
+            },
             ("link", false) => {
                 link_file(&from, &to) || {
                     let copied = std::fs::copy(&from, &to).is_ok();
@@ -2792,8 +2820,8 @@ tools/conpty.ps1"));
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
-    /// A folder that cannot be given a second name is copied instead, and
-    /// only what really landed is said to have been copied.
+    /// A folder that cannot be given a second name is a question, not a loss,
+    /// and the answer copies it in.
     ///
     /// The case this is for is a project on another machine's share: the kind
     /// of link Windows makes without asking anyone for rights is a name for a
@@ -2802,39 +2830,40 @@ tools/conpty.ps1"));
     /// project on a mapped drive). Held here with a destination no folder can
     /// be written to, which is the one way to refuse a link on any machine
     #[test]
-    fn a_folder_that_cannot_be_linked_is_copied_and_only_then_called_copied() {
+    fn a_folder_that_cannot_be_linked_is_asked_about_and_then_copied() {
         let main = repo("carry-nolink");
         let there = main.join("vendor").join("left-pad");
         std::fs::create_dir_all(&there).unwrap();
         std::fs::write(there.join("index.js"), "x").unwrap();
         let cut = plan(&main, "feature/nolink", None).unwrap();
         std::fs::create_dir_all(&cut.folder).unwrap();
-        // Nothing can be made under a name a file already holds, so neither
-        // the link nor the copy behind it can be
+        // Nothing can be made under a name a file already holds, so this is a
+        // link no machine can make
         std::fs::write(cut.folder.join("gone"), "in the way").unwrap();
-        let carry = |name: &str| Carry {
+        let carry = |name: &str, how: &str| Carry {
             name: name.into(),
             folder: true,
-            how: "link".into(),
+            how: how.into(),
             from: Some(main.join("vendor").display().to_string()),
             replace: Vec::new(),
             line: None,
         };
-        let said = carry_into(&cut, &[carry("gone/vendor")]);
-        assert_eq!(said.missed, ["gone/vendor"], "a folder that never arrived was not said to be missing");
-        assert!(said.copied.is_empty(), "it was called copied although nothing was copied: {said:?}");
+        let said = carry_into(&cut, &[carry("gone/vendor", "link")]);
+        assert_eq!(said.unlinked, ["gone/vendor"], "a folder with no second name was not asked about");
+        assert!(said.missed.is_empty(), "a question was counted as a loss: {said:?}");
+        assert!(said.copied.is_empty(), "it was copied without being asked: {said:?}");
+        // Answering yes is the same carrying, asked for as a copy -- and one
+        // that cannot be written is a loss like any other
+        let said = carry_into(&cut, &[carry("gone/vendor", "copy")]);
+        assert_eq!(said.missed, ["gone/vendor"], "a copy that failed was not said to be missing");
+        assert!(said.unlinked.is_empty(), "a copy was asked about as if it were a link: {said:?}");
 
-        // And where it can be written, it arrives -- as a link or as a copy,
-        // whichever this machine allows, and the copy is the one that is named
-        let said = carry_into(&cut, &[carry("vendor")]);
-        assert!(said.missed.is_empty(), "the folder did not arrive at all: {said:?}");
+        // Where it can be written, a link is made and nothing is asked
+        let said = carry_into(&cut, &[carry("vendor", "link")]);
+        assert!(said.missed.is_empty() && said.unlinked.is_empty(), "the folder did not arrive: {said:?}");
         assert!(
             cut.folder.join("vendor").join("left-pad").join("index.js").exists(),
             "what came along cannot be read",
-        );
-        assert!(
-            said.copied.is_empty() || said.copied == ["vendor"],
-            "a copy was made without saying so: {said:?}",
         );
         let mut unhook = std::process::Command::new("cmd");
         unhook.args(["/c", "rmdir"]).arg(cut.folder.join("vendor"));
