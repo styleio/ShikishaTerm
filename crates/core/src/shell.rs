@@ -15814,7 +15814,11 @@ function drawGitCommit() {
       .filter(Boolean).join(" · ");
   }
   if (u.sync.textContent !== up) u.sync.textContent = up;
-  u.sync.title = b && b.upstream ? (T["git.sync.title"] || "").replace("{upstream}", b.upstream) : "";
+  // Which branch the count is against, and -- when it is one found by this
+  // branch's own name rather than one it follows -- that it found it that way
+  u.sync.title = b && b.upstream
+    ? (T[b.by_name ? "git.sync.title.by_name" : "git.sync.title"] || "").replace("{upstream}", b.upstream)
+    : "";
 
   const writing = G.busy === "message";
   u.msg.disabled = writing;
@@ -19406,6 +19410,31 @@ mod tests {
             last = at;
         }
         assert!(!next.contains("send("), "a step talks to the app other than through gitAsk");
+    }
+
+    /// The git column says "not pushed yet" only when there is nothing on the
+    /// server to compare with, and says which branch the count is against.
+    ///
+    /// What went wrong: the column asked git what the branch follows and
+    /// nothing else. A branch pushed from a terminal without
+    /// `--set-upstream` follows nothing, so the column said the work had never
+    /// been pushed and offered to publish it, while the server held every
+    /// commit of it. The count now falls back to the branch of this one's name
+    /// (`git::upstream`), and the line's tooltip says when it is that one
+    #[test]
+    fn the_column_says_not_pushed_only_when_there_is_nothing_to_compare_with() {
+        let draw = PAGE.split("function drawGitCommit() {").nth(1)
+            .and_then(|r| r.split("
+}
+").next()).expect("there is no drawGitCommit");
+        assert!(
+            draw.contains(r#"if (!b.upstream) up = T["git.sync.none"]"#),
+            "the words for a branch with nothing to compare with have moved: {draw}"
+        );
+        assert!(
+            draw.contains(r#"T[b.by_name ? "git.sync.title.by_name" : "git.sync.title"]"#),
+            "the line does not say which of the two branches it is counting against"
+        );
     }
 
     /// The folder picker is a framed dialog, drawn in this app's own marks.

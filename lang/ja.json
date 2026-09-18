@@ -2798,6 +2798,7 @@
   "git.sync.ahead": "プッシュ待ち {n}",
   "git.sync.behind": "プル待ち {n}",
   "git.sync.title": "{upstream} と比べた数（最後にフェッチした時点）",
+  "git.sync.title.by_name": "サーバーにある同じ名前のブランチ {upstream} と比べた数（最後にフェッチした時点）。このブランチは追いかける先が未設定で、ここからプッシュすると設定されます",
   "git.acct.title": "取得・プル・プッシュでサインインする git アカウント",
   "git.acct.pick": "アカウントを選択",
   "git.acct.fits": "（このリポジトリ向け）",

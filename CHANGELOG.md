@@ -352,6 +352,21 @@ other.
   and what the CLI told itself, and everything found goes through the same funnel as
   before: requests too light to say anything dropped, code cut out, the newest few
   kept, the whole thing asked for at most once in ten minutes.
+- **The git column says "Not pushed yet" only when there is nothing on the server
+  to compare with.** It asked git what the branch follows and nothing else, so a
+  branch sent from a terminal without `--set-upstream` -- which follows nothing --
+  read as work that had never left this PC, and the column's button offered to
+  publish it again. The count now falls back to the branch of this one's own name
+  on the server it would push to, and the line's tooltip says when it is that one
+  and that pushing from here sets the branch to follow it. A pull on such a branch
+  says where to pull from rather than leaving git with nothing to read.
+- **Pressing a working folder's name shows that folder.** It could bring up
+  another folder's tab instead, and the card said one folder while the screen
+  showed another. Two tabs were answering to one automation name: the name was
+  worked out from the order the lines stood in and written down nowhere, so
+  taking a folder out of the settings handed the name of a tab still running to
+  a different line. The names are written down now, and the arrangement a folder
+  was last looked at in is kept by what each pane held rather than by that name.
 - **Pressing a folder that has not been looked at yet shows it on its own.** With
   the screen split, it went into the pane in front only, and the other pane went
   on showing a folder of another project beside it.

@@ -497,9 +497,10 @@ impl std::fmt::Display for PullBlocked {
 impl std::error::Error for PullBlocked {}
 
 /// The uncommitted files a pull would change, once the pull has fetched.
-/// Empty when there are none or it cannot be told
-fn in_the_way(dir: &Path) -> Vec<String> {
-    let Ok(coming) = run(dir, &["diff", "--name-only", "-z", "HEAD...@{upstream}"]) else {
+/// `theirs` is the branch it is pulling from. Empty when there are none or it
+/// cannot be told
+fn in_the_way(dir: &Path, theirs: &str) -> Vec<String> {
+    let Ok(coming) = run(dir, &["diff", "--name-only", "-z", &format!("HEAD...{theirs}")]) else {
         return Vec::new();
     };
     let coming: std::collections::HashSet<&str> = coming.split('\0').filter(|p| !p.is_empty()).collect();
@@ -826,25 +827,83 @@ pub fn show_bytes(dir: &Path, hash: &str, path: &str) -> Result<Vec<u8>> {
     run_bytes(dir, &args, b"", LIMIT)
 }
 
+/// The branch on the server this one is compared with, and how far apart the
+/// two are
+#[derive(Debug, Clone, PartialEq)]
+pub struct Follows {
+    /// The branch there, as git spells it (`origin/main`)
+    pub name: String,
+    /// Commits here that are not there yet
+    pub ahead: u32,
+    /// Commits there that are not here
+    pub behind: u32,
+    /// Whether the branch is set to follow it. False for one found by its name
+    /// alone: it was pushed from somewhere that did not set the upstream (a
+    /// terminal without `--set-upstream`), and the two are still the same
+    /// branch on the same server
+    pub tracked: bool,
+}
+
 /// Where the branch checked out sends its commits, and how far apart the two
-/// are: commits here that are not there yet, and commits there that are not
-/// here. As of the last fetch -- asking the server is what fetch is for, and a
+/// are. As of the last fetch -- asking the server is what fetch is for, and a
 /// count that talked to it would make every look at the panel a network wait.
-/// `None` when the branch follows nothing (never pushed) or the head is detached
-pub fn upstream(dir: &Path) -> Result<Option<(String, u32, u32)>> {
-    let Ok(name) = run(dir, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]) else {
-        return Ok(None);
-    };
-    let name = name.trim().to_string();
-    if name.is_empty() {
+///
+/// The branch it is set to follow, else the branch of its own name on the
+/// server it would push to. The second because "this branch follows nothing"
+/// is not the same as "this work is not on the server": a push from a terminal
+/// without `--set-upstream` sends the commits and writes no setting, and a
+/// screen that only asked git what the branch follows then said the work had
+/// never been pushed while the server had every commit of it.
+///
+/// `None` when neither exists (never pushed anywhere) or the head is detached
+pub fn upstream(dir: &Path) -> Result<Option<Follows>> {
+    let set = run(dir, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+        .ok()
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty());
+    if let Some(name) = set {
+        let (ahead, behind) = apart(dir, "@{upstream}")?;
+        return Ok(Some(Follows { name, ahead, behind, tracked: true }));
+    }
+    let Some(here) = branch(dir)? else { return Ok(None) };
+    let ref_name = format!("refs/remotes/{}/{here}", push_remote(dir));
+    if run(dir, &["rev-parse", "--verify", "--quiet", &ref_name]).is_err() {
         return Ok(None);
     }
-    // "behind<TAB>ahead": the left side is the upstream's own commits
-    let counts = run(dir, &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])?;
+    let name = ref_name.trim_start_matches("refs/remotes/").to_string();
+    let (ahead, behind) = apart(dir, &name)?;
+    Ok(Some(Follows { name, ahead, behind, tracked: false }))
+}
+
+/// How far HEAD is from `rev`: commits here it does not have, and commits it
+/// has that are not here
+fn apart(dir: &Path, rev: &str) -> Result<(u32, u32)> {
+    // "behind<TAB>ahead": the left side is the other branch's own commits
+    let counts = run(dir, &["rev-list", "--left-right", "--count", &format!("{rev}...HEAD")])?;
     let mut parts = counts.split_whitespace().map(|n| n.parse::<u32>().unwrap_or(0));
     let behind = parts.next().unwrap_or(0);
     let ahead = parts.next().unwrap_or(0);
-    Ok(Some((name, ahead, behind)))
+    Ok((ahead, behind))
+}
+
+/// The server this branch's commits would go to: the one it is set to use,
+/// else the one every push goes to unless told otherwise, else `origin`
+fn push_remote(dir: &Path) -> String {
+    let here = branch(dir).ok().flatten().unwrap_or_default();
+    let asked = [
+        (!here.is_empty()).then(|| format!("branch.{here}.pushRemote")),
+        Some("remote.pushDefault".to_string()),
+        (!here.is_empty()).then(|| format!("branch.{here}.remote")),
+    ];
+    for key in asked.into_iter().flatten() {
+        if let Ok(v) = run(dir, &["config", "--get", &key]) {
+            let v = v.trim().to_string();
+            if !v.is_empty() {
+                return v;
+            }
+        }
+    }
+    "origin".to_string()
 }
 
 pub fn branch(dir: &Path) -> Result<Option<String>> {
@@ -1306,8 +1365,25 @@ pub fn fetch(dir: &Path, who: &As) -> Result<String> {
 
 pub fn pull(dir: &Path, who: &As) -> Result<String> {
     fits(dir, who)?;
-    run_as(dir, &["pull"], "", NETWORK_LIMIT, who).map_err(|e| {
-        let both = in_the_way(dir);
+    // A branch that follows nothing leaves a bare `git pull` with nothing to
+    // read, so where to pull from is said outright -- the branch of this one's
+    // name on the server (see [`upstream`]), which is what a person would type.
+    // Its name is `<remote>/<branch>`, and a remote's name holds no slash,
+    // while a branch's may
+    let named = match upstream(dir)? {
+        Some(f) if !f.tracked => f.name.split_once('/').map(|(r, b)| (r.to_string(), b.to_string())),
+        _ => None,
+    };
+    let args: Vec<&str> = match &named {
+        Some((remote, branch)) => vec!["pull", remote, branch],
+        None => vec!["pull"],
+    };
+    let theirs = match &named {
+        Some((remote, branch)) => format!("{remote}/{branch}"),
+        None => "@{upstream}".to_string(),
+    };
+    run_as(dir, &args, "", NETWORK_LIMIT, who).map_err(|e| {
+        let both = in_the_way(dir, &theirs);
         if both.is_empty() { e } else { anyhow::Error::new(PullBlocked(both)) }
     })
 }
@@ -2193,6 +2269,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&far);
     }
 
+    /// A branch that follows nothing still pulls: what came in elsewhere is
+    /// taken from the branch of its own name on the server.
+    ///
+    /// The screen offers the pull, because it counts against that branch. A
+    /// bare `git pull` has nothing to read there and answers "there is no
+    /// tracking information for the current branch", so where to pull from is
+    /// said outright
+    #[test]
+    fn a_branch_that_follows_nothing_pulls_from_its_own_name() {
+        let Some(far) = scratch_repo("byname-far") else { return };
+        std::fs::write(far.join("a.txt"), "one
+").unwrap();
+        run(&far, &["add", "."]).unwrap();
+        run(&far, &["commit", "-m", "one"]).unwrap();
+        let near = std::env::temp_dir().join(format!("shikisha-git-{}-byname-near", std::process::id()));
+        let _ = std::fs::remove_dir_all(&near);
+        run(&far, &["clone", "-q", &far.display().to_string(), &near.display().to_string()]).unwrap();
+        run(&near, &["config", "user.email", "test@example.invalid"]).unwrap();
+        run(&near, &["config", "user.name", "test"]).unwrap();
+
+        // A branch made here, sent from a terminal with no --set-upstream
+        run(&near, &["checkout", "-q", "-b", "side"]).unwrap();
+        run(&near, &["push", "-q", &far.display().to_string(), "side:side"]).unwrap();
+        run(&near, &["fetch", "-q"]).unwrap();
+        assert!(run(&near, &["rev-parse", "@{upstream}"]).is_err(), "it follows something after all");
+
+        // A commit arrives on that branch over there
+        run(&far, &["checkout", "-q", "side"]).unwrap();
+        std::fs::write(far.join("b.txt"), "theirs
+").unwrap();
+        run(&far, &["add", "."]).unwrap();
+        run(&far, &["commit", "-m", "theirs"]).unwrap();
+        run(&near, &["fetch", "-q"]).unwrap();
+        assert_eq!(
+            upstream(&near).unwrap().map(|f| (f.name, f.ahead, f.behind)),
+            Some(("origin/side".to_string(), 0, 1)),
+            "the screen would not offer a pull at all"
+        );
+
+        pull(&near, &As::default()).expect("a branch that follows nothing cannot pull");
+        assert!(near.join("b.txt").is_file(), "what was pulled did not arrive");
+        let _ = std::fs::remove_dir_all(&near);
+        let _ = std::fs::remove_dir_all(&far);
+    }
+
     #[test]
     fn a_failure_is_not_buried_under_line_ending_notes() {
         let said = "warning: in the working copy of 'a.md', LF will be replaced by CRLF the next time Git touches it\n\
@@ -2202,7 +2323,9 @@ mod tests {
     }
 
     /// A branch that follows another says how many commits each side has that
-    /// the other does not; one that follows nothing says nothing at all
+    /// the other does not; one that follows nothing is compared with the
+    /// branch of its own name on the server, and says nothing only when there
+    /// is no such branch either
     #[test]
     fn a_branch_counts_what_it_has_to_send_and_to_take() {
         let Some(far) = scratch_repo("upstream-far") else { return };
@@ -2214,7 +2337,10 @@ mod tests {
         run(&far, &["clone", "-q", &far.display().to_string(), &near.display().to_string()]).unwrap();
         run(&near, &["config", "user.email", "test@example.invalid"]).unwrap();
         run(&near, &["config", "user.name", "test"]).unwrap();
-        assert_eq!(upstream(&near).unwrap(), Some(("origin/main".to_string(), 0, 0)));
+        let follows = |name: &str, ahead, behind, tracked| {
+            Some(Follows { name: name.to_string(), ahead, behind, tracked })
+        };
+        assert_eq!(upstream(&near).unwrap(), follows("origin/main", 0, 0, true));
 
         // Two commits here, one there
         for n in ["two", "three"] {
@@ -2224,12 +2350,35 @@ mod tests {
         std::fs::write(far.join("b.txt"), "far").unwrap();
         run(&far, &["add", "."]).unwrap();
         run(&far, &["commit", "-m", "far"]).unwrap();
-        assert_eq!(upstream(&near).unwrap(), Some(("origin/main".to_string(), 2, 0)), "not fetched yet");
+        assert_eq!(upstream(&near).unwrap(), follows("origin/main", 2, 0, true), "not fetched yet");
         run(&near, &["fetch", "-q"]).unwrap();
-        assert_eq!(upstream(&near).unwrap(), Some(("origin/main".to_string(), 2, 1)));
+        assert_eq!(upstream(&near).unwrap(), follows("origin/main", 2, 1, true));
 
         run(&near, &["checkout", "-q", "-b", "alone"]).unwrap();
-        assert_eq!(upstream(&near).unwrap(), None, "a branch never pushed follows nothing");
+        assert_eq!(upstream(&near).unwrap(), None, "a branch never pushed is compared with something");
+
+        // Sent from elsewhere without being set to follow anything -- a push
+        // from a terminal with no `--set-upstream`. The work is on the server,
+        // and the screen that only asked what the branch follows said it had
+        // never been pushed
+        std::fs::write(near.join("c.txt"), "alone").unwrap();
+        run(&near, &["add", "."]).unwrap();
+        run(&near, &["commit", "-m", "alone"]).unwrap();
+        run(&near, &["push", "-q", &far.display().to_string(), "alone:alone"]).unwrap();
+        run(&near, &["fetch", "-q"]).unwrap();
+        assert!(
+            run(&near, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_err(),
+            "the branch follows something after all, so this proves nothing"
+        );
+        assert_eq!(
+            upstream(&near).unwrap(),
+            follows("origin/alone", 0, 0, false),
+            "the branch of its own name on the server was not found"
+        );
+        // ...and one commit later it is a push, not a first publish
+        std::fs::write(near.join("c.txt"), "more").unwrap();
+        run(&near, &["commit", "-am", "more"]).unwrap();
+        assert_eq!(upstream(&near).unwrap(), follows("origin/alone", 1, 0, false));
         let _ = std::fs::remove_dir_all(&near);
         let _ = std::fs::remove_dir_all(&far);
     }
