@@ -2751,6 +2751,7 @@
   "git.sync.ahead": "{n} to push",
   "git.sync.behind": "{n} to pull",
   "git.sync.title": "Compared with {upstream}, as of the last fetch",
+  "git.sync.title.by_name": "Compared with {upstream}, the branch of this one's name on the server, as of the last fetch. This branch is not set to follow it; pushing from here sets it",
   "git.acct.title": "The git account fetch, pull and push sign in as",
   "git.acct.pick": "Choose an account",
   "git.acct.fits": "(for this repository)",

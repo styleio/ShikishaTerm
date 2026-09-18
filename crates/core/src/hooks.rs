@@ -3349,14 +3349,21 @@ impl HookEngine {
                                 let row = lua.create_table()?;
                                 row.set("protected", crate::git::is_protected(&n, &protect))?;
                                 row.set("name", n)?;
-                                // Only when it follows something: a count
-                                // against nothing is not zero, it is no answer
-                                if let Some((up, ahead, behind)) = crate::git::upstream(&dir)
+                                // Only when there is a branch on the server to
+                                // count against: a count against nothing is not
+                                // zero, it is no answer
+                                if let Some(up) = crate::git::upstream(&dir)
                                     .map_err(|e| mlua::Error::runtime(e.to_string()))?
                                 {
-                                    row.set("upstream", up)?;
-                                    row.set("ahead", ahead)?;
-                                    row.set("behind", behind)?;
+                                    row.set("upstream", up.name)?;
+                                    row.set("ahead", up.ahead)?;
+                                    row.set("behind", up.behind)?;
+                                    // Said only when it is the branch's own
+                                    // name that found it, so a screen can say
+                                    // which of the two it is comparing with
+                                    if !up.tracked {
+                                        row.set("by_name", true)?;
+                                    }
                                 }
                                 // What it was cut from, when that was written down,
                                 // and the commands bringing its latest in would run

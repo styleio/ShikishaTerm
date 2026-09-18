@@ -104,6 +104,14 @@ once it reaches its first tagged release.
 - **The Issue tab is called Issues & PRs.**
 
 ### Fixed
+- **The git column says "Not pushed yet" only when there is nothing on the server
+  to compare with.** It asked git what the branch follows and nothing else, so a
+  branch sent from a terminal without `--set-upstream` -- which follows nothing --
+  read as work that had never left this PC, and the column's button offered to
+  publish it again. The count now falls back to the branch of this one's own name
+  on the server it would push to, and the line's tooltip says when it is that one
+  and that pushing from here sets the branch to follow it. A pull on such a branch
+  says where to pull from rather than leaving git with nothing to read.
 - **Pressing a working folder's name shows that folder.** It could bring up
   another folder's tab instead, and the card said one folder while the screen
   showed another. Two tabs were answering to one automation name: the name was
