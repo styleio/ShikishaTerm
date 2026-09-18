@@ -144,6 +144,15 @@ once it reaches its first tagged release.
   case where a tab starts clean although it was having a conversation -- the record of
   it is no longer on this computer -- is written into `logs\hooks.log` instead of
   passing in silence.
+- **The bar across the top of a phone no longer runs out of room.** What it carries
+  grows with the day -- the desk's name, AUTO, REMOTE, and how much of the
+  subscription's five-hour and seven-day windows is gone -- and past a point it ran
+  under the buttons at the right. The drawer, RESTART and STOP now keep their places
+  at the two ends, and everything between them is one row that is pulled sideways
+  with a finger, the same way the rows over the input bar are. What has been pulled
+  into view stays there while the screen goes on updating. The window's own bar is
+  unchanged: with a pointer to hover and room to spare, it still cuts the readings
+  short rather than hiding them.
 - **A folder that names itself now hears what is typed straight into its AI.** It
   heard two kinds of request before: the ones sent from the app's own input bar, and
   the ones a CLI was given a hook to report. Typing into the terminal of a CLI whose

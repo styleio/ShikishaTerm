@@ -56,20 +56,29 @@ function findCargo() {
   return die('cargo was not found; install rustup first');
 }
 
-/** The page as the app serves it, one file per language and scheme. */
-function writePages(langs, looks) {
+/**
+ * The page as the app serves it, one file per language, scheme and side.
+ *
+ * "side" is who is being served: the window, or a phone. The two are not the
+ * same page at different widths -- the phone's carries controls the window has
+ * no use for -- so a scene about a phone's screen asks for `served: 'remote'`.
+ */
+function writePages(langs, looks, sides) {
   const cargo = findCargo();
   fs.mkdirSync(OUT, { recursive: true });
   const pages = {};
   for (const lang of langs) {
     for (const look of looks) {
-      const args = ['run', '--quiet', '--bin', 'page_dump', '--', lang];
-      if (look === 'light') args.push('light');
-      const made = spawnSync(cargo, args, { cwd: ROOT, maxBuffer: 1 << 28 });
-      if (made.status !== 0) die('page_dump failed: ' + made.stderr);
-      const file = path.join(OUT, 'page.' + lang + '.' + look + '.html');
-      fs.writeFileSync(file, made.stdout);
-      pages[lang + '.' + look] = file;
+      for (const side of sides) {
+        const args = ['run', '--quiet', '--bin', 'page_dump', '--', lang];
+        if (look === 'light') args.push('light');
+        if (side === 'remote') args.push('remote');
+        const made = spawnSync(cargo, args, { cwd: ROOT, maxBuffer: 1 << 28 });
+        if (made.status !== 0) die('page_dump failed: ' + made.stderr);
+        const file = path.join(OUT, 'page.' + lang + '.' + look + '.' + side + '.html');
+        fs.writeFileSync(file, made.stdout);
+        pages[lang + '.' + look + '.' + side] = file;
+      }
     }
   }
   return pages;
@@ -128,7 +137,11 @@ const spec = (await import(pathToFileURL(path.resolve(file)).href)).default;
 const langs = spec.langs || ['en', 'ja'];
 const looks = spec.looks || ['dark', 'light'];
 const sizes = spec.sizes || [['wide', 1280, 860], ['phone', 390, 820]];
-const pages = writePages(langs, looks);
+const served = spec.served || 'window';
+// Only the sides some scene actually asks for: each one is another build
+const sides = [...new Set(Object.values(spec.scenes || {})
+  .map((s) => (typeof s === 'string' ? served : s.served || served)))];
+const pages = writePages(langs, looks, sides);
 const chrome = await connect(findChrome());
 
 // The page talks to the app through a bridge that is not here. A place that
@@ -154,7 +167,7 @@ for (const [name, scene] of Object.entries(spec.scenes)) {
         await chrome.send('Emulation.setTouchEmulationEnabled',
           { enabled: size === 'phone', maxTouchPoints: size === 'phone' ? 5 : 1 });
         await chrome.send('Page.navigate',
-          { url: pathToFileURL(pages[lang + '.' + look]).href });
+          { url: pathToFileURL(pages[lang + '.' + look + '.' + (at.served || served)]).href });
         await sleep(spec.settle || 900);
         if (spec.setup) await chrome.run(spec.setup);
         await chrome.run(at.run);
