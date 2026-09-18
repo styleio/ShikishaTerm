@@ -8,6 +8,13 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-18
+
+A branch goes all the way in from the git column, an AI client is handed this
+app's own commands as its tools, a working folder names itself from what its
+AIs are asked, and a project on another machine's share is worked in like any
+other.
+
 ### Added
 - **A tab that comes up on a conversation of nobody's offers the way back.** When an AI
   tab starts clean although its folder has been worked in before, its caption and its row
@@ -29,6 +36,40 @@ once it reaches its first tagged release.
   Account to use, on a project's page and on a git tab's, is "+ Add a PAT (git
   account)": it opens the desk's git accounts over the page, and closing it comes back
   with the account that was made already chosen.
+- **An AI client is handed this app's own commands as its tools.** A client that
+  speaks the Model Context Protocol -- Claude Code, and the others -- started as
+  `SHIKISHA-TERM.exe --mcp` is offered every command the automation API has, each
+  with `shikisha_` in front of it so that this app's `send` cannot be mistaken for
+  another server's. Started by a CLI sitting in a tab it needs nothing else: that
+  tab's own key is already in its environment, so its calls arrive as the tab they
+  came from, counted against that tab's chain and allowed only what Settings >
+  Automation permissions allows an AI. The list of tools is the running app's own
+  answer, asked every time, so what a client is offered and what the app will
+  actually do cannot drift apart. `--pid` with `--token-file` points a client at
+  another running copy -- the one being tested rather than the one being worked in.
+- **A file that is not UTF-8 reads as its own words.** A CSV saved by a spreadsheet
+  on a Japanese machine is Shift_JIS, and read as UTF-8 every character in it is a
+  replacement mark. A git diff, the file panel's comparison of a file here with the
+  server's, and the editor now all read the bytes as what they are: UTF-8 whenever
+  they are valid UTF-8, and otherwise the likeliest reading for the language this
+  machine is set up for. An Encoding menu says which was used and sets it when the
+  guess is wrong -- UTF-8, Shift_JIS, EUC-JP, GBK, Big5, EUC-KR, windows-1252. A
+  piece of a diff added or discarded goes back byte for byte, and one that cannot be
+  written back exactly is refused rather than writing the marks into the file.
+- **A file is saved in the encoding it was read in**, and a character that encoding
+  cannot hold stops the save: it names the characters, and offers `?` in their place
+  or the file as UTF-8. A file that could not be read exactly says so over the text,
+  and saving it says what would be lost first.
+- **A project on another machine's share is worked in like any other.** A branch can
+  be cut from one (Windows answers about a folder across the network with a name of
+  its own, and what git was handed was not a name git would take). A project git
+  refuses because its files belong to another account now says so in one line,
+  instead of several lines of English in a row, and offers the press that writes the
+  one line of configuration settling it -- for a branch this app made, once, for
+  every branch after it. And a folder every branch is to share -- `vendor`, `dic`,
+  `.claude` -- arrives by the one kind of second name that can point off this
+  machine; where nobody turned that right on, the row says which folders and asks
+  whether to copy them in, rather than deciding on your behalf.
 - **Working folders are named and described from what their AIs are asked.** With
   Auto on, an AI writes a folder's name and a summary of a few sentences from the
   requests sent to the AIs in it -- sent from the input bar, or typed straight into
@@ -130,6 +171,16 @@ once it reaches its first tagged release.
 - **The branches and the history open as a Git tab in the middle**, from the arrow
   in the git column, rather than being a pane of the column. The column keeps what
   is done every day. A Git tab with no account of its own uses its project's.
+- **A folder and its tabs stand in one box** in the list at the side, and the
+  folder in front wears the brand colour on its edge.
+- **A new desk starts empty, or comes in from a file.** The three AI templates are
+  gone: each promised something the desk it made did not do. The browser one handed
+  its AI nothing to start on, so it sat there until somebody aimed it by hand; the
+  review one's "everybody said LGTM" finish reached no code, so a review only ever
+  ended on the round limit; and the discussion's own default asked for more
+  hand-offs than the automatic chain allows, so it stopped before the judge ruled.
+  The dialog also no longer writes the word "null" where a desk has nothing to copy
+  from.
 - **The Issue tab is called Issues & PRs.**
 
 ### Fixed
@@ -192,6 +243,14 @@ once it reaches its first tagged release.
 - **A project's + opens the worktree dialog again after a worktree was made
   without a name.** The answer about that worktree stayed with the app, and the
   dialog took it for one just made and closed as it opened, so the + seemed dead.
+- **The Issue tab's button to the settings lands on the card that chooses the
+  account** for a project reached through a mapped drive. Such a project is one
+  place with two names: the disk answers with the machine the drive points at,
+  while the settings hold what the person typed. The button looked the second up by
+  the first, found nothing, and dropped you on the desk's own page; the branch
+  dialog could not tell which project it was standing in either. A project now
+  carries both -- the checkout to run git in, and the folder of the desk it was
+  found through.
 - **Testing a connection through a bastion on a port other than 22** tested it
   on 22. The test built the connection with a copy of the launch code that did
   not read a port typed into the box; it now uses the launch code itself.
@@ -2614,7 +2673,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/styleio/ShikishaTerm/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/styleio/ShikishaTerm/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/styleio/ShikishaTerm/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/styleio/ShikishaTerm/compare/v0.13.0...v0.14.0
