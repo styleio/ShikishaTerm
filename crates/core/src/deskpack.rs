@@ -535,6 +535,13 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
         },
     };
     desk["id"] = Value::String(free_ws_id(&list, &want_id));
+    // And what automation calls each of its tabs, for the same reason. A pack
+    // written before tabs were named brings tabs with no name of their own,
+    // and one left for the loader is worked out from the order the tabs are
+    // in -- so closing one would rename the others. Only within this desk,
+    // which is where a tab's name has to be its own
+    let mut used = crate::config::tab_ids_in(&desk);
+    crate::config::name_new_tabs(&mut desk, &mut used);
     list.push(desk);
     cfg["desks"] = Value::Array(list);
     // Now that it's moved into desks, the folders and tabs written
