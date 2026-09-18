@@ -3367,6 +3367,11 @@ impl HookEngine {
                                     if !up.tracked {
                                         row.set("by_name", true)?;
                                     }
+                                    // The commit the server has, which is the
+                                    // one CI ran on
+                                    if !up.sha.is_empty() {
+                                        row.set("upstream_sha", up.sha)?;
+                                    }
                                 }
                                 // What it was cut from, when that was written down,
                                 // and the commands bringing its latest in would run

@@ -842,6 +842,9 @@ pub struct Follows {
     /// terminal without `--set-upstream`), and the two are still the same
     /// branch on the same server
     pub tracked: bool,
+    /// The commit that branch is at, as of the last fetch. The commit CI ran
+    /// on: the server has this one, and what a check says is said about it
+    pub sha: String,
 }
 
 /// Where the branch checked out sends its commits, and how far apart the two
@@ -863,7 +866,8 @@ pub fn upstream(dir: &Path) -> Result<Option<Follows>> {
         .filter(|n| !n.is_empty());
     if let Some(name) = set {
         let (ahead, behind) = apart(dir, "@{upstream}")?;
-        return Ok(Some(Follows { name, ahead, behind, tracked: true }));
+        let sha = commit_at(dir, "@{upstream}");
+        return Ok(Some(Follows { name, ahead, behind, tracked: true, sha }));
     }
     let Some(here) = branch(dir)? else { return Ok(None) };
     let ref_name = format!("refs/remotes/{}/{here}", push_remote(dir));
@@ -872,7 +876,13 @@ pub fn upstream(dir: &Path) -> Result<Option<Follows>> {
     }
     let name = ref_name.trim_start_matches("refs/remotes/").to_string();
     let (ahead, behind) = apart(dir, &name)?;
-    Ok(Some(Follows { name, ahead, behind, tracked: false }))
+    let sha = commit_at(dir, &ref_name);
+    Ok(Some(Follows { name, ahead, behind, tracked: false, sha }))
+}
+
+/// The commit a name stands for, or nothing when it stands for none
+fn commit_at(dir: &Path, rev: &str) -> String {
+    run(dir, &["rev-parse", "--verify", "--quiet", rev]).map(|s| s.trim().to_string()).unwrap_or_default()
 }
 
 /// How far HEAD is from `rev`: commits here it does not have, and commits it
@@ -2337,10 +2347,20 @@ mod tests {
         run(&far, &["clone", "-q", &far.display().to_string(), &near.display().to_string()]).unwrap();
         run(&near, &["config", "user.email", "test@example.invalid"]).unwrap();
         run(&near, &["config", "user.name", "test"]).unwrap();
+        // The commit is whatever that branch is at; the counts are what this
+        // is about, so it is filled in from the answer
         let follows = |name: &str, ahead, behind, tracked| {
-            Some(Follows { name: name.to_string(), ahead, behind, tracked })
+            Some(Follows { name: name.to_string(), ahead, behind, tracked, sha: String::new() })
         };
-        assert_eq!(upstream(&near).unwrap(), follows("origin/main", 0, 0, true));
+        let said = |dir: &std::path::Path| {
+            upstream(dir).unwrap().map(|mut f| {
+                assert_eq!(f.sha, commit_at(dir, &f.name), "the commit is not the one that branch is at");
+                assert_eq!(f.sha.len(), 40, "a commit is not a commit: {:?}", f.sha);
+                f.sha = String::new();
+                f
+            })
+        };
+        assert_eq!(said(&near), follows("origin/main", 0, 0, true));
 
         // Two commits here, one there
         for n in ["two", "three"] {
@@ -2350,12 +2370,12 @@ mod tests {
         std::fs::write(far.join("b.txt"), "far").unwrap();
         run(&far, &["add", "."]).unwrap();
         run(&far, &["commit", "-m", "far"]).unwrap();
-        assert_eq!(upstream(&near).unwrap(), follows("origin/main", 2, 0, true), "not fetched yet");
+        assert_eq!(said(&near), follows("origin/main", 2, 0, true), "not fetched yet");
         run(&near, &["fetch", "-q"]).unwrap();
-        assert_eq!(upstream(&near).unwrap(), follows("origin/main", 2, 1, true));
+        assert_eq!(said(&near), follows("origin/main", 2, 1, true));
 
         run(&near, &["checkout", "-q", "-b", "alone"]).unwrap();
-        assert_eq!(upstream(&near).unwrap(), None, "a branch never pushed is compared with something");
+        assert_eq!(said(&near), None, "a branch never pushed is compared with something");
 
         // Sent from elsewhere without being set to follow anything -- a push
         // from a terminal with no `--set-upstream`. The work is on the server,
@@ -2371,14 +2391,14 @@ mod tests {
             "the branch follows something after all, so this proves nothing"
         );
         assert_eq!(
-            upstream(&near).unwrap(),
+            said(&near),
             follows("origin/alone", 0, 0, false),
             "the branch of its own name on the server was not found"
         );
         // ...and one commit later it is a push, not a first publish
         std::fs::write(near.join("c.txt"), "more").unwrap();
         run(&near, &["commit", "-am", "more"]).unwrap();
-        assert_eq!(upstream(&near).unwrap(), follows("origin/alone", 1, 0, false));
+        assert_eq!(said(&near), follows("origin/alone", 1, 0, false));
         let _ = std::fs::remove_dir_all(&near);
         let _ = std::fs::remove_dir_all(&far);
     }

@@ -1065,14 +1065,17 @@ pub fn answer(
     let done = hub_for(source).and_then(|(repo, hub)| match act {
         "detail" if pulls => hub.pull(&repo, number),
         "detail" => hub.issue(&repo, number),
-        // With what CI says of the commit the newest open one is at: the same
-        // commit for every base the branch was sent to
+        // With what CI says of the commit the branch is at on the server: the
+        // same commit for every base the branch was sent to, and the one CI
+        // ran on whether a pull request was ever made from it or not -- a
+        // check that failed is worth knowing about before anybody opens one
         "branch_prs" => hub.branch_pulls(&repo, &s("head")).map(|prs| {
             let sha = prs
                 .as_array()
                 .and_then(|a| a.iter().find(|p| p["state"] == "open"))
                 .and_then(|p| p["sha"].as_str())
-                .map(str::to_string);
+                .map(str::to_string)
+                .or_else(|| Some(s("sha")).filter(|sha| !sha.is_empty()));
             let checks = sha.as_deref().and_then(|sha| {
                 hub.checks(&repo, sha).ok().map(|mut c| {
                     c["sha"] = json!(sha);

@@ -639,6 +639,13 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     });
                     t.git_acct =
                         Some(crate::uistate::GitAcctState::of(&ui.git_accounts, &ui.pc_accounts, git, repo, "tab", None));
+                    // And which repository it reports on, the same as a
+                    // session's: the column asks it before asking GitHub
+                    // whether this branch has pull requests or CI
+                    t.place = repo.map(|r| crate::uistate::PlaceState {
+                        repo: Some(r.to_string()),
+                        ..Default::default()
+                    });
                     Some(t)
                 }
             }?)))

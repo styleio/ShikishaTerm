@@ -361,6 +361,12 @@ pub struct PlaceState {
     pub pr: Option<String>,
     #[serde(default)]
     pub ports: Vec<u16>,
+    /// `owner/name` on GitHub, when that is where this folder pushes to. What
+    /// the screen asks before it asks GitHub anything at all: with this
+    /// missing, the git column has no way to tell a folder whose server has
+    /// pull requests and CI from one whose server has neither
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 /// The colours a project is given when nobody has chosen one. Eight, because
@@ -1958,6 +1964,7 @@ impl TabState {
                 branch: t.place.branch.clone(),
                 pr: t.place.pr.clone(),
                 ports: t.place.ports.clone(),
+                repo: t.place.repo.clone(),
             }),
             cost: t.usage.line(),
             readable: readable(t),
@@ -2187,6 +2194,27 @@ mod tests {
         // Not in a repository, so it belongs to no family and has no colour
         assert_eq!(found[0].1.color, None);
         assert!(!found[0].1.linked);
+    }
+
+    /// Where a tab is says which repository its folder pushes to.
+    ///
+    /// The screen asks that before it asks GitHub anything: with it missing,
+    /// the git column could not tell a folder whose server has pull requests
+    /// and CI from one whose server has neither, so it asked for neither and
+    /// showed neither -- while the pull requests and the CI were there
+    #[test]
+    fn where_a_tab_is_says_which_repository_it_pushes_to() {
+        let place = crate::repo::Place {
+            branch: Some("feature".into()),
+            repo: Some("owner/name".into()),
+            ..Default::default()
+        };
+        let sent = PlaceState { branch: place.branch.clone(), pr: None, ports: vec![], repo: place.repo.clone() };
+        let js = serde_json::to_value(&sent).expect("it cannot be sent to the screen");
+        assert_eq!(js["repo"], "owner/name", "the screen is not told the repository: {js}");
+        // And nothing is added for a folder that pushes nowhere
+        let none = serde_json::to_value(PlaceState::default()).unwrap();
+        assert!(none.get("repo").is_none(), "an answer nobody has is sent as one: {none}");
     }
 
     /// A project's own checkout is headed by its folder and a worktree by its
