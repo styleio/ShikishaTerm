@@ -272,6 +272,13 @@ pub fn build_engine(
 /// name: a tab opened again from the tab bar comes back into the conversation
 /// it was having. Taken out as they are used, and preferred over a `resume`
 /// written in the settings, which is older news
+///
+/// `carry` is what was on screen when the app last closed, for the tabs this
+/// starts that nothing else speaks for. A settings change starts tabs by the
+/// same rules a launch does, so a folder added back is the folder it was, with
+/// the conversation it was having -- and, just as importantly, a tab started
+/// here holds on to what it was having, so saving the settings cannot quietly
+/// replace a real conversation with an empty one nobody has spoken in
 pub fn apply_ws_config(
     tabs: &mut Vec<Tab>,
     desk: &config::Desk,
@@ -279,6 +286,7 @@ pub fn apply_ws_config(
     cols: u16,
     errors: &mut Vec<String>,
     resume: &mut std::collections::HashMap<String, tab::Session>,
+    carry: Option<&crate::lastsession::Saved>,
 ) -> String {
     let mut added = 0usize;
     let mut removed = 0usize;
@@ -353,7 +361,7 @@ pub fn apply_ws_config(
                 opts,
                 match ft.cfg.id.as_deref().and_then(|id| resume.remove(id)) {
                     Some(s) if tab::resumable(&argv, &ft.cfg.profile, &s.id) => tab::Resume::Id(s),
-                    _ => resume_plan_of(ft.cfg.resume.as_deref()),
+                    _ => launch_plan(carry, desk, &argv, &ft.cfg, &said.cwd, &title),
                 },
             ) {
                 Ok(mut t) => {
@@ -364,6 +372,11 @@ pub fn apply_ws_config(
                     t.id = ft.cfg.id.clone();
                     t.notify_on_done = ft.cfg.notify_on_done.clone();
                     t.notify_reply = ft.cfg.notify_reply;
+                    // What this tab was having, whether or not it was carried:
+                    // the key that means "carry the conversation over" reaches
+                    // for it, and it is what the app goes on remembering for a
+                    // tab nobody has spoken to yet
+                    t.previous = carry.and_then(|last| last.conversation_for(desk, &t));
                     ordered.push(t);
                     added += 1;
                 }
@@ -539,13 +552,7 @@ pub fn spawn_desk(
         // Kept for the message, because the options are moved into the tab and
         // the message is only wanted when that did not happen
         let said = opts.clone();
-        let plan = match resume_plan_of(ft.cfg.resume.as_deref()) {
-            named @ tab::Resume::Id(_) => named,
-            _ => carried_conversation(carry, desk, &argv, &ft.cfg, &cwd, &title),
-        };
-        if let tab::Resume::Id(s) = &plan {
-            append_hook_log(&format!("launching \"{title}\" carrying {}", s.short()));
-        }
+        let plan = launch_plan(carry, desk, &argv, &ft.cfg, &cwd, &title);
         match Tab::spawn_as(
             title.clone(),
             &argv,
@@ -1037,13 +1044,59 @@ mod calling_home_tests {
             desks.remove(0)
         };
         let (mut tabs, mut errors, mut resume) = (Vec::new(), Vec::new(), Default::default());
-        apply_ws_config(&mut tabs, &desk_named("before"), 10, 40, &mut errors, &mut resume);
+        apply_ws_config(&mut tabs, &desk_named("before"), 10, 40, &mut errors, &mut resume, None);
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(tabs[0].group_name(), Some("before"));
 
-        apply_ws_config(&mut tabs, &desk_named("作業フォルダ"), 10, 40, &mut errors, &mut resume);
+        apply_ws_config(&mut tabs, &desk_named("作業フォルダ"), 10, 40, &mut errors, &mut resume, None);
         assert_eq!(tabs[0].group_name(), Some("作業フォルダ"), "the running tab kept the name it launched under");
         assert!(!tabs[0].needs_restart, "a new heading restarts the tab");
+        for t in &mut tabs {
+            t.kill();
+        }
+    }
+
+    /// Saving the settings does not throw away what a tab was saying.
+    ///
+    /// Two roads start tabs, and only one of them used to be told what the
+    /// tabs were having: a desk being opened asked, a settings change did not.
+    /// So a tab the settings started came up knowing nothing, and what the app
+    /// went on remembering for it was the empty conversation it had just been
+    /// handed -- which cannot be resumed, so the real one was gone for good
+    #[test]
+    fn a_tab_the_settings_start_knows_the_conversation_it_was_having() {
+        let here = std::env::temp_dir().display().to_string();
+        let json = serde_json::json!({"desks": [{"name":"w", "id":"w",
+            "folders": [{"cwd": here.clone(),
+                "tabs": [{"id":"agent", "name":"sh", "command": crate::test_shell()}]}]}]});
+        let cfg: config::Config = serde_json::from_value(json).expect("the settings cannot be read");
+        let (desks, errs) = cfg.resolve_desks();
+        assert!(errs.is_empty(), "{errs:?}");
+        let desk = &desks[0];
+        let last = crate::lastsession::Saved {
+            version: 1,
+            desks: vec![crate::lastsession::SavedWs {
+                name: "w".into(),
+                id: Some("w".into()),
+                panes: None,
+                tabs: vec![crate::lastsession::SavedTab {
+                    title: "sh".into(),
+                    id: Some("agent".into()),
+                    cwd: Some(here),
+                    program: crate::test_shell(),
+                    session: "what-it-was-saying".into(),
+                    source: "Minted".into(),
+                }],
+            }],
+        };
+        let (mut tabs, mut errors, mut resume) = (Vec::new(), Vec::new(), Default::default());
+        apply_ws_config(&mut tabs, desk, 10, 40, &mut errors, &mut resume, Some(&last));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            tabs[0].previous.as_ref().map(|s| s.id.as_str()),
+            Some("what-it-was-saying"),
+            "a tab the settings started was never told what it was having"
+        );
         for t in &mut tabs {
             t.kill();
         }
@@ -1227,11 +1280,13 @@ pub fn open_declared_browsers(desk: &config::Desk, caps: &hooks::Caps, errors: &
 
 /// The conversation a tab should be launched back into, if there is one.
 ///
-/// Three things all have to hold, and every one of them failing is ordinary
-/// rather than exceptional: this tab may have been told to start clean, it may
-/// be new since last time, and the conversation may have been deleted since. So
-/// there is no message here — a tab that starts fresh is what a tab normally
-/// does, and saying so on every launch would be noise.
+/// Three things all have to hold, and two of them failing are ordinary rather
+/// than exceptional: this tab may have been told to start clean, and it may be
+/// new since last time. Neither is worth a word — a tab that starts fresh is
+/// what a tab normally does, and saying so on every launch would be noise. The
+/// third is not ordinary and is written down: the tab was having a conversation
+/// and the record of it has gone, which is the one case where a tab that looks
+/// like every other fresh tab has lost something.
 ///
 /// The tab is recognised by the same four things `lastsession` writes down, in
 /// the same spelling: the program is `argv[0]` and the folder is the resolved
@@ -1262,8 +1317,44 @@ pub fn carried_conversation(
     };
     match tab::resumable(argv, &cfg.profile, &session.id) {
         true => tab::Resume::Id(session),
-        false => tab::Resume::Fresh,
+        // The one failure that is not ordinary: this tab was having a
+        // conversation, and what is left of it on this computer is nothing.
+        // Said out loud because the tab comes up looking like any other fresh
+        // one, and because the app is about to remember the empty conversation
+        // it starts instead
+        false => {
+            append_hook_log(&format!(
+                "\"{title}\" starts clean: {} is not on this computer any more",
+                session.short()
+            ));
+            tab::Resume::Fresh
+        }
     }
+}
+
+/// The conversation a tab is launched into, whichever road starts it.
+///
+/// Two roads start tabs -- the settings being read (`apply_ws_config`) and a
+/// desk being opened (`spawn_desk`) -- and a tab must begin the same way down
+/// either. A conversation the settings name outranks the one the tab was
+/// having: it was chosen for this tab deliberately, and "what this tab was
+/// saying last time" is not an answer to that
+fn launch_plan(
+    carry: Option<&crate::lastsession::Saved>,
+    desk: &config::Desk,
+    argv: &[String],
+    cfg: &config::TabConfig,
+    cwd: &Option<std::path::PathBuf>,
+    title: &str,
+) -> tab::Resume {
+    let plan = match resume_plan_of(cfg.resume.as_deref()) {
+        named @ tab::Resume::Id(_) => named,
+        _ => carried_conversation(carry, desk, argv, cfg, cwd, title),
+    };
+    if let tab::Resume::Id(s) = &plan {
+        append_hook_log(&format!("launching \"{title}\" carrying {}", s.short()));
+    }
+    plan
 }
 
 #[cfg(test)]
@@ -1301,7 +1392,7 @@ mod keeping_running_tabs_tests {
 
     fn start(desk: &config::Desk) -> Vec<Tab> {
         let (mut tabs, mut errors) = (Vec::new(), Vec::new());
-        apply_ws_config(&mut tabs, desk, 10, 40, &mut errors, &mut Default::default());
+        apply_ws_config(&mut tabs, desk, 10, 40, &mut errors, &mut Default::default(), None);
         assert!(errors.is_empty(), "{errors:?}");
         tabs
     }
@@ -1339,7 +1430,7 @@ mod keeping_running_tabs_tests {
                 .expect("no tab works in the folder that stays");
 
             let (mut errors, mut resume) = (Vec::new(), Default::default());
-            let msg = apply_ws_config(&mut tabs, &desk_of("w", "w", &[busy]), 10, 40, &mut errors, &mut resume);
+            let msg = apply_ws_config(&mut tabs, &desk_of("w", "w", &[busy]), 10, 40, &mut errors, &mut resume, None);
 
             assert_eq!(tabs.len(), 1, "{msg}");
             assert!(same_process(&tabs[0], &at_work), "the AI at work was stopped (deleted folder listed first: {gone_first})");
@@ -1361,7 +1452,7 @@ mod keeping_running_tabs_tests {
         let other = tabs[1].parser.clone();
 
         let (mut errors, mut resume) = (Vec::new(), Default::default());
-        apply_ws_config(&mut tabs, &desk_of("w", "w", &[&dirs[1], &dirs[2]]), 10, 40, &mut errors, &mut resume);
+        apply_ws_config(&mut tabs, &desk_of("w", "w", &[&dirs[1], &dirs[2]]), 10, 40, &mut errors, &mut resume, None);
 
         assert_eq!(tabs.len(), 2);
         assert!(same_process(&tabs[0], &moved), "the moved folder's tab was replaced at once");

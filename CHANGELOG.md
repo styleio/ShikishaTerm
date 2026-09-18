@@ -117,6 +117,18 @@ once it reaches its first tagged release.
 - **The Issue tab is called Issues & PRs.**
 
 ### Fixed
+- **Saving the settings no longer costs an AI tab the conversation it was having.**
+  Two roads start tabs -- a desk being opened, and the settings being read again --
+  and only the first was told what each tab was having. So a tab the settings started
+  came up on a conversation of nobody's, and what the app went on remembering for that
+  tab was the empty one it had just been handed: it names no record anywhere, so the
+  next time the app opened, the tab came up clean and what it had been saying was no
+  longer written down anywhere the app looks. Both roads now start a tab the same way.
+  A conversation that exists also outranks one that does not, so an id nobody has
+  spoken in cannot take a real conversation's place in what is remembered. And the one
+  case where a tab starts clean although it was having a conversation -- the record of
+  it is no longer on this computer -- is written into `logs\hooks.log` instead of
+  passing in silence.
 - **A folder that names itself now hears what is typed straight into its AI.** It
   heard two kinds of request before: the ones sent from the app's own input bar, and
   the ones a CLI was given a hook to report. Typing into the terminal of a CLI whose
