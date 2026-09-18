@@ -4952,12 +4952,21 @@ function petId(desk, self) {
 }
 
 // ── Sidebar ───────────────────────────────────────
+// Whether this is the folder the app itself is in. Written "." rather than
+// as a path, so that settings carried to another PC land beside the app there
+const besideTheApp = g => (g.cwd || "").trim().replace(/[\\/]+$/, "") === ".";
+// The folder as a line of its own: its path, or the words for the two cases a
+// path cannot say
+function folderWhere(g) {
+  if (besideTheApp(g)) return T["settings.group.folder.beside"];
+  return (g.cwd || "").trim() || T["settings.group.folder.ph"];
+}
 // What a folder is called in a list: what someone typed, else the folder itself
 function folderLabel(g, i) {
   const name = (g.name || "").trim();
   if (name) return name;
   const cwd = (g.cwd || "").trim();
-  if (!cwd) return T["settings.group.folder.ph"];
+  if (!cwd || besideTheApp(g)) return folderWhere(g);
   return cwd.split(/[\\/]/).filter(Boolean).pop() || cwd;
 }
 
@@ -5048,7 +5057,7 @@ function renderNav() {
     nav.append(el("button", {class:"navitem navproject" + (within(gi) ? " sel" : ""),
         onclick:() => { sel = {desk:sel.desk, grp:gi, tab:null, global:false}; render(); }},
       folderMark(null),
-      el("div", {class:"body"}, el("span", {}, folderLabel(g, gi)), el("span", {class:"sub"}, g.cwd || T["settings.group.folder.ph"]))));
+      el("div", {class:"body"}, el("span", {}, folderLabel(g, gi)), el("span", {class:"sub"}, folderWhere(g)))));
   }
   if (!projects.length && !loose.length) nav.append(el("div", {class:"navnone"}, T["settings.nav.projects.none"]));
 }
@@ -9770,7 +9779,7 @@ function projectPane(desk, p) {
     const fam = FAMILIES[(g.cwd || "").trim()] || {};
     rows.append(el("div", {class:"listrow secretrow", onclick:() => { sel = {desk:sel.desk, grp:gi, tab:null, global:false}; render(); }},
       el("span", {class:"secretname"}, folderLabel(g, gi)),
-      el("span", {class:"hint mono secretdesc"}, g.cwd || T["settings.group.folder.ph"]),
+      el("span", {class:"hint mono secretdesc"}, folderWhere(g)),
       el("span", {class:"hint"}, fam.cut ? T["settings.project.worktree"] : T["settings.project.checkout"]),
       el("span", {class:"go"}, "›")));
   }
@@ -12089,11 +12098,24 @@ function enterFloat(wi, i) {
   document.body.classList.add("float");
   const gi = t.group || 0;
   const g = (desk.folders || [])[gi];
+  // Where it is going, when there is a where. A group with no folder yet is
+  // asked about below instead, and "adding to no folder chosen" is not a line
+  // anybody should have to read
   document.getElementById("floatwhere").textContent =
-    g ? fill(T["settings.float.where"], {folder: folderLabel(g, gi)}) : "";
+    g && (g.cwd || "").trim() ? fill(T["settings.float.where"], {folder: folderLabel(g, gi)}) : "";
   const body = document.getElementById("floatbody");
   body.textContent = "";
   body.append(launchCard(t));
+  // A group with no folder of its own has nowhere to run anything, and a tab
+  // added to one waits instead of starting. The question is asked here, while
+  // the tab is being made, rather than left to be discovered on a tab that
+  // sits there saying nothing happened
+  if (g && !(g.cwd || "").trim()) {
+    body.append(card(T["settings.group.folder"],
+      row(T["settings.group.folder"],
+          ...pathField(g, "cwd", T["settings.group.folder.ph"], "dir", T["settings.group.folder.pick"]),
+          el("span", {class:"hint"}, T["settings.group.folder.hint"]))));
+  }
   const first = body.querySelector("select, input");
   if (first) first.focus();
 }
@@ -13276,6 +13298,58 @@ mod tests {
         assert!(PAGE.contains("if (!floating) goIndex();"), "adding a tab from its dialog sends the person to INDEX");
         assert!(PAGE.contains(r#"postMessage(JSON.stringify({kind:"settingsfull"}))"#),
             "More settings does not ask the window for the whole of it");
+        // A tab added to a group with no folder would wait instead of starting,
+        // so the dialog asks for the folder while the tab is being made
+        assert!(PAGE.contains(r#"if (g && !(g.cwd || "").trim()) {"#),
+            "the dialog adds a tab to a group with nowhere to work and asks nothing");
+    }
+
+    /// The settings screen's script is JavaScript a browser can actually parse.
+    ///
+    /// It is one script, so one syntax error anywhere in it takes the whole
+    /// settings screen down at once: nothing is defined, no card is drawn, and
+    /// what is left is an empty window with no way to fix the settings that
+    /// opened it. Every other test here reads the page as text, and text
+    /// cannot tell a broken expression from a fine one, so this one hands it
+    /// to a parser. Node does the parsing, because no crate here parses
+    /// JavaScript and node is on both CI runners; where there is none it says
+    /// so rather than pretending to have checked
+    #[test]
+    fn the_settings_script_is_javascript_a_browser_can_parse() {
+        let html = crate::i18n::render(&themed(PAGE.to_string()))
+            .replace("__TOKEN__", "t")
+            .replace("__REMOTE__", "false")
+            .replace("__HOTKEY_DEFAULT__", crate::hotkeys::DEFAULT)
+            .replace("__QUICK__", &quick_json())
+            .replace("__DICT__", "{}")
+            .replace("__GRANTS__", "[]")
+            .replace("__GITLUA__", "\"\"")
+            .replace("__PROTECT__", "[]")
+            .replace("__THISPC__", "\"@pc\"")
+            .replace("__PETNOUNS__", "[]")
+            .replace("__MD__", "\"\"");
+        let mut script = String::new();
+        let mut rest = html.as_str();
+        while let Some(at) = rest.find("<script>") {
+            rest = &rest[at + "<script>".len()..];
+            let Some(end) = rest.find("</script>") else { break };
+            script.push_str(&rest[..end]);
+            script.push('\n');
+            rest = &rest[end..];
+        }
+        assert!(script.len() > 10_000, "the script could not be pulled out of the page: {} characters", script.len());
+        let file = std::env::temp_dir().join(format!("shikisha-settings-{}.js", std::process::id()));
+        std::fs::write(&file, &script).expect("could not write the script out");
+        let checked = std::process::Command::new("node").arg("--check").arg(&file).output();
+        let _ = std::fs::remove_file(&file);
+        match checked {
+            Ok(done) => assert!(
+                done.status.success(),
+                "the settings script dies whole on a syntax error:\n{}",
+                String::from_utf8_lossy(&done.stderr)
+            ),
+            Err(e) => eprintln!("node is missing, so the syntax check did not run ({e}). It runs in CI"),
+        }
     }
 
     /// The screen must not still contain a raw `{{key}}` or `__DICT__`.

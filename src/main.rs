@@ -637,6 +637,8 @@ impl WinSurface {
                 Ev::Browse { path, open, make } => self.mail.browses.push((path, open, make)),
                 Ev::FolderName { folder, name } => self.mail.folder_names.push((folder, name)),
                 Ev::TabName { tab, name } => self.mail.tab_names.push((tab, name)),
+                // A tab that was waiting for somewhere to work was given a folder
+                Ev::TabFolder { tab, folder } => self.mail.tab_folders.push((tab, folder)),
                 Ev::FolderClose { folder } => self.mail.folder_closes.push(folder),
                 Ev::FolderDiscard { folder, unasked } => self.mail.folder_discards.push((folder, unasked)),
                 Ev::RemoteCut => self.mail.remote_cut = true,
