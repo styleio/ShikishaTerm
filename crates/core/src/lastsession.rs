@@ -72,6 +72,48 @@ fn path() -> PathBuf {
     crate::config::state_path(FILE)
 }
 
+/// Whether the CLI's own record of this conversation is still on this computer.
+///
+/// A CLI that keeps no record we know how to find is taken at its word: there
+/// is nothing to check, and doubting it would throw away conversations that are
+/// perfectly alive
+fn kept_on_this_computer(t: &Tab, id: &str) -> bool {
+    match t.resume.as_ref().and_then(|r| r.verify.as_deref()) {
+        Some(pattern) => crate::sessionfind::exists(pattern, id),
+        None => true,
+    }
+}
+
+/// Which conversation to remember for one tab: the one it holds now, or the one
+/// this file already holds for it.
+///
+/// Normally the one it holds now, and there is nothing to weigh. The exception
+/// is the one that loses work: a tab is handed a brand new id the moment it
+/// starts, and until somebody speaks in it that id names nothing — no record,
+/// nowhere. Remembering it in place of a conversation that does exist trades
+/// something for nothing, and the trade is silent: the empty id cannot be
+/// resumed next time, so the tab comes up clean and what it was saying is no
+/// longer written down anywhere the app looks.
+///
+/// So a conversation with a record outranks one without. Nothing is held on to
+/// once the tab has a real conversation of its own again -- speaking in the new
+/// one gives it a record, and it wins the moment it has one
+fn worth_keeping(
+    live: Option<&Session>,
+    had: Option<&Session>,
+    kept: impl Fn(&str) -> bool,
+) -> Option<Session> {
+    match (live, had) {
+        (Some(now), Some(before))
+            if now.id != before.id && !kept(&now.id) && kept(&before.id) =>
+        {
+            Some(before.clone())
+        }
+        (Some(now), _) => Some(now.clone()),
+        (None, before) => before.cloned(),
+    }
+}
+
 impl Saved {
     pub fn load() -> Saved {
         let fallback = Saved { version: VERSION, desks: Vec::new() };
@@ -184,7 +226,10 @@ impl Saved {
                 // launch and never put anything in it, so what it had BEFORE
                 // is the one still worth coming back to — otherwise opening
                 // the app and closing it again would quietly forget everything
-                let s = t.conversation_to_keep()?;
+                let had = self.conversation_for(desk, t);
+                let s = worth_keeping(t.conversation_to_keep(), had.as_ref(), |id| {
+                    kept_on_this_computer(t, id)
+                })?;
                 Some(SavedTab {
                     title: t.title.clone(),
                     id: t.id.clone(),
@@ -352,6 +397,46 @@ mod tests {
             Some("abc".into()),
             "the conversation that tab was having comes back"
         );
+    }
+
+    /// An empty conversation does not take a real one's place.
+    ///
+    /// A tab is handed a brand new id the moment it starts, and until somebody
+    /// speaks in it that id names nothing. Written down in place of the
+    /// conversation the tab was having, it loses it twice over: the new id
+    /// cannot be resumed, so the tab comes up clean next time, and the real
+    /// conversation is no longer written down anywhere the app looks
+    #[test]
+    fn a_conversation_nobody_has_spoken_in_does_not_replace_one_that_exists() {
+        let of = |id: &str| Session { id: id.into(), source: SessionSource::Minted };
+        let (real, empty) = (of("written-down"), of("never-used"));
+        let on_disk = |id: &str| id == "written-down";
+
+        // The tab holds an id nothing was ever said in, and the file holds the
+        // conversation it was having: the conversation wins
+        assert_eq!(
+            worth_keeping(Some(&empty), Some(&real), on_disk).map(|s| s.id),
+            Some("written-down".into())
+        );
+        // Once the tab has a conversation of its own again, it wins at once --
+        // nothing is held on to for longer than it is the only one there is
+        assert_eq!(
+            worth_keeping(Some(&real), Some(&of("older")), on_disk).map(|s| s.id),
+            Some("written-down".into())
+        );
+        // Neither has a record: there is nothing to weigh, so the tab's own
+        // stands. Refusing both would forget a conversation that is about to
+        // have a record the moment somebody types in it
+        assert_eq!(
+            worth_keeping(Some(&empty), Some(&of("also-gone")), on_disk).map(|s| s.id),
+            Some("never-used".into())
+        );
+        // A tab with nothing of its own keeps what the file holds for it
+        assert_eq!(
+            worth_keeping(None, Some(&real), on_disk).map(|s| s.id),
+            Some("written-down".into())
+        );
+        assert!(worth_keeping(None, None, on_disk).is_none());
     }
 
     #[test]

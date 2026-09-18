@@ -524,13 +524,14 @@ pub fn retry_failed(
     desk: Option<&config::Desk>,
     rows: u16,
     cols: u16,
+    carry: Option<&crate::lastsession::Saved>,
 ) -> Option<String> {
     let Some(Surface::Failed { name, .. }) = surfaces.get(at.checked_sub(1)?) else {
         return None;
     };
     let desk = desk?;
     let mut errors = Vec::new();
-    crate::desk::apply_ws_config(tabs, desk, rows, cols, &mut errors, &mut Default::default());
+    crate::desk::apply_ws_config(tabs, desk, rows, cols, &mut errors, &mut Default::default(), carry);
     Some(match crate::desk::launch_failure(&desk.name, name) {
         Some(still) => still.why,
         None => i18n::tp("msg.failed.started", &[("name", name)]),
@@ -1618,7 +1619,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if let Some(w) = new_ws.get(target) {
                     if viewed.is_some() {
                         let before = startup_errors.len();
-                        msg = apply_ws_config(&mut tabs, w, rows, cols, &mut startup_errors, &mut resume_for);
+                        msg = apply_ws_config(
+                            &mut tabs,
+                            w,
+                            rows,
+                            cols,
+                            &mut startup_errors,
+                            &mut resume_for,
+                            Some(&last_session),
+                        );
                         // A tab that the save asked for and could not start is what
                         // there is to say, not that the settings were read. The tab
                         // itself stays on screen saying the same (Surface::Failed)
@@ -3695,7 +3704,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             active = pane_layout.focused_surface();
             view_touched_ms = start.elapsed().as_millis() as u64;
-            if let Some(msg) = retry_failed(active, &surfaces, &mut tabs, desks.get(desk_index), rows, cols)
+            if let Some(msg) = retry_failed(active, &surfaces, &mut tabs, desks.get(desk_index), rows, cols, Some(&last_session))
                 .or_else(|| restart_surface(active, keep, &mut tabs, &surfaces, &mut engine, &caps, rows, cols))
             {
                 flash = Some(msg);
@@ -7027,7 +7036,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // conversation back, while wanting a clean slate has an
                         // answer inside the CLI already (/clear)
                         KeyCode::Char('r') | KeyCode::Char('R') => {
-                            flash = retry_failed(active, &surfaces, &mut tabs, desks.get(desk_index), rows, cols)
+                            flash = retry_failed(active, &surfaces, &mut tabs, desks.get(desk_index), rows, cols, Some(&last_session))
                                 .or_else(|| {
                                     restart_surface(
                                         active,
@@ -12290,7 +12299,7 @@ mod tests {
                 {"name":"three","command":"<sh>"}
             ]}]}]}"#,
         );
-        let msg = apply_ws_config(&mut tabs, &desk1, 24, 80, &mut errs, &mut Default::default());
+        let msg = apply_ws_config(&mut tabs, &desk1, 24, 80, &mut errs, &mut Default::default(), None);
 
         assert_eq!(
             tabs.iter().map(|t| t.title.clone()).collect::<Vec<_>>(),
@@ -12309,7 +12318,7 @@ mod tests {
                 {"name":"three","command":"<sh>"}
             ]}]}]}"#,
         );
-        let msg2 = apply_ws_config(&mut tabs, &desk2, 24, 80, &mut errs, &mut Default::default());
+        let msg2 = apply_ws_config(&mut tabs, &desk2, 24, 80, &mut errs, &mut Default::default(), None);
         assert!(tabs[0].needs_restart, "it is marked as needing a restart");
         assert!(msg2.contains("1 need a restart"), "{msg2}");
 
