@@ -157,7 +157,7 @@ fn main() -> Result<()> {
         // failing it.
         let quiet = matches!(
             std::env::args().nth(1).as_deref(),
-            Some("--bridge") | Some("--hook")
+            Some("--bridge") | Some("--hook") | Some("--mcp")
         );
         if !quiet {
             say_fatally(&format!("{e}"));
@@ -185,6 +185,18 @@ fn boot() -> Result<()> {
     // sound the agent could mistake for its own
     if std::env::args().nth(1).as_deref() == Some("--hook") {
         return hook_mode(std::env::args().nth(2).unwrap_or_default());
+    }
+    // MCP mode. An AI client -- Claude Code and the others -- starts this and
+    // speaks the Model Context Protocol down its own pipes: one JSON object per
+    // line, the tools being this app's automation primitives and nothing else.
+    //
+    // It drives a *running* copy through the external API rather than starting
+    // anything itself, and which copy is the caller's to say: the environment
+    // for the one this is running inside, `--pid` for a separate one. Nothing
+    // is printed but an answer, for the same reason hook mode stays silent --
+    // the client is reading this process's output as the protocol itself.
+    if std::env::args().nth(1).as_deref() == Some("--mcp") {
+        return shikisha_core::mcp::run();
     }
     // A copy started to finish an update waits for the copy that started it
     // to leave, so nothing below reads files the old one is still writing

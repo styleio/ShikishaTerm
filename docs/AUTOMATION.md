@@ -755,6 +755,44 @@ someone who is already you.
 The first caller of each session is written to `logs/hooks.log`, along with any connection
 that presented no valid key.
 
+### The same door, as MCP tools
+
+An AI client that speaks the Model Context Protocol -- Claude Code, and the others -- can be
+given these commands as its own tools:
+
+```jsonc
+{ "command": "<path>\\SHIKISHA-TERM.exe", "args": ["--mcp"] }
+```
+
+Started by a CLI in a tab, it needs nothing else: the tab's key is already in its
+environment, so its calls arrive as **that tab**, counted against that tab's chain and its
+permissions. To point it at another running copy -- the one being tested rather than the one
+you are working in -- name that copy instead:
+
+```jsonc
+{ "command": "<path>\\SHIKISHA-TERM.exe",
+  "args": ["--mcp", "--pid", "12345", "--token-file", "<its root>\\data\\api-token"] }
+```
+
+`--pid` is that copy's process id (the door carries it in its name), and `--token-file` is
+where `access: "user"` leaves its key. `--pipe` and `--token` say the same things outright.
+
+Every tool is one command from section 9 with a `shikisha_` prefix, so that this app's
+`send` cannot be mistaken for another server's, and its arguments go in `params` in the
+order the command takes them:
+
+```jsonc
+{ "name": "shikisha_send_to_tab", "arguments": { "params": ["reviewer", "how is it going?"] } }
+```
+
+The list of tools is the answer to `list` -- asked of the running app, every time, through
+the same door and the same permissions. **What a client is offered and what the app will
+actually do cannot drift apart**, including the part that depends on who is asking. A
+command a desk switched off for an AI is not on the list an AI is handed.
+
+A command that refuses comes back as a tool that failed, with the reason in it, rather than
+as a broken connection: the model reads it and tries something else.
+
 ---
 
 ## 8. Tips for writing it
