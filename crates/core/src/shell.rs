@@ -2116,6 +2116,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The words give way before the bars do: a bar with its sentence cut short
      still says how much is left; a sentence with no bar says less */
   #status .usage .wsay { overflow:hidden; text-overflow:ellipsis; min-width:0; flex:0 1 auto; }
+  /* The short forms of this reading, drawn but not shown until the screen is
+     too narrow for the long ones (see the narrow rules at the foot of this
+     sheet). Kept here, beside what they stand in for, so the pair cannot be
+     changed one at a time */
+  #status .usage .aim, #status .usage .wpct { display:none; }
   .pill.live:hover { background:var(--tint); }
   #stop { cursor:pointer; color:var(--stop); border:1px solid color-mix(in srgb, var(--stop) 40%, var(--bg));
     padding:2px 10px; border-radius:var(--r-ctl); font-weight:700; }
@@ -3149,6 +3154,36 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     /* The ASCII wordmark breaks up at this width, so switch to plain bold text */
     .mark { display:none; }
     .mark-lite { display:block; }
+  }
+
+  /* ── A bar too narrow for its own words ───────────────────────────────
+     Width alone, and not the shape of the screen the rules above also answer
+     to: a tall monitor is turned on its side, not made small, and every word
+     still fits across it. 700px is the width those rules already name, and it
+     is where this row stops fitting: laid out in full it is a little over
+     700px of readings before the two buttons at the end.
+
+     Everything here is one long form giving way to a short one that was
+     drawn beside it all along. The letters stay in the element -- what shrinks
+     is the type, not the text -- so what reads the page aloud is unaffected,
+     and the whole word is in the tooltip. This is the trade the two pills at
+     the end already make (STOP is a square, RESTART an arrow) */
+  @media (max-width:700px) {
+    /* AUTO and REMOTE, as their first letter. The colour goes on saying which
+       way AUTO is set: green for on, grey for off */
+    #status .pill.auto, #status .pill.remote { font-size:0; }
+    #status .pill.auto::after { content:"A"; font-size:12px; }
+    #status .pill.remote::after { content:"R"; font-size:12px; }
+    /* Claude's name, as the mark its own tabs wear, in its own colour */
+    #status .usage .who { display:none; }
+    #status .usage .aim { display:inline-block; }
+    /* "5h(5%) 7d(51%)": the bar and the sentence give way to the number, and
+       the two windows are told apart by the space between them */
+    #status .usage { gap:var(--s2); }
+    #status .usage .bar, #status .usage .wsay { display:none; }
+    #status .usage .wpct { display:inline; }
+    #status .usage .win { gap:0; }
+    #status .usage .win + .win::before { content:none; }
   }
 </style>
 <!-- Where a colour scheme chosen after this page was built lands. Empty
@@ -8483,10 +8518,18 @@ function usagePill() {
       el("span", {class:"bar"}, fill),
       // "24% used 9m": the span bare, next to the words. The dot between
       // the two windows is the stylesheet's, so the words stay this short
-      el("span", {class:"wsay"}, w.used + (w.resets ? " " + w.resets : "")));
+      el("span", {class:"wsay"}, w.used + (w.resets ? " " + w.resets : "")),
+      // "(24%)": the same reading with nothing in it but the number, for a
+      // screen too narrow for a bar and a sentence. Both are drawn and the
+      // stylesheet picks one — this row is rebuilt several times a second,
+      // so which one is showing must not be something JavaScript is told
+      el("span", {class:"wpct"}, "(" + w.pct + "%)"));
   };
   return el("span", {class:"usage ai-claude", title:S.usage.title},
+    // The name where there is room for it, and where there is not, the mark
+    // Claude's own tabs wear — built by the one thing that builds those marks
     el("span", {class:"who"}, "Claude"),
+    aiMark("claude"),
     win(S.usage.five),
     win(S.usage.week));
 }
@@ -8506,9 +8549,14 @@ function drawStatus() {
   [
     el("span", {class:"desklink", title:T["tui.menu.desk"] || "DESK",
       onclick:() => send({kind:"opendesk"})}, S.desk || ""),
-    el("span", {class:"pill " + (S.auto_enabled ? "on" : "off")},
+    // Named in their class as well as their words: on a narrow screen each is
+    // cut to its first letter, and the stylesheet has to be able to tell which
+    // letter. The whole word stays in the element (and in the tooltip), so
+    // what reads the page out loud still says it
+    el("span", {class:"pill auto " + (S.auto_enabled ? "on" : "off"),
+      title:"AUTO " + (S.auto_enabled ? "ON" : "OFF")},
       "AUTO " + (S.auto_enabled ? "ON" : "OFF")),
-    S.remote_on ? el("span", {class:"pill on"}, "REMOTE") : null,
+    S.remote_on ? el("span", {class:"pill remote on", title:"REMOTE"}, "REMOTE") : null,
     // A phone is connected right now. Only shown at the window (a phone must not
     // be able to disconnect itself). Clicking it ends every remote session — the
     // phone's screen goes dark at once and its touches stop reaching anything —
@@ -18266,6 +18314,39 @@ mod tests {
         // The bar is rebuilt several times a second; a flick must survive it
         assert!(PAGE.contains("const wasMid = s.querySelector(\".stmid\");")
             && PAGE.contains("if (wasAt) mid.scrollLeft = wasAt;"), "a flick snaps back to the left on the next state");
+    }
+
+    /// A bar too narrow for its words says the same things in fewer of them:
+    /// AUTO and REMOTE as one letter, Claude as its mark, and the
+    /// subscription as "5h(5%) 7d(51%)".
+    ///
+    /// Both forms are drawn and the stylesheet picks one. It has to be that
+    /// way round: this row is rebuilt several times a second, and a form
+    /// chosen in JavaScript would have to be told every time the window is
+    /// dragged to another width.
+    #[test]
+    fn a_narrow_bar_says_the_same_things_in_fewer_letters() {
+        // Width alone. The layout rules also answer to a tall screen, which is
+        // wide enough for every word
+        assert!(PAGE.contains("  @media (max-width:700px) {\n"), "the short forms follow the shape of the screen as well as its width");
+        // The pills, by name rather than by position
+        assert!(PAGE.contains(r#"el("span", {class:"pill auto " + (S.auto_enabled ? "on" : "off"),"#), "the automation pill cannot be told from the others");
+        assert!(PAGE.contains(r#"el("span", {class:"pill remote on", title:"REMOTE"}, "REMOTE")"#), "the remote pill cannot be told from the others");
+        assert!(PAGE.contains(r#"#status .pill.auto::after { content:"A"; font-size:12px; }"#), "AUTO is not cut to its letter");
+        assert!(PAGE.contains(r#"#status .pill.remote::after { content:"R"; font-size:12px; }"#), "REMOTE is not cut to its letter");
+        // The whole word stays in the element, for whatever reads it aloud
+        assert!(PAGE.contains("#status .pill.auto, #status .pill.remote { font-size:0; }"), "the words are taken out rather than made small");
+        // Claude's name becomes the mark its own tabs wear -- built by the one
+        // builder for those marks, not a second copy of the table
+        assert!(PAGE.contains("    aiMark(\"claude\"),\n    win(S.usage.five),"), "the mark is not the one the tabs wear");
+        assert!(PAGE.contains("#status .usage .who { display:none; }\n    #status .usage .aim { display:inline-block; }"), "the name does not give way to the mark");
+        // "5h(5%)": the number alone, with the bar and the sentence away
+        assert!(PAGE.contains(r#"el("span", {class:"wpct"}, "(" + w.pct + "%)")"#), "there is no short reading to fall back to");
+        assert!(PAGE.contains("#status .usage .bar, #status .usage .wsay { display:none; }"), "the bar and the words still take the width");
+        assert!(PAGE.contains("#status .usage .wpct { display:inline; }"), "the short reading never shows");
+        // Both forms are in the page at once, and the wide one is what a wide
+        // screen gets
+        assert!(PAGE.contains("#status .usage .aim, #status .usage .wpct { display:none; }"), "the short forms show at every width");
     }
 
     /// A usage-limit notice is the tab's own, so it is shown only over the

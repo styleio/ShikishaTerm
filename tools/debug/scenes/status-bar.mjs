@@ -45,9 +45,19 @@ const state = (extra) => JSON.stringify(JSON.stringify(Object.assign({
   help_rows: [], ais: [],
 }, extra)));
 
-// Pull the readings to their far end, the way a thumb would
+// Pull the readings to their far end, the way a thumb would. It must really
+// have moved: cut short enough to fit, this row has nothing to pull, and a
+// scene that quietly photographed a row at rest would prove nothing
 const flick = ' new Promise(r => setTimeout(() => { const m = document.querySelector("#status .stmid");'
-  + ' m.scrollLeft = m.scrollWidth; r("ok"); }, 200))';
+  + ' m.scrollLeft = m.scrollWidth;'
+  + ' r(m.scrollLeft > 0 ? "ok" : Promise.reject(new Error("there was nothing to pull")));'
+  + ' }, 200))';
+
+// The longest thing the bar ever carries: a CLI that has run out says so in
+// its own words, and no cutting down makes that fit
+const limited = state({
+  tabs: [tab(0, 'claude', { ai: 'claude', limit: 'usage limit reached, resets 3pm' })],
+});
 
 export default {
   settle: 1500,
@@ -56,21 +66,19 @@ export default {
   scenes: {
     // What the bar carries on an ordinary working day
     full: `window.__state(${state()}); "ok"`,
+    // With the CLI's own notice as well: cut down as far as it goes, this is
+    // still wider than the bar, which is what the pulling is there for
+    limited: `window.__state(${limited}); "ok"`,
     // The same bar pulled to its far end: RESTART and STOP have not moved,
-    // and the last of the reading has come into view
-    scrolled: `window.__state(${state()});` + flick,
+    // and the last of the notice has come into view
+    scrolled: `window.__state(${limited});` + flick,
     // Pulled, and then left where the next state push finds it. This bar is
     // rebuilt several times a second, and a flick that snapped back to the
     // left on the next push would be a row nobody could read to the end
-    kept: `window.__state(${state()});` + flick
-      + `.then(() => { window.__state(${state()});`
+    kept: `window.__state(${limited});` + flick
+      + `.then(() => { window.__state(${limited});`
       + ' return document.querySelector("#status .stmid").scrollLeft > 0'
       + ' ? "ok" : Promise.reject(new Error("the flick was lost on the next state")); })',
-    // With the CLI's own notice as well, which is the longest thing the bar
-    // ever carries
-    limited: `window.__state(${state({
-      tabs: [tab(0, 'claude', { ai: 'claude', limit: 'usage limit reached, resets 3pm' })],
-    })}); "ok"`,
     // Nothing but the desk and AUTO: there is nothing to pull, and the bar
     // must not look any different for it
     quiet: `window.__state(${state({
@@ -83,6 +91,15 @@ export default {
       run: `window.__state(${state()}); "ok"`,
       served: 'window',
       sizes: [['wide', 1280, 860], ['narrow', 900, 700]],
+    },
+    // A window dragged down to a phone's width. It is the same short form:
+    // what decides is how much room the words have, not what is holding them
+    small: {
+      run: `window.__state(${state()}); "ok"`,
+      served: 'window',
+      sizes: [['small', 620, 700]],
+      langs: ['en'],
+      looks: ['dark'],
     },
   },
 };
