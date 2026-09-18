@@ -35,6 +35,12 @@
       "cwd": "payload.cwd"
     },
     "verify": "{home}/.codex/sessions/*/*/*/rollout-*-{id}.jsonl",
+    "asks": {
+      "role_at": "/payload/role",
+      "role": "user",
+      "text_at": "/payload/content",
+      "parts": ["input_text"]
+    },
     "hook": {
       "file": "{home}/.codex/hooks.json",
       "format": "bare",

@@ -997,6 +997,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // What people asked the AIs in each folder, for the folders that name and
     // describe themselves from it (`crate::labels`)
     let mut heard = crate::labels::Board::default();
+    // How far each AI's own record of its conversation has been read
+    // (`crate::asks`). Kept by file rather than by tab: the file is what is
+    // being read, and a tab that restarts on the same conversation carries on
+    // rather than starting again
+    let mut read_asks: std::collections::HashMap<std::path::PathBuf, u64> =
+        std::collections::HashMap::new();
     let mut label_jobs: Vec<LabelJob> = Vec::new();
     let mut label_seq: u64 = 0;
     let mut label_look = Instant::now();
@@ -4494,6 +4500,36 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         true => wanted.push((cwd.clone(), f.summary.is_some())),
                         // Heard for nothing: a folder that does not ask keeps nothing
                         false => heard.forget(cwd),
+                    }
+                }
+                // What people asked the AIs, read out of the record each AI
+                // keeps of its own conversation (`crate::asks`). The other two
+                // roads only cover some of the asking: the input bar knows
+                // what it handed over, and a hook reports what it was
+                // installed to report. Somebody typing straight into a CLI
+                // that has had nothing put into its settings travels neither,
+                // and that is how most work is asked for -- folders left
+                // unnamed for weeks were all of them this
+                for t in tabs.iter() {
+                    let Some(at) = t.cwd() else { continue };
+                    if !wanted.iter().any(|(w, _)| crate::uistate::same_folder(w, at)) {
+                        continue;
+                    }
+                    let Some(spec) = t.resume.as_ref() else { continue };
+                    let (Some(how), Some(verify), Some(session)) =
+                        (spec.asks.as_ref(), spec.verify.as_deref(), t.session.as_ref())
+                    else {
+                        continue;
+                    };
+                    let Some(file) = sessionfind::locate(verify, &session.id) else { continue };
+                    let from = *read_asks
+                        .entry(file.clone())
+                        .or_insert_with(|| crate::asks::begin_at(&file));
+                    let (said, now_at) = crate::asks::read_from(&file, how, from);
+                    read_asks.insert(file, now_at);
+                    let at = at.to_path_buf();
+                    for text in said {
+                        heard.hear(&at, &text);
                     }
                 }
                 let due = heard.due(now, &wanted);

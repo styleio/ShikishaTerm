@@ -54,6 +54,12 @@
         "StopFailure": "FAILED"
       }
     },
-    "verify": "{home}/.claude/projects/*/{id}.jsonl"
+    "verify": "{home}/.claude/projects/*/{id}.jsonl",
+    "asks": {
+      "role_at": "/message/role",
+      "role": "user",
+      "text_at": "/message/content",
+      "skip_when": ["/isMeta", "/isCompactSummary"]
+    }
   }
 }

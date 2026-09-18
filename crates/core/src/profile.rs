@@ -181,6 +181,39 @@ pub struct ResumeSpec {
     /// How to ask this CLI to report its conversation as it starts
     #[serde(default)]
     pub hook: Option<HookSpec>,
+    /// How to read a person's requests out of that record, for the folder's
+    /// own name and summary (`crate::asks`). Nothing is installed anywhere to
+    /// get them: the CLI already writes them down, and `verify` already says
+    /// where
+    #[serde(default)]
+    pub asks: Option<AskSpec>,
+}
+
+/// How to tell a person's own words apart from everything else a CLI writes
+/// into its record of a conversation.
+///
+/// A record holds far more than what was typed: what tools returned, what the
+/// app injected, what the CLI told itself. Those arrive under the same `user`
+/// as the person's words -- a tool's answer is written as something the model
+/// was told -- so telling them apart is the whole job, and it is done from
+/// here rather than in code, because each CLI writes them differently and a
+/// new CLI is a file, not a release.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct AskSpec {
+    /// Where the line says whose words these are (a JSON pointer)
+    pub role_at: String,
+    /// Whose words count. A person's
+    pub role: String,
+    /// Where the words themselves are (a JSON pointer)
+    pub text_at: String,
+    /// The kinds of content block that hold a person's words. Empty means
+    /// the words stand there as a string, with no blocks around them
+    #[serde(default)]
+    pub parts: Vec<String>,
+    /// Pointers that, where they hold anything true, mean the line is not a
+    /// person speaking however it is labelled
+    #[serde(default)]
+    pub skip_when: Vec<String>,
 }
 
 /// A CLI's own record of its conversations, as far as we need to read it:
