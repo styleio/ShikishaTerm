@@ -382,6 +382,7 @@ pub fn apply_ws_config(
         removed += 1;
     }
     *tabs = ordered;
+    said_if_two_answer_to_one_name(tabs);
 
     let mut parts = vec![i18n::t("msg.config_reloaded")];
     if added > 0 {
@@ -394,6 +395,31 @@ pub fn apply_ws_config(
         parts.push(i18n::tp("msg.config_needs_restart", &[("n", &staged.to_string())]));
     }
     parts.join(" / ")
+}
+
+/// Say so when two tabs that are running answer to one automation name.
+///
+/// It must not happen: everything that is told a name and not a place --
+/// automation, an API key, a hand-off -- reaches whichever of them comes
+/// first, silently, and differently after a reorder. The settings cannot hold
+/// two of one name (`config::settle_tab_ids`), and every line written since
+/// 0.16.0 says its name outright, so a pair here is a tab still carrying a
+/// name its own line has since given up: settings from before that, edited
+/// while it ran. It is written to the log rather than left to be found by the
+/// surprise it causes -- a press that shows somebody else's folder
+fn said_if_two_answer_to_one_name(tabs: &[Tab]) {
+    let mut seen: Vec<(&str, &str)> = Vec::new();
+    for t in tabs {
+        let Some(id) = t.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) else { continue };
+        match seen.iter().find(|(name, _)| *name == id) {
+            Some((_, first)) => crate::append_hook_log(&format!(
+                "two tabs answer to \"{id}\": \"{first}\" and \"{}\" -- \
+                 whatever names it reaches the first of them",
+                t.title
+            )),
+            None => seen.push((id, &t.title)),
+        }
+    }
 }
 
 /// Which running tab each line of the settings is, by position in `tabs`.

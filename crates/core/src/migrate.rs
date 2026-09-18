@@ -53,7 +53,8 @@ pub struct Step {
 /// the shape of a settings file adds one line here, and a fixture of a real
 /// file from the version before it under `tests/fixtures/`, so the test that
 /// walks every fixture to the present keeps walking.
-const STEPS: &[Step] = &[Step { to: "0.10.0", apply: to_0_10_0 }];
+const STEPS: &[Step] =
+    &[Step { to: "0.10.0", apply: to_0_10_0 }, Step { to: "0.16.0", apply: to_0_16_0 }];
 
 /// The unit a person switches between is called a desk.
 ///
@@ -80,6 +81,39 @@ fn to_0_10_0(doc: &mut serde_json::Value) -> Result<()> {
         };
         if let Some(rest) = file.strip_prefix("workspaces/").or_else(|| file.strip_prefix("workspaces\\")) {
             desk["file"] = serde_json::json!(format!("desks/{rest}"));
+        }
+    }
+    Ok(())
+}
+
+/// Every tab says the name automation calls it by.
+///
+/// A tab that said none was named by loading, from its display name and the
+/// order it stood in among the tabs sharing that name: the second "claude" in
+/// a desk was `claude-2`. Nothing wrote that down, so it was worked out again
+/// on every start -- and a tab already running kept the name it was given at
+/// launch. Take a working folder out of the settings, and the name that tab
+/// still answers to is handed to a different line: two live tabs then answer
+/// to one name, and whatever is looked up by it (automation, an API key, the
+/// view a folder was last looked at in) reaches whichever comes first.
+///
+/// So the name is written down here, once, exactly as loading was deriving it
+/// -- nothing a script already says changes -- and from then on it is a
+/// property of the line rather than of its position. A line that already says
+/// one is left alone, including a name two lines both claim: that is somebody's
+/// own file, and loading still moves the second aside and says so at startup.
+fn to_0_16_0(doc: &mut serde_json::Value) -> Result<()> {
+    match doc.get_mut("desks").and_then(|d| d.as_array_mut()) {
+        Some(desks) => {
+            for desk in desks {
+                crate::config::name_desk_tabs(desk);
+            }
+        }
+        // A desk kept in a file of its own is the same shape as one inside the
+        // settings, and a settings file with no desks written in it is read as
+        // a single desk: both are this document
+        None => {
+            crate::config::name_desk_tabs(doc);
         }
     }
     Ok(())
@@ -453,6 +487,62 @@ mod tests {
             let _: crate::config::Config = serde_json::from_value(doc).expect("it cannot be read after migrating");
         }
         assert!(seen >= 1, "there is not a single fixture");
+    }
+
+    /// Every tab is left saying the name automation calls it by, and saying
+    /// the one loading was working out for it until now.
+    ///
+    /// The name mattered from the first start of this version, because nothing
+    /// had written it down: it was handed out by the order the lines stood in,
+    /// so a folder taken out of the settings passed the name of a tab still
+    /// running to a different line. Two live tabs then answered to one name,
+    /// and everything that looks one up -- automation, an API key, the view a
+    /// folder was last looked at in -- reached whichever came first
+    #[test]
+    fn every_tab_is_left_saying_what_automation_calls_it() {
+        let before: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                crate::repo_root().join("tests").join("fixtures").join("config-0.15.0.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let derived = |doc: &serde_json::Value| -> Vec<Vec<String>> {
+            let cfg: crate::config::Config = serde_json::from_value(doc.clone()).unwrap();
+            cfg.resolve_desks()
+                .0
+                .iter()
+                .map(|d| d.tabs.iter().filter_map(|t| t.cfg.id.clone()).collect())
+                .collect()
+        };
+        let mut doc = before.clone();
+        let (at, err) = run_steps(&mut doc, "0.15.0", STEPS);
+        assert_eq!((at.as_str(), err), ("0.16.0", None));
+
+        // Written down, and not one of them changed in the writing
+        assert_eq!(derived(&doc), derived(&before), "a tab's automation name moved");
+        let ids = |desk: usize, folder: usize| -> Vec<String> {
+            doc["desks"][desk]["folders"][folder]["tabs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["id"].as_str().unwrap_or("").to_string())
+                .collect()
+        };
+        assert_eq!(ids(0, 1), ["mouse", "powershell"], "a name somebody wrote was not left alone");
+        assert_eq!(ids(0, 2), ["claude"]);
+        assert_eq!(ids(0, 3)[0], "claude-2", "the second folder's tab says nothing: {:?}", ids(0, 3));
+        // A desk whose tabs are written the old way, beside the folders
+        assert_eq!(doc["desks"][1]["tabs"][0]["id"], "claude");
+
+        // The name a folder's tab answers to no longer moves when another
+        // folder is taken out of the settings
+        let mut cut = doc.clone();
+        cut["desks"][0]["folders"].as_array_mut().unwrap().remove(2);
+        assert_eq!(
+            derived(&cut)[0],
+            ["mouse", "powershell", "claude-2", &crate::config::pet_name("レビュー")]
+        );
     }
 
     /// The rename arrives without anybody losing what they had written.

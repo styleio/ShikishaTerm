@@ -85,12 +85,32 @@ once it reaches its first tagged release.
   tab reaches any more.
 
 ### Changed
+- **What automation calls a tab is written into the settings the moment its line
+  is made, and never worked out from where that line stands.** It is taken from
+  the tab's display name: all of it POSIX's portable filename characters
+  (`A-Z a-z 0-9 . _ -`) and the name stands as it is, letter for letter; those
+  mixed with others and the others are taken out, as long as three characters
+  remain; none of them, or no display name at all, and a short word is drawn from
+  the list branch names come from (`otter`, `finch`). Two names that come out the
+  same still get `-2` on the end, once, where it stays. The first start of this
+  version writes down the name of every tab in the settings that has none,
+  keeping a copy of the file first, and writes exactly the name that was being
+  worked out until then -- with one exception: a name with no letters of its own
+  (Japanese, say) had a five-character hash and now draws a word, and a display
+  name's capitals are kept where they were lowercased before.
 - **The branches and the history open as a Git tab in the middle**, from the arrow
   in the git column, rather than being a pane of the column. The column keeps what
   is done every day. A Git tab with no account of its own uses its project's.
 - **The Issue tab is called Issues & PRs.**
 
 ### Fixed
+- **Pressing a working folder's name shows that folder.** It could bring up
+  another folder's tab instead, and the card said one folder while the screen
+  showed another. Two tabs were answering to one automation name: the name was
+  worked out from the order the lines stood in and written down nowhere, so
+  taking a folder out of the settings handed the name of a tab still running to
+  a different line. The names are written down now, and the arrangement a folder
+  was last looked at in is kept by what each pane held rather than by that name.
 - **Pressing a folder that has not been looked at yet shows it on its own.** With
   the screen split, it went into the pane in front only, and the other pane went
   on showing a folder of another project beside it.
