@@ -38,6 +38,15 @@ const SCAN_CAP: usize = 400;
 /// to tens of megabytes is not made more findable by reading all of it
 const READ_CAP: usize = 512 * 1024;
 
+/// How many records to open when asking what was said in one folder. A folder
+/// nothing was ever said in is the case this bounds: without it, every tab
+/// that came up clean would read the whole of the past to learn nothing
+const LOOK_CAP: usize = 120;
+
+/// How much of a record to read to learn which folder it belongs to. Every one
+/// of these writes that down within the first exchange
+const FOLDER_CAP: usize = 64 * 1024;
+
 /// One place a conversation can be found and resumed from.
 struct Source {
     /// What launches this CLI — the head of its command, e.g. `claude`
@@ -50,6 +59,9 @@ struct Source {
     id_path: Option<String>,
     /// How to read the folder out of a record's first line, if it says so
     cwd_path: Option<String>,
+    /// How to tell a person's own words apart from everything else the record
+    /// holds, for saying what a conversation was about
+    asks: Option<crate::profile::AskSpec>,
 }
 
 /// One conversation the search turned up.
@@ -153,6 +165,75 @@ pub fn reopen_argv(hit: &Hit) -> Option<Vec<String>> {
     Some(out)
 }
 
+/// The conversations one CLI recorded in one folder, newest first.
+///
+/// The Vault's search asked the other way round: not "which conversation
+/// mentioned this word" but "what has been said here before". It is asked
+/// about a tab that came up on a conversation of nobody's -- whatever lost the
+/// thread, the CLI's own records are what is left to offer, and they are on
+/// the disk already.
+///
+/// Reading stops at the first `most` that match, and never looks past
+/// `LOOK_CAP` files, so asking about a folder nothing was ever said in costs a
+/// bounded look rather than the whole of the past
+pub fn here(program: &str, cwd: &Path, most: usize) -> Vec<Hit> {
+    let Some(src) = sources().into_iter().find(|s| s.program == program) else {
+        return Vec::new();
+    };
+    here_in(&src, cwd, most)
+}
+
+/// The same question asked of one CLI's records, so a test can supply its own.
+fn here_in(src: &Source, cwd: &Path, most: usize) -> Vec<Hit> {
+    let mut files: Vec<(SystemTime, PathBuf)> = list(&src.verify)
+        .into_iter()
+        .filter_map(|path| {
+            let when = path.metadata().ok()?.modified().ok()?;
+            Some((when, path))
+        })
+        .collect();
+    files.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
+    files.truncate(LOOK_CAP);
+
+    let mut out = Vec::new();
+    for (when, path) in files {
+        if out.len() >= most {
+            break;
+        }
+        // Enough of the file to hold the folder it belongs to and nothing
+        // more: every one of these writes that within the first exchange, and
+        // reading half a megabyte per file to learn one path is a scan nobody
+        // would wait for
+        let Some(head) = read_some(&path, FOLDER_CAP) else { continue };
+        let Some(at) = cwd_of(&head, &src) else { continue };
+        if !crate::uistate::same_folder(Path::new(&at), cwd) {
+            continue;
+        }
+        let Some(id) = id_of(&path, &head, &src) else { continue };
+        out.push(Hit {
+            program: src.program.clone(),
+            id,
+            title: title_of(Some(&at), &src.program),
+            snippet: first_ask(&path, &src).unwrap_or_default(),
+            cwd: Some(at),
+            when: when.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+            tab: None,
+        });
+    }
+    out
+}
+
+/// What the person asked first in a record, for saying which conversation this
+/// is. Their own words, told apart from everything else the file holds the way
+/// that CLI's profile says (`crate::asks`)
+fn first_ask(path: &Path, src: &Source) -> Option<String> {
+    let how = src.asks.as_ref()?;
+    let (said, _) = crate::asks::read_from(path, how, 0);
+    let first = said.into_iter().find(|t| !t.trim().is_empty())?;
+    let one_line: String = first.split_whitespace().collect::<Vec<_>>().join(" ");
+    Some(one_line.chars().take(120).collect())
+}
+
 /// The CLIs whose records can be searched and resumed by id.
 fn sources() -> Vec<Source> {
     profiles()
@@ -171,7 +252,7 @@ fn sources() -> Vec<Source> {
                 Some(rec) => (Some(rec.id.clone()), Some(rec.cwd.clone())),
                 None => (None, None),
             };
-            Some(Source { program, with_id: r.with_id, verify, id_path, cwd_path })
+            Some(Source { program, with_id: r.with_id, verify, id_path, cwd_path, asks: r.asks })
         })
         .collect()
 }
@@ -273,9 +354,14 @@ fn snippet(text: &str, at: usize, len: usize) -> String {
 
 /// The first part of a file, capped.
 fn read_head(path: &Path) -> Option<String> {
+    read_some(path, READ_CAP)
+}
+
+/// The front of a file, at most `cap` bytes of it.
+fn read_some(path: &Path, cap: usize) -> Option<String> {
     use std::io::Read as _;
     let mut f = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0u8; READ_CAP];
+    let mut buf = vec![0u8; cap];
     let n = f.read(&mut buf).ok()?;
     buf.truncate(n);
     // Lossy on purpose: a record with a stray non-UTF-8 byte is still worth
@@ -378,6 +464,74 @@ mod tests {
         d
     }
 
+    /// What was said in one folder before, newest first, and nothing from
+    /// anywhere else.
+    ///
+    /// This is what is left when the app has lost which conversation a tab was
+    /// having: the records are on the disk whatever the app remembers, and
+    /// every one of them says which folder it belongs to
+    #[test]
+    fn what_was_said_in_one_folder_is_found_whatever_the_app_remembers() {
+        let root = tmp("here");
+        let proj = root.join("proj-here");
+        let line = |cwd: &str, said: &str| {
+            format!(
+                r#"{{"type":"user","cwd":"{cwd}","message":{{"role":"user","content":"{said}"}}}}"#
+            )
+        };
+        write(&proj.join("aaaa1111-0000-0000-0000-000000000001.jsonl"),
+            &[&line("D:\\\\work\\\\here", "the older one"), ""]);
+        write(&proj.join("bbbb2222-0000-0000-0000-000000000002.jsonl"),
+            &[&line("D:\\\\work\\\\here", "the newer one"), ""]);
+        write(&proj.join("cccc3333-0000-0000-0000-000000000003.jsonl"),
+            &[&line("D:\\\\work\\\\elsewhere", "somebody else's"), ""]);
+        // Newest last-written wins, and the test says which is which rather
+        // than trusting the order two files happened to be written in
+        let older = proj.join("aaaa1111-0000-0000-0000-000000000001.jsonl");
+        let newer = proj.join("bbbb2222-0000-0000-0000-000000000002.jsonl");
+        let now = std::time::SystemTime::now();
+        let ago = now - std::time::Duration::from_secs(600);
+        let touch = |at: &Path, when: std::time::SystemTime| {
+            std::fs::OpenOptions::new().write(true).open(at).unwrap().set_modified(when).unwrap();
+        };
+        touch(&older, ago);
+        touch(&newer, now);
+
+        let src = Source {
+            program: "claude".into(),
+            with_id: vec!["--resume".into(), "{id}".into()],
+            verify: with_seps(&format!("{}/*/{{id}}.jsonl", root.display())),
+            id_path: None,
+            cwd_path: None,
+            asks: None,
+        };
+        let ids = |most| {
+            here_in(&src, Path::new("D:\\work\\here"), most)
+                .into_iter()
+                .map(|h| h.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(5),
+            vec![
+                "bbbb2222-0000-0000-0000-000000000002".to_string(),
+                "aaaa1111-0000-0000-0000-000000000001".to_string(),
+            ],
+            "the folder's own conversations, newest first, and nobody else's"
+        );
+        // The same folder written the other way round is the same folder
+        assert_eq!(
+            here_in(&src, Path::new("d:/work/here"), 1).len(),
+            1,
+            "the other slash and another case named the same folder"
+        );
+        assert!(
+            here_in(&src, Path::new("D:\\work\\nothing-here"), 1).is_empty(),
+            "a folder nothing was said in offers nothing"
+        );
+        assert_eq!(ids(1).len(), 1, "it stops once it has what was asked for");
+    }
+
     #[test]
     fn a_glob_lists_records_and_the_id_comes_from_the_name_when_the_file_does_not_say() {
         // Claude's shape: id is the file's own name, cwd lives in a later line
@@ -396,6 +550,7 @@ mod tests {
             verify: with_seps(&format!("{}/*/{{id}}.jsonl", root.display())),
             id_path: None,
             cwd_path: None,
+            asks: None,
         };
         let files = list(&src.verify);
         assert_eq!(files.len(), 1, "the glob does not find the record");
@@ -419,6 +574,7 @@ mod tests {
             verify: with_seps(&format!("{}/*/*/*/rollout-*-{{id}}.jsonl", root.display())),
             id_path: Some("payload.session_id".into()),
             cwd_path: Some("payload.cwd".into()),
+            asks: None,
         };
         let files = list(&src.verify);
         assert_eq!(files.len(), 1);
@@ -457,6 +613,7 @@ mod tests {
                 verify: String::new(),
                 id_path: None,
                 cwd_path: None,
+                asks: None,
             };
             let mut v = vec![src.program.clone()];
             for a in &src.with_id {

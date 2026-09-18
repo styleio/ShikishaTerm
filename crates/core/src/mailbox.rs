@@ -192,6 +192,12 @@ pub struct Mailbox {
     pub vault_queries: Vec<String>,
     /// Past conversations asked to be reopened as resuming tabs
     pub vault_opens: Vec<shikisha_shared::Ev>,
+    /// Tabs asked what was said in their folder before, by the number a person
+    /// presses. The loop reads the records and puts the list into state
+    pub past_lists: Vec<u32>,
+    /// Tabs asked to be put back into one of those conversations: which tab,
+    /// and which conversation
+    pub past_resumes: Vec<(u32, String)>,
     /// Branches asked about, and asked for: (folder cut from, branch, what to
     /// grow it from, make it, what to bring along)
     pub branches: Vec<shikisha_shared::BranchAsk>,
@@ -442,6 +448,12 @@ impl Mailbox {
     }
     pub fn take_vault_opens(&mut self) -> Vec<shikisha_shared::Ev> {
         std::mem::take(&mut self.vault_opens)
+    }
+    pub fn take_past_lists(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.past_lists)
+    }
+    pub fn take_past_resumes(&mut self) -> Vec<(u32, String)> {
+        std::mem::take(&mut self.past_resumes)
     }
     pub fn take_branches(&mut self) -> Vec<shikisha_shared::BranchAsk> {
         std::mem::take(&mut self.branches)

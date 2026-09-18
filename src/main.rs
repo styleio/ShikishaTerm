@@ -516,10 +516,12 @@ impl WinSurface {
     /// Takes the pending ✨ suggestion requests since the last drain.
     /// Route a Vault intent that arrived from the phone into the same queues a
     /// window-origin one uses, so both are drained in one place
-    fn queue_vault(&mut self, ev: shikisha_shared::Ev) {
+    fn queue_ui(&mut self, ev: shikisha_shared::Ev) {
         match ev {
             shikisha_shared::Ev::VaultSearch { query } => self.mail.vault_queries.push(query),
             ev @ shikisha_shared::Ev::VaultOpen { .. } => self.mail.vault_opens.push(ev),
+            shikisha_shared::Ev::PastList { tab } => self.mail.past_lists.push(tab),
+            shikisha_shared::Ev::PastResume { tab, id } => self.mail.past_resumes.push((tab, id)),
             _ => {}
         }
     }
@@ -637,6 +639,8 @@ impl WinSurface {
                 }
                 Ev::VaultSearch { query } => self.mail.vault_queries.push(query),
                 ev @ Ev::VaultOpen { .. } => self.mail.vault_opens.push(ev),
+                Ev::PastList { tab } => self.mail.past_lists.push(tab),
+                Ev::PastResume { tab, id } => self.mail.past_resumes.push((tab, id)),
                 ev @ Ev::Branch { .. } => {
                     self.mail.branches.extend(shikisha_shared::BranchAsk::of(ev));
                 }
@@ -1851,7 +1855,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn push_ideas(&self, json: &str) { WinSurface::push_ideas(self, json) }
     fn push_sftp(&self, json: &str) { WinSurface::push_sftp(self, json) }
     fn push_recorded(&self, line_json: &str) { WinSurface::push_recorded(self, line_json) }
-    fn queue_vault(&mut self, ev: shikisha_shared::Ev) { WinSurface::queue_vault(self, ev) }
+    fn queue_ui(&mut self, ev: shikisha_shared::Ev) { WinSurface::queue_ui(self, ev) }
     fn push_suggested(&self, json: &str) { WinSurface::push_suggested(self, json) }
     fn push_surveyed(&self, json: &str) { WinSurface::push_surveyed(self, json) }
     fn push_lua_done(&self, err_json: &str) { WinSurface::push_lua_done(self, err_json) }

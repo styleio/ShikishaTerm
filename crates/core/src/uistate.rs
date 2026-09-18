@@ -71,6 +71,12 @@ pub struct TabState {
     /// browser or the settings pane.
     #[serde(default)]
     pub auto: bool,
+    /// Whether this tab came up on a conversation of nobody's while its folder
+    /// has been worked in before. The caption offers the way back while it is
+    /// true, which is until somebody speaks here: from then on this tab has a
+    /// conversation of its own, and the past is the Vault's business
+    #[serde(default)]
+    pub past: bool,
     /// Whether relaunching this makes any sense. A session always can be; a
     /// placed page can be reopened at the URL it started on; the app's own
     /// furniture (the settings form, the result view) cannot, because there is
@@ -272,6 +278,17 @@ impl GitAcctState {
 pub struct AskState {
     pub text: String,
     pub label: String,
+}
+
+/// What has been said in one tab's folder before, for the tab that came up on
+/// a conversation of nobody's: the list the person picks the way back from.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct PastState {
+    /// The tab this was asked about, by the number a person presses
+    pub tab: usize,
+    /// What that tab is called, so the overlay can say which tab it is about
+    pub name: String,
+    pub hits: Vec<crate::vault::Hit>,
 }
 
 /// The Vault overlay's contents: what was searched and what turned up.
@@ -1768,6 +1785,9 @@ pub struct UiState {
     /// the rest of the time, so the state stays small
     #[serde(default)]
     pub vault: Option<VaultState>,
+    /// What was said before in one tab's folder, while that overlay is open
+    #[serde(default)]
+    pub past: Option<PastState>,
     /// The help itself: the keys in force, paired with the dictionary key for
     /// the line describing each. Built from the same table the window
     /// dispatches on, so a rebound key cannot leave the help telling people to
@@ -1854,6 +1874,7 @@ impl TabState {
             group: None,
             kind: "pty".into(),
             restartable: true,
+            past: t.past_here && !t.spoke(),
             model: t.is_model(),
             busy: t.is_generating(),
             settings: false,
@@ -1972,6 +1993,8 @@ impl TabState {
             activity: Vec::new(),
             group: None,
             kind: "browser".into(),
+            // A page has no conversation to have been having
+            past: false,
             // The same two keys `main::restartable_page` refuses, and for the
             // same reason: they are opened and closed by the app, so "open it
             // again" is not a thing a person can want from them
@@ -2367,6 +2390,7 @@ mod tests {
             state_label: "WAIT".into(),
             since: None,
             profile: "GENERIC".into(),
+            past: false,
             locked: false,
             depth: 0,
             activity: vec![0; 4],

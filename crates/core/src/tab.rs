@@ -2628,6 +2628,14 @@ pub struct Tab {
     /// someone who quit to be rid of it — but offered to the key that already
     /// means "carry the conversation over"
     pub previous: Option<Session>,
+    /// Whether this tab came up on a conversation of nobody's although its
+    /// folder has been worked in before.
+    ///
+    /// Worked out once, as the tab starts, because that is when it is true and
+    /// because it reads files: the conversation it should have come back to is
+    /// gone from what the app remembers, and what is left is the CLI's own
+    /// records. It is what the caption offers a way back from
+    pub past_here: bool,
     /// Whether anything has been said in this tab since it started. Set from
     /// the writing side, which is shared, hence the atomic
     spoke: AtomicBool,
@@ -2953,6 +2961,17 @@ impl Tab {
         // What the conversation asks for, turned into arguments. A model tab
         // runs no CLI at all, so there is nothing to resume
         let resume_spec = if opts.model.is_some() { None } else { profile.resume.clone() };
+        // A tab starting on nobody's conversation, in a folder that has been
+        // worked in before, is the one case worth offering a way back from.
+        // Asked here, where the plan is still in hand and before the process
+        // exists: what comes back is the CLI's own records, which are not
+        // affected by anything this launch does
+        let past_here = matches!(plan, Resume::Fresh)
+            && resume_spec.as_ref().is_some_and(|r| !r.with_id.is_empty())
+            && opts.cwd.as_deref().is_some_and(|at| {
+                !crate::vault::here(argv.first().map(String::as_str).unwrap_or_default(), at, 1)
+                    .is_empty()
+            });
         let (resumed, session) = plan_launch(resume_spec.as_ref(), argv, plan);
         // A held tab holds the display the same way a model tab does, and for
         // the same reason: the thing it would run must not run. A remote tab
@@ -3205,6 +3224,7 @@ impl Tab {
             log_path,
             keyboard,
             previous: None,
+            past_here,
             spoke: AtomicBool::new(false),
             status: Vec::new(),
             progress: None,

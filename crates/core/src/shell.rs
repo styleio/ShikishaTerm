@@ -910,6 +910,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      one control that silently picks for you is how a restart eats a day's work.
      Armed shows in warning colour rather than in words: the caption is 22px
      tall and has no room for "SURE?" */
+  /* The way back, for a tab that came up on a conversation of nobody's while
+     its folder has been worked in before. A mark with words rather than an
+     icon alone: what it offers is not something anybody has an icon for, and
+     the name beside it is what flexes, so the offer keeps its words for as
+     long as the caption has any room at all */
+  .pane .phead .past { flex:none; display:flex; align-items:center; gap:4px;
+    padding:1px 6px; border:1px solid var(--line); border-radius:4px;
+    color:var(--dim); font-size:11px; line-height:14px; cursor:pointer; }
+  .pane .phead .past:hover { color:var(--brand); border-color:var(--brand); }
+  .pane .phead .past[hidden] { display:none; }
   .pane .phead .rs { opacity:.55; padding:0 2px; font-size:12px; line-height:1; }
   .pane .phead .rs:hover { opacity:1; color:var(--brand); }
   .pane .phead .rs.armed { opacity:1; color:var(--warn); }
@@ -2333,16 +2343,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the press outside a dialog: not adding after all */
   #dlgscrim { position:fixed; inset:0; background:#00000099; z-index:52; }
   #dlgscrim[hidden] { display:none; }
-  #vault, #palette, #branch, #browse, #repair, #sask, #sdiff { position:fixed; inset:0; background:#00000099; display:flex;
+  #vault, #past, #palette, #branch, #browse, #repair, #sask, #sdiff { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
-  #vault[hidden], #palette[hidden], #branch[hidden], #browse[hidden],
+  #vault[hidden], #past[hidden], #palette[hidden], #branch[hidden], #browse[hidden],
   #repair[hidden], #sask[hidden], #sdiff[hidden] { display:none; }
-  #vault .vbox, #palette .vbox, #branch .vbox, #browse .vbox,
+  #vault .vbox, #past .vbox, #palette .vbox, #branch .vbox, #browse .vbox,
   #sask .vbox, #sdiff .vbox { background:var(--panel); border:1px solid var(--line);
     border-radius:var(--r-card); padding:var(--s4) var(--s5); width:min(720px,92vw);
     max-height:82vh; display:flex; flex-direction:column; gap:var(--s3); }
   #branch .vbox { gap:var(--s5); }
-  #vault .vhead, #palette .vhead, #branch .vhead, #browse .vhead,
+  #vault .vhead, #past .vhead, #palette .vhead, #branch .vhead, #browse .vhead,
   #sask .vhead, #sdiff .vhead { display:flex; align-items:center; }
   /* The title is one thing and what is under it is another */
   #browse .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
@@ -2471,13 +2481,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #sask .quiet:hover { color:var(--text); }
   #sask .go.stop { border-color:var(--stop); background:transparent; color:var(--stop); }
   #browse .brow { padding-top:var(--s3); border-top:1px solid var(--line); }
-  #vault .vtitle, #palette .vtitle, #branch .vtitle, #browse .vtitle,
+  #vault .vtitle, #past .vtitle, #palette .vtitle, #branch .vtitle, #browse .vtitle,
   #sask .vtitle, #sdiff .vtitle { color:var(--text);
     font-size:13.5px; font-weight:600; text-transform:uppercase; flex:1; }
-  #vault .vclose, #palette .vclose, #branch .vclose, #browse .vclose,
+  #vault .vclose, #past .vclose, #palette .vclose, #branch .vclose, #browse .vclose,
   #sask .vclose, #sdiff .vclose { cursor:pointer;
     color:var(--dim); font-size:16px; padding:2px 6px; }
-  #vault .vclose:hover, #palette .vclose:hover, #branch .vclose:hover,
+  #vault .vclose:hover, #past .vclose:hover, #palette .vclose:hover, #branch .vclose:hover,
   #browse .vclose:hover, #repair .vclose:hover, #sask .vclose:hover,
   #sdiff .vclose:hover { color:var(--text); }
   #vault #vq, #palette #pq { font:inherit; font-size:14px; background:var(--bg);
@@ -2863,25 +2873,31 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      count belongs, and never pushes the name around */
   .tab.folder .drift { margin-left:auto; display:flex; gap:5px; flex:0 0 auto;
     font-size:10.5px; font-family:var(--mono); }
+  /* The way back on a tab's row. A hand on a phone is what this is for, so
+     it is given the 22px every other mark in a row is given rather than the
+     size of the glyph inside it */
+  .tab .back { flex:none; display:flex; align-items:center; justify-content:center;
+    min-width:22px; min-height:22px; color:var(--dim); font-size:13px; cursor:pointer; }
+  .tab .back:hover { color:var(--brand); }
   .tab.folder .drift .beh { color:var(--warn, #e0a80a); }
   .tab.folder .drift .ahd { color:var(--dim); }
   /* The + keeps its place at the very end */
   .tab.folder .drift + .more { margin-left:6px; }
-  #vault .vhint { color:var(--dim); font-size:11.5px; }
-  #vault .vlist, #palette .vlist { overflow:auto; display:flex; flex-direction:column; gap:var(--s1); }
-  #vault .vrow, #palette .prow { padding:9px 10px; border-radius:var(--r-ctl); cursor:pointer; border:1px solid transparent; }
+  #vault .vhint, #past .vhint { color:var(--dim); font-size:11.5px; }
+  #vault .vlist, #past .vlist, #palette .vlist { overflow:auto; display:flex; flex-direction:column; gap:var(--s1); }
+  #vault .vrow, #past .vrow, #palette .prow { padding:9px 10px; border-radius:var(--r-ctl); cursor:pointer; border:1px solid transparent; }
   #palette .prow { display:flex; gap:var(--s3); align-items:baseline; }
   #palette .prow.sel { background:var(--raise); border-color:var(--brand); }
   #palette .pgrp { flex:none; font-size:10px; color:var(--brand); text-transform:uppercase;
     width:64px; letter-spacing:.5px; }
   #palette .plabel { color:var(--text); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #vault .vrow:hover { background:var(--raise); border-color:var(--line); }
-  #vault .vrow .vr1 { display:flex; gap:var(--s2); align-items:baseline; }
-  #vault .vrow .vprog { color:var(--brand); font-size:11px; flex:none; }
-  #vault .vrow .vname { color:var(--text); font-size:13px; overflow:hidden;
+  #vault .vrow:hover, #past .vrow:hover { background:var(--raise); border-color:var(--line); }
+  #vault .vrow .vr1, #past .vrow .vr1 { display:flex; gap:var(--s2); align-items:baseline; }
+  #vault .vrow .vprog, #past .vrow .vprog { color:var(--brand); font-size:11px; flex:none; }
+  #vault .vrow .vname, #past .vrow .vname { color:var(--text); font-size:13px; overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
-  #vault .vrow .vwhen { color:var(--dim); font-size:11px; margin-left:auto; flex:none; }
-  #vault .vrow .vsnip { color:var(--dim); font-size:11.5px; margin-top:2px;
+  #vault .vrow .vwhen, #past .vrow .vwhen { color:var(--dim); font-size:11px; margin-left:auto; flex:none; }
+  #vault .vrow .vsnip, #past .vrow .vsnip { color:var(--dim); font-size:11.5px; margin-top:2px;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #veil .box { background:var(--panel); border:1px solid var(--brand);
     border-radius:var(--r-card); padding:20px 24px; max-width:min(760px,86vw);
@@ -3221,6 +3237,19 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div class="vbox">
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
       <input id="pq" type="text" autocomplete="off" spellcheck="false">
+      <div class="vlist"></div>
+    </div>
+  </div>
+  <!-- What was said in this tab's folder before, for a tab that came up on a
+       conversation of nobody's. One list, one choice: the tab goes back into
+       whichever is picked -->
+  <div id="past" hidden>
+    <div class="vbox">
+      <div class="vhead">
+        <span class="vtitle"></span>
+        <span class="vclose" title="close">✕</span>
+      </div>
+      <div class="vhint"></div>
       <div class="vlist"></div>
     </div>
   </div>
@@ -5990,6 +6019,13 @@ function tabRow(t, g, deep, head) {
       ? el("span", {class:"nm agent", title:t.profile},
           el("span", {class:"st"}, t.state_label || t.state), el("span", {class:"who"}, " - ", tabName(t, "tabs", "")))
       : el("span", {class:"nm", title:t.profile}, tabName(t, "tabs", "")),
+    // The way back, for a tab that came up on a conversation of nobody's. It
+    // is in the pane's caption too, and a phone has no captions -- this row is
+    // the one place both surfaces draw
+    t.past
+      ? el("span", {class:"back", title:T["tui.pane.past_hint"] || "",
+          onclick:(e) => { e.stopPropagation(); window.__openPast(t.index, t.name); }}, "\u21A9")
+      : null,
     // Beside the name rather than on the line under it: "which server" is the
     // thing a person reads this row for before they type into it
     serverMark(t.mark),
@@ -8972,6 +9008,7 @@ window.__state = function (json) {
   drawThinking();
   drawVeil();
   renderVault();
+  renderPast();
   drawBranch();
   drawRepair();
   drawBrowse();
@@ -9020,6 +9057,9 @@ window.__panes = function (json) {
       el.dataset.pid = p.id;
       el.innerHTML = '<div class="phead"><span class="dot"></span>' +
         '<span class="nm"></span><span class="pmark"></span>' +
+        // The ⟲ beside it starts a conversation from nothing; this one goes
+        // back to one that already happened in this folder
+        '<span class="past" hidden><span>&#8617;</span><span class="pwd"></span></span>' +
         // ▥ lines running down = a division down the middle; ▤ lines running
         // across = a division across. A matched pair, so the two read as one
         // choice with two directions rather than as two unrelated icons
@@ -9062,6 +9102,14 @@ window.__panes = function (json) {
         // folder in the settings, so splitting while working in the third one
         // and pressing its invitation added a tab to the first
         addTabHere(activeFolder(), p.id);
+      };
+      // The way back asks rather than acts: two tabs of one CLI in one folder
+      // leave two conversations that look alike, and putting the wrong one
+      // back is worse than asking which
+      el.querySelector(".past").onclick = (e) => {
+        e.stopPropagation();
+        const t = paneTab(p);
+        if (t) window.__openPast(t.index, t.name);
       };
       // Same two divisions the keyboard makes, on the pane you pressed them on
       for (const [cls, down] of [[".sr", false], [".sd", true]]) {
@@ -9157,6 +9205,14 @@ function paintPaneHeads() {
       const b = el.querySelector(cls);
       b.hidden = !(t && t.restartable);
       b.classList.toggle("armed", armedPane === cls + p.id);
+    }
+    // Offered only while it is true: this tab is in a conversation nobody has
+    // spoken in, and its folder has conversations behind it
+    const back = el.querySelector(".past");
+    back.hidden = !(t && t.past);
+    if (t && t.past) {
+      back.querySelector(".pwd").textContent = T["tui.pane.past"] || "Earlier conversation";
+      back.title = T["tui.pane.past_hint"] || "";
     }
     // The Issue tab is a page that takes its pane whole: dividing it from its
     // own caption is not something it is for
@@ -11748,6 +11804,48 @@ function closeVault() {
   const v = document.getElementById("vault");
   if (v) v.hidden = true;
 }
+// What was said in one tab's folder before. Asked for as the list opens, so
+// what it holds is what is on the disk now rather than what was there when the
+// tab started
+window.__openPast = function (tab, name) {
+  const v = document.getElementById("past");
+  if (!v) return;
+  v.dataset.tab = String(tab);
+  v.hidden = false;
+  v.querySelector(".vtitle").textContent = T["past.title"] || "EARLIER CONVERSATIONS";
+  v.querySelector(".vhint").textContent = (T["past.say"] || "").replace("{name}", name || "");
+  v.querySelector(".vlist").textContent = "";
+  send({kind:"pastlist", tab});
+};
+function closePast() {
+  const v = document.getElementById("past");
+  if (v) v.hidden = true;
+}
+function renderPast() {
+  const v = document.getElementById("past");
+  if (!v || v.hidden) return;
+  const ps = S && S.past;
+  if (!ps || String(ps.tab) !== v.dataset.tab) return;
+  const list = v.querySelector(".vlist");
+  const hint = v.querySelector(".vhint");
+  list.textContent = "";
+  const hits = ps.hits || [];
+  if (!hits.length) {
+    hint.textContent = T["past.none"] || "Nothing has been said in this folder before.";
+    return;
+  }
+  hint.textContent = (T["past.say"] || "").replace("{name}", ps.name || "");
+  for (const h of hits) {
+    const row = el("div", {class:"vrow", onclick:() => {
+      closePast();
+      send({kind:"pastresume", tab:ps.tab, id:h.id});
+    }});
+    row.append(el("div", {class:"vr1"},
+      el("span", {class:"vname"}, h.snippet || h.program),
+      el("span", {class:"vwhen"}, ago(h.when))));
+    list.append(row);
+  }
+}
 // How long ago, in the plainest words a row has space for
 function ago(sec) {
   if (!sec) return "";
@@ -11798,6 +11896,12 @@ function renderVault() {
       const query = q.value;
       vaultTimer = setTimeout(() => send({kind:"vaultsearch", query}), 180);
     });
+  }
+  const pv = document.getElementById("past");
+  if (pv) {
+    pv.querySelector(".vclose").addEventListener("click", closePast);
+    pv.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); closePast(); } });
+    pv.addEventListener("mousedown", (e) => { if (e.target === pv) closePast(); });
   }
   const v = document.getElementById("vault");
   if (v) {
@@ -17603,6 +17707,38 @@ mod tests {
     /// pair now lives in each pane's caption, where it names the pane it is drawn
     /// on. The bar keeps it on the phone alone, which has no panes to be ambiguous
     /// about and is exactly who needs it when an SSH tab drops.
+    /// A tab that came up on a conversation of nobody's offers the way back.
+    ///
+    /// The offer is drawn in the pane's caption only while it is true, and it
+    /// asks rather than acts: two tabs of one CLI in one folder leave two
+    /// conversations that look alike, so which one to go back to is the
+    /// person's to say.
+    #[test]
+    fn a_tab_that_started_clean_offers_the_way_back() {
+        assert!(
+            PAGE.contains(r#"back.hidden = !(t && t.past);"#),
+            "the caption offers the way back when there is nothing to go back to"
+        );
+        assert!(
+            PAGE.contains(r#"if (t) window.__openPast(t.index, t.name);"#),
+            "pressing the offer does not ask what was said here before"
+        );
+        // A phone draws no pane captions, so the row is the one place both
+        // surfaces offer it
+        assert!(
+            PAGE.contains(r#"e.stopPropagation(); window.__openPast(t.index, t.name);"#),
+            "the tab's own row does not offer it, so a phone cannot reach it"
+        );
+        assert!(
+            PAGE.contains(r#"send({kind:"pastlist", tab});"#),
+            "the list is not asked for"
+        );
+        assert!(
+            PAGE.contains(r#"send({kind:"pastresume", tab:ps.tab, id:h.id});"#),
+            "picking one does not put that tab back into it"
+        );
+    }
+
     #[test]
     fn a_pane_is_restarted_from_its_own_caption() {
         // Both meanings offered, because one control that picks for you is how
