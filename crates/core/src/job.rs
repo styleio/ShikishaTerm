@@ -53,6 +53,15 @@ impl Job {
         None
     }
 
+    /// Which processes the group holds right now, by id.
+    ///
+    /// Empty here for the same reason `active` says nothing: there is no cheap
+    /// call that lists a process group, and a caller reads an empty answer as
+    /// "nothing to say about this tab" rather than as "the tab is empty".
+    pub fn pids(&self) -> Vec<u32> {
+        Vec::new()
+    }
+
     /// Put a process, and everything it goes on to start, into this group.
     ///
     /// False when it could not be done -- most likely because the process had
@@ -161,6 +170,70 @@ impl Job {
             )
         };
         (ok != 0).then_some(info.ActiveProcesses)
+    }
+
+    /// Which processes the job holds right now, by id.
+    ///
+    /// The count says a tab has something running; the ids say *what*. Asked
+    /// of the job rather than of the machine's process table on purpose: these
+    /// are exactly the processes this tab started, so nothing else on the
+    /// computer can turn up in the answer and no parent-child walk has to be
+    /// trusted to stay ahead of processes starting while it walks.
+    ///
+    /// Empty where the answer cannot be had. A caller must read that as
+    /// "nothing to say about this tab", never as "the tab is empty".
+    pub fn pids(&self) -> Vec<u32> {
+        use windows_sys::Win32::Foundation::ERROR_MORE_DATA;
+        use windows_sys::Win32::System::JobObjects::{
+            JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList,
+            QueryInformationJobObject,
+        };
+        // The struct ends in an array of one, and the real list is written
+        // past it, so the buffer is bytes rather than the struct. Asking twice
+        // -- once to be told the count, once to hold it -- is how this call is
+        // meant to be used, and the population can change between the two, so
+        // the second ask is given room to grow rather than exactly what the
+        // first one said
+        let mut room = 64usize;
+        for _ in 0..4 {
+            let bytes = std::mem::size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()
+                + room * std::mem::size_of::<usize>();
+            let mut buf = vec![0u8; bytes];
+            // SAFETY: the handle is ours and lives as long as self; the buffer
+            // is at least as large as the struct the class names, and its size
+            // is passed with it
+            let ok = unsafe {
+                QueryInformationJobObject(
+                    self.0,
+                    JobObjectBasicProcessIdList,
+                    buf.as_mut_ptr().cast(),
+                    bytes as u32,
+                    std::ptr::null_mut(),
+                )
+            };
+            let err = std::io::Error::last_os_error().raw_os_error();
+            // SAFETY: the call above filled the head of the buffer with the
+            // struct, and the buffer outlives this read
+            let head = unsafe { &*buf.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() };
+            let (assigned, returned) =
+                (head.NumberOfAssignedProcesses as usize, head.NumberOfProcessIdsInList as usize);
+            if ok == 0 {
+                // The one failure worth trying again for: more processes than
+                // the buffer could hold. The call still writes how many there
+                // are, so the next ask is sized from the kernel's own number
+                if err != Some(ERROR_MORE_DATA as i32) || assigned <= room {
+                    return Vec::new();
+                }
+                room = assigned + 16;
+                continue;
+            }
+            let first = std::ptr::from_ref(&head.ProcessIdList).cast::<usize>();
+            // SAFETY: the kernel wrote `returned` ids starting at that field,
+            // and the buffer was sized to hold at least that many
+            let ids = unsafe { std::slice::from_raw_parts(first, returned.min(room)) };
+            return ids.iter().map(|&id| id as u32).collect();
+        }
+        Vec::new()
     }
 
     /// Put a process, and everything it goes on to start, into this job.

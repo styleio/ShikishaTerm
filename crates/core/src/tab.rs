@@ -1924,6 +1924,25 @@ mod tests {
         t
     }
 
+    /// The screen can change hands; what this tab is allowed to do cannot.
+    ///
+    /// An AI started by hand in a shell tab makes that tab read as the AI --
+    /// the mark, the states, the key the emergency stop presses. What it must
+    /// not do is make the tab **count** as an AI, because that answer is what
+    /// stands at the external API's door, and a tab can say anything about
+    /// itself. A title is a string the program in the tab chose.
+    #[test]
+    fn what_is_running_can_change_the_reading_and_never_the_standing() {
+        let plain = shell_judged_as(crate::profile::GENERIC, 12, 60);
+        assert!(!plain.is_ai(), "a shell is not an AI");
+        // The same tab, now read as Claude Code -- which is exactly what
+        // spotting one inside it does
+        let spotted = shell_judged_as("claude", 12, 60);
+        assert_eq!(spotted.profile_name(), "Claude Code", "the screen is read as the AI's");
+        assert!(!spotted.is_ai(), "a shell with an AI in it is still a shell at the door");
+        assert!(!spotted.detector.interrupt().is_empty(), "the emergency stop has nothing to press");
+    }
+
     #[test]
     fn an_answer_requires_the_ai_to_have_started_working() {
         use std::sync::atomic::Ordering;
@@ -2716,6 +2735,17 @@ pub struct Tab {
     /// How many processes this tab's job holds when nothing is going on.
     /// Learned rather than assumed -- see [`crate::detect::background_now`]
     job_rest: Option<u32>,
+    /// The AI somebody started by hand in here, while it is running. Only ever
+    /// looked for on a tab whose own command is not an AI -- see
+    /// [`crate::guest`]
+    guest: crate::guest::Watch,
+    /// The profile this tab's own command resolves to, by name.
+    ///
+    /// Kept apart from the detector's, which changes hands when an AI is
+    /// spotted running inside a shell. Everything about what may be done in
+    /// this tab is answered from here, so nothing read off a screen or a title
+    /// can widen it
+    own: String,
     /// Where the program in this tab last said it is working. Empty unless the
     /// shell announces it, which takes shell integration most people do not
     /// have -- so this is a bonus, never something relied on
@@ -2936,6 +2966,10 @@ impl Tab {
             anyhow::bail!(why);
         }
         let profile = Self::resolve_profile(argv, &profile_spec);
+        // Remembered before the profile is handed to the detector, because the
+        // detector's may change hands later and this one may not: it is the
+        // answer to "what was this tab started to run"
+        let own_profile = profile.name.clone();
         // Where this tab's terminal is. A local one is a process behind a
         // ConPTY; a remote one is a channel on a connection (see `crate::ssh`)
         // or a stream from a sandbox (see `crate::e2b`). The difference ends
@@ -3269,6 +3303,8 @@ impl Tab {
             bytes_out,
             job,
             job_rest: None,
+            guest: crate::guest::Watch::default(),
+            own: own_profile,
             reported_cwd,
             not_utf8,
             created: Instant::now(),
@@ -3705,6 +3741,11 @@ impl Tab {
             let p = conn.provider.trim().to_ascii_lowercase();
             return (!p.is_empty()).then_some(p);
         }
+        // What is running, which is the tab's own command unless somebody
+        // started an AI by hand inside it
+        if let Some(guest) = self.guest.who() {
+            return Some(guest.to_string());
+        }
         let head = self.argv.first()?;
         let head = std::path::Path::new(head)
             .file_stem()
@@ -3747,7 +3788,12 @@ impl Tab {
     pub fn apply_live_config(&mut self, profile_spec: Option<String>, locked: bool, auto_restart: bool, depth: u16, notify_on_done: Option<String>, live: &TabOptions) {
         if self.profile_spec != profile_spec {
             self.profile_spec = profile_spec;
-            self.detector = Detector::new(Self::resolve_profile(&self.argv, &self.profile_spec));
+            let profile = Self::resolve_profile(&self.argv, &self.profile_spec);
+            self.own = profile.name.clone();
+            // A profile named in the settings is the answer, so whatever was
+            // spotted running is let go of rather than left to argue with it
+            self.guest.clear();
+            self.detector = Detector::new(profile);
         }
         self.locked = locked;
         self.auto_restart = auto_restart;
@@ -3816,6 +3862,9 @@ impl Tab {
             self.submit_tick_ms.store(now, Ordering::Relaxed);
         }
         let old_state = self.state;
+        // Who is running in here, before the verdict rather than after it, so
+        // the screen is read by whoever is actually there
+        self.watch_for_a_guest();
         // Hand over what the program is claiming in its title before asking for
         // a verdict, so the two are read from the same moment
         if let Ok(t) = self.window_title.lock() {
@@ -3976,6 +4025,55 @@ impl Tab {
         self.model.is_some()
     }
 
+    /// Notice an AI somebody started by hand in a tab that was opened as a
+    /// shell, and let go of it again when it ends.
+    ///
+    /// What changes hands is the detector and the mark on the tab: how this
+    /// screen is read, what the emergency stop presses, which CLI's usage is
+    /// worth showing. What does not change hands is anything a fence is built
+    /// on -- `is_ai`, and the arguments a restart is built from, both answer
+    /// from the command this tab was started with. A tab can say anything
+    /// about itself; what it may do is not its own to say.
+    ///
+    /// Only ever on a tab that is not already an AI. A tab started as one has
+    /// nothing to notice, and a CLI that shells out to another CLI must not
+    /// rename the tab out from under the conversation that is running in it.
+    fn watch_for_a_guest(&mut self) {
+        if self.is_model() || self.own != crate::profile::GENERIC {
+            return;
+        }
+        let active = self.job.as_ref().and_then(crate::job::Job::active);
+        let title = match self.window_title.lock() {
+            Ok(t) => t.clone(),
+            Err(_) => return,
+        };
+        if !self.guest.due(active, &title) {
+            return;
+        }
+        let pids = self.job.as_ref().map(crate::job::Job::pids).unwrap_or_default();
+        if !self.guest.settle(active, &title, &pids) {
+            return;
+        }
+        // A new profile means a new detector: the one that was reading this
+        // screen was reading it as a shell, and its judgment about a shell is
+        // not a starting point for judging an AI
+        self.detector = Detector::new(match self.guest.who() {
+            Some(name) => crate::profile::load_by_name(name),
+            None => Self::resolve_profile(&self.argv, &self.profile_spec),
+        });
+        crate::append_hook_log(&format!(
+            "tab \"{}\" is now read as [{}]",
+            self.title,
+            self.detector.profile_name()
+        ));
+    }
+
+    /// The AI running in here that nobody told this app about, by command
+    /// name. `None` on a tab that is what it was started as
+    pub fn guest(&self) -> Option<&str> {
+        self.guest.who()
+    }
+
     /// Whether an AI is what is running here: a model this app talks to over
     /// an API, or a CLI one of the profiles recognises.
     ///
@@ -3986,7 +4084,7 @@ impl Tab {
     /// AI has a shell, which is a wider door than this one, so the answer is
     /// the honest one rather than a guess dressed up as a boundary
     pub fn is_ai(&self) -> bool {
-        self.is_model() || self.profile_name() != crate::profile::GENERIC
+        self.is_model() || self.own != crate::profile::GENERIC
     }
 
     /// Whether a chat reply is being generated right now (for the UI spinner).

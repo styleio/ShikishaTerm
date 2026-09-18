@@ -4,6 +4,7 @@
   "command_match": [
     "codex"
   ],
+  "script_match": ["node_modules/@openai/codex/"],
   "busy_patterns": [
     "•\\s*Working",
     "esc to interrupt",

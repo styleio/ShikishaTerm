@@ -4,6 +4,8 @@
   "command_match": [
     "claude"
   ],
+  "title_match": ["Claude Code"],
+  "one_shot": ["-p", "--print"],
   "busy_patterns": [
     "esc to interrupt",
     "ctrl\\+c to stop"
