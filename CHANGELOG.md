@@ -117,6 +117,12 @@ once it reaches its first tagged release.
 - **The Issue tab is called Issues & PRs.**
 
 ### Fixed
+- **A working folder written the other way round keeps its conversations.** Windows opens
+  `C:\x`, `C:/x` and `c:\x\` as one folder, and the settings keep whatever was typed.
+  What the app remembers was looked up by the spelling alone, so one rewriting of a
+  folder's path turned every conversation on that desk into a stranger at once: every AI
+  tab there came up clean, with nothing said. It is now asked the same question every
+  other place-comparison in the app asks.
 - **Saving the settings no longer costs an AI tab the conversation it was having.**
   Two roads start tabs -- a desk being opened, and the settings being read again --
   and only the first was told what each tab was having. So a tab the settings started
