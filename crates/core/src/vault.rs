@@ -519,12 +519,18 @@ mod tests {
             ],
             "the folder's own conversations, newest first, and nobody else's"
         );
-        // The same folder written the other way round is the same folder
-        assert_eq!(
-            here_in(&src, Path::new("d:/work/here"), 1).len(),
-            1,
-            "the other slash and another case named the same folder"
-        );
+        // The same folder written the other way round is the same folder --
+        // where that is true. On Windows neither the case of the letters nor
+        // the direction of the slashes makes another folder; everywhere else
+        // both do, and folding them would hand one folder's conversations to
+        // somebody working in another
+        if cfg!(windows) {
+            assert_eq!(
+                here_in(&src, Path::new("d:/work/here"), 1).len(),
+                1,
+                "the other slash and another case named the same folder"
+            );
+        }
         assert!(
             here_in(&src, Path::new("D:\\work\\nothing-here"), 1).is_empty(),
             "a folder nothing was said in offers nothing"
