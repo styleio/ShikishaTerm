@@ -232,7 +232,15 @@ impl Board {
         if weight(text) < SHORT {
             return false;
         }
-        h.asks.push(trim_ask(text));
+        // The same request can arrive by more than one road -- the input bar
+        // knows what it handed over, the CLI's own record has it written down,
+        // and a hook can report it -- and one asked for twice is not two
+        // things the folder is for
+        let cut = trim_ask(text);
+        if h.asks.iter().any(|a| *a == cut) {
+            return false;
+        }
+        h.asks.push(cut);
         if h.asks.len() > KEEP {
             let over = h.asks.len() - KEEP;
             h.asks.drain(..over);

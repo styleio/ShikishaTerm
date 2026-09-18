@@ -117,6 +117,18 @@ once it reaches its first tagged release.
 - **The Issue tab is called Issues & PRs.**
 
 ### Fixed
+- **A folder that names itself now hears what is typed straight into its AI.** It
+  heard two kinds of request before: the ones sent from the app's own input bar, and
+  the ones a CLI was given a hook to report. Typing into the terminal of a CLI whose
+  settings have not been touched was neither, so a folder worked in that way stayed
+  unnamed for as long as it existed, with nothing on screen to say why. Requests are
+  now read out of the record each CLI already keeps of its own conversation -- this
+  app already knows which file that is, because it hands Claude Code the id it will
+  use and finds Codex's out of Codex's own records -- so nothing has to be installed
+  into anyone's settings. A person's words are told apart from what tools returned
+  and what the CLI told itself, and everything found goes through the same funnel as
+  before: requests too light to say anything dropped, code cut out, the newest few
+  kept, the whole thing asked for at most once in ten minutes.
 - **Pressing a folder that has not been looked at yet shows it on its own.** With
   the screen split, it went into the pane in front only, and the other pane went
   on showing a folder of another project beside it.
