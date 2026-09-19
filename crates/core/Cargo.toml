@@ -106,6 +106,12 @@ winreg = "0.10.1"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
 windows = { version = "0.61.3", features = [
   "Win32_Foundation",
+  # Compressing the screen into H.264 with the encoder Windows already has
+  # (crates/core/src/vencode.rs). The operating system carries the licence for
+  # it too, so nothing is shipped and no terms are taken on
+  "Win32_Media_MediaFoundation",
+  "Win32_System_Variant",
+  "Win32_System_Ole",
   "UI_Notifications",
   "Services_Store",
   "ApplicationModel",
