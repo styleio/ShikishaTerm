@@ -786,7 +786,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .found .fpath { min-width:0; font-family:var(--mono); font-size:10px; color:var(--dim); overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; direction:rtl; }
   .found .fcount { flex:none; font-size:10px; padding:0 5px; border-radius:999px; background:var(--raise); color:var(--dim); }
-  .found .fname { font-size:11px; color:var(--text); padding-left:var(--s1); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .found .fname { display:flex; align-items:center; gap:var(--s2); font-size:11px; color:var(--text);
+    padding-left:var(--s1); min-height:22px; }
+  .found .fname .fleaf { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* Throwing this one away, from the line that names it. Always drawn rather
+     than waiting for a pointer: a finger has none, and a control that only
+     exists under a mouse is a control a phone does not have. The colour it
+     will act in is worn only when it is about to (§5, the breaking button) */
+  .found .fname .fkill { flex:none; width:22px; height:22px; display:flex; align-items:center;
+    justify-content:center; border-radius:var(--r-chip); color:var(--dim); cursor:pointer; }
+  .found .fname .fkill:hover { background:var(--raise); color:var(--stop); }
   .found .fmore { font-size:11px; color:var(--dim); cursor:pointer; padding-left:var(--s1); }
   .found .fmore:hover { color:var(--text); }
   .found .fnote { font-size:11px; color:var(--dim); padding:var(--s1) var(--s2); border-radius:var(--r-ctl);
@@ -795,6 +804,17 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .found .fbtns button { font:inherit; font-size:11px; min-height:24px; padding:0 var(--s2); border-radius:var(--r-ctl);
     border:1px solid var(--edge); background:var(--panel2); color:var(--text); cursor:pointer; }
   .found .fbtns button:hover { border-color:var(--edge-hi); }
+  /* Folders put out of sight until the next launch. One line for all of them
+     at the foot of the list, not one line each: the list is as wide as the
+     column, and a row per folder would spend that width saying the same thing
+     several times */
+  .hidrow { display:flex; align-items:center; gap:var(--s2); min-height:28px; margin:var(--s2) var(--s2) 2px 14px;
+    padding:0 6px; border-radius:var(--r-ctl); font-size:11px; color:var(--dim); cursor:pointer; }
+  .hidrow:hover { background:var(--hover); color:var(--text); }
+  .hidrow .hsay { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hidrow .hback { flex:none; min-height:22px; display:flex; align-items:center; padding:0 var(--s2);
+    border-radius:var(--r-chip); border:1px solid var(--edge); color:var(--text); }
+  .hidrow .hback:hover { border-color:var(--edge-hi); background:var(--raise); }
   /* A worktree being made: a framed line under its project's heading with the
      dot that says work is under way, its name, and below it how far it has
      got. The ✕ takes it back. Failed, the dot is a mark, the line says why, and
@@ -1291,6 +1311,50 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      One file of this tab's folder. Stands where a terminal stands, like the
      panels beside it: a line saying which file and how it stands, then the
      text, which is a library's business and not ours */
+  /* ── The folder that is not on this machine ──────
+     A tab whose working folder is missing is not started, and where the
+     terminal would be there is a card instead. It stands in the focused
+     pane's rectangle, the way the panels beside it do, because that is where
+     the person is looking when they read that the folder is gone -- the ⚠ in
+     the list is where they would have to go to answer, and a card that says
+     what is wrong while the answer lives somewhere else is half a card */
+  #held[hidden] { display:none; }
+  #held { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+    bottom:calc(var(--fb) + var(--dock, 0px)); z-index:4; overflow:auto;
+    display:flex; align-items:flex-start; justify-content:center;
+    padding:var(--s7) 16px 16px; box-sizing:border-box; background:var(--bg); }
+  #held .hcard { width:min(560px, 100%); box-sizing:border-box; background:var(--panel);
+    border:1px solid var(--line); border-radius:var(--r-card); padding:var(--s5);
+    display:flex; flex-direction:column; gap:var(--s3); }
+  #held .htitle { font-size:13.5px; font-weight:600; color:var(--text); }
+  #held .hsay { font-size:13px; color:var(--dim); line-height:1.6; }
+  /* The path is the thing a person goes and looks for, so it is set to be read
+     back: one to a line, in the typeface the rest of the app spells paths in */
+  #held .hpath { font-family:var(--mono); font-size:11.5px; color:var(--text);
+    background:var(--sunk); border-radius:var(--r-ctl); padding:var(--s2) var(--s3);
+    overflow-wrap:anywhere; }
+  #held .hbtns { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2);
+    padding-top:var(--s2); border-top:1px solid var(--line); }
+  /* The three answers stay one group and stay to the right, so that a width
+     too narrow for them puts them on their own line with the main one still
+     last -- rather than wrapping the main one to the left on its own (5.3) */
+  #held .hbtns .hgroup { flex:1 1 auto; display:flex; flex-wrap:wrap;
+    justify-content:flex-end; align-items:center; gap:var(--s2); }
+  #held button { font:inherit; font-size:12.5px; min-height:32px; padding:0 var(--s3);
+    border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--panel2);
+    color:var(--text); cursor:pointer; }
+  #held button:hover { border-color:var(--edge-hi); }
+  #held button.go { border-color:var(--brand); background:var(--brand); color:#fff; font-weight:600; }
+  #held button.go:hover { filter:brightness(1.08); }
+  /* Grey, and it still answers (§5.4): a drive that is not on this machine has
+     nowhere to put a clone, and the button says so rather than vanishing */
+  #held button.go.held { background:var(--panel2); border-color:var(--line); color:var(--faint);
+    cursor:not-allowed; font-weight:400; }
+  #held button.go.held:hover { filter:none; border-color:var(--line); }
+  #held button.kill { border-color:transparent; background:transparent; color:var(--stop); }
+  #held button.kill:hover { background:var(--hover); border-color:transparent; }
+  #held .hwhy { font-size:11.5px; color:var(--warn); }
+  #held .hfoot { font-size:11.5px; color:var(--faint); line-height:1.6; }
   /* The Issue tab: the desk's issues and pull requests, where a terminal would be.
      Its sibling is the file panel, and its parts are the style guide's: a bar of
      controls, an enclosed list of records (5.5), fields (5.1), one primary button */
@@ -2361,12 +2425,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #vault[hidden], #past[hidden], #palette[hidden], #branch[hidden], #browse[hidden],
   #repair[hidden], #sask[hidden], #sdiff[hidden] { display:none; }
   #vault .vbox, #past .vbox, #palette .vbox, #branch .vbox, #browse .vbox,
-  #sask .vbox, #sdiff .vbox { background:var(--panel); border:1px solid var(--line);
+  #repair .vbox, #sask .vbox, #sdiff .vbox { background:var(--panel); border:1px solid var(--line);
     border-radius:var(--r-card); padding:var(--s4) var(--s5); width:min(720px,92vw);
     max-height:82vh; display:flex; flex-direction:column; gap:var(--s3); }
   #branch .vbox { gap:var(--s5); }
   #vault .vhead, #past .vhead, #palette .vhead, #branch .vhead, #browse .vhead,
-  #sask .vhead, #sdiff .vhead { display:flex; align-items:center; }
+  #repair .vhead, #sask .vhead, #sdiff .vhead { display:flex; align-items:center; }
   /* The title is one thing and what is under it is another */
   #browse .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
     margin-bottom:var(--s1); }
@@ -2495,10 +2559,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #sask .go.stop { border-color:var(--stop); background:transparent; color:var(--stop); }
   #browse .brow { padding-top:var(--s3); border-top:1px solid var(--line); }
   #vault .vtitle, #past .vtitle, #palette .vtitle, #branch .vtitle, #browse .vtitle,
-  #sask .vtitle, #sdiff .vtitle { color:var(--text);
+  #repair .vtitle, #sask .vtitle, #sdiff .vtitle { color:var(--text);
     font-size:13.5px; font-weight:600; text-transform:uppercase; flex:1; }
   #vault .vclose, #past .vclose, #palette .vclose, #branch .vclose, #browse .vclose,
-  #sask .vclose, #sdiff .vclose { cursor:pointer;
+  #repair .vclose, #sask .vclose, #sdiff .vclose { cursor:pointer;
     color:var(--dim); font-size:16px; padding:2px 6px; }
   #vault .vclose:hover, #past .vclose:hover, #palette .vclose:hover, #branch .vclose:hover,
   #browse .vclose:hover, #repair .vclose:hover, #sask .vclose:hover,
@@ -2691,7 +2755,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     background:var(--bg); color:var(--text); border:1px solid var(--brand);
     border-radius:var(--r-ctl); padding:4px 6px; outline:none; }
   #repair .rerr { color:var(--stop); font-size:12px; white-space:pre-wrap; }
-  #branch .brow, #browse .brow { display:flex; gap:var(--s2); justify-content:flex-end; }
+  /* While the steps run: the one running is in the brand colour, the ones
+     behind it are spent. No spinner -- the step itself is the progress */
+  #repair .rcmd.at { color:var(--brand); border-color:var(--brand); }
+  #repair .rcmd.was { color:var(--dim); }
+  #repair button.go.held { background:var(--panel2); border-color:var(--line); color:var(--faint);
+    cursor:not-allowed; filter:none; }
+  #branch .brow, #browse .brow, #repair .brow { display:flex; gap:var(--s2); justify-content:flex-end; }
+  #repair .brow { padding-top:var(--s3); border-top:1px solid var(--line); }
   /* The folder picker. A framed dialog (5.2) -- head, body, foot, each divided
      by a rule -- widened to hold two columns, which is the one thing it has that
      a one-question dialog does not: somewhere to start from, beside the list */
@@ -3220,6 +3291,26 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div id="sftppanel" hidden></div>
     <div id="failpanel" hidden></div>
     <div id="issuespanel" hidden></div>
+    <!-- The working folder is not on this machine, so nothing was started and
+         this stands where the terminal would. It says the one thing that
+         matters and carries the four answers to it -->
+    <div id="held" hidden>
+      <div class="hcard">
+        <div class="htitle"></div>
+        <div class="hsay"></div>
+        <div class="hpath"></div>
+        <div class="hwhy"></div>
+        <div class="hbtns">
+          <button type="button" class="kill"></button>
+          <span class="hgroup">
+            <button type="button" class="hhide"></button>
+            <button type="button" class="hmove"></button>
+            <button type="button" class="go hput"></button>
+          </span>
+        </div>
+        <div class="hfoot"></div>
+      </div>
+    </div>
     <!-- One question about one file: replace what is there, throw it away,
          call it something else. Named rather than "are you sure", because the
          far end is somebody else's machine and there is no way back from it -->
@@ -3763,6 +3854,7 @@ function drawTabs() {
   // so a page declared between two tabs does not split their folder in two
   const folders = S.groups || [];
   troubleRow(nav, folders);
+  hiddenRow(nav);
   // Tabs by the folder they are in, each list in its own order. A tab in no
   // folder at all (a browser) comes after every folder, in the order it came
   const inside = folders.map(() => []);
@@ -5710,7 +5802,13 @@ function foundRow(d) {
     const group = el("div", {class:"fgroup"},
       el("div", {class:"fparent", title:parent}, el("span", {class:"fpath"}, homeShort(parent)), el("span", {class:"fcount"}, String(list.length))));
     for (const w of (all ? list : list.slice(0, 3))) {
-      group.append(el("div", {class:"fname", title:w.folder}, "• " + leafOf(w.folder) + (w.branch && w.branch !== leafOf(w.folder) ? "  (" + w.branch + ")" : "")));
+      // The same delete a folder on the desk gets, asked the same way: these
+      // are the worktrees nothing is using, which is exactly what fills a disk
+      const kill = el("span", {class:"fkill", title:T["tui.found.discard"] || "",
+        onclick:e => { e.stopPropagation(); discardFolder({folder:w.folder}); }}, pickIcon("trash"));
+      group.append(el("div", {class:"fname", title:w.folder},
+        el("span", {class:"fleaf"}, "• " + leafOf(w.folder) + (w.branch && w.branch !== leafOf(w.folder) ? "  (" + w.branch + ")" : "")),
+        kill));
     }
     if (list.length > 3) {
       group.append(el("div", {class:"fmore", onclick:() => { all ? foundAll.delete(key) : foundAll.add(key); drawTabs(); }},
@@ -6276,6 +6374,18 @@ function whyFolder(g) {
 // dismiss, and by the third nobody is reading them. The count is the message;
 // the names and the reasons are one click away, and the folder's own row keeps
 // its own mark so the list still says which one.
+// The folders put out of sight until the next launch, as one line for all of
+// them. One, not one each: the list is as wide as the column, and the way back
+// is the same way back whichever folder was put away
+function hiddenRow(nav) {
+  const n = (S && S.hidden) || 0;
+  if (!n) return;
+  const say = (n === 1 ? (T["tui.hidden.one"] || "") : (T["tui.hidden"] || "")).split("{n}").join(n);
+  nav.append(el("div", {class:"hidrow", title:T["tui.hidden.title"] || "",
+      onclick:() => send({kind:"folderhide", folder:"", hide:false})},
+    el("span", {class:"hsay"}, say),
+    el("span", {class:"hback"}, T["tui.hidden.back"] || "")));
+}
 let troubleOpen = false;
 function troubleRow(nav, folders) {
   const bad = folders.filter(ailing);
@@ -6305,6 +6415,78 @@ function troubleRow(nav, folders) {
       el("span", {class:"nm"}, g.name || g.folder || ""),
       el("span", {class:"why"}, whyFolder(g))));
   }
+}
+
+// ── The folder that is not on this machine ────
+// The tab in view is held back because its working folder is not here. What is
+// drawn where the terminal would be, and the four answers to it: fetch the
+// folder, work somewhere else, look away until the next launch, or take the
+// folder off the list. The buttons open the dialogs that already do these
+// things -- what will run is still shown before it runs
+function heldFolder() {
+  if (!S || !S.tabs || !S.groups) return null;
+  const t = S.tabs.find(x => x.index === S.active);
+  if (!t || t.group == null) return null;
+  const g = S.groups[t.group];
+  return g && ailing(g) ? g : null;
+}
+function drawHeld(g) {
+  const b = document.getElementById("held");
+  if (!b) return;
+  b.hidden = !g;
+  if (!g) return;
+  const nodrive = (g.health || {}).as === "nodrive";
+  const said = [
+    b.querySelector(".htitle"), T["msg.folder.held"] || "",
+    b.querySelector(".hsay"), nodrive
+      ? (T["tui.held.nodrive"] || "").split("{drive}").join((g.health || {}).drive || "")
+      : (T["tui.held.missing"] || ""),
+    b.querySelector(".hpath"), g.folder || "",
+    b.querySelector(".hfoot"), T["tui.held.note"] || "",
+    b.querySelector(".kill"), T["tui.held.forget"] || "",
+    b.querySelector(".hhide"), T["tui.held.hide"] || "",
+    b.querySelector(".hmove"), T["tui.held.move"] || "",
+    b.querySelector(".hput"), g.plain ? (T["tui.held.make"] || "") : (T["tui.held.clone"] || ""),
+  ];
+  // Written only where it says something else: this is repainted on every
+  // state push, and a node rewritten each time cannot be selected or read
+  for (let i = 0; i < said.length; i += 2) {
+    if (said[i] && said[i].textContent !== said[i + 1]) said[i].textContent = said[i + 1];
+  }
+  const put = b.querySelector(".hput");
+  // A drive this machine does not have is nowhere to put anything. Grey, and
+  // it still answers: the reason goes above the buttons and stays there
+  put.classList.toggle("held", nodrive);
+  const why = b.querySelector(".hwhy");
+  if (!nodrive && why.textContent) why.textContent = "";
+  put.onclick = () => {
+    if (nodrive) {
+      why.textContent = (T["tui.held.nowhere"] || "").split("{drive}").join((g.health || {}).drive || "");
+      return;
+    }
+    openRepair(g);
+  };
+  // The picker starts where it always starts -- home and the drives -- not at
+  // the folder being replaced. That path is the one thing known not to be on
+  // this machine, and opening on it greeted the person with the error they
+  // pressed the button to get away from
+  b.querySelector(".hmove").onclick = () =>
+    openBrowse("", path => send({kind:"foldermove", folder:g.folder, to:path}));
+  b.querySelector(".hhide").onclick = () => send({kind:"folderhide", folder:g.folder, hide:true});
+  b.querySelector(".kill").onclick = () => forgetFolder(g);
+}
+// Taking a folder that is not here off the list. Nothing on disk is touched --
+// there is nothing here to touch -- so the question says what really happens:
+// the settings lose it, and the machine that has the folder still has it
+function forgetFolder(g) {
+  askQuestion({
+    title: T["tui.held.forget.title"] || "",
+    say: T["tui.held.forget.say"] || "",
+    what: g.folder,
+    label: T["tui.held.forget"] || "",
+    danger: true,
+    go: () => send({kind:"folderclose", folder:g.folder}),
+  });
 }
 
 // ── Renaming where it stands ──────────────────
@@ -6446,6 +6628,10 @@ const PICK_ICON = {
   copy: '<rect x="4.5" y="4.5" width="7.5" height="7.5" rx="1"/><path d="M9.5 4.5V2.5a.5.5 0 0 0-.5-.5H2.5a.5.5 0 0 0-.5.5V9a.5.5 0 0 0 .5.5h2"/>',
   grip: '<circle cx="5" cy="3.5" r=".7" fill="currentColor"/><circle cx="9" cy="3.5" r=".7" fill="currentColor"/><circle cx="5" cy="7" r=".7" fill="currentColor"/><circle cx="9" cy="7" r=".7" fill="currentColor"/><circle cx="5" cy="10.5" r=".7" fill="currentColor"/><circle cx="9" cy="10.5" r=".7" fill="currentColor"/>',
   refresh: '<path d="M12 7a5 5 0 0 1-8.7 3.4"/><path d="M2 7a5 5 0 0 1 8.7-3.4"/><path d="M11 1.5v2.5H8.5"/><path d="M3 12.5V10h2.5"/>',
+  // Throwing something away for good. Its own drawing rather than another ✕:
+  // beside the ✕ that only puts a line out of sight, one mark for two acts --
+  // one of them undoable and the other not -- is the mistake waiting to happen
+  trash: '<path d="M2.5 3.5h9"/><path d="M5.5 3.5V2.2h3v1.3"/><path d="M3.6 3.5 4.2 12h5.6l.6-8.5"/><path d="M6 5.8v3.8M8 5.8v3.8"/>',
 };
 function pickIcon(name) {
   const s = el("span", {class:"ico"});
@@ -6795,17 +6981,27 @@ function drawRepair() {
   box.textContent = "";
   const steps = p.steps || [];
   if (steps.length) {
-    box.append(el("div", {class:"rwill"}, T["tui.repair.will"] || ""));
-    for (const s of steps) {
-      box.append(el("div", {class:"rcmd"}, s.line || (s["do"] === "make" ? s.to : "")));
-    }
+    // While it runs, the same lines say where it has got to: the one that is
+    // running is marked, and the ones behind it are done. A clone takes as
+    // long as the network does, and a dialog that said nothing for a minute
+    // read as a button that had not worked
+    box.append(el("div", {class:"rwill"}, T[p.running ? "tui.repair.doing" : "tui.repair.will"] || ""));
+    steps.forEach((s, i) => {
+      const line = s.line || (s["do"] === "make" ? s.to : "");
+      const at = p.running && i === (p.at_step || 0);
+      const done = p.running && i < (p.at_step || 0);
+      box.append(el("div", {class:"rcmd" + (at ? " at" : "") + (done ? " was" : "")},
+        (at ? "• " : done ? "✓ " : "") + line));
+    });
   }
   // The one question, and only when there is one
   const ask = b.querySelector(".rask");
-  ask.hidden = !p.asking;
-  if (p.asking) drawAsk(ask, p);
+  ask.hidden = !p.asking || !!p.running;
+  if (!ask.hidden) drawAsk(ask, p);
   const go = b.querySelector(".go");
-  go.textContent = p.asking ? (T["tui.repair.save"] || "") : (T["tui.repair.go"] || "");
+  go.textContent = p.running ? (T["tui.repair.running"] || "")
+    : p.asking ? (T["tui.repair.save"] || "") : (T["tui.repair.go"] || "");
+  go.classList.toggle("held", !!p.running);
   go.disabled = p.asking ? false : !steps.length;
 }
 // Which project this folder holds. Drawn once per set of projects: rebuilding
@@ -7701,6 +7897,7 @@ function applyCarryLines(b, lines) {
   // those it is doing is written on it, and decided by the app rather than here
   b.querySelector(".go").onclick = () => {
     const asking = !b.querySelector(".rask").hidden;
+    if (S && S.repair && S.repair.running && S.repair.folder === repairAt) return;
     askRepair(!asking);
   };
   b.addEventListener("keydown", e => {
@@ -8909,8 +9106,16 @@ window.__state = function (json) {
   board.hidden = !S.board;
   document.getElementById("panes").hidden = cover;
   // Nothing to draw for a pane with nothing in it -- it says so itself
-  screen.hidden = cover || S.active === 0 || web || git || files || edit || !!failedTab || issuesUp;
-  drawFailed(cover ? null : failedTab);
+  // The tab in view works in a folder that is not on this machine, so nothing
+  // was started and there is nothing to draw where the terminal goes. Its
+  // folder, not its tab: every tab of that folder is held back for the same
+  // reason and would say the same thing
+  const heldIn = cover ? null : heldFolder();
+  drawHeld(heldIn);
+  screen.hidden = cover || S.active === 0 || web || git || files || edit || !!failedTab || issuesUp || !!heldIn;
+  // A tab that could not start in a folder that is not here has one thing
+  // wrong with it, not two, and the card is the one that can answer it
+  drawFailed(cover || heldIn ? null : failedTab);
   drawWelcome();
   drawAddProject();
   const ipanel = document.getElementById("issuespanel");
@@ -18743,6 +18948,97 @@ mod tests {
         assert!(PAGE.contains(r#"branchTab = preset.link ? "github" : preset.name ? "name" : "auto";"#));
         assert!(PAGE.contains(r#"return branchTab === "auto" || !branchNamed;"#));
         assert!(PAGE.contains("auto:branchAuto(), seq:branchSeq});"), "the make button does not say whether it names itself");
+    }
+
+    /// A tab held back because its working folder is not on this machine has
+    /// the answers where the person is looking -- in the pane, not behind a ⚠
+    /// in the list -- and every one of them works from a phone, because the
+    /// window and the phone are the same page
+    #[test]
+    fn the_folder_that_is_not_here_carries_its_own_answers() {
+        assert!(
+            PAGE.contains(r#"<div id="held" hidden>"#),
+            "there is no card for a folder that is not on this machine"
+        );
+        // It stands where the terminal would, in the focused pane's rectangle,
+        // and the terminal stands down while it is up
+        assert!(
+            PAGE.contains("#held { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);"),
+            "the card is not drawn where the terminal is"
+        );
+        assert!(
+            PAGE.contains("|| issuesUp || !!heldIn;"),
+            "the terminal is still drawn under the card"
+        );
+        // The four answers. Fetching it opens the dialog that shows what will
+        // run before it runs; the other three are one message each
+        for (what, why) in [
+            ("openRepair(g);", "the card cannot put the folder back"),
+            (r#"openBrowse("", path => send({kind:"foldermove", folder:g.folder, to:path}))"#,
+                "the card cannot point the folder somewhere else"),
+            (r#"send({kind:"folderhide", folder:g.folder, hide:true})"#,
+                "the card cannot put the folder out of sight"),
+            (r#"send({kind:"folderclose", folder:g.folder})"#,
+                "the card cannot take the folder off the list"),
+        ] {
+            assert!(PAGE.contains(what), "{why}");
+        }
+        // A drive this machine has not got is nowhere to clone to: the button
+        // greys and still answers, rather than going quiet (style guide 5.4)
+        assert!(
+            PAGE.contains(r#"put.classList.toggle("held", nodrive);"#)
+                && PAGE.contains(r#"why.textContent = (T["tui.held.nowhere"] || "")"#),
+            "the button for a drive that is not here says nothing when pressed"
+        );
+        // Taking the folder off the list says what really happens: nothing on
+        // disk is touched, and every PC reading these settings loses it
+        assert!(
+            PAGE.contains(r#"say: T["tui.held.forget.say"] || "","#),
+            "taking the setting away does not say what it costs"
+        );
+    }
+
+    /// The worktrees git knows and the desk does not list can be deleted from
+    /// the line that names them -- they are exactly the folders nothing is
+    /// using -- and the question asked is the one a folder on the desk asks
+    #[test]
+    fn a_found_worktree_can_be_thrown_away_from_where_it_is_named() {
+        assert!(
+            PAGE.contains(r#"onclick:e => { e.stopPropagation(); discardFolder({folder:w.folder}); }}"#),
+            "a found worktree cannot be deleted from the line that names it"
+        );
+        // The same question, which means the same refusal while anything is
+        // uncommitted and the same "don't ask again"
+        assert!(
+            PAGE.contains(r#"function discardFolder(g) {
+  const go = unasked => send({kind:"folderdiscard", folder:g.folder, unasked});
+  if (S && S.discard_unasked) { go(false); return; }"#),
+            "found worktrees are deleted by some other question than the one on the desk"
+        );
+        // Drawn always, not on hover: a finger has no hover
+        assert!(
+            PAGE.contains(".found .fname .fkill { flex:none; width:22px; height:22px;"),
+            "the delete control is smaller than a finger, or drawn only under a pointer"
+        );
+    }
+
+    /// Folders put out of sight come back through one line, however many of
+    /// them there are: the list is as wide as the column
+    #[test]
+    fn one_line_brings_back_every_folder_put_out_of_sight() {
+        assert!(
+            PAGE.contains(r#"onclick:() => send({kind:"folderhide", folder:"", hide:false})"#),
+            "there is no way back for a folder put out of sight"
+        );
+        assert!(
+            PAGE.matches(r#"kind:"folderhide", folder:"", hide:false"#).count() == 1,
+            "the way back is drawn per folder, or there is more than one of it"
+        );
+        assert!(
+            PAGE.contains("const n = (S && S.hidden) || 0;
+  if (!n) return;"),
+            "the line is drawn when nothing is hidden"
+        );
     }
 
     /// The tab bar's + has to work on a phone too.

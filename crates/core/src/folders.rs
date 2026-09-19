@@ -468,6 +468,65 @@ pub fn take(step: &Step, source: &crate::config::Source) -> anyhow::Result<()> {
     }
 }
 
+/// A folder being put back on this machine, while the window keeps drawing.
+///
+/// Cloning a project takes as long as the network does. Run where the drawing
+/// happens, a repository of any size stops the window for minutes: nothing
+/// redraws, nothing can be pressed, and the app looks hung at exactly the
+/// moment it is doing what it was asked. So the steps run on their own thread
+/// and this is what is left behind to ask -- which step is running now, and
+/// how it ended. The same shape as [`crate::worktree::Making`], because it is
+/// the same promise: the window stays alive while git works.
+pub struct Putting {
+    /// The folder being put back, so an answer can be matched to the card that
+    /// asked for it
+    pub at: PathBuf,
+    /// Every step, in the order they run, exactly as they were shown
+    pub steps: Vec<Step>,
+    /// How many have finished. While it is running this is also the one
+    /// running now
+    done: Arc<std::sync::atomic::AtomicUsize>,
+    outcome: Arc<Mutex<Option<Result<(), String>>>>,
+}
+
+impl Putting {
+    /// Starts the steps. They run in order and stop at the first that fails:
+    /// each one is built on the one before it having happened.
+    pub fn start(at: PathBuf, steps: Vec<Step>, source: crate::config::Source) -> Putting {
+        use std::sync::atomic::Ordering;
+        let putting = Putting {
+            at,
+            steps: steps.clone(),
+            done: Default::default(),
+            outcome: Default::default(),
+        };
+        let (done, outcome) = (putting.done.clone(), putting.outcome.clone());
+        std::thread::spawn(move || {
+            let mut said = Ok(());
+            for step in &steps {
+                if let Err(e) = take(step, &source) {
+                    said = Err(format!("{e:#}"));
+                    break;
+                }
+                done.fetch_add(1, Ordering::Relaxed);
+            }
+            *outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(said);
+        });
+        putting
+    }
+
+    /// Which step is running now, counting from zero. Past the last one when
+    /// they have all finished
+    pub fn at_step(&self) -> usize {
+        self.done.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How it ended, once it has. `None` while it is still running
+    pub fn outcome(&self) -> Option<Result<(), String>> {
+        self.outcome.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
 /// The root of a drive, spelled the way the operating system wants it.
 fn drive_root(drive: &str) -> String {
     format!("{drive}{}", std::path::MAIN_SEPARATOR)
@@ -1135,6 +1194,61 @@ mod restore_tests {
         // Nothing to take out, nothing changed
         assert_eq!(scrub("https://github.com/team/x.git"), "https://github.com/team/x.git");
         assert_eq!(scrub("git@github.com:team/x.git"), "git@github.com:team/x.git");
+    }
+
+    /// The steps run somewhere else, in order, and say how far they got. Run
+    /// where the drawing happens, a clone of any size would stop the window
+    /// for as long as the network took
+    #[test]
+    fn putting_a_folder_back_runs_away_from_the_drawing() {
+        let root = std::env::temp_dir().join(format!("shikisha-putting-{}", crate::random_hex(6)));
+        let one = root.join("one");
+        let two = root.join("one").join("two");
+        let putting = Putting::start(
+            two.clone(),
+            vec![
+                Step::Make { to: one.display().to_string() },
+                Step::Make { to: two.display().to_string() },
+            ],
+            crate::config::Source::Plain,
+        );
+        assert_eq!(putting.at, two, "the answer could not be matched to what asked");
+        let until = Instant::now() + Duration::from_secs(10);
+        while putting.outcome().is_none() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(matches!(putting.outcome(), Some(Ok(()))), "it did not finish: {:?}", putting.outcome());
+        assert_eq!(putting.at_step(), 2, "it did not count the steps it took");
+        assert!(two.is_dir(), "the folder was not made");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// It stops at the first step that will not work: the second is built on
+    /// the first having happened, and the reason is what the card says
+    #[test]
+    fn a_step_that_fails_stops_the_ones_behind_it() {
+        let root = std::env::temp_dir().join(format!("shikisha-putfail-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&root).unwrap();
+        // A file where a folder has to go: making it cannot work
+        let blocked = root.join("busy");
+        std::fs::write(&blocked, "in the way").unwrap();
+        let after = blocked.join("inside");
+        let putting = Putting::start(
+            after.clone(),
+            vec![
+                Step::Make { to: blocked.display().to_string() },
+                Step::Make { to: after.display().to_string() },
+            ],
+            crate::config::Source::Plain,
+        );
+        let until = Instant::now() + Duration::from_secs(10);
+        while putting.outcome().is_none() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(matches!(putting.outcome(), Some(Err(ref why)) if !why.is_empty()), "it said nothing went wrong");
+        assert_eq!(putting.at_step(), 0, "it went on past the step that failed");
+        assert!(!after.exists(), "the step behind the failure ran anyway");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// One project reached by two spellings is one project. Whoever cloned it

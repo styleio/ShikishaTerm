@@ -255,10 +255,43 @@ fn discovered_of(
     out
 }
 
+/// The working folder a surface stands in, when it stands in one.
+///
+/// A session borrows its tab's; the panels carry their own because they have
+/// no tab to borrow from; a placed page belongs to no folder at all. Asked in
+/// one place so that hiding a folder, listing its tabs and deciding what is on
+/// screen cannot disagree about which tabs are its.
+pub fn surface_dir(p: &Surface, tabs: &[Tab]) -> Option<std::path::PathBuf> {
+    match p {
+        Surface::Session(i) => tabs.get(*i).and_then(|t| t.cwd()).map(|c| c.to_path_buf()),
+        Surface::Sftp { dir, .. }
+        | Surface::Editor { dir, .. }
+        | Surface::Failed { dir, .. }
+        | Surface::Git { dir, .. } => dir.clone(),
+        Surface::Browser { .. } | Surface::Issues { .. } => None,
+    }
+}
+
 pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
     // The folders these tabs are actually in. Worked out here, once, so the
     // window and the phone are looking at the same list
     let mut groups = crate::uistate::GroupState::all(tabs, &ui.folder_colors, &ui.folders);
+    // The ones somebody put out of sight for this run. Taken off the list here,
+    // before anything is numbered against it, so a tab cannot end up pointing
+    // at a heading that is no longer drawn -- and taken off in one place, so
+    // the window and the phone put away the same folders
+    let put_away: Vec<std::path::PathBuf> = match ui.folders_hidden.is_empty() {
+        true => Vec::new(),
+        false => groups
+            .iter()
+            .map(|(k, _)| k.clone())
+            .filter(|k| ui.folders_hidden.iter().any(|h| crate::uistate::same_folder(h, k)))
+            .collect(),
+    };
+    groups.retain(|(k, _)| !put_away.iter().any(|h| crate::uistate::same_folder(h, k)));
+    let hidden_here = |dir: Option<&std::path::Path>| {
+        dir.is_some_and(|d| put_away.iter().any(|h| crate::uistate::same_folder(h, d)))
+    };
     crate::uistate::GroupState::name_projects(&mut groups, &ui.folder_projects);
     crate::uistate::GroupState::name_work_items(&mut groups, &ui.folder_items);
     crate::uistate::GroupState::describe(&mut groups, &ui.folder_labels);
@@ -316,6 +349,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             g.linked = *linked;
             g.family = Some(family.display().to_string());
         }
+        g.plain = ui.folders_plain.iter().any(|p| crate::uistate::same_folder(p, at));
         g.health = health.get(at).cloned().unwrap_or_default();
         g.drift = drift.get(at).cloned().unwrap_or_default();
         // A folder with a panel in it is not empty. The list is built from
@@ -369,6 +403,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         ais: ui.ais.clone(),
         coach: ui.coach,
         discard_unasked: ui.discard_unasked,
+        hidden: put_away.len(),
         setup: ui.setup.clone(),
         add_project: ui.add_project.clone(),
         discovered,
@@ -388,6 +423,11 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             .surfaces
             .iter()
             .enumerate()
+            // What stands in a folder put out of sight goes with it. Its
+            // screen number is untouched -- the number is carried on the row,
+            // not counted from the list -- so bringing the folder back brings
+            // the same tabs back under the same numbers
+            .filter(|(_, p)| !hidden_here(surface_dir(p, tabs).as_deref()))
             .filter_map(|(i, p)| Some((p, match p {
                 Surface::Session(s) => tabs.get(*s).map(|t| {
                     let mut ts = crate::uistate::TabState::of(i + 1, t);
@@ -736,6 +776,43 @@ mod drawn_away_tests {
             "a page drawn over there does not say which device"
         );
         assert_eq!(state.tabs[1].away, None, "even a page here is treated as over there");
+    }
+
+    /// A folder put out of sight takes its tabs with it and leaves a number
+    /// behind, so one line can bring every one of them back. The tabs that
+    /// stay keep the screen numbers they had: the number is carried on the
+    /// row, not counted from what is left of the list
+    #[test]
+    fn a_folder_put_out_of_sight_takes_its_tabs_and_leaves_a_number() {
+        use std::path::PathBuf;
+        let away = PathBuf::from(r"D:\server\soj_main");
+        let here = PathBuf::from(r"D:\work\here");
+        let ui = Ui {
+            active: 1,
+            surfaces: vec![
+                Surface::Git { key: "g1".into(), name: "git".into(), dir: Some(away.clone()),
+                    protect: Vec::new(), git: Default::default() },
+                Surface::Git { key: "g2".into(), name: "git".into(), dir: Some(here.clone()),
+                    protect: Vec::new(), git: Default::default() },
+            ],
+            folders: vec![(away.clone(), "server".into()), (here.clone(), "here".into())],
+            ..Default::default()
+        };
+        let all = ui_state_of(&[], &ui, None);
+        assert_eq!(all.groups.len(), 2, "both folders should be on the list");
+        assert_eq!(all.hidden, 0, "nothing was put away, and it says something was");
+
+        let hidden = Ui {
+            folders_hidden: std::collections::BTreeSet::from([away.clone()]),
+            ..ui
+        };
+        let state = ui_state_of(&[], &hidden, None);
+        assert_eq!(state.groups.len(), 1, "the folder put away is still on the list");
+        assert_eq!(state.groups[0].name, "here");
+        assert_eq!(state.tabs.len(), 1, "its tabs stayed behind it: {:?}", state.tabs);
+        assert_eq!(state.tabs[0].index, 2, "the tab that stayed lost its screen number");
+        assert_eq!(state.tabs[0].group, Some(0), "it points at a heading that is not drawn");
+        assert_eq!(state.hidden, 1, "the way back needs to know how many there are");
     }
 
     /// Nothing is said about a page drawn here, which is nearly every page.
@@ -1133,6 +1210,14 @@ pub struct Ui {
     /// opinion worth having about them: it is asked whether every folder is
     /// here, and for these the answer is "no" and is not a fault
     pub folders_elsewhere: Vec<std::path::PathBuf>,
+    /// The folders put out of sight until the program is started again. Held
+    /// nowhere but here: nothing is written down, so the next launch shows
+    /// them, which is the whole of what was asked for
+    pub folders_hidden: std::collections::BTreeSet<std::path::PathBuf>,
+    /// And the ones the settings call an ordinary folder -- nothing git about
+    /// them. What it would take to put one back on this machine is to make it,
+    /// so the card that offers to says "make" and not "clone"
+    pub folders_plain: Vec<std::path::PathBuf>,
     /// Those same folders, each with the name of the machine it is on
     pub folder_hosts: Vec<(std::path::PathBuf, String)>,
     /// And each with the server that machine is, for the name a person gave it

@@ -655,6 +655,8 @@ impl WinSurface {
                 Ev::TabName { tab, name } => self.mail.tab_names.push((tab, name)),
                 Ev::FolderClose { folder } => self.mail.folder_closes.push(folder),
                 Ev::FolderDiscard { folder, unasked } => self.mail.folder_discards.push((folder, unasked)),
+                Ev::FolderHide { folder, hide } => self.mail.folder_hides.push((folder, hide)),
+                Ev::FolderMove { folder, to } => self.mail.folder_moves.push((folder, to)),
                 Ev::RemoteCut => self.mail.remote_cut = true,
                 Ev::Coach { step } => self.mail.coach_done = Some(step),
                 Ev::Thanks { open } => self.mail.thanks = Some(open),
