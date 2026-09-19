@@ -50,6 +50,17 @@ pub struct Cast {
     /// the caller is a loop pushing pictures and has nothing useful to do with
     /// an error about one of them
     pub trouble: Option<String>,
+    /// Whether the connection has ever come up, and whether a picture has ever
+    /// gone down it.
+    ///
+    /// Two separate facts, and keeping them apart is the point. "A viewer
+    /// asked for video" was being said as though it meant "a viewer is getting
+    /// video", and on the first phone where the two came apart -- the offer
+    /// answered, the connection never made -- the record said the picture was
+    /// going out when it was not. From out here that looks identical to video
+    /// that connected and decoded badly, and the two want opposite fixes.
+    said_live: bool,
+    said_sent: bool,
 }
 
 impl Cast {
@@ -71,6 +82,8 @@ impl Cast {
                 encoder: None,
                 size: (0, 0),
                 trouble: None,
+                said_live: false,
+                said_sent: false,
             },
             answer,
         ))
@@ -96,6 +109,19 @@ impl Cast {
     pub fn picture(&mut self, jpeg: &[u8]) {
         if !self.live() {
             return;
+        }
+        // Nothing is prepared until there is somewhere to send it. A
+        // connection takes a moment to come up and may never come up at all,
+        // and until then every picture undone and compressed here is thrown
+        // away at the other end of the queue -- while costing the relay's own
+        // thread, which is the thread still sending this viewer its JPEGs.
+        // Paid for twice and delivered once
+        if self.viewer.state() != State::Live {
+            return;
+        }
+        if !self.said_live {
+            self.said_live = true;
+            crate::append_hook_log("a video viewer is connected");
         }
         let now = Instant::now();
         let what = self.pace.decide(now, true);
@@ -131,6 +157,15 @@ impl Cast {
             }
         };
         if let Some(out) = encoder.encode(&planes, whole)? {
+            if !self.said_sent {
+                self.said_sent = true;
+                crate::append_hook_log(&format!(
+                    "the first picture went out as video: {}x{}, {} bytes",
+                    size.0,
+                    size.1,
+                    out.data.len()
+                ));
+            }
             self.viewer.send(Frame { data: out.data, keyframe: out.keyframe, taken: now });
         }
         Ok(())
@@ -155,6 +190,43 @@ mod tests {
     fn a_cast_with_no_address_is_refused() {
         let said = Cast::answer("v=0\r\n", &[]).map(|_| ()).unwrap_err().to_string();
         assert!(said.contains("no address"), "it failed for some other reason: {said}");
+    }
+
+    /// A picture is not prepared for a viewer that is not there yet.
+    ///
+    /// Undoing a JPEG and compressing it costs the relay's own thread -- the
+    /// one still sending this same viewer its JPEGs -- so doing it for a
+    /// connection that has not come up makes the picture they ARE watching
+    /// worse, to prepare one nobody receives.
+    #[test]
+    fn nothing_is_prepared_before_the_connection_is_up() {
+        // A cast that cannot connect to anywhere: the loopback with an offer
+        // no browser will ever answer
+        let addrs = [std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)];
+        let offer = concat!(
+            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n",
+            "m=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\n",
+            "a=rtcp-mux\r\na=ice-ufrag:aaaa\r\na=ice-pwd:bbbbbbbbbbbbbbbbbbbbbb\r\n",
+            "a=fingerprint:sha-256 ",
+            "00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:",
+            "00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF\r\n",
+            "a=setup:actpass\r\na=mid:0\r\na=recvonly\r\n",
+            "a=rtpmap:102 H264/90000\r\n",
+            "a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f\r\n",
+        );
+        let Ok((mut cast, _)) = Cast::answer(offer, &addrs) else {
+            // A build with no encoder cannot answer at all, and then there is
+            // nothing here to prove
+            return;
+        };
+        // Not a picture at all. It would fail loudly if it were ever looked
+        // at, which is the point: nothing looks at it
+        cast.picture(b"this is not a jpeg");
+        assert!(
+            cast.trouble.is_none(),
+            "a picture was prepared before anyone could receive it: {:?}",
+            cast.trouble
+        );
     }
 
     /// The ceiling and the heartbeat are the ones the measurements argued for:

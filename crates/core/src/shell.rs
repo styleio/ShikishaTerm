@@ -11917,7 +11917,7 @@ async function castFrame(e) {
 // This page offers and the PC answers. The page is the side that knows what
 // its own browser can decode, and a phone that cannot do any of it simply
 // never gets past the first line here.
-let videoPc = null, videoOn = false, videoAsked = 0;
+let videoPc = null, videoOn = false, videoAsked = 0, videoBound = false;
 function videoTry() {
   if (videoPc || typeof RTCPeerConnection !== "function") return;
   const cv = document.getElementById("cast");
@@ -11970,13 +11970,72 @@ function videoLive(on) {
   videoOn = on;
   el.hidden = !on;
   if (on) {
+    // The picture changing size means the PC re-drew the page at a different
+    // width -- its own window was resized, or the shape it was drawing to has
+    // been taken away. Say what shape this screen is again, so the page comes
+    // back fitted to it. It settles after one round: the PC works out the
+    // same shape from the same numbers, so nothing changes and nothing asks
+    // again
+    if (!videoBound) {
+      videoBound = true;
+      el.addEventListener("resize", () => {
+        if (!videoOn) return;
+        shapeW = 0;
+        castShaped = sendShape(true);
+      });
+    }
     if (castWs) { castWs.close(); castWs = null; }
     if (castCtx) castCtx.clearRect(0, 0, cv.width, cv.height);
+    // Say the shape again, now. The PC draws the page at whatever shape it
+    // was last told, and the only thing that ever told it was a JPEG frame
+    // arriving -- which stops happening on the line that was just closed. A
+    // shape measured too early, before the page had settled, would otherwise
+    // stand for the whole session: the picture comes back tiny and the phone
+    // blows it up to fill the screen
+    castShaped = false;
+    shapeW = 0;
+    castShaped = sendShape(true);
+    videoWatch();
   }
+}
+
+// Is anything actually arriving?
+//
+// "Connected" is the connection's opinion of itself, and a browser can hold
+// one open while decoding nothing -- it agreed to a codec it will not play,
+// or the pictures are arriving broken. Believing it is worse than never
+// having tried: the JPEG line was closed when video took over, so the screen
+// simply stops, and nothing says why.
+//
+// Two lengths of silence, two different answers. A second of it is a picture
+// that arrived damaged, and the PC is asked for a whole one. Five seconds
+// with not one frame ever decoded is a browser that cannot play this, and
+// the only honest thing left is to go back to what was working
+let videoFrames = 0, videoWatchT = 0;
+function videoWatch() {
+  clearInterval(videoWatchT);
+  videoFrames = 0;
+  const el = document.getElementById("castv");
+  if (!el) return;
+  // The proper count where it exists; elsewhere the clock inside the video,
+  // which only moves when a picture does
+  const count = () => { videoFrames++; if (videoOn) el.requestVideoFrameCallback(count); };
+  if (el.requestVideoFrameCallback) el.requestVideoFrameCallback(count);
+  let last = -1, still = 0;
+  videoWatchT = setInterval(() => {
+    if (!videoOn) { clearInterval(videoWatchT); videoWatchT = 0; return; }
+    const now = el.requestVideoFrameCallback ? videoFrames : Math.round(el.currentTime * 1000);
+    if (now !== last) { last = now; still = 0; return; }
+    still++;
+    if (still === 2) videoDamaged();
+    if (still >= 10 && videoFrames === 0 && !el.currentTime) videoStop();
+  }, 500);
 }
 // Back to JPEG, which is where this started. Reached when the connection
 // fails, when the far end goes away, or when the picture stops arriving
 function videoStop() {
+  clearInterval(videoWatchT);
+  videoWatchT = 0;
   if (videoPc) { try { videoPc.close(); } catch (e) {} videoPc = null; }
   const el = document.getElementById("castv");
   if (el) { el.hidden = true; el.srcObject = null; }
@@ -12002,9 +12061,13 @@ function videoDamaged() {
 }
 // Rotating the phone changes the width — tell the PC the new shape (debounced)
 window.addEventListener("resize", () => {
-  if (!castWs) return;
+  // Whichever way the picture is arriving. Asking only about the JPEG line
+  // meant that once video took over -- which closes that line -- turning the
+  // phone never told the PC, and the page went on being drawn to the shape
+  // the phone had before
+  if (!castWs && !videoOn) return;
   clearTimeout(shapeT);
-  shapeT = setTimeout(() => { if (castWs) sendShape(false); }, 300);
+  shapeT = setTimeout(() => { if (castWs || videoOn) sendShape(false); }, 300);
 });
 function castStop() {
   if (castWs) { castWs.close(); castWs = null; }
@@ -19124,6 +19187,38 @@ mod tests {
         assert!(
             PAGE.contains("#castv") && PAGE.contains("pointer-events:none;"),
             "the video is not kept out of the way of the fingers"
+        );
+        // The phone's shape reaches the PC whichever way the picture comes
+        // back. Video closes the JPEG line, and the JPEG line was the only
+        // thing that ever reported the shape
+        assert!(
+            PAGE.contains("if (!castWs && !videoOn) return;"),
+            "turning the phone stops re-shaping the page once video takes over"
+        );
+        assert!(
+            PAGE.contains("castShaped = sendShape(true);\n    videoWatch();"),
+            "video takes over without saying what shape the phone is"
+        );
+        // And a picture that changes size means the PC re-drew the page at
+        // another width, which is the one thing that makes the shape stale
+        assert!(
+            PAGE.contains(r#"el.addEventListener("resize""#),
+            "a picture that changes size leaves the phone's shape unsaid"
+        );
+        // A connection that carries nothing must not be believed. Asking for
+        // a whole picture is the answer to a short silence, and going back to
+        // JPEG is the answer to a browser that never plays one at all
+        assert!(
+            PAGE.contains("videoWatch();"),
+            "nothing checks that the video is carrying anything"
+        );
+        assert!(
+            PAGE.contains("if (still === 2) videoDamaged();"),
+            "a picture that stopped is never asked for again"
+        );
+        assert!(
+            PAGE.contains("videoFrames === 0 && !el.currentTime) videoStop();"),
+            "a browser that decodes nothing is left with a frozen screen"
         );
         // A phone will not play a picture that asks to be tapped first
         assert!(

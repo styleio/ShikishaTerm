@@ -1547,6 +1547,9 @@ fn run_window(
     // from the real size, and torn down (override cleared) with the cast
     let mut naturals: std::collections::HashMap<Option<String>, (f64, f64)> =
         std::collections::HashMap::new();
+    // The last size this window had while somebody could see it. What the
+    // board is held at while the window is put away
+    let mut last_size: Option<(u32, u32)> = None;
     // Basic-auth arming. One per target. Only answers 401s while this is held
     let mut auths: std::collections::HashMap<Option<String>, cdp::AuthArm> =
         std::collections::HashMap::new();
@@ -1877,7 +1880,13 @@ fn run_window(
                     }
                 }
                 Cmd::ChildBounds { name, rect } => {
-                    if let Some(v) = children.get(&name) {
+                    // The other half of the same rule as Resized: a minimized
+                    // window's layout is not a layout anybody asked for, and a
+                    // page being watched from a phone must not be re-shaped by
+                    // it. The seat is left alone as well, so what comes back
+                    // when the window does is the size it had
+                    if !window.is_minimized()
+                        && let Some(v) = children.get(&name) {
                         let _ = v.set_bounds(to_rect(rect));
                         match child_sizes.get(&name) {
                             Some(seat) => seat.set(rect),
@@ -1934,7 +1943,13 @@ fn run_window(
                     }
                 }
                 Cmd::Focus { to } => {
-                    if let Some(v) = target(main_view(&shell), &children, &overlays, &to)
+                    // A window that is put away cannot take focus, and
+                    // Windows says so with a bare 0x80070057. Asking anyway
+                    // wrote two lines of that into the log every time a phone
+                    // touched a tab while the PC was minimized -- an error
+                    // where nothing was wrong, next to the ones that matter
+                    if !window.is_minimized()
+                        && let Some(v) = target(main_view(&shell), &children, &overlays, &to)
                         && let Err(e) = v.focus() {
                             shikisha_core::append_hook_log(&shikisha_core::i18n::tp(
                                 "err.browser.log_focus_failed",
@@ -2057,7 +2072,13 @@ fn run_window(
                                 // report must come after a frame (cast_dims filled), which
                                 // the sender guarantees
                                 let (cw, ch) = cast_dims.get();
-                                if cw >= 1.0 && ch >= 1.0 {
+                                // Big enough to be a page somebody is looking
+                                // at. Anything under this is the picture a
+                                // window collapses to while it is being put
+                                // away or brought back, and measuring from it
+                                // once fixes the page at that size for as long
+                                // as the phone keeps watching
+                                if cw >= 320.0 && ch >= 240.0 {
                                     let nat = *naturals.entry(to.clone()).or_insert((cw, ch));
                                     match shikisha_core::cdp::view_metrics(nat, w, h) {
                                         Some(m) => cdp::call(
@@ -2293,13 +2314,61 @@ fn run_window(
                         window.is_maximized()
                     ));
                 }
-                if size.width > 0 && size.height > 0
-                    && let Some(v) = main_view(&shell) {
-                        let _ = v.set_bounds(wry::Rect {
-                            position: wry::dpi::PhysicalPosition::new(0, 0).into(),
-                            size: wry::dpi::PhysicalSize::new(size.width, size.height).into(),
-                        });
+                // What size to draw the board at. Not the one that arrives
+                // while the window is put away: Windows reports a minimized
+                // window as a small rectangle of its own -- 128x220 on this
+                // machine, not zero, so a guard against zero never saw it --
+                // and the board laid itself out to it, handed it down to the
+                // page it was relaying, and the phone watching from another
+                // room was sent that page 128 pixels wide, one character per
+                // line. Nobody is looking at this window while it is away,
+                // and its size then says nothing about how wide a page should
+                // be, so the last size that meant something is held instead
+                let (w, h) = if window.is_minimized() {
+                    // Hold it where it was. Not resizing from here is only
+                    // half of it: wry keeps a WM_SIZE hook of its own, and
+                    // whatever that makes of a window with no client area is
+                    // what the page would be drawn at
+                    match last_size {
+                        Some(r) => r,
+                        None => return,
                     }
+                } else if size.width > 0 && size.height > 0 {
+                    last_size = Some((size.width, size.height));
+                    (size.width, size.height)
+                } else {
+                    return;
+                };
+                if let Some(v) = main_view(&shell) {
+                    let _ = v.set_bounds(wry::Rect {
+                        position: wry::dpi::PhysicalPosition::new(0, 0).into(),
+                        size: wry::dpi::PhysicalSize::new(w, h).into(),
+                    });
+                }
+                // A page being watched from a phone is re-shaped to that
+                // phone's aspect, worked out from the width the page has
+                // HERE. This window just changed size, so that width has
+                // changed and the shape on the phone is worked out from a
+                // number that no longer exists. Take the override off and let
+                // the next report from the phone measure it again.
+                //
+                // Without this the arithmetic survives its own inputs: the
+                // window came back from minimized, where Windows had told it
+                // it was 128 wide, and the page went on being drawn 128 wide
+                // in a full-sized pane -- one character per line, on the PC
+                // and on the phone both
+                if !window.is_minimized() && !naturals.is_empty() {
+                    for to in naturals.keys() {
+                        if let Some(v) = target(main_view(&shell), &children, &overlays, to) {
+                            cdp::call(
+                                &cdp::webview_of(v),
+                                "Emulation.clearDeviceMetricsOverride",
+                                "{}",
+                            );
+                        }
+                    }
+                    naturals.clear();
+                }
             }
             // The move notice the same hook gave, for the same reason:
             // Chromium places its popups (select lists, tooltips) by where
@@ -3125,6 +3194,57 @@ mod tests {
         let restored = body.find("window.set_minimized(false)").expect("it does not bring the window back from minimized");
         let built = body.find("match shell_of()").expect("it does not rebuild the board");
         assert!(restored < built, "it builds the board while still minimized");
+    }
+
+    /// A window that is put away does not re-shape the page inside it.
+    ///
+    /// Windows gives a minimized window a small size of its own (128x220 on
+    /// this machine) rather than none, so a guard against zero lets it
+    /// through. The board laid itself out to it, passed it down to the page
+    /// it was relaying, and a phone watching from another room got that page
+    /// 128 pixels wide and blew it up to fill its screen
+    #[test]
+    fn a_put_away_window_does_not_resize_what_it_holds() {
+        let src = include_str!("browser.rs");
+        let resized =
+            src.find("event: WindowEvent::Resized(size),").expect("nothing follows the size");
+        let body = &src[resized..resized + 1800];
+        assert!(
+            body.contains("window.is_minimized()") && body.contains("last_size"),
+            "the board follows the window into being minimized"
+        );
+        let child =
+            src.find("Cmd::ChildBounds { name, rect } => {").expect("no pane sizing");
+        let body = &src[child..child + 900];
+        assert!(
+            body.contains("window.is_minimized()"),
+            "a pane is re-sized by the layout of a window nobody can see"
+        );
+    }
+
+    /// What a phone is shown is worked out from the width the page has here,
+    /// so a window that changes size invalidates it.
+    ///
+    /// Nothing re-takes that width by itself: it is measured once, when the
+    /// phone first says what shape it is. Coming back from minimized left the
+    /// page drawn at the width Windows reports for a minimized window, in a
+    /// pane the full size of the screen
+    #[test]
+    fn a_window_that_changes_size_measures_the_page_again() {
+        let src = include_str!("browser.rs");
+        let resized =
+            src.find("event: WindowEvent::Resized(size),").expect("nothing follows the size");
+        let body = &src[resized..resized + 3860];
+        assert!(
+            body.contains("naturals.clear()"),
+            "the shape sent to a phone outlives the window it was measured from"
+        );
+        let view = src.find("Input::View { w, h } => {").expect("no view intent");
+        let body = &src[view..view + 1600];
+        assert!(
+            body.contains("cw >= 320.0 && ch >= 240.0"),
+            "a page is measured from a size nothing could be read at"
+        );
     }
 
     /// A page placed in the window may report, and may not ask. Every intent

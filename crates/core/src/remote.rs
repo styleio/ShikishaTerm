@@ -2294,6 +2294,13 @@ fn handle(
                 for cast in casts.lock().unwrap().iter_mut() {
                     cast.whole_one_wanted();
                 }
+                // And ask the screen for a picture to put in it. Asking for a
+                // whole one only decides how the NEXT picture is compressed,
+                // and pictures are made when the screen changes -- so on a
+                // page that is sitting still, which is most pages and exactly
+                // where a picture that stopped is noticed, nothing would have
+                // been sent and the asking would have changed nothing
+                keyframe_wanted.store(true, Ordering::SeqCst);
                 req.respond(json_response(serde_json::json!({"ok": true})))?;
                 return Ok(());
             }
@@ -2442,7 +2449,7 @@ fn open_cast(
     // this, "is it actually using video?" can only be answered by taking the
     // machine apart
     crate::append_hook_log(&format!(
-        "a viewer is watching as video ({}), over {}",
+        "a viewer asked for video ({}) and was answered, over {}",
         crate::vencode::codec(),
         addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")
     ));
@@ -2918,6 +2925,12 @@ mod tests {
     /// did not ask for.
     #[test]
     fn asking_to_watch_as_video_is_gated_and_never_breaks_the_relay() {
+        // This test pairs a phone, and pairing writes a row into the book the
+        // whole process shares. Written without owning it, the row landed in
+        // whichever other test happened to be holding the book, and that test
+        // counted one device too many -- a failure with nothing to do with
+        // video, in a file that was not touched
+        let _book = crate::clients::tests::OwnBook::new();
         let ui = RemoteUi::start(
             "127.0.0.1".parse().unwrap(),
             0,
@@ -2934,10 +2947,8 @@ mod tests {
 
         let mut phone = Phone::new(&base);
         phone.pair("board-token-0000");
-        // The token rides on each request rather than resting on the device
-        // row alone: that row lives in a book shared by the whole process, and
-        // another test filling it up would take this phone's door away for a
-        // reason that has nothing to do with video
+        // The token rides on each request as well, so that what is being
+        // tested is the video door and not the device row behind it
         let door = "/api/video?t=board-token-0000";
         // Nonsense is answered, not thrown
         let (code, body) = phone.said_post(door, r#"{"offer":"not an offer"}"#);
@@ -2953,9 +2964,17 @@ mod tests {
 
         // Saying the picture is damaged is answered even when nobody is
         // watching: a viewer whose connection just ended may say it last
+        ui.take_keyframe_request();
         let (code, body) = phone.said_post(door, r#"{"damaged":true}"#);
         assert_eq!(code, 200);
         assert!(body.contains("true"), "a damaged picture went unanswered: {body}");
+        // And a picture is asked for. Without this, saying the picture is
+        // damaged only changes how the next one is compressed -- and on a
+        // page that is sitting still there is no next one
+        assert!(
+            ui.take_keyframe_request(),
+            "a damaged picture was answered without asking the screen for one"
+        );
     }
 
     /// The reply link is a door of its own, and the whole design rests on how

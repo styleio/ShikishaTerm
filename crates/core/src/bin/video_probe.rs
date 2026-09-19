@@ -50,6 +50,39 @@ fn main() {
     )
     .expect("the relay would not start");
 
+    // What one picture costs, before anybody is watching. If this is over a
+    // thirtieth of a second the ceiling is a wish: the pictures cannot be
+    // prepared as fast as they are asked for, and the far end sees the
+    // difference as dropped frames
+    {
+        let one = &frames[0];
+        let began = Instant::now();
+        let planes = shikisha_core::vframe::planes_of(one).expect("the picture will not read");
+        let undo = began.elapsed();
+        let mut enc = shikisha_core::vencode::encoder_for(planes.width, planes.height, 30)
+            .expect("no encoder");
+        // The first few are the encoder settling; the ones after it are the cost
+        for _ in 0..5 {
+            let _ = enc.encode(&planes, false);
+        }
+        let began = Instant::now();
+        let mut n = 0;
+        while began.elapsed() < Duration::from_secs(2) {
+            let p = shikisha_core::vframe::planes_of(&frames[n % frames.len()]).unwrap();
+            let _ = enc.encode(&p, false);
+            n += 1;
+        }
+        let each = began.elapsed().as_secs_f64() / n as f64;
+        println!(
+            "one picture {}x{}: undoing it {:.1}ms, the whole way {:.1}ms = {:.0} a second",
+            planes.width,
+            planes.height,
+            undo.as_secs_f64() * 1000.0,
+            each * 1000.0,
+            1.0 / each
+        );
+    }
+
     println!("origin {}", ui.url.split("/?").next().unwrap());
     println!("token {token}");
     println!("frames {}", frames.len());
