@@ -58,7 +58,12 @@ impl Cast {
     /// The page offers and this answers, because the page is the one that
     /// knows what its browser can decode.
     pub fn answer(offer: &str, addrs: &[std::net::IpAddr]) -> Result<(Cast, String)> {
-        let (viewer, answer) = crate::webrtc::answer(offer, addrs)?;
+        // What the far end is agreed with has to be what the encoder will
+        // later produce, and the encoder does not exist yet -- it is made on
+        // the first picture, which is the first thing that says how big the
+        // screen is. So the platform is asked instead
+        let (viewer, answer) =
+            crate::webrtc::answer(offer, addrs, crate::vencode::codec())?;
         Ok((
             Cast {
                 viewer,

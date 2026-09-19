@@ -2430,11 +2430,7 @@ fn open_cast(
     keyframe_wanted: &Arc<AtomicBool>,
     offer: &str,
 ) -> Result<String> {
-    let all = crate::netaddr::local_addresses();
-    let addrs = crate::webrtc::addresses_here(&all);
-    if addrs.is_empty() {
-        anyhow::bail!("this machine has no address a phone could reach");
-    }
+    let addrs = crate::webrtc::addresses_here(&crate::netaddr::local_addresses());
     let (cast, answer) = crate::vcast::Cast::answer(offer, &addrs)?;
     casts.lock().unwrap().push(cast);
     // A viewer that has just joined has nothing to build a picture from, so
@@ -2924,8 +2920,13 @@ mod tests {
 
         let mut phone = Phone::new(&base);
         phone.pair("board-token-0000");
+        // The token rides on each request rather than resting on the device
+        // row alone: that row lives in a book shared by the whole process, and
+        // another test filling it up would take this phone's door away for a
+        // reason that has nothing to do with video
+        let door = "/api/video?t=board-token-0000";
         // Nonsense is answered, not thrown
-        let (code, body) = phone.said_post("/api/video", r#"{"offer":"not an offer"}"#);
+        let (code, body) = phone.said_post(door, r#"{"offer":"not an offer"}"#);
         assert_eq!(code, 200, "a bad offer became a failed request");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
         assert_eq!(v["ok"], serde_json::json!(false), "nonsense was accepted: {body}");
@@ -2938,7 +2939,7 @@ mod tests {
 
         // Saying the picture is damaged is answered even when nobody is
         // watching: a viewer whose connection just ended may say it last
-        let (code, body) = phone.said_post("/api/video", r#"{"damaged":true}"#);
+        let (code, body) = phone.said_post(door, r#"{"damaged":true}"#);
         assert_eq!(code, 200);
         assert!(body.contains("true"), "a damaged picture went unanswered: {body}");
     }
