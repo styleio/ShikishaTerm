@@ -349,7 +349,6 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             g.linked = *linked;
             g.family = Some(family.display().to_string());
         }
-        g.plain = ui.folders_plain.iter().any(|p| crate::uistate::same_folder(p, at));
         g.health = health.get(at).cloned().unwrap_or_default();
         g.drift = drift.get(at).cloned().unwrap_or_default();
         // A folder with a panel in it is not empty. The list is built from
@@ -1214,10 +1213,6 @@ pub struct Ui {
     /// nowhere but here: nothing is written down, so the next launch shows
     /// them, which is the whole of what was asked for
     pub folders_hidden: std::collections::BTreeSet<std::path::PathBuf>,
-    /// And the ones the settings call an ordinary folder -- nothing git about
-    /// them. What it would take to put one back on this machine is to make it,
-    /// so the card that offers to says "make" and not "clone"
-    pub folders_plain: Vec<std::path::PathBuf>,
     /// Those same folders, each with the name of the machine it is on
     pub folder_hosts: Vec<(std::path::PathBuf, String)>,
     /// And each with the server that machine is, for the name a person gave it

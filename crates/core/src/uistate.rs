@@ -460,11 +460,6 @@ pub struct GroupState {
     /// the tabs in that folder are being held back rather than run
     #[serde(default)]
     pub health: crate::folders::Health,
-    /// Whether the settings call it an ordinary folder rather than a piece of
-    /// a project. Only read while the folder is not on this machine, to say
-    /// what putting it back would be: making a folder, or fetching a project
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub plain: bool,
     /// How far this folder's branch is from the remote, as of the last fetch.
     /// A number the row can wear, so "somebody else has pushed" is something
     /// you notice rather than something you find out
@@ -551,7 +546,6 @@ impl GroupState {
                     // here, and how far it has drifted, are questions for the
                     // disk, and the disk is asked away from the list being built
                     health: Default::default(),
-                    plain: false,
                     drift: Default::default(),
                     empty: false,
                     work_item: None,
@@ -591,7 +585,6 @@ impl GroupState {
                     family,
                     branch: None,
                     health: Default::default(),
-                    plain: false,
                     drift: Default::default(),
                     empty: true,
                     work_item: None,

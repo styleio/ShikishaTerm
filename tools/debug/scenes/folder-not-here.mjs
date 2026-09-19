@@ -24,7 +24,7 @@ const groups = (hidden) => [
     branch: 'main', health: { as: 'fine' }, drift: { behind: 0, ahead: 0 } },
   ...(hidden ? [] : [{ name: 'soj_main', folder: 'D:/server/soj_main', color: '#19c37d',
     linked: false, branch: 'main', health: { as: 'missing' }, drift: { behind: 0, ahead: 0 } }]),
-  { name: 'notes', folder: 'X:/notes', linked: false, plain: true,
+  { name: 'notes', folder: 'X:/notes', linked: false,
     health: { as: 'nodrive', drive: 'X:' }, drift: { behind: 0, ahead: 0 } },
 ];
 

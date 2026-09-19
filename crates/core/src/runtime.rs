@@ -3345,16 +3345,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            folders_plain: desks
-                .get(desk_index)
-                .map(|w| {
-                    w.folders
-                        .iter()
-                        .filter(|f| matches!(f.source, config::Source::Plain))
-                        .filter_map(|f| f.cwd.clone())
-                        .collect()
-                })
-                .unwrap_or_default(),
             folder_projects: desks
                 .get(desk_index)
                 .map(|w| {
