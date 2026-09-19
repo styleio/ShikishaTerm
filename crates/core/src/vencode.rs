@@ -78,6 +78,20 @@ pub fn available() -> bool {
     cfg!(windows)
 }
 
+/// What this machine will produce, in the word an SDP uses.
+///
+/// Asked before an encoder exists, because the far end has to be told what to
+/// expect while the connection is being agreed -- and the encoder is not made
+/// until the first picture arrives and says how big the screen is. A
+/// connection agreed on one encoding and fed another is a black rectangle
+/// with no error anywhere.
+pub fn codec() -> &'static str {
+    match cfg!(windows) {
+        true => "H264",
+        false => "VP8",
+    }
+}
+
 /// H.264 through the encoder Windows already has.
 ///
 /// The operating system carries both the encoder and the licence that covers
@@ -402,5 +416,17 @@ mod tests {
     #[test]
     fn the_build_says_whether_it_can_compress() {
         assert_eq!(available(), cfg!(windows));
+    }
+
+    /// What the connection is agreed on and what the encoder produces have to
+    /// be the same word. They are decided in different places and at
+    /// different times -- the agreement before the first picture, the encoder
+    /// after it -- and if they ever part, the far end shows a black rectangle
+    /// and nothing anywhere says why.
+    #[cfg(windows)]
+    #[test]
+    fn what_is_promised_is_what_is_produced() {
+        let enc = encoder_for(160, 120, 30).unwrap();
+        assert_eq!(enc.codec(), codec(), "the encoder makes something else than was promised");
     }
 }

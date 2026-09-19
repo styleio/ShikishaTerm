@@ -15,6 +15,13 @@ repository = "https://github.com/styleio/ShikishaTerm"
 name = "sign"
 path = "src/bin/sign.rs"
 
+# Does the video path reach a browser? Run by hand against a real browser,
+# because that is the only thing that can answer it (crates/core/src/bin/video_probe.rs).
+# Not part of any download.
+[[bin]]
+name = "video_probe"
+path = "src/bin/video_probe.rs"
+
 [dependencies]
 shikisha-shared = { path = "../shared" }
 aes-gcm = "0.11.0"
@@ -75,8 +82,6 @@ tokio = { version = "1.53.1", default-features = false, features = ["rt", "net",
 
 # What only exists away from Windows: the C library every unix has, for the
 # handful of questions std does not answer (the local clock, process groups).
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 # Sending the screen as video instead of as a stream of JPEGs
 # (crates/core/src/webrtc.rs). Chosen over webrtc-rs because it holds no IO of
@@ -84,17 +89,15 @@ libc = "0.2"
 # webrtc-rs would have brought a tokio runtime in beside it. 54 crates against
 # 207, and nothing can reach the network except through code written here --
 # which is also why it cannot quietly ask a STUN server where we are.
-# The crypto backend differs per platform: Windows has one in the OS, and
-# using it means no OpenSSL and no perl in the build.
-[target.'cfg(windows)'.dependencies.str0m]
-version = "0.9"
-default-features = false
-features = ["wincrypto", "sha1"]
+# The cipher suite is the pure-Rust one. The other backends are OpenSSL, which
+# wants perl and a C compiler to build, and the operating system's own, which
+# on Windows would not agree a single cipher with Chrome (SEC_E_ALGORITHM_MISMATCH
+# at the first handshake, found by the end-to-end probe). Pure Rust also keeps
+# the Linux build the single static file it is.
+str0m = { version = "0.23", default-features = false, features = ["rust-crypto"] }
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
-[target.'cfg(not(windows))'.dependencies.str0m]
-version = "0.9"
-default-features = false
-features = ["openssl", "vendored", "sha1"]
 
 # What only exists on Windows. Everything above this line builds anywhere,
 # which is the whole point of the runtime being its own crate.
