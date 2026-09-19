@@ -72,6 +72,24 @@ tokio = { version = "1.53.1", default-features = false, features = ["rt", "net",
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Sending the screen as video instead of as a stream of JPEGs
+# (crates/core/src/webrtc.rs). Chosen over webrtc-rs because it holds no IO of
+# its own: this app is threads and blocking sockets all the way down, and
+# webrtc-rs would have brought a tokio runtime in beside it. 54 crates against
+# 207, and nothing can reach the network except through code written here --
+# which is also why it cannot quietly ask a STUN server where we are.
+# The crypto backend differs per platform: Windows has one in the OS, and
+# using it means no OpenSSL and no perl in the build.
+[target.'cfg(windows)'.dependencies.str0m]
+version = "0.9"
+default-features = false
+features = ["wincrypto", "sha1"]
+
+[target.'cfg(not(windows))'.dependencies.str0m]
+version = "0.9"
+default-features = false
+features = ["openssl", "vendored", "sha1"]
+
 # What only exists on Windows. Everything above this line builds anywhere,
 # which is the whole point of the runtime being its own crate.
 [target.'cfg(windows)'.dependencies]
