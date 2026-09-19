@@ -32,6 +32,28 @@ pub fn lan_ip() -> Option<Ipv4Addr> {
     ip.is_private().then_some(ip)
 }
 
+/// Every address this machine can be reached at, as far as it can tell.
+///
+/// Worked out the same way as the two above -- by asking the routing table
+/// which address it would use to reach somewhere -- rather than by listing the
+/// interfaces, which needs a different call on every system and answers with
+/// a great deal that is not an address anybody can reach.
+///
+/// Two questions cover what this app is used over: the route to the VPN and
+/// the route to the internet. A machine on both answers twice; one on neither
+/// answers with nothing, which is a true answer about a machine no phone can
+/// reach.
+pub fn local_addresses() -> Vec<IpAddr> {
+    let mut out: Vec<IpAddr> = Vec::new();
+    for ip in [tailscale_ip(), lan_ip()].into_iter().flatten() {
+        let at = IpAddr::V4(ip);
+        if !out.contains(&at) {
+            out.push(at);
+        }
+    }
+    out
+}
+
 pub fn is_tailscale(ip: &Ipv4Addr) -> bool {
     let o = ip.octets();
     o[0] == 100 && (64..128).contains(&o[1])

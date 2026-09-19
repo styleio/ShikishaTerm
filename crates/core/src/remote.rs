@@ -348,6 +348,14 @@ struct FrameClient {
     tx: Sender<Vec<u8>>,
     session: String,
 }
+/// Viewers watching the screen as video rather than as a run of JPEGs.
+///
+/// Kept beside the JPEG viewers rather than replacing them: a browser that
+/// cannot take video, a build with no encoder, and a connection that never
+/// comes up all fall back to what was there before, and nobody is asked to
+/// choose between them.
+type Casts = Arc<Mutex<Vec<crate::vcast::Cast>>>;
+
 /// Destinations for state pushes — the terminal screen and UI, sent over a
 /// WebSocket instead of the phone polling. One text sender per connected viewer.
 type StateClients = Arc<Mutex<Vec<StateClient>>>;
@@ -399,6 +407,10 @@ pub struct RemoteUi {
     page_line: PageLine,
     /// Destinations for relay frames. JPEGs arriving from the browser flow here
     frame_clients: FrameClients,
+    /// The same pictures, for whoever is watching them as video instead. Fed
+    /// from the same door as the JPEGs (`push_frame`), so the two can never be
+    /// looking at different screens
+    casts: Casts,
     /// Destinations for state pushes (screen HTML / UI JSON) over /ws-state
     state_clients: StateClients,
     /// When a viewer last asked for the state over plain HTTP. Watching is
@@ -798,6 +810,7 @@ impl RemoteUi {
         let (tx, rx) = channel::<RemoteCmd>();
         let stop = Arc::new(AtomicBool::new(false));
         let frame_clients: FrameClients = Arc::new(Mutex::new(Vec::new()));
+        let casts: Casts = Arc::new(Mutex::new(Vec::new()));
         let pipes: Pipes = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let page_line: PageLine = Arc::new(Mutex::new(None));
         let pages_open: PagesOpen = Arc::new(Mutex::new(std::collections::HashMap::new()));
@@ -856,6 +869,7 @@ impl RemoteUi {
             let snapshot = Arc::clone(&snapshot);
             let stop = Arc::clone(&stop);
             let clients = Arc::clone(&frame_clients);
+            let casting = Arc::clone(&casts);
             let pipes = Arc::clone(&pipes);
             let page_line = Arc::clone(&page_line);
             let pages_open = Arc::clone(&pages_open);
@@ -873,7 +887,7 @@ impl RemoteUi {
                     }
                     if let Err(e) =
                         handle(
-                            req, &token, &snapshot, &tx, &clients, &pipes, &page_line,
+                            req, &token, &snapshot, &tx, &clients, &casting, &pipes, &page_line,
                             &pages_open, &states, &polls, &kf, &settings, &gate,
                             &book_for_thread, sticky,
                         )
@@ -892,6 +906,7 @@ impl RemoteUi {
             let snapshot = Arc::clone(&snapshot);
             let stop = Arc::clone(&stop);
             let clients = Arc::clone(&frame_clients);
+            let casting = Arc::clone(&casts);
             let pipes = Arc::clone(&pipes);
             let page_line = Arc::clone(&page_line);
             let pages_open = Arc::clone(&pages_open);
@@ -908,7 +923,7 @@ impl RemoteUi {
                         break;
                     }
                     if let Err(e) = handle(
-                        req, &token, &snapshot, &tx, &clients, &pipes, &page_line,
+                        req, &token, &snapshot, &tx, &clients, &casting, &pipes, &page_line,
                         &pages_open, &states, &polls, &kf, &settings, &gate,
                         &book_for_thread, sticky,
                     ) {
@@ -930,6 +945,7 @@ impl RemoteUi {
             rx,
             stop,
             frame_clients,
+            casts,
             page_line,
             state_clients,
             last_poll,
@@ -1066,6 +1082,7 @@ impl RemoteUi {
         // instant the person here decides it does.
         self.push_state(CUT_MESSAGE.to_string());
         self.frame_clients.lock().unwrap().clear();
+        self.casts.lock().unwrap().clear();
         self.state_clients.lock().unwrap().clear();
     }
 
@@ -1078,15 +1095,47 @@ impl RemoteUi {
     /// Deliver a relay frame (JPEG bytes) to every connected WS client.
     /// Drop lines that can't receive it (the peer closed or is backed up)
     pub fn push_frame(&self, jpeg: Vec<u8>) {
-        let mut clients = self.frame_clients.lock().unwrap();
-        // A line whose session has ended since it opened gets nothing more
-        clients.retain(|c| self.gate.granted(&c.session) && c.tx.send(jpeg.clone()).is_ok());
+        {
+            let mut clients = self.frame_clients.lock().unwrap();
+            // A line whose session has ended since it opened gets nothing more
+            clients.retain(|c| self.gate.granted(&c.session) && c.tx.send(jpeg.clone()).is_ok());
+        }
+        // And to whoever is watching the same screen as video. The picture
+        // arriving here at all is what says the page drew something, which is
+        // the signal the whole video path is paced by -- a tab sitting still
+        // reaches this line once and then not again
+        let mut casts = self.casts.lock().unwrap();
+        for cast in casts.iter_mut() {
+            cast.picture(&jpeg);
+        }
+        casts.retain(|c| {
+            if let Some(why) = &c.trouble {
+                crate::append_hook_log(&format!("a video viewer was dropped: {why}"));
+            }
+            c.live()
+        });
+    }
+
+    /// Answer a viewer asking to watch as video. Returns what to send back, or
+    /// why it cannot be done -- which the page reads as "stay on JPEG".
+    ///
+    /// The same words as the route serves, through the same function: two ways
+    /// of starting a cast would be two ways of getting a different answer.
+    pub fn open_cast(&self, offer: &str) -> Result<String> {
+        open_cast(&self.casts, &self.keyframe_wanted, offer)
+    }
+
+    /// How many are watching as video. For the window, which says what is
+    /// going on, and for the tests
+    pub fn casts(&self) -> usize {
+        self.casts.lock().unwrap().len()
     }
 
     /// Whether at least one client is watching the relay (if nobody is
     /// watching, the relay can be stopped)
     pub fn has_frame_clients(&self) -> bool {
         !self.frame_clients.lock().unwrap().is_empty()
+            || !self.casts.lock().unwrap().is_empty()
     }
 
     /// Whether at least one viewer is connected on the state socket. When none
@@ -1276,6 +1325,7 @@ fn handle(
     snapshot: &Arc<Mutex<Snapshot>>,
     tx: &Sender<RemoteCmd>,
     frame_clients: &FrameClients,
+    casts: &Casts,
     pipes: &Pipes,
     page_line: &PageLine,
     pages_open: &PagesOpen,
@@ -2221,6 +2271,34 @@ fn handle(
                 }
             req.respond(json_response(serde_json::json!({"ok": took})))?;
         }
+        // Watching the screen as video instead of as a run of JPEGs. The page
+        // offers, because the page is the one that knows what its browser can
+        // decode; this answers. A failure here is not an error the person
+        // needs to see -- the page reads it as "stay on JPEG", which is what
+        // it was doing a moment ago
+        ("POST", "/api/video") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            // The far end saying its picture is damaged. Answered by every
+            // viewer, because there is one screen and they are all on it
+            if v.get("damaged").and_then(|x| x.as_bool()).unwrap_or(false) {
+                for cast in casts.lock().unwrap().iter_mut() {
+                    cast.whole_one_wanted();
+                }
+                req.respond(json_response(serde_json::json!({"ok": true})))?;
+                return Ok(());
+            }
+            let offer = v.get("offer").and_then(|x| x.as_str()).unwrap_or_default();
+            let said = match open_cast(casts, keyframe_wanted, offer) {
+                Ok(answer) => serde_json::json!({"ok": true, "answer": answer}),
+                Err(e) => serde_json::json!({"ok": false, "why": format!("{e:#}")}),
+            };
+            req.respond(json_response(said))?;
+        }
         ("POST", "/api/auto") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
@@ -2338,9 +2416,32 @@ fn cookie_value(req: &tiny_http::Request, name: &str) -> String {
 /// once, and the cost was silent: `/api/replay` was added below and not here,
 /// so the phone's download button asked the settings proxy for it and the code
 /// that actually serves it — a dozen lines away — was never once reached.
-const OWN_VERBS: [&str; 8] = [
-    "state", "send", "auto", "intent", "attach", "read", "replay", "snip",
+const OWN_VERBS: [&str; 9] = [
+    "state", "send", "auto", "intent", "attach", "read", "replay", "snip", "video",
 ];
+
+/// Answer a viewer asking to watch as video, and remember it.
+///
+/// Apart from the route so that the same words serve the request and the
+/// method on `RemoteUi`: two ways of starting a cast that drifted apart would
+/// be two ways of getting a different answer.
+fn open_cast(
+    casts: &Casts,
+    keyframe_wanted: &Arc<AtomicBool>,
+    offer: &str,
+) -> Result<String> {
+    let all = crate::netaddr::local_addresses();
+    let addrs = crate::webrtc::addresses_here(&all);
+    if addrs.is_empty() {
+        anyhow::bail!("this machine has no address a phone could reach");
+    }
+    let (cast, answer) = crate::vcast::Cast::answer(offer, &addrs)?;
+    casts.lock().unwrap().push(cast);
+    // A viewer that has just joined has nothing to build a picture from, so
+    // the loop is asked for one frame of whatever is on screen now
+    keyframe_wanted.store(true, Ordering::SeqCst);
+    Ok(answer)
+}
 
 fn is_settings_path(path: &str) -> bool {
     if path == "/cfg" || path == "/help" || path == "/result" {
@@ -2795,6 +2896,51 @@ mod tests {
         fn state(&self, token: &str) -> u16 {
             self.status(&format!("/api/state?t={token}"))
         }
+    }
+
+    /// Asking to watch as video is a door like every other: it wants the
+    /// token and a live session, and a stranger gets nothing.
+    ///
+    /// And when it cannot be done -- no encoder in this build, no address a
+    /// phone could reach, an offer that is not one -- it says so in the body
+    /// instead of failing. The page reads that as "stay on JPEG", which is
+    /// what it was already doing: nobody is shown an error for a thing they
+    /// did not ask for.
+    #[test]
+    fn asking_to_watch_as_video_is_gated_and_never_breaks_the_relay() {
+        let ui = RemoteUi::start(
+            "127.0.0.1".parse().unwrap(),
+            0,
+            "board-token-0000".into(),
+            String::new(),
+        )
+        .unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+
+        // A stranger is refused before the offer is even looked at
+        let stranger = Phone::new(&base);
+        let (code, _) = stranger.said_post("/api/video", r#"{"offer":"v=0"}"#);
+        assert_eq!(code, 403, "an unpaired visitor was let near the video door");
+
+        let mut phone = Phone::new(&base);
+        phone.pair("board-token-0000");
+        // Nonsense is answered, not thrown
+        let (code, body) = phone.said_post("/api/video", r#"{"offer":"not an offer"}"#);
+        assert_eq!(code, 200, "a bad offer became a failed request");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        assert_eq!(v["ok"], serde_json::json!(false), "nonsense was accepted: {body}");
+        assert!(
+            v.get("why").and_then(|x| x.as_str()).is_some_and(|w| !w.is_empty()),
+            "it refused without saying why: {body}"
+        );
+        // And nobody is watching as video, so the relay is unchanged
+        assert_eq!(ui.casts(), 0, "a viewer was kept from a failed offer");
+
+        // Saying the picture is damaged is answered even when nobody is
+        // watching: a viewer whose connection just ended may say it last
+        let (code, body) = phone.said_post("/api/video", r#"{"damaged":true}"#);
+        assert_eq!(code, 200);
+        assert!(body.contains("true"), "a damaged picture went unanswered: {body}");
     }
 
     /// The reply link is a door of its own, and the whole design rests on how
