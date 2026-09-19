@@ -97,6 +97,7 @@ pub mod webui;
 pub mod winpath;
 pub mod desk;
 pub mod deskpack;
+pub mod webrtc;
 pub mod worktree;
 pub mod ws;
 
