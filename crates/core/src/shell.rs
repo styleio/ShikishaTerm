@@ -6446,7 +6446,10 @@ function drawHeld(g) {
     b.querySelector(".kill"), T["tui.held.forget"] || "",
     b.querySelector(".hhide"), T["tui.held.hide"] || "",
     b.querySelector(".hmove"), T["tui.held.move"] || "",
-    b.querySelector(".hput"), g.plain ? (T["tui.held.make"] || "") : (T["tui.held.clone"] || ""),
+    // The dialog's own words for the same act, so what the button offers and
+    // what the dialog does are named the same thing. It is not always a clone:
+    // a project already on this machine only needs the branch its own folder
+    b.querySelector(".hput"), T["tui.repair.go"] || "",
   ];
   // Written only where it says something else: this is repainted on every
   // state push, and a node rewritten each time cannot be selected or read
