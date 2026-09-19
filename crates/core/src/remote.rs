@@ -1111,6 +1111,11 @@ impl RemoteUi {
         casts.retain(|c| {
             if let Some(why) = &c.trouble {
                 crate::append_hook_log(&format!("a video viewer was dropped: {why}"));
+            } else if !c.live() {
+                // The far end went away, or never arrived. Said as plainly as
+                // the start was: a viewer that silently fell back to JPEG is
+                // the thing hardest to notice and most worth knowing
+                crate::append_hook_log("a video viewer is gone; the picture goes back to JPEG");
             }
             c.live()
         });
@@ -2432,6 +2437,15 @@ fn open_cast(
 ) -> Result<String> {
     let addrs = crate::webrtc::addresses_here(&crate::netaddr::local_addresses());
     let (cast, answer) = crate::vcast::Cast::answer(offer, &addrs)?;
+    // Said out loud, because from the outside a viewer on video and one on
+    // JPEG look exactly alike -- the picture is the same picture. Without
+    // this, "is it actually using video?" can only be answered by taking the
+    // machine apart
+    crate::append_hook_log(&format!(
+        "a viewer is watching as video ({}), over {}",
+        crate::vencode::codec(),
+        addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")
+    ));
     casts.lock().unwrap().push(cast);
     // A viewer that has just joined has nothing to build a picture from, so
     // the loop is asked for one frame of whatever is on screen now

@@ -15,6 +15,12 @@ repository = "https://github.com/styleio/ShikishaTerm"
 name = "sign"
 path = "src/bin/sign.rs"
 
+# A pairing link as a square a phone can read, for anywhere there is no window
+# to draw one (crates/core/src/bin/qr.rs). Not part of any download.
+[[bin]]
+name = "qr"
+path = "src/bin/qr.rs"
+
 # Does the video path reach a browser? Run by hand against a real browser,
 # because that is the only thing that can answer it (crates/core/src/bin/video_probe.rs).
 # Not part of any download.

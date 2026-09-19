@@ -165,6 +165,56 @@ pub fn shown_link(url: &str) -> (String, &'static str) {
     }
 }
 
+/// The same QR code, drawn with characters, for a terminal.
+///
+/// The window shows the SVG one; anything without a window -- a build running
+/// on a server, a check run by hand -- has only the terminal, and reading a
+/// pairing link off the screen and typing it into a phone is how people end up
+/// not pairing at all.
+///
+/// **Two rows to a line, and the polarity is deliberate.** Each character
+/// covers two rows of the code with a half block, so the picture comes out
+/// square rather than twice as tall. The LIGHT modules are drawn and the dark
+/// ones are left as spaces: a terminal is ordinarily light text on a dark
+/// background, so drawn-light-on-nothing gives a scanner the black-on-white it
+/// expects. Drawn the other way round it is an inverted code, which most
+/// phone cameras refuse.
+pub fn qr_text(text: &str) -> String {
+    use qrcode::{EcLevel, QrCode};
+    let Ok(code) = QrCode::with_error_correction_level(text.as_bytes(), EcLevel::L) else {
+        return String::new();
+    };
+    let w = code.width();
+    let dark: Vec<bool> = code.into_colors().iter().map(|c| *c == qrcode::Color::Dark).collect();
+    // The quiet zone is part of the code, not decoration: a scanner needs the
+    // clear margin to find the edges at all
+    let quiet = 4;
+    let side = w + quiet * 2;
+    let lit = |x: usize, y: usize| -> bool {
+        if x < quiet || y < quiet || x >= w + quiet || y >= w + quiet {
+            return true; // the quiet zone is light
+        }
+        !dark[(y - quiet) * w + (x - quiet)]
+    };
+    let mut out = String::new();
+    let mut y = 0;
+    while y < side {
+        for x in 0..side {
+            let top = lit(x, y);
+            let bottom = y + 1 >= side || lit(x, y + 1);
+            out.push(match (top, bottom) {
+                (true, true) => '\u{2588}',   // both light
+                (true, false) => '\u{2580}',  // the upper half
+                (false, true) => '\u{2584}',  // the lower half
+                (false, false) => ' ',
+            });
+        }
+        out.push('\n');
+        y += 2;
+    }
+    out
+}
+
 /// QR code (SVG) shown on the settings screen, for scanning with a phone
 /// camera.
 pub fn qr_svg(text: &str, scale: u32) -> String {
@@ -273,6 +323,31 @@ mod tests {
         assert_eq!(demo_link_from("http://8.8.8.8/\n").as_deref(), Some("http://8.8.8.8/"));
         assert_eq!(demo_link_from("  \n "), None, "an empty file is not valid");
         assert_eq!(demo_link_from("http://8.8.8.8/ と書いた"), None, "something with a space does not become a QR code");
+    }
+
+    #[test]
+    fn qr_text_is_a_square_of_the_right_polarity() {
+        let out = qr_text("http://100.64.0.1:8787/?t=abc");
+        let rows: Vec<&str> = out.lines().collect();
+        assert!(!rows.is_empty(), "nothing was drawn");
+        // Two rows of the code to a line of text, so it comes out square
+        let wide = rows[0].chars().count();
+        assert!(
+            (wide as i64 - (rows.len() * 2) as i64).abs() <= 2,
+            "it is not square: {wide} across, {} lines", rows.len()
+        );
+        // The quiet zone is there, and it is light -- a code with no clear
+        // margin cannot be found by a camera at all
+        assert!(
+            rows[0].chars().all(|c| c == '\u{2588}'),
+            "the top margin is not clear: {:?}", rows[0]
+        );
+        assert!(
+            rows.iter().all(|r| r.starts_with('\u{2588}')),
+            "the left margin is not clear"
+        );
+        // And something was actually drawn between the margins
+        assert!(out.contains(' '), "there are no dark modules at all");
     }
 
     #[test]
