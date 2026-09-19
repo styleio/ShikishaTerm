@@ -3857,6 +3857,8 @@ dependencies = [
  "winreg",
  "zeroize",
  "zip",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

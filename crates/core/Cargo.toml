@@ -37,6 +37,12 @@ p256 = { version = "0.14.0", features = ["ecdh", "ecdsa"] }
 # crate is a command-line tool of its own
 petname = { version = "3.2.0", default-features = false, features = ["default-words", "default-rng"] }
 portable-pty = "0.9.0"
+# Undoing the JPEGs the screen relay produces, so they can be compressed as
+# video instead (crates/core/src/vframe.rs). Pure Rust, already in the tree
+# through the clipboard library, and small: the alternative was a C decoder,
+# which the portable build has no room for
+zune-core = "0.5.1"
+zune-jpeg = "0.5.15"
 qrcode = { version = "0.14.1", default-features = false }
 rand = "0.10.2"
 regex = "1.13.1"
