@@ -307,6 +307,13 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         | Ev::FolderClose { .. }
         | Ev::FolderDiscard { .. }
         | Ev::FolderColor { .. } => true,
+        // Putting a folder that is not on this machine out of sight until the
+        // next launch, and telling one to work somewhere else. The first
+        // writes nothing at all; the second writes one path, which is less
+        // than adding a folder (`Ev::Browse`) already writes. Both belong to
+        // the same card as `Ev::Repair`, and a card whose buttons work on the
+        // window and not on a phone is half a card
+        Ev::FolderHide { .. } | Ev::FolderMove { .. } => true,
         // How big the text is, and how wide the tab bar is. Both are the
         // looking person's own comfort, and both are already whatever the last
         // side to change them said

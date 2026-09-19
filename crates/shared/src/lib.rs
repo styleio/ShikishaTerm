@@ -271,6 +271,15 @@ pub enum Ev {
     /// anything in it that is not committed. `unasked` is the person's
     /// "don't show this again", ticked in the question that came before it
     FolderDiscard { folder: String, unasked: bool },
+    /// A folder put out of sight until the program is started again. Nothing
+    /// is written down and nothing on disk is touched: the settings still hold
+    /// it, and the next launch shows it again. `hide` false with an empty
+    /// `folder` brings back every folder put away this way
+    FolderHide { folder: String, hide: bool },
+    /// A folder told to work somewhere else. The folder keeps everything it
+    /// said about itself -- its name, its colour, its tabs -- and only the
+    /// place it works in changes
+    FolderMove { folder: String, to: String },
     /// "Close settings" on the settings page. Collapses the settings tab
     /// and returns to the operating board. This is a window-internal
     /// action, so it's not accepted from a phone (allowed_from_afar)
@@ -901,6 +910,14 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("folderdiscard") => Ev::FolderDiscard {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             unasked: v.get("unasked").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        Some("folderhide") => Ev::FolderHide {
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            hide: v.get("hide").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        Some("foldermove") => Ev::FolderMove {
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            to: v.get("to").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("browse") => Ev::Browse {
             path: v.get("path").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

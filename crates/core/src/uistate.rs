@@ -460,6 +460,11 @@ pub struct GroupState {
     /// the tabs in that folder are being held back rather than run
     #[serde(default)]
     pub health: crate::folders::Health,
+    /// Whether the settings call it an ordinary folder rather than a piece of
+    /// a project. Only read while the folder is not on this machine, to say
+    /// what putting it back would be: making a folder, or fetching a project
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plain: bool,
     /// How far this folder's branch is from the remote, as of the last fetch.
     /// A number the row can wear, so "somebody else has pushed" is something
     /// you notice rather than something you find out
@@ -546,6 +551,7 @@ impl GroupState {
                     // here, and how far it has drifted, are questions for the
                     // disk, and the disk is asked away from the list being built
                     health: Default::default(),
+                    plain: false,
                     drift: Default::default(),
                     empty: false,
                     work_item: None,
@@ -585,6 +591,7 @@ impl GroupState {
                     family,
                     branch: None,
                     health: Default::default(),
+                    plain: false,
                     drift: Default::default(),
                     empty: true,
                     work_item: None,
@@ -1054,6 +1061,18 @@ pub struct RepairPlan {
     /// Set once the folder is actually there
     #[serde(default)]
     pub done: bool,
+    /// Whether the steps are running now. Cloning takes as long as the network
+    /// does, so it runs on its own and the dialog says how far it has got
+    #[serde(default)]
+    pub running: bool,
+    /// Which step is running, counting from zero, while it is running
+    #[serde(default)]
+    pub at_step: usize,
+}
+
+/// Nothing put away, which is nearly always, and then the number is not sent.
+fn none_hidden(n: &usize) -> bool {
+    *n == 0
 }
 
 /// A project already on this machine, offered as the one a folder belongs to.
@@ -1729,6 +1748,11 @@ pub struct UiState {
     /// A worktree is deleted from the list without asking first
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub discard_unasked: bool,
+    /// How many folders are put out of sight until the next launch. A number
+    /// rather than the list: one line brings all of them back, and a line for
+    /// each would take the width the list is drawn in
+    #[serde(default, skip_serializing_if = "none_hidden")]
+    pub hidden: usize,
     /// The first-start setup, while it has not been answered
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<SetupState>,

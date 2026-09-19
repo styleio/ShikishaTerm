@@ -1157,6 +1157,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut assistant_ai = config::assistant_written();
     // The projects whose found worktrees somebody chose to keep hidden
     let mut worktrees_kept = load_kept();
+    // The working folders put out of sight until the next launch. Held here
+    // and nowhere else: nothing is written down, so starting the program again
+    // shows every one of them, which is what "hide while it runs" means
+    let mut folders_hidden: std::collections::BTreeSet<std::path::PathBuf> =
+        std::collections::BTreeSet::new();
+    // A folder being put back on this machine while the window keeps drawing
+    let mut putting: Option<folders::Putting> = None;
     // Worktrees being made, each a row under its project's heading
     let mut makings: Vec<Pending> = Vec::new();
     let mut leavings: Vec<Leaving> = Vec::new();
@@ -2952,6 +2959,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderColor { folder, color }) => {
                         shell.mail().folder_colors.push((folder, color));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderHide { folder, hide }) => {
+                        shell.mail().folder_hides.push((folder, hide));
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderMove { folder, to }) => {
+                        shell.mail().folder_moves.push((folder, to));
+                    }
                     // How big the text is, and how wide the tab bar is, as the
                     // person looking wants them
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FontSize { px }) => {
@@ -3217,6 +3230,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .unwrap_or(0);
             crate::uistate::UsageState::of(&l, now)
         });
+        // A folder put out of sight is not a folder put out of reach. Anything
+        // that brings one of its tabs to the front -- a script switching tabs,
+        // a key, the desk being changed -- brings the folder back with it,
+        // because typing into a tab nobody can see is the one outcome this
+        // must not have
+        if !folders_hidden.is_empty()
+            && let Some(dir) =
+                surfaces.get(active.wrapping_sub(1)).and_then(|p| crate::view::surface_dir(p, &tabs))
+        {
+            folders_hidden.retain(|h| !crate::uistate::same_folder(h, &dir));
+        }
         let ui = Ui {
             ais: ai_choices.clone(),
             past: past_view.clone(),
@@ -3227,6 +3251,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             setup: setup_view.clone(),
             add_project: add_view.clone(),
             worktrees_kept: worktrees_kept.clone(),
+            folders_hidden: folders_hidden.clone(),
             making: makings.iter().map(Pending::state).chain(leavings.iter().map(Leaving::state)).collect(),
             hosts: cfg
                 .as_ref()
@@ -3317,6 +3342,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .filter_map(|f| {
                             f.cwd.clone().map(|c| (c, f.name.clone().unwrap_or_default()))
                         })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            folders_plain: desks
+                .get(desk_index)
+                .map(|w| {
+                    w.folders
+                        .iter()
+                        .filter(|f| matches!(f.source, config::Source::Plain))
+                        .filter_map(|f| f.cwd.clone())
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -5722,6 +5757,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 None => {}
                 Some(Ok(())) => {
                     flash = Some(i18n::tp("msg.folder.discarded", &[("path", &l.removal.folder.display().to_string())]));
+                    // The project it was cut from has one worktree fewer. Said
+                    // now rather than waited out, so the line offering the
+                    // found ones stops offering a folder that is gone
+                    if let Some(main) = &l.main {
+                        crate::folders::watch().forget(main);
+                    }
                     l.gone = true;
                 }
                 Some(Err(why)) => l.error = Some(why),
@@ -5967,24 +6008,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Ok(steps) => {
                     view.done = steps.is_empty();
                     view.steps = steps.clone();
-                    if take && !steps.is_empty() {
-                        // Stopped at the first thing that will not work: the
-                        // second step is built on the first having happened
-                        match steps.iter().try_for_each(|s| crate::folders::take(s, &source)) {
-                            Ok(()) => view.done = at.is_dir(),
-                            Err(e) => view.error = Some(format!("{e:#}")),
-                        }
-                        // What was true a moment ago is not true now. Said out
-                        // loud rather than waited out, so the folder stops
-                        // being called missing the instant it is made -- and
-                        // the tabs held back for it start on the next beat
-                        crate::folders::watch().forget(&at);
-                        if view.done {
-                            flash = Some(i18n::tp(
-                                "msg.folder.ready",
-                                &[("name", &view.name)],
-                            ));
-                        }
+                    // Already working on this folder: the answer is how far it
+                    // has got, not a second clone of the same project into the
+                    // same place
+                    if let Some(p) = putting.as_ref().filter(|p| p.at == at) {
+                        view.running = true;
+                        view.at_step = p.at_step();
+                        view.steps = p.steps.clone();
+                    } else if take && !steps.is_empty() {
+                        // Cloning takes as long as the network does, so it runs
+                        // on its own thread and the dialog says which step is
+                        // running. Run here, a repository of any size would
+                        // stop the window until git was finished with it
+                        view.running = true;
+                        view.at_step = 0;
+                        putting = Some(crate::folders::Putting::start(at.clone(), steps, source.clone()));
                     }
                 }
                 Err(blocked) => {
@@ -5998,6 +6036,112 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             }
             repair_view = Some(view);
+        }
+        // The folder being put back, while it is being put back. The card is
+        // kept up to date from here rather than by the page asking again and
+        // again: what is running is known on this side, and a page that had to
+        // poll would say nothing at all on the frames between
+        if let Some(p) = putting.as_ref() {
+            let at = p.at.clone();
+            match p.outcome() {
+                None => {
+                    if let Some(v) = repair_view.as_mut().filter(|v| v.folder == at.display().to_string()) {
+                        v.running = true;
+                        v.at_step = p.at_step();
+                    }
+                }
+                Some(said) => {
+                    // What was true a moment ago is not true now. Said out loud
+                    // rather than waited out, so the folder stops being called
+                    // missing the instant it is made -- and the tabs held back
+                    // for it start on the next beat
+                    crate::folders::watch().forget(&at);
+                    let here = at.is_dir();
+                    if let Some(v) = repair_view.as_mut().filter(|v| v.folder == at.display().to_string()) {
+                        v.running = false;
+                        v.done = here;
+                        v.error = said.as_ref().err().cloned();
+                        if here {
+                            flash = Some(i18n::tp("msg.folder.ready", &[("name", &v.name)]));
+                        }
+                    } else if here {
+                        flash = Some(i18n::tp(
+                            "msg.folder.ready",
+                            &[("name", &at.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())],
+                        ));
+                    }
+                    // A folder that came back is no longer one anybody chose
+                    // to look away from
+                    folders_hidden.retain(|h| !crate::uistate::same_folder(h, &at));
+                    putting = None;
+                }
+            }
+        }
+        // Folders put out of sight until the next launch, and the one line that
+        // brings them all back. Nothing is written down: this is what somebody
+        // does with a desk that belongs to another machine, and it must not
+        // follow them to the machine the folders are really on
+        for (folder, hide) in shell.mail().take_folder_hides() {
+            match (hide, folder.trim().is_empty()) {
+                (true, false) => {
+                    let at = std::path::PathBuf::from(&folder);
+                    folders_hidden.insert(at.clone());
+                    // What was on screen is about to stop being drawn, so the
+                    // view goes to the first tab that is still on the list --
+                    // or, when there is none, to the board. Left where it was,
+                    // the next frame would bring the folder straight back
+                    let in_hidden = |i: usize| {
+                        surfaces
+                            .get(i)
+                            .and_then(|p| crate::view::surface_dir(p, &tabs))
+                            .is_some_and(|d| {
+                                folders_hidden.iter().any(|h| crate::uistate::same_folder(h, &d))
+                            })
+                    };
+                    if in_hidden(active.wrapping_sub(1)) {
+                        match (0..surfaces.len()).find(|i| !in_hidden(*i)) {
+                            Some(i) => {
+                                if let Some(v) = look_at(i + 1, surface_count, active, settings_open) {
+                                    (active, board_open, settings_open) =
+                                        (v.active, v.board_open, v.settings_open);
+                                }
+                            }
+                            None => board_open = true,
+                        }
+                    }
+                }
+                (false, true) => folders_hidden.clear(),
+                (false, false) => {
+                    folders_hidden.retain(|h| !crate::uistate::same_folder(h, std::path::Path::new(&folder)));
+                }
+                (true, true) => {}
+            }
+        }
+        // A folder told to work somewhere else. The folder keeps its name, its
+        // colour and its tabs: it is the same folder, standing in a different
+        // place
+        for (folder, to) in shell.mail().take_folder_moves() {
+            let (at, to) = (std::path::PathBuf::from(&folder), std::path::PathBuf::from(&to));
+            if to.as_os_str().is_empty() {
+                continue;
+            }
+            let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
+            match config::move_folder(&desk, &at, &to) {
+                Ok(()) => {
+                    folders_hidden.retain(|h| !crate::uistate::same_folder(h, &at));
+                    crate::folders::watch().forget(&at);
+                    let said = i18n::tp(
+                        "msg.folder.moved",
+                        &[
+                            ("name", &at.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
+                            ("path", &to.display().to_string()),
+                        ],
+                    );
+                    said_before_reload = Some((Instant::now(), said.clone()));
+                    flash = Some(said);
+                }
+                Err(e) => flash = Some(format!("{e:#}")),
+            }
         }
         // Another branch of a project already open. The same call answers "what
         // would this do" and does it, so the line shown before it happens is

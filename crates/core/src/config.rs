@@ -3669,6 +3669,34 @@ pub fn set_folder_source_at(
     })
 }
 
+/// A folder told to work somewhere else.
+///
+/// Everything the folder said about itself stays -- its name, its colour, its
+/// tabs, what it is a piece of -- because this is the same folder standing in
+/// a different place, not a new one. The settings are shared by every machine
+/// that reads them, so this is the answer for "the path is wrong", not for
+/// "this machine keeps it elsewhere".
+pub fn move_folder(desk_name: &str, cwd: &Path, to: &Path) -> Result<()> {
+    move_folder_at(&config_file_path(), desk_name, cwd, to)
+}
+
+/// The same, told which settings file to edit.
+fn move_folder_at(path: &Path, desk_name: &str, cwd: &Path, to: &Path) -> Result<()> {
+    with_folders(path, desk_name, |folders| {
+        if folders.iter().any(|g| folder_is(g, to)) {
+            anyhow::bail!(crate::i18n::tp(
+                "err.folder.already_here",
+                &[("path", &to.display().to_string())]
+            ));
+        }
+        let Some(o) = find_folder(folders, cwd).and_then(|g| g.as_object_mut()) else {
+            return Ok(());
+        };
+        o.insert("cwd".into(), serde_json::json!(to.display().to_string()));
+        Ok(())
+    })
+}
+
 /// Takes a folder out of the list, and its tabs with it.
 ///
 /// The folder on disk is not touched. Closing a thing on screen and deleting
@@ -3693,11 +3721,15 @@ pub fn take_folder(desk_name: &str, cwd: &Path) -> Result<Option<TakenFolder>> {
 fn take_folder_at(path: &Path, desk_name: &str, cwd: &Path) -> Result<Option<TakenFolder>> {
     let mut taken = None;
     with_folders(path, desk_name, |folders| {
-        if folders.len() <= 1 {
-            anyhow::bail!(crate::i18n::t("err.worktree.last_folder"));
-        }
         let at = folders.iter().position(|g| folder_is(g, cwd));
         if let Some(i) = at {
+            // A desk with no folders left has no list to draw and nothing to
+            // start a tab in. Asked only of a folder that is actually on the
+            // list: a worktree git knows and the desk never listed is being
+            // deleted from disk, and it cannot be the last of anything
+            if folders.len() <= 1 {
+                anyhow::bail!(crate::i18n::t("err.worktree.last_folder"));
+            }
             taken = Some((i, folders.remove(i)));
         }
         Ok(())
@@ -6375,6 +6407,75 @@ mod tests {
         assert_eq!(again, before, "put back twice, it is in the list twice");
         // A folder that is not in the list takes nothing
         assert!(take_folder_at(&file, "Demo", Path::new(&crate::local_path("D:/nowhere"))).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder standing somewhere else keeps everything it said about itself,
+    /// and the desk will not hold the same folder twice
+    #[test]
+    fn a_folder_told_to_work_elsewhere_keeps_its_name_and_its_tabs() {
+        let dir = std::env::temp_dir().join(format!("shikisha-move-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        let was = crate::local_path("D:/server/soj_main");
+        let now = crate::local_path("E:/work/soj_main");
+        let other = crate::local_path("D:/work/other");
+        std::fs::write(
+            &file,
+            r##"{"desks": [{"name": "Demo", "folders": [
+                {"cwd": "<was>", "name": "server", "color": "#123456",
+                 "tabs": [{"name": "a", "command": "claude"}]},
+                {"cwd": "<other>", "tabs": []}]}]}"##
+                .replace("<was>", &json_path(&was))
+                .replace("<other>", &json_path(&other)),
+        )
+        .unwrap();
+        move_folder_at(&file, "Demo", Path::new(&was), Path::new(&now)).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let g = &v["desks"][0]["folders"][0];
+        assert_eq!(
+            g["cwd"].as_str().map(resolve_folder_cwd),
+            Some(std::path::PathBuf::from(&now)),
+            "it did not move: {text}"
+        );
+        assert_eq!(g["name"].as_str(), Some("server"), "it lost its name: {text}");
+        assert_eq!(g["color"].as_str(), Some("#123456"), "it lost its colour: {text}");
+        assert_eq!(g["tabs"].as_array().map(Vec::len), Some(1), "it lost its tabs: {text}");
+        // Onto a folder the desk already holds is refused, and nothing moves
+        let before = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            move_folder_at(&file, "Demo", Path::new(&now), Path::new(&other)).is_err(),
+            "one desk took the same folder twice"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before, "a refused move still wrote");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Deleting a worktree git knows and the desk never listed must not be
+    /// refused for being the desk's last folder. It is not on the desk at all
+    #[test]
+    fn a_folder_that_is_not_on_the_list_is_not_the_last_one() {
+        let dir = std::env::temp_dir().join(format!("shikisha-last-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        let only = crate::local_path("D:/work/proj");
+        let found = crate::local_path("D:/work/proj.branches/login");
+        std::fs::write(
+            &file,
+            r#"{"desks": [{"name": "Demo", "folders": [{"cwd": "<only>", "tabs": []}]}]}"#
+                .replace("<only>", &json_path(&only)),
+        )
+        .unwrap();
+        assert!(
+            take_folder_at(&file, "Demo", Path::new(&found)).unwrap().is_none(),
+            "a folder that was never on the list was taken off it"
+        );
+        // The one that IS the last is still refused
+        assert!(
+            take_folder_at(&file, "Demo", Path::new(&only)).is_err(),
+            "the desk was left with no folders at all"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
