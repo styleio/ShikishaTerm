@@ -1033,6 +1033,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     height:calc(100% - var(--fy) - var(--navh) - var(--fb) - var(--askh, 0px));
     object-fit:contain; object-position:top center; background:#000; touch-action:none;
     transform-origin:0 0; }
+  /* The same picture as video, when the connection for it comes up. It sits
+     in the same rectangle and BEHIND the canvas, which stays where it is and
+     goes transparent: the canvas is what fingers are bound to, and moving the
+     input to a second element would mean two sets of coordinates to keep
+     agreeing with each other. Muted and inline so a phone will play it
+     without being asked -- there is no sound in it yet, and a picture that
+     waits for a tap is a picture that never starts */
+  #castv { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--navh));
+    right:var(--fr); bottom:var(--fb);
+    width:calc(100% - var(--fx) - var(--fr));
+    height:calc(100% - var(--fy) - var(--navh) - var(--fb) - var(--askh, 0px));
+    object-fit:contain; object-position:top center; background:#000;
+    pointer-events:none; }
+  #castv[hidden] { display:none; }
   /* Said in place of the relay, for a page drawn on somebody else's device.
      The same rectangle, since it stands where the picture would have been, and
      deliberately quiet: nothing has gone wrong, the page is simply somewhere
@@ -3338,6 +3352,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <div class="brow"><button class="quiet"></button></div>
       </div>
     </div>
+    <video id="castv" autoplay playsinline muted hidden></video>
     <canvas id="cast" hidden></canvas>
     <!-- And, in the same place, what is said instead when the page being
          looked at is drawn on the device of whoever opened it: there is no
@@ -11847,35 +11862,143 @@ function castStart() {
   if (!REMOTE || castWs || remoteCut) return;
   const cv = document.getElementById("cast");
   castCtx = cv.getContext("2d");
+  openJpegLine();
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const base = proto + "//" + location.host;
   const tok = encodeURIComponent(TOKEN);
-  castWs = new WebSocket(base + "/ws?t=" + tok);
-  castWs.binaryType = "blob";
-  castWs.onmessage = async (e) => {
-    try {
-      const bmp = await createImageBitmap(e.data);
-      if (cv.width !== bmp.width || cv.height !== bmp.height) {
-        cv.width = bmp.width; cv.height = bmp.height;
-        // If a frame changes the canvas dimensions, recompute the cursor
-        // position too (before the first frame it defaults to 300x150, which throws things off)
-        if (castMode) posCursor();
-        // A new frame shape = a different page is being cast (tab switch) or
-        // its window was resized — report our screen shape again. Re-reporting
-        // is idempotent on the PC side, so this can't ping-pong
-        castShaped = false;
-      }
-      // Report the screen shape only once a frame exists: the PC computes
-      // the new viewport from the current one, so it must have seen a frame
-      if (!castShaped) castShaped = sendShape(true);
-      castCtx.drawImage(bmp, 0, 0);
-      if (bmp.close) bmp.close();
-    } catch (err) {}
-  };
-  castWs.onclose = () => { castWs = null; };
-  castIn = new WebSocket(base + "/ws-in?t=" + tok);
+  castIn = new WebSocket(proto + "//" + location.host + "/ws-in?t=" + tok);
   castIn.onclose = () => { castIn = null; };
   bindCastInput(cv);
+  videoTry();
+}
+
+// The line the picture has always come down. Opened here rather than inline
+// so that falling back from video opens the same line the same way: two
+// places opening it would be two places to keep in step
+function openJpegLine() {
+  if (castWs) return;
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  castWs = new WebSocket(proto + "//" + location.host + "/ws?t=" + encodeURIComponent(TOKEN));
+  castWs.binaryType = "blob";
+  castWs.onmessage = castFrame;
+  castWs.onclose = () => { castWs = null; };
+}
+
+// One JPEG from the relay, onto the canvas
+async function castFrame(e) {
+  const cv = document.getElementById("cast");
+  if (!cv || !castCtx) return;
+  try {
+    const bmp = await createImageBitmap(e.data);
+    if (cv.width !== bmp.width || cv.height !== bmp.height) {
+      cv.width = bmp.width; cv.height = bmp.height;
+      // If a frame changes the canvas dimensions, recompute the cursor
+      // position too (before the first frame it defaults to 300x150, which throws things off)
+      if (castMode) posCursor();
+      // A new frame shape = a different page is being cast (tab switch) or
+      // its window was resized — report our screen shape again. Re-reporting
+      // is idempotent on the PC side, so this can't ping-pong
+      castShaped = false;
+    }
+    // Report the screen shape only once a frame exists: the PC computes
+    // the new viewport from the current one, so it must have seen a frame
+    if (!castShaped) castShaped = sendShape(true);
+    castCtx.drawImage(bmp, 0, 0);
+    if (bmp.close) bmp.close();
+  } catch (err) {}
+}
+
+// ── The same picture, as video ────────────────
+// A run of JPEGs costs the PC and the line at once: every frame is the whole
+// picture compressed again from nothing. As video it was measured at a third
+// of the CPU and a ninth of the bytes. So this is tried alongside, and if it
+// comes up the JPEG line is closed; if it does not, nothing changes and
+// nobody is told -- what was already working goes on working.
+//
+// This page offers and the PC answers. The page is the side that knows what
+// its own browser can decode, and a phone that cannot do any of it simply
+// never gets past the first line here.
+let videoPc = null, videoOn = false, videoAsked = 0;
+function videoTry() {
+  if (videoPc || typeof RTCPeerConnection !== "function") return;
+  const cv = document.getElementById("cast");
+  const el = document.getElementById("castv");
+  if (!cv || !el) return;
+  // No ICE servers: the PC offers the addresses it has, and this side only
+  // has to answer them. Naming a public one here would be asking a stranger
+  // where this phone is, for a connection that is going to the next room
+  const pc = new RTCPeerConnection({iceServers: []});
+  videoPc = pc;
+  pc.addTransceiver("video", {direction: "recvonly"});
+  pc.ontrack = (e) => {
+    el.srcObject = e.streams[0];
+    el.play().catch(() => {});
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === "connected") videoLive(true);
+    if (pc.connectionState === "failed" || pc.connectionState === "disconnected"
+        || pc.connectionState === "closed") videoStop();
+  };
+  (async () => {
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      // One message, with the candidates already in it. The PC answers the
+      // same way, so there is no trickle to carry and no second round trip
+      await new Promise((done) => {
+        if (pc.iceGatheringState === "complete") return done();
+        pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === "complete") done(); };
+        setTimeout(done, 2000);
+      });
+      const said = await (await fetch("/api/video", {
+        method: "POST",
+        headers: {"content-type": "application/json", "X-Token": TOKEN},
+        body: JSON.stringify({offer: pc.localDescription.sdp}),
+      })).json();
+      if (!said || !said.ok || !said.answer) { videoStop(); return; }
+      await pc.setRemoteDescription({type: "answer", sdp: said.answer});
+    } catch (e) { videoStop(); }
+  })();
+}
+// The video is carrying the picture: the JPEG line is closed, and the canvas
+// is wiped so the video behind it shows through. The canvas itself stays --
+// it is what fingers are bound to, and its rectangle is what coordinates are
+// worked out against
+function videoLive(on) {
+  const cv = document.getElementById("cast");
+  const el = document.getElementById("castv");
+  if (!cv || !el) return;
+  videoOn = on;
+  el.hidden = !on;
+  if (on) {
+    if (castWs) { castWs.close(); castWs = null; }
+    if (castCtx) castCtx.clearRect(0, 0, cv.width, cv.height);
+  }
+}
+// Back to JPEG, which is where this started. Reached when the connection
+// fails, when the far end goes away, or when the picture stops arriving
+function videoStop() {
+  if (videoPc) { try { videoPc.close(); } catch (e) {} videoPc = null; }
+  const el = document.getElementById("castv");
+  if (el) { el.hidden = true; el.srcObject = null; }
+  if (videoOn) {
+    videoOn = false;
+    // Whatever was being watched is still being watched: open the line that
+    // was carrying it before
+    if (REMOTE && !remoteCut) openJpegLine();
+  }
+}
+// A picture that has stopped moving while the connection says it is fine is
+// a picture that arrived damaged. Asked for a whole one, at most once a
+// second: asking faster would spend the line on the asking
+function videoDamaged() {
+  const now = Date.now();
+  if (!videoOn || now - videoAsked < 1000) return;
+  videoAsked = now;
+  fetch("/api/video", {
+    method: "POST",
+    headers: {"content-type": "application/json", "X-Token": TOKEN},
+    body: JSON.stringify({damaged: true}),
+  }).catch(() => {});
 }
 // Rotating the phone changes the width — tell the PC the new shape (debounced)
 window.addEventListener("resize", () => {
@@ -11886,6 +12009,10 @@ window.addEventListener("resize", () => {
 function castStop() {
   if (castWs) { castWs.close(); castWs = null; }
   if (castIn) { castIn.close(); castIn = null; }
+  // The video goes with it, and without reopening the line it fell back to:
+  // nothing is being watched any more
+  videoOn = false;
+  videoStop();
   castShaped = false; shapeW = 0;
   zoomReset();
   // Only tear down browser CONTROL mode. On a terminal tab castMode is already
@@ -18951,6 +19078,58 @@ mod tests {
         assert!(PAGE.contains(r#"branchTab = preset.link ? "github" : preset.name ? "name" : "auto";"#));
         assert!(PAGE.contains(r#"return branchTab === "auto" || !branchNamed;"#));
         assert!(PAGE.contains("auto:branchAuto(), seq:branchSeq});"), "the make button does not say whether it names itself");
+    }
+
+    /// The picture can come as video, and when it cannot, nothing changes.
+    ///
+    /// Written as a test because every part of this is a thing that must not
+    /// be quietly lost: the fallback, the closing of the line it replaces,
+    /// and the refusal to name an outside server.
+    #[test]
+    fn the_picture_can_come_as_video_and_falls_back_when_it_cannot() {
+        // The page offers; the PC answers. The page is the side that knows
+        // what its own browser can decode
+        assert!(
+            PAGE.contains(r#"pc.addTransceiver("video", {direction: "recvonly"});"#),
+            "the page does not ask for a picture it can only receive"
+        );
+        // No outside server is ever named. The PC offers the addresses it
+        // has; asking a public one where this phone is would be telling a
+        // stranger about a connection going to the next room
+        assert!(
+            PAGE.contains("new RTCPeerConnection({iceServers: []})"),
+            "the page would ask an outside server where it is"
+        );
+        // When video carries the picture, the line it replaces is closed --
+        // otherwise the same screen is paid for twice
+        assert!(
+            PAGE.contains("if (castWs) { castWs.close(); castWs = null; }
+    if (castCtx) castCtx.clearRect"),
+            "video starts without closing the JPEG line, so both are paid for"
+        );
+        // And when it fails, that line comes back
+        assert!(
+            PAGE.contains("if (REMOTE && !remoteCut) openJpegLine();"),
+            "a failed video leaves the viewer with no picture at all"
+        );
+        // One opener for that line, used by both the start and the fallback
+        assert_eq!(
+            PAGE.matches("function openJpegLine()").count(),
+            1,
+            "the line that carries the picture is opened in more than one place"
+        );
+        // The video sits behind the canvas and takes no input: the canvas is
+        // what fingers are bound to, and two input surfaces would be two sets
+        // of coordinates to keep agreeing
+        assert!(
+            PAGE.contains("#castv") && PAGE.contains("pointer-events:none;"),
+            "the video is not kept out of the way of the fingers"
+        );
+        // A phone will not play a picture that asks to be tapped first
+        assert!(
+            PAGE.contains(r#"<video id="castv" autoplay playsinline muted hidden></video>"#),
+            "the video would wait for a tap on a phone"
+        );
     }
 
     /// A tab held back because its working folder is not on this machine has
