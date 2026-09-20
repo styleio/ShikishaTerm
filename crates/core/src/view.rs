@@ -264,11 +264,12 @@ fn discovered_of(
 pub fn surface_dir(p: &Surface, tabs: &[Tab]) -> Option<std::path::PathBuf> {
     match p {
         Surface::Session(i) => tabs.get(*i).and_then(|t| t.cwd()).map(|c| c.to_path_buf()),
-        Surface::Sftp { dir, .. }
+        Surface::Browser { dir, .. }
+        | Surface::Sftp { dir, .. }
         | Surface::Editor { dir, .. }
         | Surface::Failed { dir, .. }
         | Surface::Git { dir, .. } => dir.clone(),
-        Surface::Browser { .. } | Surface::Issues { .. } => None,
+        Surface::Issues { .. } => None,
     }
 }
 
@@ -458,8 +459,14 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     });
                     ts
                 }),
-                Surface::Browser { key, name } => {
-                    let mut t = crate::uistate::TabState::browser(i + 1, key, name);
+                Surface::Browser { key, name, dir } => {
+                    // It stands under the folder it was written in, exactly as
+                    // the panels beside it do, so it is in that folder's tab
+                    // bar and is folded away with it
+                    let group = dir.as_deref().and_then(|d| {
+                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
+                    });
+                    let mut t = crate::uistate::TabState::browser(i + 1, key, name, group);
                     // What a script is asking the person about this page, if
                     // anything. The board draws the bar under the page from it
                     t.ask = ui.asks.iter().find(|(k, _)| k == key).map(|(_, a)| a.clone());
@@ -748,6 +755,63 @@ mod file_panel_tests {
 }
 
 #[cfg(test)]
+mod page_folder_tests {
+    use super::*;
+
+    fn desk_of(json: &str) -> config::Desk {
+        let cfg: config::Config = serde_json::from_str(json).expect("the settings cannot be read");
+        let (desks, errs) = cfg.resolve_desks();
+        assert!(errs.is_empty(), "{errs:?}");
+        desks.into_iter().next().expect("there is no desk")
+    }
+
+    const TWO_FOLDERS: &str = r#"{
+      "desks": [ { "name":"w", "id":"w",
+        "folders": [
+          {"name":"first","cwd":"C:/work/one","tabs":[{"name":"shell","id":"sh","command":"powershell"}]},
+          {"name":"second","cwd":"C:/work/two","tabs":[
+             {"name":"page","id":"fox","command":"browser https://example.com/"}]}
+        ] } ]
+    }"#;
+
+    /// A page written under a folder belongs to that folder.
+    ///
+    /// It used to belong to nothing: a page added from the second folder's +
+    /// was drawn below every folder as a tab of its own, and its folder's tab
+    /// bar did not have it -- so the one press that made it left the person
+    /// somewhere they had not asked to be
+    #[test]
+    fn a_page_written_in_a_folder_stands_in_it() {
+        let desk = desk_of(TWO_FOLDERS);
+        let surfaces = surfaces_of(Some(&desk), &["shell"], &[], &[], false);
+        let page = surfaces
+            .iter()
+            .find(|s| matches!(s, Surface::Browser { .. }))
+            .expect("the page is not on the list");
+        assert_eq!(
+            surface_dir(page, &[]).as_deref(),
+            Some(std::path::Path::new("C:/work/two")),
+            "the page is in no folder"
+        );
+    }
+
+    /// A page opened while the program runs was written nowhere, so it really
+    /// is in no folder, and saying otherwise would file it under whichever
+    /// folder happened to be first
+    #[test]
+    fn a_page_opened_later_is_in_no_folder() {
+        let desk = desk_of(TWO_FOLDERS);
+        let hosted = vec!["result".to_string()];
+        let surfaces = surfaces_of(Some(&desk), &["shell"], &hosted, &[], false);
+        let adhoc = surfaces
+            .iter()
+            .find(|s| matches!(s, Surface::Browser { key, .. } if key == "result"))
+            .expect("the page is not on the list");
+        assert_eq!(surface_dir(adhoc, &[]), None, "a page nobody wrote was given a folder");
+    }
+}
+
+#[cfg(test)]
 mod drawn_away_tests {
     use super::{Surface, Ui, ui_state_of};
 
@@ -762,8 +826,8 @@ mod drawn_away_tests {
         let ui = Ui {
             active: 1,
             surfaces: vec![
-                Surface::Browser { key: "probe".into(), name: "試し".into() },
-                Surface::Browser { key: "here".into(), name: "こちら".into() },
+                Surface::Browser { key: "probe".into(), name: "試し".into(), dir: None },
+                Surface::Browser { key: "here".into(), name: "こちら".into(), dir: None },
             ],
             away: vec![("probe".to_string(), "台所のノート".to_string())],
             ..Default::default()
@@ -849,7 +913,7 @@ mod drawn_away_tests {
     fn a_page_of_this_machines_own_says_nothing_about_where_it_is() {
         let ui = Ui {
             active: 1,
-            surfaces: vec![Surface::Browser { key: "probe".into(), name: "試し".into() }],
+            surfaces: vec![Surface::Browser { key: "probe".into(), name: "試し".into(), dir: None }],
             ..Default::default()
         };
         let state = ui_state_of(&[], &ui, None);
@@ -1015,7 +1079,7 @@ pub fn surfaces_written(
                     used_web.push(h);
                 }
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
-                out.push((Surface::Browser { key, name }, Some(written)));
+                out.push((Surface::Browser { key, name, dir: desk.cwd_of(ft) }, Some(written)));
                 continue;
             }
             let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
@@ -1094,7 +1158,7 @@ pub fn surfaces_written(
             } else {
                 h.clone()
             };
-            out.push((Surface::Browser { key: h.clone(), name }, None));
+            out.push((Surface::Browser { key: h.clone(), name, dir: None }, None));
         }
     }
     // An editor's tab says which file it is showing rather than what it was
@@ -1303,6 +1367,15 @@ pub enum Surface {
         key: String,
         /// The human-readable name
         name: String,
+        /// The folder it was written under, when it was written under one.
+        ///
+        /// A page runs no program, so it has no working folder of its own to
+        /// borrow one from -- and without this it belonged to nothing: a page
+        /// added from a folder's + stood outside every folder, missing from
+        /// that folder's tab bar. Absent for a page opened while the program
+        /// runs (automation, the result view), which is written nowhere and
+        /// really is in no folder
+        dir: Option<std::path::PathBuf>,
     },
     /// The git panel: no process, no page, drawn by the board itself.
     ///

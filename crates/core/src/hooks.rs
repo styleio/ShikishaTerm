@@ -7903,7 +7903,7 @@ end
         let mut surfaces = Vec::new();
         for index in 1..=3 {
             surfaces.push(crate::view::Surface::Browser {
-                key: format!("page{index}"), name: format!("Page {index}"),
+                key: format!("page{index}"), name: format!("Page {index}"), dir: None,
             });
             // Both the local browser and the connected browser enter this
             // queue. Draining a batch must preserve every page report.

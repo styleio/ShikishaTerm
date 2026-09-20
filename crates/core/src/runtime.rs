@@ -1103,9 +1103,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut composer_shut = false;
     // The placed page currently showing that pen, if any
     let mut pen_shown: Option<String> = None;
-    // A pane waiting for the tab it asked for, and how many surfaces there
-    // were when it asked. Cleared when the tab arrives or the form is shut
-    let mut awaiting_tab: Option<(u32, usize)> = None;
+    // A pane waiting for the tab it asked for, and the rows that were on the
+    // list when it asked (by `surface_key`, so a row that only moved is still
+    // the same row). Cleared when the tab arrives or the form is shut
+    let mut awaiting_tab: Option<(u32, Vec<String>)> = None;
     // What was last written, so an unchanged screen writes nothing at all
     let mut last_saved: Option<(crate::layout::Layout, Vec<Option<tab::Session>>)> = None;
     // Which key does what, this run. Read once and re-read when the settings
@@ -3620,13 +3621,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             pen_shown = wants_pen;
         }
 
-        // A pane asked for a tab and the form has produced one. It is the
-        // surface nothing is showing yet -- newly written config is the only
-        // way a surface appears with no pane behind it -- so the pane that
-        // asked takes it, and asks for nothing more
+        // A pane asked for a tab and the form has produced one. It is the row
+        // that was not on the list when the pane asked, so the pane that asked
+        // takes that row, and asks for nothing more
         // The form is a surface too, from the moment it opens. It is not the
         // answer to the question -- it IS the question -- so it is left out of
-        // both counts below. Counting it made the baseline move under its own
+        // both lists below. Counting it made the baseline move under its own
         // feet: it was already there when the wait began and gone again by the
         // time the tab arrived, so the total came back to where it started and
         // the new tab looked like nothing new
@@ -3634,9 +3634,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             matches!(ui_surface_at(&surfaces, n), Some(Surface::Browser { key, .. })
                 if key == SETTINGS_TAB)
         };
-        let real_surfaces = (1..=surface_count).filter(|n| !is_form(*n)).count();
+        // Every row on the list, by what it is rather than where it stands
+        // (see `arrived_row`)
+        let rows_now: Vec<(usize, String)> = (1..=surface_count)
+            .filter(|n| !is_form(*n))
+            .filter_map(|n| ui_surface_at(&surfaces, n).map(|s| (n, surface_key(s, &tabs))))
+            .collect();
         if let Some(id) = shell.mail().take_add_tab_pane() {
-            awaiting_tab = Some((id, real_surfaces));
+            awaiting_tab = Some((id, rows_now.iter().map(|(_, k)| k.clone()).collect()));
         }
         // Nothing calls the wait off. Not the form closing -- saving CLOSES it,
         // and the tab it wrote does not exist until the settings file has been
@@ -3646,24 +3651,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // ended the wait one frame after it began. A wait that is never
         // answered simply never fires, and an empty pane stays empty, which is
         // exactly what it was before anybody asked
-        if let Some((id, was)) = awaiting_tab {
-            let taken: std::collections::HashSet<usize> =
-                pane_layout.leaves().into_iter().map(|(_, s)| s).collect();
-            let fresh = (real_surfaces > was)
-                .then(|| (1..=surface_count).rev().find(|n| !taken.contains(n) && !is_form(*n)))
-                .flatten();
-            if let Some(fresh) = fresh {
-                pane_layout.set_surface(id, fresh);
-                // Made here, so the keyboard belongs here
-                pane_layout.focus_pane(id);
-                active = pane_layout.focused_surface();
-                board_open = false;
-                awaiting_tab = None;
-                // The form was opened to make this one tab, and it has. Leaving
-                // it up would leave it sitting in the pane the tab was made for
-                let _ = caps.browser_close(SETTINGS_TAB);
-                settings_open = false;
-            }
+        let arrived = awaiting_tab
+            .as_ref()
+            .and_then(|(id, was)| arrived_row(was, &rows_now).map(|n| (*id, n)));
+        if let Some((id, fresh)) = arrived {
+            pane_layout.set_surface(id, fresh);
+            // Made here, so the keyboard belongs here
+            pane_layout.focus_pane(id);
+            active = pane_layout.focused_surface();
+            board_open = false;
+            awaiting_tab = None;
+            // The form was opened to make this one tab, and it has. Leaving
+            // it up would leave it sitting in the pane the tab was made for
+            let _ = caps.browser_close(SETTINGS_TAB);
+            settings_open = false;
         }
 
         // Someone clicked into a page placed in the window. That press never
@@ -8665,6 +8666,27 @@ fn pane_screen_message(id: crate::layout::PaneId, html: &str) -> String {
 pub fn ui_surface_at(surfaces: &[Surface], n: usize) -> Option<&Surface> {
     surfaces.get(n.checked_sub(1)?)
 }
+/// The row the settings just made, for the pane that asked for it: the one
+/// that was not on the list when it asked.
+///
+/// `was` is the list as it stood then and `now` is the list as it stands,
+/// each row carrying its number and what it is (`view::surface_key`).
+///
+/// Told apart by number instead, the arrival can only be guessed at, and the
+/// guess this replaces -- "the last row nobody is looking at" -- was wrong
+/// whenever the new tab was not last. A tab is written into its own folder's
+/// list, so one added to any folder but the final one lands in the middle of
+/// the rows: the pane was handed an unrelated tab in an unrelated folder, and
+/// a folder somebody had put out of sight came straight back with it, because
+/// something had brought one of its tabs to the front
+pub fn arrived_row(was: &[String], now: &[(usize, String)]) -> Option<usize> {
+    // Only once there is more one more row than there was. A row renamed while
+    // the form was open is a key that was not there either, and nothing has
+    // arrived for the pane to be given
+    (now.len() > was.len())
+        .then(|| now.iter().find(|(_, k)| !was.contains(k)).map(|(n, _)| *n))
+        .flatten()
+}
 pub fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
     match surfaces.get(active.checked_sub(1)?)? {
         Surface::Session(i) => Some(*i),
@@ -8990,7 +9012,7 @@ pub fn page_ctx(
     complete: bool,
 ) -> Option<hooks::PageCtx> {
     surfaces.iter().enumerate().find_map(|(i, p)| match p {
-        Surface::Browser { key: k, name } if k == key => Some(hooks::PageCtx {
+        Surface::Browser { key: k, name, .. } if k == key => Some(hooks::PageCtx {
             index: i + 1,
             id: k.clone(),
             name: name.clone(),
@@ -11564,7 +11586,7 @@ mod tests {
             std::collections::HashMap::new(),
             Default::default(),
         ));
-        let page = |k: &str| Surface::Browser { key: k.into(), name: k.into() };
+        let page = |k: &str| Surface::Browser { key: k.into(), name: k.into(), dir: None };
         let surfaces = vec![
             page(SETTINGS_TAB),
             page(RESULT_TAB),
@@ -11666,7 +11688,7 @@ mod tests {
     #[test]
     fn a_page_knows_its_number_and_both_of_its_names() {
         let surfaces = vec![
-            Surface::Browser { key: "html".into(), name: "HTML解析".into() },
+            Surface::Browser { key: "html".into(), name: "HTML解析".into(), dir: None },
             Surface::Session(0),
         ];
         let page = page_ctx(&surfaces, "html", "https://example.com/".into(), true)
@@ -11747,6 +11769,41 @@ mod tests {
         );
     }
 
+    /// The tab a pane asked for is the row that arrived, wherever it landed.
+    ///
+    /// A tab is written into its own folder's list, so one added to any folder
+    /// but the last lands in the middle of the rows. The pane used to be handed
+    /// "the last row nobody is looking at", which in that case is somebody
+    /// else's tab -- and when that tab's folder had been put out of sight, the
+    /// folder came back with it
+    #[test]
+    fn the_pane_gets_the_row_that_arrived_not_the_last_one() {
+        let keys = |v: &[&str]| v.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        let rows = |v: &[&str]| {
+            v.iter().enumerate().map(|(i, k)| (i + 1, k.to_string())).collect::<Vec<_>>()
+        };
+        let was = keys(&["tab:1", "tab:2", "tab:3"]);
+        assert_eq!(
+            arrived_row(&was, &rows(&["tab:1", "page:fox", "tab:2", "tab:3"])),
+            Some(2),
+            "the pane was given a row that was already there"
+        );
+        assert_eq!(
+            arrived_row(&was, &rows(&["tab:1", "tab:2", "tab:3", "page:fox"])),
+            Some(4),
+            "a tab added to the last folder is still the one that arrived"
+        );
+        // Nothing has arrived: the pane goes on waiting rather than being
+        // handed whatever stands at the end
+        assert_eq!(arrived_row(&was, &rows(&["tab:1", "tab:2", "tab:3"])), None);
+        assert_eq!(arrived_row(&was, &rows(&["tab:1", "tab:3"])), None, "a row going is not one arriving");
+        assert_eq!(
+            arrived_row(&was, &rows(&["tab:1", "tab:9", "tab:3"])),
+            None,
+            "a row renamed while the form was open is not a new tab"
+        );
+    }
+
     /// The screen order must match the order written in config.
     ///
     /// Sessions and browsers are kept separately. Letting that internal
@@ -11765,7 +11822,7 @@ mod tests {
         let surfaces = surfaces_of(Some(&desk), &tabs, &hosted, &[], false);
         assert_eq!(
             surfaces,
-            vec![Surface::Browser { key: "html".into(), name: "HTML解析".into() }, Surface::Session(0)],
+            vec![Surface::Browser { key: "html".into(), name: "HTML解析".into(), dir: None }, Surface::Session(0)],
             "they are not in the order of the settings"
         );
         // A session must be resolvable from its screen number
@@ -11821,7 +11878,7 @@ mod tests {
         let surfaces = surfaces_of(Some(&desk), &tabs, &[], &[], false);
         assert_eq!(
             surfaces,
-            vec![Surface::Browser { key: "html".into(), name: "HTML解析".into() }, Surface::Session(0)],
+            vec![Surface::Browser { key: "html".into(), name: "HTML解析".into(), dir: None }, Surface::Session(0)],
             "before it is opened, the numbers are off"
         );
     }
@@ -11840,7 +11897,7 @@ mod tests {
             vec![
                 Surface::Session(0),
                 Surface::Session(1),
-                Surface::Browser { key: "settings".into(), name: "settings".into() }
+                Surface::Browser { key: "settings".into(), name: "settings".into(), dir: None }
             ]
         );
     }
@@ -11861,7 +11918,7 @@ mod tests {
         let after = vec![
             Surface::Session(0),
             Surface::Session(1),
-            Surface::Browser { key: "settings".into(), name: "settings".into() },
+            Surface::Browser { key: "settings".into(), name: "settings".into(), dir: None },
         ];
         assert_eq!(settings_active(&after), 3, "when open, it is where it is");
     }
@@ -12330,7 +12387,7 @@ mod tests {
     #[test]
     fn a_browser_in_the_row_does_not_hide_the_tabs_behind_it() {
         let surfaces = vec![
-            Surface::Browser { key: "html".into(), name: "解析".into() },
+            Surface::Browser { key: "html".into(), name: "解析".into(), dir: None },
             Surface::Session(0),
         ];
         let keys = surface_keys(&surfaces, &[]);

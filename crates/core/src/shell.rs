@@ -3968,13 +3968,14 @@ function drawTabs() {
   // The folder each run of tabs works in. A heading appears when the folder
   // changes, and only when there is more than one to change to -- with a single
   // folder the sidebar looks exactly as it always has. A tab that is in no
-  // folder at all (a browser) leaves the heading alone rather than ending it,
-  // so a page declared between two tabs does not split their folder in two
+  // folder at all (a page opened while the program runs) leaves the heading
+  // alone rather than ending it, so it does not split a folder in two
   const folders = S.groups || [];
   troubleRow(nav, folders);
   hiddenRow(nav);
   // Tabs by the folder they are in, each list in its own order. A tab in no
-  // folder at all (a browser) comes after every folder, in the order it came
+  // folder at all -- a page opened by automation or the result view, which is
+  // written nowhere -- comes after every folder, in the order it came
   const inside = folders.map(() => []);
   const loose = [];
   for (const t of S.tabs) {

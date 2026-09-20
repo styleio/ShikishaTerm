@@ -1938,9 +1938,8 @@ impl TabState {
             kind: "sftp".into(),
             state: "SFTP".into(),
             state_label: crate::i18n::t("tui.state.sftp"),
-            group,
             restartable: false,
-            ..Self::browser(index, key, name)
+            ..Self::browser(index, key, name, group)
         }
     }
 
@@ -1951,9 +1950,8 @@ impl TabState {
             kind: "editor".into(),
             state: "EDIT".into(),
             state_label: crate::i18n::t("tui.state.editor"),
-            group,
             restartable: false,
-            ..Self::browser(index, key, name)
+            ..Self::browser(index, key, name, group)
         }
     }
 
@@ -1964,7 +1962,7 @@ impl TabState {
             state: "ISSUES".into(),
             state_label: crate::i18n::t("tui.state.issues"),
             restartable: false,
-            ..Self::browser(index, key, &crate::i18n::t("tui.issues.tab"))
+            ..Self::browser(index, key, &crate::i18n::t("tui.issues.tab"), None)
         }
     }
 
@@ -1975,11 +1973,10 @@ impl TabState {
             kind: "failed".into(),
             state: "FAILED".into(),
             state_label: crate::i18n::t("tui.state.failed"),
-            group,
             // Starting it again is exactly what the person will want once the
             // program is installed
             restartable: true,
-            ..Self::browser(index, key, name)
+            ..Self::browser(index, key, name, group)
         }
     }
 
@@ -1988,14 +1985,13 @@ impl TabState {
             kind: "git".into(),
             state: "GIT".into(),
             state_label: crate::i18n::t("tui.state.git"),
-            group,
             // Opening and closing it is the tab list's business, not a restart
             restartable: false,
-            ..Self::browser(index, key, name)
+            ..Self::browser(index, key, name, group)
         }
     }
 
-    pub fn browser(index: usize, key: &str, name: &str) -> Self {
+    pub fn browser(index: usize, key: &str, name: &str, group: Option<usize>) -> Self {
         Self {
             index,
             name: name.to_string(),
@@ -2008,7 +2004,7 @@ impl TabState {
             locked: false,
             depth: 0,
             activity: Vec::new(),
-            group: None,
+            group,
             kind: "browser".into(),
             // A page has no conversation to have been having
             past: false,
@@ -2085,8 +2081,8 @@ mod tests {
     /// If the numbering isn't contiguous, the number a person presses no longer matches the contents
     #[test]
     fn a_browser_takes_the_next_tab_number() {
-        let a = TabState::browser(3, "shop", "通販サイト");
-        let b = TabState::browser(4, "mail", "メール");
+        let a = TabState::browser(3, "shop", "通販サイト", None);
+        let b = TabState::browser(4, "mail", "メール", None);
         assert_eq!((a.index, b.index), (3, 4));
         assert_eq!(a.kind, "browser", "it is shown the same way as a session");
         assert_eq!(a.id.as_deref(), Some("shop"), "the name automation uses is wrong");

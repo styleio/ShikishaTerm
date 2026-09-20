@@ -302,7 +302,7 @@ pub fn close(
         // Not one that closes, like INDEX: its row in the list is always there,
         // and pressing another tab is the way out of it
         Surface::Issues { .. } => Closing::Nothing,
-        Surface::Browser { key: page, name } => {
+        Surface::Browser { key: page, name, .. } => {
             if page == crate::runtime::SETTINGS_TAB {
                 return Closing::Nothing;
             }
