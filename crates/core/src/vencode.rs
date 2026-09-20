@@ -145,6 +145,23 @@ mod windows_h264 {
             let mft: IMFTransform = CoCreateInstance(&CLSID_MSH264EncoderMFT, None, CLSCTX_INPROC_SERVER)
                 .map_err(|e| anyhow!("this Windows has no H.264 encoder: {e}"))?;
 
+            // Before the media types, and this is the difference between a
+            // relay and a recording.
+            //
+            // Left alone this encoder works the way one compressing a film
+            // does: it holds pictures back, looks at what follows them, and
+            // lets the first out only when it has enough -- seventeen of them
+            // on this machine. On a page drawing sixty times a second that is
+            // a moment; on a page that changes once a second, which is most
+            // pages, it is seventeen seconds of nothing, and the far end has
+            // long since given up and gone back to JPEG. It is also exactly
+            // what "choppy at first and then suddenly smooth" was.
+            //
+            // Said before the types are set because that is when an encoder
+            // decides how it is going to work. Refusals are not failures: an
+            // encoder that will not take these still produces video, later
+            low_latency(&mft);
+
             // The output type goes first. An encoder will not say what it can
             // take until it has been told what it is to produce
             let out = MFCreateMediaType().map_err(|e| anyhow!("{e}"))?;
@@ -174,22 +191,6 @@ mod windows_h264 {
             set_size(&inp, &MF_MT_PIXEL_ASPECT_RATIO, 1, 1)?;
             mft.SetInputType(0, &inp, 0)
                 .map_err(|e| anyhow!("the encoder refused the picture's shape: {e}"))?;
-
-            // Before streaming begins, and this is the difference between a
-            // relay and a recording.
-            //
-            // Left alone, this encoder works the way one compressing a film
-            // does: it holds several pictures back, looks ahead at what
-            // follows, and only then emits the first. On a page that changes
-            // sixty times a second nobody notices; on a page that changes
-            // once a second -- which is most pages -- the first picture came
-            // out SIXTEEN SECONDS after the connection was made, by which
-            // time the far end had given up and gone back to JPEG. It is
-            // also what "choppy at first, then suddenly smooth" was.
-            //
-            // Refusals are not failures: an encoder that will not take these
-            // still produces video, just later
-            low_latency(&mft);
 
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
@@ -269,6 +270,10 @@ mod windows_h264 {
             VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_UI4,
         };
         unsafe {
+            // The transform's own attribute. Some encoders read only this one
+            if let Ok(attrs) = mft.GetAttributes() {
+                let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
+            }
             let Ok(api) = mft.cast::<ICodecAPI>() else { return };
             let yes = VARIANT {
                 Anonymous: VARIANT_0 {
@@ -389,6 +394,43 @@ mod windows_h264 {
 mod tests {
     use super::*;
     use crate::vframe::from_rgb;
+
+    /// The first picture comes out of the encoder at once, not once the next
+    /// several have been fed in.
+    ///
+    /// Left to itself this encoder works the way one compressing a film does:
+    /// it holds pictures back, looks at what follows them, and lets the first
+    /// out only when it has enough. On a page drawing sixty times a second
+    /// that is a moment. On a page that changes once a second -- a terminal, a
+    /// form, almost anything being worked in -- it was twenty seconds before
+    /// the first picture went out, by which time the far end had given up and
+    /// gone back to JPEG.
+    ///
+    /// Counted in pictures, not seconds, because pictures are what it waits
+    /// for: the seconds depend on how fast the page changes.
+    #[test]
+    fn the_first_picture_comes_out_without_waiting_for_the_next_ones() {
+        let (w, h) = (320usize, 240usize);
+        let Ok(mut enc) = encoder_for(w, h, 30) else {
+            // A machine with no encoder has nothing to say here
+            return;
+        };
+        let mut held = None;
+        for i in 0..40usize {
+            if enc.encode(&moving(i, w, h), i == 0).ok().flatten().is_some() {
+                held = Some(i);
+                break;
+            }
+        }
+        let at = held.expect("the encoder never produced a picture at all");
+        assert!(
+            at <= 2,
+            "the encoder held {} pictures back before letting the first one out; \
+             on a screen that changes once a second that is {} seconds of nothing",
+            at + 1,
+            at + 1
+        );
+    }
 
     /// A picture the size of a real one, with something in it that compresses
     /// differently from frame to frame.

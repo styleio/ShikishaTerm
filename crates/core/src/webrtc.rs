@@ -97,7 +97,7 @@ impl State {
 /// Dropping it ends the connection: the thread sees the channel close and
 /// stops. There is no `close()` to forget to call.
 pub struct Viewer {
-    frames: mpsc::Sender<Frame>,
+    frames: mpsc::Sender<Heard>,
     state: Arc<AtomicU8>,
     /// The candidates this side offered, kept for the tests and for saying
     /// what happened when a connection does not come up
@@ -117,7 +117,7 @@ impl Viewer {
     /// so is not an error -- the picture was produced before anyone here knew,
     /// and there is nothing for the caller to do differently.
     pub fn send(&self, frame: Frame) {
-        if self.frames.send(frame).is_err() {
+        if self.frames.send(Heard::Picture(frame)).is_err() {
             self.state.store(State::Gone.as_u8(), Ordering::Relaxed);
         }
     }
@@ -252,17 +252,31 @@ pub fn answer(offer: &str, addrs: &[IpAddr], codec: &str) -> Result<(Viewer, Str
         .map_err(|e| anyhow!("the offer could not be answered: {e}"))?;
     let answer_sdp = answer.to_sdp_string();
 
-    let (tx, rx) = mpsc::channel::<Frame>();
+    let (tx, rx) = mpsc::channel::<Heard>();
+    let for_sockets = tx.clone();
     let state = Arc::new(AtomicU8::new(State::Connecting.as_u8()));
     let mine = state.clone();
     std::thread::spawn(move || {
-        if let Err(e) = run(rtc, sockets, rx, &mine) {
+        if let Err(e) = run(rtc, sockets, rx, for_sockets, &mine) {
             crate::append_hook_log(&format!("the video relay stopped: {e:#}"));
         }
         mine.store(State::Gone.as_u8(), Ordering::Relaxed);
     });
 
     Ok((Viewer { frames: tx, state, offered }, answer_sdp))
+}
+
+/// Everything the connection's own thread waits for, as one kind of thing.
+///
+/// Two channels would be the obvious shape -- packets on one, pictures on the
+/// other -- and it is the shape this had. A thread can only wait on one of
+/// them, so the pictures were read after the wait rather than waited for, and
+/// a picture handed over on a quiet connection sat there until a packet
+/// happened to arrive from the far end. A quarter of a second of the delay
+/// measured on a loopback connection with nothing wrong with it was this.
+enum Heard {
+    Packet(Arrived),
+    Picture(Frame),
 }
 
 /// One datagram, as it arrived: what it says, who sent it, and -- the part
@@ -287,14 +301,14 @@ struct Arrived {
 fn run(
     mut rtc: str0m::Rtc,
     sockets: Vec<Arc<UdpSocket>>,
-    frames: mpsc::Receiver<Frame>,
+    heard: mpsc::Receiver<Heard>,
+    heard_tx: mpsc::Sender<Heard>,
     state: &Arc<AtomicU8>,
 ) -> Result<()> {
     use str0m::net::{Protocol, Receive};
     use str0m::{Event, Input, Output};
 
     let began = Instant::now();
-    let (heard_tx, heard) = mpsc::channel::<Arrived>();
     for s in &sockets {
         let s = Arc::clone(s);
         let tx = heard_tx.clone();
@@ -304,8 +318,9 @@ fn run(
             loop {
                 match s.recv_from(&mut buf) {
                     Ok((n, from)) => {
-                        let one =
-                            Arrived { at: Instant::now(), from, here, data: buf[..n].to_vec() };
+                        let one = Heard::Packet(
+                            Arrived { at: Instant::now(), from, here, data: buf[..n].to_vec() },
+                        );
                         if tx.send(one).is_err() {
                             return;
                         }
@@ -318,9 +333,9 @@ fn run(
             }
         });
     }
-    // Held only by the reading threads from here, so that when they are gone
-    // the loop below is told rather than waiting on a channel nobody will
-    // ever write to
+    // Held only by the reading threads and by the viewer from here, so that
+    // when both are gone the loop below is told rather than waiting on a
+    // channel nobody will ever write to
     drop(heard_tx);
     // Which media line carries the picture, and which of the encodings both
     // sides kept. Not known yet: the library says so once the answer has been
@@ -393,9 +408,20 @@ fn run(
         let now = Instant::now();
         let until = (wait.max(now) - now).max(Duration::from_millis(1));
         match heard.recv_timeout(until) {
-            Ok(one) => {
+            Ok(Heard::Packet(one)) => {
                 if let Ok(r) = Receive::new(Protocol::Udp, one.from, one.here, &one.data) {
                     rtc.handle_input(Input::Receive(one.at, r)).map_err(|e| anyhow!("{e}"))?;
+                }
+            }
+            // A picture, handed over by whoever is compressing them. It comes
+            // down the same channel as the packets on purpose: waiting on one
+            // channel and reading the other afterwards meant a picture sat
+            // here until something happened to arrive from the far end --
+            // measured at a quarter of a second, on a connection with nothing
+            // wrong with it
+            Ok(Heard::Picture(frame)) => {
+                if let Some((mid, pt)) = carrying {
+                    send_frame(&mut rtc, mid, pt, began, frame);
                 }
             }
             // Nothing arrived in time, which is the ordinary case: the
@@ -407,16 +433,21 @@ fn run(
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
         }
 
-        // Anything queued for the far end. Taken without waiting: the socket
-        // above is what this loop waits on
+        // Anything else already waiting, so that a burst is not spread over
+        // as many wake-ups as it has pieces
         loop {
-            match frames.try_recv() {
-                Ok(frame) => {
+            match heard.try_recv() {
+                Ok(Heard::Picture(frame)) => {
                     if let Some((mid, pt)) = carrying {
                         send_frame(&mut rtc, mid, pt, began, frame);
                     }
                 }
-                // The viewer was dropped, which is how a caller says stop
+                Ok(Heard::Packet(one)) => {
+                    if let Ok(r) = Receive::new(Protocol::Udp, one.from, one.here, &one.data) {
+                        rtc.handle_input(Input::Receive(one.at, r)).map_err(|e| anyhow!("{e}"))?;
+                    }
+                }
+                // Nobody is left to send anything, which is how this ends
                 Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
                 Err(mpsc::TryRecvError::Empty) => break,
             }

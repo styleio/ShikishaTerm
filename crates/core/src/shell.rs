@@ -12058,6 +12058,14 @@ function videoTry() {
   videoPc = pc;
   pc.addTransceiver("video", {direction: "recvonly"});
   pc.ontrack = (e) => {
+    // Play it as it arrives. A browser holds video back by default to smooth
+    // a network out -- sensible for a film, wrong for a screen somebody is
+    // typing into, and worst of all on a screen that changes rarely, where
+    // the guess it makes from the gaps between pictures was measured at
+    // nearly half a second. Two names for the same thing, new and old, and a
+    // browser that knows neither simply keeps its own idea
+    try { e.receiver.jitterBufferTarget = 0; } catch (err) {}
+    try { e.receiver.playoutDelayHint = 0; } catch (err) {}
     el.srcObject = e.streams[0];
     el.play().catch(() => {});
   };
@@ -19453,6 +19461,13 @@ mod tests {
         assert!(
             PAGE.contains(r#"T["tui.cast.as.video"]"#),
             "the word for it is written into the page instead of translated"
+        );
+        // The picture is played as it arrives rather than held back to
+        // smooth the network: this screen is watched while it is being
+        // typed into
+        assert!(
+            PAGE.contains("jitterBufferTarget = 0"),
+            "the picture is held back before it is shown"
         );
         // A connection that carries nothing must not be believed. Asking for
         // a whole picture is the answer to a short silence, and going back to

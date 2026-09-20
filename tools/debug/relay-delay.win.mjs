@@ -236,10 +236,36 @@ async function measure(how, dbg) {
 
   await sleep(SECONDS * 1000);
 
-  const got = await view.run(`(() => {
+  const got = await view.run(`(async () => {
     clearInterval(window.__watch);
     const v = document.getElementById('castv');
-    return JSON.stringify({ seen: window.__seen,
+    // Where the time went, in the browser's own words. Only the picture side
+    // has any of this; the old way is a WebSocket and a canvas
+    let inbound = null;
+    try {
+      const stats = await videoPc.getStats();
+      stats.forEach((r) => {
+        if (r.type === 'inbound-rtp' && r.kind === 'video') {
+          inbound = {
+            frames: r.framesReceived, decoded: r.framesDecoded, dropped: r.framesDropped,
+            // Seconds, totalled over every frame; divided by the count to get
+            // what one frame waited
+            waitedPerFrame: r.jitterBufferEmittedCount
+              ? +(r.jitterBufferDelay / r.jitterBufferEmittedCount * 1000).toFixed(0) : null,
+            decodePerFrame: r.framesDecoded
+              ? +(r.totalDecodeTime / r.framesDecoded * 1000).toFixed(1) : null,
+            assemblyPerFrame: r.framesDecoded
+              ? +(r.totalAssemblyTime / r.framesAssembledFromMultiplePackets * 1000).toFixed(1) : null,
+            target: r.jitterBufferTargetDelay && r.jitterBufferEmittedCount
+              ? +(r.jitterBufferTargetDelay / r.jitterBufferEmittedCount * 1000).toFixed(0) : null,
+            minimum: r.jitterBufferMinimumDelay && r.jitterBufferEmittedCount
+              ? +(r.jitterBufferMinimumDelay / r.jitterBufferEmittedCount * 1000).toFixed(0) : null,
+            freezes: r.freezeCount, pauses: r.pauseCount,
+          };
+        }
+      });
+    } catch (e) { inbound = { asked: String(e) }; }
+    return JSON.stringify({ seen: window.__seen, inbound,
       as: v && !v.hidden && v.videoWidth ? 'video' : 'stills',
       size: v && v.videoWidth ? v.videoWidth + 'x' + v.videoHeight : null });
   })()`);
@@ -270,6 +296,7 @@ try {
     rows.push({ how, arrived: got.as, n: ds.length, middle: middle(ds), worst: ds.length ? Math.max(...ds) : null });
     console.log(`${how.padEnd(6)} arrived as ${got.as}${got.size ? ' ' + got.size : ''}: ` +
       `${ds.length} changes seen, middle ${middle(ds)}ms, worst ${ds.length ? Math.max(...ds) : '-'}ms`);
+    if (got.inbound) console.log('       the browser says:', JSON.stringify(got.inbound));
   }
 } finally {
   server.close();
