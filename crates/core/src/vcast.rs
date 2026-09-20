@@ -122,6 +122,11 @@ impl Cast {
         self.viewer.state() == State::Connecting && self.born.elapsed() > COME_UP_WITHIN
     }
 
+    /// Whether this viewer has the sound turned on.
+    pub fn listening(&self) -> bool {
+        self.listening.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Turn the sound of the page being watched on or off.
     ///
     /// Asked for from the far end, because that is where the speaker is.

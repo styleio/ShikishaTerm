@@ -1101,7 +1101,22 @@ impl RemoteUi {
     /// when nothing is. Nothing is recorded because of this -- it is only the
     /// answer to "whose sound?" for when somebody taps the speaker.
     pub fn sound_comes_from(&self, pid: u32) {
-        self.sound_from.store(pid, std::sync::atomic::Ordering::SeqCst);
+        let was = self.sound_from.swap(pid, std::sync::atomic::Ordering::SeqCst);
+        if was == pid {
+            return;
+        }
+        // The page being watched has changed. Anyone listening was listening
+        // to the last one, and a phone that switched tabs would go on hearing
+        // the tab it left -- so put that down and, if there is a new page to
+        // hear, take this one up instead
+        for cast in self.casts.lock().unwrap().iter_mut() {
+            if cast.listening() {
+                cast.listen(false, None);
+                if pid != 0 {
+                    cast.listen(true, Some(pid));
+                }
+            }
+        }
     }
 
     /// Whether anybody has said whose sound goes with the picture.
