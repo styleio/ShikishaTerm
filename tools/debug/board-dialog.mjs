@@ -160,6 +160,41 @@ async function openDialog() {
     'document.getElementById("cfglayer").contentDocument.body.classList.contains("float")',
     'the dialog never opened');
 }
+// A keyboard types into the dialog, not into the terminal underneath. With
+// real keys about, the board takes the caret for the pane -- so a form framed
+// over it has to be the one exception, and the press that proves it is a real
+// press, through the browser, not a value set from here
+await openDialog();
+{
+  const where = await js(`(() => {
+    const f = document.getElementById("cfglayer");
+    const b = f.getBoundingClientRect();
+    const i = f.contentDocument.querySelector("#floatbody input.mono");
+    const r = i.getBoundingClientRect();
+    i.value = "";
+    return {x: Math.round(b.left + r.left + r.width / 2), y: Math.round(b.top + r.top + r.height / 2)};
+  })()`);
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await cdp.call('Input.dispatchMouseEvent',
+      { type, x: where.x, y: where.y, button: 'left', clickCount: 1 });
+  }
+  // Away and back, the way somebody reads something in another tab and returns:
+  // that is when the board used to take the caret back
+  await cdp.call('Page.bringToFront');
+  for (const ch of 'echo hi') {
+    await cdp.call('Input.dispatchKeyEvent', { type: 'keyDown', text: ch, key: ch });
+    await cdp.call('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
+  }
+  await sleep(300);
+  const typed = await js(`document.getElementById("cfglayer").contentDocument
+    .querySelector("#floatbody input.mono").value`);
+  if (typed !== 'echo hi') bad++;
+  console.log(`${typed === 'echo hi' ? 'ok  ' : 'BAD '} keys       the field holds "${typed}" (want "echo hi")`);
+}
+await js(`[...document.getElementById("cfglayer").contentDocument.querySelectorAll("#floatbox .ffoot button")]
+  .find(b => b.getAttribute("onclick") === "floatCancel()").click()`);
+await until('!document.getElementById("cfglayer")', 'the dialog never closed');
+
 // The thing itself: the tab is added from the frame, the frame goes, and the
 // tab is on the board a moment later -- the board never reloaded, so it is the
 // one that was there before
