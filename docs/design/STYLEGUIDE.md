@@ -87,6 +87,13 @@ It is worn exactly twice on a tab row (left edge and name) and once in front of
 anything that is that AI's, such as its allowance on the status line. Never on a
 dot, never on a border of structure, never mixed with a state colour.
 
+**On the tab being looked at, and on no other.** An unselected AI tab is the
+quiet row a terminal gets: name in `--text`, mark in `--dim`, left edge bare.
+Lit at once, the colours say what selection says, and the tab that really is
+selected has nothing left to say it with. Weight is not colour: a name that is
+600 stays 600 either way, so nothing moves as tabs are switched. A summary of
+tabs that are put away is not a tab, and keeps its colours.
+
 ### Contrast
 
 Text on `--panel` and `--raise` must be `--text` or `--dim`, never a state colour

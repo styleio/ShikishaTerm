@@ -574,7 +574,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      tab spent on a separator. The AI keeps a colour of its own: its name, the
      way the sidebar has always said it (.tab.aitab .nm) */
   #strip .stab .aim { color:inherit; }
-  #strip .stab.aitab .nm { color:var(--ai); font-weight:600; }
+  /* Its colour on the tab being looked at only, as in the sidebar: the rest of
+     the row is already --muted up here, so an unselected AI name simply joins
+     the quiet ones */
+  #strip .stab.aitab .nm { font-weight:600; }
+  #strip .stab.aitab.sel .nm { color:var(--ai); }
   #strip .stab.st-BUSY .aim { color:var(--live); }
   #strip .stab.st-BACKGROUND .aim { color:var(--live); opacity:.55; }
   #strip .stab.st-DONE .aim { color:var(--brand); }
@@ -663,10 +667,21 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      The colour is worn twice -- the left bar and the name -- and no more: a
      third copy as a chip in front of the status dot pushed the dot sideways on
      AI rows only, so the column of dots you scan down the sidebar zig-zagged,
-     and the second line's fixed indent no longer lined up under anything. */
-  .tab.aitab { border-left-color:var(--ai); }
+     and the second line's fixed indent no longer lined up under anything.
+
+     Worn by the tab being looked at, and by no other. A colour on every AI row
+     at once is read as "these are the live ones": a whole sidebar of lit rows
+     says the thing that being selected says, and the one row that IS selected
+     stops standing out (2026-09-20, the user: it reads as active). Unselected,
+     an AI row is the same quiet row a terminal is -- the name in the text
+     colour, the mark in --dim, the left edge bare -- and which AI it runs is
+     still there to read in the mark and the name. The weight stays on both
+     ways: it is not a colour, and taking it off on selection would move every
+     name in the strip a pixel as tabs are switched. */
+  .tab.aitab .nm { font-weight:600; }
   .tab.aitab.sel { border-left-color:var(--ai); }
-  .tab.aitab .nm { color:var(--ai); font-weight:600; }
+  .tab.aitab.sel .nm { color:var(--ai); }
+  .tab.aitab:not(.sel) .aim { color:var(--dim); }
   /* Each AI in the colour it uses for itself, so a person who knows the tool
      knows the tab. A CLI is named by its own command (claude, codex...); a
      model bridge by the provider it was pointed at, which is why both spellings
@@ -18911,6 +18926,35 @@ mod tests {
             "the set of tabs is still a box inside the box");
         // A flex column squeezes a box shorter than its rows, and the box clips them
         assert!(PAGE.contains(".fcard { flex:none;"), "a long list cuts the bottom off each box");
+    }
+
+    /// An AI wears its colour on the tab being looked at, and on no other.
+    /// Lit all at once, the colours said the thing selection says, and the
+    /// tab that really was selected had nothing left to say it with
+    /// (2026-09-20, the user: the colour reads as active).
+    #[test]
+    fn only_the_selected_ai_tab_wears_its_colour() {
+        assert!(PAGE.contains(".tab.aitab.sel { border-left-color:var(--ai); }"),
+            "the selected AI row lost the bar in its colour");
+        assert!(PAGE.contains(".tab.aitab.sel .nm { color:var(--ai); }"),
+            "the selected AI row lost the name in its colour");
+        assert!(PAGE.contains("#strip .stab.aitab.sel .nm { color:var(--ai); }"),
+            "the selected AI tab in the strip lost the name in its colour");
+        // Unselected, an AI tab is the quiet row a terminal gets
+        assert!(!PAGE.contains(".tab.aitab { border-left-color:var(--ai); }"),
+            "every AI row wears the bar again, selected or not");
+        assert!(!PAGE.contains(".tab.aitab .nm { color:var(--ai)"),
+            "every AI row wears the name colour again, selected or not");
+        assert!(!PAGE.contains("#strip .stab.aitab .nm { color:var(--ai)"),
+            "every AI tab in the strip wears the name colour again, selected or not");
+        assert!(PAGE.contains(".tab.aitab:not(.sel) .aim { color:var(--dim); }"),
+            "an unselected AI row's mark keeps its brand colour");
+        // Weight is not colour: it is worn either way, so no name changes
+        // width as tabs are switched
+        assert!(PAGE.contains(".tab.aitab .nm { font-weight:600; }"),
+            "an AI name is bold only while it is selected, so the row moves when it is picked");
+        assert!(PAGE.contains("#strip .stab.aitab .nm { font-weight:600; }"),
+            "an AI name in the strip is bold only while it is selected");
     }
 
     /// Several tabs in one folder get a heading, and a folded folder speaks
