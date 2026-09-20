@@ -585,7 +585,12 @@ mod tests {
     /// fault -- the offer came from a page, and a page can be out of date.
     #[test]
     fn an_offer_that_is_not_one_is_refused() {
-        let addrs = [IpAddr::V4(Ipv4Addr::new(192, 168, 0, 99))];
+        // The loopback, because this binds a socket on whatever it is given
+        // and every machine has this one. A home-network address was written
+        // here first -- one this machine really has -- and on a machine that
+        // did not have it the refusal came from the socket instead, which is
+        // a different thing being tested
+        let addrs = [IpAddr::V4(Ipv4Addr::LOCALHOST)];
         let said = answer("not an offer at all", &addrs, "VP8").map(|_| ()).unwrap_err().to_string();
         assert!(said.contains("the offer"), "the reason names the wrong side: {said}");
     }

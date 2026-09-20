@@ -6418,7 +6418,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("config.json");
         let was = crate::local_path("D:/server/soj_main");
-        let now = crate::local_path("E:/work/soj_main");
+        // Another place, said the way every other path in these tests is
+        // said. Written as another DRIVE once, which is a true story on this
+        // machine and nothing anywhere else: `local_path` folds D: away and
+        // leaves E: standing, so on a system without drive letters the folder
+        // was told to move to a path that is not one, and the move was refused
+        let now = crate::local_path("D:/elsewhere/soj_main");
         let other = crate::local_path("D:/work/other");
         std::fs::write(
             &file,
