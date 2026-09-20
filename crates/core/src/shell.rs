@@ -9359,6 +9359,12 @@ window.__state = function (json) {
   if (castDock && castDock.style.display === "flex" && S.active !== lastCastActive) {
     renderPanel();
   }
+  // ...and the caret follows it into the bar. Arriving somewhere is nearly
+  // always followed by writing something, and the bar was standing there
+  // empty-handed: every move between tabs or folders cost a click in the field
+  // before a word could be typed. Only when the bar is up -- shut it with the ✕
+  // and typing goes straight into the screen, exactly as before (see focusComposer)
+  if (lastCastActive !== null && S.active !== lastCastActive) focusComposer();
   lastCastActive = S.active;
   if (S.board) drawBoard();
   drawTopicBar();
@@ -11131,6 +11137,32 @@ const focus = () => {
   if (REMOTE && !typingDirect()) return;
   kbd.focus();
 };
+// Put the caret in the composer, when the composer is the way into where we
+// have just landed. Called on a move between panes -- another tab, another
+// folder -- from the state handler, on both surfaces.
+//
+// Only while the bar is actually up. That is the whole of the choice: the ✕
+// (and, away from the window, the ⌨) shuts it, and then typing goes into the
+// pane as it always did. It is also why this cannot be folded into focus(),
+// which answers a different question -- where a CLICK or a returning window
+// leaves the caret -- and would bounce the caret back out of the pane every
+// time somebody clicked into it.
+//
+// The same things hold the keyboard here as there: a dialog, the quick
+// commands, the ideas, a form, a field being typed in. Pressing a tab in the bar
+// at the top is not one of them -- that press IS the move being answered.
+function focusComposer() {
+  if (!castInput || !castDock || castDock.style.display !== "flex") return;
+  if (covering() || quickOpen || ideasOpen || cfgLayerUp() || setupUp()) return;
+  if (!document.getElementById("addproj").hidden) return;
+  const a = document.activeElement;
+  // The pane's own caret is not "somebody typing in a form": #kbd is a hidden
+  // textarea, and it is holding the keyboard on every one of these moves. Taking
+  // it from there is the entire point
+  if (a && a !== castInput && a !== kbd
+      && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT")) return;
+  castInput.focus();
+}
 // Scroll back through history with the wheel.
 //
 // The terminal only ever shows a single screen's worth at a time — the
@@ -19702,6 +19734,42 @@ mod tests {
             PAGE.matches("rememberTypeDirect(false)").count(),
             1,
             "the pen is no longer the one way back to the bar"
+        );
+    }
+
+    /// Landing on another pane hands the caret to the composer, when the
+    /// composer is the thing standing there.
+    ///
+    /// The bar shows itself wherever there is something to type into, but it
+    /// would not take a word until it had been clicked -- and a move to another
+    /// tab or folder is nearly always followed by typing something. Asked for on
+    /// both surfaces at once, so it is decided where both of them arrive: the
+    /// state handler, on a change of the tab in front.
+    ///
+    /// The ✕ remains the whole of the choice. With the bar shut, a move leaves
+    /// the caret where it has always been -- in the pane -- which is why this
+    /// cannot live inside focus(), the answer to a CLICK: from there it would
+    /// pull the caret back out of the pane every time somebody clicked into it.
+    #[test]
+    fn arriving_at_another_pane_hands_the_caret_to_the_bar() {
+        assert!(
+            PAGE.contains("if (lastCastActive !== null && S.active !== lastCastActive) focusComposer();"),
+            "a move between panes leaves the bar standing there empty-handed"
+        );
+        // One place decides it, and it is not the click path
+        assert_eq!(
+            PAGE.matches("focusComposer()").count(),
+            2,
+            "the caret is moved into the bar from somewhere else as well"
+        );
+        assert!(
+            PAGE.contains("  if (!castInput || !castDock || castDock.style.display !== \"flex\") return;"),
+            "the caret is put in a bar that is not there"
+        );
+        // Nothing that is already holding the keyboard is robbed of it
+        assert!(
+            PAGE.contains("  if (covering() || quickOpen || ideasOpen || cfgLayerUp() || setupUp()) return;"),
+            "a dialog, the quick commands or the ideas would lose the caret to the bar"
         );
     }
 

@@ -1,12 +1,14 @@
 /**
- * Can somebody looking at this board from another machine just type?
+ * Where does the caret go -- at the window, and for somebody looking at this
+ * board from another machine?
  *
  *     cargo build
  *     node tools/debug/type-from-elsewhere.win.mjs
  *
  * Needs Windows, Node and Chrome. Starts this checkout's build in a folder of
- * its own with the relay on, then opens that relay in a headless Chrome twice:
- * once as a laptop (a mouse and real keys) and once as a phone (a touch screen).
+ * its own with the relay on, then opens that relay in a headless Chrome twice --
+ * once as a laptop (a mouse and real keys) and once as a phone (a touch screen)
+ * -- and finally drives the app's own window through its DevTools port.
  * Nothing of a copy somebody is using is read, written or stopped.
  *
  * Why it exists. The sub-input bar was written for the phone, whose soft
@@ -20,11 +22,16 @@
  *
  * What it checks, in order:
  *   laptop  the page decides by itself that this machine types into the pane,
- *           and keys pressed with nothing clicked reach the terminal
+ *           keys pressed with nothing clicked reach the terminal, and moving to
+ *           another tab hands the caret to the sub-input bar that is standing
+ *           there (so the next thing typed lands in it without a click)
  *   phone   the page decides the other way, and a tap brings the bar up without
  *           pulling the caret into the pane (which is what would throw the soft
  *           keyboard over the screen), and the bar's keyboard button hands
  *           typing back to the screen, and the pen takes it back again
+ *   window  the same move, on the surface that has always had the caret in the
+ *           pane: with the bar up it goes to the bar, and with the bar shut
+ *           (the person's own ✕) it stays in the pane
  *
  * What it cannot stand in for: a soft keyboard. Keys sent to a browser over
  * DevTools arrive the way a real keyboard's do -- so a phone driven from here
@@ -40,8 +47,10 @@ const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RUN = path.join(os.tmpdir(), 'sk-typing');
 const APP = path.join(RUN, 'app');
 const WORK = path.join(RUN, 'work');
+const ELSE = path.join(RUN, 'elsewhere');   // a second folder, to move between
 const CONFIG = path.join(APP, 'config', 'config.json');
 const BOARD = 9347;          // the app's relay; 93xx is this folder's band
+const WINDOW_CDP = 9348;     // the app's own window, for the last part
 const CHROME_CDP = 9349;     // the stand-in device's own DevTools port
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -71,7 +80,7 @@ console.log('starting this checkout\'s build, isolated, with the relay on');
 stopApp();
 await sleep(800);
 fs.rmSync(RUN, { recursive: true, force: true });
-for (const d of [APP, WORK, path.join(RUN, 'localappdata')]) fs.mkdirSync(d, { recursive: true });
+for (const d of [APP, WORK, ELSE, path.join(RUN, 'localappdata')]) fs.mkdirSync(d, { recursive: true });
 const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
 if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n' + staged.stdout + staged.stderr);
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
@@ -79,12 +88,19 @@ fs.writeFileSync(CONFIG, JSON.stringify({
   language: 'en',
   remote: { enabled: true, bind: '127.0.0.1', port: BOARD },
   desks: [{ name: 'Check', id: 'check', folders: [
-    { cwd: WORK, tabs: [{ name: 'shell', id: 'shell', command: 'cmd.exe' }] },
+    // Two tabs and a second folder, because half of what is checked here is
+    // what a move -- either kind of move -- does to the caret
+    { cwd: WORK, tabs: [
+      { name: 'shell', id: 'shell', command: 'cmd.exe' },
+      { name: 'other', id: 'other', command: 'cmd.exe' },
+    ] },
+    { cwd: ELSE, tabs: [{ name: 'over-there', id: 'over-there', command: 'cmd.exe' }] },
   ] }],
 }, null, 2));
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
 env.LOCALAPPDATA = path.join(RUN, 'localappdata');
+env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${WINDOW_CDP}`;
 spawn(path.join(APP, 'SHIKISHA-TERM.exe'), [], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
 
 // The relay writes its token as it opens: its arrival is what says the copy is up
@@ -106,16 +122,16 @@ const chrome = spawn(findChrome(), [
   'about:blank',
 ], { stdio: 'ignore' });
 
-// One conversation with the stand-in device's browser. Raw CDP over a socket:
-// what is being checked is a page served over the network, so nothing here
-// should need a driver library installed to see it.
-async function attach() {
+// One conversation with a browser -- the stand-in device's, or the app's own
+// window. Raw CDP over a socket: what is being checked is a page served over
+// the network, so nothing here should need a driver library installed to see it.
+async function attach(port = CHROME_CDP) {
   let list;
   for (let i = 0; i < 80 && !list; i++) {
-    try { list = (await (await fetch(`http://127.0.0.1:${CHROME_CDP}/json/list`)).json()).filter((t) => t.type === 'page'); } catch { await sleep(250); }
+    try { list = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).filter((t) => t.type === 'page'); } catch { await sleep(250); }
     if (list && !list.length) list = null;
   }
-  if (!list) die('the stand-in browser never opened its DevTools port');
+  if (!list) die('nothing answered the DevTools port ' + port);
   const ws = new WebSocket(list[0].webSocketDebuggerUrl);
   await new Promise((r) => ws.addEventListener('open', r, { once: true }));
   let id = 0;
@@ -159,13 +175,18 @@ async function type(dev, text) {
 
 // What the terminal is showing right now, as text
 const shown = (dev) => dev.run(`(document.getElementById("screen") || {}).innerText || ""`);
-// Put the shell tab in front and wait until the page agrees it is there
-async function toShell(dev) {
+// Move to a tab by name and wait until the page agrees it is in front
+async function toTab(dev, name) {
   await until(() => dev.run(`!!(S && S.tabs && S.tabs.length)`), 'the board');
-  await dev.run(`send({kind:"select", tab: S.tabs.find(t => t.name === "shell").index}); true`);
-  await until(() => dev.run(`!!(S && S.tabs && S.tabs.some(t => t.index === S.active && t.name === "shell"))`), 'the shell tab in front');
+  await dev.run(`send({kind:"select", tab: S.tabs.find(t => t.name === ${JSON.stringify(name)}).index}); true`);
+  await until(() => dev.run(`!!(S && S.tabs && S.tabs.some(t => t.index === S.active && t.name === ${JSON.stringify(name)}))`),
+    'the ' + name + ' tab in front');
   await sleep(1200);
 }
+const toShell = (dev) => toTab(dev, 'shell');
+// Where the caret is, in words, so a failure says what it found
+const caret = (dev) => dev.run(`(() => { const a = document.activeElement;
+  return !a ? "nothing" : a.id ? ("#" + a.id) : (a.tagName || "?").toLowerCase(); })()`);
 
 let dev = null;
 try {
@@ -183,6 +204,15 @@ try {
   check(ok, 'keys pressed with nothing clicked reach the terminal');
   check(await dev.run(`document.activeElement === document.getElementById("kbd")`),
     'the caret sits in the pane, as it does at the window');
+  // ...and moving to another tab hands it to the bar standing at the foot, so
+  // the next thing typed lands in it rather than nowhere
+  check(await dev.run(`!!(castDock && castDock.style.display === "flex")`), 'the bar is up over a terminal tab');
+  await toTab(dev, 'other');
+  check(await caret(dev) === '#castinput', 'moving to another tab puts the caret in the bar, found ' + await caret(dev));
+  await type(dev, 'echo through-the-bar\n');
+  let ok3 = false;
+  try { await until(async () => (await shown(dev)).includes('through-the-bar'), 'the line to arrive', 8000); ok3 = true; } catch {}
+  check(ok3, 'what is typed after the move reaches that tab');
   dev.close();
 
   // ---- a phone: a touch screen, nothing to press ----
@@ -223,6 +253,47 @@ try {
   await dev.run(`document.getElementById("composerfab").click(); true`);
   await sleep(600);
   check(await dev.run(`localStorage.getItem("shikishaTypeDirect") !== "1"`), 'the pen brings the bar back for good');
+  dev.close();
+
+  // ---- the window itself: the surface that has always had the caret in the pane ----
+  console.log('\n3. the app\'s own window');
+  dev = await attach(WINDOW_CDP);
+  await dev.call('Runtime.enable');
+  check(!(await dev.run(`!!(S && S.setup)`)), 'the window is past its first-start setup');
+  await toShell(dev);
+  check(await dev.run(`!!(castDock && castDock.style.display === "flex")`), 'the bar stands at the foot of the pane');
+  await toTab(dev, 'other');
+  check(await caret(dev) === '#castinput', 'moving to another tab puts the caret in the bar, found ' + await caret(dev));
+  await type(dev, 'echo window-through-the-bar\n');
+  let ok4 = false;
+  try { await until(async () => (await shown(dev)).includes('window-through-the-bar'), 'the line to arrive', 8000); ok4 = true; } catch {}
+  check(ok4, 'what is typed after the move reaches that tab');
+  // The other kind of move: a whole folder, pressed by its name
+  await dev.run(`send({kind:"folderview", folder:${JSON.stringify(ELSE)}}); true`);
+  await until(() => dev.run(`!!(S && S.tabs && S.tabs.some(t => t.index === S.active && t.name === "over-there"))`),
+    'the other folder in front');
+  await sleep(900);
+  check(await caret(dev) === '#castinput', 'moving to another folder puts the caret in the bar, found ' + await caret(dev));
+  // With the bar shut by the person's own ✕, a move does not go looking for it.
+  // The ✕ means "out of my way": nothing may drag the caret into a bar that is
+  // not there, and the screen goes on taking typing the way it always has --
+  // click it, and type
+  await dev.run(`[...document.querySelectorAll("#castbar .castbtn")].find(b => b.textContent === "✕").click(); true`);
+  await sleep(600);
+  check(await dev.run(`!castDock || castDock.style.display !== "flex"`), 'the ✕ puts the bar away');
+  await toTab(dev, 'shell');
+  check(await caret(dev) !== '#castinput', 'a move respects the ✕, found ' + await caret(dev));
+  const pane = await dev.run(`(() => { const r = document.getElementById("screen").getBoundingClientRect();
+    return {x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2)}; })()`);
+  for (const half of ['mousePressed', 'mouseReleased']) {
+    await dev.call('Input.dispatchMouseEvent', { type: half, x: pane.x, y: pane.y, button: 'left', clickCount: 1 });
+  }
+  await sleep(400);
+  check(await caret(dev) === '#kbd', 'a click on the screen puts the caret in the pane, found ' + await caret(dev));
+  await type(dev, 'echo window-direct\n');
+  let ok5 = false;
+  try { await until(async () => (await shown(dev)).includes('window-direct'), 'the typing to arrive', 8000); ok5 = true; } catch {}
+  check(ok5, 'typing still goes straight into the screen there');
   dev.close();
 } catch (e) {
   console.error('\n' + (e && e.stack || e));
