@@ -306,6 +306,10 @@ pub enum Ev {
         /// counted tabs the settings do not count the same way -- one written
         /// with nothing to run is a tab on one side and not on the other
         tabname: Option<String>,
+        /// Stood over the board rather than given the whole window: what a
+        /// link that named one thing asks for (a card, a folder, a tab), so
+        /// the board it was pressed on is still there around it
+        sheet: bool,
     },
     /// Save the newest run's replay.lua to the user's Downloads folder
     ReplaySave,
@@ -1020,6 +1024,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             ret: v.get("ret").and_then(|x| x.as_bool()).unwrap_or(false),
             tabpos: v.get("tabpos").and_then(|x| x.as_u64()).map(|n| n as u32),
             tabname: v.get("tabname").and_then(|x| x.as_str()).filter(|s| !s.trim().is_empty()).map(str::to_string),
+            // Whether the page stands over the board rather than taking the
+            // whole window: what the board asks for when it named one thing
+            sheet: v.get("sheet").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         Some("menu") => Ev::Menu {
             key: v

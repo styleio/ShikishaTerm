@@ -2518,12 +2518,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--line); border-radius:var(--r-card); overflow:hidden;
     background:var(--panel); }
   #cfgwrap .cfgbox iframe { display:block; width:100%; height:100%; border:0; }
+  /* The sheet: the same frame at the size a whole page of settings about one
+     thing is stood at (runtime::sheet_rect), for the ⚙ of a panel, a folder's
+     or a tab's "edit", and the rest of the links that name one thing. The
+     settings themselves are not this -- they are a screen of their own */
+  #cfgwrap.sheet .cfgbox { width:min({{SHEET_W}},100%); height:min({{SHEET_H}},100%); }
   /* A screen too small to leave any board around it gives the page all of
      itself -- the window's rule for the same case -- and so does "More
      settings", which is the whole of the settings and no longer a dialog */
   @media (max-width:{{DLG_MIN_W}}), (max-height:{{DLG_MIN_H}}) {
     #cfgwrap { padding:0; }
     #cfgwrap .cfgbox { width:100%; height:100%; border:0; border-radius:0; }
+  }
+  /* ...and the sheet stops floating sooner, being the larger of the two */
+  @media (max-width:{{SHEET_MIN_W}}), (max-height:{{SHEET_MIN_H}}) {
+    #cfgwrap.sheet { padding:0; }
+    #cfgwrap.sheet .cfgbox { width:100%; height:100%; border:0; border-radius:0; }
   }
   #cfgwrap.full { padding:0; }
   #cfgwrap.full .cfgbox { width:100%; height:100%; border:0; border-radius:0; }
@@ -13677,6 +13687,12 @@ function openSettings(section, ret, folder, tab) {
   // for this tab". Only when the ask names no place of its own (a section, a
   // folder's row) and a tab is actually in view (INDEX is no tab) -- or when a
   // tab's own row asked, which names the tab itself
+  // Asked for one thing -- a card, a folder, a tab -- or asked for the settings
+  // themselves. The first stands over the board it was pressed on, so what was
+  // being looked at is still there when it is put away; the second is a screen
+  // of its own. Read from what the CALLER named: the gear names nothing, even
+  // though the tab in view rides along below
+  const sheet = !!(section || folder || tab);
   let tabpos = null;
   let tabname = null;
   if (tab || (!section && !folder && S && !S.board)) {
@@ -13704,10 +13720,12 @@ function openSettings(section, ret, folder, tab) {
     if (folder) p.folder = folder;
     if (tabpos != null) p.tabpos = tabpos;
     if (tabname) p.tabname = tabname;
-    walkToSettings(p);
+    // One thing's settings arrive framed over the board, the size the window
+    // stands them at; the settings themselves take the screen
+    if (sheet) { p.sheet = "1"; openCfgLayer(p, "sheet"); } else walkToSettings(p);
   } else {
     send({kind:"opensettings", section: section || null, ret: !!ret, folder: folder || null,
-          tabpos: tabpos, tabname: tabname});
+          tabpos: tabpos, tabname: tabname, sheet});
   }
 }
 // The way in from a browser: hand the token over once (the proxy trades it for
@@ -13728,17 +13746,21 @@ function cfgQuery(params) {
 // thing that reaches this page; a tablet and a Chromebook have room for the
 // board and the dialog both, and the CSS gives the frame the whole screen only
 // where the window would have stopped floating too
-function openCfgLayer(params) {
+// `size` is "sheet" for a whole page of settings about one thing, and nothing
+// for the one-question dialog. Both are the rectangle the window would place
+// the page in (runtime::SettingsPlace), so the two surfaces stand it the same
+function openCfgLayer(params, size) {
   const wrap = document.getElementById("cfgwrap");
   if (!wrap) return;
   closeCfgLayer();
+  if (size === "sheet") wrap.classList.add("sheet");
   // A press on the dimming is the press outside a dialog: not adding after
   // all. Nothing was written -- the tab exists only on the page being framed
   wrap.onclick = e => { if (e.target === wrap) closeCfgLayer(); };
   const box = el("div", {class:"cfgbox"});
   const f = document.createElement("iframe");
   f.id = "cfglayer";
-  f.title = T["tui.tab.add"] || "";
+  f.title = (size === "sheet" ? T["tui.menu.settings"] : T["tui.tab.add"]) || "";
   f.src = "cfg?" + cfgQuery(Object.assign({embed:1}, params));
   box.append(f);
   wrap.append(box);
@@ -13750,7 +13772,7 @@ function closeCfgLayer() {
   const wrap = document.getElementById("cfgwrap");
   if (!wrap) return;
   wrap.hidden = true;
-  wrap.classList.remove("full");
+  wrap.classList.remove("full", "sheet");
   wrap.textContent = "";
 }
 // Declared, not assigned to a name: where the caret belongs is decided at the
@@ -17550,6 +17572,11 @@ fn built(sticky: bool, by: Served) -> String {
     // the window hands over the whole area, and so does the frame
     .replace("{{DLG_MIN_W}}", &px(crate::runtime::DLG_MIN_W - 1))
     .replace("{{DLG_MIN_H}}", &px(crate::runtime::DLG_MIN_H - 1))
+    // ...and the sheet, which stands a whole page of settings about one thing
+    .replace("{{SHEET_W}}", &px(crate::runtime::SHEET_WIDE))
+    .replace("{{SHEET_H}}", &px(crate::runtime::SHEET_TALL))
+    .replace("{{SHEET_MIN_W}}", &px(crate::runtime::SHEET_MIN_W - 1))
+    .replace("{{SHEET_MIN_H}}", &px(crate::runtime::SHEET_MIN_H - 1))
     .replace(
         "{{ENCODINGS}}",
         &serde_json::to_string(crate::charset::CHOICES).unwrap_or_else(|_| "[]".into()),
@@ -19209,7 +19236,7 @@ mod tests {
             PAGE.contains("const p = {desk: (S && S.desk_index) || 0};"),
             "the desk is not carried on the phone's path (without it, it falls back to the basic card)"
         );
-        assert!(PAGE.contains("tabpos: tabpos, tabname: tabname});"), "the position is not carried on the window's path");
+        assert!(PAGE.contains("tabpos: tabpos, tabname: tabname, sheet});"), "the position is not carried on the window's path");
     }
 
     /// The subscription's reading is shown only over a Claude tab, and only
@@ -20076,7 +20103,7 @@ mod tests {
     /// whole screen.
     #[test]
     fn the_framed_dialog_is_the_size_the_window_gives_one() {
-        use crate::runtime::{DLG_EDGE, DLG_MIN_H, DLG_MIN_W, DLG_TALL, DLG_TOP, DLG_WIDE};
+        use crate::runtime::{DLG_EDGE, DLG_MIN_H, DLG_MIN_W, DLG_TALL, DLG_TOP, DLG_WIDE, SHEET_MIN_H, SHEET_MIN_W, SHEET_TALL, SHEET_WIDE};
         let p = super::page();
         assert!(!p.contains("{{DLG_"), "the dialog's measurements were not written out");
         assert!(
@@ -20099,13 +20126,41 @@ mod tests {
             )),
             "the small-screen rule is not the window's own rule"
         );
-        // Both ways of handing over the whole screen hand over the whole of it.
-        // Giving the box back its edge but not its size left "More settings"
-        // showing the whole of the settings through a 560px hole
+        // Every way of handing over the whole screen hands over the whole of
+        // it: the two sizes' small-screen rules and "More settings". Giving the
+        // box back its edge but not its size left the whole of the settings
+        // showing through a 560px hole
         assert_eq!(
             p.matches(".cfgbox { width:100%; height:100%; border:0; border-radius:0; }").count(),
-            2,
+            3,
             "a screen given to the page is still only as wide as a dialog"
+        );
+        // The sheet: the same frame at the size the window stands a whole page
+        // of settings about one thing at
+        assert!(
+            p.contains(&format!(
+                "#cfgwrap.sheet .cfgbox {{ width:min({SHEET_WIDE}px,100%); height:min({SHEET_TALL}px,100%); }}"
+            )),
+            "the framed sheet is not the size the window places one at"
+        );
+        assert!(
+            p.contains(&format!(
+                "@media (max-width:{}px), (max-height:{}px) {{",
+                SHEET_MIN_W - 1,
+                SHEET_MIN_H - 1
+            )),
+            "the sheet never stops floating, however small the screen"
+        );
+        // A link that names one thing is a sheet; the settings themselves are
+        // a screen. Read from what the caller named, so the tab riding along
+        // with the plain gear does not turn it into a sheet
+        assert!(
+            p.contains("const sheet = !!(section || folder || tab);"),
+            "what stands over the board and what takes the screen is no longer decided in one place"
+        );
+        assert!(
+            p.contains("if (sheet) { p.sheet = \"1\"; openCfgLayer(p, \"sheet\"); } else walkToSettings(p);"),
+            "a browser still walks off the board for one thing's settings"
         );
         // The board stays behind it: the frame is emptied when it goes, so no
         // page is left running in a frame nobody is looking at
@@ -20114,7 +20169,7 @@ mod tests {
             "the framed page is not told it is framed"
         );
         assert!(
-            p.contains("wrap.classList.remove(\"full\");\n  wrap.textContent = \"\";"),
+            p.contains("wrap.classList.remove(\"full\", \"sheet\");\n  wrap.textContent = \"\";"),
             "closing leaves the page loaded in a hidden frame"
         );
         // Its two words back: done with, and "give me the whole screen"

@@ -258,6 +258,83 @@ const home = await js('!!document.querySelector("#strip .snew, .tab.fnew")');
 if (!home) bad++;
 console.log(`${home ? 'ok  ' : 'BAD '} close      it asks about the half-added tab, then gives the board back`);
 
+// And the sheet: a whole page of settings about one thing, stood over the same
+// board. The composer's actions panel has the ⚙ that asks for one -- the link
+// this was written for -- and every other "edit this" goes the same way
+for (const s of [SIZES[0], SIZES[2]]) {
+  await cdp.call('Emulation.setDeviceMetricsOverride',
+    { width: s.w, height: s.h, deviceScaleFactor: 1, mobile: s.mobile });
+  await cdp.call('Page.navigate', { url: `http://127.0.0.1:${port}/?t=${encodeURIComponent(token)}` });
+  await until('typeof openSettings === "function" && !!document.getElementById("screen")',
+    'the board never arrived');
+  // Pressed the way a person does: the panel's own gear, not the function
+  await js('rememberCastClosed(false); openTermBar(); castPanel = "actions"; renderPanel();');
+  const pressed = await js(`(() => {
+    const g = document.querySelector("#castpanel .castgear");
+    if (!g) return false;
+    g.click();
+    return true;
+  })()`);
+  if (!pressed) {
+    // No quick actions written on this copy, so the panel draws no gear. The
+    // same road, from the link a folder's row takes
+    await js('openSettings(null, false, (S.groups || [])[0] && S.groups[0].folder)');
+  }
+  await until('!!document.getElementById("cfglayer")', 'the sheet never opened');
+  await until('document.getElementById("cfglayer").contentDocument && ' +
+    'document.getElementById("cfglayer").contentDocument.querySelector("#nav .navitem")',
+    'the framed page never became the settings');
+  await sleep(600);
+  const m = await js(`(() => {
+    const f = document.getElementById("cfglayer");
+    const b = f.closest(".cfgbox").getBoundingClientRect();
+    const board = document.getElementById("tabs");
+    return {w: Math.round(b.width), h: Math.round(b.height), y: Math.round(b.top),
+            sheet: document.getElementById("cfgwrap").classList.contains("sheet"),
+            board: !!(board && board.getBoundingClientRect().width > 0),
+            // The page's own two columns, which is what the width is for
+            columns: !!f.contentDocument.querySelector("nav") &&
+              f.contentDocument.defaultView.getComputedStyle(
+                f.contentDocument.querySelector("nav")).position !== "fixed"};
+  })()`);
+  const WIDE = 1040, TALL = 760, TOP = 56, EDGE = 16;
+  const floats = s.w >= WIDE / 2 + EDGE * 2 && s.h >= TALL / 2 + TOP + EDGE;
+  const want = floats
+    ? { w: Math.min(WIDE, s.w - EDGE * 2), h: Math.min(TALL, s.h - TOP - EDGE), y: TOP }
+    : { w: s.w, h: s.h, y: 0 };
+  const ok = m.sheet && m.w === want.w && m.h === want.h && m.y === want.y && (!floats || m.board);
+  if (!ok) bad++;
+  console.log(
+    `${ok ? 'ok  ' : 'BAD '} sheet:${s.name.padEnd(6)} ${s.w}x${s.h}` +
+    ` frame ${m.w}x${m.h} at y ${m.y} (want ${want.w}x${want.h} at y ${want.y})` +
+    ` board ${m.board ? 'drawn' : 'gone'} list ${m.columns ? 'beside' : 'behind'} the card`);
+  const shot = await cdp.call('Page.captureScreenshot', { format: 'png' });
+  fs.writeFileSync(path.join(OUT, `sheet-${s.name}.png`), Buffer.from(shot.result.data, 'base64'));
+  // Escape puts it away -- pressed with the caret INSIDE the sheet, where the
+  // board behind never hears the key, so this is the page's own way out (the
+  // one the window relies on entirely, having no board that can listen)
+  const inside = await js(`(() => {
+    const f = document.getElementById("cfglayer");
+    const b = f.getBoundingClientRect();
+    const n = f.contentDocument.querySelector("#nav .navitem");
+    const r = n.getBoundingClientRect();
+    return {x: Math.round(b.left + r.left + r.width / 2), y: Math.round(b.top + r.top + r.height / 2)};
+  })()`);
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await cdp.call('Input.dispatchMouseEvent', { type, x: inside.x, y: inside.y, button: 'left', clickCount: 1 });
+  }
+  await sleep(400);
+  for (const type of ['keyDown', 'keyUp']) {
+    await cdp.call('Input.dispatchKeyEvent',
+      { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+  }
+  await sleep(600);
+  const gone = !(await js('!!document.getElementById("cfglayer")'));
+  if (!gone) { bad++; await js('document.getElementById("cfglayer").contentWindow.closeSettings()'); }
+  console.log(`${gone ? 'ok  ' : 'BAD '} sheet:esc  Escape pressed inside the sheet ${gone ? 'put it away' : 'did nothing'}`);
+  await until('!document.getElementById("cfglayer")', 'the sheet never closed');
+}
+
 console.log('pictures in ' + OUT);
 cdp.close();
 process.exit(bad ? 1 : 0);

@@ -1281,10 +1281,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // tab you get pushed out of. Only an explicit human tab/desk pick, or
     // "close settings", leaves it.
     let mut settings_open = false;
-    // Whether the settings page is the add-a-tab dialog the board's + opens: a
-    // rectangle over the board rather than the whole window. Only meaningful
-    // while `settings_open`; every other way in opens the page proper
-    let mut settings_float = false;
+    // Where the settings page stands while it is open: the whole window, a
+    // sheet over the board (a link that named one thing: a card, a folder, a
+    // tab), or the dialog the board's + opens. Only meaningful while
+    // `settings_open`
+    let mut settings_place = SettingsPlace::Full;
     // Flag for dragging the tab-bar border (lets the mouse adjust its width)
     // The settings web GUI (launched via INDEX's [e], stopped when the app exits)
     let mut web: Option<webui::WebUi> = None;
@@ -3317,7 +3318,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             active,
             board: board_open,
             settings: settings_open,
-            settings_float,
+            settings_float: settings_place.floats(),
             // The flag itself, engine or no engine. It used to be sent only
             // while a Lua engine existed, which left the bar saying AUTO ON
             // after an emergency stop in a desk with no automation of
@@ -3873,7 +3874,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let room = shell.geom_full().2 > 0 && shell.geom_full().3 > 0;
             if settings_open && !covered && room {
                 let full = shell.geom_full();
-                let at = if settings_float { dialog_rect(full) } else { full };
+                let at = settings_place.rect(full);
                 caps.show_at(&[(SETTINGS_TAB.to_string(), at)]);
             } else {
             let shown: Vec<(String, (i32, i32, i32, i32))> = pane_layout
@@ -6790,37 +6791,46 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         // The add-a-tab dialog's "More settings": the same page, the whole window
         if shell.mail().take_settings_full() {
-            settings_float = false;
+            settings_place = SettingsPlace::Full;
         }
 
         // The sidebar gear. Opens settings from any tab (the menu "e" key only
         // fires while INDEX is in view, so the gear needs its own path).
         // The desk being viewed rides along so its group opens expanded.
-        if let Some((section, ret, folder, tabpos, tabname)) = shell.take_open_settings() {
+        if let Some(want) = shell.take_open_settings() {
             // The gear passes the desk being viewed, and the tab in view so
             // the page opens on its card; a deep-link shortcut may instead name
             // a section to land on and ask to return once saved.
             let mut query = format!("&desk={desk_index}");
-            if let Some(f) = folder {
+            if let Some(f) = want.folder {
                 query += &format!("&folder={}", urlish(&f));
             }
-            if let Some(n) = tabpos {
+            if let Some(n) = want.tabpos {
                 query += &format!("&tabpos={n}");
             }
-            if let Some(t) = tabname {
+            if let Some(t) = want.tabname {
                 query += &format!("&tabname={}", urlish(&t));
             }
-            if let Some(s) = section {
+            if let Some(s) = want.section {
                 query += &format!("&section={s}");
             }
-            if ret {
+            if want.ret {
                 query += "&ret=1";
+            }
+            // Standing over the board makes it a dialog, and Escape is a
+            // dialog's way out (style guide 5.2). The page hears that key
+            // itself -- the board behind cannot, the page has the keyboard
+            if want.sheet {
+                query += "&sheet=1";
             }
             flash = Some(
                 match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, &query) {
                     Ok(()) => {
                         settings_open = true;
-                        settings_float = false;
+                        // A link that named one thing stands over the board it
+                        // was pressed on; the settings themselves get the window
+                        settings_place =
+                            if want.sheet { SettingsPlace::Sheet } else { SettingsPlace::Full };
                         i18n::t("msg.settings_here")
                     }
                     Err(e) => i18n::tp("msg.settings_failed", &[("error", &e.to_string())]),
@@ -6923,7 +6933,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if let Some(open) = shell.mail().take_update_card() {
             update::card_answered();
             if open {
-                shell.mail().open_settings = Some((Some("update".into()), false, None, None, None));
+                // The card that says a newer version is out: its one card, over
+                // the board the card was drawn on
+                shell.mail().open_settings = Some(crate::mailbox::SettingsWanted {
+                    section: Some("update".into()),
+                    sheet: true,
+                    ..Default::default()
+                });
             }
         }
         // A tab asked for from the screen: a row in the list or the bar, a
@@ -7323,7 +7339,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 ) {
                                     Ok(()) => {
                                         settings_open = true;
-                                        settings_float = true;
+                                        settings_place = SettingsPlace::Dialog;
                                         i18n::t("msg.settings_here")
                                     }
                                     Err(e) => i18n::tp(
@@ -7576,7 +7592,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         // Don't leave it opened but invisible.
                                         // If already open, switch to its existing location.
                                         settings_open = true;
-                                        settings_float = false;
+                                        settings_place = SettingsPlace::Full;
                                         i18n::t("msg.settings_here")
                                     }
                                     Err(e) => i18n::tp(
@@ -7767,6 +7783,55 @@ pub const DLG_EDGE: i32 = 16;
 /// is no board left around it, so it takes the whole area instead
 pub const DLG_MIN_W: i32 = DLG_WIDE / 2 + DLG_EDGE * 2;
 pub const DLG_MIN_H: i32 = DLG_TALL / 2 + DLG_TOP + DLG_EDGE;
+/// And the sheet (5.2): a whole page of settings stood over the board, for a
+/// link that named one thing. Wide enough for the page's own two columns --
+/// its list beside the card -- where a dialog's width would fold them into the
+/// narrow arrangement meant for a phone
+pub const SHEET_WIDE: i32 = 1040;
+pub const SHEET_TALL: i32 = 760;
+/// The smallest area a sheet still stands over, read the same way as a
+/// dialog's: under it, the page is given the whole of the area
+pub const SHEET_MIN_W: i32 = SHEET_WIDE / 2 + DLG_EDGE * 2;
+pub const SHEET_MIN_H: i32 = SHEET_TALL / 2 + DLG_TOP + DLG_EDGE;
+
+/// Where an open settings page stands.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SettingsPlace {
+    /// The settings themselves: the whole window, the way INDEX's own gear
+    /// opens them
+    Full,
+    /// One thing's settings, stood over the board it was asked from
+    Sheet,
+    /// The one question the board's + asks
+    Dialog,
+}
+
+impl SettingsPlace {
+    /// The rectangle this place gives a page, out of the whole content area.
+    pub fn rect(self, full: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+        match self {
+            SettingsPlace::Full => full,
+            SettingsPlace::Sheet => sheet_rect(full),
+            SettingsPlace::Dialog => dialog_rect(full),
+        }
+    }
+    /// Whether the board stays drawn behind it.
+    pub fn floats(self) -> bool {
+        self != SettingsPlace::Full
+    }
+}
+
+/// Where a sheet-sized page goes over the board, given the whole content area.
+/// The dialog's rule, at the sheet's size (see `dialog_rect`).
+pub fn sheet_rect(full: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    let (x, y, w, h) = full;
+    if w < SHEET_MIN_W || h < SHEET_MIN_H {
+        return full;
+    }
+    let dw = SHEET_WIDE.min(w - DLG_EDGE * 2);
+    let dh = SHEET_TALL.min(h - DLG_TOP - DLG_EDGE);
+    (x + (w - dw) / 2, y + DLG_TOP, dw, dh)
+}
 /// Where a dialog-sized page goes over the board, given the whole content area.
 ///
 /// The style guide's dialog: at most 560 wide, 56 down from the top, centred
@@ -11447,6 +11512,30 @@ mod tests {
         assert_eq!(dialog_rect((0, 0, 1400, 300)), (0, 0, 1400, 300));
         // Nothing measured yet stays nothing
         assert_eq!(dialog_rect((0, 0, 0, 0)), (0, 0, 0, 0));
+    }
+
+    /// One thing's settings stand in the same place, one size up -- and the
+    /// settings themselves stand nowhere: they are given the window.
+    #[test]
+    fn a_sheet_is_a_dialog_one_size_up() {
+        use super::{SettingsPlace, sheet_rect};
+        let (x, y, w, h) = sheet_rect((0, 30, 1400, 900));
+        assert_eq!((w, h), (1040, 760));
+        assert_eq!(x, (1400 - 1040) / 2, "not centred across");
+        assert_eq!(y, 30 + 56, "not 56 down, where a dialog starts");
+        // A window with no room around it hands the whole of itself over
+        assert_eq!(sheet_rect((0, 0, 500, 900)), (0, 0, 500, 900));
+        assert_eq!(sheet_rect((0, 0, 1400, 400)), (0, 0, 1400, 400));
+        // ...and a dialog still floats there, being the smaller of the two
+        assert_ne!(dialog_rect((0, 0, 500, 900)), (0, 0, 500, 900));
+        // Each place puts the page where it says
+        let full = (0, 30, 1400, 900);
+        assert_eq!(SettingsPlace::Full.rect(full), full);
+        assert_eq!(SettingsPlace::Sheet.rect(full), sheet_rect(full));
+        assert_eq!(SettingsPlace::Dialog.rect(full), dialog_rect(full));
+        // ...and only the settings themselves cover the board
+        assert!(!SettingsPlace::Full.floats());
+        assert!(SettingsPlace::Sheet.floats() && SettingsPlace::Dialog.floats());
     }
 
     /// A tab past the ninth can be picked. Sent as Ctrl+B and a digit, tab 10

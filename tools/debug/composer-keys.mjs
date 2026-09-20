@@ -114,8 +114,16 @@ function surface(cdp) {
 
 // The bar, open and focused, with nothing written in it
 async function emptyBar(s) {
-  await s.until('typeof openTermBar === "function" && !!document.getElementById("screen")',
+  await s.until('typeof openTermBar === "function" && !!document.getElementById("screen") && !!S',
     'the board never arrived');
+  // The shell tab, whatever else the copy has been used for since: another
+  // tool may have left an AI tab in view, and an AI is not what answers here
+  await s.js(`(() => {
+    const t = (S.tabs || []).find(x => x.kind === "pty" && !x.settings);
+    if (t && S.active !== t.index) send({kind:"select", tab:t.index});
+  })()`);
+  await s.until('(() => { const t = (S.tabs || []).find(x => x.kind === "pty" && !x.settings);' +
+    ' return !!t && S.active === t.index; })()', 'the shell tab never came into view');
   await s.js('rememberCastClosed(false); openTermBar(); castInput.value = ""; growCastInput(); castInput.focus();');
   await s.until('document.activeElement === castInput', 'the caret never reached the input bar');
 }

@@ -4123,6 +4123,12 @@ const REMOTE = __REMOTE__;
 // over the board the way the window places one. The way out is a word to the
 // board rather than a walk to "/" -- that would load the board into the frame
 const EMBED = new URLSearchParams(location.search).get("embed") === "1";
+// True when this page is standing over the board as a sheet (?sheet=1): one
+// thing's settings, asked for from the board and put away back to it. It is a
+// dialog one size up, so Escape is its way out (style guide 5.2) -- and this
+// page is what hears that key, wherever it stands: in the window the board
+// behind has no keyboard, and in a frame the key never leaves the frame
+const SHEET = new URLSearchParams(location.search).get("sheet") === "1";
 const toBoard = act => { try { window.parent.postMessage({cfg:act}, location.origin); } catch (e) {} };
 const T = __DICT__;
 // Every command there is, grouped, with the answer it has when nobody has said
@@ -12217,9 +12223,12 @@ function floatMore() {
 // Esc is the dialog's way out (style guide 5.2), and only the dialog's: a
 // confirmation opened over it takes its own Esc first
 document.addEventListener("keydown", e => {
-  if (e.key !== "Escape" || !floating || document.querySelector("dialog[open]")) return;
-  e.preventDefault();
-  floatCancel();
+  if (e.key !== "Escape" || document.querySelector("dialog[open]")) return;
+  // The one question the board's + asks: not adding after all
+  if (floating) { e.preventDefault(); floatCancel(); return; }
+  // A sheet standing over the board: the same way out, and the same guard
+  // about work not saved that its Close button goes through
+  if (SHEET) { e.preventDefault(); closeSettings(); }
 });
 
 // Opens a help/report page in the real browser. The server whitelists `dest`
@@ -13167,6 +13176,86 @@ mod tests {
         );
     }
 
+    /// The words between one text and the next quote, wherever the text appears.
+    fn named_after(text: &str, pat: &str) -> std::collections::BTreeSet<String> {
+        let mut out = std::collections::BTreeSet::new();
+        let mut at = 0;
+        while let Some(i) = text[at..].find(pat) {
+            let from = at + i + pat.len();
+            let Some(len) = text[from..].find('"') else { break };
+            out.insert(text[from..from + len].to_string());
+            at = from + len;
+        }
+        out
+    }
+
+    /// The body of a function or an object literal, by the line it starts on.
+    fn body_of<'a>(text: &'a str, opens: &str, closes: &str) -> &'a str {
+        let at = text.find(opens).unwrap_or_else(|| panic!("{opens} is gone"));
+        let from = at + opens.len();
+        let len = text[from..].find(closes).unwrap_or_else(|| panic!("{opens} does not end"));
+        &text[from..from + len]
+    }
+
+    /// Every screen the board sends somebody to is a screen this page has.
+    ///
+    /// A deep link is a word: the board hands `?section=<word>` over and this
+    /// page looks it up. Nothing fails when the word is not found -- the page
+    /// opens on the general cards, and whoever pressed "edit this" is left
+    /// looking for what they pressed. So a card renamed or taken away here,
+    /// while the board goes on naming it, breaks a button silently and in the
+    /// other file. This is the one thing that says so.
+    ///
+    /// It reads both pages rather than holding a list of its own: what the
+    /// board asks for is every `openSettings("...")`, plus the two fields whose
+    /// value is handed to that same function (a row's `settings:` and the git
+    /// panel's `edit:`). A new field carrying a section has to be named here.
+    #[test]
+    fn every_screen_the_board_asks_for_is_one_the_settings_have() {
+        let board = crate::shell::page();
+        let mut asks = named_after(&board, "openSettings(\"");
+        asks.extend(named_after(&board, "settings: \""));
+        asks.extend(named_after(&board, "edit:\""));
+        assert!(asks.len() > 5, "the board's links are no longer being found: {asks:?}");
+
+        // What this page can be asked for: a card of its own, a desk's card by
+        // the name the board uses for it, or a project's page
+        let global = named_after(body_of(PAGE, "function globalSections() {", "\n}"), "{id:\"");
+        let desk_ids = named_after(body_of(PAGE, "function deskSections(desk) {", "\n}"), "s(\"");
+        let links = body_of(PAGE, "const DESK_LINKS = {", "};");
+        let desk_links: Vec<(String, String)> = links
+            .split(',')
+            .filter_map(|kv| kv.split_once(':'))
+            .map(|(k, v)| {
+                (k.trim().trim_matches('"').to_string(), v.trim().trim_matches('"').to_string())
+            })
+            .collect();
+        assert!(!global.is_empty() && !desk_ids.is_empty() && !desk_links.is_empty(),
+            "the settings' own lists are no longer being found");
+        // The two names that are neither: a project's page, and the card on it
+        let project = PAGE
+            .contains(r#"if ((sec === "project" || sec === "project-gitacct") && want && desks[cur]) {"#);
+        assert!(project, "the project's own page is no longer reachable by name");
+
+        for ask in &asks {
+            let known = global.contains(ask)
+                || desk_links.iter().any(|(k, _)| k == ask)
+                || ask == "project"
+                || ask == "project-gitacct";
+            assert!(known, "the board sends people to \"{ask}\", which is no screen these settings have");
+        }
+        // ...and the desk's own cards, which those names point at
+        for (k, v) in &desk_links {
+            assert!(desk_ids.contains(v), "\"{k}\" points at the desk card \"{v}\", which is gone");
+        }
+        // A link that marks one field brings that field into view by its id,
+        // so the id has to be given out somewhere as well as asked for here
+        for id in named_after(PAGE, "lookAtCard(\"") {
+            let given = PAGE.matches(&format!("\"{id}\"")).count();
+            assert!(given > 1, "nothing on the page is called \"{id}\", so the link marks nothing");
+        }
+    }
+
     #[test]
     fn a_server_tabs_settings_survive_a_save() {
         assert!(PAGE.contains("server: t.server || null"), "reading drops the connection settings");
@@ -13444,6 +13533,14 @@ mod tests {
             "the framed page draws an edge inside the frame's own");
         assert!(PAGE.contains(r#"if (EMBED) document.body.classList.add("embed");"#),
             "nothing says the page is framed before it is painted");
+        // A sheet is a dialog one size up, so Escape is its way out -- and
+        // this page is what hears that key, in the window as in a frame
+        assert!(PAGE.contains(r#"const SHEET = new URLSearchParams(location.search).get("sheet") === "1";"#),
+            "the page cannot tell it is standing over a board");
+        assert!(PAGE.contains(r#"if (SHEET) { e.preventDefault(); closeSettings(); }"#),
+            "Escape does not put a sheet away");
+        assert!(crate::shell::page().contains(r#"if (sheet) { p.sheet = "1"; openCfgLayer(p, "sheet"); } else walkToSettings(p);"#),
+            "a browser's sheet is never told that it is one");
     }
 
     /// The screen must not still contain a raw `{{key}}` or `__DICT__`.

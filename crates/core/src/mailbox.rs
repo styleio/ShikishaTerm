@@ -12,11 +12,23 @@
 use crate::tab::RecordedStep;
 use shikisha_shared::Ev;
 
-/// What "open the settings" is asking for: which section to land on,
-/// whether to come back to the board once saved, which item to look at,
-/// and which tab of it. Four maybes with no names between them was one
-/// too many
-pub type SettingsWanted = (Option<String>, bool, Option<String>, Option<u32>, Option<String>);
+/// What "open the settings" is asking for. Maybes with no names between them
+/// were one too many even at four, and the place it stands makes five
+#[derive(Debug, Clone, Default)]
+pub struct SettingsWanted {
+    /// The card to land on, when the ask named one
+    pub section: Option<String>,
+    /// Come back to the board once it has been saved
+    pub ret: bool,
+    /// The folder whose page to open...
+    pub folder: Option<String>,
+    /// ...and which of its tabs, by place and by the name it goes by
+    pub tabpos: Option<u32>,
+    pub tabname: Option<String>,
+    /// Stood over the board rather than given the whole window: the ask named
+    /// one thing, so the board it was asked from stays drawn around it
+    pub sheet: bool,
+}
 
 /// Reports from a shell, sorted and waiting.
 #[derive(Default)]

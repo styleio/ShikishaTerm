@@ -273,6 +273,17 @@ hint             11.5px / --faint
 - Focus lands on the first thing to fill in -- the first empty field, or the
   first one the person came to change.
 
+**The sheet** is the same thing one size up: a whole page of settings about one
+thing (a panel's ⚙, a folder's or a tab's "edit"), stood over the board it was
+asked from. `min(1040px, 100%)` wide and `min(760px, 100%)` tall, in the same
+place -- 56px down, 16px of edge, centred across. It is wide enough for the
+settings' own two columns; a dialog's width would fold them into the narrow
+arrangement meant for a phone. **The settings themselves are not a sheet**: the
+gear that opens all of them opens a screen. A screen too small to leave any
+board around either of them is given the whole of itself instead
+(`runtime::SettingsPlace` holds both sizes and that rule, for the window and
+for a browser alike).
+
 ### 5.3 Where the buttons live
 
 One law, so that no screen has to be learned twice.
