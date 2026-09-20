@@ -9,6 +9,14 @@ license = "MIT"
 name = "shikisha-serve"
 path = "src/main.rs"
 
+[features]
+# Sending a screen as video. Off by default for the same reason it is off in
+# the runtime: it links against libvpx, which has to be on the machine that
+# builds it. A package built for a distribution turns it on and declares the
+# library as a dependency; the one static file does not, because a static
+# build needs a libvpx built the same way
+vp8 = ["shikisha-core/vp8"]
+
 [dependencies]
 shikisha-core = { path = "../core" }
 anyhow = { workspace = true }

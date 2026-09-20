@@ -63,11 +63,15 @@ pub fn encoder_for(width: usize, height: usize, fps: u32) -> Result<Box<dyn Enco
     {
         windows_h264::open(width, height, fps).map(|e| Box::new(e) as Box<dyn Encoder>)
     }
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), feature = "vp8"))]
+    {
+        vp8::open(width, height, fps).map(|e| Box::new(e) as Box<dyn Encoder>)
+    }
+    #[cfg(all(not(windows), not(feature = "vp8")))]
     {
         let _ = (width, height, fps);
         anyhow::bail!(
-            "this build cannot compress video yet: the encoder for this system is not written"
+            "this build cannot compress video: it was built without the VP8 encoder"
         )
     }
 }
@@ -75,7 +79,7 @@ pub fn encoder_for(width: usize, height: usize, fps: u32) -> Result<Box<dyn Enco
 /// Whether this build can compress video at all. For asking before offering
 /// somebody something that cannot happen.
 pub fn available() -> bool {
-    cfg!(windows)
+    cfg!(windows) || cfg!(feature = "vp8")
 }
 
 /// What this machine will produce, in the word an SDP uses.
@@ -89,6 +93,211 @@ pub fn codec() -> &'static str {
     match cfg!(windows) {
         true => "H264",
         false => "VP8",
+    }
+}
+
+/// VP8, through the library that defines it.
+///
+/// Not the operating system's, because no operating system has one: Windows
+/// carries an H.264 encoder and its licence, and everywhere else the answer
+/// is a library. libvpx is BSD and takes on no conditions at all -- nothing
+/// to display, nothing to fetch at runtime, nothing that stops working
+/// offline -- which is why it is the default here rather than H.264 through
+/// Cisco's binary. The cost is about twice the processor time, measured, and
+/// still well under one core for a screen at thirty frames a second.
+///
+/// The binding is [`crate::vpx`], generated from the headers once and kept in
+/// the repository so that building this needs nothing but a linker and the
+/// library itself.
+#[cfg(all(not(windows), feature = "vp8"))]
+mod vp8 {
+    use super::*;
+    use crate::vpx;
+    use anyhow::bail;
+
+    /// What to aim at, in bits a second. The same figure the Windows side
+    /// uses, so a comparison between them is about the encoders and not about
+    /// what they were asked for.
+    const BITS: u32 = 2_000;
+
+    pub struct Vp8 {
+        ctx: Box<vpx::vpx_codec_ctx_t>,
+        img: Box<vpx::vpx_image_t>,
+        /// One buffer holding Y, then U, then V, because that is what an
+        /// image is handed over as. Kept between frames so a picture does not
+        /// mean an allocation
+        planes: Vec<u8>,
+        width: usize,
+        height: usize,
+        /// Counted in frames rather than taken from a clock: the library
+        /// wants a number that only goes up, and the pacing above already
+        /// decided which pictures are worth sending
+        at: i64,
+    }
+
+    // The encoder is used from the one thread that owns it
+    unsafe impl Send for Vp8 {}
+
+    pub fn open(width: usize, height: usize, fps: u32) -> Result<Vp8> {
+        if width == 0 || height == 0 {
+            bail!("a picture with no size cannot be compressed");
+        }
+        unsafe {
+            let iface = vpx::vpx_codec_vp8_cx();
+            if iface.is_null() {
+                bail!("this system's libvpx has no VP8 encoder in it");
+            }
+            let mut cfg: vpx::vpx_codec_enc_cfg_t = std::mem::zeroed();
+            let how = vpx::vpx_codec_enc_config_default(iface, &mut cfg, 0);
+            if how != vpx::vpx_codec_err_t_VPX_CODEC_OK {
+                bail!("the encoder would not say how it works: {}", said(how));
+            }
+
+            cfg.g_w = width as u32;
+            cfg.g_h = height as u32;
+            cfg.g_timebase = vpx::vpx_rational { num: 1, den: fps.max(1) as i32 };
+            cfg.rc_target_bitrate = BITS;
+            // A screen, not a film: the picture has to go out as it is made.
+            // Constant bitrate and no lag, or the encoder holds frames back
+            // to look at what follows them -- the same mistake the Windows
+            // side made, where it cost seventeen seconds of nothing
+            cfg.rc_end_usage = vpx::vpx_rc_mode_VPX_CBR;
+            cfg.g_lag_in_frames = 0;
+            cfg.g_error_resilient = 0;
+            // Whole pictures come from the pacing above, which knows when one
+            // is worth sending; the library is told not to decide on its own
+            cfg.kf_mode = vpx::vpx_kf_mode_VPX_KF_DISABLED;
+            cfg.g_threads = 2;
+            // Dropping frames is the pacing's business too: a frame this side
+            // decided to send is one somebody is waiting for
+            cfg.rc_dropframe_thresh = 0;
+
+            let mut ctx: Box<vpx::vpx_codec_ctx_t> = Box::new(std::mem::zeroed());
+            let how = vpx::vpx_codec_enc_init_ver(
+                &mut *ctx,
+                iface,
+                &cfg,
+                0,
+                vpx::VPX_ENCODER_ABI_VERSION as i32,
+            );
+            if how != vpx::vpx_codec_err_t_VPX_CODEC_OK {
+                // The one failure worth naming: this system's libvpx is not
+                // the one the binding was made from, and it says so rather
+                // than reading the wrong bytes
+                if how == vpx::vpx_codec_err_t_VPX_CODEC_ABI_MISMATCH {
+                    bail!(
+                        "this system's libvpx is a different version than this build was made for"
+                    );
+                }
+                bail!("the encoder would not start: {}", said(how));
+            }
+
+            // Speed over quality, which for a screen is not a compromise: a
+            // page of text at a lower setting is still a page of text, and a
+            // page of text that arrives late is nothing
+            let _ = vpx::vpx_codec_control_(&mut *ctx, VP8E_SET_CPUUSED, 12i32);
+
+            let size = width * height * 3 / 2;
+            let mut me = Vp8 {
+                ctx,
+                img: Box::new(std::mem::zeroed()),
+                planes: vec![0u8; size],
+                width,
+                height,
+                at: 0,
+            };
+            let wrapped = vpx::vpx_img_wrap(
+                &mut *me.img,
+                vpx::vpx_img_fmt_VPX_IMG_FMT_I420,
+                width as u32,
+                height as u32,
+                1,
+                me.planes.as_mut_ptr(),
+            );
+            if wrapped.is_null() {
+                bail!("the picture could not be described to the encoder");
+            }
+            Ok(me)
+        }
+    }
+
+    /// What the library calls a failure, in its own words.
+    fn said(how: vpx::vpx_codec_err_t) -> String {
+        unsafe {
+            let p = vpx::vpx_codec_err_to_string(how);
+            if p.is_null() {
+                return format!("error {how}");
+            }
+            std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+        }
+    }
+
+    /// Speed against quality, 0 (best) to 16 (fastest) for VP8. Named here
+    /// rather than taken from the binding because it is a control id, and the
+    /// control ids are macros the generator does not carry over.
+    const VP8E_SET_CPUUSED: i32 = 13;
+
+    impl Drop for Vp8 {
+        fn drop(&mut self) {
+            unsafe {
+                vpx::vpx_codec_destroy(&mut *self.ctx);
+            }
+        }
+    }
+
+    impl Encoder for Vp8 {
+        fn codec(&self) -> &'static str {
+            "VP8"
+        }
+
+        fn encode(&mut self, planes: &Planes, whole: bool) -> Result<Option<Encoded>> {
+            if planes.width != self.width || planes.height != self.height {
+                bail!("the picture changed size under the encoder");
+            }
+            // Into one buffer, in the order an image is read in
+            let y = self.width * self.height;
+            let c = (self.width / 2) * (self.height / 2);
+            if planes.y.len() < y || planes.u.len() < c || planes.v.len() < c {
+                bail!("the picture is smaller than it says it is");
+            }
+            self.planes[..y].copy_from_slice(&planes.y[..y]);
+            self.planes[y..y + c].copy_from_slice(&planes.u[..c]);
+            self.planes[y + c..y + 2 * c].copy_from_slice(&planes.v[..c]);
+
+            unsafe {
+                let flags: i64 = if whole { vpx::VPX_EFLAG_FORCE_KF as i64 } else { 0 };
+                let how = vpx::vpx_codec_encode(
+                    &mut *self.ctx,
+                    &*self.img,
+                    self.at,
+                    1,
+                    flags,
+                    vpx::VPX_DL_REALTIME as u64,
+                );
+                self.at += 1;
+                if how != vpx::vpx_codec_err_t_VPX_CODEC_OK {
+                    bail!("the picture would not compress: {}", said(how));
+                }
+                let mut iter: vpx::vpx_codec_iter_t = std::ptr::null();
+                loop {
+                    let pkt = vpx::vpx_codec_get_cx_data(&mut *self.ctx, &mut iter);
+                    if pkt.is_null() {
+                        return Ok(None);
+                    }
+                    if (*pkt).kind != vpx::vpx_codec_cx_pkt_kind_VPX_CODEC_CX_FRAME_PKT {
+                        continue;
+                    }
+                    let frame = (*pkt).data.frame;
+                    if frame.buf.is_null() || frame.sz == 0 {
+                        continue;
+                    }
+                    let data =
+                        std::slice::from_raw_parts(frame.buf as *const u8, frame.sz).to_vec();
+                    let keyframe = frame.flags & vpx::VPX_FRAME_IS_KEY != 0;
+                    return Ok(Some(Encoded { data, keyframe }));
+                }
+            }
+        }
     }
 }
 
@@ -504,7 +713,7 @@ mod tests {
 
     /// A picture that changes size under an encoder is refused rather than
     /// quietly producing a mangled frame.
-    #[cfg(windows)]
+    #[cfg(any(windows, feature = "vp8"))]
     #[test]
     fn a_picture_that_changes_size_is_refused() {
         let mut enc = encoder_for(320, 240, 30).unwrap();
@@ -512,10 +721,66 @@ mod tests {
         assert!(said.contains("changed size"), "it failed for some other reason: {said}");
     }
 
+    /// Pictures go in and VP8 comes out, with the ones asked to stand on
+    /// their own doing so.
+    ///
+    /// A keyframe is recognisable from the outside: VP8 puts the frame type
+    /// in the low bit of the first byte (0 for a keyframe) and follows a
+    /// keyframe with the three bytes 9d 01 2a. Checked because "it produced
+    /// some bytes" is not the same as "it produced what was asked for", and
+    /// the far end shows a black rectangle for the difference.
+    #[cfg(all(not(windows), feature = "vp8"))]
+    #[test]
+    fn what_comes_out_is_vp8_and_the_whole_ones_are_whole() {
+        let (w, h) = (320usize, 240usize);
+        let mut enc = encoder_for(w, h, 30).expect("no encoder to test");
+
+        let first = enc
+            .encode(&moving(0, w, h), true)
+            .expect("the first picture would not compress")
+            .expect("the first picture came back as nothing");
+        assert!(first.keyframe, "the first picture was asked to stand on its own and did not");
+        assert!(first.data.len() > 20, "the first picture is too small to be one");
+        assert_eq!(first.data[0] & 1, 0, "the first byte does not say keyframe");
+        assert_eq!(
+            &first.data[3..6],
+            &[0x9d, 0x01, 0x2a],
+            "the mark every VP8 keyframe carries is not there"
+        );
+
+        // And the ones after it are differences: smaller, and not keyframes
+        let mut after = Vec::new();
+        for i in 1..6 {
+            if let Some(out) = enc.encode(&moving(i, w, h), false).expect("it would not compress") {
+                after.push(out);
+            }
+        }
+        assert!(!after.is_empty(), "nothing came out after the first picture");
+        assert!(
+            after.iter().all(|f| !f.keyframe),
+            "a picture stood on its own without being asked to"
+        );
+        assert!(
+            after.iter().all(|f| f.data.len() > 4),
+            "a picture came out with nothing in it: {:?}",
+            after.iter().map(|f| f.data.len()).collect::<Vec<_>>()
+        );
+        // Not "smaller than the whole one", which is only true of pictures
+        // that hold still: the test picture is nearly flat, so its keyframe
+        // is tiny and a moving bar across it costs more than the page did
+    }
+
     /// Somewhere to ask before offering a viewer something that cannot happen.
+    ///
+    /// Two ways of being able to: Windows carries an encoder, and everywhere
+    /// else it is a library this was built against or it is nothing.
     #[test]
     fn the_build_says_whether_it_can_compress() {
-        assert_eq!(available(), cfg!(windows));
+        assert_eq!(available(), cfg!(windows) || cfg!(feature = "vp8"));
+        // And whichever it is, there is an encoder to be had
+        if available() {
+            assert!(encoder_for(160, 120, 30).is_ok(), "it says it can and then cannot");
+        }
     }
 
     /// What the connection is agreed on and what the encoder produces have to
@@ -523,7 +788,7 @@ mod tests {
     /// different times -- the agreement before the first picture, the encoder
     /// after it -- and if they ever part, the far end shows a black rectangle
     /// and nothing anywhere says why.
-    #[cfg(windows)]
+    #[cfg(any(windows, feature = "vp8"))]
     #[test]
     fn what_is_promised_is_what_is_produced() {
         let enc = encoder_for(160, 120, 30).unwrap();

@@ -28,6 +28,15 @@ path = "src/bin/qr.rs"
 name = "video_probe"
 path = "src/bin/video_probe.rs"
 
+[features]
+# Sending a screen as video from a system that is not Windows.
+#
+# Off by default, and deliberately: it links against libvpx, which has to be
+# on the machine that builds it (`libvpx-dev` on Debian and Ubuntu, `libvpx`
+# on the rest). Windows needs none of this -- it has an H.264 encoder of its
+# own -- so nothing here changes for anyone building the app.
+vp8 = []
+
 [dependencies]
 shikisha-shared = { path = "../shared" }
 aes-gcm = "0.11.0"

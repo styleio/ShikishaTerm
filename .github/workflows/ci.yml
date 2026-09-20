@@ -52,6 +52,16 @@ jobs:
       - name: Test
         run: cargo test -p shikisha-core -p shikisha-shared -p shikisha-serve --locked --verbose
 
+      # Sending a screen as video from a system with no encoder of its own.
+      # Off by default, so without this step it would compile on nobody's
+      # machine until somebody tried it -- and the binding it links through is
+      # generated from headers, which is exactly the kind of thing that rots
+      # quietly. libvpx is the only thing it needs
+      - name: The VP8 encoder still builds and works
+        run: |
+          sudo apt-get install -y libvpx-dev
+          cargo test -p shikisha-core --features vp8 --locked --verbose
+
       # What ships is statically linked against musl. The promise that one file runs on every distro
       # rests on it building here
       - name: The static build still links

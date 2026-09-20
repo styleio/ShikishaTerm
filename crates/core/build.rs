@@ -43,6 +43,17 @@ fn main() {
     // calling itself the commit before -- which the deploy rightly refused
     watch_git_head();
     println!("cargo:rerun-if-changed=../../tools/build_git_head.rs");
+
+    // The library that compresses video where the operating system has no
+    // encoder of its own. Said here rather than left to whoever runs the
+    // build: a link line that lives in somebody's environment is a link line
+    // that works on one machine.
+    //
+    // Only when asked for. Off, nothing is linked and nothing is needed;
+    // Windows never asks, because it has its own (src/vencode.rs).
+    if std::env::var_os("CARGO_FEATURE_VP8").is_some() {
+        println!("cargo:rustc-link-lib=vpx");
+    }
 }
 
 include!("../../tools/build_git_head.rs");
