@@ -261,6 +261,8 @@
   "tui.branch.start.none": "nothing",
   "tui.branch.fan": "One folder per AI",
   "tui.cast.control": "In control — tap to release",
+  "tui.cast.as.video": "video",
+  "tui.cast.as.stills": "stills",
   "tui.cast.type.ph": "Type here to send",
   "tui.cast.send": "Send",
   "tui.cast.attach": "Attach a file",

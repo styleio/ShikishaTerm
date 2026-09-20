@@ -1047,6 +1047,18 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     object-fit:contain; object-position:top center; background:#000;
     pointer-events:none; }
   #castv[hidden] { display:none; }
+  /* Which way the picture is arriving, said in the corner of the picture
+     itself. There are two paths to this screen and they look alike; when one
+     quietly gives way to the other, this is the only thing that says so.
+     Takes no taps: it stands on top of what somebody is trying to look at,
+     and a word is not something to press */
+  #castway { position:absolute; right:calc(var(--fr) + 10px);
+    top:calc(var(--fy) + var(--navh) + 10px); z-index:9; pointer-events:none;
+    font-size:12px; line-height:1; padding:5px 10px; border-radius:999px;
+    border:1px solid var(--line); color:var(--dim);
+    background:color-mix(in srgb, var(--panel) 72%, transparent);
+    -webkit-backdrop-filter:blur(4px); backdrop-filter:blur(4px); }
+  #castway[hidden] { display:none; }
   /* Said in place of the relay, for a page drawn on somebody else's device.
      The same rectangle, since it stands where the picture would have been, and
      deliberately quiet: nothing has gone wrong, the page is simply somewhere
@@ -3353,6 +3365,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       </div>
     </div>
     <video id="castv" autoplay playsinline muted hidden></video>
+    <div id="castway" hidden></div>
     <canvas id="cast" hidden></canvas>
     <!-- And, in the same place, what is said instead when the page being
          looked at is drawn on the device of whoever opened it: there is no
@@ -11871,10 +11884,25 @@ function castStart() {
   videoTry();
 }
 
+// Which way the picture is arriving, in the corner of the picture. Called
+// from the three places that decide it -- the old line opening, video taking
+// over, and watching stopping -- rather than worked out from the state,
+// because "which of these two is happening" is exactly what went unsaid
+function castWay(how) {
+  const el = document.getElementById("castway");
+  if (!el) return;
+  if (!how) { el.hidden = true; return; }
+  el.textContent = how === "video"
+    ? (T["tui.cast.as.video"] || "video")
+    : (T["tui.cast.as.stills"] || "stills");
+  el.hidden = false;
+}
+
 // The line the picture has always come down. Opened here rather than inline
 // so that falling back from video opens the same line the same way: two
 // places opening it would be two places to keep in step
 function openJpegLine() {
+  castWay("stills");
   if (castWs) return;
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   castWs = new WebSocket(proto + "//" + location.host + "/ws?t=" + encodeURIComponent(TOKEN));
@@ -11996,6 +12024,7 @@ function videoLive(on) {
     shapeW = 0;
     castShaped = sendShape(true);
     videoWatch();
+    castWay("video");
   }
 }
 
@@ -12077,6 +12106,7 @@ function castStop() {
   videoOn = false;
   videoStop();
   castShaped = false; shapeW = 0;
+  castWay(null);
   zoomReset();
   // Only tear down browser CONTROL mode. On a terminal tab castMode is already
   // false, and its sub-input bar must survive the per-update __state redraws
@@ -19204,6 +19234,17 @@ mod tests {
         assert!(
             PAGE.contains(r#"el.addEventListener("resize""#),
             "a picture that changes size leaves the phone's shape unsaid"
+        );
+        // And the phone is told which of the two it is watching. Both paths
+        // draw the same picture, so from the phone they are the same thing
+        // until one of them says
+        assert!(
+            PAGE.contains(r#"castWay("video")"#) && PAGE.contains(r#"castWay("stills")"#),
+            "a phone cannot tell whether it is being sent video or pictures"
+        );
+        assert!(
+            PAGE.contains(r#"T["tui.cast.as.video"]"#),
+            "the word for it is written into the page instead of translated"
         );
         // A connection that carries nothing must not be believed. Asking for
         // a whole picture is the answer to a short silence, and going back to

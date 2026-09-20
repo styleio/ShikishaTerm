@@ -261,6 +261,8 @@
   "tui.branch.start.none": "何も起動しない",
   "tui.branch.fan": "AIごとに1つ作る",
   "tui.cast.control": "操作中 — タップで解除",
+  "tui.cast.as.video": "動画",
+  "tui.cast.as.stills": "静止画",
   "tui.cast.type.ph": "ここに入力",
   "tui.cast.send": "送信",
   "tui.cast.attach": "ファイルを添付",

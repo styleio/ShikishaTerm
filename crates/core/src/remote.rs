@@ -1111,13 +1111,26 @@ impl RemoteUi {
         casts.retain(|c| {
             if let Some(why) = &c.trouble {
                 crate::append_hook_log(&format!("a video viewer was dropped: {why}"));
-            } else if !c.live() {
+                return false;
+            }
+            if !c.live() {
                 // The far end went away, or never arrived. Said as plainly as
                 // the start was: a viewer that silently fell back to JPEG is
                 // the thing hardest to notice and most worth knowing
                 crate::append_hook_log("a video viewer is gone; the picture goes back to JPEG");
+                return false;
             }
-            c.live()
+            // Answered, and then nothing. Nothing failed, so nothing was said,
+            // and the record showed a viewer that had asked for video and was
+            // answered -- which reads as success and is not. It is the one
+            // outcome that looks identical to working from in here
+            if c.never_came_up() {
+                crate::append_hook_log(
+                    "a video connection never came up; that viewer is watching as JPEG",
+                );
+                return false;
+            }
+            true
         });
     }
 

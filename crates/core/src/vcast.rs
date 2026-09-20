@@ -38,6 +38,14 @@ const CEILING: u32 = 30;
 /// picture is damaged, and that is the path that ordinarily runs.
 const WHOLE_EVERY: Duration = Duration::from_secs(4);
 
+/// How long a connection has to come up before it is given up on.
+///
+/// Generous: finding a path across a home network is quick, but a phone that
+/// has just woken its radio, or one deciding between Wi-Fi and the mobile
+/// network, can take seconds. The far end gives up on its own side at five,
+/// and this is only about saying so here.
+const COME_UP_WITHIN: Duration = Duration::from_secs(15);
+
 /// One viewer, watching the screen as video.
 pub struct Cast {
     viewer: Viewer,
@@ -61,6 +69,10 @@ pub struct Cast {
     /// that connected and decoded badly, and the two want opposite fixes.
     said_live: bool,
     said_sent: bool,
+    /// When this was answered. A connection that never comes up is otherwise
+    /// silent in every record: the offer was answered, nothing failed, and
+    /// nothing says the viewer is watching the old way instead
+    born: Instant,
 }
 
 impl Cast {
@@ -84,6 +96,7 @@ impl Cast {
                 trouble: None,
                 said_live: false,
                 said_sent: false,
+                born: Instant::now(),
             },
             answer,
         ))
@@ -92,6 +105,16 @@ impl Cast {
     /// Whether this is still worth feeding.
     pub fn live(&self) -> bool {
         self.viewer.state() != State::Gone && self.trouble.is_none()
+    }
+
+    /// Waited long enough, and never connected.
+    ///
+    /// Not a failure of anything here -- the far end is watching the screen
+    /// the old way, which is what it was doing before it asked. It is worth
+    /// saying out loud because from every other angle it looks like success:
+    /// the offer was answered and nothing went wrong.
+    pub fn never_came_up(&self) -> bool {
+        self.viewer.state() == State::Connecting && self.born.elapsed() > COME_UP_WITHIN
     }
 
     /// The far end says its picture is damaged.
