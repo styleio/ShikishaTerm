@@ -265,11 +265,26 @@ pub fn repo_root() -> std::path::PathBuf {
 /// name -- so a test handing one over was quietly measuring the folder the
 /// test runner happened to be standing in. Give it the Windows spelling and it
 /// hands back that same path as written here.
+///
+/// **Whatever the letter.** It folded away `D:` alone once, because that is
+/// the drive this app grew up on -- and a test that said `C:` or `E:`, both of
+/// which read perfectly naturally, went on being a relative name on a system
+/// with no drives at all. That cost two afternoons in one day: a folder told
+/// to move somewhere that was not a path, and a page whose folder could not be
+/// matched with the folder it was written in.
 #[cfg(test)]
 pub fn local_path(win: &str) -> String {
     match cfg!(windows) {
         true => win.to_string(),
-        false => win.replacen("D:", "", 1).replace('\\', "/"),
+        false => {
+            let s = win.replace('\\', "/");
+            let drive = s.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                && s.as_bytes().get(1) == Some(&b':');
+            match drive {
+                true => s[2..].to_string(),
+                false => s,
+            }
+        }
     }
 }
 
@@ -339,5 +354,28 @@ pub fn source_files() -> Vec<std::path::PathBuf> {
     walk(&root.join("src"), &mut out);
     walk(&root.join("crates"), &mut out);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    /// A path a test writes the way this app's own machine writes one is an
+    /// absolute path wherever the test runs.
+    ///
+    /// Not a detail: a relative path where an absolute one was meant is
+    /// measured from wherever the test runner happens to be standing, so the
+    /// test goes on passing while proving something else entirely -- or fails
+    /// on one machine only, which is how both of these were found.
+    #[test]
+    fn a_path_written_the_way_this_machine_writes_one_is_absolute_anywhere() {
+        for p in ["D:/work/one", "C:/work/two", "E:/elsewhere", r"F:\deep\place"] {
+            let said = super::local_path(p);
+            assert!(
+                std::path::Path::new(&said).is_absolute(),
+                "{p} became {said}, which is a name measured from wherever this is run"
+            );
+        }
+        // A path with no drive on it is left alone, whatever it says
+        assert_eq!(super::local_path("/etc/hosts"), "/etc/hosts");
+    }
 }
 

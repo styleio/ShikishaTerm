@@ -765,14 +765,28 @@ mod page_folder_tests {
         desks.into_iter().next().expect("there is no desk")
     }
 
-    const TWO_FOLDERS: &str = r#"{
-      "desks": [ { "name":"w", "id":"w",
-        "folders": [
-          {"name":"first","cwd":"C:/work/one","tabs":[{"name":"shell","id":"sh","command":"powershell"}]},
-          {"name":"second","cwd":"C:/work/two","tabs":[
-             {"name":"page","id":"fox","command":"browser https://example.com/"}]}
-        ] } ]
-    }"#;
+    /// The folder the page is written under, spelled the way the system
+    /// running this spells a path -- a drive letter is a name, not a root,
+    /// on a machine that has no drives, and the folder would be resolved
+    /// against wherever the test was run from
+    fn second_folder() -> String {
+        crate::local_path("D:/work/two")
+    }
+
+    fn two_folders() -> String {
+        format!(
+            r#"{{
+          "desks": [ {{ "name":"w", "id":"w",
+            "folders": [
+              {{"name":"first","cwd":"{one}","tabs":[{{"name":"shell","id":"sh","command":"powershell"}}]}},
+              {{"name":"second","cwd":"{two}","tabs":[
+                 {{"name":"page","id":"fox","command":"browser https://example.com/"}}]}}
+            ] }} ]
+        }}"#,
+            one = crate::local_path("D:/work/one"),
+            two = second_folder(),
+        )
+    }
 
     /// A page written under a folder belongs to that folder.
     ///
@@ -782,7 +796,7 @@ mod page_folder_tests {
     /// somewhere they had not asked to be
     #[test]
     fn a_page_written_in_a_folder_stands_in_it() {
-        let desk = desk_of(TWO_FOLDERS);
+        let desk = desk_of(&two_folders());
         let surfaces = surfaces_of(Some(&desk), &["shell"], &[], &[], false);
         let page = surfaces
             .iter()
@@ -790,7 +804,7 @@ mod page_folder_tests {
             .expect("the page is not on the list");
         assert_eq!(
             surface_dir(page, &[]).as_deref(),
-            Some(std::path::Path::new("C:/work/two")),
+            Some(std::path::Path::new(&second_folder())),
             "the page is in no folder"
         );
     }
@@ -800,7 +814,7 @@ mod page_folder_tests {
     /// folder happened to be first
     #[test]
     fn a_page_opened_later_is_in_no_folder() {
-        let desk = desk_of(TWO_FOLDERS);
+        let desk = desk_of(&two_folders());
         let hosted = vec!["result".to_string()];
         let surfaces = surfaces_of(Some(&desk), &["shell"], &hosted, &[], false);
         let adhoc = surfaces
