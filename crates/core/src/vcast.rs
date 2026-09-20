@@ -69,6 +69,10 @@ pub struct Cast {
     /// that connected and decoded badly, and the two want opposite fixes.
     said_live: bool,
     said_sent: bool,
+    /// Whether the far end has the speaker turned on. Off until somebody taps
+    /// it, and nothing is recorded while it is off: a screen being watched is
+    /// not permission to listen to the room around it
+    listening: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// When this was answered. A connection that never comes up is otherwise
     /// silent in every record: the offer was answered, nothing failed, and
     /// nothing says the viewer is watching the old way instead
@@ -96,6 +100,7 @@ impl Cast {
                 trouble: None,
                 said_live: false,
                 said_sent: false,
+                listening: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 born: Instant::now(),
             },
             answer,
@@ -115,6 +120,29 @@ impl Cast {
     /// the offer was answered and nothing went wrong.
     pub fn never_came_up(&self) -> bool {
         self.viewer.state() == State::Connecting && self.born.elapsed() > COME_UP_WITHIN
+    }
+
+    /// Turn the sound of the page being watched on or off.
+    ///
+    /// Asked for from the far end, because that is where the speaker is.
+    /// Nothing here records anything until this is true, and it goes back to
+    /// false the moment the far end says so or goes away.
+    pub fn listen(&mut self, on: bool, pid: Option<u32>) {
+        use std::sync::atomic::Ordering;
+        if on && !self.viewer.wants_sound() {
+            // The far end never agreed a line for sound, so there is nowhere
+            // to put any. Saying so beats recording into nothing
+            crate::append_hook_log("the sound was asked for on a connection that has no line for it");
+            return;
+        }
+        let was = self.listening.swap(on, Ordering::Relaxed);
+        if on && !was && let Some(pid) = pid {
+            crate::vaudio::pour(pid, self.viewer.mouth(), std::sync::Arc::clone(&self.listening));
+        }
+        if on && pid.is_none() {
+            crate::append_hook_log("the sound was asked for, but nothing here knows which program plays it");
+            self.listening.store(false, Ordering::Relaxed);
+        }
     }
 
     /// The far end says its picture is damaged.

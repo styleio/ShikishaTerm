@@ -3025,6 +3025,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if let Some(new) = &want {
                     let _ = caps.browser_screencast(new, true);
                 }
+                // And whose sound goes with it, once the window has had the
+                // message above -- it has not yet, so this is nobody's for
+                // now and asked again below
+                r.sound_comes_from(0);
                 casting = want;
             } else if let Some(key) = &casting {
                 // Even if the target hasn't changed, push out one frame of the current
@@ -3032,6 +3036,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // them waiting for a change forever, staring at nothing.
                 if r.take_keyframe_request() {
                     let _ = caps.browser_screencast(key, true);
+                }
+                // Whose sound goes with this picture, asked until there is an
+                // answer. The window is told to start casting by a message and
+                // only knows which browser plays the page once it has acted on
+                // it, so asking in the same breath as sending it always
+                // answered "nobody" -- and a phone tapping the speaker was
+                // told the PC did not know what was playing
+                if !r.sound_is_known() {
+                    r.sound_comes_from(caps.browser_sound_from(key).unwrap_or(0));
                 }
             }
         }

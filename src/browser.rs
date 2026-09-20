@@ -455,6 +455,14 @@ pub struct Browser {
     /// behind `{ref=N}`. Cleared when that page navigates (backend ids die
     /// with the document, and a stale ref must say so, not click thin air)
     digests: std::sync::Mutex<std::collections::HashMap<Option<String>, Vec<i64>>>,
+    /// Which process plays the sound of the page now being cast, or 0.
+    ///
+    /// Filled in by the window's own loop, because only it holds the page: a
+    /// page is drawn by a browser of its own and played by a child of that,
+    /// and the relay -- which knows nothing about browsers -- has to be told
+    /// a number. Nothing is recorded because of this; it is the answer to
+    /// "whose sound?" for if somebody taps the speaker on their phone
+    sound_pid: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 
@@ -594,11 +602,13 @@ impl Browser {
         let (ev_tx, ev_rx) = channel();
         let url = url.to_string();
         let title = title.to_string();
+        let sound_pid = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let its_sound_pid = std::sync::Arc::clone(&sound_pid);
 
         std::thread::Builder::new()
             .name("shikisha-browser".into())
             .spawn(move || {
-                if let Err(e) = run_window(&url, &title, proxy_tx, ev_tx.clone()) {
+                if let Err(e) = run_window(&url, &title, proxy_tx, ev_tx.clone(), its_sound_pid) {
                     shikisha_core::append_hook_log(&shikisha_core::i18n::tp(
                         "err.browser.log_open_failed",
                         &[("e", &format!("{e}"))],
@@ -621,6 +631,7 @@ impl Browser {
             spare: std::sync::Mutex::new(Vec::new()),
             through: std::sync::Mutex::new(None),
             digests: std::sync::Mutex::new(std::collections::HashMap::new()),
+            sound_pid,
         };
         // Don't return until the document is ready. Returning as soon as
         // the window exists would leave the caller touching an empty
@@ -1352,6 +1363,10 @@ fn run_window(
     title: &str,
     proxy_tx: Sender<tao::event_loop::EventLoopProxy<Cmd>>,
     ev_tx: Sender<Ev>,
+    // Filled in with the process that plays the page being cast, for a phone
+    // that asks to hear it. Written here because this is the only place that
+    // holds the page itself
+    sound_pid: std::sync::Arc<std::sync::atomic::AtomicU32>,
 ) -> Result<()> {
     use tao::event::{Event, WindowEvent};
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -2014,6 +2029,11 @@ fn run_window(
                             let tx = ev_tx.clone();
                             let from = to.clone();
                             let dims = cast_dims.clone();
+                            // Whose sound goes with this picture. Asked
+                            // once, here, because this is where the page is
+                            let mut plays: u32 = 0;
+                            let _ = unsafe { wv.BrowserProcessId(&mut plays) };
+                            sound_pid.store(plays, std::sync::atomic::Ordering::SeqCst);
                             if let Some(cast) = cdp::start(&wv, move |data, w, h| {
                                 dims.set((w, h));
                                 let _ = tx.send(Ev::Frame {
@@ -2031,6 +2051,7 @@ fn run_window(
                             }
                         }
                     } else if let Some(cast) = casts.remove(&to) {
+                        sound_pid.store(0, std::sync::atomic::Ordering::SeqCst);
                         // Give the page its own shape back before the stream goes away
                         if naturals.remove(&to).is_some()
                             && let Some(view) = target(main_view(&shell), &children, &overlays, &to) {
@@ -4292,6 +4313,14 @@ impl BrowserHost for Browser {
     fn eval_in(&self, to: Option<&str>, js: &str) -> Result<u64> { Browser::eval_in(self, to, js) }
     fn inject(&self, to: Option<&str>, input: Input) -> Result<()> { Browser::inject(self, to, input) }
     fn screencast(&self, to: Option<&str>, on: bool) -> Result<()> { Browser::screencast(self, to, on) }
+    /// The page being cast is the only one anybody can ask to hear, so this
+    /// is the one the window wrote down when the cast started
+    fn sound_from(&self, _to: Option<&str>) -> Result<u32> {
+        match self.sound_pid.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => anyhow::bail!("nothing is being watched, so nothing is playing"),
+            pid => Ok(pid),
+        }
+    }
     fn record(&self, to: Option<&str>, on: bool) -> Result<()> { Browser::record(self, to, on) }
 
     fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Found> {

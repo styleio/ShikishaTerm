@@ -4024,6 +4024,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "rusty-opus"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa2cbb720cf9bed36712efbae9ffc89d8977bf51b05687b792c1f98a33add8e2"
+
+[[package]]
 name = "salsa20"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4335,6 +4341,7 @@ dependencies = [
  "russh",
  "russh-sftp",
  "rustls",
+ "rusty-opus",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -4348,6 +4355,7 @@ dependencies = [
  "vt100",
  "webpki-roots",
  "windows 0.61.3",
+ "windows-core 0.61.2",
  "windows-sys 0.61.2",
  "winreg",
  "zeroize",

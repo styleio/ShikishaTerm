@@ -803,6 +803,15 @@ pub trait BrowserHost {
     fn eval_in(&self, to: Option<&str>, js: &str) -> anyhow::Result<u64>;
     fn inject(&self, to: Option<&str>, input: Input) -> anyhow::Result<()>;
     fn screencast(&self, to: Option<&str>, on: bool) -> anyhow::Result<()>;
+    /// Which process plays this page's sound, for a relay that has been asked
+    /// to carry it. A browser draws a page in one process and plays it in
+    /// another, and only the browser knows which.
+    ///
+    /// Answering is optional: a browser that cannot say has its pages watched
+    /// without sound, which is what every browser did until this was written.
+    fn sound_from(&self, _to: Option<&str>) -> anyhow::Result<u32> {
+        anyhow::bail!("this browser cannot say which program plays a page")
+    }
     fn record(&self, to: Option<&str>, on: bool) -> anyhow::Result<()>;
 
     fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Found>;

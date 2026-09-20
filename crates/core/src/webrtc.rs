@@ -31,7 +31,7 @@
 //! | deciding a viewer wants video | `remote.rs` |
 
 use std::net::{IpAddr, SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -98,6 +98,7 @@ impl State {
 /// stops. There is no `close()` to forget to call.
 pub struct Viewer {
     frames: mpsc::Sender<Heard>,
+    wants_sound: Arc<AtomicBool>,
     state: Arc<AtomicU8>,
     /// The candidates this side offered, kept for the tests and for saying
     /// what happened when a connection does not come up
@@ -120,6 +121,57 @@ impl Viewer {
         if self.frames.send(Heard::Picture(frame)).is_err() {
             self.state.store(State::Gone.as_u8(), Ordering::Relaxed);
         }
+    }
+
+    /// Hand over twenty milliseconds of sound. Dropped if the far end never
+    /// asked for any, which is not an error -- a viewer that wants the
+    /// picture alone is the ordinary case.
+    pub fn say(&self, sound: Sound) {
+        if self.frames.send(Heard::Sound(sound)).is_err() {
+            self.state.store(State::Gone.as_u8(), Ordering::Relaxed);
+        }
+    }
+
+    /// Whether the far end asked for sound at all, which is what decides
+    /// whether this machine starts listening to anything.
+    pub fn wants_sound(&self) -> bool {
+        self.wants_sound.load(Ordering::Relaxed)
+    }
+
+    /// A way to hand over sound from another thread.
+    ///
+    /// Sound does not arrive with the pictures: the screen produces a frame
+    /// when it draws one, and a page produces sound continuously whether
+    /// anything is drawn or not. So it is gathered on a thread of its own,
+    /// and this is what that thread holds -- the viewer itself stays where it
+    /// is, with the pictures.
+    pub fn mouth(&self) -> Mouth {
+        Mouth { frames: self.frames.clone(), state: Arc::clone(&self.state) }
+    }
+}
+
+/// The sound half of a viewer, held by whoever is gathering it.
+#[derive(Clone)]
+pub struct Mouth {
+    frames: mpsc::Sender<Heard>,
+    state: Arc<AtomicU8>,
+}
+
+impl Mouth {
+    /// Whether there is still anyone to say anything to. Asked rather than
+    /// discovered by sending, because an empty frame sent to find out is
+    /// still an empty frame arriving at the far end.
+    pub fn alive(&self) -> bool {
+        State::of(self.state.load(Ordering::Relaxed)) != State::Gone
+    }
+
+    /// Hand over twenty milliseconds. `false` means the viewer has gone,
+    /// which is how the thread gathering sound learns to stop.
+    pub fn say(&self, sound: Sound) -> bool {
+        if State::of(self.state.load(Ordering::Relaxed)) == State::Gone {
+            return false;
+        }
+        self.frames.send(Heard::Sound(sound)).is_ok()
     }
 }
 
@@ -230,6 +282,10 @@ pub fn answer(offer: &str, addrs: &[IpAddr], codec: &str) -> Result<(Viewer, Str
         .clear_codecs()
         .enable_h264(codec == "H264")
         .enable_vp8(codec == "VP8")
+        // And sound, if the far end asked for any. Opus and nothing else:
+        // the others are telephone codecs from before any of this, and a
+        // page playing music through one is worse than no sound at all
+        .enable_opus(true)
         .build(Instant::now());
     let mut offered = Vec::new();
     for s in &sockets {
@@ -252,6 +308,13 @@ pub fn answer(offer: &str, addrs: &[IpAddr], codec: &str) -> Result<(Viewer, Str
         .map_err(|e| anyhow!("the offer could not be answered: {e}"))?;
     let answer_sdp = answer.to_sdp_string();
 
+    // Whether the far end asked for sound. Read off the answer rather than
+    // the offer: what matters is what was agreed, and a browser that asked
+    // for sound this side cannot send has no line in the answer
+    let wants_sound = Arc::new(AtomicBool::new(
+        answer_sdp.lines().any(|l| l.starts_with("m=audio") && !l.starts_with("m=audio 0 ")),
+    ));
+
     let (tx, rx) = mpsc::channel::<Heard>();
     let for_sockets = tx.clone();
     let state = Arc::new(AtomicU8::new(State::Connecting.as_u8()));
@@ -263,7 +326,7 @@ pub fn answer(offer: &str, addrs: &[IpAddr], codec: &str) -> Result<(Viewer, Str
         mine.store(State::Gone.as_u8(), Ordering::Relaxed);
     });
 
-    Ok((Viewer { frames: tx, state, offered }, answer_sdp))
+    Ok((Viewer { frames: tx, state, offered, wants_sound }, answer_sdp))
 }
 
 /// Everything the connection's own thread waits for, as one kind of thing.
@@ -277,6 +340,13 @@ pub fn answer(offer: &str, addrs: &[IpAddr], codec: &str) -> Result<(Viewer, Str
 enum Heard {
     Packet(Arrived),
     Picture(Frame),
+    Sound(Sound),
+}
+
+/// Twenty milliseconds of Opus, and when the page played it.
+pub struct Sound {
+    pub data: Vec<u8>,
+    pub played: Instant,
 }
 
 /// One datagram, as it arrived: what it says, who sent it, and -- the part
@@ -343,6 +413,10 @@ fn run(
     // is right -- there is nowhere to put them and a picture from before the
     // connection existed is not worth showing
     let mut carrying: Option<(str0m::media::Mid, str0m::media::Pt)> = None;
+    // And the same for sound, when the far end asked for any. A viewer that
+    // did not ask has no line here and everything handed over for it is
+    // dropped, which is the right answer: there is nowhere to put it
+    let mut saying: Option<(str0m::media::Mid, str0m::media::Pt)> = None;
 
     loop {
         // Everything the library has to say, until it says "now wait"
@@ -394,6 +468,16 @@ fn run(
                             bail!("the offer asked for no encoding this side can send");
                         }
                     }
+                    // The sound's own line, settled the same way. Its absence
+                    // is not a failure: a viewer may ask for the picture only
+                    Event::MediaAdded(added)
+                        if added.kind == str0m::media::MediaKind::Audio && saying.is_none() =>
+                    {
+                        saying = rtc
+                            .writer(added.mid)
+                            .and_then(|w| w.payload_params().next().map(|p| p.pt()))
+                            .map(|pt| (added.mid, pt));
+                    }
                     _ => {}
                 },
             }
@@ -424,6 +508,11 @@ fn run(
                     send_frame(&mut rtc, mid, pt, began, frame);
                 }
             }
+            Ok(Heard::Sound(sound)) => {
+                if let Some((mid, pt)) = saying {
+                    send_sound(&mut rtc, mid, pt, began, sound);
+                }
+            }
             // Nothing arrived in time, which is the ordinary case: the
             // library is owed the moment it asked for
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -442,6 +531,11 @@ fn run(
                         send_frame(&mut rtc, mid, pt, began, frame);
                     }
                 }
+                Ok(Heard::Sound(sound)) => {
+                    if let Some((mid, pt)) = saying {
+                        send_sound(&mut rtc, mid, pt, began, sound);
+                    }
+                }
                 Ok(Heard::Packet(one)) => {
                     if let Ok(r) = Receive::new(Protocol::Udp, one.from, one.here, &one.data) {
                         rtc.handle_input(Input::Receive(one.at, r)).map_err(|e| anyhow!("{e}"))?;
@@ -456,6 +550,28 @@ fn run(
             return Ok(());
         }
     }
+}
+
+/// Put twenty milliseconds of sound on the wire.
+///
+/// Opus is timed against a 48kHz clock, which is also the rate it is recorded
+/// at, so one sample is one tick and the arithmetic is the same on both sides.
+fn send_sound(
+    rtc: &mut str0m::Rtc,
+    mid: str0m::media::Mid,
+    pt: str0m::media::Pt,
+    began: Instant,
+    sound: Sound,
+) {
+    use str0m::media::MediaTime;
+
+    let Some(writer) = rtc.writer(mid) else { return };
+    let ticks = sound.played.saturating_duration_since(began).as_secs_f64()
+        * crate::vaudio::RATE as f64;
+    let when = MediaTime::new(ticks as u64, str0m::media::Frequency::FORTY_EIGHT_KHZ);
+    // Sound has no keyframes: every frame stands on its own, which is part of
+    // why losing one is a click rather than a freeze
+    let _ = writer.write(pt, Instant::now(), when, sound.data);
 }
 
 /// Put one compressed picture on the wire.

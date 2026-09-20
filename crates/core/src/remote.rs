@@ -422,6 +422,11 @@ pub struct RemoteUi {
     /// screen at the next opportunity (so a static page doesn't stay blank
     /// waiting for the next change)
     keyframe_wanted: Arc<AtomicBool>,
+    /// Which program plays the sound of the page being watched, or 0 while
+    /// nothing is. Set by the loop that decides what is on screen, because
+    /// this side has no idea what a browser is -- and read only when somebody
+    /// taps the speaker on their phone
+    sound_from: Arc<std::sync::atomic::AtomicU32>,
     /// The local settings web server to reverse-proxy the phone's `/cfg` (and the
     /// settings `/api/*`) to, as (origin, token). The config UI stays bound to
     /// loopback and never faces the network — the phone reaches it only through
@@ -817,6 +822,9 @@ impl RemoteUi {
         let state_clients: StateClients = Arc::new(Mutex::new(Vec::new()));
         let last_poll: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
         let keyframe_wanted = Arc::new(AtomicBool::new(false));
+        // 0 while nothing is being watched. The loop that decides what is on
+        // screen fills it in, because only that side knows what a browser is
+        let sound_from = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let settings = Arc::new(Mutex::new(None));
         // Who is let in, and the one thing a "disconnect" changes. In memory
         // only — an app restart re-pairs every phone from the link
@@ -876,6 +884,7 @@ impl RemoteUi {
             let states = Arc::clone(&state_clients);
             let polls = Arc::clone(&last_poll);
             let kf = Arc::clone(&keyframe_wanted);
+            let sf = Arc::clone(&sound_from);
             let settings = Arc::clone(&settings);
             let gate = Arc::clone(&gate);
             let book_for_thread = Arc::clone(&book);
@@ -888,7 +897,7 @@ impl RemoteUi {
                     if let Err(e) =
                         handle(
                             req, &token, &snapshot, &tx, &clients, &casting, &pipes, &page_line,
-                            &pages_open, &states, &polls, &kf, &settings, &gate,
+                            &pages_open, &states, &polls, &kf, &sf, &settings, &gate,
                             &book_for_thread, sticky,
                         )
                     {
@@ -913,6 +922,7 @@ impl RemoteUi {
             let states = Arc::clone(&state_clients);
             let polls = Arc::clone(&last_poll);
             let kf = Arc::clone(&keyframe_wanted);
+            let sf = Arc::clone(&sound_from);
             let settings = Arc::clone(&settings);
             let gate = Arc::clone(&gate);
             let book_for_thread = Arc::clone(&book);
@@ -924,7 +934,7 @@ impl RemoteUi {
                     }
                     if let Err(e) = handle(
                         req, &token, &snapshot, &tx, &clients, &casting, &pipes, &page_line,
-                        &pages_open, &states, &polls, &kf, &settings, &gate,
+                        &pages_open, &states, &polls, &kf, &sf, &settings, &gate,
                         &book_for_thread, sticky,
                     ) {
                         crate::append_hook_log(&crate::i18n::tp(
@@ -950,6 +960,7 @@ impl RemoteUi {
             state_clients,
             last_poll,
             keyframe_wanted,
+            sound_from,
             settings,
             gate,
             book,
@@ -1084,6 +1095,18 @@ impl RemoteUi {
         self.frame_clients.lock().unwrap().clear();
         self.casts.lock().unwrap().clear();
         self.state_clients.lock().unwrap().clear();
+    }
+
+    /// Say which program plays the sound of the page now being watched, or 0
+    /// when nothing is. Nothing is recorded because of this -- it is only the
+    /// answer to "whose sound?" for when somebody taps the speaker.
+    pub fn sound_comes_from(&self, pid: u32) {
+        self.sound_from.store(pid, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether anybody has said whose sound goes with the picture.
+    pub fn sound_is_known(&self) -> bool {
+        self.sound_from.load(std::sync::atomic::Ordering::SeqCst) != 0
     }
 
     /// Whether a new viewer joined and we should emit one frame of the
@@ -1350,6 +1373,7 @@ fn handle(
     state_clients: &StateClients,
     last_poll: &Arc<Mutex<Option<Instant>>>,
     keyframe_wanted: &Arc<AtomicBool>,
+    sound_from: &Arc<std::sync::atomic::AtomicU32>,
     settings: &Arc<Mutex<Option<(String, String)>>>,
     gate: &Arc<Gate>,
     book: &Arc<crate::reply::Book>,
@@ -2303,6 +2327,17 @@ fn handle(
             let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             // The far end saying its picture is damaged. Answered by every
             // viewer, because there is one screen and they are all on it
+            // The speaker on the far end. Said here rather than negotiated
+            // again: the line for sound was agreed when the connection was
+            // made, and what changes is only whether anything goes down it
+            if let Some(on) = v.get("sound").and_then(|x| x.as_bool()) {
+                let pid = sound_from.load(Ordering::SeqCst);
+                for cast in casts.lock().unwrap().iter_mut() {
+                    cast.listen(on, (pid != 0).then_some(pid));
+                }
+                req.respond(json_response(serde_json::json!({"ok": true})))?;
+                return Ok(());
+            }
             if v.get("damaged").and_then(|x| x.as_bool()).unwrap_or(false) {
                 for cast in casts.lock().unwrap().iter_mut() {
                     cast.whole_one_wanted();

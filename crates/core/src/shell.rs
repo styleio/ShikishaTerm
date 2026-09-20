@@ -1088,6 +1088,32 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     background:color-mix(in srgb, var(--panel) 72%, transparent);
     -webkit-backdrop-filter:blur(4px); backdrop-filter:blur(4px); }
   #castway[hidden] { display:none; }
+  /* The speaker. Beside the word for the picture, because it is the same
+     question about the other half: what is arriving. A button and not a
+     label, because a phone will not play sound that nobody asked for --
+     and neither should this */
+  #castear { position:absolute; right:calc(var(--fr) + 10px);
+    top:calc(var(--fy) + var(--navh) + 46px); z-index:9;
+    width:38px; height:38px; border-radius:50%; border:1px solid var(--line);
+    background:color-mix(in srgb, var(--panel) 72%, transparent); color:var(--dim);
+    -webkit-backdrop-filter:blur(4px); backdrop-filter:blur(4px);
+    display:flex; align-items:center; justify-content:center; font-size:17px;
+    cursor:pointer; user-select:none; -webkit-user-select:none;
+    touch-action:manipulation; }
+  #castear.on { color:var(--brand); border-color:var(--brand); }
+  #castear[hidden] { display:none; }
+  /* Said in the picture's own rectangle while there is no picture yet. The
+     frame arrives long before the screen does -- the bar, the tabs and this
+     empty black box -- and on a phone that gap was three seconds of a page
+     that looked broken. Quiet, because nothing is wrong: it is the ordinary
+     wait for the first one */
+  #castwait { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--navh));
+    right:var(--fr); bottom:calc(var(--fb) + var(--askh, 0px));
+    display:flex; align-items:center; justify-content:center; gap:var(--s3);
+    z-index:7; pointer-events:none; color:var(--dim); font-size:13px; }
+  #castwait[hidden] { display:none; }
+  #castwait .spin { width:18px; height:18px; border:2px solid var(--line);
+    border-top-color:var(--brand); border-radius:50%; animation:splashspin .8s linear infinite; }
   /* Said in place of the relay, for a page drawn on somebody else's device.
      The same rectangle, since it stands where the picture would have been, and
      deliberately quiet: nothing has gone wrong, the page is simply somewhere
@@ -3424,6 +3450,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     </div>
     <video id="castv" autoplay playsinline muted hidden></video>
     <div id="castway" hidden></div>
+    <div id="castwait" hidden><div class="spin"></div><span></span></div>
+    <button id="castear" hidden type="button"></button>
     <canvas id="cast" hidden></canvas>
     <!-- And, in the same place, what is said instead when the page being
          looked at is drawn on the device of whoever opened it: there is no
@@ -12037,8 +12065,11 @@ function sendShape(force) {
 }
 function castStart() {
   if (!REMOTE || castWs || remoteCut) return;
+  const ear = document.getElementById("castear");
+  if (ear && !ear.onclick) ear.onclick = castEarTap;
   const cv = document.getElementById("cast");
   castCtx = cv.getContext("2d");
+  castWaiting(true);
   openJpegLine();
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const tok = encodeURIComponent(TOKEN);
@@ -12052,6 +12083,18 @@ function castStart() {
 // from the three places that decide it -- the old line opening, video taking
 // over, and watching stopping -- rather than worked out from the state,
 // because "which of these two is happening" is exactly what went unsaid
+// Waiting for the first picture. Not an error and not a failure: the page
+// draws its frame in a moment and the screen behind it takes as long as it
+// takes, and the difference between "waiting" and "broken" is whether
+// anything says so
+function castWaiting(on) {
+  const el = document.getElementById("castwait");
+  if (!el) return;
+  const say = el.querySelector("span");
+  if (say) say.textContent = T["tui.cast.waiting"] || "Waiting for the screen…";
+  el.hidden = !on;
+}
+
 function castWay(how) {
   const el = document.getElementById("castway");
   if (!el) return;
@@ -12066,7 +12109,6 @@ function castWay(how) {
 // so that falling back from video opens the same line the same way: two
 // places opening it would be two places to keep in step
 function openJpegLine() {
-  castWay("stills");
   if (castWs) return;
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   castWs = new WebSocket(proto + "//" + location.host + "/ws?t=" + encodeURIComponent(TOKEN));
@@ -12094,6 +12136,11 @@ async function castFrame(e) {
     // Report the screen shape only once a frame exists: the PC computes
     // the new viewport from the current one, so it must have seen a frame
     if (!castShaped) castShaped = sendShape(true);
+    // A picture has arrived, so say which way it came and stop saying that
+    // one is on its way. Said here rather than when the line opened: an open
+    // line is not a picture, and on a phone the difference is seconds
+    if (!videoOn) castWay("stills");
+    castWaiting(false);
     castCtx.drawImage(bmp, 0, 0);
     if (bmp.close) bmp.close();
   } catch (err) {}
@@ -12121,6 +12168,18 @@ function videoTry() {
   const pc = new RTCPeerConnection({iceServers: []});
   videoPc = pc;
   pc.addTransceiver("video", {direction: "recvonly"});
+  // And a line for sound, agreed now and left empty. Nothing is recorded on
+  // the PC until the speaker below is tapped -- this only means that when it
+  // is, there is somewhere for the sound to go and nothing has to be agreed
+  // again while somebody is waiting to hear something
+  pc.addTransceiver("audio", {direction: "recvonly"});
+  // One holder for both tracks, made here rather than taken from what
+  // arrives. The picture and the sound come as two separate streams, and this
+  // is called once for each: taking the stream off the second one threw the
+  // first away, so adding sound silently took the picture with it -- the
+  // connection stayed up, the video element had nothing in it, and the page
+  // gave up and went back to JPEG five seconds later
+  const both = new MediaStream();
   pc.ontrack = (e) => {
     // Play it as it arrives. A browser holds video back by default to smooth
     // a network out -- sensible for a film, wrong for a screen somebody is
@@ -12130,7 +12189,8 @@ function videoTry() {
     // browser that knows neither simply keeps its own idea
     try { e.receiver.jitterBufferTarget = 0; } catch (err) {}
     try { e.receiver.playoutDelayHint = 0; } catch (err) {}
-    el.srcObject = e.streams[0];
+    both.addTrack(e.track);
+    if (el.srcObject !== both) el.srcObject = both;
     el.play().catch(() => {});
   };
   pc.onconnectionstatechange = () => {
@@ -12197,7 +12257,46 @@ function videoLive(on) {
     castShaped = sendShape(true);
     videoWatch();
     castWay("video");
+    castWaiting(false);
+    castEar(true);
   }
+}
+
+// The sound of the page being watched, off until it is asked for.
+//
+// Two things have to be true before anything is heard, and they are separate
+// on purpose. The PC records nothing until it is told to, so that a screen
+// being watched is not a microphone; and this page keeps the picture muted
+// until a finger says otherwise, because a browser will not play sound that
+// nobody asked for and pretending otherwise would be a picture that silently
+// refuses to start.
+let earOn = false;
+function castEar(show) {
+  const el = document.getElementById("castear");
+  if (!el) return;
+  el.hidden = !show;
+  if (!show) return;
+  el.textContent = earOn ? "\u{1F50A}" : "\u{1F507}";
+  el.classList.toggle("on", earOn);
+  el.title = earOn
+    ? (T["tui.cast.sound.on"] || "Sound on")
+    : (T["tui.cast.sound.off"] || "Sound off");
+  el.setAttribute("aria-label", el.title);
+}
+function castEarTap() {
+  const el = document.getElementById("castv");
+  earOn = !earOn;
+  if (el) {
+    el.muted = !earOn;
+    // The tap is what lets it play at all, so this is the moment to ask
+    if (earOn) el.play().catch(() => {});
+  }
+  castEar(true);
+  fetch("/api/video", {
+    method: "POST",
+    headers: {"content-type": "application/json", "X-Token": TOKEN},
+    body: JSON.stringify({sound: earOn}),
+  }).catch(() => {});
 }
 
 // Is anything actually arriving?
@@ -12237,6 +12336,17 @@ function videoWatch() {
 function videoStop() {
   clearInterval(videoWatchT);
   videoWatchT = 0;
+  // Sound goes with the video it came on. Told to the PC as well, so that
+  // nothing is left recording for a viewer who is no longer listening
+  if (earOn) {
+    earOn = false;
+    fetch("/api/video", {
+      method: "POST",
+      headers: {"content-type": "application/json", "X-Token": TOKEN},
+      body: JSON.stringify({sound: false}),
+    }).catch(() => {});
+  }
+  castEar(false);
   if (videoPc) { try { videoPc.close(); } catch (e) {} videoPc = null; }
   const el = document.getElementById("castv");
   if (el) { el.hidden = true; el.srcObject = null; }
@@ -12279,6 +12389,8 @@ function castStop() {
   videoStop();
   castShaped = false; shapeW = 0;
   castWay(null);
+  castWaiting(false);
+  castEar(false);
   zoomReset();
   // Only tear down browser CONTROL mode. On a terminal tab castMode is already
   // false, and its sub-input bar must survive the per-update __state redraws
@@ -19639,6 +19751,39 @@ mod tests {
         assert!(
             PAGE.contains(r#"T["tui.cast.as.video"]"#),
             "the word for it is written into the page instead of translated"
+        );
+        // Something stands where the picture will be until it arrives. The
+        // frame of the page is drawn in a moment and the screen behind it is
+        // not, and an empty black box says nothing about which
+        assert!(
+            PAGE.contains(r#"<div id="castwait""#) && PAGE.contains("castWaiting(true);"),
+            "nothing says a picture is on its way"
+        );
+        assert!(
+            PAGE.contains(r#"T["tui.cast.waiting"]"#),
+            "the words for it are written into the page instead of translated"
+        );
+        // The sound of the page, off until a finger says otherwise -- both
+        // here, where a browser will not play what nobody asked for, and on
+        // the PC, which records nothing until it is told to
+        assert!(
+            PAGE.contains(r#"pc.addTransceiver("audio", {direction: "recvonly"})"#),
+            "there is no line for sound, so asking for it later would mean agreeing again"
+        );
+        // Both tracks go into one holder of this page's own making. They
+        // arrive as two separate streams, so taking the stream off whichever
+        // arrived last threw the other one away
+        assert!(
+            PAGE.contains("both.addTrack(e.track);"),
+            "the picture and the sound are kept in whichever stream arrived last"
+        );
+        assert!(
+            PAGE.contains("let earOn = false;") && PAGE.contains(r#"JSON.stringify({sound: earOn})"#),
+            "nothing tells the PC whether anyone is listening"
+        );
+        assert!(
+            PAGE.contains("el.muted = !earOn;"),
+            "the picture is unmuted without anybody asking"
         );
         // The picture is played as it arrives rather than held back to
         // smooth the network: this screen is watched while it is being

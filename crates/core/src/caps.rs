@@ -988,6 +988,17 @@ impl Capabilities {
         self.with(name, |b, to| b.screencast(to, on))
     }
 
+    /// Which process plays this page's sound (for the relay, when somebody
+    /// has asked to hear it)
+    pub fn browser_sound_from(&self, name: &str) -> Result<u32> {
+        let mut got = 0;
+        self.with(name, |b, to| {
+            got = b.sound_from(to)?;
+            Ok(())
+        })?;
+        Ok(got)
+    }
+
     /// Inject input into the relay screen (finger trails, swipes, characters)
     pub fn browser_inject(&self, name: &str, input: shikisha_shared::Input) -> Result<()> {
         self.with(name, |b, to| b.inject(to, input))
