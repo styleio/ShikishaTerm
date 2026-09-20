@@ -7740,6 +7740,19 @@ pub fn finish_paste(pending: &mut [PendingSend], t: &Tab, tab: usize, now_ms: u6
 /// The name used when placing the settings page inside the window.
 /// If the spelling drifts, it gets treated as a different browser and a second copy opens.
 pub const SETTINGS_TAB: &str = "settings";
+/// The style guide's dialog, in numbers (5.2): how wide it grows to, how tall
+/// a page placed in a rectangle is given, how far down it starts, and the edge
+/// left around it. One set of numbers for both surfaces -- the window places a
+/// page here, and the board on a phone or tablet frames the same page with the
+/// same measurements (shell::PAGE reads them as `{{DLG_*}}`)
+pub const DLG_WIDE: i32 = 560;
+pub const DLG_TALL: i32 = 640;
+pub const DLG_TOP: i32 = 56;
+pub const DLG_EDGE: i32 = 16;
+/// The smallest area a dialog still floats over. Under either measurement there
+/// is no board left around it, so it takes the whole area instead
+pub const DLG_MIN_W: i32 = DLG_WIDE / 2 + DLG_EDGE * 2;
+pub const DLG_MIN_H: i32 = DLG_TALL / 2 + DLG_TOP + DLG_EDGE;
 /// Where a dialog-sized page goes over the board, given the whole content area.
 ///
 /// The style guide's dialog: at most 560 wide, 56 down from the top, centred
@@ -7748,17 +7761,13 @@ pub const SETTINGS_TAB: &str = "settings";
 /// small to leave any board around it gets the whole area -- a dialog squeezed
 /// into a corner of a window that small would only be harder to use
 pub fn dialog_rect(full: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
-    const WIDE: i32 = 560;
-    const TALL: i32 = 640;
-    const TOP: i32 = 56;
-    const EDGE: i32 = 16;
     let (x, y, w, h) = full;
-    if w < WIDE / 2 + EDGE * 2 || h < TALL / 2 + TOP + EDGE {
+    if w < DLG_MIN_W || h < DLG_MIN_H {
         return full;
     }
-    let dw = WIDE.min(w - EDGE * 2);
-    let dh = TALL.min(h - TOP - EDGE);
-    (x + (w - dw) / 2, y + TOP, dw, dh)
+    let dw = DLG_WIDE.min(w - DLG_EDGE * 2);
+    let dh = DLG_TALL.min(h - DLG_TOP - DLG_EDGE);
+    (x + (w - dw) / 2, y + DLG_TOP, dw, dh)
 }
 /// The page in view, when putting it back the way it started is a thing that
 /// makes sense — otherwise None.

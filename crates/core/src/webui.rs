@@ -4012,6 +4012,10 @@ const PAGE: &str = r##"<!doctype html>
  body.float > header, body.float > .layout, body.float > #navscrim { display:none; }
  body.float #floatbox { display:flex; flex-direction:column; height:100vh;
    border:1px solid var(--line); box-sizing:border-box; }
+ /* Framed over a board (?embed=1) the edge belongs to the frame, which draws it
+    and cuts this page to its corners -- a second edge inside would sit just
+    within the first and read as a box inside a box */
+ body.embed.float #floatbox { border:0; }
  #floatbox .fhead { display:flex; align-items:center; gap:var(--s3); padding:16px 20px;
    border-bottom:1px solid var(--line); }
  #floatbox .fhead h1 { font-size:13.5px; font-weight:600; margin:0; }
@@ -4114,6 +4118,12 @@ const TOKEN = "__TOKEN__";
 // dialogs (folder/file pickers, export/import) open a window on the PC instead
 // of here, so the buttons that would summon one are left out entirely
 const REMOTE = __REMOTE__;
+// True when this page is not a screen of its own but a dialog: a frame the
+// board placed over itself (?embed=1), which is how a browser puts a page
+// over the board the way the window places one. The way out is a word to the
+// board rather than a walk to "/" -- that would load the board into the frame
+const EMBED = new URLSearchParams(location.search).get("embed") === "1";
+const toBoard = act => { try { window.parent.postMessage({cfg:act}, location.origin); } catch (e) {} };
 const T = __DICT__;
 // Every command there is, grouped, with the answer it has when nobody has said
 // otherwise. Comes from the same list the app enforces, so the screen cannot
@@ -12146,6 +12156,9 @@ async function closeSettings() {
   // which re-authenticates from its stored token. The unsaved-changes guard above
   // runs first either way.
   if (window.ipc) { try { window.ipc.postMessage(JSON.stringify({kind:"closesettings"})); } catch (e) { goIndex(); } }
+  // Framed over a board that is still running: the board takes the frame down
+  // and is there underneath, with nothing to load again
+  else if (EMBED) toBoard("close");
   else { location.href = "/"; }
 }
 
@@ -12194,6 +12207,9 @@ function floatMore() {
   floating = null;
   document.body.classList.remove("float");
   if (window.ipc) { try { window.ipc.postMessage(JSON.stringify({kind:"settingsfull"})); } catch (e) {} }
+  // Framed: the board gives the frame the whole screen. The page it holds is
+  // this one, so everything chosen so far is still chosen
+  else if (EMBED) toBoard("full");
   sel = {desk:wi, grp:t.group || 0, tab:i, global:false};
   render();
   showSelected("center");
@@ -12212,6 +12228,9 @@ function openExt(dest) {
   fetch("/api/open?dest=" + dest, {headers:{"X-Token":TOKEN}}).catch(()=>{});
 }
 
+// Said once, before the first paint: this page is inside a frame the board
+// drew an edge around (see body.embed in the style block)
+if (EMBED) document.body.classList.add("embed");
 // Lay the header out for this screen width before the first paint, so the page
 // doesn't flash the desktop arrangement on the way in.
 placeHeadLinks();
@@ -13402,6 +13421,29 @@ mod tests {
         assert!(PAGE.contains("if (!floating) goIndex();"), "adding a tab from its dialog sends the person to INDEX");
         assert!(PAGE.contains(r#"postMessage(JSON.stringify({kind:"settingsfull"}))"#),
             "More settings does not ask the window for the whole of it");
+    }
+
+    /// The same dialog, framed over a board in a browser (?embed=1).
+    ///
+    /// A browser has no WebView to place this page in, so the board frames it
+    /// instead. Framed, the way out is a word to the board: walking to "/"
+    /// would load the board inside the frame, and the board is already there
+    /// behind it.
+    #[test]
+    fn the_dialog_framed_over_a_board_talks_to_the_board() {
+        assert!(PAGE.contains(r#"const EMBED = new URLSearchParams(location.search).get("embed") === "1";"#),
+            "the page cannot tell it is framed");
+        assert!(PAGE.contains(r#"const toBoard = act => { try { window.parent.postMessage({cfg:act}, location.origin); } catch (e) {} };"#),
+            "there is no way to answer the board, or it answers any origin");
+        assert!(PAGE.contains(r#"else if (EMBED) toBoard("close");"#),
+            "closing a framed dialog loads the board inside the frame");
+        assert!(PAGE.contains(r#"else if (EMBED) toBoard("full");"#),
+            "More settings leaves the whole of the settings in a dialog-sized frame");
+        // The frame draws the edge; a second one inside reads as a box in a box
+        assert!(PAGE.contains(" body.embed.float #floatbox { border:0; }"),
+            "the framed page draws an edge inside the frame's own");
+        assert!(PAGE.contains(r#"if (EMBED) document.body.classList.add("embed");"#),
+            "nothing says the page is framed before it is painted");
     }
 
     /// The screen must not still contain a raw `{{key}}` or `__DICT__`.

@@ -2446,6 +2446,32 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the press outside a dialog: not adding after all */
   #dlgscrim { position:fixed; inset:0; background:#00000099; z-index:52; }
   #dlgscrim[hidden] { display:none; }
+  /* The same dialog, where there is no window to place a page in: a browser,
+     which may be a phone, a tablet or a Chromebook. The settings page arrives
+     in a frame over the board -- the board stays drawn and connected behind
+     the dimming -- and the frame is given exactly the rectangle the window
+     gives it (runtime::dialog_rect): at most {{DLG_W}} across, at most
+     {{DLG_H}} down, {{DLG_TOP}} from the top, {{DLG_EDGE}} of an edge each
+     side. The page inside is what draws the dialog, so nothing here paints */
+  #cfgwrap { position:fixed; inset:0; background:#00000099; display:flex;
+    align-items:flex-start; justify-content:center; z-index:52;
+    padding:{{DLG_TOP}} {{DLG_EDGE}} {{DLG_EDGE}}; }
+  #cfgwrap[hidden] { display:none; }
+  /* The frame wears the dialog's edge and corners and cuts the page to them;
+     the page inside knows it is framed and draws no second edge of its own */
+  #cfgwrap .cfgbox { width:min({{DLG_W}},100%); height:min({{DLG_H}},100%);
+    border:1px solid var(--line); border-radius:var(--r-card); overflow:hidden;
+    background:var(--panel); }
+  #cfgwrap .cfgbox iframe { display:block; width:100%; height:100%; border:0; }
+  /* A screen too small to leave any board around it gives the page all of
+     itself -- the window's rule for the same case -- and so does "More
+     settings", which is the whole of the settings and no longer a dialog */
+  @media (max-width:{{DLG_MIN_W}}), (max-height:{{DLG_MIN_H}}) {
+    #cfgwrap { padding:0; }
+    #cfgwrap .cfgbox { width:100%; height:100%; border:0; border-radius:0; }
+  }
+  #cfgwrap.full { padding:0; }
+  #cfgwrap.full .cfgbox { width:100%; height:100%; border:0; border-radius:0; }
   #vault, #past, #palette, #branch, #browse, #repair, #sask, #sdiff { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
   #vault[hidden], #past[hidden], #palette[hidden], #branch[hidden], #browse[hidden],
@@ -3549,6 +3575,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     </div>
   </div>
   <div id="dlgscrim" hidden></div>
+  <!-- The same dialog in a browser: the settings page, framed over the board.
+       Filled when it opens and emptied when it closes, so a frame nobody is
+       looking at is not left holding a page (see openCfgLayer) -->
+  <div id="cfgwrap" hidden></div>
   <!-- Somewhere else to work. The same list on the window and on a phone -->
   <!-- The reader: what was said on this tab, as text you can scroll and copy.
        Its own layer rather than a pane, because it covers the terminal and
@@ -8185,10 +8215,10 @@ function drawStrip() {
     tabs.append(one);
   }
   strip.append(tabs);
-  // The same road the sidebar's + takes: from a phone it walks to the settings
-  // page, because the window's own way of opening them is refused from afar
-  // and would do nothing at all. And it carries which folder it was asked
-  // from, or the form adds the tab to the first one instead of this one
+  // The same road the sidebar's + takes: in a browser it frames the settings
+  // page over the board, because the window's own way of opening them is
+  // refused from afar and would do nothing at all. And it carries which folder
+  // it was asked from, or the form adds the tab to the first one instead
   const g = active.group != null ? (S.groups || [])[active.group] : null;
   // Into the pane it was pressed above, the way a browser's + opens the new
   // tab where you are looking rather than somewhere off to the side
@@ -9132,7 +9162,13 @@ window.__state = function (json) {
   // the layout, which stays drawn -- dimmed -- behind it
   const cover = !!S.board || (!!S.settings_open && !S.settings_float);
   const scrim = document.getElementById("dlgscrim");
-  scrim.hidden = !(S.settings_open && S.settings_float);
+  // The dimming belongs to a dialog placed in THIS window. A browser somewhere
+  // else is not shown that dialog and cannot close it (`Ev::CloseSettings` is
+  // refused from afar), so drawing the dimming there greyed the whole board
+  // over nothing and swallowed every press until the PC was attended to. What
+  // the phone is told instead is the toast the app already sends, and its own
+  // + opens its own dialog, with a dimming of its own (#cfgwrap)
+  scrim.hidden = REMOTE || !(S.settings_open && S.settings_float);
   scrim.onclick = () => send({kind:"closesettings"});
   board.hidden = !S.board;
   document.getElementById("panes").hidden = cover;
@@ -11064,6 +11100,11 @@ const focus = () => {
   if (quickOpen) return;
   // So do the ideas: the caret belongs in a card
   if (ideasOpen) return;
+  // And so does the settings page framed over the board (the +'s dialog): the
+  // caret belongs in the form, and taking it back would put every keystroke
+  // into the terminal underneath -- on a laptop or a tablet with real keys,
+  // coming back to this browser tab would have done exactly that
+  if (cfgLayerUp()) return;
   // The first-start setup holds the keyboard while it is up: Enter is its
   // Continue, and a letter must not reach the board's menu behind it
   if (setupUp()) return;
@@ -13468,17 +13509,78 @@ function openSettings(section, ret, folder, tab) {
           tabpos: tabpos, tabname: tabname});
   }
 }
-// The phone's only way in: hand the token over once (the proxy trades it for a
-// cookie and bounces to a URL without it), carrying which screen to land on.
+// The way in from a browser: hand the token over once (the proxy trades it for
+// a cookie and bounces to a URL without it), carrying which screen to land on.
+// The whole screen, for the screens the window gives the whole window to.
 function walkToSettings(params) {
-  const q = new URLSearchParams(params).toString();
-  location.href = "cfg?t=" + encodeURIComponent(TOKEN) + (q ? "&" + q : "");
+  location.href = "cfg?" + cfgQuery(params);
 }
+function cfgQuery(params) {
+  const q = new URLSearchParams(params).toString();
+  return "t=" + encodeURIComponent(TOKEN) + (q ? "&" + q : "");
+}
+// And the way in for the one screen the window does NOT give the whole window
+// to: the add-a-tab dialog, which it places over the board (dialog_rect). The
+// same page arrives here in a frame of the same size over the same dimming, so
+// the board is still there -- drawn, connected, and one press away -- rather
+// than being left behind for a screen of settings. A phone is not the only
+// thing that reaches this page; a tablet and a Chromebook have room for the
+// board and the dialog both, and the CSS gives the frame the whole screen only
+// where the window would have stopped floating too
+function openCfgLayer(params) {
+  const wrap = document.getElementById("cfgwrap");
+  if (!wrap) return;
+  closeCfgLayer();
+  // A press on the dimming is the press outside a dialog: not adding after
+  // all. Nothing was written -- the tab exists only on the page being framed
+  wrap.onclick = e => { if (e.target === wrap) closeCfgLayer(); };
+  const box = el("div", {class:"cfgbox"});
+  const f = document.createElement("iframe");
+  f.id = "cfglayer";
+  f.title = T["tui.tab.add"] || "";
+  f.src = "cfg?" + cfgQuery(Object.assign({embed:1}, params));
+  box.append(f);
+  wrap.append(box);
+  wrap.hidden = false;
+}
+// Taken down: the frame goes with it, rather than being hidden with a page
+// still in it asking the app questions nobody is reading the answers to
+function closeCfgLayer() {
+  const wrap = document.getElementById("cfgwrap");
+  if (!wrap) return;
+  wrap.hidden = true;
+  wrap.classList.remove("full");
+  wrap.textContent = "";
+}
+// Declared, not assigned to a name: where the caret belongs is decided at the
+// top of this file and asks this, which runs while the page is still being read
+function cfgLayerUp() { return !!document.getElementById("cfglayer"); }
+// What the framed page says back. Only the frame this board opened is listened
+// to, and only from this origin
+window.addEventListener("message", e => {
+  const f = document.getElementById("cfglayer");
+  if (!f || e.source !== f.contentWindow || e.origin !== location.origin || !e.data) return;
+  // Done with, either way: added, or not adding after all
+  if (e.data.cfg === "close") closeCfgLayer();
+  // "More settings": the whole of the settings, so the frame is given the whole
+  // screen -- the window answers the same press by growing the page it placed.
+  // The frame keeps the page it has, so what was chosen so far is still there
+  if (e.data.cfg === "full") {
+    const wrap = document.getElementById("cfgwrap");
+    if (wrap) wrap.classList.add("full");
+  }
+});
+// Escape is a dialog's way out (5.2). The framed page answers it while the
+// caret is inside it -- a keystroke there never reaches this page -- so this
+// is the same key pressed while the board still has it
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && cfgLayerUp()) { e.preventDefault(); closeCfgLayer(); }
+});
 // The tab bar's +. In the window this becomes Ctrl+B t, which opens the settings
-// as a child WebView already adding a tab to the desk in view. A phone has
+// as a child WebView already adding a tab to the desk in view. A browser has
 // no such WebView and no keystroke that could summon one — the intent was simply
-// refused from afar, so the + did nothing at all. It walks to the same page and
-// asks for the same thing instead.
+// refused from afar, so the + did nothing at all. It frames the same page over
+// the board and asks for the same thing instead.
 // `g` is the folder it was asked for from, when it was asked for from one.
 // Carrying it is the difference between "add a tab here" and "add a tab
 // somewhere, and let the form pick" -- which picked the first folder
@@ -13487,10 +13589,11 @@ function walkToSettings(params) {
 function addTabHere(g, pane) {
   const at = g && g.folder ? g.folder : "";
   if (typeof REMOTE !== "undefined" && REMOTE) {
-    // The same one question the window asks in its dialog
+    // The same one question the window asks in its dialog, framed where the
+    // window puts its dialog: over the board, which stays behind it
     const p = {addtab: (S && S.desk_index) || 0, float: 1};
     if (at) p.folder = at;
-    walkToSettings(p);
+    openCfgLayer(p);
   } else {
     send({kind:"addtab", folder: at, pane: pane == null ? null : pane});
   }
@@ -17186,6 +17289,11 @@ pub fn served_page(sticky: bool, by: Served) -> String {
     built(sticky, by)
 }
 
+/// A number the page reads as a length.
+fn px(n: i32) -> String {
+    format!("{n}px")
+}
+
 fn built(sticky: bool, by: Served) -> String {
     // Read here rather than threaded in: the page is built in several places
     // (window, phone, tests) and every one of them wants the same look
@@ -17219,6 +17327,18 @@ fn built(sticky: bool, by: Served) -> String {
     .replace("{{TAB_W_MIN}}", &crate::config::TAB_BAR_MIN_PX.to_string())
     .replace("{{TAB_W_MAX}}", &crate::config::TAB_BAR_MAX_PX.to_string())
     .replace("{{TAB_W_DEF}}", &crate::config::TAB_BAR_DEFAULT_PX.to_string())
+    // The dialog's measurements, from the one place that has them: the window
+    // places a page in this rectangle, and a browser frames the same page in a
+    // box of the same size. Written out rather than repeated here, so the two
+    // surfaces cannot drift apart
+    .replace("{{DLG_W}}", &px(crate::runtime::DLG_WIDE))
+    .replace("{{DLG_H}}", &px(crate::runtime::DLG_TALL))
+    .replace("{{DLG_TOP}}", &px(crate::runtime::DLG_TOP))
+    .replace("{{DLG_EDGE}}", &px(crate::runtime::DLG_EDGE))
+    // One pixel inside the smallest area it still floats over: from there down
+    // the window hands over the whole area, and so does the frame
+    .replace("{{DLG_MIN_W}}", &px(crate::runtime::DLG_MIN_W - 1))
+    .replace("{{DLG_MIN_H}}", &px(crate::runtime::DLG_MIN_H - 1))
     .replace(
         "{{ENCODINGS}}",
         &serde_json::to_string(crate::charset::CHOICES).unwrap_or_else(|_| "[]".into()),
@@ -19452,13 +19572,17 @@ mod tests {
     /// It used to send the addtab intent on every surface, but that intent turns
     /// into the keystroke that opens the settings as a child WebView — something
     /// only the window has. `allowed_from_afar` refused it, so from a phone the +
-    /// did nothing at all, silently. The phone walks to the settings page instead.
+    /// did nothing at all, silently. It frames the settings page instead.
     #[test]
     fn the_tab_bar_plus_reaches_the_settings_from_a_phone() {
         assert!(
             PAGE.contains("const p = {addtab: (S && S.desk_index) || 0, float: 1};")
-                && PAGE.contains("walkToSettings(p);"),
-            "the phone's + does not walk to the settings page, or not to its one-question dialog"
+                && PAGE.contains("openCfgLayer(p);"),
+            "the phone's + does not reach the settings page, or not to its one-question dialog"
+        );
+        assert!(
+            !PAGE.contains("if (at) p.folder = at;\n    walkToSettings(p);"),
+            "the + walks off the board again instead of framing the dialog over it"
         );
         // The tab bar's + puts the new tab where the person is looking
         assert!(
@@ -19474,6 +19598,13 @@ mod tests {
         assert!(
             PAGE.contains(r#"scrim.onclick = () => send({kind:"closesettings"});"#),
             "pressing outside the add-a-tab dialog does not close it"
+        );
+        // ...in the window. A browser elsewhere is not shown that dialog and is
+        // refused the intent that closes it, so the dimming there was a grey
+        // sheet over a working board that swallowed every press
+        assert!(
+            PAGE.contains("scrim.hidden = REMOTE || !(S.settings_open && S.settings_float);"),
+            "a browser still draws the dimming of a dialog it cannot see or close"
         );
         // The window still takes the keystroke path (the WebView is its to open),
         // and carries the pane as well -- an empty pane's invitation names both
@@ -19556,6 +19687,92 @@ mod tests {
             PAGE.matches("rememberTypeDirect(false)").count(),
             1,
             "the pen is no longer the one way back to the bar"
+        );
+    }
+
+    /// The add-a-tab dialog is a dialog in a browser too.
+    ///
+    /// The phone was the only browser this page was written for, so the + left
+    /// the board for a page of settings that filled the screen. A tablet and a
+    /// Chromebook have room for the board and the dialog both -- and so does a
+    /// phone held the usual way. The frame gets exactly the rectangle the
+    /// window gives the page it places (runtime::dialog_rect), from the same
+    /// numbers, and only a screen too small for a board around it is given the
+    /// whole screen.
+    #[test]
+    fn the_framed_dialog_is_the_size_the_window_gives_one() {
+        use crate::runtime::{DLG_EDGE, DLG_MIN_H, DLG_MIN_W, DLG_TALL, DLG_TOP, DLG_WIDE};
+        let p = super::page();
+        assert!(!p.contains("{{DLG_"), "the dialog's measurements were not written out");
+        assert!(
+            p.contains(&format!(
+                "#cfgwrap .cfgbox {{ width:min({DLG_WIDE}px,100%); height:min({DLG_TALL}px,100%);"
+            )),
+            "the framed dialog is not the size the window places one at"
+        );
+        assert!(
+            p.contains(&format!("padding:{DLG_TOP}px {DLG_EDGE}px {DLG_EDGE}px;")),
+            "the framed dialog does not start where the window starts one"
+        );
+        // Under either measurement the window stops floating and hands over the
+        // whole area; below the same sizes the frame takes the whole screen
+        assert!(
+            p.contains(&format!(
+                "@media (max-width:{}px), (max-height:{}px) {{",
+                DLG_MIN_W - 1,
+                DLG_MIN_H - 1
+            )),
+            "the small-screen rule is not the window's own rule"
+        );
+        // Both ways of handing over the whole screen hand over the whole of it.
+        // Giving the box back its edge but not its size left "More settings"
+        // showing the whole of the settings through a 560px hole
+        assert_eq!(
+            p.matches(".cfgbox { width:100%; height:100%; border:0; border-radius:0; }").count(),
+            2,
+            "a screen given to the page is still only as wide as a dialog"
+        );
+        // The board stays behind it: the frame is emptied when it goes, so no
+        // page is left running in a frame nobody is looking at
+        assert!(
+            p.contains(r#"f.src = "cfg?" + cfgQuery(Object.assign({embed:1}, params));"#),
+            "the framed page is not told it is framed"
+        );
+        assert!(
+            p.contains("wrap.classList.remove(\"full\");\n  wrap.textContent = \"\";"),
+            "closing leaves the page loaded in a hidden frame"
+        );
+        // Its two words back: done with, and "give me the whole screen"
+        assert!(
+            p.contains(r#"if (e.data.cfg === "close") closeCfgLayer();"#)
+                && p.contains(r#"if (e.data.cfg === "full") {"#),
+            "the board does not listen to the page it framed"
+        );
+        assert!(
+            p.contains("if (!f || e.source !== f.contentWindow || e.origin !== location.origin || !e.data) return;"),
+            "the board listens to frames and origins other than the one it opened"
+        );
+        // Pressing the dimming, and Escape with the board still holding the key
+        assert!(
+            p.contains(r#"wrap.onclick = e => { if (e.target === wrap) closeCfgLayer(); };"#),
+            "pressing outside the framed dialog does not close it"
+        );
+        assert!(
+            p.contains(r#"if (e.key === "Escape" && cfgLayerUp()) { e.preventDefault(); closeCfgLayer(); }"#),
+            "Escape does not close the framed dialog"
+        );
+        // While it is up the board does not take the caret back. The one place
+        // that decides where the caret belongs is asked, along with every other
+        // "not while this is up" rule, rather than a second rule growing here
+        assert!(
+            p.contains("  if (ideasOpen) return;
+  // And so does the settings page framed over the board"),
+            "coming back to this browser tab types into the terminal under the dialog"
+        );
+        // ...and it is asked by a name that exists that early in the page
+        assert!(
+            p.contains("function cfgLayerUp() { return !!document.getElementById(\"cfglayer\"); }"),
+            "the board asks for something not yet defined when it first looks for the caret"
         );
     }
 

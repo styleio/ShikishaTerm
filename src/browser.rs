@@ -3208,7 +3208,12 @@ mod tests {
         let src = include_str!("browser.rs");
         let resized =
             src.find("event: WindowEvent::Resized(size),").expect("nothing follows the size");
-        let body = &src[resized..resized + 1800];
+        // Between the size arriving and the board being given one, rather than
+        // a fixed number of characters after it: a line added above the guard
+        // used to carry it out of the window and fail a test about the guard
+        let after = &src[resized..];
+        let used = after.find("v.set_bounds(wry::Rect {").expect("the size is never used");
+        let body = &after[..used];
         assert!(
             body.contains("window.is_minimized()") && body.contains("last_size"),
             "the board follows the window into being minimized"
