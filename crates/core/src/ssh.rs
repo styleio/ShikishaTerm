@@ -159,17 +159,17 @@ pub fn machine_key(written: &str) -> String {
 /// asked about: at that moment there is no way to tell "they reinstalled it"
 /// from "somebody is standing in the middle", and the second one is the one
 /// that costs a password.
+// A test run never writes into the real one. The probe server makes a new key
+// every time and listens on whatever port the machine hands out, so a kept file
+// fills up with dead ports -- and the day the machine hands out one of them
+// again, a test fails saying the key changed. What the real answer would be is
+// checked by a test of its own
+#[cfg(test)]
 fn known_hosts_path() -> std::path::PathBuf {
-    // A test run never writes into the real one. The probe server makes a new
-    // key every time and listens on whatever port the machine hands out, so a
-    // kept file fills up with dead ports -- and the day the machine hands out
-    // one of them again, a test fails saying the key changed. What the real
-    // answer would be is checked by a test of its own
-    if cfg!(test) {
-        return std::env::temp_dir()
-            .join(format!("shikisha-known-hosts-{}", std::process::id()))
-            .join("known-hosts.json");
-    }
+    crate::test_temp("known-hosts").join("known-hosts.json")
+}
+#[cfg(not(test))]
+fn known_hosts_path() -> std::path::PathBuf {
     real_known_hosts_path()
 }
 

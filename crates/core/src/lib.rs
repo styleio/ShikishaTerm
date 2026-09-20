@@ -315,6 +315,61 @@ pub fn test_shell() -> String {
     }
 }
 
+/// A folder in the temporary area that belongs to this run alone, emptied the
+/// first time this run asks for it by that name.
+///
+/// Two things make this more than `temp_dir().join(name)`.
+///
+/// A name with this process's id in it is not a new name: Windows hands the
+/// same id out again within the day, and what the earlier run left behind is
+/// sitting there under it. A worktree test found exactly that -- a folder
+/// already standing where a branch was about to be cut, which the app refuses,
+/// correctly -- and the failure read as a fault in the app rather than as
+/// litter on the machine. Emptied once per name per run, never on the second
+/// ask, so a test that names its own folder twice does not lose its work.
+///
+/// And what an old run left is taken away with it. Runs leave one folder each
+/// otherwise, for every family of them; 7,773 had gathered on the machine
+/// this was written on. Only folders of the same family, only ones this run
+/// did not make, and only ones nothing has touched for two hours -- a suite
+/// takes seconds, so nothing live is ever that quiet.
+#[cfg(test)]
+pub fn test_temp(what: &str) -> std::path::PathBuf {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static EMPTIED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let family = format!("shikisha-{what}-");
+    let at = std::env::temp_dir().join(format!("{family}{}", std::process::id()));
+    let first = EMPTIED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .map(|mut seen| seen.insert(what.to_string()))
+        .unwrap_or(false);
+    if !first {
+        return at;
+    }
+    // Links go before the tree does, or whatever removes it walks into a
+    // junction and takes the other side's contents with it (see unhook_links)
+    crate::worktree::unhook_links(&at);
+    let _ = std::fs::remove_dir_all(&at);
+    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60);
+    let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) else { return at };
+    for e in rd.flatten() {
+        let old = e.path();
+        if old == at || !old.is_dir() {
+            continue;
+        }
+        if !e.file_name().to_string_lossy().starts_with(&family) {
+            continue;
+        }
+        if e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < stale) {
+            crate::worktree::unhook_links(&old);
+            let _ = std::fs::remove_dir_all(&old);
+        }
+    }
+    at
+}
+
 /// A path that is absolute, and nowhere near anything this app owns.
 ///
 /// Written once because it differs: `C:/windows/x` is an absolute path on
@@ -376,6 +431,66 @@ mod tests {
         }
         // A path with no drive on it is left alone, whatever it says
         assert_eq!(super::local_path("/etc/hosts"), "/etc/hosts");
+    }
+
+    /// Says a file or a folder was last touched then. A folder needs a word
+    /// of its own on Windows, where opening one at all is asking for a
+    /// backup's view of the disk
+    #[cfg(test)]
+    fn aged(at: &std::path::Path, when: std::time::SystemTime) {
+        let mut how = std::fs::File::options();
+        how.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const BACKUP: u32 = 0x0200_0000; // FILE_FLAG_BACKUP_SEMANTICS
+            // Saying when something was touched is writing to it, folder or not
+            how.write(true).custom_flags(BACKUP);
+        }
+        #[cfg(not(windows))]
+        how.write(!at.is_dir());
+        how.open(at)
+            .unwrap_or_else(|e| panic!("cannot open {at:?}: {e}"))
+            .set_modified(when)
+            .unwrap_or_else(|e| panic!("cannot age {at:?}: {e}"));
+    }
+
+    /// A run's own folder is empty when the run starts, keeps what the run
+    /// puts in it, and takes an old run's folder away with it.
+    ///
+    /// The first of the three is what a worktree test was failing on: a
+    /// process id comes round again, and the folder the last run left under it
+    /// was still standing where this run was about to cut a branch.
+    #[test]
+    fn a_runs_own_folder_starts_empty_and_takes_the_last_run_with_it() {
+        let family = format!("selftest-{}", crate::random_hex(4));
+        // What an earlier run left: one of ours, too old to be anybody's now
+        let before = std::env::temp_dir().join(format!("shikisha-{family}-424242"));
+        std::fs::create_dir_all(&before).unwrap();
+        let left = before.join("left-behind");
+        std::fs::write(&left, "from a run that is over").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 60 * 60);
+        aged(&left, old);
+        // The folder itself last: writing the file inside it just touched it
+        aged(&before, old);
+
+        // ...and this run's own, which the same id may well have made before
+        let ours = std::env::temp_dir().join(format!("shikisha-{family}-{}", std::process::id()));
+        std::fs::create_dir_all(&ours).unwrap();
+        std::fs::write(ours.join("stale"), "from the run before this one").unwrap();
+
+        let at = crate::test_temp(&family);
+        assert_eq!(at, ours);
+        assert!(!at.join("stale").exists(), "this run began in the last run's folder");
+        assert!(!before.exists(), "an old run's folder was left on the machine");
+
+        // Asked for again, it is the same folder with the same things in it:
+        // a test that names its own folder twice must not lose its work
+        std::fs::create_dir_all(&at).unwrap();
+        std::fs::write(at.join("mine"), "written by this test").unwrap();
+        assert_eq!(crate::test_temp(&family), at);
+        assert!(at.join("mine").exists(), "the second ask emptied the folder");
+        let _ = std::fs::remove_dir_all(&at);
     }
 }
 

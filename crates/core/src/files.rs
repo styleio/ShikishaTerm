@@ -308,9 +308,7 @@ mod tests {
     /// test runs on one machine (another window, a watch loop) otherwise share
     /// it and delete each other's files mid-assertion.
     fn scratch(name: &str) -> PathBuf {
-        let at = std::env::temp_dir()
-            .join(format!("shikisha-files-test-{}", std::process::id()))
-            .join(name);
+        let at = crate::test_temp("files-test").join(name);
         let _ = std::fs::remove_dir_all(&at);
         std::fs::create_dir_all(at.join("sub")).unwrap();
         at

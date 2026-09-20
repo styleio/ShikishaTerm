@@ -13292,7 +13292,7 @@ mod tests {
     /// explicit, and it carries enough to point at the mistake.
     #[test]
     fn a_broken_file_is_refused_with_the_spot_it_broke_at() {
-        let dir = std::env::temp_dir().join(format!("shikisha-userjson-{}", std::process::id()));
+        let dir = crate::test_temp("userjson");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.json");
         let _ = std::fs::remove_file(&path);

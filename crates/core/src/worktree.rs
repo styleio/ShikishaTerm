@@ -1659,19 +1659,23 @@ fn short_enough(at: &Path) -> bool {
 /// a home folder can be written to does not change while a program is running
 pub(crate) fn branches_root() -> PathBuf {
     static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    ROOT.get_or_init(|| {
-        // A test run never writes into the person's own folder. A run that
-        // leaves folders in somebody's home has changed the machine it was
-        // meant to be checking, and two runs at once would fight over the same
-        // names -- so the process gets one of its own. What the real answer
-        // would be is checked directly, by a test of its own
-        if cfg!(test) {
-            return std::env::temp_dir()
-                .join(format!("shikisha-branches-{}", std::process::id()));
-        }
-        real_branches_root()
-    })
-    .clone()
+    ROOT.get_or_init(chosen_branches_root).clone()
+}
+
+// A test run never writes into the person's own folder. A run that leaves
+// folders in somebody's home has changed the machine it was meant to be
+// checking, and two runs at once would fight over the same names -- so the
+// process gets one of its own, emptied on the way in (`test_temp`: a process id
+// comes round again, and what the last run left under it stands exactly where
+// this run is about to cut a branch, which is refused). What the real answer
+// would be is checked directly, by a test of its own
+#[cfg(test)]
+fn chosen_branches_root() -> PathBuf {
+    crate::test_temp("branches")
+}
+#[cfg(not(test))]
+fn chosen_branches_root() -> PathBuf {
+    real_branches_root()
 }
 
 /// The person's own folder, or ours when theirs cannot hold it.
@@ -2159,7 +2163,7 @@ mod tests {
     /// object, which sends whoever reads it looking at git. Same shape as
     /// [`branches_root`] under test: the process gets its own
     fn scratch(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("shikisha-wt-{name}-{}", std::process::id()))
+        crate::test_temp(&format!("wt-{name}"))
     }
 
     /// A project of this test's own. Named after the test, because where
