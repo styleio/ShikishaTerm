@@ -10977,6 +10977,34 @@ document.addEventListener("keydown", e => {
               : {kind:"key", named:d.key, shift:d.shift, alt:d.alt});
 }, true);
 
+// A real keyboard, found out by being used.
+//
+// Whether the thing looking at this board has keys is the one fact the page
+// cannot ask for straight: a phone with a keyboard beside it still says it is a
+// touch screen. But a soft keyboard only ever types into the field it was opened
+// for, so a key arriving while nothing is focused can only have been pressed by a
+// person on real keys — and from that press on, this machine types into the pane
+// like the window does. The press that taught us is not swallowed: it is handed
+// on exactly as #kbd would have sent it.
+document.addEventListener("keydown", e => {
+  if (!REMOTE || hardKeys || e.isComposing || e.metaKey) return;
+  const nm = NAMED[e.key];
+  // A modifier held on its own says nothing — every keyboard has those, and so
+  // does the strip a soft one puts on the screen
+  if (!nm && e.key.length !== 1) return;
+  const a = document.activeElement;
+  if (a && a !== document.body && a !== document.documentElement) return;
+  hardKeys = true;
+  // Where the caret belongs is decided in one place, with every "not while this
+  // is up" rule in it. If it did not land in the terminal, this key isn't ours.
+  focus();
+  if (document.activeElement !== kbd) return;
+  e.preventDefault();
+  if (nm) send({kind:"key", named:nm, shift:e.shiftKey, alt:e.altKey});
+  else if (e.ctrlKey) send({kind:"key", ctrl:e.key.toLowerCase(), shift:e.shiftKey, alt:e.altKey});
+  else send({kind:"key", text:e.key});
+}, true);
+
 // Same convention as PuTTY: selecting text copies it immediately, right-click pastes.
 // Except while typing in the URL bar — stealing focus there would block every keystroke
 // The tab in view, once, so nothing has to re-derive it from S.active. Every
@@ -11000,6 +11028,34 @@ const onModelTab = () => { const t = activeTab(); return !!(t && t.model); };
 // when it carried a composer of its own; it has none now, so leaving it out
 // would leave it with no way in at all.
 const onTermPty = () => onTerminal();
+// Where typing goes on this machine when the board is being looked at from
+// somewhere else.
+//
+// At the window it has only ever gone one way: straight into the pane, through
+// the hidden #kbd, with the caret sitting in the terminal itself. A phone cannot
+// do that for free -- focusing a field throws the soft keyboard up over the very
+// screen being typed at -- which is why the sub-input bar exists. So the answer
+// belongs to the device, not to the app: a machine with keys a person can press
+// types straight in, a touch screen gets the bar. Whoever disagrees says so: the
+// bar's keyboard button hands typing back to the screen (remembered here), and
+// the pen that summons the bar takes it back again.
+//
+// The question asked is "is this a touch screen", not "does this have a mouse":
+// a browser that reports no pointing device at all -- headless, and whatever
+// else answers that way -- is far likelier to be sitting in front of a keyboard
+// than to be a phone, and a phone always says coarse. Getting it wrong that way
+// round is also the cheap one: the first key pressed puts it right (below),
+// where a phone wrongly handed the caret would throw its keyboard over the pane
+// and have no way to say so.
+let hardKeys = true;
+try { hardKeys = !window.matchMedia("(pointer: coarse)").matches; } catch (e) {}
+function rememberTypeDirect(v) {
+  try { if (v) localStorage.setItem("shikishaTypeDirect", "1"); else localStorage.removeItem("shikishaTypeDirect"); } catch (e) {}
+}
+function typeDirectChosen() {
+  try { return localStorage.getItem("shikishaTypeDirect") === "1"; } catch (e) { return false; }
+}
+function typingDirect() { return hardKeys || typeDirectChosen(); }
 const focus = () => {
   const a = document.activeElement;
   if (a && a.closest && a.closest("#nav")) return;
@@ -11026,11 +11082,12 @@ const focus = () => {
     if (castInput && castDock && castDock.style.display === "flex") castInput.focus();
     return;
   }
-  // On a phone, terminal typing never goes through the hidden #kbd (which would
-  // pop the soft keyboard up over the screen). It goes through the sub-input bar,
-  // opened on a tap — see the mouseup handler and openTermBar(). The window (PC)
-  // keeps its previous behavior (#kbd is needed for its menu keys and inline caret).
-  if (REMOTE) return;
+  // On a touch screen, terminal typing never goes through the hidden #kbd (which
+  // would pop the soft keyboard up over the screen). It goes through the sub-input
+  // bar, opened on a tap — see the mouseup handler and openTermBar(). Anywhere
+  // there are real keys — the window, and a laptop or a keyboard looking at this
+  // board from elsewhere — typing lands in the pane, caret and all (see typingDirect).
+  if (REMOTE && !typingDirect()) return;
   kbd.focus();
 };
 // Scroll back through history with the wheel.
@@ -11662,13 +11719,15 @@ document.addEventListener("mouseup", e => {
     else send({kind:"copy", text:t});
     return;
   }
-  // On a phone, tapping a terminal tab opens the sub-input bar (see openTermBar)
-  // rather than the hidden #kbd, so the keyboard never lands on top of the screen.
+  // On a touch screen, tapping a terminal tab opens the sub-input bar (see
+  // openTermBar) rather than the hidden #kbd, so the keyboard never lands on top
+  // of the screen. With real keys about, a click puts the caret in the pane
+  // instead — the same click the window answers that way.
   //
   // Except after the person's own ✕. That press means "out of my way", and a tap
   // used to undo it on the spot — so the bar came straight back the moment the
   // screen was touched, and the ✕ meant nothing. The ✎ pen is the way back in.
-  if (REMOTE && onTermPty()) { if (!castClosed()) openTermBar(); return; }
+  if (REMOTE && onTermPty() && !typingDirect()) { if (!castClosed()) openTermBar(); return; }
   focus();
 });
 document.addEventListener("contextmenu", e => {
@@ -13648,6 +13707,26 @@ function panelName(p) {
 function gearTo(section, title) {
   return el("button", {class:"castgear", title: title,
     onclick: () => openSettings(section, true)}, "⚙️");
+}
+// The keys panel's ⌨: type into the screen itself instead of into the bar. The
+// soft keyboard then stands over the pane and the caret sits in the terminal,
+// exactly as at the window -- which is what someone reading a file in vi, or
+// answering a CLI's y/n, actually wants. Remembered for this machine, so the
+// bar stops coming back; the ✎ pen is the way back and takes the choice with it.
+//
+// Here rather than in the row below for the reason the ⚙ is here: that row's
+// field is the one thing on a phone that has to keep its width, and it loses a
+// quarter of it to a sixth button. Here it costs nothing and sits with the keys,
+// which is what it is about.
+function directBtn() {
+  return el("button", {class:"castgear", title: T["tui.cast.direct"] || "Type into the screen itself",
+    onclick: () => {
+      rememberTypeDirect(true);
+      closeBar();
+      rememberCastClosed(true);
+      kbd.focus();
+      toast(T["tui.cast.direct.on"] || "Typing goes into the screen — ✎ brings this bar back");
+    }}, "⌨ " + (T["tui.cast.direct.btn"] || "Screen"));
 }
 // A compact emoji for the switcher itself — text labels ate horizontal width.
 function panelLabel(p) {
@@ -16343,6 +16422,10 @@ function renderPanel() {
   if (castPanel === "actions") {
     castPanelEl.append(gearTo("actions", T["tui.cast.actions.edit"] || "Edit quick actions"));
   }
+  // The keys panel keeps the other way of typing at its right edge, where the
+  // keys are and the scrolling isn't (see directBtn). Only away from the window:
+  // there the pane already has the caret and this would be a second ✕
+  if (REMOTE && castPanel === "keys") castPanelEl.append(directBtn());
   // A 🎯 that can't aim (the operator still asks for confirmation) gets the
   // same gear: no section, so it opens THIS tab's own card -- where that is
   // switched on -- and comes back here once saved
@@ -16611,6 +16694,11 @@ function toggleComposer() {
     openTermBar();
     if (castInput) castInput.focus();
     rememberCastClosed(false);
+    // Summoning the bar is the answer to the ⌨: typing comes back down here, and
+    // a tap on the screen opens this rather than the keyboard over it. On a
+    // machine with real keys nothing changes — there the pane keeps the caret
+    // whenever this field hasn't got it.
+    rememberTypeDirect(false);
   }
   // Over a browser tab, the reserved room on #page follows the open/closed state.
   syncBrowserDock();
@@ -19421,6 +19509,56 @@ mod tests {
         );
     }
 
+    /// Typing reaches the pane from anything with real keys.
+    ///
+    /// The sub-input bar was made for the phone, whose soft keyboard would
+    /// otherwise stand over the screen being typed at -- and then it was made
+    /// the only way in for EVERYTHING that isn't the window. A laptop looking at
+    /// the board over the network got a field at the foot it had to click into
+    /// first, and keys pressed anywhere else went nowhere at all. So the device
+    /// answers it now: real keys type into the pane (caret, IME and menu keys,
+    /// as at the window), a touch screen keeps the bar, and either side can say
+    /// otherwise -- the ⌨ hands typing back to the screen, the ✎ pen calls the
+    /// bar back.
+    #[test]
+    fn keys_a_person_can_press_type_into_the_pane() {
+        assert!(
+            PAGE.contains("if (REMOTE && !typingDirect()) return;\n  kbd.focus();"),
+            "everything that isn't the window is still shut out of the pane"
+        );
+        assert!(
+            PAGE.contains(r#"hardKeys = !window.matchMedia("(pointer: coarse)").matches;"#),
+            "the page never asks the device whether it is a touch screen"
+        );
+        // A phone with a keyboard beside it still calls itself a touch screen.
+        // A key arriving with nothing focused can only have been pressed on real
+        // keys, and that press is handed on rather than swallowed
+        assert!(
+            PAGE.contains("  hardKeys = true;\n  // Where the caret belongs is decided in one place"),
+            "a keyboard used on a touch screen is never noticed"
+        );
+        assert!(
+            PAGE.contains("  if (document.activeElement !== kbd) return;\n  e.preventDefault();\n  if (nm) send({kind:\"key\", named:nm"),
+            "the press that proved there is a keyboard is dropped"
+        );
+        // One remembered choice, written by the two buttons that mean it
+        assert_eq!(
+            PAGE.matches(r#"localStorage.getItem("shikishaTypeDirect")"#).count(),
+            1,
+            "where typing goes is read in more than one place (a source of disagreement)"
+        );
+        assert_eq!(
+            PAGE.matches("rememberTypeDirect(true)").count(),
+            1,
+            "more than one thing claims to hand typing to the screen"
+        );
+        assert_eq!(
+            PAGE.matches("rememberTypeDirect(false)").count(),
+            1,
+            "the pen is no longer the one way back to the bar"
+        );
+    }
+
     /// The ✕ on the sub-input bar has to stick.
     ///
     /// On a phone, tapping the terminal summons the composer — and that tap used
@@ -19434,7 +19572,7 @@ mod tests {
     #[test]
     fn dismissing_the_composer_survives_a_tap() {
         assert!(
-            PAGE.contains("if (REMOTE && onTermPty()) { if (!castClosed()) openTermBar(); return; }"),
+            PAGE.contains("if (REMOTE && onTermPty() && !typingDirect()) { if (!castClosed()) openTermBar(); return; }"),
             "tapping the screen ignores the ✕ and opens the input bar again"
         );
         // One reader, so the meaning of the ✕ can't drift between callers
