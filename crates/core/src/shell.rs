@@ -106,8 +106,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
 
 
   /* ── Left tab bar ───────────────────────── */
+  /* No room held at the foot: the row of tools that stands there is pinned to
+     the floor of this box (.gearrow), and a strip of padding under it is a
+     strip the rows would scroll through in plain sight, below a row that is
+     supposed to be the end of the bar. The row brings its own breathing space */
   #tabs { grid-row:2/4; width:var(--tabw); background:var(--panel);
-    border-right:1px solid var(--line); overflow-y:auto; padding:6px 0;
+    border-right:1px solid var(--line); overflow-y:auto; padding:6px 0 0;
     display:flex; flex-direction:column; }
   /* Put away, the bar is a width of nothing rather than a display of none: the
      grip below stays exactly where it was, so the way back is where the way
@@ -205,8 +209,18 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #sidegrip:hover, #sidegrip.dragging { background:var(--brand); opacity:.35; }
   /* Settings, the manual and the tools, pinned to the very bottom. The row is
      only where they stand: each is its own button with a box of its own to
-     press, so a press that misses the scissors does not open settings */
-  .gearrow { margin-top:auto; display:flex; align-items:center; justify-content:center;
+     press, so a press that misses the scissors does not open settings
+
+     Pinned means pinned, however long the list above it grows. `margin-top:auto`
+     alone only held it down while everything fitted: with enough projects and
+     tabs to fill the bar, the row went back to being the last thing in a
+     scrolling column and left the screen -- so settings, the manual, the ideas
+     and the tools were reachable only by scrolling to the end of the list,
+     which is precisely the machine where that list is longest. Sticky keeps it
+     against the floor of the scrollport with the rows passing underneath, and
+     it needs the bar's own background to pass under rather than through */
+  .gearrow { margin-top:auto; position:sticky; bottom:0; z-index:2; background:var(--panel);
+    display:flex; align-items:center; justify-content:center;
     gap:var(--s4); padding:6px 10px; border-top:1px solid var(--line); user-select:none; }
   .gearrow .sidebtn { width:34px; height:34px; display:inline-flex; align-items:center;
     justify-content:center; border-radius:var(--r-ctl); cursor:pointer; color:var(--dim);
@@ -3251,6 +3265,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     /* On a phone this box is how a folder's tabs are reached at all, so it is
        as tall as the rows a finger already presses, not a strip under them */
     #tabs .bundle { min-height:40px; }
+    /* The drawer reaches the floor of the phone, and the floor of a phone can
+       be a home indicator. The row pinned down there keeps clear of it */
+    #tabs .gearrow { padding-bottom:calc(6px + env(safe-area-inset-bottom, 0px)); }
     #app.drawer #backdrop { display:block; position:fixed; inset:0; z-index:20;
       background:rgba(0,0,0,.45); }
 
@@ -17930,6 +17947,37 @@ mod tests {
         assert!(
             p.contains(r#"const base = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions"] : ["actions"];"#),
             "the phone's special keys have dropped out of the basic panels"
+        );
+    }
+
+    /// The row of tools at the foot of the left bar stays at the foot, however
+    /// long the list above it grows.
+    ///
+    /// `margin-top:auto` pins a row only while everything fits. With enough
+    /// projects and tabs to fill the bar the row became the last thing in a
+    /// scrolling column and walked off the bottom of the screen -- so settings,
+    /// the manual, the ideas and the tools could be reached only by scrolling to
+    /// the end of the list, on exactly the machine where that list is longest.
+    ///
+    /// Sticky holds it against the floor of the scrollport. The bar may hold no
+    /// padding under it: that strip is scrollable too, and the rows went through
+    /// it in plain sight, under a row that is supposed to be the end of the bar.
+    #[test]
+    fn the_tools_stay_at_the_foot_of_the_bar() {
+        let p = super::page();
+        assert!(
+            p.contains(".gearrow { margin-top:auto; position:sticky; bottom:0; z-index:2; background:var(--panel);"),
+            "the row of tools scrolls away once the bar is full"
+        );
+        assert!(
+            p.contains("overflow-y:auto; padding:6px 0 0;"),
+            "the bar holds room under the pinned row for the list to show through"
+        );
+        // The drawer a phone pulls out reaches the floor of the phone, which may
+        // be a home indicator
+        assert!(
+            p.contains("#tabs .gearrow { padding-bottom:calc(6px + env(safe-area-inset-bottom, 0px)); }"),
+            "the phone's tools sit under the home indicator"
         );
     }
 
