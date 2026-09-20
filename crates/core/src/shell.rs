@@ -12348,16 +12348,32 @@ function castKeyLabel(name) { return CAST_LABEL[name] || name.toUpperCase(); }
 // Cast key names → the terminal's own named-key vocabulary (what the #kbd path
 // sends). Anything not listed passes through unchanged (esc/tab/enter/arrows/home/end).
 const TERM_KEY = { backspace:"bs", delete:"del", pageup:"pgup", pagedown:"pgdn" };
+// ...and the way back, read off the very same list rather than written out a
+// second time: a key pressed on a real keyboard arrives as the browser's name
+// for it, NAMED turns that into the terminal's word, and the composer speaks
+// the cast vocabulary its own ⌫ and keys panel speak
+const CAST_KEY = Object.fromEntries(Object.entries(TERM_KEY).map(([cast, term]) => [term, cast]));
+// The cast name of a pressed key, or "" for a key that types a character (that
+// one belongs in the box it was typed into)
+function castKeyOf(e) {
+  const n = NAMED[e.key];
+  return n ? (CAST_KEY[n] || n) : "";
+}
 // Send a single auxiliary key press. In browser control mode it goes to the relay
 // (latching Ctrl/Alt combine in); over a terminal it sends the very intents #kbd
 // would send. Either way, any latch is released afterwards.
-function sendCastKey(name) {
+// `ev` is the press itself, when a person pressed the key rather than the
+// button: Shift and Alt have no spelling of their own on a named key, so a
+// Shift+Tab pressed here would arrive as a plain Tab without them
+function sendCastKey(name, ev) {
+  const shift = !!(ev && ev.shiftKey);
+  const alt = !!(ev && ev.altKey);
   if (drivingBrowser()) {
-    injectIn({kind:"inject", what:"key", named:name, ctrl:modCtrl, alt:modAlt});
+    injectIn({kind:"inject", what:"key", named:name, ctrl:modCtrl, alt: alt || modAlt});
   } else if (name === "space") {
     send({kind:"key", text:" "});
   } else if (name !== "ctrl" && name !== "alt") {
-    send({kind:"key", named: TERM_KEY[name] || name});
+    send({kind:"key", named: TERM_KEY[name] || name, shift, alt});
   }
   if (modCtrl || modAlt) { modCtrl = false; modAlt = false; refreshMods(); }
 }
@@ -16639,23 +16655,33 @@ function ensureBar() {
   // Rows top-to-bottom: release banner, the switchable panel, the input row.
   castDock = el("div", {id:"castdock"}, modeEl, castPanelEl, castBar);
   document.getElementById("main").append(castDock);
-  // Enter sends; Shift+Enter (or an active IME) inserts a newline instead.
-  // Backspace in an empty field has nothing here to delete, so it goes on to
-  // where Send goes, the same way the phone's ⌫ does. A held Backspace that
-  // began on text stops at the empty field: emptying the draft must not go on
-  // to eat the prompt behind it.
+  // Enter sends; Shift+Enter (or an active IME) inserts a newline instead. Sent
+  // with nothing written, it is a bare Enter to the pane (sendLine) — and every
+  // other key that types no character follows it there once the box is empty:
+  // an empty box has nothing of its own for Esc, Tab, an arrow or an F key to
+  // do, and the pane behind is where each of them means something. Esc stops an
+  // AI, Tab completes a path, ↑ walks the history, F-keys belong to whatever
+  // full-screen program is running. They go out by the same door the ⌫ button
+  // uses, so there is one way in for a pressed key and a pressed button both.
+  //
+  // Backspace keeps one rule of its own: a held Backspace that began on text
+  // stops at the empty field, because emptying the draft must not go on to eat
+  // the prompt behind it.
   let bsBeganOnText = false;
   castInput.addEventListener("keydown", (e) => {
     if (typingIME(e)) return;
-    if (e.key === "Enter" && !e.shiftKey) { sendBar(); e.preventDefault(); }
-    if (e.key === "Backspace") {
-      if (!e.repeat) bsBeganOnText = castInput.value !== "";
-      if (castInput.value === "" && !bsBeganOnText && !e.ctrlKey && !e.altKey && !e.metaKey
-          && backspaceGoesOn()) {
-        e.preventDefault();
-        sendCastKey("backspace");
-      }
-    }
+    // Enter is the Send button, and Shift+Enter is this box's own newline --
+    // neither is handed on as a key, and an empty Send is already a bare Enter
+    // to the pane (sendLine), which is where Enter was going anyway
+    if (e.key === "Enter") { if (!e.shiftKey) { sendBar(); e.preventDefault(); } return; }
+    // Where a held Backspace began is read before the box is judged empty --
+    // the press that started it happened while there was still something there
+    if (e.key === "Backspace" && !e.repeat) bsBeganOnText = castInput.value !== "";
+    const named = castKeyOf(e);
+    if (!named || castInput.value !== "" || e.ctrlKey || e.metaKey || !keysGoOn()) return;
+    if (named === "backspace" && (bsBeganOnText || e.altKey)) return;
+    e.preventDefault();
+    sendCastKey(named, e);
   });
   // Grow the field with its content (up to the CSS max-height, then it scrolls).
   castInput.addEventListener("input", growCastInput);
@@ -16738,11 +16764,11 @@ function sendLine(text, tab) {
   // insert a newline) and not a line at all, so it stays a keystroke.
   send({kind:"key", named:"enter"});
 }
-// Whether a Backspace in the empty composer has a keystroke to become, asked
+// Whether a key pressed in the empty composer has a keystroke to become, asked
 // in sendBar's own order. ▶ run mode's sheet and a 🎯 goal are documents, not
-// keystrokes, and a model pane has no line to take one from: there it deletes
-// nothing, as in any empty field.
-function backspaceGoesOn() {
+// keystrokes, and a model pane has no line to take one from: there such a key
+// does nothing, as in any empty field.
+function keysGoOn() {
   if (castPanel === "lua" && luaMode === "run") return false;
   if (drivingBrowser()) return true;
   return !castTarget && !onModelTab();
@@ -17967,24 +17993,52 @@ mod tests {
         assert!(p.contains("if (fresh && !REMOTE) go.focus({preventScroll:true});"), "the empty quick commands leave the keyboard behind");
     }
 
-    /// Backspace in the empty input bar deletes in the pane it sends to, and
-    /// nowhere else: not after a held key has emptied the draft, and not where
-    /// Send carries a document rather than keystrokes.
+    /// A key that types nothing, pressed in the empty input bar, is the pane's.
+    ///
+    /// The bar was written for a phone, where every key is a soft one and the
+    /// only thing to do with one is type -- so Esc, Tab, the arrows and the F
+    /// keys landed in the box and stopped there. With a keyboard in front of it
+    /// (a window, a laptop, a tablet with keys) that box is where the caret
+    /// sits, and Esc pressed at an AI has to reach the AI: it is how a person
+    /// stops one. Empty, the box has nothing of its own for such a key, so it
+    /// leaves by the door the ⌫ button already uses. Backspace keeps its one
+    /// rule: held from text, it stops at the empty field rather than going on
+    /// to eat the prompt behind it.
     #[test]
-    fn backspace_in_an_empty_bar_goes_on_to_the_pane() {
+    fn a_key_that_types_nothing_goes_on_to_the_pane() {
         let p = super::page();
         assert!(
-            p.contains("if (!e.repeat) bsBeganOnText = castInput.value !== \"\";"),
+            p.contains("if (e.key === \"Backspace\" && !e.repeat) bsBeganOnText = castInput.value !== \"\";"),
             "a held Backspace that emptied the draft goes on deleting in the pane"
         );
         assert!(
-            p.contains("&& backspaceGoesOn()) {\n        e.preventDefault();\n        sendCastKey(\"backspace\");"),
-            "Backspace in the empty input bar is not handed to the pane"
+            p.contains("    const named = castKeyOf(e);\n    if (!named || castInput.value !== \"\" || e.ctrlKey || e.metaKey || !keysGoOn()) return;"),
+            "the empty input bar keeps the keys that type nothing"
         );
-        let at = p.find("function backspaceGoesOn() {").expect("nothing decides where Backspace goes");
+        assert!(
+            p.contains("    e.preventDefault();\n    sendCastKey(named, e);"),
+            "a key pressed in the empty bar does not go out the ⌫ button's door"
+        );
+        // One vocabulary, read both ways rather than written out twice
+        assert!(
+            p.contains("const CAST_KEY = Object.fromEntries(Object.entries(TERM_KEY).map(([cast, term]) => [term, cast]));"),
+            "the pressed key is translated by a second list of its own"
+        );
+        // Shift and Alt have no spelling of their own on a named key
+        assert!(
+            p.contains(r#"send({kind:"key", named: TERM_KEY[name] || name, shift, alt});"#),
+            "Shift+Tab arrives as a plain Tab"
+        );
+        // Enter is still the Send button, Shift+Enter is still this box's
+        // newline, and neither is handed on as a key of its own
+        assert!(
+            p.contains(r#"if (e.key === "Enter") { if (!e.shiftKey) { sendBar(); e.preventDefault(); } return; }"#),
+            "Enter no longer sends what is written, or Shift+Enter lost its newline"
+        );
+        let at = p.find("function keysGoOn() {").expect("nothing decides where such a key goes");
         let body = &p[at..at + p[at..].find("\n}").unwrap()];
         for guard in ["luaMode === \"run\"", "drivingBrowser()", "!castTarget", "!onModelTab()"] {
-            assert!(body.contains(guard), "backspaceGoesOn has lost `{guard}`");
+            assert!(body.contains(guard), "keysGoOn has lost `{guard}`");
         }
     }
 
