@@ -347,7 +347,19 @@ fn run(
                     }
                 }
                 Output::Event(e) => match e {
-                    Event::IceConnectionStateChange(str0m::IceConnectionState::Connected) => {
+                    // Both of the states that mean a path was found, which is
+                    // what `is_connected` is for. Matching `Connected` alone
+                    // looked equivalent and was not: an agent with nothing
+                    // left to try goes from checking straight to `Completed`
+                    // and never passes through `Connected` at all
+                    // (is-0.11: "got nomination, no others to try"). That is
+                    // the ordinary case for two machines on the same network,
+                    // so the connection came up, the far end said it was
+                    // connected, and this side went on believing nobody was
+                    // there -- sending not one picture, while every record
+                    // here said the offer had been answered and nothing had
+                    // gone wrong
+                    Event::IceConnectionStateChange(how) if how.is_connected() => {
                         state.store(State::Live.as_u8(), Ordering::Relaxed);
                     }
                     Event::IceConnectionStateChange(str0m::IceConnectionState::Disconnected) => {
@@ -449,6 +461,31 @@ fn crypto() -> std::sync::Arc<str0m::crypto::CryptoProvider> {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// Both states that mean a path was found are taken as one.
+    ///
+    /// An ICE agent with no pairs left to try goes from checking straight to
+    /// `Completed`, never passing through `Connected` -- which is the
+    /// ordinary case for two machines on one network. Matching `Connected`
+    /// alone therefore missed the connections most likely to happen, and the
+    /// symptom was a picture that never started with nothing wrong anywhere:
+    /// the far end said connected, this end said nobody was there.
+    ///
+    /// The two states cannot be produced here without a peer, so what is
+    /// pinned is the call that covers both.
+    #[test]
+    fn a_path_found_is_a_path_found_whichever_way_it_is_said() {
+        use str0m::IceConnectionState::*;
+        assert!(Connected.is_connected() && Completed.is_connected());
+        assert!(!Checking.is_connected() && !Disconnected.is_connected());
+        let src = include_str!("webrtc.rs");
+        let loop_ = src.find("Output::Event(e) => match e {").expect("no event loop");
+        let body = &src[loop_..loop_ + 1400];
+        assert!(
+            body.contains("if how.is_connected()"),
+            "only one of the two ways of saying a path was found is taken as one"
+        );
+    }
 
     /// The addresses offered to a phone are the ones a phone can reach, and
     /// the ones it is most likely to reach come first. Loopback is not one of

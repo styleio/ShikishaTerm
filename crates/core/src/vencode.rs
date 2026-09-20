@@ -175,6 +175,22 @@ mod windows_h264 {
             mft.SetInputType(0, &inp, 0)
                 .map_err(|e| anyhow!("the encoder refused the picture's shape: {e}"))?;
 
+            // Before streaming begins, and this is the difference between a
+            // relay and a recording.
+            //
+            // Left alone, this encoder works the way one compressing a film
+            // does: it holds several pictures back, looks ahead at what
+            // follows, and only then emits the first. On a page that changes
+            // sixty times a second nobody notices; on a page that changes
+            // once a second -- which is most pages -- the first picture came
+            // out SIXTEEN SECONDS after the connection was made, by which
+            // time the far end had given up and gone back to JPEG. It is
+            // also what "choppy at first, then suddenly smooth" was.
+            //
+            // Refusals are not failures: an encoder that will not take these
+            // still produces video, just later
+            low_latency(&mft);
+
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
 
@@ -238,6 +254,48 @@ mod windows_h264 {
                 self.mft.ProcessInput(0, &sample, 0)?;
                 take_output(&self.mft)
             }
+        }
+    }
+
+    /// Hand every picture over as soon as it is compressed.
+    ///
+    /// Two knobs, because encoders disagree about which they honour: low
+    /// latency mode, and no B-frames. A B-frame is compressed against the
+    /// picture AFTER it, so the encoder cannot emit either until both exist --
+    /// which on a screen that changes slowly means waiting for something to
+    /// happen before the last thing that happened can be sent.
+    unsafe fn low_latency(mft: &IMFTransform) {
+        use windows::Win32::System::Variant::{
+            VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_UI4,
+        };
+        unsafe {
+            let Ok(api) = mft.cast::<ICodecAPI>() else { return };
+            let yes = VARIANT {
+                Anonymous: VARIANT_0 {
+                    Anonymous: std::mem::ManuallyDrop::new(VARIANT_0_0 {
+                        vt: VT_BOOL,
+                        wReserved1: 0,
+                        wReserved2: 0,
+                        wReserved3: 0,
+                        // -1 is true in this shape, the way it has been since
+                        // long before any of this
+                        Anonymous: VARIANT_0_0_0 { boolVal: windows::Win32::Foundation::VARIANT_TRUE },
+                    }),
+                },
+            };
+            let _ = api.SetValue(&CODECAPI_AVLowLatencyMode, &yes);
+            let none = VARIANT {
+                Anonymous: VARIANT_0 {
+                    Anonymous: std::mem::ManuallyDrop::new(VARIANT_0_0 {
+                        vt: VT_UI4,
+                        wReserved1: 0,
+                        wReserved2: 0,
+                        wReserved3: 0,
+                        Anonymous: VARIANT_0_0_0 { ulVal: 0 },
+                    }),
+                },
+            };
+            let _ = api.SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount, &none);
         }
     }
 
