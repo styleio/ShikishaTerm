@@ -1,0 +1,64 @@
+{
+  "language": "ja",
+  "desks": [
+    {
+      "name": "Work",
+      "id": "default",
+      "folders": [
+        {
+          "tabs": [
+            {
+              "name": "aaa",
+              "command": "claude --dangerously-skip-permissions",
+              "id": "squid"
+            },
+            {
+              "name": "notes",
+              "command": "editor"
+            }
+          ]
+        },
+        {
+          "cwd": "D:/work/proj",
+          "tabs": [
+            {
+              "name": "PowerShell",
+              "command": "powershell.exe"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Reading",
+      "id": "read",
+      "folders": [
+        {
+          "tabs": [
+            {
+              "name": "docs",
+              "command": "browser https://example.com/"
+            },
+            {
+              "name": "files",
+              "command": "sftp://me@example.test:22"
+            },
+            {
+              "name": "there",
+              "command": "ssh://me@example.test:22"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Chores",
+      "tabs": [
+        {
+          "name": "shell",
+          "command": "powershell.exe"
+        }
+      ]
+    }
+  ]
+}

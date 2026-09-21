@@ -112,6 +112,29 @@ impl TabOptions {
         };
         folder && machine(self) == machine(other)
     }
+
+    /// Why this launch cannot run what it was given, if it cannot.
+    ///
+    /// **The one place the question "does this tab have somewhere to work?" is
+    /// answered.** It used to be answered three times over and differently
+    /// each time: the launch fell back to the folder the app was started from,
+    /// automation and git were told the tab was nowhere at all, and a file
+    /// dropped on it landed in the app's own folder. Three answers to one
+    /// question is three behaviours nobody can predict, so there is one here
+    /// and the others ask it.
+    ///
+    /// A tab that runs nothing of this PC's needs no folder of this PC's: a
+    /// model conversation is an exchange with a server, and a terminal on
+    /// another machine works where that machine puts it
+    pub fn hold(&self) -> Option<Held> {
+        if self.model.is_some() || self.remote.is_some() || self.cloud.is_some() {
+            return None;
+        }
+        match self.cwd.as_deref() {
+            Some(cwd) => Held::of(Some(cwd)),
+            None => Some(Held::NoFolder),
+        }
+    }
 }
 
 /// Why a tab is being held rather than started.
@@ -125,6 +148,16 @@ pub enum Held {
     NoDrive { drive: String, cwd: std::path::PathBuf },
     /// The drive is here and the folder is not
     Missing { cwd: std::path::PathBuf },
+    /// Nothing says which folder this tab works in, and it is about to run a
+    /// program on this PC.
+    ///
+    /// The folder is not a detail of such a tab, it is where the work happens:
+    /// an AI told to fix a file, a build, a `git push`, all of them act on
+    /// whatever is around them. With none named there was one answer left --
+    /// the folder this program itself was started from -- and that answer
+    /// changes with how the app was started, is written down nowhere, and
+    /// appears nowhere on screen. So the tab is held instead, and says so
+    NoFolder,
 }
 
 impl Held {
@@ -134,6 +167,10 @@ impl Held {
     /// restart ask here, so a tab cannot be held for a reason that has stopped
     /// being true -- which is exactly what happened when only the launch path
     /// knew how to ask.
+    ///
+    /// This is the health of a folder that was named. Whether a tab needed one
+    /// named at all is [`TabOptions::hold`], which asks this in its turn: a
+    /// folder is only unhealthy once there is a folder
     pub fn of(cwd: Option<&std::path::Path>) -> Option<Held> {
         let cwd = cwd?;
         match crate::folders::watch().settled(cwd, crate::folders::BEFORE_LAUNCH) {
@@ -143,6 +180,18 @@ impl Held {
             crate::folders::Health::Missing => Some(Held::Missing { cwd: cwd.to_path_buf() }),
             _ => None,
         }
+    }
+
+    /// The line at the head of the card.
+    ///
+    /// Not one line for every reason: a folder that is missing and a folder
+    /// that was never named are two different things to go and do, and the
+    /// first line is the one that is read
+    pub fn header(&self) -> String {
+        crate::i18n::t(match self {
+            Held::NoFolder => "msg.folder.none_head",
+            _ => "msg.folder.held",
+        })
     }
 
     /// The reason a folder is not usable, as the tab's own screen says it.
@@ -156,6 +205,16 @@ impl Held {
                 "msg.folder.missing",
                 &[("path", &cwd.display().to_string())],
             ),
+            Held::NoFolder => crate::i18n::t("msg.folder.none"),
+        }
+    }
+
+    /// The folder it was given, when it was given one. `None` is the tab that
+    /// was given none at all, which is the whole of what is wrong with it
+    pub fn folder(&self) -> Option<&std::path::Path> {
+        match self {
+            Held::NoDrive { cwd, .. } | Held::Missing { cwd } => Some(cwd),
+            Held::NoFolder => None,
         }
     }
 
@@ -164,6 +223,7 @@ impl Held {
         match self {
             Held::NoDrive { drive, .. } => format!("nodrive:{drive}"),
             Held::Missing { .. } => "missing".into(),
+            Held::NoFolder => "nofolder".into(),
         }
     }
 }
@@ -860,7 +920,7 @@ fn fold(s: &str, width: usize) -> Vec<String> {
 /// is the folder not being here — and names the folder, because the person
 /// reading it is about to go and look for it.
 fn held_card(held: &Held, cols: u16) -> String {
-    let header = crate::i18n::t("msg.folder.held");
+    let header = held.header();
     let body: Vec<String> = vec![String::new(), held.say(), String::new()];
     let want = body.iter().map(|b| width_of(b)).max().unwrap_or(0).min(56);
     card(&header, &body, want, cols, AMBER)
@@ -2995,6 +3055,26 @@ impl Tab {
         self.opts.held.as_ref()
     }
 
+    /// Ask again whether what is holding this tab back is still true, and let
+    /// it go if it is not.
+    ///
+    /// Asked several times a second by the loop, because nothing announces a
+    /// folder appearing: it is made by the dialog, by hand in Explorer, or by
+    /// a stick being plugged in. Only ever in this direction -- a folder that
+    /// has GONE leaves a running tab alone, because stopping somebody's agent
+    /// mid-sentence is worse than the folder being gone.
+    ///
+    /// It asks `TabOptions::hold`, the same question the launch asked. Asking
+    /// a narrower one here -- whether the folder is on this PC -- let go of
+    /// every tab that was held for having no folder at all, since no folder is
+    /// no folder that is missing: they were released, restarted, held again,
+    /// and went round for as long as the app was open
+    pub fn reconsider(&mut self) {
+        if self.opts.held.is_some() && self.opts.hold().is_none() {
+            self.release();
+        }
+    }
+
     /// The folder turned up. Put back what this tab was asked to run.
     ///
     /// The folder appearing is not something anyone tells us about -- it is
@@ -3092,16 +3172,21 @@ impl Tab {
             });
         let (resumed, session) = plan_launch(resume_spec.as_ref(), argv, plan);
         let session = claimed(session, opts.held.as_ref());
+        // Whether this tab is about to run the person's own program on this PC.
+        //
         // A held tab holds the display the same way a model tab does, and for
         // the same reason: the thing it would run must not run. A remote tab
         // has nothing local to run either -- its command line says where to
         // connect, not what to start -- so it takes the placeholder too, and
-        // the placeholder is never spawned because there is no local pty
-        let spawn_argv: &[String] = if opts.model.is_some() || opts.held.is_some() || !local {
+        // the placeholder is never spawned because there is no local pty.
+        // None of the three needs a folder on this PC, which is why the same
+        // answer decides both what starts and where (see `TabOptions::hold`)
+        let runs_here = local && opts.model.is_none() && opts.held.is_none();
+        let spawn_argv: &[String] = if runs_here {
+            &resumed
+        } else {
             idle = idle_argv();
             &idle
-        } else {
-            &resumed
         };
         let mut cmd = build_command(spawn_argv);
         // Where the external API is, the key to it, and which tab this is.
@@ -3124,19 +3209,13 @@ impl Tab {
         // saying so. A launch that cannot have its folder now fails, and
         // `launch_problem` turns the failure into words.
         //
-        // A held tab is the exception. Nothing of the person's runs in one, so
-        // its placeholder is given somewhere that exists.
-        //
         // Refused here rather than left to the operating system, which does not
         // refuse: ConPTY starts the child regardless and it comes up in
         // whatever folder this process happens to be in. The answer comes from
         // the table that is already keeping it, so this costs a lookup rather
         // than a disk that may not be answering
-        let cwd = match (&opts.held, &opts.cwd) {
-            // A remote tab works where the far end puts it. Its local folder,
-            // if it has one, is only where git commands about it look
-            _ if !local => std::env::current_dir()?,
-            (None, Some(p)) => {
+        let cwd = match (&opts.cwd, runs_here) {
+            (Some(p), true) => {
                 if crate::folders::watch()
                     .settled(p, crate::folders::BEFORE_LAUNCH)
                     .wrong()
@@ -3145,7 +3224,18 @@ impl Tab {
                 }
                 p.clone()
             }
-            _ => std::env::current_dir()?,
+            // The placeholder, which is what a held tab, a model conversation
+            // and a terminal on another machine all show. Nothing of the
+            // person's runs in it, so it is given the one folder that is
+            // always there and is the same on every start: the app's own
+            (_, false) => crate::config::root_dir(),
+            // Nothing declared a folder, and nothing had to: the app was
+            // handed a command to run (`SHIKISHA-TERM <command>`), or this is
+            // the shell of a first start. Both are somebody standing in a
+            // folder asking for a terminal, and that folder is the answer.
+            // A tab out of the settings never reaches here -- one with no
+            // folder is held before it is started (`TabOptions::hold`)
+            (None, true) => std::env::current_dir()?,
         };
         cmd.cwd(cwd);
         // The terminal itself, and whatever ends it
@@ -3618,7 +3708,7 @@ impl Tab {
         // the folder has turned up since this tab was held, or has gone since
         // it started. Without this the restart button on a held tab put back
         // the same held tab, for ever
-        self.opts.held = Held::of(self.opts.cwd.as_deref());
+        self.opts.held = self.opts.hold();
         // A restart is a birth of its own, and its conversation is the plan
         // right here: one that carries has lost nothing, and one that starts
         // clean was asked to. Either way the loss the tab was born with is not
@@ -5671,6 +5761,47 @@ mod held_tests {
         tab.kill();
     }
 
+    /// A launch with no folder at all is held, the same as one whose folder
+    /// is missing -- and for the same reason.
+    ///
+    /// There was one answer left for a tab nobody gave a folder: the folder
+    /// this program was started from. That is not a place anybody chose. It
+    /// changes with how the app was started, it is written down nowhere, and
+    /// the tab says nothing about it -- so an AI told to run without asking
+    /// went to work in whatever folder the shortcut happened to name, which on
+    /// this project's own machine is the folder the app is installed in
+    #[test]
+    fn a_launch_with_no_folder_at_all_is_held_too() {
+        let none = TabOptions::default();
+        assert_eq!(none.hold(), Some(Held::NoFolder), "it would have run somewhere nobody chose");
+
+        // What runs nothing of this PC's needs no folder of this PC's
+        let far = TabOptions {
+            remote: Some(crate::ssh::Spec {
+                host: "example.test".into(),
+                port: 22,
+                user: "me".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(far.hold(), None, "a terminal on another machine was held for a folder here");
+
+        // And a folder that is really there is still the ordinary case
+        let here = TabOptions { cwd: Some(std::env::temp_dir()), ..Default::default() };
+        assert_eq!(here.hold(), None);
+    }
+
+    /// The held tab says the one thing there is to do about it, and it is not
+    /// the sentence about a folder that is missing: nothing is missing
+    #[test]
+    fn the_card_of_a_tab_with_no_folder_asks_for_one() {
+        let (none, gone) = (Held::NoFolder, Held::Missing { cwd: nowhere() });
+        assert_ne!(none.header(), gone.header(), "both reasons wear the same first line");
+        assert!(!none.say().trim().is_empty());
+        assert_ne!(none.tag(), gone.tag(), "a restart cannot tell the two apart");
+    }
+
     /// A folder turning up changes what the tab is, so the ordinary
     /// "its launch conditions changed" path restarts it. Without this, a stick
     /// plugged in after startup would leave every tab held for ever.
@@ -5727,6 +5858,24 @@ mod held_tests {
         assert!(tab.needs_restart, "nothing will ever restart it");
         tab.kill();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tab held for having no folder at all is not let go of a moment later.
+    ///
+    /// The loop asks every held tab, several times a second, whether the
+    /// reason still stands. Asked as "is its folder on this PC?", a tab with no
+    /// folder answered yes -- nothing is missing -- so it was released,
+    /// restarted, held again by the launch, and round again for as long as the
+    /// app was open: a tab that flickered and a card nobody could read
+    #[test]
+    fn a_tab_with_no_folder_is_not_let_go_of_a_moment_later() {
+        let opts = TabOptions { held: Some(Held::NoFolder), ..Default::default() };
+        let mut tab =
+            Tab::spawn("t".into(), &[crate::test_shell()], None, 10, 60, opts).expect("held");
+        tab.reconsider();
+        assert_eq!(tab.held(), Some(&Held::NoFolder), "it was let go, and the launch will hold it again");
+        assert!(!tab.needs_restart, "it is on its way round the loop again");
+        tab.kill();
     }
 
     /// Japanese spends two columns per character, and the card holds Japanese.

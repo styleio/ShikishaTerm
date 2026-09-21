@@ -2378,7 +2378,15 @@ pub struct FolderConfig {
     #[serde(default)]
     pub id: Option<String>,
     /// The folder every tab in here starts in. A relative path is resolved
-    /// against the config file's location. Absent means beside the app.
+    /// against the app's own folder, so `"."` is that folder and a settings
+    /// file carried to another PC lands beside the app there too.
+    ///
+    /// Absent means nowhere, and a tab that would run a program here is held
+    /// rather than started (see `TabOptions::hold`). It used to mean "beside
+    /// the app", which was never a folder anybody chose: what it really came
+    /// to was the folder the app itself had been started from, so the same tab
+    /// worked in one place from the shortcut and another from a script, and
+    /// nothing on screen ever said which.
     /// A folder inside Docker/WSL cannot be named this way (use the command's
     /// own -w / --cd)
     #[serde(default)]
@@ -2548,7 +2556,8 @@ pub struct Folder {
     pub id: Option<String>,
     /// The machine it is on, already looked up. None is this one
     pub host: Option<HostSpec>,
-    /// Where its tabs start. Absent means wherever the app itself is
+    /// Where its tabs start. Absent means nowhere: a tab here that would run a
+    /// program is held instead of started (see `TabOptions::hold`)
     pub cwd: Option<std::path::PathBuf>,
     /// What it would take to make this folder on a machine that does not have
     /// it. [`Source::Unknown`] is the case that has to ask
@@ -4241,6 +4250,33 @@ pub fn put_tab_back_at(path: &Path, desk_name: &str, taken: &TakenTab) -> Result
         Ok(())
     })?;
     Ok(given)
+}
+
+/// Moves one tab into the folder at `cwd`, which the desk gains if it does not
+/// have it yet. Returns the name automation calls the tab by.
+///
+/// Taking the line out and putting it back is the whole of it: `put_tab_back`
+/// already knows how to find a folder by its path, and how to open one the list
+/// does not have, so there is no second way of writing a tab's folder that
+/// could come to disagree with the first. It joins its new folder at the end --
+/// where it stood among the tabs it has left is not a place in the folder it is
+/// arriving in
+pub fn move_tab_to_folder(desk_name: &str, written: usize, mark: &TabMark, cwd: &Path) -> Result<String> {
+    move_tab_to_folder_at(&config_file_path(), desk_name, written, mark, cwd)
+}
+
+/// The same, told which settings file to edit.
+pub fn move_tab_to_folder_at(
+    path: &Path,
+    desk_name: &str,
+    written: usize,
+    mark: &TabMark,
+    cwd: &Path,
+) -> Result<String> {
+    let mut taken = take_tab_at(path, desk_name, written, mark)?;
+    taken.folder = Some(cwd.display().to_string());
+    taken.path = vec![usize::MAX];
+    put_tab_back_at(path, desk_name, &taken)
 }
 
 /// Takes a page out of a desk's `browsers` list -- the older way of opening
@@ -6769,6 +6805,68 @@ mod tests {
         assert!(in_folder(2).is_empty(), "it should start nothing, but there are tabs");
         let opts = crate::desk::tab_options(&one[0].cfg, Some(there));
         assert!(opts.remote.is_some(), "a tab in the far folder starts on this machine");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tab waiting for somewhere to work is given a folder, and that is
+    /// the whole of the fix: it is written where the tab's folder is written,
+    /// and the next read starts it there.
+    ///
+    /// Both ways round, because the folder offered is usually one the desk
+    /// already has -- and sometimes one it has never heard of, which it then
+    /// gains rather than refusing the answer
+    #[test]
+    fn a_tab_with_nowhere_to_work_is_given_a_folder() {
+        let dir = std::env::temp_dir().join(format!("shikisha-move-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        // Spelled the way this machine spells it: a settings file names real
+        // folders, and the test is about finding the one that is already there
+        let (proj, other) = (crate::local_path("D:/work/proj"), crate::local_path("D:/work/other"));
+        std::fs::write(
+            &file,
+            format!(
+                r#"{{"desks": [{{"name": "W", "folders": [
+                {{"tabs": [{{"name": "aaa", "command": "sh", "id": "squid"}}]}},
+                {{"cwd": "{}", "tabs": [{{"name": "sh", "command": "sh"}}]}}
+            ]}}]}}"#,
+                proj
+            ),
+        )
+        .unwrap();
+        let read = |at: &Path| {
+            let cfg: Config = serde_json::from_str(&std::fs::read_to_string(at).unwrap()).unwrap();
+            cfg.resolve_desks().0.remove(0)
+        };
+        let desk = read(&file);
+        let ft = desk.tabs.first().expect("there is no tab");
+        assert!(desk.folder_of(ft).and_then(|f| f.cwd.as_ref()).is_none(), "it starts with a folder");
+
+        // Into a folder the desk already has: it joins that one, and no second
+        // folder of the same path turns up beside it
+        let mark = TabMark::of(&desk, ft);
+        move_tab_to_folder_at(&file, "W", 0, &mark, Path::new(&proj)).unwrap();
+        let desk = read(&file);
+        assert_eq!(desk.folders.len(), 2, "the desk grew a folder it already had");
+        let moved = desk.tabs.iter().find(|t| t.cfg.name.as_deref() == Some("aaa")).expect("the tab is gone");
+        assert_eq!(
+            desk.folder_of(moved).and_then(|f| f.cwd.clone()),
+            Some(std::path::PathBuf::from(&proj)),
+            "the tab did not move"
+        );
+
+        // And into one it does not have, which it gains
+        let mark = TabMark::of(&desk, moved);
+        let written = desk.tabs.iter().position(|t| t.cfg.name.as_deref() == Some("aaa")).unwrap();
+        move_tab_to_folder_at(&file, "W", written, &mark, Path::new(&other)).unwrap();
+        let desk = read(&file);
+        let moved = desk.tabs.iter().find(|t| t.cfg.name.as_deref() == Some("aaa")).expect("the tab is gone");
+        assert_eq!(
+            desk.folder_of(moved).and_then(|f| f.cwd.clone()),
+            Some(std::path::PathBuf::from(&other)),
+            "a folder the desk did not have was refused instead of added"
+        );
+        assert_eq!(desk.tabs.len(), 2, "the tab was copied rather than moved");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

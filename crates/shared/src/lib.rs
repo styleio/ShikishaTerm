@@ -273,6 +273,10 @@ pub enum Ev {
     /// A tab was renamed where it stands, by its screen number. An empty name
     /// hands it back to what its command calls it
     TabName { tab: usize, name: String },
+    /// A tab that was waiting for somewhere to work was given a folder, by its
+    /// screen number. It moves into that folder, which the desk gains if it
+    /// does not have it, and starts there
+    TabFolder { tab: usize, folder: String },
     /// A folder was closed: its tabs go, the files stay
     FolderClose { folder: String },
     /// A branch's folder was thrown away for good. Refused while there is
@@ -925,6 +929,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .map(str::to_string),
         },
         Some("folderview") => Ev::FolderView {
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
+        Some("tabfolder") => Ev::TabFolder {
+            tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or_default() as usize,
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("tabname") => Ev::TabName {

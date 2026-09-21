@@ -453,7 +453,11 @@ pub fn plain_error(said: &str) -> String {
 ///
 /// A tab with no folder of its own gets an empty path rather than the app's
 /// own folder: falling back would mean `git_status()` from a tab that is
-/// nowhere quietly answers about the app's own repository
+/// nowhere quietly answers about the app's own repository. Nothing that runs
+/// a program on this PC arrives here without one -- a tab out of the settings
+/// with no folder is held rather than started (`TabOptions::hold`) -- so the
+/// empty path is a model conversation or a terminal on another machine, and
+/// both of those are genuinely in no folder of ours
 pub fn tab_places(tabs: &[Tab]) -> Vec<hooks::TabPlace> {
     tabs.iter()
         .map(|t| {
@@ -819,7 +823,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             None,
             rows,
             cols,
-            tab::TabOptions::default(),
+            // Somebody standing in a folder asked for this command, the way
+            // any terminal is asked. That folder is written down rather than
+            // left to be guessed at the launch, so this tab says where it
+            // works the same way every other tab does
+            tab::TabOptions { cwd: std::env::current_dir().ok(), ..Default::default() },
         )?);
     } else if let Some(w) = desks.get(desk_index) {
         // If we're resuming where we left off, launch that same desk too.
@@ -844,7 +852,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             None,
             rows,
             cols,
-            tab::TabOptions::default(),
+            // The same as a command asked for by hand: there are no settings
+            // yet to name a folder, so the one the app was started from is the
+            // answer, and it is written down rather than guessed
+            tab::TabOptions { cwd: std::env::current_dir().ok(), ..Default::default() },
         )?);
     }
 
@@ -1985,15 +1996,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // is not a reason to lose the conversation
             // A folder that has turned up since its tabs were held back. Nobody
             // announces that -- it is made by the dialog, by hand in Explorer,
-            // or by a stick being plugged in -- so it is noticed here, off the
-            // table the watch already keeps, and the tab goes back through the
-            // ordinary restart below. Only ever in this direction: a folder
-            // that has GONE leaves a running tab alone, because stopping
-            // somebody's agent mid-sentence is worse than the folder being gone
+            // or by a stick being plugged in -- so it is asked here, off the
+            // table the watch already keeps, and a tab that is free to run goes
+            // back through the ordinary restart below (see `Tab::reconsider`)
             for t in tabs.iter_mut().chain(desk_tabs.iter_mut().flatten()) {
-                if t.held().is_some() && tab::Held::of(t.cwd()).is_none() {
-                    t.release();
-                }
+                t.reconsider();
             }
             let alone: Vec<bool> = (0..tabs.len()).map(|i| only_one_here(&tabs, i)).collect();
             for (i, t) in tabs.iter_mut().enumerate() {
@@ -3028,6 +3035,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::TabName { tab, name }) => {
                         shell.mail().tab_names.push((tab, name));
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::TabFolder { tab, folder }) => {
+                        shell.mail().tab_folders.push((tab, folder));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderName { folder, name }) => {
                         shell.mail().folder_names.push((folder, name));
@@ -5578,6 +5588,34 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
                 Ok(None) => {}
+                Err(e) => flash = Some(format!("{e:#}")),
+            }
+        }
+        // A tab that was waiting for somewhere to work, given a folder from its
+        // own screen. Written into the settings, which is what starts it: the
+        // reload that follows sees a tab with a folder and launches it there
+        for (index, folder) in shell.mail().take_tab_folders() {
+            let at = folder.trim();
+            if at.is_empty() {
+                continue;
+            }
+            let Some(desk) = desks.get(desk_index) else { continue };
+            let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
+            let rows = surfaces_written(Some(desk), &titles, &caps.hosted_names(), &editors, issues_open);
+            let written = index
+                .checked_sub(1)
+                .and_then(|i| rows.get(i))
+                .and_then(|(_, w)| *w);
+            let Some(written) = written else { continue };
+            let Some(ft) = desk.tabs.get(written) else { continue };
+            let mark = config::TabMark::of(desk, ft);
+            match config::move_tab_to_folder(
+                &desk.name,
+                written,
+                &mark,
+                std::path::Path::new(at),
+            ) {
+                Ok(_) => flash = Some(i18n::tp("msg.folder.tab_moved", &[("path", at)])),
                 Err(e) => flash = Some(format!("{e:#}")),
             }
         }
@@ -9290,13 +9328,16 @@ pub fn percent_encode(s: &str) -> String {
     out
 }
 /// The tab's working folder as an absolute path string, for attachments. Falls
-/// back to the app's own working folder when the tab has none configured.
+/// back to what the shell in it says about itself when the tab was given none,
+/// and to nothing at all when it says nothing.
 pub fn tab_cwd_abs(t: &Tab) -> String {
     // Where somebody put this tab is where it belongs, and a `cd` typed inside
-    // it does not move it. But for a tab nobody gave a folder, what the shell
-    // in it says about itself beats the only other answer there was -- the
-    // folder this program happens to be running from, which is a place a file
-    // dropped from a phone had no business landing in.
+    // it does not move it. A tab with no folder of its own is a terminal on
+    // another machine or a conversation with a model, and what the shell in it
+    // says about itself is the only true answer there is. Failing that there
+    // is none: the folder this program happens to be running from was the old
+    // answer, and it is a place a file dropped from a phone had no business
+    // landing in
     let reported = || {
         let r = t.reported_cwd();
         (!r.is_empty()).then(|| std::path::PathBuf::from(r))
@@ -9304,7 +9345,7 @@ pub fn tab_cwd_abs(t: &Tab) -> String {
     let abs = match t.cwd().map(std::path::Path::to_path_buf) {
         Some(p) if p.is_absolute() => Some(p),
         Some(p) => std::env::current_dir().ok().map(|c| c.join(p)),
-        None => reported().or_else(|| std::env::current_dir().ok()),
+        None => reported(),
     };
     abs.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
 }

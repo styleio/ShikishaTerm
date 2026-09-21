@@ -1689,23 +1689,32 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #issuespanel .bar .line input { flex:1 1 calc(100% - 32px - var(--s3)); }
     #issuespanel .bar .line .wide-only { display:none; }
   }
-  /* A tab that could not start. Where its terminal would be: what went wrong,
-     and the ways on from here, in that order */
-  #failpanel[hidden] { display:none; }
-  #failpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+  /* A tab that could not start, and a tab waiting for somewhere to work.
+     Where its terminal would be: what happened, and the ways on from here, in
+     that order. One look for both, because to the person looking they are one
+     thing -- this tab is not running, and here is what to do about it */
+  #failpanel[hidden], #holdpanel[hidden] { display:none; }
+  #failpanel, #holdpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px)); overflow:auto; z-index:4;
     display:flex; align-items:flex-start; justify-content:center; padding:var(--s6) var(--s5); }
-  #failpanel .box { max-width:620px; width:100%; display:flex; flex-direction:column; gap:var(--s3); }
-  #failpanel h3 { margin:0; font-size:14px; font-weight:600; color:var(--text); display:flex; gap:var(--s2); align-items:center; }
-  #failpanel h3 .dot { width:8px; height:8px; border-radius:50%; background:var(--stop); }
-  #failpanel .why { color:var(--text); font-size:13px; line-height:1.6; white-space:pre-wrap; }
-  #failpanel .next { color:var(--dim); font-size:12px; line-height:1.6; }
-  #failpanel .acts { display:flex; flex-wrap:wrap; gap:var(--s2); margin-top:var(--s2); }
-  #failpanel .acts button, #failpanel .acts a { font:inherit; font-size:12.5px; height:32px; padding:0 var(--s3);
+  #failpanel .box, #holdpanel .box { max-width:620px; width:100%; display:flex; flex-direction:column; gap:var(--s3); }
+  #failpanel h3, #holdpanel h3 { margin:0; font-size:14px; font-weight:600; color:var(--text); display:flex; gap:var(--s2); align-items:center; }
+  #failpanel h3 .dot, #holdpanel h3 .dot { width:8px; height:8px; border-radius:50%; background:var(--stop); }
+  /* Waiting is not failing: the same dot, in the colour of something paused */
+  #holdpanel h3 .dot { background:var(--warn); }
+  #failpanel .why, #holdpanel .why { color:var(--text); font-size:13px; line-height:1.6; white-space:pre-wrap; }
+  #failpanel .next, #holdpanel .next { color:var(--dim); font-size:12px; line-height:1.6; }
+  #failpanel .acts, #holdpanel .acts { display:flex; flex-wrap:wrap; gap:var(--s2); margin-top:var(--s2); align-items:center; }
+  #failpanel .acts button, #failpanel .acts a,
+  #holdpanel .acts button, #holdpanel .acts select { font:inherit; font-size:12.5px; height:32px; padding:0 var(--s3);
     border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--panel); color:var(--text);
     cursor:pointer; display:inline-flex; align-items:center; text-decoration:none; }
-  #failpanel .acts button:hover, #failpanel .acts a:hover { border-color:var(--edge-hi); }
-  #failpanel .acts .go { border-color:var(--brand); color:var(--brand); }
+  #holdpanel .acts select { max-width:min(320px, 60vw); }
+  #failpanel .acts button:hover, #failpanel .acts a:hover,
+  #holdpanel .acts button:hover, #holdpanel .acts select:hover { border-color:var(--edge-hi); }
+  /* The words the row is a sentence with, around the folder it names */
+  #holdpanel .acts .lead { color:var(--dim); font-size:12.5px; }
+  #failpanel .acts .go, #holdpanel .acts .go { border-color:var(--brand); color:var(--brand); }
   #editpanel[hidden] { display:none; }
   #editpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px)); display:flex; flex-direction:column; overflow:hidden;
@@ -3457,6 +3466,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div id="gitpanel" hidden></div>
     <div id="sftppanel" hidden></div>
     <div id="failpanel" hidden></div>
+    <!-- A tab with nowhere to work stands here too, with the folder to give it -->
+    <div id="holdpanel" hidden></div>
     <div id="issuespanel" hidden></div>
     <!-- The working folder is not on this machine, so nothing was started and
          this stands where the terminal would. It says the one thing that
@@ -5107,6 +5118,52 @@ function drawFailed(t) {
     el("h3", {}, el("span", {class:"dot"}), (T["tui.failed.title"] || "{name}").replace("{name}", t.name)),
     el("div", {class:"why"}, f.why || ""),
     el("div", {class:"next"}, f.install_url ? (T["tui.failed.next.install"] || "") : (T["tui.failed.next"] || "")),
+    acts));
+}
+
+// A tab waiting for somewhere to work: what is the matter, and the folder that
+// settles it. Every folder this desk already has is in the list, and the button
+// beside it moves the tab there; "another folder" opens the same picker the
+// list of folders uses, so a folder that is not on the desk yet can be chosen
+// as easily as one that is. Being told what is wrong and left to find the
+// settings is not help, and this is a tab that cannot run until somebody acts.
+//
+// Only for the tab that was given no folder at all. One whose folder is named
+// but not here is a thing about the FOLDER -- every tab of it is held for the
+// same reason, and the card that says so (`drawHeld`) answers it once, for all
+// of them, with the answers that are about a folder
+function drawHolding(t) {
+  const box = document.getElementById("holdpanel");
+  if (!box) return;
+  box.hidden = !t;
+  if (!t) { box.dataset.sig = ""; return; }
+  const h = t.hold || {};
+  // The folders of this desk, each as [path, what it is called]. The one this
+  // tab was given and could not have is not offered back to it
+  const places = ((S && S.groups) || [])
+    .filter(g => g.folder && !(h.folder && sameFolder(g.folder, h.folder)))
+    .map(g => [g.folder, (g.name || "").trim() || leafOf(g.folder)]);
+  const sig = JSON.stringify([t.index, t.name, h, places]);
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.textContent = "";
+  const move = path => { if (path) send({kind:"tabfolder", tab:t.index, folder:path}); };
+  const acts = el("div", {class:"acts"});
+  if (places.length) {
+    const sel = el("select", {});
+    for (const [path, name] of places) sel.append(el("option", {value:path, title:path}, name));
+    // The row is a sentence with the folder inside it, and where the folder
+    // sits in that sentence is the language's business, not this code's
+    const said = (T["tui.hold.move"] || "{folder}").split("{folder}");
+    if (said[0]) acts.append(el("span", {class:"lead"}, said[0]));
+    acts.append(sel);
+    if (said[1]) acts.append(el("span", {class:"lead"}, said[1]));
+    acts.append(el("button", {class:"go", onclick:() => move(sel.value)}, T["tui.hold.move.go"] || ""));
+  }
+  acts.append(el("button", {onclick:() => openBrowse(h.folder || "", move)}, T["tui.hold.browse"] || ""));
+  box.append(el("div", {class:"box"},
+    el("h3", {}, el("span", {class:"dot"}), h.head || ""),
+    el("div", {class:"why"}, h.say || ""),
     acts));
 }
 
@@ -9351,10 +9408,17 @@ window.__state = function (json) {
   // reason and would say the same thing
   const heldIn = cover ? null : heldFolder();
   drawHeld(heldIn);
-  screen.hidden = cover || S.active === 0 || web || git || files || edit || !!failedTab || issuesUp || !!heldIn;
+  // A tab that was given no folder at all. Its own panel and not the folder's
+  // card, because there is no folder to say anything about: what it needs is
+  // one, and the panel carries the list to pick from. A tab whose folder is
+  // named but not here is the card's business, so the card wins where both
+  // could speak
+  const holding = cover || heldIn ? null : S.tabs.find(t => t.index === S.active && t.hold);
+  drawHolding(holding);
+  screen.hidden = cover || S.active === 0 || web || git || files || edit || !!failedTab || issuesUp || !!heldIn || !!holding;
   // A tab that could not start in a folder that is not here has one thing
   // wrong with it, not two, and the card is the one that can answer it
-  drawFailed(cover || heldIn ? null : failedTab);
+  drawFailed(cover || heldIn || holding ? null : failedTab);
   drawWelcome();
   drawAddProject();
   const ipanel = document.getElementById("issuespanel");
@@ -20423,7 +20487,7 @@ mod tests {
             "the card is not drawn where the terminal is"
         );
         assert!(
-            PAGE.contains("|| issuesUp || !!heldIn;"),
+            PAGE.contains("|| issuesUp || !!heldIn || !!holding;"),
             "the terminal is still drawn under the card"
         );
         // The four answers. Fetching it opens the dialog that shows what will
@@ -20451,6 +20515,53 @@ mod tests {
         assert!(
             PAGE.contains(r#"say: T["tui.held.forget.say"] || "","#),
             "taking the setting away does not say what it costs"
+        );
+    }
+
+    /// A tab with nowhere to work is not told off and left there: the folder
+    /// to give it is on the same screen, with the button that gives it.
+    ///
+    /// The whole point of holding such a tab back is that somebody has to
+    /// choose where it works. A panel that only said so would make that person
+    /// go and find the settings, which is the app knowing the answer and
+    /// keeping it to itself.
+    #[test]
+    fn a_tab_waiting_for_a_folder_is_offered_one() {
+        assert!(PAGE.contains(r#"<div id="holdpanel" hidden></div>"#), "there is nowhere to draw it");
+        assert!(
+            PAGE.contains(r#"const holding = cover || heldIn ? null : S.tabs.find(t => t.index === S.active && t.hold);"#),
+            "the board does not notice a tab that is waiting"
+        );
+        assert!(PAGE.contains("drawHolding(holding);"), "it is never drawn");
+        // Every folder of the desk is offered, and so is one it has never heard of
+        assert!(
+            PAGE.contains(r#"send({kind:"tabfolder", tab:t.index, folder:path})"#),
+            "choosing a folder tells the app nothing"
+        );
+        assert!(
+            PAGE.contains(r#"openBrowse(h.folder || "", move)"#),
+            "a folder the desk does not have yet cannot be chosen"
+        );
+        // A folder that is named but not on this machine is the FOLDER's
+        // business: its card answers for every tab of it at once, and two
+        // panels over one pane would be two answers to one question
+        assert!(
+            PAGE.contains("drawFailed(cover || heldIn || holding ? null : failedTab);"),
+            "a waiting tab is drawn over by the card for a tab that could not start"
+        );
+        // The window and a phone are two doors into the same app, and a message
+        // taken in at one of them only is a button that works in one place and
+        // does nothing in the other. This one was exactly that for an afternoon
+        let reads = |path: &str| {
+            std::fs::read_to_string(crate::repo_root().join(path)).unwrap_or_default()
+        };
+        assert!(
+            reads("src/main.rs").contains("Ev::TabFolder { tab, folder }"),
+            "the window takes the answer and drops it"
+        );
+        assert!(
+            reads("crates/core/src/remote.rs").contains("Ev::TabFolder { .. }"),
+            "a phone is not allowed to answer"
         );
     }
 

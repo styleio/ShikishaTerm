@@ -234,6 +234,8 @@ pub struct Mailbox {
     pub folder_names: Vec<(String, String)>,
     /// Tabs renamed where they stand: (screen number, name)
     pub tab_names: Vec<(usize, String)>,
+    /// A tab that was waiting for a folder, and the folder it was given
+    pub tab_folders: Vec<(usize, String)>,
     /// Folders taken out of the list. The files stay where they are
     pub folder_closes: Vec<String>,
     /// Branch folders thrown away for good: (folder, and whether the person
@@ -493,6 +495,10 @@ impl Mailbox {
     pub fn take_folder_views(&mut self) -> Vec<String> {
         std::mem::take(&mut self.folder_views)
     }
+    pub fn take_tab_folders(&mut self) -> Vec<(usize, String)> {
+        std::mem::take(&mut self.tab_folders)
+    }
+
     pub fn take_tab_names(&mut self) -> Vec<(usize, String)> {
         std::mem::take(&mut self.tab_names)
     }
