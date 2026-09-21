@@ -184,13 +184,13 @@ fn spaceless(path: &Path) -> Option<String> {
 /// second of process startup, charged to the person's turn, for a report
 /// nobody is waiting on. Nothing here answers back, so nothing here should be
 /// waited for. The timeout stays for the CLIs that still honour one.
-fn handler(format: HookFormat, timeout: u32, arg: &str) -> serde_json::Value {
-    let exe = me().display().to_string();
+fn handler(format: HookFormat, timeout: u32, arg: &str, program: &Path) -> serde_json::Value {
+    let exe = program.display().to_string();
     match format {
         // Nothing quoted, and a path chosen so that nothing needs to be
         HookFormat::Bare => serde_json::json!({
             "type": "command",
-            "command": format!("{} --hook {arg}", spaceless(&me()).unwrap_or(exe)),
+            "command": format!("{} --hook {arg}", spaceless(program).unwrap_or(exe)),
             "timeout": timeout,
             "async": true,
         }),
@@ -243,6 +243,17 @@ fn is_current(wanted: &[serde_json::Value], h: &serde_json::Value) -> bool {
 
 /// What the file says about us, without changing anything.
 pub fn status(t: &Target) -> Status {
+    status_of(t, &me())
+}
+
+/// The same, asked about a copy of this app somewhere else.
+///
+/// `Stale` means "the entry names a different program", and which program is
+/// the right one depends on who is asking: the app asks about itself, while a
+/// tool repairing an install asks about that install. Asked with `me()` from a
+/// tool, every correctly installed entry reads as stale -- which is how it
+/// would report a repair it had just made successfully
+pub fn status_of(t: &Target, program: &Path) -> Status {
     let Ok(text) = std::fs::read_to_string(&t.file) else {
         return Status::NoConfig;
     };
@@ -255,7 +266,7 @@ pub fn status(t: &Target) -> Status {
     // Once per event, not once per thing wanted from it: an event asked for
     // two things was being read twice, and counted both of its handlers each
     // time -- so a correctly installed entry never added up
-    for (event, hs) in wanted(t) {
+    for (event, hs) in wanted(t, program) {
         for group in doc
             .pointer(&format!("/hooks/{event}"))
             .and_then(|g| g.as_array())
@@ -285,10 +296,10 @@ pub fn status(t: &Target) -> Status {
 /// events in total, so the start of a turn has to carry both "this is the
 /// conversation" and "it is working" -- and writing them one at a time meant
 /// each one removed the last. Gathering first is what makes that impossible
-fn wanted(t: &Target) -> Vec<(String, Vec<serde_json::Value>)> {
+fn wanted(t: &Target, program: &Path) -> Vec<(String, Vec<serde_json::Value>)> {
     let mut out: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
     for entry in &t.entries {
-        let h = handler(t.format, t.timeout, &entry.arg);
+        let h = handler(t.format, t.timeout, &entry.arg, program);
         match out.iter_mut().find(|(event, _)| *event == entry.event) {
             Some((_, list)) => list.push(h),
             None => out.push((entry.event.clone(), vec![h])),
@@ -303,7 +314,7 @@ fn wanted(t: &Target) -> Vec<(String, Vec<serde_json::Value>)> {
 /// "trust me" is not an acceptable substitute for the four lines involved
 pub fn preview(t: &Target) -> String {
     let mut hooks = serde_json::Map::new();
-    for (event, hs) in wanted(t) {
+    for (event, hs) in wanted(t, &me()) {
         hooks.insert(event, serde_json::json!([{ "hooks": hs }]));
     }
     serde_json::to_string_pretty(&serde_json::json!({ "hooks": hooks }))
@@ -312,23 +323,34 @@ pub fn preview(t: &Target) -> String {
 
 /// Put our entry in (or bring it up to date), leaving everything else alone.
 pub fn install(t: &Target) -> Result<()> {
-    edit(t, true)
+    edit(t, true, &me())
+}
+
+/// The same, naming the program to be run instead of this one.
+///
+/// For the times this is not being asked by the app a person uses: a tool that
+/// puts the hook back into an install somewhere else, after it was found
+/// missing. The path is written into somebody's settings and will be run, so
+/// it is given rather than guessed -- the obvious guess, "whatever is running
+/// now", is exactly the one that writes the wrong program in
+pub fn install_as(t: &Target, program: &Path) -> Result<()> {
+    edit(t, true, program)
 }
 
 /// Take our entry out, leaving everything else alone.
 pub fn uninstall(t: &Target) -> Result<()> {
-    edit(t, false)
+    edit(t, false, &me())
 }
 
-fn edit(t: &Target, want: bool) -> Result<()> {
+fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
     // Said before anything is written, not discovered later by a dot that
     // never moves: a CLI that will not take quotes cannot be handed a path
     // with a space in it, and on a volume with no short names there is no
     // second spelling to fall back on
-    if want && t.format == HookFormat::Bare && spaceless(&me()).is_none() {
+    if want && t.format == HookFormat::Bare && spaceless(program).is_none() {
         anyhow::bail!(crate::i18n::tp(
             "err.hook.path_has_space",
-            &[("name", &t.name), ("path", &me().display().to_string())]
+            &[("name", &t.name), ("path", &program.display().to_string())]
         ));
     }
     let existing = std::fs::read_to_string(&t.file).ok();
@@ -350,7 +372,7 @@ fn edit(t: &Target, want: bool) -> Result<()> {
         ));
     }
 
-    for (event, hs) in wanted(t) {
+    for (event, hs) in wanted(t, program) {
         let list = doc
             .as_object_mut()
             .and_then(|o| o.entry("hooks").or_insert_with(|| serde_json::json!({})).as_object_mut())
@@ -468,6 +490,73 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
         assert_eq!(back, theirs, "it takes away only its own");
         assert_eq!(status(&t), Status::Absent);
+    }
+
+    /// Another app that installs a hook of its own into the same file keeps it.
+    ///
+    /// These files are shared ground: more than one program asks a CLI to
+    /// report on itself, and they all write into the one settings file. The
+    /// word "hook" is what every one of them is about, so a rule that removed
+    /// anything mentioning it would quietly disable a neighbour -- and the
+    /// person would see it as that other app going deaf, with nothing naming
+    /// the app that did it. What makes an entry ours is our own name in it.
+    #[test]
+    fn another_apps_hook_in_the_same_file_is_left_alone() {
+        let dir = tmp("neighbour");
+        let t = target(&dir, HookFormat::Args);
+        // Shaped like the ones really found in the wild: a script of theirs,
+        // under the events we want too, and the word "hook" all through it
+        let theirs = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{ "hooks": [
+                    { "type": "command", "command": "C:/Users/me/.other/agent-hooks/their-hook.cmd || echo {}", "timeout": 10 }
+                ]}],
+                "Stop": [{ "hooks": [
+                    { "type": "command", "command": "other-tool --hook stop", "timeout": 10 }
+                ]}]
+            }
+        });
+        std::fs::write(&t.file, serde_json::to_string_pretty(&theirs).unwrap()).unwrap();
+
+        install(&t).unwrap();
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
+        for event in ["SessionStart", "Stop"] {
+            let theirs_here = &theirs["hooks"][event][0]["hooks"][0];
+            let found = after["hooks"][event]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|g| g["hooks"].as_array().is_some_and(|hs| hs.contains(theirs_here)));
+            assert!(found, "the other app's {event} hook was taken out: {after}");
+        }
+        // ...and taking ours away leaves theirs exactly as it was written
+        uninstall(&t).unwrap();
+        let back: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
+        assert_eq!(back, theirs, "removing ours disturbed the other app's");
+    }
+
+    /// A repair tool writes in the app it is repairing, not itself.
+    ///
+    /// What goes into these files is a command line the CLI runs on every
+    /// turn. Taken from "whatever process is asking", a tool that puts the
+    /// hook back would write ITSELF in -- and every turn afterwards would run
+    /// a one-shot diagnostic instead of the app.
+    #[test]
+    fn the_program_written_in_is_the_one_named() {
+        let dir = tmp("named");
+        let t = target(&dir, HookFormat::Args);
+        let elsewhere = dir.join("SomeWhereElse.exe");
+        install_as(&t, &elsewhere).unwrap();
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
+        let said = after["hooks"]["SessionStart"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert_eq!(said, elsewhere.display().to_string(), "it wrote a different program in");
+        // And the entry reads as installed for THAT app, while this build --
+        // which is not what will run -- sees it as naming somewhere else
+        assert_eq!(status_of(&t, &elsewhere), Status::Installed);
+        assert_eq!(status(&t), Status::Stale);
     }
 
     /// A path with no space in it is its own space-free spelling, wherever
@@ -623,7 +712,7 @@ mod tests {
     /// be written in Windows' second, space-free spelling.
     #[test]
     fn the_bare_form_carries_no_quotes() {
-        let h = handler(HookFormat::Bare, TIMEOUT_S, "state:DONE");
+        let h = handler(HookFormat::Bare, TIMEOUT_S, "state:DONE", &me());
         let line = h["command"].as_str().unwrap();
         assert!(!line.contains('"'), "with quotes it does not start: {line}");
         assert!(line.ends_with(" --hook state:DONE"), "{line}");
