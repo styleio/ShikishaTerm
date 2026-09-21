@@ -351,6 +351,8 @@
   "tui.discuss.start.ph": "議題を入力（例: リモートワークは是か非か）",
   "tui.discuss.start.btn": "開始する",
   "tui.stop": "停止",
+  "tui.build.copy": "押すとこの行をコピーします",
+  "tui.build.copied": "ビルドをコピーしました",
   "tui.restart": "再起動",
   "tui.restart.arm": "もう一度",
   "tui.restart.title": "今見ているタブを再起動します。動いている間は二度押し（もう一度押すと実行）",

@@ -2278,7 +2278,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #status .pill, #stop, #restart { flex:none; white-space:nowrap; }
   /* The build stamp gives way first: it is for whoever built this, and the
      usage words are for whoever is paying for the AI */
-  #status .build { flex:0 4 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #status .build { flex:0 4 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    cursor:pointer; }
+  #status .build:hover { color:var(--text); }
   .pill { padding:1px 8px; border-radius:999px; border:1px solid var(--line); }
   .pill.on { color:var(--live); border-color:color-mix(in srgb, var(--live) 40%, var(--bg)); }
   .pill.off { color:var(--dim); }
@@ -9050,6 +9052,17 @@ function usagePill() {
     win(S.usage.five),
     win(S.usage.week));
 }
+// The build stamp. It is the answer to "which build are you looking at?", and
+// that question is always asked of somebody who is looking at it and has to
+// get it into a message -- so pressing the words copies the line. Nothing is
+// drawn beside them: a mark would take room from a stamp that is already the
+// first thing this bar gives up (see the stylesheet), and the words being the
+// button is what a title and a pointer are for
+function buildStamp() {
+  const b = el("span", {class:"build", title:T["tui.build.copy"] || "Press to copy this line"}, BUILD);
+  b.onclick = () => copyText(BUILD).then(() => toast(T["tui.build.copied"] || "Build copied"));
+  return b;
+}
 function drawStatus() {
   const s = document.getElementById("status");
   // On a phone the middle of this bar is a row that scrolls sideways, and the
@@ -9097,7 +9110,7 @@ function drawStatus() {
   [
     mid,
     el("span", {class:"grow"}),
-    el("span", {class:"build"}, BUILD),
+    buildStamp(),
     restartBtn(),
     el("span", {id:"stop", onclick:() => send({kind:"stop"})},
       T["tui.stop"] || "STOP"),
@@ -18182,14 +18195,21 @@ fn built(sticky: bool, by: Served) -> String {
         })
         .replace("{{PWA}}", &crate::pwa::head(sticky))
         .replace(
-        "{{BUILD}}",
-        &serde_json::to_string(&format!(
-            "build {}  ({})",
-            env!("BUILD_TIME"),
-            env!("BUILD_REV")
-        ))
-        .unwrap_or_else(|_| "\"\"".into()),
-    )
+            "{{BUILD}}",
+            &serde_json::to_string(&stamp()).unwrap_or_else(|_| "\"\"".into()),
+        )
+}
+
+/// What the bottom right of the window says this build is.
+///
+/// Written once and read twice: the page carries it as a constant, the state
+/// carries it as a field, and the board reloads itself when the two disagree
+/// (that is how a page left over from the previous build heals). Two copies of
+/// the same format string are two chances for that comparison to be wrong
+/// forever. It is also what pressing the stamp copies, so it says the same
+/// thing on screen and in a message -- no double spaces that only HTML hides.
+pub fn stamp() -> String {
+    format!("build {} ({})", env!("BUILD_TIME"), env!("BUILD_REV"))
 }
 
 #[cfg(test)]
@@ -20734,6 +20754,29 @@ mod tests {
         assert!(
             PAGE.contains(r#"T["tui.nav.url.go"]"#),
             "the words for it are written into the page instead of translated"
+        );
+    }
+
+    /// The build stamp is the button that copies it.
+    ///
+    /// Which build is on screen is the first thing anyone is asked when
+    /// something looks wrong, and until now the only way to answer was to read
+    /// a timestamp and a short hash off the bar and type them into a message,
+    /// which is where a wrong answer comes from.
+    #[test]
+    fn the_build_stamp_copies_itself() {
+        assert!(
+            PAGE.contains("b.onclick = () => copyText(BUILD)"),
+            "pressing the build stamp does not copy it"
+        );
+        assert!(
+            PAGE.contains("#status .build:hover { color:var(--text); }"),
+            "the one thing on this bar that can be pressed does not look like it"
+        );
+        // Its words are its own: nothing is drawn beside them
+        assert!(
+            PAGE.contains(r#"el("span", {class:"build", title:T["tui.build.copy"]"#),
+            "the stamp is not the button, or its words are written into the page"
         );
     }
 
