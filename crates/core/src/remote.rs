@@ -2524,7 +2524,7 @@ fn open_cast(
 }
 
 fn is_settings_path(path: &str) -> bool {
-    if path == "/cfg" || path == "/help" || path == "/result" {
+    if path == "/cfg" || path == "/help" || path == "/result" || path == "/guide" {
         return true;
     }
     if let Some(rest) = path.strip_prefix("/api/") {
@@ -2550,9 +2550,9 @@ fn proxy_settings(
     // caller asked to land on rides along — `?section=` / `?addtab=` / `?ret=`
     // say which screen to open. Dropping them here landed every walk to the
     // settings on a plain page, which is how the tab bar's + came to do nothing.
-    if path == "/cfg" && !query_value(req.url(), "t").is_empty() {
+    if matches!(path, "/cfg" | "/guide") && !query_value(req.url(), "t").is_empty() {
         let cookie = format!("sst={remote_token}; Path=/; HttpOnly; SameSite=Strict");
-        let location = format!("/cfg{}", carried_query(req.url()));
+        let location = format!("{path}{}", carried_query(req.url()));
         let resp = Response::empty(302)
             .with_header(Header::from_bytes(&b"Location"[..], location.as_bytes()).unwrap())
             .with_header(Header::from_bytes(&b"Set-Cookie"[..], cookie.as_bytes()).unwrap());
@@ -2566,6 +2566,8 @@ fn proxy_settings(
     };
 
     let query = req.url().split_once('?').map(|(_, q)| q.to_string());
+    // `/cfg` is the settings' own root; everything else is asked for by the
+    // name it has over there, the guide's panel included
     let sub = if path == "/cfg" { "/" } else { path };
     let url = match &query {
         Some(q) if !q.is_empty() => format!("{origin}{sub}?{q}"),

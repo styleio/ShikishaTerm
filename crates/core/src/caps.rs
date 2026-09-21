@@ -1119,6 +1119,12 @@ impl Capabilities {
             .copied()
     }
 
+    /// Put a placed page above the others (see `BrowserHost::raise_child`).
+    pub fn raise_page(&self, name: &str) {
+        let Some(h) = self.host.borrow().as_ref().map(std::rc::Rc::clone) else { return };
+        let _ = h.raise_child(&Self::key(self.desk.get(), name));
+    }
+
     pub fn browser_close(&self, name: &str) -> Result<()> {
         let desk = self.desk.get();
         let key = Self::key(desk, name);

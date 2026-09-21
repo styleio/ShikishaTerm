@@ -2522,6 +2522,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      gives it (runtime::dialog_rect): at most {{DLG_W}} across, at most
      {{DLG_H}} down, {{DLG_TOP}} from the top, {{DLG_EDGE}} of an edge each
      side. The page inside is what draws the dialog, so nothing here paints */
+  /* The ? that answers, on a phone: a sheet up from the bottom, with no
+     dimming over the board -- the whole point of it is talking to it while
+     touching what is behind (style guide 5.2). Under the dialogs, because a
+     dialog is a question waiting for an answer and this is not */
+  #guidewrap { position:fixed; left:0; right:0; bottom:0; height:70vh; z-index:50;
+    background:var(--panel); border-top:1px solid var(--line);
+    border-radius:var(--r-card) var(--r-card) 0 0; overflow:hidden;
+    box-shadow:0 -8px 24px #0007; }
+  #guidewrap[hidden] { display:none; }
+  #guidewrap iframe { display:block; width:100%; height:100%; border:0; }
   #cfgwrap { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:flex-start; justify-content:center; z-index:52;
     padding:{{DLG_TOP}} {{DLG_EDGE}} {{DLG_EDGE}}; }
@@ -3663,6 +3673,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
        Filled when it opens and emptied when it closes, so a frame nobody is
        looking at is not left holding a page (see openCfgLayer) -->
   <div id="cfgwrap" hidden></div>
+  <div id="guidewrap" hidden></div>
   <!-- Somewhere else to work. The same list on the window and on a phone -->
   <!-- The reader: what was said on this tab, as text you can scroll and copy.
        Its own layer rather than a pane, because it covers the terminal and
@@ -4144,10 +4155,10 @@ function drawTabs() {
           T["tui.update.close"] || ""))));
   }
   // The settings gear, pinned to the very bottom of the sidebar. Always visible.
-  // Beside it, the manual on the site: the window asks the app to open the
-  // PC's browser, the phone follows a plain link
+  // Beside it, the ? that answers. The window places a panel over the board;
+  // a phone has no room to float one, so it comes up from the bottom in a
+  // frame over the same page (style guide 5.2)
   const settingsOpen = !!S.settings_open;
-  const manual = T["tui.help.url"] || "https://shikisha-term.com/manual/";
   nav.append(el("div", {class:"gearrow"},
     // On the phone, settings is served by reverse-proxy at /cfg and rendered
     // natively (responsive) — navigate there, handing over the token once in
@@ -4155,11 +4166,9 @@ function drawTabs() {
     // it opens as the child WebView, as before.
     el("span", {class:"sidebtn gear" + (settingsOpen ? " sel" : ""),
         title:T["tui.menu.settings"] || "SETTINGS", onclick:() => openSettings()}, "⚙️"),
-    REMOTE
-      ? el("a", {class:"sidebtn help", href:manual, target:"_blank", rel:"noopener",
-          title:T["tui.help.site"] || "Manual"}, el("span", {}, "?"))
-      : el("span", {class:"sidebtn help", title:T["tui.help.site"] || "Manual",
-          onclick:() => send({kind:"help"})}, el("span", {}, "?")),
+    el("span", {class:"sidebtn help" + (guideUp() ? " sel" : ""),
+        title:T["guide.menu"] || "Ask about this program",
+        onclick:() => toggleGuide()}, el("span", {}, "?")),
     // The ideas: notes jotted down now and dealt with later, per project
     el("span", {class:"sidebtn ideabtn" + (ideasOpen ? " sel" : ""), title:T["tui.ideas.open"] || "Ideas",
         onclick:e => { e.stopPropagation(); window.__openIdeas(); }}, "💡"),
@@ -4174,6 +4183,48 @@ function drawTabs() {
         onclick:e => { e.stopPropagation(); quickOpen ? closeQuick() : window.__openQuick(); }}, "🎛️")));
   drawCoach();
 }
+
+// ── The ? that answers ────────────────────────────────────
+// One button, two surfaces. The window asks the app, which places the panel
+// over the board and remembers where it was put. A phone has no room to float
+// anything, so the same page arrives in a sheet up from the bottom -- and
+// because it is the same page, there is one panel and not two.
+function guideUp() {
+  return !!document.getElementById("guideframe");
+}
+function toggleGuide() {
+  if (typeof REMOTE !== "undefined" && REMOTE) {
+    guideUp() ? closeGuide() : openGuide();
+    drawNav();
+    return;
+  }
+  send({kind:"help"});
+}
+function openGuide() {
+  const wrap = document.getElementById("guidewrap");
+  if (!wrap) return;
+  closeGuide();
+  const f = document.createElement("iframe");
+  f.id = "guideframe";
+  f.title = T["guide.title"] || "";
+  // The token is handed over once; the proxy trades it for a cookie and
+  // bounces to a URL without it, exactly as the settings are reached
+  f.src = "guide?t=" + encodeURIComponent(TOKEN);
+  wrap.append(f);
+  wrap.hidden = false;
+}
+function closeGuide() {
+  const wrap = document.getElementById("guidewrap");
+  if (!wrap) return;
+  wrap.hidden = true;
+  wrap.textContent = "";
+}
+// Its own ✕, said from inside the frame
+window.addEventListener("message", e => {
+  const f = document.getElementById("guideframe");
+  if (!f || e.source !== f.contentWindow || e.origin !== location.origin || !e.data) return;
+  if (e.data.guide === "shut") { closeGuide(); drawNav(); }
+});
 
 // ── The Issue tab ─────────────────────────────────────────
 // The desk's issues and pull requests. Every button is one request the app
@@ -19513,8 +19564,11 @@ mod tests {
         assert!(PAGE.contains(r#"T["tui.update.title.store"]"#), "the pill cannot say a Store update that has no number");
         assert!(PAGE.contains(r#"send({kind:"update", open:true})"#) && PAGE.contains(r#"send({kind:"update", open:false})"#));
         assert!(!PAGE.contains("/api/update/install"), "it installs straight from the pill");
-        assert!(PAGE.contains(r#"el("a", {class:"sidebtn help", href:manual, target:"_blank", rel:"noopener","#), "the phone's ? is not a link");
+        // The ? answers rather than linking out: the window asks the app to
+        // place the panel, a phone frames the same page in a sheet of its own
         assert!(PAGE.contains(r#"send({kind:"help"})"#), "the window's ? does not ask the app");
+        assert!(PAGE.contains(r#"f.src = "guide?t=" + encodeURIComponent(TOKEN);"#), "the phone's ? opens nothing");
+        assert!(!PAGE.contains(r#"T["tui.help.url"]"#), "the ? still leaves for the site");
     }
 
     /// The branch dialog says what the new folder runs, and can make one

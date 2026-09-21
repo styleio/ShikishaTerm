@@ -184,6 +184,12 @@ impl Scheme {
         out.push_str(&format!("--live:{};", ansi[2]));
         out.push_str(&format!("--warn:{};", ansi[3]));
         out.push_str(&format!("--stop:{};", ansi[1]));
+        // A box somebody picked for the guide to write in. The scheme's yellow
+        // like `--warn`, and a separate name because it says something else:
+        // `--warn` is the program saying a person is needed, this is a person
+        // saying an AI is wanted. Sharing the name would mean that changing
+        // what one of them looks like silently changed the other
+        out.push_str(&format!("--pick:{};", ansi[3]));
         // On a horizontal rule this means one thing and one thing only: the
         // focus is here. The focused pane underlines its caption with it, and
         // nothing else may draw a plain separator in it -- the composer's own

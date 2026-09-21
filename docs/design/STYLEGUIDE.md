@@ -74,6 +74,7 @@ weight, a form has no order to read in.
 | `--brand` | **Focus and "answered"**: the focused pane's underline, the DONE dot, the selected row's edge, the primary button's outline | Never as a border for structure; never for text that is not a state |
 | `--live` | **Working**: the BUSY dot, a bar that is filling normally, AUTO ON | |
 | `--warn` | **Needs a person, or nearly used up**: the QUESTION dot, a limit notice, a bar past 80%, a folder that drifted behind | |
+| `--pick` | **Picked for an AI to fill in**: the border of the box somebody pressed to have the guide's ? write in it | Only what a person picks and a person can unpick. Never put on by the program |
 | `--stop` | **Stopped or dangerous**: the EXIT dot, the stop button, a bar past 95%, delete | |
 
 A colour used for a state must not be used for decoration nearby. A blue rule
@@ -283,6 +284,22 @@ gear that opens all of them opens a screen. A screen too small to leave any
 board around either of them is given the whole of itself instead
 (`runtime::SettingsPlace` holds both sizes and that rule, for the window and
 for a browser alike).
+
+**A floating panel** differs from a dialog in that **it does not stop the
+board**. There is one so far -- the guide's ? -- and being able to talk to it
+while touching the settings is the whole reason it exists, so it has no
+backdrop and is picked up and moved by its head. 380px wide,
+`min(560px, window height - 112px)` tall, `--panel` with 1px of `--line`,
+10px corners, shadow `0 8px 24px #0007`. It first appears 16px in from the
+bottom right. **It never leaves the screen**: 24px of the head always stays
+inside the window. The head is 40px (title 13.5/600, ✕ at the right) and is
+the only part that can be picked up (`cursor: grab`, `grabbing` while held).
+**No backdrop, and Esc does not close it** -- closing is the ✕, or pressing
+again the button that opened it (a panel that vanishes when Esc is pressed in
+the screen behind it is not guiding anybody). **On a phone it does not
+float**: a sheet up from the bottom, 70vh tall, corners on the top only. On a
+narrow screen a floating panel makes the finger's drag and the page's scroll
+fight over the same gesture.
 
 ### 5.3 Where the buttons live
 

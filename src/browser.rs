@@ -202,6 +202,9 @@ pub enum Cmd {
         name: String,
         rect: (i32, i32, i32, i32),
     },
+    /// Put a placed page above the others. A page built later already sits
+    /// above one built earlier; this is for when that is the wrong way round
+    RaiseChild { name: String },
     /// Remove a placed page
     RemoveChild { name: String },
     /// Take in the windows pages asked for, and let go of the ones that asked
@@ -819,6 +822,13 @@ impl Browser {
         self.send(Cmd::ChildBounds {
             name: name.to_string(),
             rect,
+        })
+    }
+
+    /// Put the placed page above the others.
+    pub fn raise_child(&self, name: &str) -> Result<()> {
+        self.send(Cmd::RaiseChild {
+            name: name.to_string(),
         })
     }
 
@@ -1892,6 +1902,28 @@ fn run_window(
                             "err.browser.log_place_failed",
                             &[("name", &name), ("e", &format!("{e}"))],
                         )),
+                    }
+                }
+                Cmd::RaiseChild { name } => {
+                    // The same move the board makes when it is built again,
+                    // for one page rather than all of them
+                    #[cfg(windows)]
+                    if let Some(v) = children.get(&name) {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{
+                            HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
+                        };
+                        use wry::WebViewExtWindows;
+                        unsafe {
+                            SetWindowPos(
+                                v.hwnd().0,
+                                HWND_TOP,
+                                0,
+                                0,
+                                0,
+                                0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                            );
+                        }
                     }
                 }
                 Cmd::ChildBounds { name, rect } => {
@@ -4370,6 +4402,7 @@ impl BrowserHost for Browser {
     fn child_bounds(&self, name: &str, rect: (i32, i32, i32, i32)) -> Result<()> {
         Browser::child_bounds(self, name, rect)
     }
+    fn raise_child(&self, name: &str) -> Result<()> { Browser::raise_child(self, name) }
     fn close_child(&self, name: &str) -> Result<()> { Browser::close_child(self, name) }
     fn trust(&self, url: &str) -> Result<()> { Browser::trust(self, url) }
     fn record_all_off(&self) { Browser::record_all_off(self) }

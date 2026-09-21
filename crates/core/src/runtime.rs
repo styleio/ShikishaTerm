@@ -1310,6 +1310,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // tab), or the dialog the board's + opens. Only meaningful while
     // `settings_open`
     let mut settings_place = SettingsPlace::Full;
+    // The guide's panel: whether it is up, and where it was put
+    let mut guide_open = false;
+    let mut guide_at = PanelAt::default();
     // Flag for dragging the tab-bar border (lets the mouse adjust its width)
     // The settings web GUI (launched via INDEX's [e], stopped when the app exits)
     let mut web: Option<webui::WebUi> = None;
@@ -3955,10 +3958,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // has measured itself there is no window to cover, and a page
             // given nothing is a page nobody can find again
             let room = shell.geom_full().2 > 0 && shell.geom_full().3 > 0;
+            // The panel floats over whatever is underneath, so it is placed
+            // with them rather than instead of them. Hidden by the same things
+            // that hide a placed page: a dialog the board drew is drawn by the
+            // board, and a page has no way to be under it
+            let panel: Vec<(String, (i32, i32, i32, i32))> = (guide_open && !covered && room)
+                .then(|| vec![(GUIDE_TAB.to_string(), guide_at.rect(shell.geom_full()))])
+                .unwrap_or_default();
             if settings_open && !covered && room {
                 let full = shell.geom_full();
                 let at = settings_place.rect(full);
-                caps.show_at(&[(SETTINGS_TAB.to_string(), at)]);
+                caps.show_at(&[vec![(SETTINGS_TAB.to_string(), at)], panel].concat());
             } else {
             let shown: Vec<(String, (i32, i32, i32, i32))> = pane_layout
                 .leaves()
@@ -3979,7 +3989,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 })
                 .filter(|_| !covered)
                 .collect();
-            caps.show_at(&shown);
+            caps.show_at(&[shown, panel].concat());
             }
         }
         // Hand off that the bar's button was pressed. The board (or the phone)
@@ -6950,6 +6960,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // was pressed on; the settings themselves get the window
                         settings_place =
                             if want.sheet { SettingsPlace::Sheet } else { SettingsPlace::Full };
+                        // A page built now sits above every page built before
+                        // it, and the panel was built before. Put it back on
+                        // top -- it is what sent them here, and being covered
+                        // by the screen it opened would be the worst of both
+                        if guide_open {
+                            caps.raise_page(GUIDE_TAB);
+                        }
                         i18n::t("msg.settings_here")
                     }
                     Err(e) => i18n::tp("msg.settings_failed", &[("error", &e.to_string())]),
@@ -6983,8 +7000,47 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             thanks_asked = true;
             let _ = crate::crypto::write_atomic(&config::state_path("thanks-asked"), "1");
         }
+        // The ? beside the gear. It used to open the manual on the site;
+        // now it opens something that answers, and the manual is a line
+        // inside it. Pressing it again puts it away
         if shell.mail().take_help_site() {
-            crate::webui::open_external(&i18n::t("tui.help.url"));
+            guide_open = !guide_open;
+            match guide_open {
+                true => {
+                    if let Err(e) =
+                        open_guide(&mut web, &config_file, &remote_info, &web_password, &caps)
+                    {
+                        append_hook_log(&format!("the guide would not open: {e:#}"));
+                        guide_open = false;
+                    }
+                }
+                false => shut_guide(&caps),
+            }
+        }
+        // What the panel asked the window for while it was open. Nothing here
+        // happens on the panel's own thread: opening a screen, moving and
+        // closing are all the window's, and this is where the window is
+        if guide_open {
+            let wants = crate::guide::take_wants();
+            if wants.moved != (0, 0) {
+                guide_at = guide_at.moved(wants.moved, shell.geom_full());
+            }
+            if let Some(handle) = wants.open {
+                // A desk's screens are named `desk:<entry>` and the program's
+                // by the entry alone, which is exactly what the page's
+                // ?section= understands
+                shell.mail().open_settings = Some(crate::mailbox::SettingsWanted {
+                    section: Some(handle),
+                    // Over the board, so the panel that sent them there is
+                    // still beside the screen it sent them to
+                    sheet: true,
+                    ..Default::default()
+                });
+            }
+            if wants.shut {
+                guide_open = false;
+                shut_guide(&caps);
+            }
         }
         // The maker's install page for the tab in front, when it is one that
         // could not start. The address comes from the profile, never the page
@@ -7912,6 +7968,60 @@ pub const SHEET_TALL: i32 = 760;
 /// dialog's: under it, the page is given the whole of the area
 pub const SHEET_MIN_W: i32 = SHEET_WIDE / 2 + DLG_EDGE * 2;
 pub const SHEET_MIN_H: i32 = SHEET_TALL / 2 + DLG_TOP + DLG_EDGE;
+
+/// The name used when placing the guide's panel inside the window.
+pub const GUIDE_TAB: &str = "guide";
+/// The style guide's floating panel (5.2): how wide, how tall it grows to,
+/// and how much of its head must stay inside the window
+pub const PANEL_WIDE: i32 = 380;
+pub const PANEL_TALL: i32 = 560;
+/// The head is 40px; leaving less than this of it inside would leave nothing
+/// to take hold of to bring it back
+pub const PANEL_HELD: i32 = 24;
+
+/// Where the panel sits, in the content area, and how it is moved and kept
+/// inside it.
+///
+/// The app holds this rather than the page, because the page is the thing
+/// being placed: a page cannot put itself somewhere, and a page that thought
+/// it knew where it was would be wrong the moment the window was resized.
+#[derive(Clone, Copy, Debug)]
+pub struct PanelAt {
+    /// From the left and the top of the content area, before it is held inside
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Default for PanelAt {
+    /// Where it stands the first time: in from the bottom right, which is the
+    /// corner the ? that opens it is in
+    fn default() -> Self {
+        PanelAt { x: i32::MAX, y: i32::MAX }
+    }
+}
+
+impl PanelAt {
+    /// The rectangle it gets, out of the whole content area, kept inside it.
+    pub fn rect(self, full: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+        let (ax, ay, aw, ah) = full;
+        let w = PANEL_WIDE.min(aw);
+        let h = PANEL_TALL.min(ah);
+        // The first time, and whenever the window has grown past where it was
+        // left, it stands in from the bottom right
+        let want = |v: i32, corner: i32| if v == i32::MAX { corner } else { v };
+        let x = want(self.x, aw - w - DLG_EDGE).clamp(PANEL_HELD - w, aw - PANEL_HELD);
+        let y = want(self.y, ah - h - DLG_EDGE).clamp(0, (ah - PANEL_HELD).max(0));
+        (ax + x, ay + y, w, h)
+    }
+
+    /// The same, moved by a drag, so that where it is put is where it was
+    /// dragged to rather than where the drag started
+    pub fn moved(self, by: (i32, i32), full: (i32, i32, i32, i32)) -> Self {
+        let (ax, ay, _, _) = full;
+        let (x, y, _, _) = self.rect(full);
+        PanelAt { x: x - ax + by.0, y: y - ay + by.1 }
+    }
+}
 
 /// Where an open settings page stands.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -9038,6 +9148,33 @@ pub fn config_file_dir() -> std::path::PathBuf {
 /// Opens the settings screen inside our own window. Only launched once; from
 /// the second time on, it just returns to the same location.
 /// `query` is extra instruction appended to the URL (e.g. "&addtab=0"; empty by default)
+/// Put the guide's panel on screen.
+///
+/// The same page the settings come from, so it is reached the same way and
+/// shares their token. Where it stands is the loop's business; this only makes
+/// it exist.
+pub fn open_guide(
+    web: &mut Option<webui::WebUi>,
+    config_file: &std::path::Path,
+    remote_info: &Arc<Mutex<webui::RemoteInfo>>,
+    web_password: &Arc<Mutex<Option<String>>>,
+    caps: &hooks::Caps,
+) -> Result<()> {
+    let url = ensure_web_url(web, config_file, remote_info, web_password, caps)?;
+    // `<host>/?token=x` is the settings; the panel is `<host>/guide?token=x`
+    let at = url.replace("/?token=", "/guide?token=");
+    caps.browser_open(GUIDE_TAB, &at, shikisha_shared::BrowserProfile::shared_default())?;
+    crate::guide::set_up(true);
+    Ok(())
+}
+
+/// Take it away again, and let go of whatever box it was writing in -- that
+/// was picked for it, and there is nothing to write in it now
+fn shut_guide(caps: &hooks::Caps) {
+    let _ = caps.browser_close(GUIDE_TAB);
+    crate::guide::set_up(false);
+}
+
 pub fn open_settings(
     web: &mut Option<webui::WebUi>,
     config_file: &std::path::Path,

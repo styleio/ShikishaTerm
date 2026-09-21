@@ -1522,6 +1522,132 @@ fn handle(
             ));
             req.respond(resp)?;
         }
+        // Opening a settings screen, moving the panel, putting it away. None
+        // of it happens here: what the panel asked for waits for the loop that
+        // draws the window, which is the only thing that can do any of it
+        ("POST", "/api/guide/open") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                return Ok(req.respond(json_resp(serde_json::json!({"error": "too big"})))?);
+            };
+            let want = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("screen").and_then(|s| s.as_str()).map(str::to_string))
+                .unwrap_or_default();
+            let body = match crate::guide::want_open(&want) {
+                true => serde_json::json!({"ok": true}),
+                false => serde_json::json!({"error": crate::i18n::t("guide.err.no_screen")}),
+            };
+            req.respond(json_resp(body))?;
+        }
+        ("POST", "/api/guide/move") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                return Ok(req.respond(json_resp(serde_json::json!({"error": "too big"})))?);
+            };
+            let by = serde_json::from_str::<serde_json::Value>(&body).unwrap_or_default();
+            let n = |k: &str| by.get(k).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            crate::guide::want_move((n("x"), n("y")));
+            req.respond(json_resp(serde_json::json!({"ok": true})))?;
+        }
+        ("POST", "/api/guide/shut") => {
+            let mut req = req;
+            let _ = read_body(&mut req, MAX_BODY)?;
+            crate::guide::want_shut();
+            req.respond(json_resp(serde_json::json!({"ok": true})))?;
+        }
+        // The ? panel. Served from here because the token, the dictionary
+        // and the phone's way in are already here; where it sits on the
+        // screen is the app's business, not this server's
+        ("GET", "/guide") => {
+            let html = crate::i18n::render(&themed(crate::guide::page().to_string()))
+                .replace("__TOKEN__", token)
+                .replace("__DICT__", &crate::i18n::dict_json());
+            let resp = secure(Response::from_string(html).with_header(
+                Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
+            ));
+            req.respond(resp)?;
+        }
+        // Put the question to the assistant AI. It takes tens of seconds, and
+        // this server answers one request at a time, so it goes to a thread of
+        // its own -- otherwise the settings screen behind the panel stops
+        // answering for as long as the AI is thinking
+        ("POST", "/api/guide/ask") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                return Ok(req.respond(json_resp(serde_json::json!({"error": "too big"})))?);
+            };
+            let ask: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let question = ask.get("question").and_then(|q| q.as_str()).unwrap_or("").to_string();
+            let so_far: Vec<crate::guide::Said> = ask
+                .get("so_far")
+                .and_then(|s| serde_json::from_value(s.clone()).ok())
+                .unwrap_or_default();
+            let picked = crate::guide::picked();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::guide::ask(&question, &so_far, picked.as_ref()));
+            });
+            let body = match rx.recv() {
+                Ok(Ok(a)) => {
+                    let at = crate::guide::screen_of(&a.open)
+                        .map(|s| crate::i18n::tp("guide.open.at", &[("at", &crate::guide::where_it_is(s))]))
+                        .unwrap_or_default();
+                    serde_json::json!({"say": a.say, "open": a.open, "fill": a.fill, "at": at})
+                }
+                Ok(Err(e)) => serde_json::json!({"error": format!("{e:#}")}),
+                Err(e) => serde_json::json!({"error": e.to_string()}),
+            };
+            req.respond(json_resp(body))?;
+        }
+        // The box somebody picked on the settings screen, and putting one down
+        ("GET", "/api/guide/picked") => {
+            req.respond(json_resp(
+                serde_json::to_value(crate::guide::picked()).unwrap_or_default(),
+            ))?;
+        }
+        ("POST", "/api/guide/picked") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                return Ok(req.respond(json_resp(serde_json::json!({"error": "too big"})))?);
+            };
+            let want: Option<crate::guide::Picked> = serde_json::from_str::<crate::guide::Picked>(&body)
+                .ok()
+                .filter(|p| !p.label.trim().is_empty());
+            crate::guide::pick(want);
+            req.respond(json_resp(serde_json::json!({"ok": true})))?;
+        }
+        // What the settings screen should write into the picked box. Left
+        // here by the panel when a person presses the button under an answer,
+        // and taken by the settings screen the next time it asks
+        ("POST", "/api/guide/fill") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                return Ok(req.respond(json_resp(serde_json::json!({"error": "too big"})))?);
+            };
+            let text = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(str::to_string))
+                .unwrap_or_default();
+            let body = match crate::guide::picked() {
+                Some(_) => {
+                    crate::guide::leave_to_fill(&text);
+                    serde_json::json!({"ok": true})
+                }
+                None => serde_json::json!({"error": crate::i18n::t("guide.err.no_pick")}),
+            };
+            req.respond(json_resp(body))?;
+        }
+        // Whether the panel is up, and anything it left to be written. One
+        // question because the settings screen asks both on the same beat,
+        // and because "write this" only means anything while it is up
+        ("GET", "/api/guide/up") => {
+            let up = crate::guide::is_up();
+            req.respond(json_resp(serde_json::json!({
+                "up": up,
+                "fill": up.then(crate::guide::take_to_fill).flatten(),
+            })))?;
+        }
         // The result view: a finished run's transcript.md rendered as a chat
         // (AI-vs-AI discussion / code review / browser rally). Same token gate
         // as the settings page; the run id rides in the query string.
@@ -1555,6 +1681,10 @@ fn handle(
                     Some("https://github.com/styleio/ShikishaTerm/discussions".to_string())
                 }
                 Some("update-notes") => crate::update::notes_url(),
+                // The manual on the site. The ? beside the gear used to be
+                // this link and now answers instead, so the link lives inside
+                // what answers -- nothing that was reachable has been taken away
+                Some("manual") => Some(crate::i18n::t("tui.help.url")),
                 // How to install the program a tab needs. The address is the
                 // app's own, looked up by program name -- the page names a
                 // program, never a place to go
@@ -3888,6 +4018,8 @@ const PAGE: &str = r##"<!doctype html>
     off the card colour instead left the form with no edges at all */
  input[type=text], input[type=number], input[type=password], select {
    height:36px; padding:0 var(--s3); }
+ .picked, .picked:focus { border-color: var(--pick) !important;
+   box-shadow: 0 0 0 3px color-mix(in srgb, var(--pick) 22%, transparent) !important; }
  input[type=text], input[type=number], input[type=password], select, textarea {
    background:var(--bg); color:var(--text); border:1px solid var(--edge);
    border-radius:var(--r-ctl); font-size:13px; font-family:inherit; outline:none; }
@@ -12418,6 +12550,91 @@ if (EMBED) document.body.classList.add("embed");
 placeHeadLinks();
 measureHeader();
 
+// ── Being written in for ──────────────────────────────────────
+// While the guide's ? is open, pressing a box here picks it: the guide is
+// told what that box is called and what goes in it, and writes the answer
+// back into it. What is IN the box never leaves this page -- the guide is
+// answering "what should go here", not reading what is there.
+//
+// A box that holds a secret cannot be picked at all. Whether it is one is
+// read off the box itself (a password field) rather than from a list of
+// names, because a list is a thing to keep up to date and a type is not.
+let pickedBox = null;
+let guideUp = false;
+
+// What a box is: what goes in it, and what it offers when it offers a list
+function boxKind(box) {
+  if (box.tagName === "SELECT") return {kind:"choice", options:[...box.options].map(o => o.textContent)};
+  if (box.type === "checkbox") return {kind:"tick", options:[]};
+  if (box.type === "number") return {kind:"number", options:[]};
+  return {kind:"text", options:[]};
+}
+// What the page calls this box: the name written beside its row, the line
+// under it, and the card it is on. Read from what is drawn, so it cannot
+// disagree with what the person is looking at
+function boxNamed(box) {
+  const row = box.closest(".row") || box.closest(".card") || document.body;
+  const own = box.closest("label.check");
+  const label = (own ? own.textContent : (row.querySelector("label") || {}).textContent) || "";
+  const hint = (row.querySelector(".hint") || {}).textContent || "";
+  const card = box.closest(".card");
+  const head = card ? (card.querySelector("h2") || {}).textContent || "" : "";
+  return {label: label.trim(), hint: hint.trim(), screen: head.trim()};
+}
+function canPick(box) {
+  return box && box.type !== "password" && !box.disabled && !box.readOnly;
+}
+function unpick() {
+  if (pickedBox) pickedBox.classList.remove("picked");
+  pickedBox = null;
+}
+function guidePost(path, body) {
+  return fetch("/api/guide" + path, {method:"POST",
+    headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+    body: JSON.stringify(body || {})}).then(r => r.json()).catch(() => ({}));
+}
+document.addEventListener("click", e => {
+  if (!guideUp) return;
+  const box = e.target.closest("input, select, textarea");
+  if (!canPick(box)) return;
+  if (pickedBox === box) { unpick(); guidePost("/picked", {}); return; }
+  unpick();
+  pickedBox = box;
+  box.classList.add("picked");
+  guidePost("/picked", Object.assign(boxNamed(box), boxKind(box)));
+}, true);
+
+// Whether the ? is up, and what it left to be written. Asked for rather than
+// pushed, because this page is the only thing that knows how to write into
+// its own boxes -- a value set without the page's own "input" event leaves it
+// showing one thing and holding another
+setInterval(async () => {
+  let now = null;
+  try { now = await (await fetch("/api/guide/up", {headers:{"X-Token":TOKEN}})).json(); }
+  catch (e) { return; }
+  const was = guideUp;
+  guideUp = !!(now && now.up);
+  // Put away from the board: nothing here is picked for it any more
+  if (was && !guideUp) unpick();
+  if (!guideUp || !pickedBox) return;
+  const text = now.fill;
+  if (text === null || text === undefined) return;
+  const box = pickedBox;
+  if (box.type === "checkbox") {
+    const on = /^(1|true|on|yes|はい)$/i.test(String(text).trim());
+    if (box.checked !== on) { box.checked = on; box.dispatchEvent(new Event("change", {bubbles:true})); }
+  } else if (box.tagName === "SELECT") {
+    const want = [...box.options].find(o => o.textContent.trim() === String(text).trim()
+                                          || o.value === String(text).trim());
+    if (want) { box.value = want.value; box.dispatchEvent(new Event("change", {bubbles:true})); }
+  } else {
+    box.value = text;
+    box.dispatchEvent(new Event("input", {bubbles:true}));
+    box.dispatchEvent(new Event("change", {bubbles:true}));
+  }
+  box.focus();
+}, 900);
+
 // If the URL has addtab=<desk-index>, start with one tab already added
 // to that desk after loading (this is where the tab bar's + comes from).
 // desk=<desk-index> only expands that group (the gear passes the desk
@@ -12434,6 +12651,18 @@ load().then(() => {
   if (sec && globalSections().some(s => s.id === sec)) {
     goSection(sec, "center");
     return;
+  }
+  // One of a desk's settings, named as the guide names one: every entry a
+  // desk has is reachable this way, where DESK_LINKS holds only the few the
+  // board links to by an older name of their own
+  if (sec && sec.startsWith("desk:")) {
+    const want = sec.slice(5);
+    if (deskSections(desks[sel.desk] || {}).some(s => s.id === want)) {
+      const at = idx("desk");
+      sel = {desk:(desks[at] ? at : sel.desk), grp:null, tab:null, global:false};
+      goDeskSection(want, "center");
+      return;
+    }
   }
   // One of a desk's settings: that desk, at that entry
   if (sec && DESK_LINKS[sec]) {

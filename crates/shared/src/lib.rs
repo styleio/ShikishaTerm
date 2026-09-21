@@ -837,6 +837,16 @@ pub trait BrowserHost {
     /// named, because the runtime refers to it by name from then on
     fn open_child(&self, name: &str, url: &str, rect: (i32, i32, i32, i32), profile: BrowserProfile) -> anyhow::Result<()>;
     fn child_bounds(&self, name: &str, rect: (i32, i32, i32, i32)) -> anyhow::Result<()>;
+    /// Put one placed page above the others.
+    ///
+    /// A page made later sits above a page made earlier, which is the right
+    /// answer until two of them overlap on purpose: the guide's panel stands
+    /// over the settings, and opening the settings again would build them on
+    /// top of it. Answering is optional -- a host where pages never overlap
+    /// has nothing to raise.
+    fn raise_child(&self, _name: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn close_child(&self, name: &str) -> anyhow::Result<()>;
     /// Let this origin through the same gate a person's click would open
     fn trust(&self, url: &str) -> anyhow::Result<()>;

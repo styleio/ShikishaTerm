@@ -115,6 +115,17 @@ impl Screen {
 /// What a desk's screen is called in front of its own name.
 pub const DESK: &str = "desk:";
 
+/// Where a screen is, spelled out for a person: "Settings > Phone connection".
+pub fn where_it_is(s: &Screen) -> String {
+    crate::i18n::tp(
+        match s.scope {
+            Scope::Program => "guide.at.program",
+            Scope::Desk => "guide.at.desk",
+        },
+        &[("name", &crate::i18n::t(&s.label_key))],
+    )
+}
+
 /// The screen a handle names, if this program has one.
 pub fn screen_of(handle: &str) -> Option<&'static Screen> {
     screens().iter().find(|s| s.handle() == handle)
@@ -938,6 +949,361 @@ pub fn reference_path(root: &std::path::Path, code: &str) -> std::path::PathBuf 
     })
 }
 
+// ── The panel ────────────────────────────────────────────────────
+
+/// The ? panel, as it is written before a language is laid over it.
+///
+/// Served by the settings' own loopback server, because that is where the
+/// token, the dictionary and the phone's way in already are. In the window it
+/// is a page the app places over the board; on a phone the board lays it over
+/// itself in a frame, which is why nothing here touches the window.
+pub fn page() -> &'static str {
+    PANEL
+}
+
+const PANEL: &str = r##"<!doctype html>
+<html lang="{{__lang__}}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{guide.title}}</title>
+<style>
+:root{ {{THEME}}
+  --s1:4px; --s2:6px; --s3:10px; --s4:14px; --s5:18px;
+  --ui: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  --mono: "Cascadia Mono", Consolas, "Noto Sans Mono", monospace; }
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--panel);color:var(--text);font:13px/1.6 var(--ui);
+     display:flex;flex-direction:column;overflow:hidden}
+/* The head is the only part that is picked up */
+#head{height:40px;flex:none;display:flex;align-items:center;gap:var(--s2);
+      padding:0 var(--s2) 0 var(--s4);border-bottom:1px solid var(--line);
+      cursor:grab;user-select:none}
+#head.holding{cursor:grabbing}
+#head.still{cursor:default}
+#title{font-size:13.5px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+button{font:12.5px var(--ui);color:var(--text);background:var(--raise);
+       border:1px solid var(--edge);border-radius:6px;padding:var(--s1) var(--s3);cursor:pointer}
+button:hover{border-color:var(--edge-hi)}
+button.icon{background:none;border:none;padding:var(--s1) var(--s2);color:var(--dim);font-size:14px}
+button.icon:hover{color:var(--text)}
+button.go{border-color:var(--brand)}
+#talk{flex:1;overflow-y:auto;padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
+.turn{display:flex;flex-direction:column;gap:var(--s2)}
+.mine{align-self:flex-end;max-width:85%;background:var(--raise);border-radius:10px;
+      padding:var(--s2) var(--s3);white-space:pre-wrap;overflow-wrap:anywhere}
+.theirs{max-width:95%;white-space:pre-wrap;overflow-wrap:anywhere}
+.acts{display:flex;flex-wrap:wrap;gap:var(--s2)}
+.bad{color:var(--stop)}
+#first{color:var(--faint);font-size:11.5px}
+#first p{margin:0 0 var(--s3)}
+#first p:last-child{margin:var(--s3) 0 0}
+#first a{color:var(--brand)}
+#first li{margin:0 0 var(--s1)}
+#first ul{margin:0;padding-left:var(--s5)}
+#pick{flex:none;display:none;align-items:center;gap:var(--s2);margin:0 var(--s4) var(--s2);
+      padding:var(--s2) var(--s3);border:1px solid var(--pick);border-radius:6px;
+      background:color-mix(in srgb, var(--pick) 9%, transparent);font-size:11.5px}
+#pick.on{display:flex}
+#pickname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#foot{flex:none;display:flex;gap:var(--s2);padding:var(--s3) var(--s4);border-top:1px solid var(--line)}
+#q{flex:1;min-width:0;font:13px var(--ui);color:var(--text);background:var(--bg);
+   border:1px solid var(--edge);border-radius:6px;padding:var(--s2) var(--s3);resize:none;height:34px;max-height:96px}
+#q:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent)}
+#q::placeholder{color:var(--faint)}
+.waiting{color:var(--dim);font-size:11.5px}
+</style></head><body>
+<div id="head"><span id="title">{{guide.title}}</span>
+  <button class="icon" id="shut" title="{{common.close}}">✕</button></div>
+<div id="talk"><div id="first"></div></div>
+<div id="pick"><span id="pickname"></span><button class="icon" id="unpick" title="{{guide.pick.drop}}">✕</button></div>
+<div id="foot">
+  <textarea id="q" rows="1" placeholder="{{guide.ask.placeholder}}" autocomplete="off"></textarea>
+  <button class="go" id="send">{{guide.ask.send}}</button>
+</div>
+<script>
+const TOKEN = "__TOKEN__";
+const T = __DICT__;
+// On a phone this page is laid inside the board, which owns where it sits
+const INSIDE = window.parent !== window;
+const el = (tag, attrs, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined) continue;
+    if (k.startsWith("on")) n[k] = v; else n.setAttribute(k, v);
+  }
+  for (const c of kids) if (c !== null && c !== undefined) n.append(c);
+  return n;
+};
+const post = (path, body) => fetch("/api/guide" + path, {method:"POST",
+  headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+  body: JSON.stringify(body || {})}).then(r => r.json());
+const get = path => fetch("/api/guide" + path, {headers:{"X-Token":TOKEN}}).then(r => r.json());
+
+// ── What has been said ────────────────────────────────────
+// Kept here and handed back with every question: the AI is asked once per
+// question and remembers nothing of its own
+let said = [];
+let asking = false;
+const talk = document.getElementById("talk");
+
+function draw() {
+  talk.textContent = "";
+  if (!said.length) {
+    const first = el("div", {id:"first"});
+    first.append(el("p", {}, T["guide.first"] || ""));
+    const ul = el("ul", {});
+    for (const k of ["guide.first.a", "guide.first.b", "guide.first.c"]) {
+      if (T[k]) ul.append(el("li", {}, T[k]));
+    }
+    first.append(ul);
+    // What the ? used to be. Still one press away, from inside what replaced it
+    first.append(el("p", {},
+      el("a", {href:"#", onclick:e => { e.preventDefault();
+        fetch("/api/open?dest=manual", {headers:{"X-Token":TOKEN}}); }},
+        T["guide.manual"] || "")));
+    talk.append(first);
+  }
+  for (const turn of said) {
+    const box = el("div", {class:"turn"});
+    box.append(el("div", {class:"mine"}, turn.asked));
+    box.append(el("div", {class:"theirs" + (turn.bad ? " bad" : "")}, turn.said));
+    const acts = el("div", {class:"acts"});
+    if (turn.open) {
+      acts.append(el("button", {class:"go", onclick:() => go(turn)}, turn.at || T["guide.open"]));
+    }
+    if (turn.fill) {
+      acts.append(el("button", {class:"go", onclick:() => write(turn)}, T["guide.fill"]));
+    }
+    if (acts.childElementCount) box.append(acts);
+    talk.append(box);
+  }
+  if (asking) talk.append(el("div", {class:"waiting"}, T["guide.thinking"] || ""));
+  talk.scrollTop = talk.scrollHeight;
+}
+
+async function ask() {
+  const box = document.getElementById("q");
+  const question = box.value.trim();
+  if (!question || asking) return;
+  box.value = "";
+  asking = true;
+  draw();
+  let r = {};
+  try {
+    r = await post("/ask", {question, so_far: said.map(t => ({asked:t.asked, said:t.said}))});
+  } catch (e) {
+    r = {error: String(e)};
+  }
+  asking = false;
+  said.push(r.error
+    ? {asked: question, said: r.error, bad: true}
+    : {asked: question, said: r.say || "", open: r.open || "", at: r.at || "", fill: r.fill || ""});
+  draw();
+}
+
+// Nothing is opened or written until this is pressed: an answer is words
+// until a person acts on it
+async function go(turn) {
+  const r = await post("/open", {screen: turn.open});
+  if (r && r.error) { turn.said += "\n" + r.error; turn.bad = true; }
+  turn.open = "";
+  draw();
+}
+async function write(turn) {
+  const r = await post("/fill", {text: turn.fill});
+  if (r && r.error) { turn.said += "\n" + r.error; turn.bad = true; }
+  turn.fill = "";
+  draw();
+}
+
+// ── The box somebody picked ───────────────────────────────
+// Read from the settings screen, which knows what it is drawing. Only what it
+// is called and what goes in it ever arrives here; never what is in it
+let pickedNow = null;
+async function readPicked() {
+  let p = null;
+  try { p = await get("/picked"); } catch (e) { return; }
+  const had = pickedNow && pickedNow.label;
+  pickedNow = p && p.label ? p : null;
+  const bar = document.getElementById("pick");
+  bar.classList.toggle("on", !!pickedNow);
+  if (pickedNow) {
+    document.getElementById("pickname").textContent =
+      (T["guide.pick.at"] || "{label}").replace("{label}", pickedNow.label);
+  }
+  if (pickedNow && pickedNow.label !== had) document.getElementById("q").focus();
+}
+setInterval(readPicked, 1200);
+readPicked();
+
+// ── Being moved ───────────────────────────────────────────
+// The app holds the rectangle, so the page says how far it was dragged and the
+// app puts it there. The panel follows the pointer exactly, so the pointer
+// stays on the head it is holding
+const head = document.getElementById("head");
+if (INSIDE) {
+  head.classList.add("still");
+} else {
+  let from = null;
+  head.addEventListener("pointerdown", e => {
+    if (e.target.closest("button")) return;
+    from = {x: e.screenX, y: e.screenY};
+    head.setPointerCapture(e.pointerId);
+    head.classList.add("holding");
+  });
+  head.addEventListener("pointermove", e => {
+    if (!from) return;
+    const by = {x: e.screenX - from.x, y: e.screenY - from.y};
+    if (!by.x && !by.y) return;
+    from = {x: e.screenX, y: e.screenY};
+    post("/move", by);
+  });
+  const done = e => {
+    if (!from) return;
+    from = null;
+    head.classList.remove("holding");
+    try { head.releasePointerCapture(e.pointerId); } catch (err) {}
+  };
+  head.addEventListener("pointerup", done);
+  head.addEventListener("pointercancel", done);
+}
+
+document.getElementById("send").onclick = ask;
+document.getElementById("shut").onclick = () => {
+  if (INSIDE) window.parent.postMessage({guide: "shut"}, location.origin);
+  else post("/shut");
+};
+document.getElementById("unpick").onclick = () => { post("/picked", {}); readPicked(); };
+document.getElementById("q").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
+});
+document.getElementById("q").addEventListener("input", e => {
+  e.target.style.height = "34px";
+  e.target.style.height = Math.min(96, e.target.scrollHeight) + "px";
+});
+draw();
+document.getElementById("q").focus();
+</script></body></html>
+"##;
+
+// ── What the two screens say to each other ───────────────────────
+//
+// The panel and the settings are two pages, and the field somebody picked is
+// on one of them while the answer that fills it comes back to the other. What
+// passes between them is held here, in the one process both are served by --
+// the same honesty as `keys::IN_FORCE`: there is exactly one ? per process, so
+// a place per process is what it is.
+//
+// Never a value. What crosses is what a box is called and what goes in it, and
+// in the other direction what to put there. A box holding a secret is not
+// picked at all, which the settings page decides before anything is sent.
+
+static PICKED: std::sync::Mutex<Option<Picked>> = std::sync::Mutex::new(None);
+static TO_FILL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static WANTS: std::sync::Mutex<Wants> = std::sync::Mutex::new(Wants::none());
+static UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the panel is on screen.
+///
+/// The settings screen asks, because what it does when a box is pressed
+/// depends on it -- and only the window knows, the panel being a page the
+/// window places rather than something the page it is over can see
+pub fn is_up() -> bool {
+    UP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Said by the window, which is the only thing that puts it up or takes it
+/// away. Taking it away lets go of the box it was writing in
+pub fn set_up(up: bool) {
+    UP.store(up, std::sync::atomic::Ordering::Relaxed);
+    if !up {
+        pick(None);
+    }
+}
+
+/// What the panel has asked the app for, waiting to be acted on.
+///
+/// The panel is a page on the settings' own server, and the app is the loop
+/// that draws the window; they are the same process but not the same thread,
+/// so what one asks the other sits here until the loop comes round. The same
+/// shape as [`crate::mailbox`], for the same reason, and drained the same way.
+#[derive(Default, Debug, Clone)]
+pub struct Wants {
+    /// A settings screen to open, by handle
+    pub open: Option<String>,
+    /// How far the panel was dragged since last time
+    pub moved: (i32, i32),
+    /// The ✕ was pressed
+    pub shut: bool,
+}
+
+impl Wants {
+    const fn none() -> Self {
+        Wants { open: None, moved: (0, 0), shut: false }
+    }
+    pub fn anything(&self) -> bool {
+        self.open.is_some() || self.moved != (0, 0) || self.shut
+    }
+}
+
+/// Everything the panel has asked for, leaving the box empty.
+pub fn take_wants() -> Wants {
+    WANTS.lock().map(|mut w| std::mem::replace(&mut *w, Wants::none())).unwrap_or_default()
+}
+
+/// Open a settings screen, if this program has one by that name.
+pub fn want_open(handle: &str) -> bool {
+    let known = screen_of(handle).is_some();
+    if known && let Ok(mut w) = WANTS.lock() {
+        w.open = Some(handle.to_string());
+    }
+    known
+}
+
+/// Move the panel. Adds up, because a drag arrives as many small steps and the
+/// loop comes round once for a handful of them
+pub fn want_move(by: (i32, i32)) {
+    if let Ok(mut w) = WANTS.lock() {
+        w.moved = (w.moved.0 + by.0, w.moved.1 + by.1);
+    }
+}
+
+/// Put the panel away.
+pub fn want_shut() {
+    if let Ok(mut w) = WANTS.lock() {
+        w.shut = true;
+    }
+}
+
+/// The box the person has picked, if any.
+pub fn picked() -> Option<Picked> {
+    PICKED.lock().ok().and_then(|p| p.clone())
+}
+
+/// Pick one, or, with `None`, let the last one go.
+pub fn pick(what: Option<Picked>) {
+    if let Ok(mut p) = PICKED.lock() {
+        *p = what;
+    }
+    // What was waiting to be written belonged to the box that was picked then
+    if let Ok(mut f) = TO_FILL.lock() {
+        *f = None;
+    }
+}
+
+/// Leave a value for the settings page to put in the picked box.
+pub fn leave_to_fill(text: &str) {
+    if let Ok(mut f) = TO_FILL.lock() {
+        *f = Some(text.to_string());
+    }
+}
+
+/// Take it, if there is one. Taking it empties it: a value is written once,
+/// and a page that asks again has nothing more to write
+pub fn take_to_fill() -> Option<String> {
+    TO_FILL.lock().ok().and_then(|mut f| f.take())
+}
+
 // ── Answering ────────────────────────────────────────────────────
 
 /// What the ? came back with.
@@ -964,7 +1330,11 @@ pub struct Said {
 
 /// The field the person picked on the settings screen, as the screen itself
 /// reads it: never its value, only what it is called and what goes in it.
-#[derive(Clone, Debug, Default, serde::Deserialize)]
+///
+/// Read off the page being drawn rather than out of the index, because the DOM
+/// in front of somebody is the thing they are looking at and cannot disagree
+/// with itself.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Picked {
     #[serde(default)]
     pub label: String,
