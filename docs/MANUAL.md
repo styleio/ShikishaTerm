@@ -24,6 +24,10 @@ letters. `Ctrl+B 0` brings it back from anywhere.
   pill, and the worktrees stand under it. The tabs working in a folder are listed
   under its card. Right-click a folder card or a tab: **Rename** turns its name into a field
   right there (leaving the field saves it), and **Edit** opens its settings page.
+  **Take this folder off the list** does just that, for any folder, the primary
+  included: the folder and its files stay on disk, and the tabs standing in it
+  close with it. A tab in the middle of something is left alone and named
+  instead, so finish it or close it and the folder goes.
   A worktree's card has a red **Delete completely** at the bottom. It deletes the
   whole folder; links are unhooked first, so what they point to stays, and files
   copied in that git does not track go with it. It does not delete while there are

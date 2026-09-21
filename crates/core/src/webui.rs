@@ -9702,19 +9702,42 @@ function folderPane(desk, g, gi) {
   // Taking it out of the list, and -- for a folder the app made for a branch --
   // getting rid of the folder itself. Two different acts: one can be undone by
   // opening it again, and the other cannot
+  // The tabs standing in the folder go with it. They have to: a line left
+  // behind would point at the folder that moved up into its place, and it
+  // could not be emptied first anyway -- the tabs written here are started
+  // again on every launch, so a folder is never quietly tab-less
   const drop = () => {
+    const gone = tabsHere();
+    desk.tabs = (desk.tabs || []).filter(t => (t.group || 0) !== gi);
     desk.folders.splice(gi, 1);
     (desk.tabs || []).forEach(t => { if ((t.group || 0) > gi) t.group--; });
     sel = {desk:sel.desk, grp:null, tab:null, global:false};
     render(); refreshSave();
+    // What each of them signed in with is that tab's own, and once the line
+    // is gone nothing can name it again
+    const w = (desk.id || "").trim();
+    const keys = [];
+    for (const t of gone) {
+      const tid = (t.id || "").trim();
+      if (w && tid) keys.push("ssh/" + w + "/" + tid + "/password",
+                              "ssh/" + w + "/" + tid + "/passphrase");
+    }
+    if (keys.length) dropSecrets(keys);
   };
   const guard = () => {
-    if (tabsHere().length) { toast(T["settings.group.in_use"], true); return false; }
     if ((desk.folders || []).length <= 1) { toast(T["settings.group.last"], true); return false; }
     return true;
   };
+  // Asked when it takes tabs with it, and only then: the question is what the
+  // press costs, and a folder with nothing in it costs nothing
+  const askedDrop = async () => {
+    const n = tabsHere().length;
+    if (n && !await confirmAction(fill(T["settings.group.delete_confirm"],
+        {name: folderLabel(g, gi), n: String(n)}), T["settings.group.delete"])) return;
+    drop();
+  };
   const buttons = el("div", {class:"row"},
-    el("button", {class:"danger", onclick:() => { if (guard()) drop(); }},
+    el("button", {class:"danger", onclick:() => { if (guard()) askedDrop(); }},
       T["settings.group.delete"]),
     el("span", {class:"hint"}, T["settings.group.delete.hint"]));
   box.append(buttons);
@@ -14001,6 +14024,31 @@ mod tests {
         let out = &PAGE[out..out + 900];
         assert!(out.contains("Object.assign({}, g)"), "saving writes only the keys it knows");
         assert!(!out.contains("const o = {};"), "saving writes only the keys it knows");
+    }
+
+    /// A folder is taken out of the list with the tabs standing in it, rather
+    /// than refused until somebody empties it first.
+    ///
+    /// Emptying it first was not a thing anybody could do: the tabs are
+    /// written in these settings, so the next launch starts them again, and
+    /// the folder was never tab-less for long enough to be taken out. The
+    /// refusal was a wall with no door in it -- one folder, on the list
+    /// forever. The lines go with the folder now, and the press asks first
+    #[test]
+    fn a_folder_goes_with_its_tabs_rather_than_waiting_to_be_emptied() {
+        assert!(!PAGE.contains("if (tabsHere().length) { toast("),
+            "the folder is still refused while it has tabs");
+        assert!(PAGE.contains("desk.tabs = (desk.tabs || []).filter(t => (t.group || 0) !== gi);"),
+            "the tabs standing in the folder are left behind");
+        // ...and they are left behind pointing at whatever moved up into its
+        // place, which is the bug the refusal was standing in front of
+        assert!(PAGE.contains("desk.folders.splice(gi, 1);
+    (desk.tabs || []).forEach(t => { if ((t.group || 0) > gi) t.group--; });"),
+            "the folders below it are not renumbered");
+        assert!(PAGE.contains(r#"fill(T["settings.group.delete_confirm"],"#),
+            "a folder with tabs in it goes without a word");
+        assert!(PAGE.contains(r#"if ((desk.folders || []).length <= 1) { toast(T["settings.group.last"], true); return false; }"#),
+            "the last folder of a desk can be taken away");
     }
 
     #[test]

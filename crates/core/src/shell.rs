@@ -7040,6 +7040,11 @@ function folderMenu(e, g) {
     // Everything else about it -- the colour, where it is, taking it off the
     // list -- is on its own page in the settings
     item(T["tui.menu.edit"] || "", () => openSettings(null, false, g.folder)),
+    // Off the list, with nothing on disk touched. Every folder has it, the
+    // project's own checkout included -- that one is never thrown away, and
+    // until this was here it was the one folder with no way off the list at
+    // all except a settings page that refused while it had tabs
+    item(T["tui.menu.forget"] || "", () => forgetHere(g)),
     // Last and in red, the one entry that cannot be taken back. Only a
     // worktree: a project's own checkout is the repository itself
     g.linked && !g.host
@@ -7047,6 +7052,22 @@ function folderMenu(e, g) {
       : null,
   ], false, e);
 }
+// A folder taken off the list while it is right here. Nothing on disk is
+// touched -- the folder and everything in it stays where it is -- and the tabs
+// standing in it close with it, which is what the question says before it is
+// answered. The app refuses while one of them is in the middle of something,
+// and says which; the quiet ones it closes itself, because a folder whose tabs
+// come back on every launch cannot be emptied by hand first
+function forgetHere(g) {
+  askQuestion({
+    title: T["tui.forget.title"] || "",
+    say: T["tui.forget.say"] || "",
+    what: g.folder,
+    label: T["tui.menu.forget"] || "",
+    go: () => send({kind:"folderclose", folder:g.folder}),
+  });
+}
+
 // A worktree deleted for good, folder and all. Asked first unless the person
 // said not to ask again -- here, or under Basic
 function discardFolder(g) {
@@ -20816,6 +20837,28 @@ mod tests {
         assert!(PAGE.contains("go(input.value.trim(), !!never && unasked.checked)"), "the box's answer is not handed on");
         assert!(PAGE.contains(r#"send({kind:"folderdiscard", folder:g.folder, unasked})"#), "the answer does not reach the app");
         assert!(PAGE.contains("unasked.checked = false;"), "a box ticked once stays ticked in the next question");
+    }
+
+    /// Every folder can be taken off the list from where it stands, the
+    /// project's own checkout included -- that one is never thrown away, and
+    /// it used to have no way off the list at all: the settings page refused
+    /// while the folder had tabs, and the tabs it had were started again by
+    /// the next launch. The tabs go with it, and the app says which tab is in
+    /// the way when one of them is in the middle of something
+    #[test]
+    fn a_folder_is_taken_off_the_list_from_its_own_right_click() {
+        assert!(PAGE.contains(r#"item(T["tui.menu.forget"] || "", () => forgetHere(g)),"#),
+            "a folder's menu cannot take it off the list");
+        // Not red, and not the last entry: nothing on disk is touched, and the
+        // red one below it is the act that cannot be taken back
+        assert!(PAGE.contains(r#"item(T["tui.menu.forget"] || "", () => forgetHere(g)),
+    // Last and in red, the one entry that cannot be taken back."#),
+            "taking a folder off the list is dressed as the delete below it");
+        assert!(PAGE.contains(r#"go: () => send({kind:"folderclose", folder:g.folder}),"#),
+            "the answer does not reach the app");
+        // What it costs, before it is answered: the tabs standing in it close
+        assert!(PAGE.contains(r#"say: T["tui.forget.say"] || "","#),
+            "taking the folder off the list does not say what it costs");
     }
 
     /// A branch cut from a project on another machine's share is refused by

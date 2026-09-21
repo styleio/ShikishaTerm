@@ -6034,10 +6034,30 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // waiting in the settings
         for folder in shell.mail().take_folder_closes() {
             let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
-            match config::remove_folder(&desk, std::path::Path::new(&folder)) {
+            let at = std::path::Path::new(&folder);
+            // The tabs standing in it go with it, and that is the point: a
+            // folder whose tabs are started again on every launch can never be
+            // emptied by hand, so asking for an empty folder first was asking
+            // for the one thing the app undoes each time it opens. Only a tab
+            // in the middle of something is in the way -- the same two states
+            // a tab's own close stops to ask about, for the same reason
+            if let Some(busy) = tabs.iter().find(|t| {
+                t.cwd().is_some_and(|c| crate::uistate::same_folder(c, at))
+                    && matches!(t.state, TabState::Busy | TabState::Question)
+            }) {
+                flash = Some(i18n::tp("msg.folder.in_use", &[("name", &busy.title)]));
+                continue;
+            }
+            match config::remove_folder(&desk, at) {
                 // Said out loud, because the folder is still on disk and this
-                // is the only sign that it was left there on purpose
-                Ok(()) => flash = Some(i18n::tp("msg.folder.closed", &[("path", &folder)])),
+                // is the only sign that it was left there on purpose. Said by
+                // the reload that closes its tabs, too: "settings reloaded" is
+                // not what happened, and it is the last word otherwise
+                Ok(()) => {
+                    let said = i18n::tp("msg.folder.closed", &[("path", &folder)]);
+                    said_before_reload = Some((Instant::now(), said.clone()));
+                    flash = Some(said);
+                }
                 Err(e) => flash = Some(format!("{e:#}")),
             }
         }
