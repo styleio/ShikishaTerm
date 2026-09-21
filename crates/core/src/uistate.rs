@@ -1696,6 +1696,10 @@ pub struct NavState {
     pub reload_hard: bool,
     /// URL field (how a person navigates to an arbitrary page)
     pub edit: bool,
+    /// The switch for how a press on a relayed page is meant. Only a phone
+    /// watching the page draws it; the window has a mouse and nothing to choose
+    #[serde(default)]
+    pub point: bool,
     pub can_back: bool,
     pub can_forward: bool,
     /// Where it's currently open

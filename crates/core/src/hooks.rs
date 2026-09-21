@@ -2437,6 +2437,7 @@ impl HookEngine {
                                     reload: get("reload"),
                                     reload_hard: get("reload_hard"),
                                     url: get("url"),
+                                    point: get("point"),
                                 }
                             }
                         };
