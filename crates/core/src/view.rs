@@ -677,7 +677,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         qr_kind: shown.as_ref().map(|(_, kind)| kind.to_string()),
         nav: ui.nav.clone(),
         scrolled: ui.scrolled,
-        build: format!("build {}  ({})", env!("BUILD_TIME"), env!("BUILD_REV")),
+        build: crate::shell::stamp(),
         restartable: ui.restartable,
         discuss_start: ui.discuss_start,
         discuss_start_name: ui.discuss_start_name.clone(),
