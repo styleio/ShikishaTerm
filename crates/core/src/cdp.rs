@@ -99,12 +99,18 @@ pub fn text_events(text: &str) -> Vec<serde_json::Value> {
 /// The held flag is carried by the caller because a drag is a chain of moves
 /// between a press and a release, and a move has to say whether it is part of
 /// one.
+///
+/// `clicks` is how many presses in a row this one is, as counted where the
+/// person pressed. A page is only told a double click happened when the press
+/// and the release both say two, so the number travels the whole way rather
+/// than being decided here. Nothing said means one.
 pub fn mouse_event(
     phase: &str,
     x: f64,
     y: f64,
     down: bool,
     held: bool,
+    clicks: u8,
 ) -> (serde_json::Value, bool) {
     let (kind, buttons, now) = match phase {
         "pressed" => ("mousePressed", 1, true),
@@ -114,7 +120,7 @@ pub fn mouse_event(
     (
         serde_json::json!({
             "type": kind, "x": x, "y": y,
-            "button": "left", "buttons": buttons, "clickCount": 1,
+            "button": "left", "buttons": buttons, "clickCount": clicks.clamp(1, 3),
         }),
         now,
     )
@@ -243,17 +249,30 @@ mod tests {
     /// A move between a press and a release is part of the drag
     #[test]
     fn a_drag_is_a_press_some_moves_and_a_release() {
-        let (down, held) = mouse_event("pressed", 10.0, 20.0, false, false);
+        let (down, held) = mouse_event("pressed", 10.0, 20.0, false, false, 1);
         assert_eq!(down["type"], "mousePressed");
         assert!(held, "it was pressed but is released");
-        let (moved, held) = mouse_event("moved", 30.0, 20.0, false, held);
+        let (moved, held) = mouse_event("moved", 30.0, 20.0, false, held, 1);
         assert_eq!(moved["buttons"], 1, "moving while dragging has no button");
         assert!(held);
-        let (up, held) = mouse_event("released", 30.0, 20.0, false, held);
+        let (up, held) = mouse_event("released", 30.0, 20.0, false, held, 1);
         assert_eq!(up["type"], "mouseReleased");
         assert!(!held, "it was released but is still held");
         // A move with nothing held is a hover
-        assert_eq!(mouse_event("moved", 1.0, 1.0, false, held).0["buttons"], 0);
+        assert_eq!(mouse_event("moved", 1.0, 1.0, false, held, 1).0["buttons"], 0);
+    }
+
+    /// The second press of a double click says so, and so does its release.
+    ///
+    /// A page decides `dblclick` from the count on the events it is handed;
+    /// two presses that both say "one" are two clicks, however fast they came
+    #[test]
+    fn a_double_click_arrives_as_a_second_press_that_says_it_is_the_second() {
+        assert_eq!(mouse_event("pressed", 1.0, 1.0, false, false, 2).0["clickCount"], 2);
+        assert_eq!(mouse_event("released", 1.0, 1.0, false, true, 2).0["clickCount"], 2);
+        // Nothing said, and anything beyond a triple, are both a press
+        assert_eq!(mouse_event("pressed", 1.0, 1.0, false, false, 0).0["clickCount"], 1);
+        assert_eq!(mouse_event("pressed", 1.0, 1.0, false, false, 9).0["clickCount"], 3);
     }
 
     /// A portrait viewer gets a taller page; a landscape one gets its own back

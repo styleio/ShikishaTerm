@@ -1278,9 +1278,9 @@ impl shikisha_shared::BrowserHost for Pages {
         let (chrome, session) = self.at(to)?;
         let (cw, ch) = self.scale(&name, &chrome, &session);
         match input {
-            Input::Mouse { phase, x, y, down } => {
+            Input::Mouse { phase, x, y, down, clicks } => {
                 let held = self.open.borrow().get(&name).is_some_and(|p| p.held);
-                let (ev, now) = crate::cdp::mouse_event(&phase, x * cw, y * ch, down, held);
+                let (ev, now) = crate::cdp::mouse_event(&phase, x * cw, y * ch, down, held, clicks);
                 if let Some(p) = self.open.borrow_mut().get_mut(&name) {
                     p.held = now;
                 }
@@ -1836,7 +1836,13 @@ mod tests {
                 pages
                     .inject(
                         Some("p"),
-                        Input::Mouse { phase: phase.into(), x: at[0], y: at[1], down: false },
+                        Input::Mouse {
+                            phase: phase.into(),
+                            x: at[0],
+                            y: at[1],
+                            down: false,
+                            clicks: 1,
+                        },
                     )
                     .expect("cannot touch");
             }

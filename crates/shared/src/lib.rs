@@ -25,6 +25,14 @@ pub enum Input {
         y: f64,
         /// true if this move happens while the button is held (needed to replay drags)
         down: bool,
+        /// How many presses this one is, counted where the person pressed:
+        /// 2 is a double click, 3 a triple. A page only hears `dblclick` when
+        /// the press and the release both say 2, and nothing on this side can
+        /// work that out -- how close together two presses have to be to be
+        /// one act is a fact about the hand that made them. 0 means "nobody
+        /// said", and is read as a single press
+        #[serde(default)]
+        clicks: u8,
     },
     /// Wheel. dx/dy are in pixels
     Wheel { x: f64, y: f64, dx: f64, dy: f64 },
@@ -1347,6 +1355,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                     x: f("x").clamp(0.0, 1.0),
                     y: f("y").clamp(0.0, 1.0),
                     down: v.get("down").and_then(|x| x.as_bool()).unwrap_or(false),
+                    clicks: v.get("clicks").and_then(|x| x.as_u64()).unwrap_or(1).min(3) as u8,
                 },
                 "wheel" => Input::Wheel {
                     x: f("x").clamp(0.0, 1.0),

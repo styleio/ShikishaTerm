@@ -2069,9 +2069,9 @@ fn run_window(
                         let wv = cdp::webview_of(view);
                         let (cw, ch) = cast_dims.get();
                         match input {
-                            Input::Mouse { phase, x, y, down } => {
+                            Input::Mouse { phase, x, y, down, clicks } => {
                                 let (ev, held) = shikisha_core::cdp::mouse_event(
-                                    &phase, x * cw, y * ch, down, mouse_down,
+                                    &phase, x * cw, y * ch, down, mouse_down, clicks,
                                 );
                                 mouse_down = held;
                                 cdp::call(&wv, "Input.dispatchMouseEvent", &ev.to_string());

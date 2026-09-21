@@ -1181,8 +1181,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      pinned to the top it gets in the way at the top of the screen */
   #castmode { background:var(--raise); border-top:1px solid var(--brand);
     color:var(--text); padding:8px 14px; font-size:13px; text-align:center;
-    cursor:pointer; user-select:none; }
+    cursor:pointer; user-select:none;
+    display:flex; align-items:center; gap:var(--s3); }
+  /* The words keep the middle of the banner whatever stands beside them */
+  #castmode > span { flex:1; }
   #castmode:active { background:var(--raise); }
+  /* The switch for how a press on the picture is meant, in whichever of its
+     two homes (see syncPoint). In the page's own bar it is one of that row's
+     buttons and is dressed as one, by #nav button above. On the banner it is a
+     pill at the right end: big enough for a finger, and far enough from the
+     words that releasing control and changing the way of pointing cannot be
+     the same press */
+  #castmode .castpoint { flex:none; height:30px; min-width:38px; padding:0 10px;
+    font:inherit; font-size:15px; line-height:1; color:var(--text);
+    background:var(--panel); border:1px solid var(--line); border-radius:999px;
+    cursor:pointer; }
+  #castmode .castpoint:hover { border-color:var(--brand); }
   /* Bottom dock combining the auxiliary key row and the text input bar.
      It sits at the foot of the *focused* pane, so the bar you type into and
      the pane you are typing at are the same rectangle. The phone's on-screen
@@ -9041,7 +9055,7 @@ function drawNav() {
   const want = S && S.nav;
   n.hidden = !want;
   n.classList.toggle("loading", !!(want && want.loading));   // in-flight loading band
-  if (!want) { n.textContent = ""; layout(); return; }
+  if (!want) { n.textContent = ""; syncPoint(); layout(); return; }
   // Rebuilding while the user is mid-typing would erase what's typed so far, one character at a time
   const inp = n.querySelector("input");
   const typing = inp && document.activeElement === inp;
@@ -9096,6 +9110,9 @@ function drawNav() {
     if (want.back && bs[i]) bs[i++].disabled = !want.can_back;
     if (want.forward && bs[i]) bs[i++].disabled = !want.can_forward;
   }
+  // Last in the row, after the URL field: the page's own controls keep the
+  // order a hand already knows, and this one is about the screen, not the page
+  syncPoint();
   layout();
 }
 
@@ -12451,7 +12468,51 @@ function castRect(cv) {
   return { ox: r.left + (r.width - dw) / 2, oy: r.top, dw, dh };
 }
 
-// Trackpad-style cursor.
+// How a press on the relayed screen is meant. Two ways, because two kinds of
+// machine look at it:
+//
+//   "pad"    — the trackpad. A finger drags a pointer around and a tap clicks
+//              where the pointer stands, so the finger never has to cover the
+//              small thing it is aiming at. The only workable way on a phone.
+//   "direct" — the press lands where it was made, the way a mouse has always
+//              worked: click, drag to select, double click, hover.
+//
+// Which one is asked of the device first, exactly as typing asks it (see
+// hardKeys): a coarse pointer is a finger, anything else has a mouse on it.
+// The first press corrects that guess from what actually pressed — a laptop
+// with a touch screen answers "coarse" and is then driven with a mouse — and
+// the button on the bar settles it for good for this machine.
+let castPoint = "pad";
+try { castPoint = window.matchMedia("(pointer: coarse)").matches ? "pad" : "direct"; } catch (e) {}
+let castPointSaid = false;
+try {
+  const v = localStorage.getItem("shikishaCastPoint");
+  if (v === "pad" || v === "direct") { castPoint = v; castPointSaid = true; }
+} catch (e) {}
+function pointDirect() { return castPoint === "direct"; }
+// What just pressed, taken as evidence — until the person says otherwise, after
+// which the device is not asked again (theirs is the last word on their own hand)
+function pointSeen(type) {
+  if (castPointSaid || !type) return;
+  setPoint(type === "touch" || type === "pen" ? "pad" : "direct", false);
+}
+// The one place the way of pointing changes. `said` means a person pressed the
+// button, which both remembers it for this machine and stops the guessing above
+function setPoint(way, said) {
+  if (said) {
+    castPointSaid = true;
+    try { localStorage.setItem("shikishaCastPoint", way); } catch (e) {}
+  }
+  if (way === castPoint) { paintPoint(); return; }
+  castPoint = way;
+  // Pointing directly, the machine draws its own pointer where the hand is;
+  // a second one drawn a little way off would be the one thing on screen that
+  // is certainly wrong
+  if (cursorEl) cursorEl.style.display = (castMode && !pointDirect()) ? "block" : "none";
+  dragging = false;
+  paintPoint();
+}
+// Trackpad-style cursor ("pad").
 //   1) Tap the cast → enters control mode and shows the cursor (this tap itself doesn't click)
 //   2) Drag → moves the cursor relatively (the finger never covers the
 //      target, so even small targets can be hit)
@@ -12463,6 +12524,63 @@ let castMode = false, cx = 0.5, cy = 0.5, cursorEl = null, modeEl = null, draggi
 let modCtrl = false, modAlt = false;   // Ctrl/Alt latching toggles
 const CURSOR_ACCEL = 1.25;
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+// Where a press landed on the picture, as the fraction of the page the relay
+// speaks in. Read from castRect(), so a pinch-zoomed view answers in the
+// zoomed-in page's own terms
+function castAt(cv, e) {
+  const r = castRect(cv);
+  return { x: clamp01((e.clientX - r.ox) / r.dw), y: clamp01((e.clientY - r.oy) / r.dh) };
+}
+// The switch between the two ways, drawn as the sound button is drawn: the mark
+// says which way it is pointing now, and the words say what pressing does.
+const POINT_MARK = { pad: "👆", direct: "🖱️" };
+function paintPointBtn(b) {
+  b.textContent = POINT_MARK[castPoint];
+  b.title = pointDirect()
+    ? (T["tui.cast.point.direct"] || "Clicks land where you point — press to move the pointer by swiping")
+    : (T["tui.cast.point.pad"] || "Swiping moves the pointer — press to click straight where you point");
+  b.setAttribute("aria-label", b.title);
+}
+function paintPoint() { document.querySelectorAll(".castpoint").forEach(paintPointBtn); }
+function pointBtn(cls) {
+  const b = el("button", {class: cls, type:"button"});
+  b.onclick = (e) => {
+    // The banner this can sit on releases control when it is pressed, and
+    // saying how a press is meant is not asking to stop pressing
+    e.stopPropagation();
+    const way = pointDirect() ? "pad" : "direct";
+    setPoint(way, true);
+    toast(way === "direct"
+      ? (T["tui.cast.point.direct.on"] || "Clicks land where you point")
+      : (T["tui.cast.point.pad.on"] || "Swipe to move the pointer"));
+  };
+  paintPointBtn(b);
+  return b;
+}
+// Where that switch stands.
+//
+// Over the page, in the row the page's own buttons are in, whenever that row is
+// shown: it is one of the browser's controls, and that is where a hand goes
+// looking for it. But that row is a per-tab choice and is off unless somebody
+// ticked it, so where there is none the switch rides on the "in control" banner
+// instead -- the one thing that is always there once a press has landed. One
+// home at a time, never both, so there is never a second switch to wonder about.
+function syncPoint() {
+  const t = activeTab();
+  const relay = !!(REMOTE && t && t.kind === "browser" && !t.away);
+  const n = document.getElementById("nav");
+  const inBar = relay && n && !n.hidden;
+  if (n) {
+    const had = n.querySelector(".castpoint");
+    if (inBar && !had) n.append(pointBtn("castpoint"));
+    else if (!inBar && had) had.remove();
+  }
+  if (modeEl) {
+    const had = modeEl.querySelector(".castpoint");
+    if (relay && !inBar && !had) modeEl.append(pointBtn("castpoint pill"));
+    else if ((!relay || inBar) && had) had.remove();
+  }
+}
 function ensureCursor() {
   if (!cursorEl) {
     cursorEl = el("div", {id:"castcursor"});
@@ -16988,7 +17106,19 @@ function posCursor() {
 }
 // Once control mode is entered, keep the sub-input bar shown at all times
 // (so the auxiliary keys work without needing to press a button first)
-function enterCast() { ensureCursor(); castMode = true; if (modeEl) modeEl.style.display = ""; cursorEl.style.display = "block"; showDock(); posCursor(); }
+function enterCast() {
+  ensureCursor();
+  castMode = true;
+  if (modeEl) modeEl.style.display = "";
+  // The drawn arrow belongs to the trackpad way: it stands where the next tap
+  // will land, which is the whole of what it is for. Pointing directly there is
+  // already a pointer on the screen -- the machine's own, under the hand
+  cursorEl.style.display = pointDirect() ? "none" : "block";
+  showDock();
+  posCursor();
+  // The banner is the switch's second home, and it has just appeared
+  syncPoint();
+}
 // Open the sub-input bar over a phone terminal tab. No relay cursor and no "in
 // control" banner — just the auxiliary keys and the text field. Like the browser
 // bar, the keyboard only opens once the user taps the field itself, so a stray
@@ -17086,6 +17216,17 @@ const click = () => {
 function bindCastInput(cv) {
   if (castBound) return; castBound = true;
   const pts = new Map(); let lastTapT = 0, moved = false, startT = 0;
+  // Presses that count as one act, for pointing directly. A page hears a double
+  // click only when the events say they are the second of a pair, and how close
+  // together two presses have to be to be one act is a fact about the hand that
+  // made them -- so it is counted here, where the hand is, and sent along.
+  let clicks = 0, lastDownT = 0, lastDownX = 0, lastDownY = 0;
+  // Where the pointer is, told to the page as it moves. Moves that are part of
+  // a drag go as they come (a slider that is being dragged has to see every one
+  // of them); a hover is only the page being looked over, so it goes at a pace
+  // that leaves the line to the drags
+  let hoverT = 0;
+  const HOVER_EVERY = 40;
   // A two-finger gesture starts undecided ("?") and commits to one meaning:
   // fingers moving apart/together = pinch zoom; sliding in parallel = pan the
   // zoomed view when magnified, otherwise scroll the page (the old behavior)
@@ -17096,10 +17237,29 @@ function bindCastInput(cv) {
              mx: (a[0].x + a[1].x) / 2, my: (a[0].y + a[1].y) / 2 };
   };
   cv.addEventListener("pointerdown", (e) => {
+    pointSeen(e.pointerType);
     pts.set(e.pointerId, {x: e.clientX, y: e.clientY});
     try { cv.setPointerCapture(e.pointerId); } catch (x) {}
     e.preventDefault();
     if (pts.size === 2) { const t = two(); gest = "?"; gd = t.d; gmx = t.mx; gmy = t.my; }
+    if (pointDirect()) {
+      // The press lands where it was made. It is also the way in: taking the
+      // first press as nothing but "the screen has my attention" is what a
+      // trackpad needs (the finger has not shown where it means yet), and a
+      // mouse has been pointing at the spot all along -- swallowing its click
+      // would be a button that has to be pressed twice
+      if (!castMode) enterCast();
+      if (pts.size >= 2) return;               // two fingers: zoom / pan / scroll
+      const now = Date.now(), at = castAt(cv, e);
+      const near = Math.abs(at.x - lastDownX) < 0.01 && Math.abs(at.y - lastDownY) < 0.01;
+      clicks = (near && now - lastDownT < 500) ? Math.min(3, clicks + 1) : 1;
+      lastDownT = now; lastDownX = at.x; lastDownY = at.y;
+      cx = at.x; cy = at.y;
+      dragging = true;
+      sendIn({kind:"inject", what:"mouse", phase:"pressed", x:cx, y:cy, down:true, clicks:clicks});
+      spawnRipple();
+      return;
+    }
     if (!castMode) { enterCast(); return; }   // the very first tap only enters control mode
     if (pts.size >= 2) return;                 // two fingers: zoom / pan / scroll
     startT = Date.now(); moved = false;
@@ -17112,6 +17272,18 @@ function bindCastInput(cv) {
     if (!castMode) return; e.preventDefault();
     const p = pts.get(e.pointerId);
     if (p) { p.x = e.clientX; p.y = e.clientY; }
+    if (pointDirect() && pts.size < 2) {
+      const at = castAt(cv, e);
+      cx = at.x; cy = at.y;
+      if (dragging) { sendIn({kind:"inject", what:"mouse", phase:"moved", x:cx, y:cy, down:true}); return; }
+      // Hovering is worth sending: menus open under a pointer that is only
+      // passing over them, and a page that never sees one has half its doors shut
+      const now = Date.now();
+      if (now - hoverT < HOVER_EVERY) return;
+      hoverT = now;
+      sendIn({kind:"inject", what:"mouse", phase:"moved", x:cx, y:cy, down:false});
+      return;
+    }
     if (pts.size >= 2) {
       const t = two();
       if (gest === "?") {  // undecided: commit once the fingers clearly do one or the other
@@ -17155,6 +17327,16 @@ function bindCastInput(cv) {
     if (pts.size < 2) gest = null;
     if (!castMode) return; e.preventDefault();
     if (pts.size >= 1) return;                  // another finger is still down
+    if (pointDirect()) {
+      if (!dragging) return;                    // the press that entered control, or a gesture
+      const at = castAt(cv, e);
+      cx = at.x; cy = at.y;
+      // The count goes on the release as well: a page is told a double click
+      // happened by the pair of events, not by the press alone
+      sendIn({kind:"inject", what:"mouse", phase:"released", x:cx, y:cy, down:false, clicks:clicks});
+      dragging = false;
+      return;
+    }
     if (dragging) { sendIn({kind:"inject", what:"mouse", phase:"released", x:cx, y:cy, down:false}); dragging = false; return; }
     if (!moved && Date.now() - startT < 300) { click(); lastTapT = Date.now(); }
   };
@@ -17162,7 +17344,12 @@ function bindCastInput(cv) {
   cv.addEventListener("pointercancel", up);
   // Also forward the mouse wheel, for testing in a desktop browser
   cv.addEventListener("wheel", (e) => {
-    if (!castMode) return;
+    // A wheel scrolls the page before anything has been pressed, where there is
+    // a wheel to turn: reading down a page is looking at it, not operating it,
+    // and a first turn that did nothing would read as a screen that is stuck.
+    // Under a finger there is no wheel -- that is two fingers, and it is the
+    // gesture above, which does want control first
+    if (!castMode && !pointDirect()) return;
     sendIn({kind:"inject", what:"wheel", x:cx, y:cy, dx:e.deltaX, dy:e.deltaY});
     e.preventDefault();
   }, {passive:false});
@@ -19839,6 +20026,88 @@ mod tests {
         assert!(
             PAGE.contains(r#"<video id="castv" autoplay playsinline muted hidden></video>"#),
             "the video would wait for a tap on a phone"
+        );
+    }
+
+    /// The relayed screen can be pointed at in the two ways the two machines
+    /// that look at it point: a finger dragging a pointer around, and a mouse
+    /// that is already on the spot.
+    ///
+    /// Written as a test because a laptop had no way in at all until this: the
+    /// trackpad way was the only one, and a mouse pressing it clicked wherever
+    /// the drawn arrow had drifted to rather than where it was pointing
+    #[test]
+    fn the_relayed_screen_is_pointed_at_the_way_this_machine_points() {
+        // The device is asked first, the same question typing asks it
+        assert!(
+            PAGE.contains(r#"castPoint = window.matchMedia("(pointer: coarse)").matches ? "pad" : "direct";"#),
+            "nothing asks the machine whether it has a finger or a mouse"
+        );
+        // ...and the first press corrects the answer. A laptop with a touch
+        // screen says coarse and is then driven with a mouse
+        assert!(
+            PAGE.contains("pointSeen(e.pointerType);"),
+            "what actually pressed is never looked at, so a wrong guess stands for the session"
+        );
+        // The person's own answer outlives both, and is not asked for twice
+        assert!(
+            PAGE.contains(r#"localStorage.setItem("shikishaCastPoint", way);"#)
+                && PAGE.contains("if (castPointSaid || !type) return;"),
+            "a way chosen by hand is forgotten, or is overruled by the next press"
+        );
+        // Pointing directly, the press goes where it was made -- not to where
+        // a pointer of our own had drifted to
+        assert!(
+            PAGE.contains(r#"sendIn({kind:"inject", what:"mouse", phase:"pressed", x:cx, y:cy, down:true, clicks:clicks});"#)
+                && PAGE.contains("const now = Date.now(), at = castAt(cv, e);"),
+            "a mouse press does not land where the mouse is"
+        );
+        // ...and so does the release, with the count on it: a page is told a
+        // double click happened by the pair, not by the press alone
+        assert!(
+            PAGE.contains(r#"phase:"released", x:cx, y:cy, down:false, clicks:clicks});"#),
+            "a double click cannot reach the page"
+        );
+        // Hovering is sent too, at a pace that leaves the line to the drags.
+        // A menu that opens under a passing pointer is half a page's doors
+        assert!(
+            PAGE.contains("if (now - hoverT < HOVER_EVERY) return;")
+                && PAGE.contains(r#"sendIn({kind:"inject", what:"mouse", phase:"moved", x:cx, y:cy, down:true}); return;"#),
+            "the page never sees the pointer pass over it, or a drag is throttled like one"
+        );
+        // A wheel scrolls before anything has been pressed: reading down a page
+        // is looking at it, and a first turn that did nothing reads as a stuck screen
+        assert!(
+            PAGE.contains("if (!castMode && !pointDirect()) return;"),
+            "a laptop has to click the page before it can scroll it"
+        );
+        // The drawn arrow belongs to the trackpad way. Under a real pointer a
+        // second one, a little way off, would be the one thing certainly wrong
+        assert!(
+            PAGE.contains(r#"cursorEl.style.display = pointDirect() ? "none" : "block";"#),
+            "two pointers are drawn on a machine that has one of its own"
+        );
+        // The switch itself: one home at a time -- the page's own bar when that
+        // bar is shown (it is a per-tab choice and is off unless somebody ticked
+        // it), and the "in control" banner when it is not
+        assert!(
+            PAGE.contains("function syncPoint() {") && PAGE.contains(r#"n.append(pointBtn("castpoint"));"#)
+                && PAGE.contains(r#"modeEl.append(pointBtn("castpoint pill"));"#),
+            "the switch has no home, or stays in a bar that is not shown"
+        );
+        assert_eq!(
+            PAGE.matches("function pointBtn(cls)").count(),
+            1,
+            "the switch is built in more than one place, so its two homes can drift apart"
+        );
+        assert!(
+            PAGE.contains("e.stopPropagation();\n    const way = pointDirect() ? \"pad\" : \"direct\";"),
+            "pressing the switch on the banner also lets go of the screen"
+        );
+        // Its words are translated, like every other word on this page
+        assert!(
+            PAGE.contains(r#"T["tui.cast.point.direct"]"#) && PAGE.contains(r#"T["tui.cast.point.pad"]"#),
+            "the words for it are written into the page instead of translated"
         );
     }
 
