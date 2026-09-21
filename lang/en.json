@@ -3136,5 +3136,7 @@
   "err.chrome.slow": "The browser did not say where to reach it within twenty seconds.",
   "err.chrome.gone": "The browser is no longer there.",
   "err.chrome.said": "The browser refused: {said}",
-  "err.chrome.no_answer": "The browser did not answer {method}."
+  "err.chrome.no_answer": "The browser did not answer {method}.",
+  "guide.at.program": "Settings > {name}",
+  "guide.at.desk": "Settings > Desk > {name}"
 }

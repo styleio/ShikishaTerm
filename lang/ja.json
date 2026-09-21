@@ -3114,5 +3114,7 @@
   "err.chrome.slow": "ブラウザが20秒たっても接続先を知らせてきませんでした。",
   "err.chrome.gone": "ブラウザがもう居ません。",
   "err.chrome.said": "ブラウザに断られました: {said}",
-  "err.chrome.no_answer": "ブラウザが {method} に答えませんでした。"
+  "err.chrome.no_answer": "ブラウザが {method} に答えませんでした。",
+  "guide.at.program": "設定の「{name}」",
+  "guide.at.desk": "設定の「デスク」＞「{name}」"
 }

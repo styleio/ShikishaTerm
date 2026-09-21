@@ -66,6 +66,28 @@ pub fn would_change(lang: Option<&str>) -> bool {
     next != self::lang()
 }
 
+/// The baseline dictionary as it is embedded, for anything that has to read
+/// the whole of it rather than one key (the guide's index, and the tests that
+/// hold the two directions together).
+pub fn english() -> &'static str {
+    EN
+}
+
+/// One language's dictionary, whichever language is running: English with that
+/// language laid over it, exactly as [`init`] builds the live one. For
+/// generating a page in a language this process is not showing.
+pub fn dictionary(code: &str, lang_dir: &std::path::Path) -> HashMap<String, String> {
+    let mut map = parse(EN);
+    if code != "en"
+        && let Ok(text) = std::fs::read_to_string(lang_dir.join(format!("{code}.json")))
+    {
+        for (k, v) in parse(&text) {
+            map.insert(k, v);
+        }
+    }
+    map
+}
+
 /// Current language code (e.g. "ja")
 pub fn lang() -> String {
     LANG.get()

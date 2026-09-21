@@ -3300,6 +3300,30 @@ pub(crate) fn themed(html: String) -> String {
         )
 }
 
+/// The settings page as it is written, before a language is laid over it.
+///
+/// Read by the guide, which works out from this script which screens the
+/// settings have and which words each one shows. A reader, never a writer:
+/// what is served goes through [`crate::i18n::render`] as it always has.
+pub fn page() -> &'static str {
+    PAGE
+}
+
+/// The screen an older name for one of a desk's settings leads to.
+///
+/// The board holds names this page has carried before (`git-message` for the
+/// git screen), so that a button written once goes on working. One answer, in
+/// the page's own table, read by whoever has to follow the same link.
+pub fn desk_link(name: &str) -> Option<&'static str> {
+    let table = PAGE.split_once("const DESK_LINKS = {")?.1.split_once("};")?.0;
+    table
+        .split(',')
+        .filter_map(|kv| kv.split_once(':'))
+        .map(|(k, v)| (k.trim().trim_matches('"'), v.trim().trim_matches('"')))
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v)
+}
+
 const PAGE: &str = r##"<!doctype html>
 <html lang="{{__lang__}}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

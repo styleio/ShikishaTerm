@@ -511,6 +511,33 @@ pub fn listing() -> Vec<(&'static str, &'static str)> {
     ACTIONS.iter().map(|a| (a.name, a.desc)).collect()
 }
 
+/// Every combination as it ships, in the person's language: what to press, and
+/// what it does.
+///
+/// As it *ships*, not as this machine has it -- what is read here is handed to
+/// somebody being told how the program works, and a settings file somebody
+/// changed is their own to describe. The manual says the same thing for the
+/// same reason.
+pub fn shipped() -> Vec<(String, String)> {
+    let prefix = Trigger::parse(DEFAULT_PREFIX).map(|t| t.show()).unwrap_or_default();
+    ACTIONS
+        .iter()
+        .map(|a| {
+            let mut ways: Vec<String> = std::iter::once(a.key)
+                .chain(a.also.iter().copied())
+                .map(|c| format!("{prefix} {c}"))
+                .collect();
+            ways.extend(
+                DEFAULT_DIRECT
+                    .iter()
+                    .filter(|(name, _)| *name == a.name)
+                    .filter_map(|(_, combo)| Trigger::parse(combo).map(|t| t.show())),
+            );
+            (ways.join(" / "), crate::i18n::t(a.desc))
+        })
+        .collect()
+}
+
 fn clash(key: &str, taken_by: &char) -> String {
     let name = ACTIONS
         .iter()
