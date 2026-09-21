@@ -9413,12 +9413,16 @@ window.__state = function (json) {
   // one, and the panel carries the list to pick from. A tab whose folder is
   // named but not here is the card's business, so the card wins where both
   // could speak
-  const holding = cover || heldIn ? null : S.tabs.find(t => t.index === S.active && t.hold);
-  drawHolding(holding);
-  screen.hidden = cover || S.active === 0 || web || git || files || edit || !!failedTab || issuesUp || !!heldIn || !!holding;
+  // Not `holding`: the press guard above this page's redraws goes by that
+  // name, and a second one here would shadow it inside this very function --
+  // where the first thing done is to read it. The board would then die on
+  // its first state, before it had drawn anything at all
+  const holdingTab = cover || heldIn ? null : S.tabs.find(t => t.index === S.active && t.hold);
+  drawHolding(holdingTab);
+  screen.hidden = cover || S.active === 0 || web || git || files || edit || !!failedTab || issuesUp || !!heldIn || !!holdingTab;
   // A tab that could not start in a folder that is not here has one thing
   // wrong with it, not two, and the card is the one that can answer it
-  drawFailed(cover || heldIn || holding ? null : failedTab);
+  drawFailed(cover || heldIn || holdingTab ? null : failedTab);
   drawWelcome();
   drawAddProject();
   const ipanel = document.getElementById("issuespanel");
@@ -20606,7 +20610,7 @@ mod tests {
             "the card is not drawn where the terminal is"
         );
         assert!(
-            PAGE.contains("|| issuesUp || !!heldIn || !!holding;"),
+            PAGE.contains("|| issuesUp || !!heldIn || !!holdingTab;"),
             "the terminal is still drawn under the card"
         );
         // The four answers. Fetching it opens the dialog that shows what will
@@ -20648,10 +20652,10 @@ mod tests {
     fn a_tab_waiting_for_a_folder_is_offered_one() {
         assert!(PAGE.contains(r#"<div id="holdpanel" hidden></div>"#), "there is nowhere to draw it");
         assert!(
-            PAGE.contains(r#"const holding = cover || heldIn ? null : S.tabs.find(t => t.index === S.active && t.hold);"#),
+            PAGE.contains(r#"const holdingTab = cover || heldIn ? null : S.tabs.find(t => t.index === S.active && t.hold);"#),
             "the board does not notice a tab that is waiting"
         );
-        assert!(PAGE.contains("drawHolding(holding);"), "it is never drawn");
+        assert!(PAGE.contains("drawHolding(holdingTab);"), "it is never drawn");
         // Every folder of the desk is offered, and so is one it has never heard of
         assert!(
             PAGE.contains(r#"send({kind:"tabfolder", tab:t.index, folder:path})"#),
@@ -20665,7 +20669,7 @@ mod tests {
         // business: its card answers for every tab of it at once, and two
         // panels over one pane would be two answers to one question
         assert!(
-            PAGE.contains("drawFailed(cover || heldIn || holding ? null : failedTab);"),
+            PAGE.contains("drawFailed(cover || heldIn || holdingTab ? null : failedTab);"),
             "a waiting tab is drawn over by the card for a tab that could not start"
         );
         // The window and a phone are two doors into the same app, and a message

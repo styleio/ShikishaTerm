@@ -11,11 +11,18 @@
 //!     cargo run --bin page_dump -- ja         the page in Japanese
 //!     cargo run --bin page_dump -- ja light   ...in the light scheme
 //!     cargo run --bin page_dump -- ja remote  ...as a phone is served it
+//!     cargo run --bin page_dump -- state      the board state, not the page
 //!
-//! `light` and `remote` are words, in any order, after the language. `remote`
-//! matters because the page a phone gets is not the window's page at a narrow
-//! width: it carries controls the window does not have (RESTART in the bar)
-//! and leaves out ones only the window can act on.
+//! `light`, `remote` and `state` are words, in any order, after the language.
+//! `remote` matters because the page a phone gets is not the window's page at a
+//! narrow width: it carries controls the window does not have (RESTART in the
+//! bar) and leaves out ones only the window can act on.
+//!
+//! `state` writes what the app hands the page on its first draw, from the very
+//! type the app sends it from (`UiState`), so a page opened outside the app can
+//! be given a board to draw with no app running. Nothing is left to a fixture
+//! written by hand: a field added to the state is in this the day it is added.
+//! tools/check-board.mjs is what asks for it.
 //!
 //! It is a tool for whoever is building this, not part of what is handed out.
 fn main() {
@@ -23,15 +30,26 @@ fn main() {
     let flag = |w: &str| args.iter().any(|a| a == w);
     let light = flag("light");
     let remote = flag("remote");
+    let state = flag("state");
     let lang = args
         .iter()
-        .find(|a| a.as_str() != "light" && a.as_str() != "remote")
+        .find(|a| !matches!(a.as_str(), "light" | "remote" | "state"))
         .cloned()
         .unwrap_or_else(|| "en".into());
     shikisha_core::i18n::init(
         Some(&lang),
         &[std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))],
     );
+    // A board with nothing on it yet: what the page is handed first, and the
+    // one state every desk passes through on its way to showing anything
+    if state {
+        print!(
+            "{}",
+            serde_json::to_string(&shikisha_core::uistate::UiState::default())
+                .expect("the state is serializable")
+        );
+        return;
+    }
     let mut html = shikisha_core::shell::served_page(
         false,
         if remote {

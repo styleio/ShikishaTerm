@@ -50,6 +50,16 @@ once it reaches its first tagged release.
   tokens. A desk can still choose another AI, or a model connection, for itself.
 
 ### Fixed
+- **The app comes up again: the window no longer spins on its splash forever.** The board
+  takes its first state in one function, and a name declared partway down that function
+  (`const holding`, the tab waiting for a folder) had the same spelling as the page's own
+  guard against redrawing under a press, which the first line of that function reads. So
+  the first line threw before anything was drawn, every time, on every state -- and it
+  threw where only the app was listening, which is why the window sat on "almost there"
+  with nothing in the log. The tab is now `holdingTab`, and a check of its own stands
+  behind it: `node tools/check-board.mjs` opens the page as it is served, hands it the
+  state the app hands it, and fails if anything throws or the splash stays up. It runs in
+  CI, on the window's page and a phone's, in both languages.
 - **Deleting a working folder no longer takes the conversations that happened in it.**
   A tab whose folder has gone is held: it shows a card saying so and starts nothing. It
   was still handed a new conversation id at that moment, for a CLI that never ran, and
