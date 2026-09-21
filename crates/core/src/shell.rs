@@ -11498,6 +11498,10 @@ function dgEnd() {
 // flick has to travel, and a flick that must ask a PC across the house how far
 // it went never will.
 let rdTab = 0, rdFrom = 0, rdMore = false, rdLoading = false, rdWasBusy = false;
+// The newest page exactly as it was last put on screen, and whether a look for
+// something newer is already out. What "a reply arrived" is held against: the
+// record is the only thing that knows whether anything was actually said
+let rdSeen = "", rdLooking = false;
 const rdPanel = () => document.getElementById("reader");
 const rdBodyEl = () => document.getElementById("rbody");
 const rdIsOpen = () => rdPanel().classList.contains("on");
@@ -11711,6 +11715,12 @@ async function rdAsk(before, want) {
   return await r.json();
 }
 
+// One page, written down as one string, so two of them can be compared. What
+// is read off the record, not what the screen happens to be scrolled to
+function rdSig(turns) {
+  return (turns || []).map(t => t.who + "\u001f" + t.text).join("\u001e");
+}
+
 // Open at the TOP of the newest answer, never at its end. "Scrolled to the
 // bottom" is where a terminal leaves you and is precisely the complaint: the
 // head of a long answer is the part that never survives
@@ -11774,7 +11784,7 @@ async function rdShow() {
   const tab = activeTab();
   if (!REMOTE || !tab || !tab.readable) return;
   rdTab = tab.index;
-  rdFrom = 0; rdMore = false; rdWasBusy = false;
+  rdFrom = 0; rdMore = false; rdWasBusy = false; rdSeen = "";
   document.getElementById("rname").textContent = tab.name || "";
   document.getElementById("rmore").classList.remove("on");
   rdNote(T["tui.read.loading"] || "…");
@@ -11790,6 +11800,7 @@ async function rdShow() {
       return;
     }
     rdFrom = j.from; rdMore = !!j.more;
+    rdSeen = rdSig(j.turns);
     const body = rdBodyEl();
     body.textContent = "";
     body.append(rdEarlier);
@@ -11810,6 +11821,37 @@ function rdHide() {
   document.getElementById("rmore").classList.remove("on");
 }
 
+// Whether anything has been said since the page on screen was read, and the
+// offer to go and see it.
+//
+// Asked of the RECORD, never of the tab's state. A tab stops looking busy for
+// all sorts of reasons that are not an answer — a question put to the person,
+// a full-screen redraw that scrolled the spinner off, a tool that took its
+// time — and an offer raised on those opens onto the very page already being
+// read, which is a button that does nothing. A few tries, a breath apart,
+// because the last words of a turn are written as the screen settles
+async function rdLookForAnswer(tries) {
+  if (rdLooking) return;
+  rdLooking = true;
+  try {
+    for (let i = 0; i < tries; i++) {
+      if (!rdIsOpen()) return;
+      const j = await rdAsk(null, RD_FIRST);
+      if (!rdIsOpen()) return;
+      if (j && j.ok && j.turns && j.turns.length && rdSig(j.turns) !== rdSeen) {
+        const more = document.getElementById("rmore");
+        more.textContent = T["tui.read.arrived"] || "";
+        more.classList.add("on");
+        return;
+      }
+      if (i + 1 < tries) await new Promise(go => setTimeout(go, 1200));
+    }
+  } catch (e) {
+  } finally {
+    rdLooking = false;
+  }
+}
+
 // Called on every state change. While a turn is running the terminal is what
 // you watch it arrive on — that live screen IS the loading indicator, and this
 // says so rather than pretending the record is behind. When the turn lands,
@@ -11825,11 +11867,7 @@ function rdOnState() {
   const foot = document.getElementById("rfoot");
   foot.classList.toggle("on", busy);
   foot.textContent = busy ? (T["tui.read.generating"] || "") : "";
-  if (rdWasBusy && !busy) {
-    const more = document.getElementById("rmore");
-    more.textContent = T["tui.read.arrived"] || "";
-    more.classList.add("on");
-  }
+  if (rdWasBusy && !busy) rdLookForAnswer(3);
   rdWasBusy = busy;
 }
 

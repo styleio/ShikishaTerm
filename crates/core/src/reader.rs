@@ -24,6 +24,15 @@
 //!     `output_text` / `input_text` for Codex). Everything else in a content
 //!     list is machinery — a tool call, its result, the model's own thinking —
 //!     and machinery is not what a person opens a reader to read
+//!
+//! And not everything said was said to anybody. An AI working its way through
+//! a job writes a line before each tool it reaches for ("Now the reload
+//! clamp:"), and those lines are filed exactly like an answer. Read back with
+//! the tool calls taken out they run together into a page of orphaned
+//! sentences, in whatever language the CLI narrates its own work in — which is
+//! the opposite of what a reader is opened for. A record said in the same
+//! breath as the tool call that follows it is an aside about the work, and is
+//! left out with the rest of the machinery.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -103,6 +112,13 @@ pub fn read_back(path: &Path, before: u64, want: usize) -> std::io::Result<Page>
     let mut read = 0usize;
     // Set when the walk meets the start of one block too many
     let mut enough = false;
+    // Whether the record just AFTER the one being looked at was the AI
+    // reaching for a tool. The walk runs backwards, so what follows a line has
+    // always been read before it -- and words said in that breath are an aside
+    // about the work, not an answer. Only somebody speaking clears it; the
+    // machinery in between (thinking, a tool's result, the CLI's own notes)
+    // leaves it standing, because a tool call can be a line or two further on
+    let mut reaching_below = false;
 
     while end > 0 && read < BUDGET && !enough {
         let start = end.saturating_sub(CHUNK as u64);
@@ -126,7 +142,19 @@ pub fn read_back(path: &Path, before: u64, want: usize) -> std::io::Result<Page>
         for k in (first..heads.len()).rev() {
             let at = heads[k];
             let stop = heads.get(k + 1).map_or(buf.len(), |n| n - 1);
-            let said = turn_of(&buf[at..stop.max(at)]);
+            let said = match look_at(&buf[at..stop.max(at)]) {
+                Seen::Reaching => {
+                    reaching_below = true;
+                    None
+                }
+                // Said on the way to that tool, so it belongs to the work
+                Seen::Said(turn) if turn.who == Who::Ai && reaching_below => None,
+                Seen::Said(turn) => {
+                    reaching_below = false;
+                    Some(turn)
+                }
+                Seen::Nothing => None,
+            };
             // One block past what was asked for: stop WITHOUT taking this line,
             // so the next page begins with it and the block it opens is read
             // whole rather than beheaded
@@ -169,29 +197,58 @@ pub fn read_back(path: &Path, before: u64, want: usize) -> std::io::Result<Page>
     })
 }
 
-/// One record, if it is somebody speaking.
-fn turn_of(line: &[u8]) -> Option<Turn> {
+/// What one record turns out to be.
+enum Seen {
+    /// Somebody speaking, and what they said
+    Said(Turn),
+    /// The AI reaching for a tool. Nothing was said here, but whatever was
+    /// said just before it was said on the way to this
+    Reaching,
+    /// Machinery, or a record this reader has no use for
+    Nothing,
+}
+
+/// What one record is: somebody speaking, a tool being reached for, or
+/// neither.
+fn look_at(line: &[u8]) -> Seen {
     // A cheap gate ahead of the JSON parser. Most of these lines are tool
     // results, some of them megabytes each, and parsing every one of them only
     // to find out it is not a message is where the whole cost of a read would go.
     //
-    // Two spellings have to survive it, and forgetting the second cost this
+    // Three spellings have to survive it, and forgetting the second cost this
     // module every human word in the file: an answer arrives as blocks
     // (`"content":[{"type":"text"…`), but what a PERSON typed is filed as a bare
-    // string (`"content":"…`), which carries no `text` key at all
-    let text = std::str::from_utf8(line).ok()?;
-    if !text.contains("\"role\"") || !(text.contains("\"text\"") || text.contains("\"content\":\""))
-    {
-        return None;
+    // string (`"content":"…`), which carries no `text` key at all. The third is
+    // a tool call, which one CLI files with a role and the other without
+    let Ok(text) = std::str::from_utf8(line) else {
+        return Seen::Nothing;
+    };
+    let spoken =
+        text.contains("\"role\"") && (text.contains("\"text\"") || text.contains("\"content\":\""));
+    if !spoken && !text.contains("_use\"") && !text.contains("_call\"") {
+        return Seen::Nothing;
     }
-    let record: Value = serde_json::from_str(text).ok()?;
+    let Ok(record) = serde_json::from_str::<Value>(text) else {
+        return Seen::Nothing;
+    };
     // A side conversation — a sub-agent's own turns, written into the same
     // file. It is a different conversation that happens to share a log, and
     // splicing it in would read as the AI interrupting itself
     if record.get("isSidechain").and_then(Value::as_bool) == Some(true) {
-        return None;
+        return Seen::Nothing;
     }
-    let message = message_of(&record)?;
+    if reaching_for_a_tool(&record) {
+        return Seen::Reaching;
+    }
+    match turn_of(&record) {
+        Some(turn) => Seen::Said(turn),
+        None => Seen::Nothing,
+    }
+}
+
+/// One record, if it is somebody speaking.
+fn turn_of(record: &Value) -> Option<Turn> {
+    let message = message_of(record)?;
     let who = match message.get("role").and_then(Value::as_str)? {
         "assistant" => Who::Ai,
         "user" => Who::You,
@@ -204,6 +261,26 @@ fn turn_of(line: &[u8]) -> Option<Turn> {
         Who::Ai => said.trim().to_string(),
     };
     (!said.is_empty()).then_some(Turn { who, text: said })
+}
+
+/// Whether this record is the AI reaching for a tool.
+///
+/// Told by the shape of the name, like everything else here. Both CLIs spell
+/// it the same two ways and have kept on spelling it that way through their
+/// renamings: a call ENDS in `_use` (`tool_use`, `server_tool_use`,
+/// `mcp_tool_use`) or in `_call` (`function_call`, `local_shell_call`,
+/// `custom_tool_call`). Named in a block of the message, or -- where the
+/// record is the call and carries no message at all -- on the record itself
+fn reaching_for_a_tool(record: &Value) -> bool {
+    let named = |v: &Value| {
+        v.get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.ends_with("_use") || t.ends_with("_call"))
+    };
+    let here = |v: &Value| {
+        named(v) || v.get("content").and_then(Value::as_array).is_some_and(|bs| bs.iter().any(named))
+    };
+    here(record) || ["message", "payload"].iter().any(|k| record.get(*k).is_some_and(here))
 }
 
 /// The object carrying `role`: the record itself, or the one field it is
@@ -299,12 +376,20 @@ mod tests {
         file
     }
 
+    /// What the walk would take from one record, and nothing else
+    fn said(line: &str) -> Option<Turn> {
+        match look_at(line.as_bytes()) {
+            Seen::Said(turn) => Some(turn),
+            _ => None,
+        }
+    }
+
     /// Claude's shape: the message is under `message`, the words under blocks
     /// of type "text"
     #[test]
     fn claude_records_are_read() {
-        let line = r#"{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"thinking","thinking":"hm"},{"type":"text","text":"直しました"}]}}"#.as_bytes();
-        let turn = turn_of(line).expect("the assistant's turn");
+        let line = r#"{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"thinking","thinking":"hm"},{"type":"text","text":"直しました"}]}}"#;
+        let turn = said(line).expect("the assistant's turn");
         assert_eq!(turn.who, Who::Ai);
         assert_eq!(turn.text, "直しました");
     }
@@ -313,8 +398,8 @@ mod tests {
     /// of type "output_text". Nothing about the reader knows which is which
     #[test]
     fn codex_records_are_read() {
-        let line = r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"原因が確定しました"}]}}"#.as_bytes();
-        let turn = turn_of(line).expect("the assistant's turn");
+        let line = r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"原因が確定しました"}]}}"#;
+        let turn = said(line).expect("the assistant's turn");
         assert_eq!(turn.who, Who::Ai);
         assert_eq!(turn.text, "原因が確定しました");
     }
@@ -324,8 +409,8 @@ mod tests {
     /// cosmetic loss — it is every human word in the file
     #[test]
     fn a_person_types_a_plain_string() {
-        let line = r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":"バグを発見しました"}}"#.as_bytes();
-        let turn = turn_of(line).expect("the person's turn");
+        let line = r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":"バグを発見しました"}}"#;
+        let turn = said(line).expect("the person's turn");
         assert_eq!(turn.who, Who::You);
         assert_eq!(turn.text, "バグを発見しました");
     }
@@ -333,20 +418,74 @@ mod tests {
     #[test]
     fn machinery_is_not_speech() {
         // A tool result rides in a user record; it has a role, but nobody said it
-        let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","text":"ok"}]}}"#.as_bytes();
-        assert!(turn_of(result).is_none(), "a tool result is not a turn");
+        let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","text":"ok"}]}}"#;
+        assert!(said(result).is_none(), "a tool result is not a turn");
         // A sub-agent's transcript shares the file
-        let side = r#"{"isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"別の会話"}]}}"#.as_bytes();
-        assert!(turn_of(side).is_none(), "a subagent's record is a different conversation");
+        let side = r#"{"isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"別の会話"}]}}"#;
+        assert!(said(side).is_none(), "a subagent's record is a different conversation");
         // Neither is anything without a role
-        let meta = r#"{"type":"summary","text":"…"}"#.as_bytes();
-        assert!(turn_of(meta).is_none());
+        let meta = r#"{"type":"summary","text":"…"}"#;
+        assert!(said(meta).is_none());
+    }
+
+    /// The line an AI writes on its way to a tool is filed exactly like an
+    /// answer. Told apart by what follows it, not by what it says -- a rule
+    /// about wording would be a rule about one model's habits
+    #[test]
+    fn the_line_said_on_the_way_to_a_tool_is_not_an_answer() {
+        let path = tmp("asides");
+        let call = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"a\"}}]}}";
+        let result = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"ok\"}]}}";
+        let think = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"hm\"}]}}";
+        let mut lines = String::new();
+        lines.push_str(&record("user", "直してください"));
+        lines.push('\n');
+        for i in 0..3 {
+            lines.push_str(&record("assistant", &format!("Now the {i} block:")));
+            lines.push('\n');
+            // The call can be a record or two further on, with the model's own
+            // thinking in between, and the aside is still an aside
+            lines.push_str(think);
+            lines.push('\n');
+            lines.push_str(call);
+            lines.push('\n');
+            lines.push_str(result);
+            lines.push('\n');
+        }
+        lines.push_str(&record("assistant", "直しました"));
+        lines.push('\n');
+        std::fs::write(&path, &lines).unwrap();
+
+        let page = read_back(&path, u64::MAX, 2).unwrap();
+        assert_eq!(page.turns.len(), 2, "the last exchange: {:?}", page.turns);
+        assert_eq!(page.turns[0].text, "直してください");
+        assert_eq!(
+            page.turns[1].text, "直しました",
+            "the lines said on the way to each tool were read back as the answer"
+        );
+    }
+
+    /// A tool call is told by the shape of its name, which is the one thing
+    /// the two CLIs spell the same way through their renamings
+    #[test]
+    fn a_tool_call_is_told_by_the_shape_of_its_name() {
+        let call = |line: &str| {
+            matches!(look_at(line.as_bytes()), Seen::Reaching)
+        };
+        assert!(call(r#"{"message":{"role":"assistant","content":[{"type":"tool_use","name":"Read"}]}}"#));
+        assert!(call(r#"{"message":{"role":"assistant","content":[{"type":"mcp_tool_use","name":"x"}]}}"#));
+        // Codex files the call as a record of its own, with no role anywhere
+        assert!(call(r#"{"type":"response_item","payload":{"type":"function_call","name":"shell"}}"#));
+        assert!(call(r#"{"type":"response_item","payload":{"type":"local_shell_call","action":{}}}"#));
+        // What comes back from one is not a call, and neither is an answer
+        assert!(!call(r#"{"message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#));
+        assert!(!call(r#"{"message":{"role":"assistant","content":[{"type":"text","text":"直しました"}]}}"#));
     }
 
     #[test]
     fn envelopes_are_peeled_off_what_a_person_typed() {
-        let line = r#"{"message":{"role":"user","content":[{"type":"text","text":"<system-reminder>machine</system-reminder>直して<user_instructions>rules</user_instructions>"}]}}"#.as_bytes();
-        let turn = turn_of(line).expect("the person's turn");
+        let line = r#"{"message":{"role":"user","content":[{"type":"text","text":"<system-reminder>machine</system-reminder>直して<user_instructions>rules</user_instructions>"}]}}"#;
+        let turn = said(line).expect("the person's turn");
         assert_eq!(turn.who, Who::You);
         assert_eq!(turn.text, "直して", "an envelope the machine inserted is not the person's words");
     }
