@@ -25,6 +25,8 @@ Tab width, chaining, language
 - **Default command** — What a project opens with when it is added, and what an empty folder opens when pressed. A PC without Git Bash opens PowerShell.
 - **Assistant AI**
 - **Yolo mode** — New AI tabs skip the AI's permission checks
+- **AI for automatic names** — Writes the name and summary of a working folder with Auto on, and the branch name that follows them. A desk can choose another one, and that is also where a model connection is chosen.
+- **Model for those names** — A name costs a fraction of an answer this way. Turn it off if the names it writes are not recognisable.
 - **Browser data** — Where the browser cache and login state live. Sharing carries logins across PCs but adds Drive sync load
 - **Where pages are drawn** — Only matters when a device is connected to this one. Drawn here, a page can be watched from a phone, keeps working with nobody connected, and is one signed-in session for every device. Drawn on the connected device it is faster and sharper, but it needs that device to be there and only it can see the page. Either way the page reaches the network through this machine, so a port opened here means the same thing on both sides. New pages only — a page already open stays where it is.
 - **UA (browser name)** — The name sites see this browser by. Leave it empty and it looks like Edge. Fill it in when a site says something like "this browser may not be secure" and will not let you sign in — putting a name like Chrome here often gets you through. Pages opened after you change it use the new name. A tab can be given its own name, which wins over this one.
@@ -287,7 +289,8 @@ The AI that names and describes working folders
 
 **Automatic names and summaries**
 
-- **AI** — An assistant AI is asked the lightest way it can be: its smallest model where it has a choice, and no tools. A model connection runs on that connection's account.
+- **AI** — An assistant AI is asked the lightest way it can be: no tools, and the smallest model it has when Basic says to use one. A model connection runs on that connection's account.
+- **Branch name** — The first name written replaces the one this app drew (mighty-gannet), once. A branch you named yourself, and one that has already been pushed, keep their names.
 
 ### Automation doors
 
