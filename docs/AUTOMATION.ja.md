@@ -415,7 +415,7 @@ shikisha.draft_to_tab("ai", shikisha.browser_html(page.id))
 ```lua
 shikisha.browser_nav(page.id)                        -- 全部出す
 shikisha.browser_nav(page.id, { reload = true, url = true })  -- 選んで出す
--- 指定できるのは back / forward / reload / reload_hard（スーパーリロード）/ url
+-- 指定できるのは back / forward / reload / reload_hard（スーパーリロード）/ url / point
 shikisha.browser_unnav(page.id)                      -- 引っ込める
 ```
 
@@ -424,7 +424,9 @@ shikisha.browser_unnav(page.id)                      -- 引っ込める
 | `back` | ← 戻る（戻れないときは押せません） |
 | `forward` | → 進む |
 | `reload` | ⟳ 更新 |
-| `url` | URL欄。人が打った先へ移ります（http/https のみ） |
+| `reload_hard` | ⟲ スーパーリロード（持っているものを捨てて取り直す） |
+| `url` | URL欄。打ったものがURLならそこへ移り、そうでなければ Google で検索します |
+| `point` | クリックモード。スマホから見ているときだけ出ます（タップした場所をそのままクリックするか、なぞってポインタを動かすかの切り替え） |
 
 **設定画面のブラウザタブでも同じことを選べます。** そちらで選んでおけば、
 `on_load` に何も書かなくても最初から出ます。Luaから呼べば設定より優先されます。

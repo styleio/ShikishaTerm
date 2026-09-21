@@ -3267,6 +3267,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 reload: spec.reload,
                 reload_hard: spec.reload_hard,
                 edit: spec.url,
+                point: spec.point,
                 can_back: w.is_some_and(|w| w.2),
                 can_forward: w.is_some_and(|w| w.3),
                 at: w.map(|w| w.1.clone()).unwrap_or_default(),

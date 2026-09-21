@@ -2147,6 +2147,12 @@ pub struct NavSpec {
     /// URL bar. Lets a person navigate to any page
     #[serde(default)]
     pub url: bool,
+    /// The switch for how a press on the phone's picture of the page is meant
+    /// (a click where the finger is, or a finger that moves a pointer). Only
+    /// ever drawn for somebody watching from a phone; in the window there is a
+    /// mouse and nothing to choose
+    #[serde(default)]
+    pub point: bool,
 }
 
 impl NavSpec {
@@ -2157,7 +2163,7 @@ impl NavSpec {
 
     /// Show all of them. Used when the spec is omitted, as in `browser_nav(id)`
     pub fn all() -> Self {
-        Self { back: true, forward: true, reload: true, reload_hard: true, url: true }
+        Self { back: true, forward: true, reload: true, reload_hard: true, url: true, point: true }
     }
 }
 
@@ -7689,6 +7695,9 @@ mod browser_kind_tests {
         let nav = t.nav.expect("the top bar was not read");
         assert!(nav.reload && nav.url, "what was written does not show");
         assert!(!nav.back && !nav.forward, "even what was not written shows");
+        // The phone's pointing switch is one of this row's buttons and is
+        // asked for the same way, so it is absent until somebody asks
+        assert!(!nav.point, "the pointing switch shows without being asked for");
         let ask = t.ask.expect("the banner was not read");
         assert_eq!(ask.label, "解析する");
 
