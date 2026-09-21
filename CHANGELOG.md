@@ -64,6 +64,15 @@ once it reaches its first tagged release.
   drawing the card and left the pane empty, with no message anywhere a person could see.
   Every page this app serves is now read before it ships, and a name called with nothing
   to call it fails the build.
+- **A tab restarted during the day is remembered as it is now, not as it was this
+  morning.** What is written down was only rewritten when the screen looked different --
+  the panes moved, or a tab took a new conversation. Which conversation is worth keeping
+  also turns on whether the CLI has written that one down yet, and it does that quietly,
+  minutes later, when somebody first speaks in the tab. So the file was written in the
+  one moment the answer was still "no" and never again: a tab restarted at noon stayed
+  remembered under the conversation it had at eleven, and that dead id is what the next
+  start handed the CLI, which came up on nothing. It is worked out every few seconds now,
+  and written only when it says something different from the file already there.
 - **Closing one tab no longer takes the other tabs' conversations with it.** A tab
   without an automation name of its own is given one -- the second `claude` on a desk
   is `claude-2`, the third `claude-3` -- so closing the first renamed the ones behind

@@ -343,10 +343,26 @@ impl Saved {
         self.desks.push(entry);
     }
 
+    /// Put it on the disk, unless what is already there says the same thing.
+    ///
+    /// The skipping is done here, against the file, rather than by the caller
+    /// against a mark made of the screen's division and each tab's
+    /// conversation. Neither of those is what decides these contents:
+    /// `worth_keeping` also asks whether the id a tab holds has a record yet,
+    /// and that answer changes on its own, a while after the tab started, when
+    /// the CLI first writes the conversation down. So a caller skipping on its
+    /// own mark wrote the file once, at the moment the answer was still "no",
+    /// and then never again -- a tab restarted at noon stayed remembered under
+    /// the conversation it had at eleven, and that dead id is what the next
+    /// start handed the CLI. Asked of the contents themselves, the question
+    /// cannot be asked of the wrong thing
     pub fn write(&self) {
         let Ok(text) = serde_json::to_string_pretty(self) else {
             return;
         };
+        if std::fs::read_to_string(path()).is_ok_and(|had| had == text) {
+            return;
+        }
         // A conversation id names a conversation; it is not a credential, but
         // it is nobody else's business either. Beside the exe with the rest of
         // the app's own state

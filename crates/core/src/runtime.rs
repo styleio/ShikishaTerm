@@ -1119,8 +1119,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // list when it asked (by `surface_key`, so a row that only moved is still
     // the same row). Cleared when the tab arrives or the form is shut
     let mut awaiting_tab: Option<(u32, Vec<String>)> = None;
-    // What was last written, so an unchanged screen writes nothing at all
-    let mut last_saved: Option<(crate::layout::Layout, Vec<Option<tab::Session>>)> = None;
     // Which key does what, this run. Read once and re-read when the settings
     // change, the same as everything else that can be edited while running
     // When to look again at where the tabs are. Starts now so the first frame
@@ -2287,18 +2285,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
 
             // Write down what is on screen, a moment after it last changed.
             // Delayed on purpose: dragging a divider changes it sixty times a
-            // second, and none of those is worth a file
+            // second, and none of those is worth a file.
+            //
+            // Worked out every time rather than when the screen looks
+            // different, because what goes in the file does not only depend on
+            // the screen: which conversation is worth keeping also turns on
+            // whether the CLI has written that conversation down yet, and that
+            // becomes true quietly, minutes after the tab started. Skipping on
+            // a mark made of the panes and the tabs' ids meant the file was
+            // written in the one moment the answer was still "no" and never
+            // again, so a tab restarted mid-afternoon was still remembered
+            // under the conversation it had that morning -- and that is the
+            // dead id the next start handed the CLI. Nothing is written when
+            // nothing changed; `write` compares with the file itself
             if save_at.is_none_or(|at| std::time::Instant::now() >= at) {
-                let mark = (
-                    pane_layout.clone(),
-                    tabs.iter().map(|t| t.session.clone()).collect::<Vec<_>>(),
-                );
-                if Some(&mark) != last_saved.as_ref() {
-                    if let Some(desk) = desks.get(desk_index) {
-                        last_session.remember(desk, &tabs, Some(&pane_layout));
-                        last_session.write();
-                    }
-                    last_saved = Some(mark);
+                if let Some(desk) = desks.get(desk_index) {
+                    last_session.remember(desk, &tabs, Some(&pane_layout));
+                    last_session.write();
                 }
                 save_at = Some(std::time::Instant::now() + Duration::from_secs(3));
             }
