@@ -1346,6 +1346,26 @@ mod tests {
         }
     }
 
+    /// What a log line calls a conversation must not read as the id itself.
+    ///
+    /// Both are eight hex characters, and the CLI's own record files are named
+    /// with the id -- so a line about a tab carrying `Minted:758c051b` was
+    /// taken for an id, looked for on the disk, not found, and written up as a
+    /// real fault. The tab was carrying exactly the right conversation.
+    #[test]
+    fn what_a_log_calls_a_conversation_cannot_be_read_as_an_id() {
+        let s = crate::tab::Session {
+            id: "f5943780-66f7-4261-baef-f5082269b8e5".into(),
+            source: crate::tab::SessionSource::Minted,
+        };
+        let said = s.short();
+        assert!(said.contains('#'), "it still reads like an id: {said}");
+        assert!(!said.contains("f5943780"), "the id itself reached a log line: {said}");
+        // ...and the two can still be matched up, which is what the mark is
+        // worth: the probe prints the id and this beside each other
+        assert!(said.ends_with(&s.digest()), "{said} cannot be matched to anything");
+    }
+
     #[test]
     fn searching_the_history_wraps_instead_of_giving_up() {
         // Copy mode opens at the newest line. A search that only looked
@@ -2324,6 +2344,29 @@ fn plan_launch(
     }
 }
 
+/// The conversation a tab may claim as its own, once it is known whether
+/// anything actually started.
+///
+/// A tab held back because its folder is not on this machine started nothing:
+/// the placeholder holds the screen and says why, and the CLI named on the
+/// command line never ran. An id minted for it names no conversation anywhere
+/// and never will — nothing is going to write that record.
+///
+/// Claiming it anyway is how a real conversation is lost, and lost for good.
+/// What is remembered for a tab is what it is holding, and an empty id holds
+/// out against the one it had before: the next start looks for that id's
+/// record, finds none, comes up clean, and mints another. So a working folder
+/// deleted after its work was merged quietly takes every conversation that
+/// happened in it, although the CLI's own records are all still there. With
+/// nothing claimed, the tab keeps what it had, and what it had is still there
+/// when the folder comes back
+fn claimed(session: Option<Session>, held: Option<&Held>) -> Option<Session> {
+    match held {
+        Some(_) => None,
+        None => session,
+    }
+}
+
 /// Whether a conversation we remember can still be handed to this command.
 ///
 /// Two questions in one, because both have the same answer for the caller —
@@ -2579,14 +2622,27 @@ pub enum SessionSource {
 
 impl Session {
     /// How the id is written down where a person might see it. Never the id
-    /// itself: it names a conversation, and a log is not the place for it
+    /// itself: it names a conversation, and a log is not the place for it.
+    ///
+    /// Marked with a `#` because it is a hash and reads exactly like an id
+    /// otherwise -- eight hex characters, which is how the CLI's own record
+    /// files begin. A log line saying a tab carried `Minted:758c051b` was read
+    /// as an id, looked for among those files, not found, and written up as a
+    /// tab being handed an hour-old conversation that no longer existed. It
+    /// was carrying precisely the conversation it should have been. What these
+    /// stand for is answered by `resume_probe`, which prints both
     pub fn short(&self) -> String {
+        format!("{:?}:#{}", self.source, self.digest())
+    }
+
+    /// The hash itself, for anything that has to match a log line to an id
+    pub fn digest(&self) -> String {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         for b in self.id.as_bytes() {
             h ^= *b as u64;
             h = h.wrapping_mul(0x1000_0000_01b3);
         }
-        format!("{:?}:{:x}", self.source, h & 0xffff_ffff)
+        format!("{:x}", h & 0xffff_ffff)
     }
 }
 
@@ -2994,12 +3050,14 @@ impl Tab {
         // exists: what comes back is the CLI's own records, which are not
         // affected by anything this launch does
         let past_here = matches!(plan, Resume::Fresh)
+            && opts.held.is_none()
             && resume_spec.as_ref().is_some_and(|r| !r.with_id.is_empty())
             && opts.cwd.as_deref().is_some_and(|at| {
                 !crate::vault::here(argv.first().map(String::as_str).unwrap_or_default(), at, 1)
                     .is_empty()
             });
         let (resumed, session) = plan_launch(resume_spec.as_ref(), argv, plan);
+        let session = claimed(session, opts.held.as_ref());
         // A held tab holds the display the same way a model tab does, and for
         // the same reason: the thing it would run must not run. A remote tab
         // has nothing local to run either -- its command line says where to
@@ -3265,6 +3323,7 @@ impl Tab {
             // Look for it shortly: a CLI writes its record as the conversation
             // begins, which is a moment after the process starts
             session_probe: (session.is_none()
+                && opts.held.is_none()
                 && resume_spec.as_ref().is_some_and(|r| r.record.is_some()))
             .then(|| (Instant::now() + std::time::Duration::from_secs(1), 30)),
             session,
@@ -5400,6 +5459,54 @@ mod held_tests {
 
     fn nowhere() -> std::path::PathBuf {
         std::env::temp_dir().join("shikisha-no-such-folder-7c2a")
+    }
+
+    /// A folder that has gone takes nothing with it.
+    ///
+    /// The tab is held, so nothing of the person's ran -- and an id minted for
+    /// a CLI that never started would be remembered in place of the
+    /// conversation this tab was having. That is how a working folder deleted
+    /// after its work was merged took every conversation that had happened in
+    /// it: each start remembered a new empty id, each next start found no
+    /// record for it and came up clean, and the real conversations sat
+    /// untouched in the CLI's own records with nothing pointing at them.
+    #[test]
+    fn a_held_tab_claims_no_conversation() {
+        let minted = |id: &str| super::Session {
+            id: id.into(),
+            source: super::SessionSource::Minted,
+        };
+        let held = Held::Missing { cwd: nowhere() };
+        assert_eq!(super::claimed(Some(minted("new")), Some(&held)), None);
+        // A tab that did start one says so, exactly as before
+        assert_eq!(
+            super::claimed(Some(minted("new")), None),
+            Some(minted("new")),
+            "a tab that started a CLI named no conversation"
+        );
+        // ...and what a held tab had before is still what is worth keeping,
+        // which is the whole reason for claiming nothing
+        let mut tab = Tab::spawn(
+            "t".into(),
+            &[crate::test_shell()],
+            None,
+            20,
+            60,
+            TabOptions {
+                cwd: Some(nowhere()),
+                held: Some(held),
+                ..Default::default()
+            },
+        )
+        .expect("held tab starts");
+        assert!(tab.session.is_none(), "a tab that started nothing named a conversation");
+        tab.previous = Some(minted("what it was saying"));
+        assert_eq!(
+            tab.conversation_to_keep(),
+            Some(&minted("what it was saying")),
+            "the held tab gave away the conversation it had"
+        );
+        tab.kill();
     }
 
     /// The whole point. A folder that is not there used to be dropped and the

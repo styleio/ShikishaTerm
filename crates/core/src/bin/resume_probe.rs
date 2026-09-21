@@ -114,9 +114,14 @@ fn main() {
                 }
                 Some(s) => {
                     let ok = tab::resumable(&argv, &ft.cfg.profile, &s.id);
+                    // The hash beside it is what the log calls this same
+                    // conversation (`Session::short`). Printed together so a
+                    // line in hooks.log can be matched to a record on the disk
+                    // without anyone having to work out which is which
                     println!(
-                        "    remembered {} ({:?}); its record is {}",
+                        "    remembered {} (#{}, {:?}); its record is {}",
                         s.id,
+                        s.digest(),
                         s.source,
                         match ok {
                             true => "still there",
@@ -127,7 +132,7 @@ fn main() {
             }
             let carried = desk::carried_conversation(Some(&saved), d, &argv, &ft.cfg, &cwd, &title);
             match carried.plan {
-                tab::Resume::Id(s) => println!("    -> carries {}", s.id),
+                tab::Resume::Id(s) => println!("    -> carries {} (#{})", s.id, s.digest()),
                 other => println!("    -> {other:?}"),
             }
             if carried.lost {

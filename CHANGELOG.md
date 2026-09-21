@@ -50,6 +50,21 @@ once it reaches its first tagged release.
   tokens. A desk can still choose another AI, or a model connection, for itself.
 
 ### Fixed
+- **Deleting a working folder no longer takes the conversations that happened in it.**
+  A tab whose folder has gone is held: it shows a card saying so and starts nothing. It
+  was still handed a new conversation id at that moment, for a CLI that never ran, and
+  that empty id was remembered in place of the conversation the tab had been having. The
+  next start looked for a record of it, found none, came up clean and minted another --
+  so a folder removed after its work was merged quietly emptied its tab, although every
+  one of those conversations was still sitting in the CLI's own records. A held tab now
+  claims nothing, and what it was saying is still there when the folder is.
+- **A log line about a conversation says it is a mark, not the id.** What a log calls a
+  conversation is a hash of its id, and it looked exactly like one -- eight hex
+  characters, which is how the CLI's own record files begin. A line saying a tab carried
+  `Minted:758c051b` was read as an id, looked for among those files, not found, and
+  written up as a real fault; the tab was carrying precisely the conversation it should
+  have been. The mark now wears a `#`, and `resume_probe` prints the id and the mark
+  beside each other.
 - **A desk's choice of AI for automatic names is kept.** It was written into the screen's
   own copy of the settings and never into the file, so the next save dropped it and the
   card came up showing the assistant AI again.
