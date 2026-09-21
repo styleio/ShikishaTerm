@@ -173,9 +173,57 @@ check(
     catch (e) { return "cannot see in: " + e.message; } })()`) === true,
   'the page inside the sheet is the panel',
 );
+// Every button in the sheet has to be answered by something the phone can
+// see. Both of these were answered by the app instead: the manual opened a
+// browser on the PC's screen and the walk to a settings screen was left for
+// the loop that draws the window -- so from a phone they did nothing at all.
+// `eval` in the frame because the panel's own names are declared with `let`,
+// which is no property of anything and cannot be reached from out here
+const inFrame = (code) =>
+  js('document.getElementById("guideframe").contentWindow.eval(' + JSON.stringify(code) + ')');
+check(
+  (await inFrame('(() => { const a = document.querySelector("#first a");'
+    + ' return a && a.target === "_blank" && /^https:/.test(a.href); })()')) === true,
+  'the manual is opened by the browser that is reading it',
+  await inFrame('(document.querySelector("#first a") || {}).outerHTML'),
+);
+
+// An answer that names a screen, as one comes back from the AI -- put in by
+// hand rather than paid for, because what is being checked is what the panel
+// does with one
+await inFrame('said.push({asked:"where do I set up my phone?", said:"On the phone screen.",'
+  + ' open:"remote", at:"Settings > Phone connection", fill:""}); draw();');
+check(await inFrame('!!document.querySelector(".turn .acts button")'),
+  'the answer offers to walk somebody to the screen');
+await inFrame('document.querySelector(".turn .acts button").click()');
+await until('!!document.getElementById("cfglayer")', 'the screen the panel named never opened', 20)
+  .catch(() => {});
+check(await js('!!document.getElementById("cfglayer")'), 'pressing it opens that screen on the phone');
+check(await js('(document.getElementById("cfglayer")||{}).src?.includes("section=remote")'),
+  'it opens on the screen the answer named',
+  await js('(document.getElementById("cfglayer")||{}).src'));
+check(await js('!document.getElementById("guidewrap").hidden'
+  + ' && document.getElementById("guidewrap").classList.contains("beside")'
+  + ' && document.getElementById("cfgwrap").classList.contains("beside")'),
+  'the ? stands beside the screen it sent somebody to, not under it');
+// ...and the screen standing beside it knows the ? is up, which is what lets a
+// box be picked for it. In the window the window says so; here the only thing
+// that knows is the sheet itself
+await until('(() => { try { return document.getElementById("cfglayer").contentWindow.eval("guideUp") === true; }'
+  + ' catch (e) { return false; } })()', 'the screen beside the ? never heard it was up', 20)
+  .catch(() => {});
+check(await js('(() => { try { return document.getElementById("cfglayer").contentWindow.eval("guideUp") === true; }'
+  + ' catch (e) { return String(e.message); } })()') === true,
+  'the screen beside the ? knows it is up, so a box can be picked for it');
+
 await js('document.querySelector(".sidebtn.help").click()');
 await sleep(600);
 check(!(await js('!!document.getElementById("guideframe")')), "a phone's ? puts it away again");
+// Gone, and said so at once: a box left marked for a ? that is no longer there
+// would be a page waiting to be written into by nothing
+await sleep(400);
+check(await js('fetch("/api/guide/up",{headers:{"X-Token":TOKEN}}).then(r=>r.json()).then(j=>j.up)') === false,
+  'the app is told the ? has gone');
 
 ws.close();
 console.log(bad ? `${bad} wrong` : 'all good');

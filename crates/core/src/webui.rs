@@ -1529,6 +1529,22 @@ fn handle(
             crate::guide::want_move((n("x"), n("y")));
             req.respond(json_resp(serde_json::json!({"ok": true})))?;
         }
+        // The panel framed on a phone saying it is there. The window says it
+        // for the panel it places; a frame the board stands over the settings
+        // has nobody to say it but itself, and the settings screen beside it
+        // will not let a box be picked for a ? that is not up
+        ("POST", "/api/guide/here") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                return Ok(req.respond(json_resp(serde_json::json!({"error": "too big"})))?);
+            };
+            let up = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("up").and_then(|u| u.as_bool()))
+                .unwrap_or(true);
+            crate::guide::phone_here(up);
+            req.respond(json_resp(serde_json::json!({"ok": true})))?;
+        }
         ("POST", "/api/guide/shut") => {
             let mut req = req;
             let _ = read_body(&mut req, MAX_BODY)?;
@@ -12615,8 +12631,15 @@ async function readGuide() {
   catch (e) { return; }
   const was = guideUp;
   guideUp = !!(now && now.up);
-  // Put away from the board: nothing here is picked for it any more
-  if (was && !guideUp) unpick();
+  // Put away from the board: nothing here is picked for it any more. Said out
+  // loud as well, because the box was this page's and a ? that was closed
+  // rather than put away (a phone's frame taken down, a browser shut) never
+  // got to let go of it
+  if (was && !guideUp) {
+    const had = !!pickedBox;
+    unpick();
+    if (had) guidePost("/picked", {});
+  }
   if (!guideUp || !pickedBox) return;
   const text = now.fill;
   if (text === null || text === undefined) return;
