@@ -1059,11 +1059,15 @@ function draw() {
       if (T[k]) ul.append(el("li", {}, T[k]));
     }
     first.append(ul);
-    // What the ? used to be. Still one press away, from inside what replaced it
-    first.append(el("p", {},
-      el("a", {href:"#", onclick:e => { e.preventDefault();
-        fetch("/api/open?dest=manual", {headers:{"X-Token":TOKEN}}); }},
-        T["guide.manual"] || "")));
+    // What the ? used to be. Still one press away, from inside what replaced it.
+    // Framed on a phone, it is the browser reading this that opens it: the app
+    // would open it on the PC's screen, where nobody is standing
+    first.append(el("p", {}, INSIDE
+      ? el("a", {href: T["tui.help.url"] || "", target:"_blank", rel:"noopener"},
+          T["guide.manual"] || "")
+      : el("a", {href:"#", onclick:e => { e.preventDefault();
+          fetch("/api/open?dest=manual", {headers:{"X-Token":TOKEN}}); }},
+          T["guide.manual"] || "")));
     talk.append(first);
   }
   for (const turn of said) {
@@ -1107,6 +1111,16 @@ async function ask() {
 // Nothing is opened or written until this is pressed: an answer is words
 // until a person acts on it
 async function go(turn) {
+  // Framed on a phone, the board holding this frame is what opens a screen
+  // there. The window's way -- leaving it for the loop that draws the window
+  // -- would open it on the PC, and the phone would sit there having watched
+  // a button do nothing
+  if (INSIDE) {
+    window.parent.postMessage({guide: "open", screen: turn.open}, location.origin);
+    turn.open = "";
+    draw();
+    return;
+  }
   const r = await post("/open", {screen: turn.open});
   if (r && r.error) { turn.said += "\n" + r.error; turn.bad = true; }
   turn.open = "";
@@ -1136,8 +1150,13 @@ async function readPicked() {
   }
   if (pickedNow && pickedNow.label !== had) document.getElementById("q").focus();
 }
-setInterval(readPicked, 1200);
-readPicked();
+// Saying it is here, on the same beat. Before the settings screen lets a box
+// be picked it asks the app whether the ? is up, and only the window can
+// answer for a panel the window placed -- a frame the board stood over the
+// settings on a phone has nobody to say it but itself
+const beat = () => { if (INSIDE) post("/here"); readPicked(); };
+setInterval(beat, 1200);
+beat();
 
 // ── Being moved ───────────────────────────────────────────
 // The app holds the rectangle, so the page says how far it was dragged and the
@@ -1205,20 +1224,43 @@ static PICKED: std::sync::Mutex<Option<Picked>> = std::sync::Mutex::new(None);
 static TO_FILL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static WANTS: std::sync::Mutex<Wants> = std::sync::Mutex::new(Wants::none());
 static UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static PHONE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
 
-/// Whether the panel is on screen.
+/// How long a panel on a phone is taken to be there after it last said so.
+/// Longer than its beat, short enough that a page that has gone is not
+/// believed for long
+const PHONE_GONE_AFTER: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Whether the panel is on screen, on either surface.
 ///
 /// The settings screen asks, because what it does when a box is pressed
-/// depends on it -- and only the window knows, the panel being a page the
-/// window places rather than something the page it is over can see
+/// depends on it. In the window only the window knows, the panel being a page
+/// the window places rather than something the page it is over can see; on a
+/// phone it is a frame the board stands over the settings, and there the page
+/// itself is the only thing that knows, so it says so on a beat.
 pub fn is_up() -> bool {
-    UP.load(std::sync::atomic::Ordering::Relaxed)
+    UP.load(std::sync::atomic::Ordering::Relaxed) || phone_up()
+}
+
+fn phone_up() -> bool {
+    PHONE.lock().ok().and_then(|p| *p).is_some_and(|at| at.elapsed() < PHONE_GONE_AFTER)
 }
 
 /// Said by the window, which is the only thing that puts it up or takes it
 /// away. Taking it away lets go of the box it was writing in
 pub fn set_up(up: bool) {
     UP.store(up, std::sync::atomic::Ordering::Relaxed);
+    if !up {
+        pick(None);
+    }
+}
+
+/// Said by the panel framed on a phone: still here, or gone. Going lets go of
+/// the box it was writing in, the same as the window taking its panel away
+pub fn phone_here(up: bool) {
+    if let Ok(mut p) = PHONE.lock() {
+        *p = up.then(std::time::Instant::now);
+    }
     if !up {
         pick(None);
     }
@@ -1696,6 +1738,43 @@ mod tests {
             "only {hit} of {} settings words found a screen",
             all.len()
         );
+    }
+
+    /// Framed on a phone, every button on the panel is answered by something
+    /// the phone can see. Both of these used to be asked of the app instead:
+    /// the manual opened a browser on the PC and the walk to a settings screen
+    /// was left for the loop that draws the window -- so from the phone, the
+    /// two buttons simply did nothing at all.
+    #[test]
+    fn a_panel_in_a_frame_does_not_ask_the_pc_to_open_things() {
+        let page = super::page();
+        assert!(page.contains("const INSIDE"), "the panel cannot tell whether it is framed");
+        assert!(
+            page.contains("T[\"tui.help.url\"]"),
+            "the manual is only opened by the app, which on a phone opens it where nobody is"
+        );
+        assert!(
+            page.contains("window.parent.postMessage({guide: \"open\", screen: turn.open}"),
+            "the walk to a settings screen is only left for the window"
+        );
+        assert!(
+            page.contains("if (INSIDE) post(\"/here\")"),
+            "a framed panel never says it is there, so the settings beside it stay unpickable"
+        );
+    }
+
+    /// The settings screen asks whether the ? is up before it lets a box be
+    /// picked, and a panel framed on a phone is the only thing that can say so
+    /// for itself. Going lets the picked box go, as the window's does.
+    #[test]
+    fn a_phone_saying_it_is_there_counts_as_up() {
+        assert!(!is_up(), "something else left the ? up");
+        phone_here(true);
+        assert!(is_up(), "the phone said it was there and the settings were told otherwise");
+        pick(Some(Picked { label: "Port".into(), ..Default::default() }));
+        phone_here(false);
+        assert!(!is_up());
+        assert!(picked().is_none(), "the ? has gone and a box is still picked for it");
     }
 
     /// The index resolves into text, and says where each screen is.

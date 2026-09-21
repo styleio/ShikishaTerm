@@ -2592,6 +2592,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   }
   #cfgwrap.full { padding:0; }
   #cfgwrap.full .cfgbox { width:100%; height:100%; border:0; border-radius:0; }
+  /* The ? and a screen it sent somebody to, both at once. The window floats
+     the panel over the settings it opened (runtime raises it again); a phone
+     has no room to float, and what is covered on a small screen is gone --
+     so the sheet gives up part of its height and the screen takes the rest.
+     Nothing is dimmed: the two fill the screen between them, and neither is
+     a question waiting on the other */
+  #guidewrap.beside { height:42vh; }
+  #cfgwrap.beside { bottom:42vh; padding:0; background:none; }
+  #cfgwrap.beside .cfgbox { width:100%; height:100%; border:0; border-radius:0; }
   #vault, #past, #palette, #branch, #browse, #repair, #sask, #sdiff { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
   #vault[hidden], #past[hidden], #palette[hidden], #branch[hidden], #browse[hidden],
@@ -4251,18 +4260,39 @@ function openGuide() {
   f.src = "guide?t=" + encodeURIComponent(TOKEN);
   wrap.append(f);
   wrap.hidden = false;
+  standBeside();
 }
 function closeGuide() {
   const wrap = document.getElementById("guidewrap");
   if (!wrap) return;
   wrap.hidden = true;
   wrap.textContent = "";
+  // Said at once rather than waiting for the beat to stop arriving: the
+  // settings screen it was writing into lets go of the picked box on hearing
+  // the ? is gone, and a box left yellow after the ? has gone is a lie
+  fetch("/api/guide/here", {method:"POST",
+    headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+    body: JSON.stringify({up:false})}).catch(() => {});
+  standBeside();
 }
-// Its own ✕, said from inside the frame
+// The ? and a screen it sent somebody to, standing beside each other rather
+// than one over the other (see #guidewrap.beside)
+function standBeside() {
+  const both = guideUp() && cfgLayerUp();
+  for (const id of ["guidewrap", "cfgwrap"]) {
+    const n = document.getElementById(id);
+    if (n) n.classList.toggle("beside", both);
+  }
+}
+// What the panel says from inside the frame: its own ✕, and the one button
+// under an answer that walks somebody to a settings screen. The window hands
+// that walk to the loop that draws it; here the board is what opens a screen,
+// and it stands it above the sheet so the ? is still there to be asked again
 window.addEventListener("message", e => {
   const f = document.getElementById("guideframe");
   if (!f || e.source !== f.contentWindow || e.origin !== location.origin || !e.data) return;
   if (e.data.guide === "shut") { closeGuide(); drawNav(); }
+  if (e.data.guide === "open" && e.data.screen) openSettings(e.data.screen);
 });
 
 // ── The Issue tab ─────────────────────────────────────────
@@ -14130,6 +14160,7 @@ function openCfgLayer(params, size) {
   box.append(f);
   wrap.append(box);
   wrap.hidden = false;
+  standBeside();
 }
 // Taken down: the frame goes with it, rather than being hidden with a page
 // still in it asking the app questions nobody is reading the answers to
@@ -14139,6 +14170,7 @@ function closeCfgLayer() {
   wrap.hidden = true;
   wrap.classList.remove("full", "sheet");
   wrap.textContent = "";
+  standBeside();
 }
 // Declared, not assigned to a name: where the caret belongs is decided at the
 // top of this file and asks this, which runs while the page is still being read
@@ -18250,6 +18282,31 @@ mod tests {
         assert!(checked > 0, "no translation read at run time was checked");
     }
 
+    /// The ? framed on a phone is walked to a settings screen by the board.
+    ///
+    /// The panel's "Open Settings > ..." button asks the app in the window,
+    /// which is a loop the phone is not being drawn by -- so from a phone the
+    /// button did nothing at all. The frame says it here instead, and the
+    /// board opens the screen the way its own links do. The two stand beside
+    /// each other rather than one over the other, so the ? that sent somebody
+    /// to a screen is still there to be asked about it.
+    #[test]
+    fn the_board_walks_the_phone_to_the_screen_the_panel_names() {
+        let p = super::page();
+        assert!(
+            p.contains(r#"if (e.data.guide === "open" && e.data.screen) openSettings(e.data.screen);"#),
+            "the board does not open the screen the framed panel names"
+        );
+        assert!(
+            p.contains("function standBeside()") && p.contains("#guidewrap.beside"),
+            "the settings would stand over the ? that sent somebody to them"
+        );
+        assert!(
+            p.contains(r#"body: JSON.stringify({up:false})"#),
+            "taking the sheet down never tells the settings the ? has gone"
+        );
+    }
+
     /// The board's "edit settings" entry must never be forwarded as a keystroke.
     ///
     /// A keystroke for it only ever lands in the window, so from a phone the
@@ -21011,13 +21068,14 @@ mod tests {
             )),
             "the small-screen rule is not the window's own rule"
         );
-        // Every way of handing over the whole screen hands over the whole of
-        // it: the two sizes' small-screen rules and "More settings". Giving the
-        // box back its edge but not its size left the whole of the settings
-        // showing through a 560px hole
+        // Every way of handing the page an area of its own hands over the whole
+        // of that area: the two sizes' small-screen rules, "More settings", and
+        // the half of the screen left over by the ? that sent somebody here.
+        // Giving the box back its edge but not its size left the whole of the
+        // settings showing through a 560px hole
         assert_eq!(
             p.matches(".cfgbox { width:100%; height:100%; border:0; border-radius:0; }").count(),
-            3,
+            4,
             "a screen given to the page is still only as wide as a dialog"
         );
         // The sheet: the same frame at the size the window stands a whole page
