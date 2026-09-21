@@ -11724,7 +11724,8 @@ function kindPanel(t, cmdInput, rebuild, real) {
       part("forward", T["tui.nav.forward"]),
       part("reload", T["tui.nav.reload"]),
       part("reload_hard", T["tui.nav.reload_hard.short"]),
-      part("url", T["tui.nav.url"])));
+      part("url", T["tui.nav.url"]),
+      part("point", T["tui.nav.point"])));
     box.append(el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["settings.browser.nav.hint"])));
 

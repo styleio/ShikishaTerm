@@ -2067,6 +2067,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     color:var(--text); background:var(--bg); border:1px solid var(--line);
     border-radius:var(--r-ctl); padding:3px 8px; outline:none; }
   #nav input:focus { border-color:var(--brand); }
+  /* The one button in the row that acts on what was typed rather than on the
+     page in front of it. Drawn in --brand because it is that row's main thing
+     to press, and because it shares its mark with the forward arrow two
+     buttons away -- two grey arrows in one row is one arrow too many */
+  #nav button.navgo { color:var(--brand); border-color:var(--brand); }
   /* The bar that asks the person something about the page in the focused
      pane (shikisha.browser_ask): the words, and one button. Drawn HERE, under
      the page, and never inside it: a page can post anything it likes to the
@@ -9217,8 +9222,14 @@ window.__password = function (title, note) {
 // shown at a time, so this side never needs to say which page it's for)
 const goTo = () => {
   const inp = document.querySelector("#nav input");
-  if (inp && inp.value.trim()) send({kind:"go", what:"to", url:inp.value});
+  const what = inp ? inp.value.trim() : "";
+  if (!what) return;
+  // It has been used, so the field belongs to the page again (see navAt)
+  delete inp.dataset.typed;
+  send({kind:"go", what:"to", url:what});
 };
+// Where the page was the last time the bar was drawn
+let navAt = null;
 function drawNav() {
   const n = document.getElementById("nav");
   const want = S && S.nav;
@@ -9228,6 +9239,16 @@ function drawNav() {
   // Rebuilding while the user is mid-typing would erase what's typed so far, one character at a time
   const inp = n.querySelector("input");
   const typing = inp && document.activeElement === inp;
+  // A page that goes somewhere new takes the field back, the way an address bar
+  // does -- but never while it is being written in, or a page that wanders off
+  // on its own (an advert, a redirect) would empty the field under the hands.
+  // Until then a half-written address is the person's: this row is rebuilt
+  // several times a second, and keeping it only while the field has the focus
+  // was enough for a keyboard and not for a phone, where the keyboard's own key
+  // takes the focus away first -- the address was replaced by the page's own
+  // URL in the moment between the tap and the press
+  if (want.at !== navAt) { navAt = want.at; if (inp && !typing) delete inp.dataset.typed; }
+  const typed = inp && inp.dataset.typed === "1" ? inp.value : null;
   if (!typing) {
     n.textContent = "";
     const btn = (mark, word, what, on) => {
@@ -9261,16 +9282,43 @@ function drawNav() {
         el("span", {class:"ico"}, "⟲")));
     }
     if (want.edit) {
-      const box = el("input", {type:"text", spellcheck:"false",
-        title:T["tui.nav.url.ph"], placeholder:T["tui.nav.url.ph"], value:want.at || ""});
+      // Both an address bar and a search box, so nothing here is capitalised or
+      // corrected on the way in, and a phone's keyboard is asked for a "go" key
+      const box = el("input", {type:"text", spellcheck:"false", autocapitalize:"off",
+        autocomplete:"off", autocorrect:"off", enterkeyhint:"go",
+        title:T["tui.nav.url.ph"], placeholder:T["tui.nav.url.ph"],
+        value: typed === null ? (want.at || "") : typed});
+      if (typed !== null) box.dataset.typed = "1";
+      box.oninput = () => { box.dataset.typed = "1"; };
       box.onkeydown = e => {
         if (typingIME(e)) { e.stopPropagation(); return; }
         if (e.key === "Enter") { e.preventDefault(); goTo(); }
+        // Esc gives the field back to the page, as it does in a browser
+        if (e.key === "Escape") {
+          e.preventDefault();
+          delete box.dataset.typed;
+          box.value = want.at || "";
+          box.blur();
+        }
         // Keystrokes here never flow to the terminal — this is where the destination URL is typed
         e.stopPropagation();
       };
       box.onfocus = () => box.select();
       n.append(box);
+      // The other door, and on a phone the only one that is certainly there: a
+      // soft keyboard's Enter ends a conversion as often as it answers the box
+      // it is in, and those two cannot be told apart in time to act on one of
+      // them. The window has real keys and needs no button, which is where the
+      // composer's own backspace key stands as well
+      if (REMOTE) {
+        const go = el("button", {class:"navgo", title:T["tui.nav.url.go"]}, "→");
+        // Leave the focus where it is: losing it rebuilds this row out from
+        // under the finger, and a button taken away between the press and the
+        // release is never pressed at all
+        go.addEventListener("pointerdown", e => e.preventDefault());
+        go.onclick = goTo;
+        n.append(go);
+      }
     }
   } else if (want.edit) {
     // Only fix up the enabled/disabled state of the buttons the user isn't currently typing into
@@ -12793,7 +12841,10 @@ function syncPoint() {
   const t = activeTab();
   const relay = !!(REMOTE && t && t.kind === "browser" && !t.away);
   const n = document.getElementById("nav");
-  const inBar = relay && n && !n.hidden;
+  // In the row only when the row was asked to carry it, like every other button
+  // there. Left out, it rides the banner below, so the way of pointing can
+  // always be changed once a press has landed
+  const inBar = relay && n && !n.hidden && !!(S && S.nav && S.nav.point);
   if (n) {
     const had = n.querySelector(".castpoint");
     if (inBar && !had) n.append(pointBtn("castpoint"));
@@ -20626,13 +20677,17 @@ mod tests {
             PAGE.contains(r#"cursorEl.style.display = pointDirect() ? "none" : "block";"#),
             "two pointers are drawn on a machine that has one of its own"
         );
-        // The switch itself: one home at a time -- the page's own bar when that
-        // bar is shown (it is a per-tab choice and is off unless somebody ticked
-        // it), and the "in control" banner when it is not
+        // The switch itself: one home at a time -- the page's own bar when it
+        // was ticked for that bar, like every other button there, and the "in
+        // control" banner when it was not
         assert!(
             PAGE.contains("function syncPoint() {") && PAGE.contains(r#"n.append(pointBtn("castpoint"));"#)
                 && PAGE.contains(r#"modeEl.append(pointBtn("castpoint pill"));"#),
             "the switch has no home, or stays in a bar that is not shown"
+        );
+        assert!(
+            PAGE.contains(r#"const inBar = relay && n && !n.hidden && !!(S && S.nav && S.nav.point);"#),
+            "the switch puts itself in the row nobody asked to carry it"
         );
         assert_eq!(
             PAGE.matches("function pointBtn(cls)").count(),
@@ -20646,6 +20701,38 @@ mod tests {
         // Its words are translated, like every other word on this page
         assert!(
             PAGE.contains(r#"T["tui.cast.point.direct"]"#) && PAGE.contains(r#"T["tui.cast.point.pad"]"#),
+            "the words for it are written into the page instead of translated"
+        );
+    }
+
+    /// The address bar has two doors, and keeps what is written in it.
+    ///
+    /// A soft keyboard's Enter is as often the keystroke that ends a conversion
+    /// as it is an answer to the field it is in, and the two cannot be told
+    /// apart in time to act on one of them -- so on a phone the key alone left
+    /// nothing to press, and the row, rebuilt several times a second, put the
+    /// page's own URL back in the field the moment the keyboard closed.
+    #[test]
+    fn what_is_typed_in_the_address_bar_can_be_opened_from_a_phone() {
+        assert!(
+            PAGE.contains(r#"const go = el("button", {class:"navgo", title:T["tui.nav.url.go"]}, "→");"#),
+            "a phone has no button for opening what was typed in the address bar"
+        );
+        assert!(
+            PAGE.contains(r#"go.addEventListener("pointerdown", e => e.preventDefault());"#),
+            "pressing it takes the focus, and the row is rebuilt out from under the finger"
+        );
+        assert!(
+            PAGE.contains(r#"const typed = inp && inp.dataset.typed === "1" ? inp.value : null;"#)
+                && PAGE.contains(r#"box.oninput = () => { box.dataset.typed = "1"; };"#),
+            "what a person typed is thrown away by the next redraw"
+        );
+        assert!(
+            PAGE.contains("if (want.at !== navAt) { navAt = want.at;"),
+            "a page that moved on never gets the field back"
+        );
+        assert!(
+            PAGE.contains(r#"T["tui.nav.url.go"]"#),
             "the words for it are written into the page instead of translated"
         );
     }

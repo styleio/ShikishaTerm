@@ -30,7 +30,8 @@
  *           a press clicks where the drawn arrow stands, not where it was made
  *   phone   the page works out the other way round, the first tap only takes
  *           hold of the screen (it must not click anything), and where the tab
- *           has no bar of its own the switch rides on the "in control" banner
+ *           did not ask for the switch -- a bar with other buttons, or no bar
+ *           at all -- it rides on the "in control" banner instead
  *
  * What it cannot stand in for: a hand. A finger that is 9mm across covering the
  * link it is aiming at is the whole reason the trackpad way exists, and no
@@ -133,10 +134,13 @@ fs.writeFileSync(CONFIG, JSON.stringify({
   remote: { enabled: true, bind: '127.0.0.1', port: BOARD },
   desks: [{ name: 'Check', id: 'check', folders: [{ cwd: WORK, tabs: [
     { name: 'shell', id: 'shell', command: 'cmd.exe' },
-    // One page with the row of controls, and one without: the switch has a home
-    // in each case, and which home is the thing being checked
+    // Three pages: one whose row was asked to carry the switch, one with a row
+    // that was not, and one with no row at all. The switch has a home in each
+    // case, and which home is the thing being checked
     { name: 'page', id: 'page', command: `browser http://127.0.0.1:${PAGE_PORT}/`,
-      nav: { back: true, forward: true, reload: true, url: true } },
+      nav: { back: true, forward: true, reload: true, url: true, point: true } },
+    { name: 'bare', id: 'bare', command: `browser http://127.0.0.1:${PAGE_PORT}/`,
+      nav: { reload: true, url: true } },
     { name: 'plain', id: 'plain', command: `browser http://127.0.0.1:${PAGE_PORT}/` },
   ] }] }],
 }, null, 2));
@@ -328,6 +332,15 @@ try {
   check(said('click').length === 0,
     'the first tap takes hold of the screen and clicks nothing, found ' + JSON.stringify(said('click')));
   check(await dev.run(`castMode === true`), 'the first tap does take hold of the screen');
+
+  // A page whose row was not asked to carry the switch: it rides on the banner,
+  // and the row itself carries only what was ticked for it
+  await toPage(dev, 'bare');
+  check(!(await dev.run(`document.getElementById("nav").hidden`)), 'this tab really has a row of controls');
+  check(!(await dev.run(`!!document.querySelector("#nav .castpoint")`)),
+    'the switch stays out of a row that did not ask for it');
+  check(await dev.run(`!!document.querySelector("#castmode .castpoint")`),
+    'the switch rides on the banner where the row did not ask for it');
 
   // A page whose tab shows no row of controls: the switch rides on the banner
   await toPage(dev, 'plain');

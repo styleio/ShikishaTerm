@@ -419,12 +419,15 @@ survives navigation and never covers the site's own sticky header.
 shikisha.browser_nav(page.id)                                 -- all of them
 shikisha.browser_nav(page.id, { reload = true, url = true })  -- pick some
 -- back / forward / reload / reload_hard (fetch it all again) / url
+-- point (phone only: a tap clicks where the finger is, or moves a pointer)
 shikisha.browser_unnav(page.id)                               -- take it away
 ```
 
-Back and forward grey out when there is nowhere to go. The address box only opens
-http/https. The same four checkboxes live in the settings screen for a browser tab, so
-this works with no Lua at all; a call from Lua wins over the setting.
+Back and forward grey out when there is nowhere to go. The address box takes an
+address or words: an address opens, and anything else is searched for on Google.
+`point` is drawn only for somebody watching from a phone. The same checkboxes live in
+the settings screen for a browser tab, so this works with no Lua at all; a call from Lua
+wins over the setting.
 
 The banner works the same way: fill in its words and button text under "Banner" in the
 settings and it is there from the moment the page opens. Then the only file you write is
