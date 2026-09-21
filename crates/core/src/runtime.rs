@@ -3962,9 +3962,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // with them rather than instead of them. Hidden by the same things
             // that hide a placed page: a dialog the board drew is drawn by the
             // board, and a page has no way to be under it
-            let panel: Vec<(String, (i32, i32, i32, i32))> = (guide_open && !covered && room)
-                .then(|| vec![(GUIDE_TAB.to_string(), guide_at.rect(shell.geom_full()))])
-                .unwrap_or_default();
+            let panel: Vec<(String, (i32, i32, i32, i32))> = match guide_open && !covered && room {
+                true => vec![(GUIDE_TAB.to_string(), guide_at.rect(shell.geom_full()))],
+                false => Vec::new(),
+            };
             if settings_open && !covered && room {
                 let full = shell.geom_full();
                 let at = settings_place.rect(full);
