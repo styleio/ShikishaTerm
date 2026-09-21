@@ -4,6 +4,7 @@
   "command_match": [
     "gemini"
   ],
+  "script_match": ["node_modules/@google/gemini-cli/"],
   "busy_patterns": [
     "esc to cancel",
     "[Ww]aiting"
