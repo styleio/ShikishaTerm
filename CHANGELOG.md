@@ -8,6 +8,15 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **"Automatic names" in a desk's settings draws again, and so does an AI tab set to a
+  model connection.** Both cards offer a Candidates button that asks a connection which
+  models it really has, and the code behind that button went out with a feature it had
+  been shared with. The button's absence was silent: the browser stopped in the middle of
+  drawing the card and left the pane empty, with no message anywhere a person could see.
+  Every page this app serves is now read before it ships, and a name called with nothing
+  to call it fails the build.
+
 ## [0.17.0] - 2026-09-18
 
 A branch goes all the way in from the git column, an AI client is handed this

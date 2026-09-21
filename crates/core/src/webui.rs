@@ -7009,6 +7009,38 @@ function providersCard(desk) {
 }
 // The connections of the desk being edited, for the pickers that offer them
 const deskProviders = () => ((desks[sel.desk] || {}).providers) || {};
+// The models a connection really has, asked of the connection itself, so a
+// name is picked from what exists instead of typed from memory. getProv()
+// hands over that connection {base_url, api_key, headers?}; onPick(id) fills
+// the field. Returns {btn, chips, load} -- the button goes inline and the
+// chips on the line below
+function modelCandidates(getProv, onPick) {
+  const chips = el("div", {style:"display:flex;gap:var(--s2);flex-wrap:wrap;margin-top:var(--s2)"});
+  async function load() {
+    const prov = getProv() || {};
+    chips.textContent = "";
+    chips.append(el("span", {class:"hint"}, T["settings.model.candidates_loading"]));
+    let r;
+    try {
+      r = await fetch("/api/provider/models", {method:"POST",
+        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+        body: JSON.stringify({base_url: prov.base_url || "", api_key: prov.api_key || "", headers: prov.headers || {}})})
+        .then(x => x.json());
+    } catch (e) { r = {ok:false, error:String(e)}; }
+    chips.textContent = "";
+    if (!r || !r.ok) {
+      chips.append(el("span", {class:"hint"}, fill(T["settings.model.candidates_failed"], {e: (r && r.error) || ""})));
+      return [];
+    }
+    const models = r.models || [];
+    if (!models.length) { chips.append(el("span", {class:"hint"}, T["settings.model.candidates_none"])); return []; }
+    for (const id of models) chips.append(el("button", {class:"quiet", type:"button",
+      style:"font-size:12px;padding:var(--s1) var(--s2)", onclick:() => onPick(id)}, id));
+    return models;
+  }
+  const btn = el("button", {class:"quiet", type:"button", onclick: load}, T["settings.model.candidates"]);
+  return {btn, chips, load};
+}
 // How long a reply may take, in the words the field uses. Blank is the app's
 // own 180 seconds, and 0 is "as long as it takes"
 const waitText = v => (v === undefined || v === null) ? fill(T["settings.providers.wait_default"], {n: 180})
@@ -12885,6 +12917,33 @@ fn picker() -> Option<&'static dyn shikisha_shared::FilePicker> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Every name a page calls is a name that page has.
+    ///
+    /// The script is a string as far as the compiler is concerned, so a
+    /// function deleted along with the feature that used it takes no callers
+    /// with it. The card that calls one draws nothing at all -- the browser
+    /// stops mid-draw, the pane stays empty, and nobody is told. That is what
+    /// `modelCandidates` did to "Automatic names" and to an AI tab set to a
+    /// model connection, from 2026-09-18 until a person pressed it and asked.
+    ///
+    /// The pages are checked as they are served, shared blocks and all: the
+    /// helpers another module splices in are the page's too.
+    #[test]
+    fn every_page_has_what_it_calls() {
+        let served = |page: &str| {
+            crate::quick::render(crate::push::inject(crate::toast::render(page.to_string())))
+        };
+        for (which, page) in [
+            ("the settings page", super::PAGE),
+            ("the result view", super::RESULT_PAGE),
+            ("the manual", super::HELP_PAGE),
+        ] {
+            let code = crate::pagelint::code_only(&crate::pagelint::scripts_of(&served(page)));
+            let missing = crate::pagelint::dangling_calls(&code);
+            assert!(missing.is_empty(), "{which} calls what it does not have: {missing:?}");
+        }
+    }
 
     /// A server's settings are read the way the page holds them, before they
     /// are saved: a port as the text in its box. A bastion on port 2222 was

@@ -57,6 +57,7 @@ pub mod migrate;
 pub mod netaddr;
 pub mod notify;
 pub mod pagejs;
+pub mod pagelint;
 pub mod pageops;
 pub mod placed;
 pub mod pr;
