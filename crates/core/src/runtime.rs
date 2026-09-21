@@ -1163,6 +1163,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // shows every one of them, which is what "hide while it runs" means
     let mut folders_hidden: std::collections::BTreeSet<std::path::PathBuf> =
         std::collections::BTreeSet::new();
+    // Whether the view is looking at something else than it was because it was
+    // moved, rather than because somebody asked it to move. Set by the places
+    // that shuffle the rows on their own -- rows following the settings, a desk
+    // replaced under the view -- and answered once a pass, just before drawing
+    // (`view::settle`). It is the whole difference between "show me that tab"
+    // and "the tab you were on is gone", and only the first may bring a folder
+    // back from out of sight
+    let mut view_drifted = false;
+    // The row the view was left on the last time that question was answered.
+    // Anything else it is on when the rows next move is somebody having asked
+    // for it in between
+    let mut view_settled_at = 0usize;
     // A folder being put back on this machine while the window keeps drawing
     let mut putting: Option<folders::Putting> = None;
     // Worktrees being made, each a row under its project's heading
@@ -1400,11 +1412,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if rows_were.0 == desk_now && !rows_were.1.is_empty() && rows_were.1 != keys {
                 let moves = surface_moves(&rows_were.1, &keys);
                 let was_focused = pane_layout.focused_surface();
-                // Whether the row the view was on is one of the rows that went.
-                // Read before the panes follow, while the old numbers still mean
-                // something
-                let row_went =
-                    active.checked_sub(1).is_some_and(|i| moves.get(i).copied().flatten().is_none());
+                // What the view was looking at, by name. Read before the panes
+                // follow, while the old numbers still mean something
+                let was_on = active.checked_sub(1).and_then(|i| rows_were.1.get(i)).cloned();
+                // Somebody asked for another row since the last time the view
+                // was settled -- a key, a row pressed, a tab opened and brought
+                // to the front. Then this is not the view being carried about
+                // by rows it did not choose, and the row they asked for is
+                // followed like any other
+                let asked = active != view_settled_at;
                 pane_layout.follow(&moves);
                 // `active` is the focused pane's row, and follows it. When
                 // something asked for another row on the last pass it is that
@@ -1414,21 +1430,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     n if n == was_focused => pane_layout.focused_surface(),
                     n => moves.get(n - 1).copied().flatten().unwrap_or(pane_layout.focused_surface()),
                 };
-                // The row it was on is gone, so the view has been put on a
-                // neighbour. Put, not asked for -- and a folder somebody set
-                // aside must not come back just because the row above it was
-                // deleted. The view steps on to one that is still drawn
-                if row_went && crate::view::row_put_away(active, &surfaces, &tabs, &folders_hidden) {
-                    match crate::view::shown_from(active, &surfaces, &tabs, &folders_hidden) {
-                        Some(n) => active = n,
-                        None => {
-                            active = 0;
-                            board_open = true;
-                        }
-                    }
+                // Looking at something else than it was, and nobody asked for
+                // it: the row it was on went, or the numbers moved out from
+                // under it. Said here and settled once, before drawing, so a
+                // folder somebody put out of sight is never brought back by
+                // the view merely landing on one of its rows
+                if !asked && was_on != active.checked_sub(1).and_then(|i| keys.get(i)).cloned() {
+                    view_drifted = true;
                 }
             }
             rows_were = (desk_now, keys);
+        }
+        // Past the end of the list in hand: the rows it was numbered against
+        // are gone and no move could be followed -- another desk's rows, or a
+        // list read while this one was being drawn. Cut down here, where the
+        // number and the list are the same list, and never in a pass that is
+        // holding a different one
+        if active > surface_count {
+            active = surface_count;
+            board_open |= active == 0;
+            view_drifted = true;
         }
         // The Issue tab, asked for on the last pass: to the front once its row
         // is here -- after the rows that moved have been followed, which would
@@ -1439,6 +1460,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             active = at + 1;
             board_open = false;
             settings_open = false;
+            // Asked for, so whatever the rows did a moment ago is not what
+            // put the view here (`view::settle`)
+            view_drifted = false;
             view_touched_ms = start.elapsed().as_millis() as u64;
         }
         // A tab just opened again, now that it is here
@@ -1446,6 +1470,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if let Some(n) = crate::closed::row_named(&surfaces, &tabs, name) {
                 active = n;
                 board_open = false;
+                view_drifted = false;
                 view_touched_ms = start.elapsed().as_millis() as u64;
                 reveal = None;
             } else if Instant::now() > *until {
@@ -1509,6 +1534,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
                 active = pane_layout.focused_surface();
+                // The editor was asked for
+                view_drifted = false;
                 view_touched_ms = start.elapsed().as_millis() as u64;
             }
         // A working folder's name was pressed: back to what was on screen the
@@ -1562,6 +1589,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             board_open = false;
             settings_open = false;
+            // A press is an ask, whatever the rows did on the way here
+            view_drifted = false;
             view_touched_ms = start.elapsed().as_millis() as u64;
         }
         if pane_layout.focused_surface() != active {
@@ -1662,6 +1691,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     active = if tabs.is_empty() { 0 } else { 1 };
                     pane_layout = crate::layout::Layout::single(active);
+                    // The desk went out from under the view; nobody asked to
+                    // be moved to row 1 of whatever took its place
+                    view_drifted = true;
                 }
                 if let Some(w) = new_ws.get(target) {
                     if viewed.is_some() {
@@ -1760,30 +1792,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 );
                 started_fired.clear();
                 started_fired.resize(tabs.len(), false);
-                // `active` counts what is on screen -- git tabs, pages and
-                // editors as well as terminals -- so it is held against that.
-                // Held against the terminals alone, a save made while looking
-                // at a git tab threw the view back to the first tab
-                let on_screen = surfaces_of(
-                    desks.get(desk_index),
-                    &tabs.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
-                    &caps.hosted_names(),
-                    &editors,
-                    issues_open,
-                );
-                if active > on_screen.len() {
-                    // The last row still there, and never one the list is no
-                    // longer drawing: a folder put out of sight keeps its rows,
-                    // and a view dropped on one of them would bring the folder
-                    // back -- which is what deleting a worktree looked like
-                    match crate::view::shown_from(active, &on_screen, &tabs, &folders_hidden) {
-                        Some(n) => active = n,
-                        None => {
-                            active = 0;
-                            board_open = true;
-                        }
-                    }
-                }
+                // `active` is a row of the list this pass is holding, and the
+                // settings just read are a list nobody has drawn yet. Cut down
+                // to fit that one, the number would then be followed a second
+                // time on the next pass -- once for the rows that went, once
+                // for the cut -- and land two rows away from what the person
+                // was looking at. Deleting a worktree did exactly that, and
+                // what it landed on was a folder somebody had put out of
+                // sight, which came back for being looked at.
+                //
+                // So nothing is renumbered here. The next pass builds the new
+                // list, knows both by name, and moves the view by name
+                // (`surface_moves`); a number left pointing past the end is
+                // cut down there, in the numbering it belongs to
                 // Apply remote UI config changes (enable/disable takes effect here too)
                 let mut remote_changed: Option<String> = None;
                 let want = newcfg.remote.clone();
@@ -3272,17 +3293,29 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .unwrap_or(0);
             crate::uistate::UsageState::of(&l, now)
         });
-        // A folder put out of sight is not a folder put out of reach. Anything
-        // that brings one of its tabs to the front -- a script switching tabs,
-        // a key, the desk being changed -- brings the folder back with it,
-        // because typing into a tab nobody can see is the one outcome this
-        // must not have
-        if !folders_hidden.is_empty()
-            && let Some(dir) =
-                surfaces.get(active.wrapping_sub(1)).and_then(|p| crate::view::surface_dir(p, &tabs))
-        {
-            folders_hidden.retain(|h| !crate::uistate::same_folder(h, &dir));
+        // Where the view has come to rest, asked once, after everything that
+        // could have moved it. A tab somebody asked for brings its folder back
+        // -- out of sight is not out of reach, and typing into a tab nobody can
+        // see is the outcome this exists to prevent. A view merely put on one
+        // of those rows steps off instead, and the folder stays away
+        let drifted = std::mem::take(&mut view_drifted);
+        if !folders_hidden.is_empty() {
+            match crate::view::settle(drifted, active, &surfaces, &tabs, &folders_hidden) {
+                crate::view::Settled::Stay => {}
+                crate::view::Settled::Bring(dir) => {
+                    folders_hidden.retain(|h| !crate::uistate::same_folder(h, &dir));
+                }
+                crate::view::Settled::Show(n) => {
+                    active = n;
+                    pane_layout.show(active);
+                }
+                crate::view::Settled::Board => {
+                    active = 0;
+                    board_open = true;
+                }
+            }
         }
+        view_settled_at = active;
         let ui = Ui {
             ais: ai_choices.clone(),
             past: past_view.clone(),
@@ -6121,17 +6154,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // What was on screen is about to stop being drawn, so the
                     // view steps on to the nearest tab that is still on the
                     // list -- or, when there is none, to the board. Left where
-                    // it was, the next frame would bring the folder straight back
-                    if crate::view::row_put_away(active, &surfaces, &tabs, &folders_hidden) {
-                        match crate::view::shown_from(active, &surfaces, &tabs, &folders_hidden) {
-                            Some(n) => {
-                                if let Some(v) = look_at(n, surface_count, active, settings_open) {
-                                    (active, board_open, settings_open) =
-                                        (v.active, v.board_open, v.settings_open);
-                                }
-                            }
-                            None => board_open = true,
+                    // it was, the next pass would read it resting there as
+                    // somebody asking for the folder back. Put, not asked for:
+                    // the same question the pass before drawing asks, so the
+                    // answer cannot come out differently here. Whatever is in
+                    // front -- the board, the settings -- stays in front: the
+                    // press was "stop drawing this", not "take me somewhere"
+                    match crate::view::settle(true, active, &surfaces, &tabs, &folders_hidden) {
+                        crate::view::Settled::Show(n) => {
+                            active = n;
+                            pane_layout.show(active);
                         }
+                        crate::view::Settled::Board => {
+                            active = 0;
+                            board_open = true;
+                        }
+                        crate::view::Settled::Stay | crate::view::Settled::Bring(_) => {}
                     }
                 }
                 (false, true) => folders_hidden.clear(),

@@ -308,6 +308,62 @@ pub fn shown_from(
     (from..=surfaces.len()).find(drawn).or_else(|| (1..from.min(surfaces.len() + 1)).rev().find(drawn))
 }
 
+/// What the view does about the row it has come to rest on, once everything
+/// that could have moved it has.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Settled {
+    /// The row it is on is drawn. Nothing to do
+    Stay,
+    /// Step on to this row, which is drawn
+    Show(usize),
+    /// Nothing is drawn any more, and the board is what is left to look at
+    Board,
+    /// Bring this folder back: somebody asked for a tab inside it
+    Bring(std::path::PathBuf),
+}
+
+/// The one question every pass asks about where the view is sitting.
+///
+/// A folder put out of sight keeps its rows -- they are simply not drawn -- and
+/// the view must never rest on one of them: typing into a tab nobody can see is
+/// the outcome this exists to prevent. There are two ways out of that, and
+/// which one it is depends entirely on how the view got there:
+///
+/// * somebody asked for that tab (a key, a row pressed, a script switching
+///   tabs, the desk changing under it). Out of sight is not out of reach: the
+///   folder comes back with the tab.
+/// * `drifted` -- nobody asked, the rows moved underneath it and left it
+///   standing there. Then it steps on to a row that is still drawn, and the
+///   folder stays away. Deleting a worktree does exactly this, and a folder
+///   somebody set aside must not come back because the row above it went.
+///
+/// Asked in one place, after the last thing that can move the view, so that no
+/// new way of moving rows can quietly grow a way of bringing a folder back.
+pub fn settle(
+    drifted: bool,
+    at: usize,
+    surfaces: &[Surface],
+    tabs: &[Tab],
+    hidden: &std::collections::BTreeSet<std::path::PathBuf>,
+) -> Settled {
+    if !row_put_away(at, surfaces, tabs, hidden) {
+        return Settled::Stay;
+    }
+    if !drifted {
+        return match at.checked_sub(1).and_then(|i| surfaces.get(i)).and_then(|p| surface_dir(p, tabs)) {
+            Some(dir) => Settled::Bring(dir),
+            // Unreachable while the row is put away, which is what having a
+            // folder means -- and staying put is the harmless answer anyway
+            None => Settled::Stay,
+        };
+    }
+    match shown_from(at, surfaces, tabs, hidden) {
+        Some(n) if n != at => Settled::Show(n),
+        Some(_) => Settled::Stay,
+        None => Settled::Board,
+    }
+}
+
 pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
     // The folders these tabs are actually in. Worked out here, once, so the
     // window and the phone are looking at the same list
@@ -362,11 +418,17 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     // The worktrees each project has that this desk does not list, as the same
     // background look found them
     let cuts = folders::watch().cuts(&groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>());
-    // A worktree being made is git's before it is the desk's; its own row says
-    // it, and it is not a stranger found for that moment in between
+    // Every folder this desk has, which is not the same as every folder it
+    // draws. A worktree being made is git's before it is the desk's; its own
+    // row says it, and it is not a stranger found for that moment in between.
+    // One put out of sight is the desk's too -- left out here, its own project
+    // would turn round and offer it back as a worktree nobody had, the folder
+    // returning under another name, which is the one thing putting it away
+    // must not do
     let listed: Vec<std::path::PathBuf> = groups
         .iter()
         .map(|(k, _)| k.clone())
+        .chain(put_away.iter().cloned())
         .chain(ui.making.iter().map(|m| std::path::PathBuf::from(&m.folder)))
         .collect();
     let discovered = discovered_of(&cuts, &listed, &ui.worktrees_kept);
@@ -1002,6 +1064,71 @@ mod drawn_away_tests {
         // Every row out of sight leaves nothing to look at but the board
         let all = std::collections::BTreeSet::from([away, here]);
         assert_eq!(super::shown_from(1, &surfaces, &[], &all), None);
+    }
+
+    /// How the view got where it is decides what happens, and nothing else
+    /// does. Asked for: the folder comes back, because a tab nobody can see is
+    /// a tab being typed into blind. Put there: the view moves and the folder
+    /// stays away -- deleting a worktree shortens the list and drops the view
+    /// on the neighbour, which is not somebody asking for that neighbour
+    #[test]
+    fn a_folder_comes_back_when_asked_for_and_not_when_merely_landed_on() {
+        use super::Settled;
+        use std::path::PathBuf;
+        let away = PathBuf::from(crate::local_path(r"D:\work\investigation"));
+        let here = PathBuf::from(crate::local_path(r"D:\work\here"));
+        let git = |dir: &PathBuf| Surface::Git {
+            key: dir.display().to_string(),
+            name: "git".into(),
+            dir: Some(dir.clone()),
+            protect: Vec::new(),
+            git: Default::default(),
+        };
+        let surfaces = vec![git(&away), git(&here), git(&away)];
+        let hidden = std::collections::BTreeSet::from([away.clone()]);
+        // Somebody pressed it, or a script switched to it: out of sight was
+        // never out of reach
+        assert_eq!(super::settle(false, 1, &surfaces, &[], &hidden), Settled::Bring(away.clone()));
+        assert_eq!(super::settle(false, 3, &surfaces, &[], &hidden), Settled::Bring(away.clone()));
+        // The rows moved underneath it. It steps on, and the folder stays away
+        assert_eq!(super::settle(true, 1, &surfaces, &[], &hidden), Settled::Show(2));
+        assert_eq!(super::settle(true, 3, &surfaces, &[], &hidden), Settled::Show(2));
+        // A row that is drawn is left alone, however the view came to it
+        assert_eq!(super::settle(true, 2, &surfaces, &[], &hidden), Settled::Stay);
+        assert_eq!(super::settle(false, 2, &surfaces, &[], &hidden), Settled::Stay);
+        // The board stands in no folder, and neither does a row off the end
+        assert_eq!(super::settle(true, 0, &surfaces, &[], &hidden), Settled::Stay);
+        assert_eq!(super::settle(true, 9, &surfaces, &[], &hidden), Settled::Stay);
+        // Nothing left to look at
+        let all = std::collections::BTreeSet::from([away, here]);
+        assert_eq!(super::settle(true, 1, &surfaces, &[], &all), Settled::Board);
+    }
+
+    /// A folder put out of sight is still one this desk has. Offered back by
+    /// its own project as a worktree nobody had, it would return under another
+    /// name the moment anything refreshed the list -- deleting a worktree does
+    #[test]
+    fn a_folder_put_away_is_not_offered_back_as_a_stranger() {
+        use std::path::PathBuf;
+        let family = PathBuf::from(crate::local_path(r"D:\work\app\.git"));
+        let main = PathBuf::from(crate::local_path(r"D:\work\app"));
+        let away = PathBuf::from(crate::local_path(r"D:\work\investigation"));
+        let cuts = std::collections::HashMap::from([(
+            family,
+            vec![(main.clone(), Some("main".into())), (away.clone(), Some("investigation".into()))],
+        )]);
+        let kept = std::collections::BTreeSet::new();
+        // The list `ui_state_of` hands over: the drawn folders and the ones
+        // put out of sight, which are on the desk just the same
+        assert!(
+            super::discovered_of(&cuts, &[main.clone(), away.clone()], &kept).is_empty(),
+            "the folder came back as a worktree nobody had"
+        );
+        // Leave it out -- draw the list from what is on screen alone -- and
+        // the project offers the folder straight back. That was the bug
+        let found = super::discovered_of(&cuts, &[main.clone()], &kept);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].found[0].folder, away.display().to_string());
     }
 
     #[test]
