@@ -12611,7 +12611,7 @@ document.addEventListener("click", e => {
 // pushed, because this page is the only thing that knows how to write into
 // its own boxes -- a value set without the page's own "input" event leaves it
 // showing one thing and holding another
-setInterval(async () => {
+async function readGuide() {
   let now = null;
   try { now = await (await fetch("/api/guide/up", {headers:{"X-Token":TOKEN}})).json(); }
   catch (e) { return; }
@@ -12636,7 +12636,13 @@ setInterval(async () => {
     box.dispatchEvent(new Event("change", {bubbles:true}));
   }
   box.focus();
-}, 900);
+}
+// Asked at once as well as on the beat: for the first beat after this page
+// opened, `guideUp` was false and pressing a box did nothing at all -- and
+// the way here is usually a button in the panel, which is to say that the
+// first second is exactly when somebody presses one
+readGuide();
+setInterval(readGuide, 900);
 
 // If the URL has addtab=<desk-index>, start with one tab already added
 // to that desk after loading (this is where the tab bar's + comes from).
