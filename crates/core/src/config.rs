@@ -6285,11 +6285,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("shikisha-named-{}", crate::random_hex(6)));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("config.json");
+        // Spelled the way the machine running this spells it. A folder that
+        // copies another finds it by `resolve_folder_cwd`, which makes a
+        // relative path absolute against the install -- and `D:/work/proj` IS
+        // relative anywhere without drives, so the written one and the asked
+        // one stopped being the same folder and nothing was copied
+        let proj = crate::local_path("D:/work/proj");
+        let branch_at = |b: &str| crate::local_path(&format!("D:/work/proj.worktrees/{b}"));
         // A project folder whose tab was never given a name of its own
         std::fs::write(
             &file,
-            r#"{"desks": [{"name": "Demo", "folders": [
-                {"cwd": "D:/work/proj", "tabs": [{"name": "claude", "command": "claude"}]}]}]}"#,
+            format!(
+                r#"{{"desks": [{{"name": "Demo", "folders": [
+                {{"cwd": "{proj}", "tabs": [{{"name": "claude", "command": "claude"}}]}}]}}]}}"#
+            ),
         )
         .unwrap();
         // Same faces, new branch: the copy is named, and so is the original it
@@ -6297,8 +6306,8 @@ mod tests {
         append_folder_at(
             &file,
             "Demo",
-            Some(Path::new("D:/work/proj")),
-            Path::new("D:/work/proj.worktrees/blue"),
+            Some(Path::new(&proj)),
+            Path::new(&branch_at("blue")),
             Some("blue"),
             &Start::Same,
             None,
@@ -6308,8 +6317,8 @@ mod tests {
         append_folder_at(
             &file,
             "Demo",
-            Some(Path::new("D:/work/proj")),
-            Path::new("D:/work/proj.worktrees/green"),
+            Some(Path::new(&proj)),
+            Path::new(&branch_at("green")),
             Some("green"),
             &Start::One { name: "codex".into(), command: "codex".into() },
             None,
@@ -6348,16 +6357,22 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("shikisha-append-{}", crate::random_hex(6)));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("config.json");
+        // Spelled the way this machine spells it: the folder to add to is
+        // found by `resolve_folder_cwd`, and a path with a drive on it is a
+        // relative one anywhere that has no drives
+        let proj = crate::local_path("D:/work/proj");
         std::fs::write(
             &file,
-            r#"{"desks": [{"name": "Demo", "folders": [
-                {"cwd": "D:/work/proj", "tabs": [{"name": "claude", "id": "coder", "command": "claude"}]}]}]}"#,
+            format!(
+                r#"{{"desks": [{{"name": "Demo", "folders": [
+                {{"cwd": "{proj}", "tabs": [{{"name": "claude", "id": "coder", "command": "claude"}}]}}]}}]}}"#
+            ),
         )
         .unwrap();
         let reopened = serde_json::json!({
             "name": "what we were saying", "command": "claude", "resume": "abc-123",
         });
-        assert!(append_tab_at(&file, "Demo", reopened, Some(Path::new("D:/work/proj"))));
+        assert!(append_tab_at(&file, "Demo", reopened, Some(Path::new(&proj))));
         let doc: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         let line = &doc["desks"][0]["folders"][0]["tabs"][1];
