@@ -8,7 +8,103 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-21
+
+A phone watching this screen is sent it as video now, with the sound of the page
+it is watching, and a mouse or a keyboard in another room works the board as one at
+the window does. The ? beside the gear answers what a screen here is for and writes
+into the box you point it at; a working folder's branch is named after the work; and
+a tab comes back to the conversation it was having rather than a new one.
+
 ### Added
+- **A screen watched from somewhere else arrives as video, not a run of pictures.**
+  Every change to a relayed page used to be the whole picture compressed again from
+  nothing and sent: measured against video, three times the processor and nine times
+  the bytes, with nowhere to put sound. A phone now takes the same screen as video
+  over a connection made straight to this machine, and says in the corner of the
+  picture which of the two it is getting. Nothing here reaches the network on its own
+  -- no public server is asked where this machine lives, which would publish somebody's
+  home address as a side effect of showing them their own screen -- and where video
+  cannot be had at all, on a network that blocks UDP or a page that will not be
+  captured, the old way is still there and is stepped back onto within seconds.
+  Windows uses the encoder it already carries; everywhere else VP8, behind a build
+  switch, from a library that asks nothing of whoever builds this.
+- **The sound of the page being watched travels with it, and nothing else does.**
+  A screen that arrives without sound is half a screen: what is being watched is as
+  often a video, a call or an AI reading something out as it is a terminal. Tapping
+  the speaker on the phone opens what that one page is playing -- its browser and the
+  processes under it, not the room. Another window, a notification, a call elsewhere
+  on this machine comes back at zero, measured. Nothing is recorded until it is asked
+  for, it stops when the picture stops or the speaker is tapped again, and it follows
+  the tab being watched rather than staying with the one it started on. A screen
+  somebody chose to share is not permission to listen to the room around it, and the
+  way to be sure of that is to hold nothing.
+- **A mouse points where it is pointing, and a finger keeps its trackpad.** The
+  relayed screen could be aimed at one way only: a finger dragged an arrow around and
+  a tap clicked wherever that arrow had got to. Right for a phone, where the finger
+  covers what it is aiming at, and unusable with a mouse, which is already on the spot.
+  The device is asked which it is and the first press corrects the guess. Pointing
+  directly, a press lands where it was made, a drag drags, a double click arrives as
+  one, and the pointer passing over the page is seen there. The switch between the two
+  stands in the page's own row of controls, or on the "in control" banner where the tab
+  shows none.
+- **A keyboard on another machine types into the terminal itself.** The sub-input bar
+  was written for a phone, whose soft keyboard stands over the very screen being typed
+  at, and it had quietly become the only way in for everything that is not the window
+  -- so on a laptop looking at the board from another room, keys pressed at a terminal
+  went nowhere at all, with no error and nothing in any log. A touch screen keeps the
+  bar; anything else types straight into the pane, caret and IME and menu keys, as at
+  the window. A phone with a keyboard beside it still calls itself a touch screen, so
+  the first key pressed with nothing focused says so and is handed on rather than
+  swallowed. Whoever wants the other one says so: "Screen" in the keys panel hands
+  typing to the terminal and is remembered for that machine, and the pen that summons
+  the bar takes it back.
+- **A change can be thrown away from its own row.** In the list of changes a row now
+  drops what it holds -- after it has been asked, and shown the command that will run.
+  What goes is said plainly for each case, because there is no way back: the changes
+  not in the next commit, a new file removed from the disk, or every change to a file
+  including what is already staged.
+- **An AI typed into a terminal is noticed, and the tab is handed back when it goes.**
+  A tab is its command, so somebody who opened a shell and typed `claude` was looking
+  at an AI in a tab that went on calling itself a shell: no mark, no states, and the
+  emergency stop with nothing to press. What answers it now is the tab's own job,
+  which lists exactly the processes this tab started and nothing else on the computer.
+  What a fence is built on has not changed hands: a restart still uses the command the
+  tab was started with, because a title is a string the program in the tab chose.
+- **The build stamp at the foot of the window is the button that copies it.** Which
+  build is on screen is the first thing anybody is asked when something looks wrong,
+  and the only way to answer was to read a timestamp and a short hash off the bottom
+  of the window and type them into a message. Pressing the words puts the line in the
+  clipboard. Nothing is drawn beside them: the stamp is already the first thing that
+  bar gives up when the window narrows.
+- **A working folder that is not on this machine says so in a card, with all four
+  answers.** It used to be drawn with line characters in the terminal, and what could
+  be done about it lived behind a ⚠ in the sidebar. It stands as a real card in the
+  pane now, and carries the lot: put the folder here, choose another folder, look away
+  until the next launch, or take the folder off the list. Fetching runs on its own
+  thread and says which step it is on, so a clone of any size no longer stops the
+  window for as long as the network takes. Looking away is held in memory and nowhere
+  else, so the next launch shows the folder again, and anything that brings such a
+  folder's tab to the front brings the folder back with it -- typing into a tab nobody
+  can see is the one outcome this must not have. The worktrees git knows about and the
+  desk does not list can be deleted from the line that names them, through the same
+  question a folder on the desk asks and with the same refusal while anything in them
+  is uncommitted.
+- **A long message says how far it has got.** A terminal takes a paste one character
+  at a time, so it is handed over a chunk at a time and paced by what it draws back:
+  34,765 characters is twenty seconds of that, and for those twenty seconds the
+  composer had emptied, the screen had not moved, and the only reading left was that
+  the message had been lost. "Sending 35% - 34,765 characters" now stands above a bar
+  at the top of the dock, which grows upward, so nothing moves under the finger that
+  has just pressed Send.
+- **A CLI can be asked, from a terminal, to report which conversation it is running.**
+  That report is how the app knows a CLI has moved on its own -- somebody resuming a
+  different conversation, a `/clear` -- and without it the books go on naming a
+  conversation nobody is having, with nothing saying so until a restart brings the tab
+  up clean. The real install had the hook in none of its CLIs; nothing had removed it,
+  it had never been put in, and the only place that could have said so was a settings
+  screen nobody had opened. A neighbour's entry in the same file survives both
+  installing ours and taking ours away.
 - **The ? beside the gear answers, instead of leaving.** Ask how something here is used
   or set up and the assistant AI answers in the language you asked in, from an index of
   this copy's own settings screens -- so the answer is about the settings you actually
@@ -49,7 +145,185 @@ once it reaches its first tagged release.
   was chosen for, and the smallest model a CLI has writes a name for a fraction of the
   tokens. A desk can still choose another AI, or a model connection, for itself.
 
+### Changed
+- **One thing's settings stand over the board rather than replacing it.** A panel's
+  ⚙, a folder's or a tab's "edit" now open a sheet laid over the board they were asked
+  from, wide enough to hold the settings' own two columns instead of folding them into
+  the narrow arrangement meant for a phone. The gear that opens all of them still
+  opens a screen, and a screen too small to leave any board around either of them is
+  given the whole of itself.
+- **An AI wears its colour on the tab being looked at, and on no other.** An
+  unselected AI tab is the quiet row a terminal gets: name in the ordinary text
+  colour, mark dimmed, left edge bare. Lit all at once, the colours were saying what
+  selection says, and the tab that really was selected had nothing left to say it with.
+  Nothing moves as tabs are switched -- weight is not colour -- and a summary of tabs
+  that are put away is not a tab, so it keeps its colours.
+- **Arriving somewhere hands the composer the caret.** The bar shows itself wherever
+  there is something to type into, and then stood there empty-handed: a move to
+  another tab or another folder is nearly always followed by writing something, and
+  every one of those moves cost a click in the field first. The caret now follows the
+  move into the bar, at the window and from anywhere else, whenever the bar is the
+  thing standing there.
+- **The relayed address bar keeps what is typed, and has a button that opens it.**
+  Enter was the only door, and on a phone that key is as often the keystroke that ends
+  a conversion as it is an answer to the box it is in -- the two cannot be told apart
+  in time -- so what was typed opened nothing. The row is also rebuilt several times a
+  second, and what was typed was kept only while the field held the focus, so closing
+  the keyboard put the page's own URL back. A device that needs the button is given
+  it, what is typed stays until it is opened or the page moves on (Esc gives the field
+  back), and the manual stops saying the field opens http and https only: words have
+  been searched for since the day it read them.
+- **A tab says which folder it works in, or it waits -- with the folder to give it
+  on the same screen.** A working folder left empty used to mean "beside the app",
+  which came to whichever folder the app itself had been started from: the same tab
+  worked in one place from the shortcut and another from a script, no screen said
+  which, and an AI allowed to run without confirmation went to work there. Such a
+  tab now waits instead, and its screen carries every folder this desk has, the
+  button that moves it into the one chosen, and "another folder" for one the desk
+  has never heard of -- so the answer is given where the question is asked, rather
+  than in the settings. The tab bar's + asks for a folder while the tab is being
+  made, for the same reason. Pages, file panels, the git panel and the editor need
+  none, and neither does a terminal on another machine or a conversation with a
+  model. Settings written before this keep working: the first start writes `"."` --
+  the app's own folder, relative so it still means that on another PC -- into the
+  groups that were relying on it, and the folder they were already using is now on
+  screen and can be changed.
+- **A tab that lost the conversation written down for it says so, and keeps saying
+  it.** "Earlier conversation" in the caption used to go the moment you typed --
+  which is usually a moment before you notice your conversation is not there. On a
+  tab that lost one, the offer now stays until it is taken up, and it is in the
+  warning colour rather than grey. A tab that simply starts clean in a folder that has
+  been worked in before is unchanged: a remark, in grey, until somebody speaks.
+- **A tab that comes up clean although it could have carried a conversation writes
+  down why.** The log said so when the record had gone and said nothing in the other
+  cases -- which is what made a whole desk's worth of lost conversations impossible to
+  explain afterwards. Every reason is written now: the settings said to, the record is
+  gone, or conversations were remembered for that CLI in that folder and none could be
+  told to be this tab's.
+
 ### Fixed
+- **Video arrives as fast as the pictures it replaced.** It was 382ms behind them --
+  on a screen somebody is typing into, the difference between a relay and a recording
+  -- and is now 78ms against their 54ms, the rest being what it costs to be video at
+  all. Three things, each found by asking a measurement where the time went. Nearly a
+  quarter of a second was a queue: the connection's thread waited on the socket and
+  read the pictures afterwards, so on a screen that changes once a second a picture
+  sat there until something happened to arrive from the far end. Another 84ms was the
+  far end holding pictures back to smooth out a network, which is right for a film and
+  wrong for this. And the encoder was set up for compressing a film: it held seventeen
+  pictures before letting the first one out -- nothing at all for seventeen seconds on
+  a page that changes once a second, which is a terminal, a form, almost anything
+  being worked in. That is what "choppy at first, then suddenly smooth" was, and what
+  made video look like something that simply never started.
+- **Putting the window away no longer shrinks what a phone is shown.** Windows reports
+  a minimised window as a small rectangle of its own -- 128x220 on this machine, not
+  zero, so a guard against zero never saw it -- and the board laid itself out to that
+  and relayed the page 128 pixels wide, which arrives on a phone hugely magnified.
+  Putting the window away is exactly what anybody does once they are watching from
+  another room, so this broke the thing they had walked off to use. It outlived the
+  window coming back, too: what a phone is shown was measured once, when the phone
+  first said what shape it was, and never again. Nothing is measured from a window
+  that is put away, the board is held at the last size that meant something, and a
+  window that changes size has its page measured again.
+- **The settings, the manual and the tools stay at the foot of the sidebar however
+  long the list above them gets.** They were held down by a margin that holds only
+  while everything fits, so with enough projects and tabs to fill the bar the row
+  became the last thing in a scrolling column and walked off the bottom -- reachable
+  only by scrolling to the end of the list, on exactly the machine where that list is
+  longest. It is stuck to the floor of the bar now, with the rows passing under it,
+  and the drawer a phone pulls out is the same bar.
+- **A key that types nothing is not swallowed by an empty input bar.** The bar was
+  written for a phone, where every key is a soft one and the only thing to do with one
+  is type, so Esc, Tab and the arrows stopped in the box -- and Esc is how a person
+  stops an AI. Pressed with nothing typed, they go on to the program in the pane, at
+  the window and from a browser alike.
+- **A question the window puts up is put to a browser as that question.** What reached
+  a phone or another machine was a screen of settings instead of the framed dialog the
+  window shows, and a key pressed at it went to the terminal underneath rather than to
+  the dialog.
+- **Deleting a worktree no longer drags a folder put out of sight back onto the desk.**
+  Hiding a folder takes its rows off the list but not out of it, and every place that
+  moves the view on its own could drop it on one of those rows -- whereupon the view
+  resting there was read as somebody asking for that folder. Deleting a worktree does
+  exactly that: the row goes, the view steps onto the neighbour, and the neighbour was
+  the folder nobody wanted to see. Which rows are drawn is one question in one place
+  now, and where the view lands is settled once, after everything that could have moved
+  it, by name rather than by a number renumbered against a list nobody is holding yet.
+  A tab asked for still brings its folder back; a view merely carried there by rows
+  moving underneath steps on to one that is drawn. And a folder put out of sight is
+  still a folder on this desk, rather than being offered back by its own project as a
+  worktree nobody has.
+- **A page added from a folder's + stands in that folder.** It carried no folder while
+  every panel beside it carries one, so it was drawn under no folder at all -- a row of
+  its own below the whole list -- that folder's tab bar did not have it, and its + then
+  added the next tab to the first folder. The pane that asked for the tab was also
+  handed "the last row nobody is looking at", which is the new tab only when the folder
+  it went into happens to be the last one; anywhere else the pane was given somebody
+  else's tab, and when that tab's folder had been put out of sight the folder came
+  straight back with it.
+- **A worktree with nothing running in it answers the press its card invites.** The
+  card wore a pointer and lit under the hand like every other row in the column, and
+  then did nothing at all: the press only went through for a project's own folder. It
+  now asks the same question the "+ Add a tab" line under it asks, so the row and the
+  line are one door said twice rather than one door and a wall.
+- **The line an AI says on its way to a tool is not filed as an answer.** An AI writes
+  a line before every tool it reaches for, and those were kept exactly like an answer:
+  read back with the tool calls stripped out, they ran together into a page of orphaned
+  sentences. A record said in the same breath as the call that follows it is left out
+  with the rest of the machinery, told by the shape of the call's name, so neither CLI
+  needs a spec of its own.
+- **"A reply arrived" is offered when something was actually said.** It was raised on
+  the tab ceasing to look busy, which it does for a question, a redraw or a slow tool
+  -- so the offer opened onto the page already on screen and looked like a button that
+  does nothing. The newest page is compared with the one being read instead.
+- **The ? answers a phone's own presses instead of reaching for the PC.** Both buttons
+  in the panel asked the app to act, and the app acts on the PC: the manual opened a
+  browser at a screen nobody was standing at, and the walk to a settings screen was
+  left for the loop that draws the window. From a phone, pressing either did nothing at
+  all. Framed on a phone the panel answers for itself, and the two stand beside each
+  other rather than one over the other -- so the ? that sent somebody to a screen is
+  still there to be asked again, and the screen beside it can be written into.
+- **The Japanese for a folder git will not work in reads as Japanese.** Three lines
+  about the same thing: a repository on another machine's share, whose files belong to
+  another account, which git refuses to touch until it is written down as trusted. They
+  carried the English sentence's shape rather than its meaning, the heading and the row
+  disagreed about what was wrong, and the folder underneath was called 枝 against
+  sixty-seven places that say ブランチ. Both now say the folder is one git does not work
+  in, and the row says what makes it work again. English is untouched: it is the base
+  the rest is laid over.
+- **A failed CI is handed to an AI from a branch that has no pull request.** The
+  button was offered only where one was open, and what it sent named it, so a
+  branch whose CI had failed before anybody opened one had no way to hand the
+  failure over. It is offered for the checks themselves now, ahead of the button
+  that opens a pull request -- what CI says is broken is worth fixing before
+  anybody is asked to look at it -- and the prompt names the commit and the
+  branch when there is no pull request to name (`{ci}`).
+- **CI is shown in the git column again, and for the branch rather than only for
+  a pull request made from it.** Two things were in the way. The column tells a
+  folder whose server is GitHub from one whose server is not by the repository the
+  folder pushes to, and that was never sent to the screen -- so it asked GitHub
+  nothing at all, and neither the pull requests nor CI ever appeared. And the
+  checks were read off an open pull request's commit only, although they run when
+  the commit is pushed: a red CI on a pushed branch, or on a protected branch
+  where no pull request is ever made, was on GitHub's pages and nowhere in the
+  app. The checks are now read for the commit the server has, whether a pull
+  request exists or not, and a push whose runs GitHub has not made yet is asked
+  for again a few times rather than once.
+- **The git column says "Not pushed yet" only when there is nothing on the server
+  to compare with.** It asked git what the branch follows and nothing else, so a
+  branch sent from a terminal without `--set-upstream` -- which follows nothing --
+  read as work that had never left this PC, and the column's button offered to
+  publish it again. The count now falls back to the branch of this one's own name
+  on the server it would push to, and the line's tooltip says when it is that one
+  and that pushing from here sets the branch to follow it. A pull on such a branch
+  says where to pull from rather than leaving git with nothing to read.
+- **Pressing a working folder's name shows that folder.** It could bring up
+  another folder's tab instead, and the card said one folder while the screen
+  showed another. Two tabs were answering to one automation name: the name was
+  worked out from the order the lines stood in and written down nowhere, so
+  taking a folder out of the settings handed the name of a tab still running to
+  a different line. Every tab's name is written into the settings the moment its
+  line is made now, so two lines cannot come to share one.
 - **The app comes up again: the window no longer spins on its splash forever.** The board
   takes its first state in one function, and a name declared partway down that function
   (`const holding`, the tab waiting for a folder) had the same spelling as the page's own
@@ -117,20 +391,6 @@ once it reaches its first tagged release.
   and its folder, which is what a person chose and what does not move; the names are
   kept for the one thing they can settle, two tabs of one CLI in one folder, and when
   they cannot settle that either, nothing is resumed rather than the wrong thing.
-
-### Changed
-- **A tab that lost the conversation written down for it says so, and keeps saying
-  it.** "Earlier conversation" in the caption used to go the moment you typed --
-  which is usually a moment before you notice your conversation is not there. On a
-  tab that lost one, the offer now stays until it is taken up, and it is in the
-  warning colour rather than grey. A tab that simply starts clean in a folder that has
-  been worked in before is unchanged: a remark, in grey, until somebody speaks.
-- **A tab that comes up clean although it could have carried a conversation writes
-  down why.** The log said so when the record had gone and said nothing in the other
-  cases -- which is what made a whole desk's worth of lost conversations impossible to
-  explain afterwards. Every reason is written now: the settings said to, the record is
-  gone, or conversations were remembered for that CLI in that folder and none could be
-  told to be this tab's.
 
 ## [0.17.0] - 2026-09-18
 
@@ -294,21 +554,6 @@ other.
   under the box while it is typed, and only when it differs from what is in it.
   Renaming a branch from the settings follows the same rule, with the line that
   will run under the box as before.
-- **A tab says which folder it works in, or it waits -- with the folder to give it
-  on the same screen.** A working folder left empty used to mean "beside the app",
-  which came to whichever folder the app itself had been started from: the same tab
-  worked in one place from the shortcut and another from a script, no screen said
-  which, and an AI allowed to run without confirmation went to work there. Such a
-  tab now waits instead, and its screen carries every folder this desk has, the
-  button that moves it into the one chosen, and "another folder" for one the desk
-  has never heard of -- so the answer is given where the question is asked, rather
-  than in the settings. The tab bar's + asks for a folder while the tab is being
-  made, for the same reason. Pages, file panels, the git panel and the editor need
-  none, and neither does a terminal on another machine or a conversation with a
-  model. Settings written before this keep working: the first start writes `"."` --
-  the app's own folder, relative so it still means that on another PC -- into the
-  groups that were relying on it, and the folder they were already using is now on
-  screen and can be changed.
 - **The branches and the history open as a Git tab in the middle**, from the arrow
   in the git column, rather than being a pane of the column. The column keeps what
   is done every day. A Git tab with no account of its own uses its project's.
@@ -364,39 +609,6 @@ other.
   and what the CLI told itself, and everything found goes through the same funnel as
   before: requests too light to say anything dropped, code cut out, the newest few
   kept, the whole thing asked for at most once in ten minutes.
-- **A failed CI is handed to an AI from a branch that has no pull request.** The
-  button was offered only where one was open, and what it sent named it, so a
-  branch whose CI had failed before anybody opened one had no way to hand the
-  failure over. It is offered for the checks themselves now, ahead of the button
-  that opens a pull request -- what CI says is broken is worth fixing before
-  anybody is asked to look at it -- and the prompt names the commit and the
-  branch when there is no pull request to name (`{ci}`).
-- **CI is shown in the git column again, and for the branch rather than only for
-  a pull request made from it.** Two things were in the way. The column tells a
-  folder whose server is GitHub from one whose server is not by the repository the
-  folder pushes to, and that was never sent to the screen -- so it asked GitHub
-  nothing at all, and neither the pull requests nor CI ever appeared. And the
-  checks were read off an open pull request's commit only, although they run when
-  the commit is pushed: a red CI on a pushed branch, or on a protected branch
-  where no pull request is ever made, was on GitHub's pages and nowhere in the
-  app. The checks are now read for the commit the server has, whether a pull
-  request exists or not, and a push whose runs GitHub has not made yet is asked
-  for again a few times rather than once.
-- **The git column says "Not pushed yet" only when there is nothing on the server
-  to compare with.** It asked git what the branch follows and nothing else, so a
-  branch sent from a terminal without `--set-upstream` -- which follows nothing --
-  read as work that had never left this PC, and the column's button offered to
-  publish it again. The count now falls back to the branch of this one's own name
-  on the server it would push to, and the line's tooltip says when it is that one
-  and that pushing from here sets the branch to follow it. A pull on such a branch
-  says where to pull from rather than leaving git with nothing to read.
-- **Pressing a working folder's name shows that folder.** It could bring up
-  another folder's tab instead, and the card said one folder while the screen
-  showed another. Two tabs were answering to one automation name: the name was
-  worked out from the order the lines stood in and written down nowhere, so
-  taking a folder out of the settings handed the name of a tab still running to
-  a different line. Every tab's name is written into the settings the moment its
-  line is made now, so two lines cannot come to share one.
 - **Pressing a folder that has not been looked at yet shows it on its own.** With
   the screen split, it went into the pane in front only, and the other pane went
   on showing a folder of another project beside it.
@@ -2847,7 +3059,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/styleio/ShikishaTerm/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/styleio/ShikishaTerm/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/styleio/ShikishaTerm/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/styleio/ShikishaTerm/compare/v0.14.0...v0.15.0
