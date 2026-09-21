@@ -1114,7 +1114,17 @@ const LIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 /// choice with two sides -- a name does not want tools, and nobody wants this
 /// in their list of conversations. Gemini is not asked either way: it routes a
 /// request this small itself, and naming a model there is a way to be wrong
-fn light_invocation(name: &str, small: bool) -> Option<(Vec<String>, Vec<(&'static str, String)>)> {
+///
+/// `shaped` holds the AI to a shape for its answer. Two of the three can be
+/// held to one -- Claude Code with `--json-schema`, Codex CLI with
+/// `--output-schema` -- and Gemini CLI has nothing of the kind, so for it the
+/// prompt is all there is. Whoever asks reads the answer as that shape and
+/// copes when it is not one
+fn light_invocation(
+    name: &str,
+    small: bool,
+    shaped: bool,
+) -> Option<(Vec<String>, Vec<(&'static str, String)>)> {
     let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match name {
         "claude" => {
@@ -1127,6 +1137,10 @@ fn light_invocation(name: &str, small: bool) -> Option<(Vec<String>, Vec<(&'stat
                 "--disable-slash-commands", "--settings", &format!("{{dir}}/{CLAUDE_SETTINGS_FILE}"),
                 "--system-prompt-file", &format!("{{dir}}/{SYSTEM_FILE}"),
             ]));
+            if shaped {
+                args.push("--json-schema".into());
+                args.push(format!("{{dir}}/{SCHEMA_FILE}"));
+            }
             Some((args, vec![("MAX_THINKING_TOKENS", "0".to_string())]))
         }
         "codex" => {
@@ -1140,6 +1154,10 @@ fn light_invocation(name: &str, small: bool) -> Option<(Vec<String>, Vec<(&'stat
             }
             args.push("-c".into());
             args.push(format!("model_instructions_file={{dir}}/{SYSTEM_FILE}"));
+            if shaped {
+                args.push("--output-schema".into());
+                args.push(format!("{{dir}}/{SCHEMA_FILE}"));
+            }
             for feature in [
                 "apps", "browser_use", "computer_use", "image_generation", "goals", "hooks", "multi_agent", "plugins",
                 "shell_tool", "sleep_tool", "tool_suggest", "unified_exec", "view_image", "skill_search", "personality",
@@ -1179,13 +1197,49 @@ pub fn ask_local_ai_light(prompt: &str, engine: Option<&str>) -> Result<String> 
     }
 }
 
+/// Ask the assistant AI for an answer in a shape, the light way.
+///
+/// Told what it is for in `system`, rather than the one line a name or a tidy
+/// gets: this carries a question somebody typed, and the AI has to know what
+/// it is looking at. What comes back is the AI's answer as it gave it -- JSON
+/// when it held to the shape, and whatever it said when it did not, which
+/// whoever asked has to cope with.
+pub fn ask_local_ai_shaped(
+    prompt: &str,
+    system: &str,
+    schema: &str,
+    engine: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<String> {
+    let (name, _) = assistant_ai(engine).with_context(|| match engine {
+        Some(w) => crate::i18n::tp("webui.err.ai_not_found", &[("name", w)]),
+        None => crate::i18n::t("webui.err.ai_missing"),
+    })?;
+    // The same setting the short answers read: whoever turned the small
+    // model off did so for everything asked this way
+    let small = crate::config::load().and_then(|c| c.summary_small_model).unwrap_or(true);
+    let (args, env) = light_invocation(name, small, true)
+        .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
+    let files: [(&str, &[u8]); 3] = [
+        (SYSTEM_FILE, system.as_bytes()),
+        (SCHEMA_FILE, schema.as_bytes()),
+        (CLAUDE_SETTINGS_FILE, br#"{"disableAllHooks": true}"#),
+    ];
+    let ran = run_in_own_folder(name, args, prompt.to_string(), &files, &env, timeout)?;
+    if !ran.ok || ran.out.trim().is_empty() {
+        let why: String = ran.err.trim().chars().take(300).collect();
+        anyhow::bail!("{}", crate::i18n::tp("ai.err.failed", &[("cmd", &ran.cmd), ("error", &why)]));
+    }
+    Ok(ran.out)
+}
+
 /// The light way alone, with nothing to fall back on
 fn ask_light_once(name: &str, prompt: &str) -> Result<String> {
     // Asked of the settings here rather than handed down: every caller of the
     // light way wants the same answer, and one that reads it for itself cannot
     // be the one that forgets
     let small = crate::config::load().and_then(|c| c.summary_small_model).unwrap_or(true);
-    let (args, env) = light_invocation(name, small)
+    let (args, env) = light_invocation(name, small, false)
         .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
     let files: [(&str, &[u8]); 2] = [
         (SYSTEM_FILE, LIGHT_SYSTEM.as_bytes()),
@@ -13016,7 +13070,7 @@ mod tests {
     #[test]
     fn turning_the_small_model_off_turns_off_only_the_model() {
         let args = |name: &str, small: bool| {
-            super::light_invocation(name, small).expect("this CLI has a light way").0.join(" ")
+            super::light_invocation(name, small, false).expect("this CLI has a light way").0.join(" ")
         };
         assert!(args("claude", true).contains("--model haiku"));
         assert!(!args("claude", false).contains("--model"), "{}", args("claude", false));

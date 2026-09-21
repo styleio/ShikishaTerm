@@ -64,6 +64,10 @@ pub struct Item {
 /// A screen with its words resolved into one language.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Page {
+    /// The handle, which is the screen's own name for the program's settings
+    /// and `desk:<name>` for a desk's. Two screens are called "Basic" -- the
+    /// program's and every desk's -- so the name alone would send half the
+    /// answers to the wrong one
     pub id: String,
     /// Where a person is told to go, spelled out: "Settings > Phone connection"
     pub at: String,
@@ -95,6 +99,25 @@ pub struct Index {
     pub loose: Vec<Item>,
     /// Every key combination, as it ships
     pub keys: Vec<Item>,
+}
+
+impl Screen {
+    /// What this screen is called where one screen has to be named: its own
+    /// name for the program's settings, `desk:<name>` for a desk's.
+    pub fn handle(&self) -> String {
+        match self.scope {
+            Scope::Program => self.id.clone(),
+            Scope::Desk => format!("{DESK}{}", self.id),
+        }
+    }
+}
+
+/// What a desk's screen is called in front of its own name.
+pub const DESK: &str = "desk:";
+
+/// The screen a handle names, if this program has one.
+pub fn screen_of(handle: &str) -> Option<&'static Screen> {
+    screens().iter().find(|s| s.handle() == handle)
 }
 
 // ── Reading the page ──────────────────────────────────────────────
@@ -602,7 +625,7 @@ pub fn index(word: &dyn Fn(&str) -> String) -> Index {
         cards.retain(|c| !c.items.is_empty());
         let about = word(&s.sub_key);
         pages.push(Page {
-            id: s.id.clone(),
+            id: s.handle(),
             at,
             title,
             about: if about == s.sub_key { String::new() } else { about },
@@ -915,6 +938,305 @@ pub fn reference_path(root: &std::path::Path, code: &str) -> std::path::PathBuf 
     })
 }
 
+// ── Answering ────────────────────────────────────────────────────
+
+/// What the ? came back with.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct Answer {
+    /// The reply, in the language the question was asked in
+    #[serde(default)]
+    pub say: String,
+    /// A settings screen worth opening, by the handle the board opens one
+    /// with. Empty when the answer does not lead to one
+    #[serde(default)]
+    pub open: String,
+    /// What to put in the field the person picked, if they picked one
+    #[serde(default)]
+    pub fill: String,
+}
+
+/// One turn of a conversation with the ?.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct Said {
+    pub asked: String,
+    pub said: String,
+}
+
+/// The field the person picked on the settings screen, as the screen itself
+/// reads it: never its value, only what it is called and what goes in it.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct Picked {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub hint: String,
+    /// text / number / tick / choice, and for a choice what it offers
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    /// Which screen it is on, so the answer is about the right one
+    #[serde(default)]
+    pub screen: String,
+}
+
+/// How long the ? waits. A question somebody typed is worth more patience than
+/// a name for a folder, and less than a picture: measured at one to seven
+/// seconds for a short answer, so a minute is a network or a first start
+const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// How many screens go into the question in full. The map of every screen goes
+/// in whatever happens, so this is how much detail rides along -- enough for
+/// the answer to quote the right box, small enough that the cheapest model is
+/// not reading a hundred screens to answer "how do I use my phone"
+const IN_FULL: usize = 4;
+
+/// The shape the answer has to come back in.
+pub fn answer_shape() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "say": {"type": "string"},
+            "open": {"type": "string"},
+            "fill": {"type": "string"},
+        },
+        "required": ["say"],
+        "additionalProperties": false,
+    })
+}
+
+/// Ask the assistant AI about using this program, and read its answer.
+///
+/// Everything it is told comes from [`index`], so an answer about the settings
+/// is an answer about the settings as they are. It is given no tools and
+/// nothing to reach: what it has is the question and the index.
+pub fn ask(question: &str, so_far: &[Said], picked: Option<&Picked>) -> anyhow::Result<Answer> {
+    let idx = index(&crate::i18n::t);
+    let prompt = question_for(&idx, question, so_far, picked);
+    let said = crate::webui::ask_local_ai_shaped(
+        &prompt,
+        &system_for(&idx, picked.is_some()),
+        &answer_shape().to_string(),
+        None,
+        ASK_TIMEOUT,
+    )?;
+    Ok(read_answer(&said, &idx))
+}
+
+/// What the AI is told it is doing.
+///
+/// Written for the job, not for a question: the rules here are the ones that
+/// hold for every question the ? will ever be asked. Anything that only
+/// answers one of them belongs in the index, where it can be read.
+fn system_for(idx: &Index, picking: bool) -> String {
+    let mut out = String::new();
+    out.push_str(&crate::i18n::t("guide.ai.who"));
+    out.push('\n');
+    out.push_str(&crate::i18n::t("guide.ai.how"));
+    out.push('\n');
+    out.push_str(&crate::i18n::tp(
+        "guide.ai.open",
+        &[("ids", &idx.pages.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", "))],
+    ));
+    if picking {
+        out.push('\n');
+        out.push_str(&crate::i18n::t("guide.ai.fill"));
+    }
+    out
+}
+
+/// The question as the AI is handed it: what was asked, what was said before,
+/// what the person is pointing at, and the part of the index worth reading.
+fn question_for(idx: &Index, question: &str, so_far: &[Said], picked: Option<&Picked>) -> String {
+    let mut out = String::new();
+    for turn in so_far.iter().rev().take(6).rev() {
+        out.push_str(&format!("Q: {}\nA: {}\n\n", turn.asked.trim(), turn.said.trim()));
+    }
+    out.push_str(&format!("Q: {}\n\n", question.trim()));
+    if let Some(p) = picked {
+        out.push_str(&crate::i18n::tp(
+            "guide.ai.picked",
+            &[("label", &p.label), ("hint", &p.hint), ("kind", &kind_of(p))],
+        ));
+        out.push_str("\n\n");
+    }
+    out.push_str("--- \n\n");
+    // The map of every screen, so an answer can send somebody anywhere
+    for page in &idx.pages {
+        out.push_str(&format!("[{}] {} — {}\n", page.id, page.at, page.about));
+    }
+    out.push('\n');
+    // ...and the few screens this question is actually about, in full
+    for page in best(idx, &together(question, so_far, picked), IN_FULL) {
+        out.push_str(&format!("## [{}] {}\n", page.id, page.at));
+        for card in &page.cards {
+            if !card.title.is_empty() {
+                out.push_str(&format!("### {}\n", card.title));
+            }
+            for it in &card.items {
+                out.push_str(&format!("- {}: {}\n", it.label, it.hint));
+            }
+        }
+        for line in &page.says {
+            out.push_str(&format!("> {line}\n"));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// A picked field described in words, for the AI that has to fill it.
+fn kind_of(p: &Picked) -> String {
+    match p.options.is_empty() {
+        true => p.kind.clone(),
+        false => format!("{} ({})", p.kind, p.options.join(" / ")),
+    }
+}
+
+/// Everything the person has said in this conversation, which is what the
+/// search runs over: "and the port?" on its own finds nothing.
+fn together(question: &str, so_far: &[Said], picked: Option<&Picked>) -> String {
+    let mut out = question.to_string();
+    for turn in so_far.iter().rev().take(2) {
+        out.push(' ');
+        out.push_str(&turn.asked);
+    }
+    if let Some(p) = picked {
+        out.push(' ');
+        out.push_str(&p.label);
+        out.push(' ');
+        out.push_str(&p.hint);
+    }
+    out
+}
+
+/// The screens a piece of text is most about.
+///
+/// Two things are looked for, and the first is worth far more than the second:
+///
+/// 1. **A name from the screen, written in the question.** Somebody asking
+///    about a port has written the word "port", which is what that box is
+///    called. Longer names count for more, so "Automatic names" beats "Name".
+/// 2. **Pairs of neighbouring characters in common**, as a tie-break. Pairs
+///    rather than words, because a question can be in any language this
+///    program is translated into and only some of them put spaces between
+///    words, and a pair is enough to tell "ポート" from "ポータル".
+///
+/// The second on its own is not enough: "ポート番号を変えたい" shares 変・え・
+/// た・い with every screen carrying a sentence of Japanese, and the answer
+/// went to whichever screen had the most writing on it.
+fn best<'a>(idx: &'a Index, text: &str, how_many: usize) -> Vec<&'a Page> {
+    let asked = text.to_lowercase();
+    let wanted = pairs(text);
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let said: Vec<(HashSet<(char, char)>, &Page)> =
+        idx.pages.iter().map(|p| (pairs(&flat(p)), p)).collect();
+    let mut scored: Vec<(usize, &Page)> = said
+        .iter()
+        .map(|(mine, p)| {
+            let named: usize = names_on(p)
+                .iter()
+                .filter(|n| n.chars().count() > 1 && asked.contains(n.as_str()))
+                .map(|n| 100 * n.chars().count())
+                .sum();
+            let shared = wanted.iter().filter(|w| mine.contains(*w)).count();
+            (named + shared, *p)
+        })
+        .filter(|(n, _)| *n > 0)
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
+    scored.into_iter().take(how_many).map(|(_, p)| p).collect()
+}
+
+/// Everything on one screen that has a name, in lower case.
+fn names_on(p: &Page) -> Vec<String> {
+    let mut out = vec![p.title.to_lowercase()];
+    for card in &p.cards {
+        out.push(card.title.to_lowercase());
+        out.extend(card.items.iter().map(|it| it.label.to_lowercase()));
+    }
+    out.retain(|n| !n.is_empty());
+    out
+}
+
+/// Everything one screen says, as one string to search.
+fn flat(p: &Page) -> String {
+    let mut out = format!("{} {} ", p.title, p.about);
+    for card in &p.cards {
+        out.push_str(&card.title);
+        out.push(' ');
+        for it in &card.items {
+            out.push_str(&it.label);
+            out.push(' ');
+            out.push_str(&it.hint);
+            out.push(' ');
+        }
+    }
+    for line in &p.says {
+        out.push_str(line);
+        out.push(' ');
+    }
+    out
+}
+
+/// The pairs of neighbouring characters in a piece of text, with the spaces
+/// and the punctuation taken out.
+fn pairs(text: &str) -> HashSet<(char, char)> {
+    let letters: Vec<char> = text
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect();
+    letters.windows(2).map(|w| (w[0], w[1])).collect()
+}
+
+/// The answer, out of whatever the AI printed.
+///
+/// It is asked for a shape and two of the three can be held to one, so the
+/// usual case is a line of JSON. The third is asked in words and answers in
+/// words, and any of them can wrap it in a fence or say something first -- so
+/// the JSON is looked for, and what is left over is read as the answer itself.
+/// A screen it names that does not exist is dropped rather than offered.
+fn read_answer(said: &str, idx: &Index) -> Answer {
+    let mut out = match shaped(said) {
+        Some(a) => a,
+        None => Answer { say: said.trim().to_string(), ..Default::default() },
+    };
+    if !idx.pages.iter().any(|p| p.id == out.open) {
+        out.open.clear();
+    }
+    out
+}
+
+/// The JSON in what was printed, if any of it is the shape asked for.
+fn shaped(said: &str) -> Option<Answer> {
+    let text = said.trim();
+    if let Ok(a) = serde_json::from_str::<Answer>(text)
+        && !a.say.trim().is_empty()
+    {
+        return Some(a);
+    }
+    // A fence, a line of chatter before it, or one line of events per line
+    let mut from = 0;
+    while let Some(at) = text[from..].find('{') {
+        let start = from + at;
+        from = start + 1;
+        for end in (start..text.len()).rev() {
+            if !text.is_char_boundary(end + 1) || text.as_bytes()[end] != b'}' {
+                continue;
+            }
+            if let Ok(a) = serde_json::from_str::<Answer>(&text[start..=end])
+                && !a.say.trim().is_empty()
+            {
+                return Some(a);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1013,6 +1335,114 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod answer_tests {
+    use super::*;
+
+    fn en() -> impl Fn(&str) -> String {
+        let dict = crate::i18n::dictionary("en", &crate::repo_root().join("lang"));
+        move |k: &str| dict.get(k).cloned().unwrap_or_else(|| k.to_string())
+    }
+
+    /// A question finds the screen it is about.
+    #[test]
+    fn a_question_finds_its_screen() {
+        let idx = index(&en());
+        for (question, want) in [
+            ("How do I use this from my phone?", "remote"),
+            ("I want to change the prefix key", "keys"),
+            ("where do I put my github token", "desk:secrets"),
+            ("stop it asking before it deletes a worktree", "basic"),
+        ] {
+            let found: Vec<&str> =
+                best(&idx, question, IN_FULL).into_iter().map(|p| p.id.as_str()).collect();
+            assert!(
+                found.contains(&want),
+                "\"{question}\" looked at {found:?}, and not at \"{want}\""
+            );
+        }
+    }
+
+    /// ...and a question in Japanese finds it too, which is the whole reason
+    /// the search runs on pairs of characters rather than on words.
+    #[test]
+    fn a_question_with_no_spaces_in_it_finds_its_screen() {
+        let dict = crate::i18n::dictionary("ja", &crate::repo_root().join("lang"));
+        let word = |k: &str| dict.get(k).cloned().unwrap_or_else(|| k.to_string());
+        let idx = index(&word);
+        for (question, want) in [
+            ("スマホから使いたい", "remote"),
+            ("ポート番号を変えたい", "remote"),
+            ("秘密情報はどこに置きますか", "desk:secrets"),
+        ] {
+            let found: Vec<&str> =
+                best(&idx, question, IN_FULL).into_iter().map(|p| p.id.as_str()).collect();
+            assert!(
+                found.contains(&want),
+                "\"{question}\" looked at {found:?}, and not at \"{want}\""
+            );
+        }
+    }
+
+    /// What is handed over carries the map of every screen, the screens the
+    /// question is about, and nothing the person did not ask about.
+    #[test]
+    fn the_question_carries_the_map_and_the_detail() {
+        let idx = index(&en());
+        let asked = question_for(&idx, "How do I use this from my phone?", &[], None);
+        for page in &idx.pages {
+            assert!(asked.contains(&format!("[{}]", page.id)), "{} is not on the map", page.id);
+        }
+        assert!(asked.contains("## [remote]"), "the phone's screen is not written out in full");
+        assert_eq!(
+            asked.matches("## [").count(),
+            IN_FULL,
+            "a different number of screens went in full than were asked for"
+        );
+    }
+
+    /// An answer is read whether it came back as the shape asked for, wrapped
+    /// in a fence, or with the AI saying something first.
+    #[test]
+    fn an_answer_is_read_however_it_arrives() {
+        let idx = index(&en());
+        let plain = r#"{"say":"Turn it on under the phone screen.","open":"remote"}"#;
+        assert_eq!(read_answer(plain, &idx).open, "remote");
+        let fenced = format!("Here you go:\n```json\n{plain}\n```\n");
+        assert_eq!(read_answer(&fenced, &idx).open, "remote");
+        assert_eq!(read_answer(&fenced, &idx).say, "Turn it on under the phone screen.");
+        // Nothing shaped in it at all: what it said is the answer
+        let words = "Turn it on under Settings > Phone connection.";
+        assert_eq!(read_answer(words, &idx).say, words);
+        assert!(read_answer(words, &idx).open.is_empty());
+    }
+
+    /// A screen it names that this program does not have is not offered.
+    ///
+    /// The button under an answer opens what the answer names, and an AI that
+    /// invents a name would leave a button that goes nowhere.
+    #[test]
+    fn a_screen_that_does_not_exist_is_not_offered() {
+        let idx = index(&en());
+        let made_up = r#"{"say":"Look there.","open":"phone-settings-page"}"#;
+        assert!(read_answer(made_up, &idx).open.is_empty(), "a made-up screen was offered");
+        assert_eq!(read_answer(made_up, &idx).say, "Look there.");
+    }
+
+    /// What the AI is told holds for any question, and names every screen it
+    /// is allowed to send somebody to.
+    #[test]
+    fn the_instructions_name_every_screen() {
+        let idx = index(&en());
+        let system = system_for(&idx, false);
+        for page in &idx.pages {
+            assert!(system.contains(&page.id), "{} is not one it may name", page.id);
+        }
+        assert!(!system.contains("fill"), "it is told about filling a box nobody picked");
+        assert!(system_for(&idx, true).len() > system.len(), "picking a box tells it nothing");
+    }
+}
 
 #[cfg(test)]
 mod reference_tests {
