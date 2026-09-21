@@ -273,6 +273,41 @@ pub fn surface_dir(p: &Surface, tabs: &[Tab]) -> Option<std::path::PathBuf> {
     }
 }
 
+/// Whether the row numbered `n` stands in a folder put out of sight.
+///
+/// Rows are numbered the way the view numbers them, from 1; row 0 is the
+/// board, which stands in no folder and is therefore never out of sight.
+pub fn row_put_away(
+    n: usize,
+    surfaces: &[Surface],
+    tabs: &[Tab],
+    hidden: &std::collections::BTreeSet<std::path::PathBuf>,
+) -> bool {
+    !hidden.is_empty()
+        && n.checked_sub(1)
+            .and_then(|i| surfaces.get(i))
+            .and_then(|p| surface_dir(p, tabs))
+            .is_some_and(|d| hidden.iter().any(|h| crate::uistate::same_folder(h, &d)))
+}
+
+/// The row the view goes to when the one it was on is not one it may rest on:
+/// the next one along that is still drawn, or the one before it when there is
+/// none -- the tab a browser shows when the one in front of you closes, which
+/// is the rule the panes already follow.
+///
+/// Nothing at all when every row is out of sight, and then the board is what
+/// is left to look at.
+pub fn shown_from(
+    from: usize,
+    surfaces: &[Surface],
+    tabs: &[Tab],
+    hidden: &std::collections::BTreeSet<std::path::PathBuf>,
+) -> Option<usize> {
+    let drawn = |n: &usize| !row_put_away(*n, surfaces, tabs, hidden);
+    let from = from.max(1);
+    (from..=surfaces.len()).find(drawn).or_else(|| (1..from.min(surfaces.len() + 1)).rev().find(drawn))
+}
+
 pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
     // The folders these tabs are actually in. Worked out here, once, so the
     // window and the phone are looking at the same list
@@ -921,6 +956,52 @@ mod drawn_away_tests {
         let kept = std::collections::BTreeSet::from([family.display().to_string()]);
         let again = super::discovered_of(&cuts, &on_desk, &kept);
         assert!(again[0].kept, "a kept project is not said to be kept");
+    }
+
+    /// A folder put out of sight keeps its rows in the list -- they are simply
+    /// not drawn -- so every place that moves the view on its own has to know
+    /// which rows those are. Asked here, once, for all of them: deleting a
+    /// worktree shortens the list, and the view dropped on row 1 would bring
+    /// back the folder somebody put away
+    #[test]
+    fn the_view_steps_over_the_rows_of_a_folder_put_away() {
+        use std::path::PathBuf;
+        let away = PathBuf::from(crate::local_path(r"D:\work\investigation"));
+        let here = PathBuf::from(crate::local_path(r"D:\work\here"));
+        let git = |dir: &PathBuf| Surface::Git {
+            key: dir.display().to_string(),
+            name: "git".into(),
+            dir: Some(dir.clone()),
+            protect: Vec::new(),
+            git: Default::default(),
+        };
+        let surfaces = vec![git(&away), git(&away), git(&here)];
+        let hidden = std::collections::BTreeSet::from([away.clone()]);
+        assert!(super::row_put_away(1, &surfaces, &[], &hidden));
+        assert!(super::row_put_away(2, &surfaces, &[], &hidden));
+        assert!(!super::row_put_away(3, &surfaces, &[], &hidden));
+        // The board stands in no folder, and neither does a row that is gone
+        assert!(!super::row_put_away(0, &surfaces, &[], &hidden));
+        assert!(!super::row_put_away(4, &surfaces, &[], &hidden));
+        // On from where the view was, never back to the top of the list
+        assert_eq!(
+            super::shown_from(1, &surfaces, &[], &hidden),
+            Some(3),
+            "the view landed in the folder it was told to stop drawing"
+        );
+        assert_eq!(super::shown_from(2, &surfaces, &[], &hidden), Some(3));
+        // Past the end -- the rows below it went -- so it steps back instead
+        assert_eq!(super::shown_from(9, &surfaces, &[], &hidden), Some(3));
+        // Nothing put away: the row it is on is the row it stays on
+        let none = std::collections::BTreeSet::new();
+        assert_eq!(super::shown_from(2, &surfaces, &[], &none), Some(2));
+        assert_eq!(super::shown_from(9, &surfaces, &[], &none), Some(3));
+        // The only rows still drawn are behind it
+        let last = std::collections::BTreeSet::from([here.clone()]);
+        assert_eq!(super::shown_from(3, &surfaces, &[], &last), Some(2));
+        // Every row out of sight leaves nothing to look at but the board
+        let all = std::collections::BTreeSet::from([away, here]);
+        assert_eq!(super::shown_from(1, &surfaces, &[], &all), None);
     }
 
     #[test]

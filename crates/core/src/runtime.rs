@@ -1400,6 +1400,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if rows_were.0 == desk_now && !rows_were.1.is_empty() && rows_were.1 != keys {
                 let moves = surface_moves(&rows_were.1, &keys);
                 let was_focused = pane_layout.focused_surface();
+                // Whether the row the view was on is one of the rows that went.
+                // Read before the panes follow, while the old numbers still mean
+                // something
+                let row_went =
+                    active.checked_sub(1).is_some_and(|i| moves.get(i).copied().flatten().is_none());
                 pane_layout.follow(&moves);
                 // `active` is the focused pane's row, and follows it. When
                 // something asked for another row on the last pass it is that
@@ -1409,6 +1414,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     n if n == was_focused => pane_layout.focused_surface(),
                     n => moves.get(n - 1).copied().flatten().unwrap_or(pane_layout.focused_surface()),
                 };
+                // The row it was on is gone, so the view has been put on a
+                // neighbour. Put, not asked for -- and a folder somebody set
+                // aside must not come back just because the row above it was
+                // deleted. The view steps on to one that is still drawn
+                if row_went && crate::view::row_put_away(active, &surfaces, &tabs, &folders_hidden) {
+                    match crate::view::shown_from(active, &surfaces, &tabs, &folders_hidden) {
+                        Some(n) => active = n,
+                        None => {
+                            active = 0;
+                            board_open = true;
+                        }
+                    }
+                }
             }
             rows_were = (desk_now, keys);
         }
@@ -1752,10 +1770,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     &caps.hosted_names(),
                     &editors,
                     issues_open,
-                )
-                .len();
-                if active > on_screen {
-                    active = if on_screen == 0 { 0 } else { 1 };
+                );
+                if active > on_screen.len() {
+                    // The last row still there, and never one the list is no
+                    // longer drawing: a folder put out of sight keeps its rows,
+                    // and a view dropped on one of them would bring the folder
+                    // back -- which is what deleting a worktree looked like
+                    match crate::view::shown_from(active, &on_screen, &tabs, &folders_hidden) {
+                        Some(n) => active = n,
+                        None => {
+                            active = 0;
+                            board_open = true;
+                        }
+                    }
                 }
                 // Apply remote UI config changes (enable/disable takes effect here too)
                 let mut remote_changed: Option<String> = None;
@@ -6092,21 +6119,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let at = std::path::PathBuf::from(&folder);
                     folders_hidden.insert(at.clone());
                     // What was on screen is about to stop being drawn, so the
-                    // view goes to the first tab that is still on the list --
-                    // or, when there is none, to the board. Left where it was,
-                    // the next frame would bring the folder straight back
-                    let in_hidden = |i: usize| {
-                        surfaces
-                            .get(i)
-                            .and_then(|p| crate::view::surface_dir(p, &tabs))
-                            .is_some_and(|d| {
-                                folders_hidden.iter().any(|h| crate::uistate::same_folder(h, &d))
-                            })
-                    };
-                    if in_hidden(active.wrapping_sub(1)) {
-                        match (0..surfaces.len()).find(|i| !in_hidden(*i)) {
-                            Some(i) => {
-                                if let Some(v) = look_at(i + 1, surface_count, active, settings_open) {
+                    // view steps on to the nearest tab that is still on the
+                    // list -- or, when there is none, to the board. Left where
+                    // it was, the next frame would bring the folder straight back
+                    if crate::view::row_put_away(active, &surfaces, &tabs, &folders_hidden) {
+                        match crate::view::shown_from(active, &surfaces, &tabs, &folders_hidden) {
+                            Some(n) => {
+                                if let Some(v) = look_at(n, surface_count, active, settings_open) {
                                     (active, board_open, settings_open) =
                                         (v.active, v.board_open, v.settings_open);
                                 }
