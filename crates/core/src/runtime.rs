@@ -4587,6 +4587,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 ),
                 "stage" => ("git_stage", vec![who.clone(), files]),
                 "unstage" => ("git_unstage", vec![who.clone(), files]),
+                // Throwing a change away. Asked twice: once with `plan`, for
+                // the command lines the question is put in, and once for real
+                // once somebody has read them and pressed the button
+                "discard" => (
+                    "git_discard",
+                    vec![
+                        who.clone(),
+                        files,
+                        serde_json::json!({
+                            "staged": args.get("staged").and_then(|v| v.as_bool()).unwrap_or(false),
+                            "plan": args.get("plan").and_then(|v| v.as_bool()).unwrap_or(false),
+                        }),
+                    ],
+                ),
                 "commit" => (
                     "git_commit",
                     vec![
@@ -5131,7 +5145,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     Some(say(match &dir {
                         Some(d) => serde_json::json!({"ok": true, "data": {
                             "folder": d.display().to_string(),
-                            "runs": crate::git::catch_up_said(&crate::git::catch_up_steps_for(d, Some(&head), &base)),
+                            "runs": crate::git::said(&crate::git::catch_up_steps_for(d, Some(&head), &base)),
                             "merging": crate::git::merging_in(d, &base) && !crate::git::conflicts(d).unwrap_or_default().is_empty(),
                         }}),
                         None => serde_json::json!({"ok": true, "data": {"folder": null}}),

@@ -3379,7 +3379,7 @@ impl HookEngine {
                                     {
                                         row.set("catching_up", theirs.as_str())?;
                                     }
-                                    row.set("catch_up", crate::git::catch_up_said(&steps))?;
+                                    row.set("catch_up", crate::git::said(&steps))?;
                                     row.set("base", base)?;
                                 }
                                 Ok(Value::Table(row))
@@ -3415,6 +3415,46 @@ impl HookEngine {
                         crate::git::unstage(&dir, &paths_of(&paths)?)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            // ...and throwing one away, which is the one thing here git cannot
+            // undo afterwards. `staged = true` takes the file back to the last
+            // commit; without it, back to the way it is staged. `plan = true`
+            // answers with the commands and runs none of them, so whoever asks
+            // can show them before asking a person. Both answer the same way --
+            // `{ plan = …, said = { "git …" } }` -- because the list shown and
+            // the list run are built by this one call
+            let c = Rc::clone(&places);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_discard",
+                    lua.create_function(
+                        move |lua, (tab, paths, opts): (Value, Value, Option<Table>)| {
+                            let dir = git_folder(&c, &o, &tab)?;
+                            let flag = |name: &str| -> mlua::Result<bool> {
+                                Ok(match &opts {
+                                    Some(t) => t.get::<Option<bool>>(name)?.unwrap_or(false),
+                                    None => false,
+                                })
+                            };
+                            let staged = flag("staged")?;
+                            let plan = flag("plan")?;
+                            let paths = paths_of(&paths)?;
+                            let said = match plan {
+                                true => crate::git::said(&crate::git::discard_steps(
+                                    &dir, &paths, staged,
+                                )),
+                                false => crate::git::discard(&dir, &paths, staged)
+                                    .map_err(|e| mlua::Error::runtime(e.to_string()))?,
+                            };
+                            let out = lua.create_table()?;
+                            out.set("plan", plan)?;
+                            out.set("said", lua.create_sequence_from(said)?)?;
+                            Ok(out)
+                        },
+                    )
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
@@ -3538,7 +3578,7 @@ impl HookEngine {
                         let out = lua.create_table()?;
                         for name in list {
                             let row = lua.create_table()?;
-                            row.set("catch_up", crate::git::catch_up_said(&crate::git::catch_up_steps(&dir, &name)))?;
+                            row.set("catch_up", crate::git::said(&crate::git::catch_up_steps(&dir, &name)))?;
                             row.set("name", name)?;
                             out.push(row)?;
                         }
@@ -6082,9 +6122,18 @@ mod tests {
         let src = include_str!("hooks.rs");
         assert!(names.len() > 40, "extracting the commands failed ({} found)", names.len());
 
-        // The `tab` table an event receives, built in tab_table below
+        // The `tab` table an event receives, read out of the one function that
+        // builds it. Read out of the whole file, every other table built
+        // anywhere in it would count as a field of `tab` -- and the way that
+        // shows up is a command added elsewhere failing this test with the
+        // names of its own answer
+        let built = src
+            .split("fn make_tab_table(")
+            .nth(1)
+            .and_then(|r| r.split("\n    }\n").next())
+            .expect("make_tab_table is not where the tab table is built any more");
         let mut fields: Vec<&str> = Vec::new();
-        for part in src.split("t.set(\"").skip(1) {
+        for part in built.split("t.set(\"").skip(1) {
             if let Some(f) = part.split('"').next() {
                 // __index is the metatable link that lets a hook see the globals,
                 // not something anyone reads off `tab`
@@ -7261,6 +7310,53 @@ mod tests {
         assert_eq!(row["work"], "M", "the working tree side is modified too");
         assert_eq!(row["staged"], true, "half is in the next commit");
         assert_eq!(row["unstaged"], true, "the other half is not in yet");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Throwing a change away, reached the way the panel reaches it: asked
+    /// first for what it would run, then asked to run it. Both answers come
+    /// from the one call, so the commands somebody read are the commands that
+    /// ran -- and the asking answer leaves the folder exactly as it was
+    #[test]
+    fn asking_what_a_discard_would_run_runs_none_of_it() {
+        let dir = std::env::temp_dir().join(format!("shikisha-hooks-drop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git").args(args).current_dir(&dir).output()
+        };
+        if git(&["init", "-b", "main"]).map(|o| !o.status.success()).unwrap_or(true) {
+            return; // no git on this machine
+        }
+        let _ = git(&["config", "user.email", "test@example.invalid"]);
+        let _ = git(&["config", "user.name", "test"]);
+        std::fs::write(dir.join("f.txt"), "one").unwrap();
+        crate::git::stage(&dir, &["f.txt".to_string()]).unwrap();
+        crate::git::commit(&dir, "start", &[], true, false, &crate::git::As::default()).unwrap();
+        std::fs::write(dir.join("f.txt"), "two").unwrap();
+
+        let e = HookEngine::new().unwrap();
+        let key = TabKey { id: Some("work".into()) };
+        e.set_states(vec![(key.clone(), "WAIT".into())]);
+        e.set_places(vec![TabPlace { key, dir: dir.clone(), ..Default::default() }]);
+        let ask = |plan: bool| {
+            e.call_primitive(
+                "git_discard",
+                &[
+                    serde_json::json!("work"),
+                    serde_json::json!(["f.txt"]),
+                    serde_json::json!({ "plan": plan }),
+                ],
+            )
+            .unwrap()
+        };
+        let plan = ask(true);
+        assert_eq!(plan["plan"], true);
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "two", "asking changed the file");
+        let done = ask(false);
+        assert_eq!(done["plan"], false);
+        assert_eq!(done["said"], plan["said"], "what was shown is not what ran");
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "one");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

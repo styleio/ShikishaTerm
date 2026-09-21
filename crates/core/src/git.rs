@@ -69,6 +69,20 @@ pub struct Change {
     pub tangled: bool,
 }
 
+impl Change {
+    /// Whether git has this file marked as unmerged.
+    ///
+    /// The four shapes git uses for it, in one place: read out of `status`, out
+    /// of the rows the automation gets, and out of what will be thrown away --
+    /// three readers who must not come to disagree about what a conflict is
+    pub fn conflicted(&self) -> bool {
+        self.index == 'U'
+            || self.work == 'U'
+            || (self.index == 'A' && self.work == 'A')
+            || (self.index == 'D' && self.work == 'D')
+    }
+}
+
 pub struct Commit {
     pub hash: String,
     pub short: String,
@@ -567,14 +581,11 @@ pub fn status(dir: &Path) -> Result<Vec<Change>> {
         } else {
             None
         };
-        let conflict = index == 'U'
-            || work == 'U'
-            || (index == 'A' && work == 'A')
-            || (index == 'D' && work == 'D');
+        let mut change = Change { index, work, path, from, tangled: false };
         // Only the conflicted ones are opened, and only up to a size worth
         // reading: this runs every time the list is drawn
-        let tangled = conflict && has_markers(&dir.join(&path));
-        changes.push(Change { index, work, path, from, tangled });
+        change.tangled = change.conflicted() && has_markers(&dir.join(&change.path));
+        changes.push(change);
     }
     Ok(changes)
 }
@@ -1191,8 +1202,11 @@ pub fn catch_up_steps_for(dir: &Path, head: Option<&str>, base: &str) -> Vec<Vec
     steps
 }
 
-/// The same commands as a person would type them
-pub fn catch_up_said(steps: &[Vec<String>]) -> Vec<String> {
+/// The same commands as a person would type them.
+///
+/// Every screen that shows what will run before it runs comes through here, so
+/// that what is read and what happens are one list written once
+pub fn said(steps: &[Vec<String>]) -> Vec<String> {
     steps.iter().map(|s| format!("git {}", s.join(" "))).collect()
 }
 
@@ -1357,6 +1371,155 @@ pub fn unstage(dir: &Path, paths: &[String]) -> Result<()> {
     let mut older: Vec<&str> = vec!["reset", "-q", "HEAD", "--"];
     older.extend(paths.iter().map(String::as_str));
     run(dir, &older).map(|_| ())
+}
+
+/// Whether this git knows `restore`, which arrived in 2.23 (2019).
+///
+/// Asked, rather than tried and fallen back on the way [`unstage`] does it.
+/// Throwing a change away is shown as command lines before anybody presses
+/// anything, and a run that quietly used a second spelling would not be the
+/// command that was read. One answer per run of the program: a git does not
+/// grow subcommands while the window is open
+fn has_restore(dir: &Path) -> bool {
+    static KNOWN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *KNOWN.get_or_init(|| {
+        let said = run(dir, &["--version"]).unwrap_or_default();
+        let mut parts = said
+            .split_whitespace()
+            .find(|w| w.starts_with(|c: char| c.is_ascii_digit()))
+            .unwrap_or_default()
+            .split('.')
+            .map(|n| n.parse::<u32>().unwrap_or(0));
+        let seen = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+        // A git that would not say its version is treated as a new one: the
+        // new spelling is what git itself suggests, and being wrong here ends
+        // in a refusal that names the subcommand rather than in the wrong file
+        // being touched
+        seen == (0, 0) || seen >= (2, 23)
+    })
+}
+
+/// Every path as `:(literal)`, so git reads it as the name it is.
+///
+/// A file really can be called `a*.txt`, and left plain that name is a pattern
+/// matching other people's files. Everywhere else in this module a pattern
+/// that caught too much would stage or show too much; on the one road that
+/// deletes, it would delete too much
+fn literal(paths: &[String]) -> Vec<String> {
+    paths.iter().map(|p| format!(":(literal){p}")).collect()
+}
+
+/// What throwing away the change to these files comes down to, as the commands
+/// that do it.
+///
+/// Built here and nowhere else: the screen shows these before it asks, and this
+/// same list is what runs, so the two cannot come to say different things
+/// (docs/design/git-access.ja.md §4).
+///
+/// `staged` says which of the two lists the files were picked from, and the two
+/// do not mean the same thing:
+///
+/// - From the working list, what goes is the half that is not in the next
+///   commit. The file goes back to the way it is staged, and one git has never
+///   seen is taken off the disk.
+/// - From the staged list there is no half to keep. The file goes back to the
+///   way the last commit has it, and one the last commit does not have comes
+///   out of the next commit and off the disk.
+///
+/// A file in conflict is left alone. Which side to keep is a question, and the
+/// diff is where it is answered -- not a menu with one entry
+pub fn discard_steps(dir: &Path, paths: &[String], staged: bool) -> Vec<Vec<String>> {
+    let rows = status(dir).unwrap_or_default();
+    // What git has a copy of to put back, and what it has no copy of -- which
+    // is the whole difference between undoing a change and deleting a file
+    let (mut put_back, mut take_away): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    for p in paths {
+        let Some(r) = rows.iter().find(|r| &r.path == p) else { continue };
+        if r.conflicted() {
+            continue;
+        }
+        match (staged, r.index) {
+            // The index follows everything but what git has never been told
+            // about, and the index is what the working side is put back from
+            (false, '?') => take_away.push(p.clone()),
+            (false, _) => put_back.push(p.clone()),
+            // The last commit has a copy of everything but what was added to
+            // the next one. A rename is an add and a delete at once: the new
+            // name goes, the old name comes back
+            (true, 'R') => {
+                take_away.push(p.clone());
+                if let Some(from) = &r.from {
+                    put_back.push(from.clone());
+                }
+            }
+            // A copy leaves the file it was copied from alone, so only the
+            // new name is in question
+            (true, 'A' | 'C') => take_away.push(p.clone()),
+            (true, _) => put_back.push(p.clone()),
+        }
+    }
+    let new_spelling = has_restore(dir);
+    let mut steps: Vec<Vec<String>> = Vec::new();
+    if !put_back.is_empty() {
+        let mut cmd: Vec<String> = match (new_spelling, staged) {
+            (true, false) => vec!["restore".into(), "--".into()],
+            (true, true) => vec![
+                "restore".into(),
+                "--source=HEAD".into(),
+                "--staged".into(),
+                "--worktree".into(),
+                "--".into(),
+            ],
+            // Before `restore`, one command did both jobs and what it did
+            // depended on what stood in front of the `--`
+            (false, false) => vec!["checkout".into(), "--".into()],
+            (false, true) => vec!["checkout".into(), "HEAD".into(), "--".into()],
+        };
+        cmd.extend(literal(&put_back));
+        steps.push(cmd);
+    }
+    if !take_away.is_empty() {
+        let mut cmd: Vec<String> = match staged {
+            // Out of the next commit and off the disk in one. There is nothing
+            // in the last commit to put in its place
+            true => vec!["rm".into(), "--force".into(), "--quiet".into(), "--".into()],
+            // git follows no copy of this file, so there is nothing to put
+            // back from and the only way to take the change away is to take
+            // the file away. Never `-x`: what the project ignores -- what was
+            // built, what holds the secrets -- is not part of anybody's change
+            false => vec![
+                "clean".into(),
+                "--force".into(),
+                "-d".into(),
+                "--quiet".into(),
+                "--".into(),
+            ],
+        };
+        cmd.extend(literal(&take_away));
+        steps.push(cmd);
+    }
+    steps
+}
+
+/// Throw away the change to named files.
+///
+/// **There is no way back from this through git.** What goes was never
+/// committed, so there is no object left to find it in again. Asking is the
+/// caller's job, and the panel that calls it names every file and shows these
+/// very commands first.
+///
+/// Answers with the commands as they ran, which is what the panel says
+/// afterwards
+pub fn discard(dir: &Path, paths: &[String], staged: bool) -> Result<Vec<String>> {
+    let steps = discard_steps(dir, paths, staged);
+    if steps.is_empty() {
+        bail!(crate::i18n::t("err.git.nothing_to_discard"));
+    }
+    for step in &steps {
+        let args: Vec<&str> = step.iter().map(String::as_str).collect();
+        run(dir, &args)?;
+    }
+    Ok(said(&steps))
 }
 
 /// Commit what is staged.
@@ -1652,6 +1815,160 @@ mod tests {
         Some(dir)
     }
 
+    /// A repository with one committed file, for the throwing-away tests
+    fn discard_repo(tag: &str) -> Option<std::path::PathBuf> {
+        let dir = scratch_repo(tag)?;
+        std::fs::write(dir.join("kept.txt"), "one\n").unwrap();
+        run(&dir, &["add", "."]).unwrap();
+        run(&dir, &["commit", "-qm", "one"]).unwrap();
+        Some(dir)
+    }
+
+    /// From the working list, only the half that is not in the next commit goes.
+    ///
+    /// Staging one piece of a file and throwing away the rest is the whole
+    /// reason the two lists are separate. A discard that reached back to the
+    /// last commit would quietly take the staged half with it
+    #[test]
+    fn the_working_side_goes_back_to_the_way_it_is_staged() {
+        let Some(dir) = discard_repo("drop-work") else { return };
+        std::fs::write(dir.join("kept.txt"), "two\n").unwrap();
+        stage(&dir, &["kept.txt".into()]).unwrap();
+        std::fs::write(dir.join("kept.txt"), "three\n").unwrap();
+        discard(&dir, &["kept.txt".into()], false).unwrap();
+        // Trimmed: a machine told to convert line endings writes its own
+        assert_eq!(
+            std::fs::read_to_string(dir.join("kept.txt")).unwrap().trim(),
+            "two",
+            "the staged half went too"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// From the staged list there is no half to keep: the file goes back to the
+    /// last commit, and what was added to the next one goes with it
+    #[test]
+    fn the_staged_side_goes_back_to_the_last_commit() {
+        let Some(dir) = discard_repo("drop-staged") else { return };
+        std::fs::write(dir.join("kept.txt"), "two\n").unwrap();
+        stage(&dir, &["kept.txt".into()]).unwrap();
+        std::fs::write(dir.join("kept.txt"), "three\n").unwrap();
+        discard(&dir, &["kept.txt".into()], true).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("kept.txt")).unwrap().trim(), "one");
+        assert!(status(&dir).unwrap().is_empty(), "something is still listed as changed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file git has never seen has nothing to be put back from, so the only
+    /// way to take its change away is to take the file away -- and a file the
+    /// project ignores is not part of anybody's change, so it stays
+    #[test]
+    fn a_file_git_never_saw_is_taken_off_the_disk_and_an_ignored_one_is_not() {
+        let Some(dir) = discard_repo("drop-new") else { return };
+        std::fs::write(dir.join(".gitignore"), "built/\n").unwrap();
+        run(&dir, &["add", ".gitignore"]).unwrap();
+        run(&dir, &["commit", "-qm", "ignore"]).unwrap();
+        std::fs::write(dir.join("new.txt"), "mine\n").unwrap();
+        std::fs::create_dir_all(dir.join("built")).unwrap();
+        std::fs::write(dir.join("built/out.bin"), "made\n").unwrap();
+        // One inside a folder git has never seen either: the file goes, the
+        // folder is not what was named
+        std::fs::create_dir_all(dir.join("fresh")).unwrap();
+        std::fs::write(dir.join("fresh/deep.txt"), "mine\n").unwrap();
+        discard(&dir, &["new.txt".into(), "fresh/deep.txt".into()], false).unwrap();
+        assert!(!dir.join("new.txt").exists(), "the new file is still there");
+        assert!(!dir.join("fresh/deep.txt").exists(), "the one in a new folder is still there");
+        assert!(dir.join("built/out.bin").exists(), "what the project ignores was thrown away");
+        assert!(dir.join("kept.txt").exists(), "a file nobody named was thrown away");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Added to the next commit and never committed: it comes out of the
+    /// commit and off the disk, because there is nothing to put in its place
+    #[test]
+    fn a_file_added_to_the_next_commit_and_no_further_goes_entirely() {
+        let Some(dir) = discard_repo("drop-added") else { return };
+        std::fs::write(dir.join("new.txt"), "mine\n").unwrap();
+        stage(&dir, &["new.txt".into()]).unwrap();
+        discard(&dir, &["new.txt".into()], true).unwrap();
+        assert!(!dir.join("new.txt").exists(), "the file is still on the disk");
+        assert!(status(&dir).unwrap().is_empty(), "it is still in the next commit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rename is an add and a delete at once, so undoing it is both: the new
+    /// name goes and the old name comes back
+    #[test]
+    fn throwing_away_a_rename_brings_the_old_name_back() {
+        let Some(dir) = discard_repo("drop-rename") else { return };
+        run(&dir, &["mv", "kept.txt", "moved.txt"]).unwrap();
+        let named = status(&dir).unwrap();
+        let Some(row) = named.iter().find(|r| r.index == 'R') else {
+            // git decides for itself whether it sees a rename; where it did
+            // not, there is nothing about renames to check here
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        assert_eq!(row.from.as_deref(), Some("kept.txt"));
+        discard(&dir, &["moved.txt".into()], true).unwrap();
+        assert!(!dir.join("moved.txt").exists(), "the new name is still there");
+        assert!(dir.join("kept.txt").exists(), "the old name did not come back");
+        assert!(status(&dir).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file whose name is a pattern is a file. Read as a pattern, what goes
+    /// reaches past the row somebody pressed -- which on the one road here that
+    /// deletes is the difference between one file and the folder
+    #[test]
+    fn a_name_that_looks_like_a_pattern_takes_only_itself() {
+        let Some(dir) = discard_repo("drop-glob") else { return };
+        // A name git will accept on every machine, and still a pattern
+        std::fs::write(dir.join("a[1].txt"), "mine\n").unwrap();
+        std::fs::write(dir.join("a1.txt"), "mine too\n").unwrap();
+        discard(&dir, &["a[1].txt".into()], false).unwrap();
+        assert!(!dir.join("a[1].txt").exists(), "the file named was not thrown away");
+        assert!(dir.join("a1.txt").exists(), "the name was read as a pattern");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file git has marked as unmerged is left alone: which side to keep is
+    /// a question, and one entry in a menu is not where it is answered
+    #[test]
+    fn a_conflict_is_not_thrown_away_by_this_road() {
+        let Some(dir) = discard_repo("drop-conflict") else { return };
+        run(&dir, &["checkout", "-q", "-b", "other"]).unwrap();
+        std::fs::write(dir.join("kept.txt"), "theirs\n").unwrap();
+        run(&dir, &["commit", "-qam", "theirs"]).unwrap();
+        run(&dir, &["checkout", "-q", "main"]).unwrap();
+        std::fs::write(dir.join("kept.txt"), "ours\n").unwrap();
+        run(&dir, &["commit", "-qam", "ours"]).unwrap();
+        let _ = run(&dir, &["merge", "other"]);
+        assert!(status(&dir).unwrap().iter().any(|r| r.conflicted()), "nothing is in conflict");
+        assert!(discard_steps(&dir, &["kept.txt".into()], false).is_empty(), "a conflict would be run over");
+        let err = discard(&dir, &["kept.txt".into()], false).unwrap_err();
+        assert!(!err.to_string().is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("kept.txt")).unwrap().contains("<<<<<<<"), true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the screen shows and what runs are one list. The screen is given
+    /// these very words, and this same list is what is handed to git
+    #[test]
+    fn what_is_shown_is_what_runs() {
+        let Some(dir) = discard_repo("drop-said") else { return };
+        std::fs::write(dir.join("kept.txt"), "two\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "mine\n").unwrap();
+        let steps = discard_steps(&dir, &["kept.txt".into(), "new.txt".into()], false);
+        let lines = said(&steps);
+        assert_eq!(lines.len(), 2, "put back and taken away are two commands: {lines:?}");
+        assert!(lines[0].contains(":(literal)kept.txt"), "{lines:?}");
+        assert!(lines[1].starts_with("git clean --force -d --quiet -- :(literal)new.txt"), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains(" -x")), "what the project ignores is in reach: {lines:?}");
+        assert_eq!(discard(&dir, &["kept.txt".into(), "new.txt".into()], false).unwrap(), lines);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// What git's credential machinery hands out for a server, asked the way
     /// git asks it before a fetch
     fn credential_for(dir: &Path, host: &str, who: &As) -> Option<String> {
@@ -1728,7 +2045,7 @@ mod tests {
         record_base(&near, "work", "origin/main").unwrap();
         assert_eq!(recorded_base(&near, "work").as_deref(), Some("origin/main"));
         assert_eq!(
-            catch_up_said(&catch_up_steps(&near, "origin/main")),
+            said(&catch_up_steps(&near, "origin/main")),
             vec!["git fetch origin +refs/heads/main:refs/remotes/origin/main".to_string(),
                  "git merge --no-edit origin/main".to_string()]
         );
@@ -1776,7 +2093,7 @@ mod tests {
     fn a_pull_requests_branch_is_fetched_before_its_base_is_merged() {
         let Some((seed, far, near)) = catch_up_setup("cu-pr-steps") else { return };
         assert_eq!(
-            catch_up_said(&catch_up_steps_for(&near, Some("work"), "origin/main")),
+            said(&catch_up_steps_for(&near, Some("work"), "origin/main")),
             vec!["git fetch origin +refs/heads/work:refs/remotes/origin/work".to_string(),
                  "git fetch origin +refs/heads/main:refs/remotes/origin/main".to_string(),
                  "git merge --no-edit origin/main".to_string()]

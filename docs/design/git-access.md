@@ -105,6 +105,30 @@ can never be taken away.
 **Never shown**: `reset --hard`, force push, `clean -xdf`. These sit on the side where a
 misclick cannot be walked back, and having to type them is the last confirmation.
 
+### 3.1 Throwing one file's change away (added 2026-09-21)
+
+**"Discard this change", on a right-click on a row of the list, is shown, and is a
+different thing from the three above.** The difference is how far it reaches. `reset
+--hard` and `clean -xdf` act on the **whole working tree**, and nothing on screen tells
+whoever pressed them what they are about to lose. Discarding from a row loses that one
+row, whose name is written right there.
+
+It still cannot be walked back, so three things came with it. It does not ship without
+them.
+
+1. **It asks first** -- the dialog of §5.2, with the main button in `--stop`.
+2. **It shows the commands that will run** (§4, "what runs is shown"). The screen does not
+   assemble a second string of its own: it shows the list `git::discard_steps` returned,
+   and that same list is what runs.
+3. **Paths go to git as `:(literal)`.** `a*.txt` is an ordinary file name, not a pattern.
+   Read as a pattern, what disappears reaches past the row that was pressed.
+
+What removes a file is `git clean --force -d --quiet -- :(literal)<path>`, and **never
+with `-x`**. `-x` is the moment what the project ignores -- what was built, what holds the
+secrets -- joins the list of things that can go, and none of that is anybody's change. The
+`-d` is there to reach one file inside an untracked folder; the folder itself is not named,
+so it stays.
+
 ## 4. Safety — offer another road rather than a wall
 
 The best idea in the implementation studied: committing to a protected branch is not

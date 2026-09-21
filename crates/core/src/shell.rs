@@ -2585,6 +2585,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--line); border-radius:var(--r-ctl); padding:var(--s2) var(--s3);
     overflow-wrap:anywhere; line-height:1.5; }
   #sask .bwhere[hidden] { display:none; }
+  /* More than one line in the well: the file being asked about, and under it
+     the commands that will run on it, quieter because the name is what is read
+     and the commands are what is checked */
+  #sask .bwhere .line { display:block; }
+  #sask .bwhere .line.run { color:var(--faint); }
   /* What a send would do, before any of it is done. The enclosed list of
      section 5.5 -- one frame round the whole, a line between the rows -- since
      this is several of one thing rather than several things */
@@ -14402,6 +14407,8 @@ window.__git = function (d) {
   if (!d.ok) {
     // What was to follow a commit does not follow a commit that did not happen
     if (d.act === "commit") G.then = "";
+    // The row that was going to be asked about is not asked about
+    if (d.act === "discard") gitDrop = null;
     // A commit refused because the branch is shared is not a failure, it is a
     // question with an answer -- asked here in the panel's own words, with the
     // way out under it. Anything else is reported as it came
@@ -14494,6 +14501,17 @@ window.__git = function (d) {
     // A piece moved. What is staged changed, and so did the piece list
     gitAsk("status");
     gitAskChange();
+  }
+  else if (d.act === "discard") {
+    const got = d.data || {};
+    // Asked what it would run: the question is put in those very lines, and
+    // nothing has happened yet
+    if (got.plan) gitDiscardQuestion(got.said || []);
+    else {
+      G.said = T["git.discard.done"] || "";
+      G.pick = {}; G.sel = null; G.diff = ""; G.hunks = [];
+      gitRefresh(true);
+    }
   }
   else if (d.act === "message") { gitSetMessage(d.data || ""); G.said = ""; }
   else {
@@ -15038,7 +15056,52 @@ function gitFileRow(r, where) {
     }});
   row.append(el("span", {class:"x"}, gitMark(r)));
   row.append(el("span", {class:"p", title:r.from ? r.from + " -> " + r.path : r.path}, r.path));
+  // What this one file can have done to it. A right button on a window, a held
+  // press on a phone: the same list either way, because this is the same column
+  const menu = e => { e.preventDefault(); gitRowMenu(row, r, where, e); };
+  row.addEventListener("contextmenu", menu);
+  holdOpens(row, menu);
   return row;
+}
+// The list a row opens. Only what has nowhere else to be: adding and taking
+// back out are buttons at the head of each list, and the change itself is one
+// press away on the row. A file git has marked as conflicted is left out --
+// which side to keep is a question, and the diff is where it is answered
+function gitRowMenu(anchor, r, where, point) {
+  if (r.conflict) return;
+  openList(anchor, [el("div", {class:"warn", onclick:() => {
+    closeFolderMenu();
+    gitDiscardAsk(r, where);
+  }}, T["git.discard"] || "")], false, point);
+}
+// The row waiting to be asked about, while the app is being asked what
+// throwing it away would run
+let gitDrop = null;
+function gitDiscardAsk(r, where) {
+  gitDrop = {path: r.path, where, index: r.index || "", work: r.work || ""};
+  gitAsk("discard", {paths: [r.path], staged: where === "staged", plan: true});
+}
+// The question itself. What goes is said in the words that fit this row, and
+// under the file name are the commands that will run, exactly as they will run
+// (docs/design/git-access.ja.md §4)
+function gitDiscardQuestion(runs) {
+  const d = gitDrop;
+  gitDrop = null;
+  if (!d) return;
+  const staged = d.where === "staged";
+  const key = staged
+    ? (d.index === "A" ? "git.discard.say.added" : "git.discard.say.staged")
+    : (d.index === "?" ? "git.discard.say.new" : "git.discard.say.work");
+  askQuestion({
+    title: T["git.discard.title"] || "",
+    say: T[key] || "",
+    what: el("span", {},
+      el("span", {class:"line"}, d.path),
+      ...(runs || []).map(line => el("span", {class:"line run"}, line))),
+    label: T["git.discard.go"] || "",
+    danger: true,
+    go: () => gitAsk("discard", {paths: [d.path], staged}),
+  });
 }
 // What happened to a file, as one character anybody can read. git's own two
 // letters are still there, in the tooltip, for whoever wants them
@@ -19023,6 +19086,50 @@ mod tests {
             assert!(PAGE.contains(place), "{place} does not draw with the shared function");
         }
         assert_eq!(PAGE.matches(r#"class:"hunkhead""#).count(), 1, "a change is drawn by more than one hand");
+    }
+
+    /// Throwing one file's change away: the one thing in the panel git cannot
+    /// undo afterwards, so it is asked before it is done, the commands it will
+    /// run are shown as they will run, and the app builds them -- the page
+    /// never writes a git command of its own.
+    ///
+    /// It opens from a right-click and from a held press, because the column
+    /// is the same column on a phone (section 8), and a file git has marked as
+    /// conflicted is left out: which side to keep is a question the diff
+    /// answers.
+    #[test]
+    fn a_row_offers_to_throw_its_change_away_and_asks_first() {
+        let body = |start: &str| -> String {
+            PAGE.split(start)
+                .nth(1)
+                .and_then(|r| r.split("\n}\n").next())
+                .unwrap_or_else(|| panic!("there is no {start}"))
+                .to_string()
+        };
+        let row = body("function gitFileRow(r, where) {");
+        assert!(row.contains("row.addEventListener(\"contextmenu\", menu);"), "a row has no menu on a right-click");
+        assert!(row.contains("holdOpens(row, menu);"), "a held press on a phone opens nothing");
+        let menu = body("function gitRowMenu(anchor, r, where, point) {");
+        assert!(menu.contains("if (r.conflict) return;"), "a file in conflict is offered the same entry");
+        assert!(menu.contains(r#"T["git.discard"]"#), "the entry has no words");
+        assert!(menu.contains(r#"class:"warn""#), "what cannot be undone reads like everything else");
+        // Asked for what would run, asked again to run it. Both go through
+        // gitAsk, which is the panel's one door to the app
+        let ask = body("function gitDiscardAsk(r, where) {");
+        assert!(ask.contains(r#"gitAsk("discard", {paths: [r.path], staged: where === "staged", plan: true});"#),
+                "the question is put without asking what it would run");
+        let question = body("function gitDiscardQuestion(runs) {");
+        assert!(question.contains("askQuestion({"), "it does not ask before throwing the change away");
+        assert!(question.contains("danger: true,"), "the button that cannot be undone is not the danger one");
+        assert!(question.contains(r#"(runs || []).map(line => el("span", {class:"line run"}, line))"#),
+                "the commands that will run are not shown");
+        assert!(question.contains(r#"go: () => gitAsk("discard", {paths: [d.path], staged}),"#),
+                "pressing the button does something other than the discard that was shown");
+        // The page never writes a git command of its own: what it shows came
+        // back from the app, which is what will run it (git-access.ja.md 4)
+        for made_up in ["git restore", "git clean", "git rm ", ":(literal)"] {
+            assert!(!PAGE.contains(made_up), "the page assembles {made_up} itself");
+        }
     }
 
     /// The commit's one button is always the next thing to do, in the order a

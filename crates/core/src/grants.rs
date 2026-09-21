@@ -242,6 +242,9 @@ pub const CATALOG: &[Entry] = &[
     e("git_branches", Group::Git, true, false, false),
     e("git_stage", Group::Git, true, false, false),
     e("git_unstage", Group::Git, true, false, false),
+    // The one git command here nothing can undo afterwards: what it throws
+    // away was never committed, so no object is left to find it in again
+    e("git_discard", Group::Git, true, false, false),
     e("git_commit", Group::Git, true, false, false),
     e("git_branch_create", Group::Git, true, false, false),
     e("git_checkout", Group::Git, true, false, false),
@@ -455,6 +458,7 @@ mod tests {
                 "git_branches",
                 "git_stage",
                 "git_unstage",
+                "git_discard",
                 "git_commit",
                 "git_branch_create",
                 "git_checkout",
