@@ -9,6 +9,28 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **The ? beside the gear answers, instead of leaving.** Ask how something here is used
+  or set up and the assistant AI answers in the language you asked in, from an index of
+  this copy's own settings screens -- so the answer is about the settings you actually
+  have, down to the words on the boxes. Under an answer that is about one screen stands a
+  button that opens it; nothing opens until it is pressed. A floating panel on the window,
+  moved wherever you want it and left there; a sheet up from the bottom on a phone. The
+  manual on the site is a line inside it.
+- **It can fill a box in for you.** With the ? open, press a box on the settings screen
+  and it is marked; ask, and the answer is written into that box. What the box is called
+  and what goes in it are read off the screen you are looking at, and its value is never
+  sent anywhere. A box holding a secret cannot be picked at all, and saving is still
+  yours to press.
+- **A reference to every setting, written by the program.** `docs/SETTINGS.md` and
+  `SETTINGS.ja.md` -- every screen, every box and the line under it, in the order the
+  settings list them. It is written out of the settings screen itself, and a test fails
+  if what is in the tree is not what the program would write, so it cannot come to
+  describe a box that has moved. It is on the site and in the download.
+- **The manual stops listing what ships by hand.** Its table of keys and its list of
+  settings screens are written from the program, between marks in the file; the prose
+  around them is still written by a person. A path it sends people down --
+  "Settings > Basic > Deleting a worktree" -- now fails a test if the settings stop
+  calling any of it that.
 - **A working folder's branch is named after the work, the once.** A folder cut with
   nobody's name in mind starts on a name this app drew (`mighty-gannet`), and that name is
   what a pull request, a merge and every list of branches afterwards would have said. The

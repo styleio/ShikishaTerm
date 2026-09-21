@@ -972,8 +972,11 @@ const PANEL: &str = r##"<!doctype html>
   --mono: "Cascadia Mono", Consolas, "Noto Sans Mono", monospace; }
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
+/* The page is the panel: what is placed in the window has no frame of its
+   own, so the edge and the corners are drawn here (style guide 5.2) */
 body{background:var(--panel);color:var(--text);font:13px/1.6 var(--ui);
-     display:flex;flex-direction:column;overflow:hidden}
+     display:flex;flex-direction:column;overflow:hidden;
+     border:1px solid var(--line);border-radius:10px}
 /* The head is the only part that is picked up */
 #head{height:40px;flex:none;display:flex;align-items:center;gap:var(--s2);
       padding:0 var(--s2) 0 var(--s4);border-bottom:1px solid var(--line);
@@ -1431,14 +1434,19 @@ fn question_for(idx: &Index, question: &str, so_far: &[Said], picked: Option<&Pi
         out.push_str("\n\n");
     }
     out.push_str("--- \n\n");
-    // The map of every screen, so an answer can send somebody anywhere
+    // The map of every screen, so an answer can send somebody anywhere.
+    //
+    // The handle stands after the name and behind a word that says what it is.
+    // Written in front of it -- "[basic] Settings > Basic" -- it was copied
+    // into the reply as though it were part of the name, and a person read
+    // "turn off X in [basic] Settings > Basic"
     for page in &idx.pages {
-        out.push_str(&format!("[{}] {} — {}\n", page.id, page.at, page.about));
+        out.push_str(&format!("{} — {} (handle: {})\n", page.at, page.about, page.id));
     }
     out.push('\n');
     // ...and the few screens this question is actually about, in full
     for page in best(idx, &together(question, so_far, picked), IN_FULL) {
-        out.push_str(&format!("## [{}] {}\n", page.id, page.at));
+        out.push_str(&format!("## {} (handle: {})\n", page.at, page.id));
         for card in &page.cards {
             if !card.title.is_empty() {
                 out.push_str(&format!("### {}\n", card.title));
@@ -1755,6 +1763,11 @@ mod answer_tests {
         }
     }
 
+    /// Where the phone's screen says it is, however that is worded
+    fn remote_at(idx: &Index) -> String {
+        idx.pages.iter().find(|p| p.id == "remote").expect("the phone's screen").at.clone()
+    }
+
     /// What is handed over carries the map of every screen, the screens the
     /// question is about, and nothing the person did not ask about.
     #[test]
@@ -1762,11 +1775,18 @@ mod answer_tests {
         let idx = index(&en());
         let asked = question_for(&idx, "How do I use this from my phone?", &[], None);
         for page in &idx.pages {
-            assert!(asked.contains(&format!("[{}]", page.id)), "{} is not on the map", page.id);
+            assert!(
+            asked.contains(&format!("(handle: {})", page.id)),
+            "{} is not on the map",
+            page.id
+        );
         }
-        assert!(asked.contains("## [remote]"), "the phone's screen is not written out in full");
+        assert!(
+            asked.contains(&format!("## {} (handle: remote)", remote_at(&idx))),
+            "the phone's screen is not written out in full"
+        );
         assert_eq!(
-            asked.matches("## [").count(),
+            asked.matches("\n## ").count(),
             IN_FULL,
             "a different number of screens went in full than were asked for"
         );

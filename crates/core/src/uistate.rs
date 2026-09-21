@@ -2035,7 +2035,7 @@ impl TabState {
             // The same two keys `main::restartable_page` refuses, and for the
             // same reason: they are opened and closed by the app, so "open it
             // again" is not a thing a person can want from them
-            restartable: key != "settings" && key != "result",
+            restartable: key != "settings" && key != "result" && key != "guide",
             status: None,
             progress: None,
             // Nothing is typed into a page by this road
@@ -2046,7 +2046,10 @@ impl TabState {
             cost: None,
             model: false,
             busy: false,
-            settings: key == "settings",
+            // Kept off the list on the left: the app opens and closes these
+            // itself, and a row for something nobody can switch to is a row
+            // that does nothing when it is pressed
+            settings: key == "settings" || key == "guide",
             ai: None,
             auto: false,
             // Nothing was said here to read back

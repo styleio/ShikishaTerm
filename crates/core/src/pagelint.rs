@@ -39,6 +39,7 @@ const GLOBALS: &[&str] = &[
     "MutationObserver", "ResizeObserver", "IntersectionObserver", "AbortController", "TextEncoder",
     "TextDecoder", "WebSocket", "Intl", "Symbol", "BigInt", "Proxy", "Reflect", "EventSource",
     "FileReader", "Uint8Array", "Int32Array", "Float32Array", "ArrayBuffer", "DOMParser",
+    "createImageBitmap", "MediaStream",
     "XMLHttpRequest", "getComputedStyle", "matchMedia", "scrollTo", "scrollBy", "addEventListener",
     "removeEventListener", "postMessage", "dispatchEvent", "getSelection", "crypto", "Notification",
 ];

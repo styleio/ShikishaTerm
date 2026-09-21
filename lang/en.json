@@ -3154,7 +3154,7 @@
   "guide.doc.path.head": "Settings",
   "guide.ai.who": "You answer questions about using SHIKISHA-TERM, a terminal that runs several AI assistants side by side. Everything below the line is what this copy of the program actually has: its settings screens and what is on each one. Answer only from it. If it does not say, say that it does not and name the screen the person could look at.",
   "guide.ai.how": "Reply in the language of the question, in two or three sentences, saying what to do rather than how the program works. Name a box on a screen exactly as it is written there.",
-  "guide.ai.open": "When the answer is on a settings screen, put that screen's handle in `open`, exactly as it is written in square brackets. Handles: {ids}. Leave `open` empty when no one screen holds the answer.",
+  "guide.ai.open": "When the answer is on a settings screen, put that screen's handle in `open`, exactly as the line for it writes it. Handles: {ids}. A handle is an address, never something to write in a sentence. Leave `open` empty when no one screen holds the answer.",
   "guide.ai.fill": "The person has picked a box on the screen for you to fill in. When your answer is a value for that box, put the value alone in `fill` -- no quotes, no explanation. Leave `fill` empty when you are not answering with a value.",
   "guide.ai.picked": "The box the person picked: \"{label}\" ({kind}). It says: {hint}",
   "guide.title": "Ask about this program",

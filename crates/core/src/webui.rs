@@ -1115,15 +1115,18 @@ const LIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 /// in their list of conversations. Gemini is not asked either way: it routes a
 /// request this small itself, and naming a model there is a way to be wrong
 ///
-/// `shaped` holds the AI to a shape for its answer. Two of the three can be
-/// held to one -- Claude Code with `--json-schema`, Codex CLI with
-/// `--output-schema` -- and Gemini CLI has nothing of the kind, so for it the
-/// prompt is all there is. Whoever asks reads the answer as that shape and
-/// copes when it is not one
+/// `schema` holds the AI to a shape for its answer, as a JSON Schema. Two of
+/// the three can be held to one, and each wants it a different way -- Claude
+/// Code takes it written out in the argument, Codex CLI takes the name of a
+/// file ([`SCHEMA_FILE`], which whoever asks has written beside it), and Gemini
+/// CLI has nothing of the kind, so for it the prompt is all there is. The same
+/// split as [`picture_invocation`], for the same reason: it is what each of
+/// them accepts. Whoever asks reads the answer as that shape and copes when it
+/// is not one
 fn light_invocation(
     name: &str,
     small: bool,
-    shaped: bool,
+    schema: Option<&str>,
 ) -> Option<(Vec<String>, Vec<(&'static str, String)>)> {
     let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match name {
@@ -1137,9 +1140,9 @@ fn light_invocation(
                 "--disable-slash-commands", "--settings", &format!("{{dir}}/{CLAUDE_SETTINGS_FILE}"),
                 "--system-prompt-file", &format!("{{dir}}/{SYSTEM_FILE}"),
             ]));
-            if shaped {
+            if let Some(shape) = schema {
                 args.push("--json-schema".into());
-                args.push(format!("{{dir}}/{SCHEMA_FILE}"));
+                args.push(shape.to_string());
             }
             Some((args, vec![("MAX_THINKING_TOKENS", "0".to_string())]))
         }
@@ -1154,7 +1157,7 @@ fn light_invocation(
             }
             args.push("-c".into());
             args.push(format!("model_instructions_file={{dir}}/{SYSTEM_FILE}"));
-            if shaped {
+            if schema.is_some() {
                 args.push("--output-schema".into());
                 args.push(format!("{{dir}}/{SCHEMA_FILE}"));
             }
@@ -1218,7 +1221,7 @@ pub fn ask_local_ai_shaped(
     // The same setting the short answers read: whoever turned the small
     // model off did so for everything asked this way
     let small = crate::config::load().and_then(|c| c.summary_small_model).unwrap_or(true);
-    let (args, env) = light_invocation(name, small, true)
+    let (args, env) = light_invocation(name, small, Some(schema))
         .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
     let files: [(&str, &[u8]); 3] = [
         (SYSTEM_FILE, system.as_bytes()),
@@ -1239,7 +1242,7 @@ fn ask_light_once(name: &str, prompt: &str) -> Result<String> {
     // light way wants the same answer, and one that reads it for itself cannot
     // be the one that forgets
     let small = crate::config::load().and_then(|c| c.summary_small_model).unwrap_or(true);
-    let (args, env) = light_invocation(name, small, false)
+    let (args, env) = light_invocation(name, small, None)
         .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
     let files: [(&str, &[u8]); 2] = [
         (SYSTEM_FILE, LIGHT_SYSTEM.as_bytes()),
@@ -13299,7 +13302,7 @@ mod tests {
     #[test]
     fn turning_the_small_model_off_turns_off_only_the_model() {
         let args = |name: &str, small: bool| {
-            super::light_invocation(name, small, false).expect("this CLI has a light way").0.join(" ")
+            super::light_invocation(name, small, None).expect("this CLI has a light way").0.join(" ")
         };
         assert!(args("claude", true).contains("--model haiku"));
         assert!(!args("claude", false).contains("--model"), "{}", args("claude", false));
@@ -13366,6 +13369,10 @@ mod tests {
             ("the settings page", super::PAGE),
             ("the result view", super::RESULT_PAGE),
             ("the manual", super::HELP_PAGE),
+            // The board and the guide's panel are pages of this app too, and
+            // a name that is not there breaks them the same silent way
+            ("the board", crate::shell::PAGE),
+            ("the guide's panel", crate::guide::page()),
         ] {
             let code = crate::pagelint::code_only(&crate::pagelint::scripts_of(&served(page)));
             let missing = crate::pagelint::dangling_calls(&code);

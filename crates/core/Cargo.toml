@@ -28,6 +28,13 @@ path = "src/bin/qr.rs"
 name = "video_probe"
 path = "src/bin/video_probe.rs"
 
+# What the ? would answer, asked for real. The flags that hold an AI to a shape
+# are each CLI's own, and nothing in the test suite starts an AI
+# (crates/core/src/bin/guide_probe.rs). Not part of any download.
+[[bin]]
+name = "guide_probe"
+path = "src/bin/guide_probe.rs"
+
 [features]
 # Sending a screen as video from a system that is not Windows.
 #
