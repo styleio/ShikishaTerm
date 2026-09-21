@@ -13031,48 +13031,6 @@ mod tests {
         }
     }
 
-    /// A folder's kept view comes back to the tab it was left on, even when
-    /// another tab answers to the same automation name.
-    ///
-    /// What went wrong: the arrangement a folder was last looked at in was
-    /// written down by the name automation says, and two tabs in different
-    /// folders both answered to "claude-2" -- a running tab keeps the name it
-    /// launched with, and the settings had since handed that name to another
-    /// line. Pressing the second folder's name brought up the first folder's
-    /// tab, so the card said one folder and the screen showed another
-    #[test]
-    fn a_kept_view_comes_back_to_its_own_tab_when_two_answer_to_one_name() {
-        let opts = || tab::TabOptions {
-            cwd: Some(std::env::temp_dir()),
-            id: Some("claude-2".into()),
-            ..Default::default()
-        };
-        let mut tabs = vec![
-            Tab::spawn("claude".into(), &[crate::test_shell()], None, 10, 40, opts()).unwrap(),
-            Tab::spawn("claude".into(), &[crate::test_shell()], None, 10, 40, opts()).unwrap(),
-        ];
-        let surfaces = vec![Surface::Session(0), Surface::Session(1)];
-
-        // The name cannot tell them apart -- which is why it is not what a
-        // pane is written down as
-        let keys = surface_keys(&surfaces, &tabs);
-        assert_eq!(hooks::TabRef::Name("claude-2".into()).resolve(&keys), Some(1));
-
-        let held = surface_handles(&surfaces, &tabs);
-        assert_ne!(held[0], held[1], "two tabs of one name are written down as one thing");
-        // Left looking at the second tab, and pressed for again later
-        let kept = crate::layout::Layout::single(2).keep(|s| held.get(s - 1).cloned().flatten());
-        let back = crate::layout::Layout::restore(&kept, &crate::layout::Layout::single(1), |k| {
-            held.iter().position(|h| h.as_deref() == Some(k)).map(|i| i + 1)
-        })
-        .expect("the view was not put back at all");
-        assert_eq!(back.focused_surface(), 2, "it came back to the other tab of that name");
-
-        for t in tabs.iter_mut() {
-            t.kill();
-        }
-    }
-
     /// A browser in the row must not hide the tabs behind it.
     ///
     /// Everything that points at a tab counts by screen number, browsers

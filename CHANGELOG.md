@@ -385,8 +385,8 @@ other.
   showed another. Two tabs were answering to one automation name: the name was
   worked out from the order the lines stood in and written down nowhere, so
   taking a folder out of the settings handed the name of a tab still running to
-  a different line. The names are written down now, and the arrangement a folder
-  was last looked at in is kept by what each pane held rather than by that name.
+  a different line. Every tab's name is written into the settings the moment its
+  line is made now, so two lines cannot come to share one.
 - **Pressing a folder that has not been looked at yet shows it on its own.** With
   the screen split, it went into the pane in front only, and the other pane went
   on showing a folder of another project beside it.
