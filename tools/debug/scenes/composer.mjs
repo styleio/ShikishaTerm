@@ -11,7 +11,9 @@
  *
  * What is judged: the buttons are one family (same size, same weight, same
  * quiet), the field is still the widest thing in the row, and nothing wraps or
- * slides under anything at the narrowest screen there is.
+ * slides under anything at the narrowest screen there is. And, while a long
+ * message is still going in, that the line saying so reads at this width and
+ * leaves the row under it exactly where it was.
  */
 
 const tab = (index, name, extra) => Object.assign({
@@ -57,5 +59,15 @@ export default {
     typing: typed,
     // And with nothing in it, which is how it is first met
     empty: `window.__state(${state()}); "ok"`,
+    // A long message still going in. A terminal takes a paste a piece at a
+    // time and sets its own pace, so 34,765 characters is twenty seconds in
+    // which the field has emptied and nothing else has moved. The line stands
+    // at the top of the dock, never between the keys and the field
+    sending: `window.__state(${state({
+      tabs: [
+        tab(0, 'claude', { ai: 'claude' }),
+        tab(1, 'shell', { ai: null, auto: false, sending: { share: 0.35, chars: 34765 } }),
+      ],
+    })}); "ok"`,
   },
 };

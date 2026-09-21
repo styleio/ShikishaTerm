@@ -1174,6 +1174,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     background:var(--brand); color:#04121c; font-weight:700; cursor:pointer; }
   #castbar .castbtn { padding:8px 11px; border:1px solid var(--line);
     border-radius:var(--r-ctl); background:var(--bg); color:var(--text); cursor:pointer; }
+  /* A long message still going into the tab in front. It is the dock's top
+     row: the dock stands on the bottom edge and grows upward, so a row
+     appearing here never moves the input row out from under the finger that
+     just pressed Send. The words come first and the bar reads as their
+     picture; track and fill are the clone's (#addproj .approg), because "how
+     far along" is one thing and should not look like two */
+  #castsending { display:flex; align-items:center; gap:var(--s3); padding:6px 10px;
+    background:var(--panel); border-top:1px solid var(--line);
+    font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  #castsending[hidden] { display:none; }
+  #castsending .say { flex:none; }
+  #castsending .track { flex:1; min-width:40px; height:3px; border-radius:3px;
+    background:var(--line); overflow:hidden; }
+  #castsending .fill { display:block; height:100%; width:0; background:var(--live); }
   /* Indicator shown while in control mode (tap to release) */
   /* Release banner. Placed at the top of the dock so it rides up and down
      together with the auxiliary key row and the keyboard. Avoids both
@@ -9195,9 +9209,11 @@ window.__state = function (json) {
     openTermBar();
     if (castInput) castInput.blur();
   }
-  // Where we are is half of what decides the pen, and it changes without the
-  // bar being touched — so it is settled from the state, every update, on both
-  // surfaces (see syncPen)
+  // What is still going into the tab in front, and whether the pen is
+  // showing. Both are answered by where we are now, and where we are changes
+  // without the bar being touched — so both are settled from the state, every
+  // update, on both surfaces (see syncSending, syncPen)
+  syncSending();
   syncPen();
   drawTitle();
   drawTabs();
@@ -13690,6 +13706,8 @@ async function attachFile(file) {
   }
 }
 let castDock = null, castBar = null, castInput = null, castKeysEl = null, castAttEl = null, castSendEl = null;
+// The dock's "still going in" row and the two things it says (see syncSending)
+let castSendingEl = null, castSendFill = null, castSendSay = null;
 // The active tab the 🎯 target panel was last built for, so __state can rebuild it
 // when the operator changes (its enabled/disabled gate depends on that tab).
 let lastCastActive = null;
@@ -16857,8 +16875,15 @@ function ensureBar() {
   // once the keyboard appears.
   modeEl = el("div", {id:"castmode"}, el("span", {}, T["tui.cast.control"] || "In control — tap to release"));
   modeEl.onclick = exitCast;
-  // Rows top-to-bottom: release banner, the switchable panel, the input row.
-  castDock = el("div", {id:"castdock"}, modeEl, castPanelEl, castBar);
+  // What is still going into the tab, while it goes (syncSending). Kept out of
+  // the input row on purpose: that row is where the hands are.
+  castSendFill = el("span", {class:"fill"});
+  castSendSay = el("span", {class:"say"});
+  castSendingEl = el("div", {id:"castsending", hidden:""},
+    castSendSay, el("span", {class:"track"}, castSendFill));
+  // Rows top-to-bottom: what is still being sent, release banner, the
+  // switchable panel, the input row.
+  castDock = el("div", {id:"castdock"}, castSendingEl, modeEl, castPanelEl, castBar);
   document.getElementById("main").append(castDock);
   // Enter sends; Shift+Enter (or an active IME) inserts a newline instead. Sent
   // with nothing written, it is a bare Enter to the pane (sendLine) — and every
@@ -16908,6 +16933,28 @@ function ensureBar() {
     window.visualViewport.addEventListener("resize", fit);
     window.visualViewport.addEventListener("scroll", fit);
   }
+}
+// What is still going into the tab in front, while it goes.
+//
+// A terminal takes a paste a chunk at a time and sets its own pace (`send.rs`),
+// so a long message is seconds of work with nothing to show for it: the box
+// empties, the screen does not move, and the only reading left is "it did not
+// go". Settled from the state on every update, and for the tab being looked at
+// — a send belongs to its tab, so walking away leaves it behind and coming
+// back finds it still going.
+function syncSending() {
+  if (!castSendingEl) return;
+  const t = activeTab();
+  const s = t && t.sending;
+  castSendingEl.hidden = !s;
+  if (!s) return;
+  const pct = Math.max(0, Math.min(100, Math.round((s.share || 0) * 100)));
+  castSendFill.style.width = pct + "%";
+  // The share alone is a riddle; the length beside it is what says why this
+  // takes a moment at all
+  castSendSay.textContent = (T["tui.cast.sending"] || "Sending {pct}% · {n} characters")
+    .split("{pct}").join(String(pct))
+    .split("{n}").join((s.chars || 0).toLocaleString());
 }
 // Whether the ✏️ pen — the way back into a collapsed composer — is showing.
 //
@@ -18281,6 +18328,36 @@ mod tests {
         for guard in ["luaMode === \"run\"", "drivingBrowser()", "!castTarget", "!onModelTab()"] {
             assert!(body.contains(guard), "keysGoOn has lost `{guard}`");
         }
+    }
+
+    /// A long message keeps the person company while it goes in.
+    ///
+    /// A terminal takes a paste a chunk at a time at its own pace, so 34,765
+    /// characters is twenty seconds of work. Reported from use: the box
+    /// emptied, the screen did not move, and the only reading left was that
+    /// the message had been lost. Two things make the answer: the row says
+    /// what is happening and how long the message is, and it stands at the TOP
+    /// of the dock -- the dock is anchored to the bottom edge, so a row
+    /// appearing there grows it upward and leaves the input row exactly where
+    /// the finger that pressed Send left it.
+    #[test]
+    fn a_long_message_says_it_is_still_going_in() {
+        let p = super::page();
+        assert!(
+            p.contains(r#"castDock = el("div", {id:"castdock"}, castSendingEl,"#),
+            "the row that says a message is still going in is no longer the dock's top row, so the input row moves under the finger that pressed Send"
+        );
+        assert!(p.contains("function syncSending()"), "nothing decides what that row says");
+        assert!(
+            p.contains("syncSending();
+  syncPen();"),
+            "a state arriving no longer re-asks what is still going in, so the row freezes at whatever it last said"
+        );
+        // The bar is never left to speak for itself (STYLEGUIDE §5)
+        assert!(
+            p.contains(r#"T["tui.cast.sending"]"#) && crate::i18n::t("tui.cast.sending").contains("{pct}"),
+            "the bar has lost the words beside it"
+        );
     }
 
     /// The ✏️ pen is decided by where we are now, not by where we were when

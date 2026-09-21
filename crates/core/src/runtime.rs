@@ -3330,6 +3330,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         view_settled_at = active;
         let ui = Ui {
             ais: ai_choices.clone(),
+            // What is still being typed into a tab, so the composer can say so
+            // rather than emptying and leaving the person guessing. Taken from
+            // the sends themselves, here, where they are: a second tally kept
+            // alongside them would be a second thing to get wrong
+            sending: pending_send
+                .iter()
+                .map(|p| {
+                    let (share, chars) = p.sending();
+                    (p.tab, crate::uistate::SendingState { share, chars })
+                })
+                .collect(),
             past: past_view.clone(),
             // The pointer waits behind the setup: it points at the list, and
             // the setup is in front of the list
@@ -9379,7 +9390,7 @@ pub fn hand_over(
         to_live(t);
         let seen = t.output_count();
         let chunks = paste_chunks(t, &text);
-        pending_send.push(PendingSend::new(target, chunks, submit, seen, now_ms));
+        pending_send.push(PendingSend::new(target, chunks, submit, seen, now_ms, text.chars().count()));
     }
     true
 }
@@ -10269,7 +10280,7 @@ pub fn exec_commands(
                     // Don't send submit (Enter). A human adds to it and sends it themselves.
                     let seen = t.output_count();
                     let chunks = paste_chunks(t, &text);
-                    pending_send.push(PendingSend::new(idx, chunks, false, seen, now_ms));
+                    pending_send.push(PendingSend::new(idx, chunks, false, seen, now_ms, text.chars().count()));
                     // A human is part of the loop too. If they add to it and
                     // send it, the chain continues, so count the depth the same
                     // way as an auto-send.
@@ -10342,7 +10353,7 @@ pub fn exec_commands(
                 } else {
                     let seen = t.output_count();
                     let chunks = paste_chunks(t, &text);
-                    pending_send.push(PendingSend::new(target, chunks, true, seen, now_ms));
+                    pending_send.push(PendingSend::new(target, chunks, true, seen, now_ms, text.chars().count()));
                     append_hook_log(&format!("Paste tab{target} ({} chars)", text.chars().count()));
                 }
                 // A self-send (seeding a persona at launch, the opening nudge,
@@ -12477,7 +12488,7 @@ mod tests {
         let one = |n: usize| vec![vec![b'x'; 8]; n];
 
         // A one-chunk paste: out at once, then the settling rule as before
-        let mut p = PendingSend::new(1, one(1), true, 100, 1_000);
+        let mut p = PendingSend::new(1, one(1), true, 100, 1_000, 8);
         assert!(handed(&p.step(100, 1_000)), "the first chunk is handed over at once");
         assert!(waited(&p.step(200, 1_100)), "a reaction starting is not enough to send");
         assert!(waited(&p.step(300, 2_000)), "still growing");
@@ -12487,7 +12498,7 @@ mod tests {
         assert!(submitted(&p.step(400, 3_100 + SUBMIT_QUIET_MS)), "it sends once it settles");
 
         // Restart the measurement if activity resumes partway through
-        let mut p = PendingSend::new(1, one(1), true, 0, 0);
+        let mut p = PendingSend::new(1, one(1), true, 0, 0, 8);
         assert!(handed(&p.step(0, 0)), "the first chunk");
         assert!(waited(&p.step(0, 100)), "quiet, but not long enough");
         assert!(waited(&p.step(50, 200)), "it started again, so it measures again");
@@ -12496,7 +12507,7 @@ mod tests {
         assert!(submitted(&p.step(50, 300 + SUBMIT_QUIET_MS)), "settled again");
 
         // Send anyway once the cap is hit, even if it never settles
-        let mut p = PendingSend::new(1, one(1), true, 0, 0);
+        let mut p = PendingSend::new(1, one(1), true, 0, 0, 8);
         assert!(handed(&p.step(0, 0)), "the first chunk");
         let mut out = 0;
         for t in (100..SUBMIT_GIVE_UP_MS).step_by(100) {
@@ -12516,7 +12527,7 @@ mod tests {
     /// of the paste, and 20,000 characters sat unsent in the input box.
     #[test]
     fn the_body_goes_over_a_piece_at_a_time_and_the_enter_comes_last() {
-        let mut p = PendingSend::new(1, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0);
+        let mut p = PendingSend::new(1, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0, 3);
         assert!(handed(&p.step(0, 0)), "the first chunk goes at once");
         // Silent recipient: not a word drawn. It must not be given the rest at
         // once, and above all must not be sent Enter.
@@ -12533,7 +12544,7 @@ mod tests {
         assert!(submitted(&p.step(9, last + 10 + SUBMIT_QUIET_MS)), "it sends after handing over everything");
 
         // A draft is placed and left alone: the body goes over, the Enter never does
-        let mut p = PendingSend::new(1, vec![vec![b'a']], false, 0, 0);
+        let mut p = PendingSend::new(1, vec![vec![b'a']], false, 0, 0, 1);
         assert!(handed(&p.step(0, 0)), "the text is handed over");
         assert!(waited(&p.step(0, 10)), "it starts watching for it to stop");
         assert!(submitted(&p.step(0, 10 + SUBMIT_QUIET_MS)), "the text is all handed over");
@@ -12549,9 +12560,9 @@ mod tests {
     /// text I meant to send never went".
     #[test]
     fn a_second_message_waits_for_the_first_ones_enter() {
-        let mut queue = [PendingSend::new(1, vec![vec![b'A']], true, 0, 0),
-            PendingSend::new(1, vec![vec![b'B']], true, 0, 0),
-            PendingSend::new(2, vec![vec![b'C']], true, 0, 0)];
+        let mut queue = [PendingSend::new(1, vec![vec![b'A']], true, 0, 0, 1),
+            PendingSend::new(1, vec![vec![b'B']], true, 0, 0, 1),
+            PendingSend::new(2, vec![vec![b'C']], true, 0, 0, 1)];
         // One pass: the front one for tab1 acts, the one behind it waits, and
         // another tab is nobody's business
         let mut holding: Vec<usize> = Vec::new();
@@ -12576,13 +12587,34 @@ mod tests {
     /// of the paste. The rest of it goes over first, in one piece.
     #[test]
     fn typing_pushes_the_rest_of_the_paste_out_first() {
-        let mut p = PendingSend::new(1, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0);
+        let mut p = PendingSend::new(1, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0, 3);
         assert!(handed(&p.step(0, 0)), "the first chunk");
         assert_eq!(p.rest(500), b"bc".to_vec(), "the rest goes out in one go");
         assert_eq!(p.rest(500), Vec::<u8>::new(), "it is not sent twice");
         // The Enter still follows, measured from the moment the rest went over
         assert!(waited(&p.step(0, 510)), "from here it measures the quiet again");
         assert!(submitted(&p.step(0, 510 + SUBMIT_QUIET_MS)), "sending comes after that");
+    }
+
+    /// A long message is seconds of work with nothing on screen to show for
+    /// it, so the screen is told how far it has got -- by the send itself.
+    ///
+    /// Read off the chunks that are actually owed, never a tally kept beside
+    /// them: a second count of the same thing is a second thing to get wrong,
+    /// and this one is read by a person watching a box they have just emptied.
+    #[test]
+    fn a_send_says_how_far_it_has_got() {
+        let chunks = vec![vec![b'a'], vec![b'b'], vec![b'c'], vec![b'd']];
+        let mut p = PendingSend::new(1, chunks, true, 0, 0, 3_400);
+        assert_eq!(p.sending(), (0.0, 3_400), "nothing has gone over, and it is 3,400 characters long");
+        assert!(handed(&p.step(0, 0)), "the first chunk goes at once");
+        assert_eq!(p.sending().0, 0.25, "one of the four is in");
+        assert!(handed(&p.step(1, PASTE_ACK_MS)), "and the second");
+        assert_eq!(p.sending().0, 0.5, "two of the four");
+        // Somebody typed: the rest goes over in one piece, and the screen must
+        // say so rather than sitting at half
+        assert_eq!(p.rest(PASTE_ACK_MS), b"cd".to_vec(), "the rest goes out in one go");
+        assert_eq!(p.sending(), (1.0, 3_400), "all of it is in, and it is still the same message");
     }
 
     /// A provider edited while its tab is open reaches that tab.

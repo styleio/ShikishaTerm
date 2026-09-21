@@ -77,6 +77,11 @@ pub struct PendingSend {
     pub submit: bool,
     /// The cumulative output amount last seen. A change means the recipient drew.
     seen: u64,
+    /// How many characters the person wrote. Kept only so the screen can say
+    /// so while it goes over: a long paste is handed across in pieces and
+    /// takes seconds, and a composer that empties with nothing else happening
+    /// reads as a message that was lost.
+    chars: usize,
     /// When the last chunk was handed over
     handed_ms: u64,
     /// The point output stopped (None = hasn't stopped yet)
@@ -116,18 +121,34 @@ pub fn paste_chunks(t: &Tab, text: &str) -> Vec<Vec<u8>> {
 }
 
 impl PendingSend {
-    pub fn new(tab: usize, chunks: Vec<Vec<u8>>, submit: bool, seen: u64, now_ms: u64) -> Self {
+    /// `chars` is the length of the text a person wrote, in characters -- the
+    /// number they would recognise, not the bytes it became on the way out.
+    pub fn new(tab: usize, chunks: Vec<Vec<u8>>, submit: bool, seen: u64, now_ms: u64, chars: usize) -> Self {
         Self {
             tab,
             chunks,
             handed: 0,
             submit,
             seen,
+            chars,
             handed_ms: now_ms,
             quiet_since: None,
             not_before: now_ms + SUBMIT_FLOOR_MS,
             give_up: now_ms + SUBMIT_GIVE_UP_MS,
         }
+    }
+
+    /// How far the text has got, 0..=1, and how long the whole of it is.
+    ///
+    /// Both numbers, because one on its own says nothing worth reading: a bar
+    /// at a third with "34,765 characters" beside it is a wait somebody can
+    /// sit through, and "33%" alone is a riddle.
+    pub fn sending(&self) -> (f32, usize) {
+        let share = match self.chunks.len() {
+            0 => 1.0,
+            n => self.handed as f32 / n as f32,
+        };
+        (share, self.chars)
     }
 
     /// Everything still owed, handed over at once.

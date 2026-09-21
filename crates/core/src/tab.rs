@@ -5165,7 +5165,7 @@ mod long_paste_probe {
 
         // Exactly what the app does: chunks out, Enter last
         let chunks = paste_chunks(&tab, body);
-        let mut p = PendingSend::new(1, chunks, true, tab.output_count(), 0);
+        let mut p = PendingSend::new(1, chunks, true, tab.output_count(), 0, body.chars().count());
         let t0 = Instant::now();
         let mut handed = 0;
         loop {
@@ -5287,8 +5287,9 @@ mod codex_session_probe {
         std::thread::sleep(Duration::from_secs(3));
 
         // Say something, the way the app says it
-        let chunks = paste_chunks(&tab, "MANGO とだけ答えてください。ツールは使わないでください。");
-        let mut p = PendingSend::new(1, chunks, true, tab.output_count(), 0);
+        let said = "MANGO とだけ答えてください。ツールは使わないでください。";
+        let chunks = paste_chunks(&tab, said);
+        let mut p = PendingSend::new(1, chunks, true, tab.output_count(), 0, said.chars().count());
         let t0 = Instant::now();
         loop {
             let now = t0.elapsed().as_millis() as u64;

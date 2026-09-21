@@ -97,6 +97,15 @@ pub struct TabState {
     /// How far along, 0..=1, when it has said. Shown beside the status
     #[serde(default)]
     pub progress: Option<f32>,
+    /// A message being typed into this tab on somebody's behalf right now,
+    /// while it is still going in.
+    ///
+    /// A terminal takes a paste a chunk at a time and sets its own pace
+    /// (`send.rs`), so a long one is seconds of work. Without this the
+    /// composer empties and nothing else happens, and a wait nobody was told
+    /// about reads as a message that was lost
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sending: Option<SendingState>,
     /// Where this tab is: the branch, its pull request, the ports it opened.
     ///
     /// A different kind of thing from `status`, which is why it gets its own
@@ -299,6 +308,18 @@ pub struct VaultState {
     /// True when the search stopped before the end -- so the overlay can say
     /// "more than these" rather than implying it is the whole of the past
     pub capped: bool,
+}
+
+/// A message on its way into a tab, as the screen says it.
+///
+/// Two numbers rather than one: a bar on its own is a riddle, and the length
+/// of what was written is what turns "still going" into "this is a long one"
+#[derive(Clone, Serialize, PartialEq, Debug)]
+pub struct SendingState {
+    /// How much of the text has gone over, 0..=1
+    pub share: f32,
+    /// How many characters the whole message is
+    pub chars: usize,
 }
 
 /// Where a tab is, in the parts it is made of.
@@ -1900,6 +1921,9 @@ impl TabState {
             auto: t.auto_runs(),
             status: t.status_line(),
             progress: t.progress.as_ref().map(|(p, _)| *p),
+            // Filled in by `view::ui_state_of`: what is being typed into a tab
+            // is the runtime's business, not the tab's
+            sending: None,
             place: (t.place != crate::repo::Place::default()).then(|| PlaceState {
                 branch: t.place.branch.clone(),
                 pr: t.place.pr.clone(),
@@ -2014,6 +2038,8 @@ impl TabState {
             restartable: key != "settings" && key != "result",
             status: None,
             progress: None,
+            // Nothing is typed into a page by this road
+            sending: None,
             // A browser is not in a folder and starts nothing, so it has
             // nowhere to be, and nothing of its own to cost
             place: None,
@@ -2418,6 +2444,7 @@ mod tests {
             auto: false,
             status: None,
             progress: None,
+            sending: None,
             place: None,
             cost: None,
             readable: false,

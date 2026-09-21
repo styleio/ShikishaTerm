@@ -542,6 +542,12 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     ts.mark = t
                         .remote()
                         .and_then(|spec| crate::uistate::MarkState::of(&spec.machine(), &ui.server_marks));
+                    // What is still going into it, while it is still going in
+                    ts.sending = ui
+                        .sending
+                        .iter()
+                        .find(|(n, _)| *n == i + 1)
+                        .map(|(_, s)| s.clone());
                     // Beside a folder in a repository, the git column signs in
                     // as the project's account
                     ts.git_acct = t.place.family.is_some().then(|| {
@@ -1456,6 +1462,10 @@ pub struct Ui {
     pub now_ms: u64,
     /// The surfaces on screen (one per tab-bar row), in the order written in config
     pub surfaces: Vec<Surface>,
+    /// The messages being typed into tabs right now, by screen number: how far
+    /// each has got and how long it is. A long one takes seconds to go in
+    /// (`send.rs`), and the composer says so while it does
+    pub sending: Vec<(usize, crate::uistate::SendingState)>,
     /// Which file each editor is showing, by the editor's own name. The page
     /// asks for the contents itself, so it has to be told this -- and it has to
     /// survive a reload, which is why it travels in the state rather than
