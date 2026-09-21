@@ -84,33 +84,43 @@ A few keys need no prefix: `Ctrl+Shift+K` opens the quick commands and
 Settings > Keys, choose the box beside an action and press the combination you
 want (`Ctrl+Shift+D`, `Alt+F4`, `F5`) to give it one of its own.
 
+The digits are the tabs themselves: `Ctrl+B 0`–`9` goes to that tab (`0` is INDEX).
+
+<!-- guide: keys -->
+
 | Key | What it does |
 |---|---|
 | `Ctrl+B q` | Quit |
-| `Ctrl+B 0`–`9` | Switch tab (0 = INDEX) |
-| `Ctrl+B n` / `Ctrl+B p` | Next tab / previous tab |
+| `Ctrl+B n` | Next tab |
+| `Ctrl+B p` | Previous tab |
 | `Ctrl+B t` | Add a tab |
 | `Ctrl+B &` | Close this tab (asks first while its AI is working) |
 | `Ctrl+B T` | Reopen the tab closed last |
-| `Ctrl+B r` / `Ctrl+B R` | Restart this tab carrying the conversation over / from nothing |
-| `Ctrl+B %` / `Ctrl+B "` | Split the screen beside / below this one |
+| `Ctrl+B r` | Restart this tab, carrying the conversation over |
+| `Ctrl+B R` | Restart this tab from nothing |
+| `Ctrl+B %` / `Ctrl+B |` | Split the screen beside this one |
+| `Ctrl+B "` / `Ctrl+B -` | Split the screen below this one |
 | `Ctrl+B o` | Move to the next pane |
 | `Ctrl+B X` | Close this pane (the tab keeps running) |
 | `Ctrl+B =` | Put the dividers back to even halves |
-| `Ctrl+B <` / `Ctrl+B >` | Move the divider left or up / right or down |
 | `Ctrl+B s` | Put the tab bar away, or bring it back |
 | `Ctrl+B g` | Show the changed files on the right, or put them away |
-| `Ctrl+B w` / `Ctrl+B W` | Desk list / next desk |
-| `Ctrl+B [` | Copy mode (`/` searches, `n` and `N` walk the matches) |
+| `Ctrl+B <` | Move the divider left / up |
+| `Ctrl+B >` | Move the divider right / down |
+| `Ctrl+B w` | Desk list |
+| `Ctrl+B W` | Next desk |
+| `Ctrl+B [` | Copy mode (/ searches, n and N walk the matches) |
 | `Ctrl+B c` | Copy the latest answer |
-| `Ctrl+B l` | Lock input on this tab |
+| `Ctrl+B l` | Lock input |
 | `Ctrl+B a` | Automation on / off |
 | `Ctrl+B x` | Emergency stop |
 | `Ctrl+B b` | Send the prefix key itself to the program |
+| `Ctrl+B ?` | This list |
 | `Ctrl+B :` | Command palette |
-| `Ctrl+B k` | Quick commands |
-| `Ctrl+B m` | Ideas |
-| `Ctrl+B ?` | The key list |
+| `Ctrl+B k` / `Ctrl+Shift+K` | Quick commands |
+| `Ctrl+B m` / `Ctrl+Shift+M` | Ideas |
+
+<!-- /guide -->
 
 On INDEX the menu is single letters: `e` settings, `p` the palette, `f` find,
 `i` the QR code for a phone, `r` restart stopped tabs, `w` switch desk,
@@ -125,9 +135,9 @@ and drag it shut to give the whole window to the terminal.
 ## 3. Working folders and branches
 
 Press the folder-plus at the end of the **PROJECT** heading to add a project: open a
-folder on this PC, clone one from a URL, or make a new one. A project added starts with
-Settings → Basic → **Default command** running (PowerShell, Command Prompt or Git Bash; PowerShell
-unless chosen). A folder left empty by closing its tabs opens it again when pressed.
+folder on this PC, clone one from a URL, or make a new one. A project added opens with
+whatever Settings > Basic > Default command says (PowerShell, Command Prompt or Git Bash;
+PowerShell unless chosen). A folder left empty by closing its tabs opens it again when pressed.
 
 **A project on a server you reach over SSH** is added from the same dialog. "A project on an SSH
 host" takes a name, host, user, port and key file, or fills them in from an alias in
@@ -145,7 +155,7 @@ and the terminal run over there.
   names the worktree and ties the work to it (a pull request's branch is fetched).
   **Branch** picks what it grows from. **Name** is typed; a name typed there is kept,
   and leaving it empty keeps Auto on;
-- **AI** — what runs in the new folder. The default is Settings → Basic → Assistant AI;
+- **AI** — what runs in the new folder. The default is Settings > Basic > Assistant AI,
 - **More** — one folder per AI, where it goes, things git does not carry (`.env`,
   `node_modules`) to bring along, and the exact `git worktree add` line.
 
@@ -155,8 +165,8 @@ and takes back the half-made folder and the new branch. If it fails, the row say
 and offers **Try again** or **Dismiss**. Folders made this way live in
 `~/SHIKISHA-TERM/branches/<project>/<name>`.
 
-**Names written from what was asked.** A folder with Auto on (Settings → the folder →
-Auto; on by default for a worktree made from the dialog) is named and described by an
+**Names written from what was asked.** A folder with Auto on (set on that folder's own
+settings page; on by default for a worktree made from the dialog) is named and described by an
 AI from the requests sent to the AIs in it: at once after the first one, then again when
 an AI there finishes its work, at most once every 10 minutes. Only the requests are
 sent, never the answers, and long code pasted into them is left out. Until it is
@@ -164,7 +174,7 @@ written the list shows the branch name; a name written this way is drawn a shade
 quieter. Rest the pointer on a folder to read its name and summary; on a phone the
 card carries a line of the summary, and holding a card down opens its menu with the
 whole summary at the top. Changing the name or the summary by hand turns Auto off.
-Which AI writes them is chosen per desk under Settings → desk → Automatic names: the
+Which AI writes them is chosen under Settings > Desk > Automatic names: the
 assistant AI, asked the lightest way it can be, or one of the desk's model connections.
 
 Worktrees made from a terminal or another tool show up under the heading as "Hiding N
@@ -222,21 +232,12 @@ A tab that runs the `ssh` command itself still works as before (the kind is
 
 ## 6. Where passwords and tokens live
 
-Register them under **Secrets** on the desk's settings page. Automation
-names them in one short word and never receives the value. Two things are asked
-when you register one:
+Register them under Settings > Desk > Secrets. Automation names them in one
+short word and never receives the value. Registering one asks which pages it may
+be filled in on, and whether automation may use it as a person only or as an AI
+as well. What each box decides is in the [settings reference](SETTINGS.md).
 
-- **Where this secret may be used** -- it is filled in on those pages and
-  nowhere else. `https://example.com` is that whole site,
-  `https://example.com/api` only the pages under `/api`, and
-  `https://*.example.com` the site and every subdomain
-- **Who may use it** -- two answers, **a person** and **an AI**, and to begin
-  with only the first. Tick the AI as well for the ones a script an AI set
-  going should be able to use; tick only the AI and it becomes a key kept for
-  an AI's errands, which nobody spends by hand
-
-Listing, changing and deleting all happen in that same **Secrets** card on the
-desk's settings page. Press a row to open it.
+Listing, changing and deleting happen on that same screen. Press a row to open it.
 
 ## 7. Automation
 
@@ -245,7 +246,54 @@ another tab, answer a confirmation, send a notification. Written in a few lines 
 Lua, or described in plain words and written for you by an AI you already have.
 See the [automation reference](https://shikisha-term.com/automation/).
 
-## 8. When something is wrong
+## 8. Where the settings are
+
+The gear at the foot of the list on the left opens them. These are all the
+screens there are. **What is on each one** is in the
+[settings reference](SETTINGS.md), which the program writes out of its own
+settings screen, so it cannot fall behind.
+
+<!-- guide: screens -->
+
+**The program's settings**
+
+- **Basic** — Tab width, chaining, language
+- **Update** — Newer versions, and going back
+- **Keys** — What each key does
+- **Quick commands** — Buttons that send a command or a prompt
+- **Saved logins** — Browser logins kept for reuse
+- **Snapshots** — Page pictures a rally took
+- **Quick actions** — One-tap buttons in the input bar
+- **Where it runs** — Places to open a branch other than this PC
+- **Server names** — Tell production from staging at a glance
+- **Operate a tab** — Limits for 🎯 driving another tab
+- **Claude's allowance** — The 5-hour and 7-day windows on the status line
+- **Phone access** — Remote control & QR
+- **External control** — Let programs drive this app
+- **Carrying conversations** — What survives a restart
+- **Files** — Automation & secrets paths
+- **Run results** — Download past rally logs
+- **Notifications** — The phones that receive notifications
+
+**A desk's settings**
+
+- **Basics** — Name, automation name, automation folder
+- **Notifications** — Chats, this PC, phones
+- **Model connections** — The APIs this desk's tabs use
+- **Automation permissions** — What a person and an AI may run
+- **git** — Protected branches, commit messages
+- **Git accounts** — What fetch, pull and push sign in as
+- **Secrets** — Passwords and tokens
+- **AI × AI discussion** — Several AI tabs discussing or working together
+- **Stop conditions** — When the joint work ends
+- **Tools** — Sending pictures to the AI
+- **Automatic names** — The AI that names and describes working folders
+- **Automation doors** — Files and URLs a script can reach
+- **Export** — This desk as one file
+
+<!-- /guide -->
+
+## 9. When something is wrong
 
 - **The program does not start after a settings change** — double-click
   `Settings.cmd` beside the program. It opens only the settings screen, where the
@@ -264,7 +312,7 @@ See the [automation reference](https://shikisha-term.com/automation/).
 - **The zip shows a Windows warning on first start** — the zip is not code-signed;
   the Store copy is. [Why, and how to check the download](https://github.com/styleio/ShikishaTerm/blob/main/SIGNING.md).
 
-## 9. Updating
+## 10. Updating
 
 The program looks, once at start and once a day while it runs, whether a newer
 version is published. If one is, a small card in the sidebar says so, once. Its

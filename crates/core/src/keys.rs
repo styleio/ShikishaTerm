@@ -519,6 +519,13 @@ pub fn listing() -> Vec<(&'static str, &'static str)> {
 /// changed is their own to describe. The manual says the same thing for the
 /// same reason.
 pub fn shipped() -> Vec<(String, String)> {
+    shipped_in(&crate::i18n::t)
+}
+
+/// The same, read out of one particular dictionary. The reference is written
+/// in every language the program ships, and only one of them is the language
+/// this process happens to be showing.
+pub fn shipped_in(word: &dyn Fn(&str) -> String) -> Vec<(String, String)> {
     let prefix = Trigger::parse(DEFAULT_PREFIX).map(|t| t.show()).unwrap_or_default();
     ACTIONS
         .iter()
@@ -533,7 +540,7 @@ pub fn shipped() -> Vec<(String, String)> {
                     .filter(|(name, _)| *name == a.name)
                     .filter_map(|(_, combo)| Trigger::parse(combo).map(|t| t.show())),
             );
-            (ways.join(" / "), crate::i18n::t(a.desc))
+            (ways.join(" / "), word(a.desc))
         })
         .collect()
 }

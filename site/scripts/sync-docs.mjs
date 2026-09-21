@@ -18,12 +18,15 @@ const PAGES = [
   // The manual first: it is where the ? beside the app's gear leads
   { src: "docs/MANUAL.md", dest: "manual.md", order: 0 },
   { src: "docs/MANUAL.ja.md", dest: "ja/manual.md", order: 0 },
-  { src: "docs/AUTOMATION.md", dest: "automation.md", order: 1 },
-  { src: "docs/TRANSLATING.md", dest: "translating.md", order: 2 },
+  // 設定の事典。アプリが自分の設定画面から書き出したもので、手では書かない
+  { src: "docs/SETTINGS.md", dest: "settings.md", order: 1 },
+  { src: "docs/SETTINGS.ja.md", dest: "ja/settings.md", order: 1 },
+  { src: "docs/AUTOMATION.md", dest: "automation.md", order: 2 },
+  { src: "docs/TRANSLATING.md", dest: "translating.md", order: 3 },
   // Microsoft Store の掲載情報がこのURLを指す。消すとストアの審査が落ちる
-  { src: "docs/PRIVACY.md", dest: "privacy.md", order: 3 },
-  { src: "docs/AUTOMATION.ja.md", dest: "ja/automation.md", order: 1 },
-  { src: "docs/PRIVACY.ja.md", dest: "ja/privacy.md", order: 3 },
+  { src: "docs/PRIVACY.md", dest: "privacy.md", order: 4 },
+  { src: "docs/AUTOMATION.ja.md", dest: "ja/automation.md", order: 2 },
+  { src: "docs/PRIVACY.ja.md", dest: "ja/privacy.md", order: 4 },
 ];
 
 /** 1行目の `# 見出し` をページタイトルに使い、本文からは取り除く */
@@ -46,6 +49,8 @@ function fixLinks(body, dest) {
   const onSite = new Map([
     ["docs/MANUAL.md", "/manual/"],
     ["docs/MANUAL.ja.md", "/ja/manual/"],
+    ["docs/SETTINGS.md", "/settings/"],
+    ["docs/SETTINGS.ja.md", "/ja/settings/"],
     ["docs/AUTOMATION.md", "/automation/"],
     ["docs/AUTOMATION.ja.md", "/ja/automation/"],
     ["docs/TRANSLATING.md", "/translating/"],

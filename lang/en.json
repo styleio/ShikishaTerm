@@ -3138,5 +3138,18 @@
   "err.chrome.said": "The browser refused: {said}",
   "err.chrome.no_answer": "The browser did not answer {method}.",
   "guide.at.program": "Settings > {name}",
-  "guide.at.desk": "Settings > Desk > {name}"
+  "guide.at.desk": "Settings > Desk > {name}",
+  "guide.doc.title": "Settings",
+  "guide.doc.intro": "Every setting this program has, screen by screen, in the order the settings themselves list them. What is on the screen and what the keys do is in the manual; this is what each entry means.",
+  "guide.doc.generated": "Written by the program from its own settings screen. Edit the settings, not this file.",
+  "guide.doc.program": "The program's settings",
+  "guide.doc.program.about": "The same on every desk. Open them from the gear at the foot of the list on the left.",
+  "guide.doc.desk": "A desk's settings",
+  "guide.doc.desk.about": "Each desk answers these for itself, so two desks can work in different ways. Open them from Desk in the settings.",
+  "guide.doc.nothing": "This screen has nothing to fill in. What it shows depends on what is set elsewhere.",
+  "guide.doc.keys": "Keys",
+  "guide.doc.keys.about": "As the program ships. Whatever has been changed is under Settings > Keys.",
+  "guide.doc.key": "Key",
+  "guide.doc.does": "What it does",
+  "guide.doc.path.head": "Settings"
 }

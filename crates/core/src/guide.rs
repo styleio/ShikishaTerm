@@ -47,6 +47,10 @@ pub struct Screen {
     /// Every `settings.*` word this screen shows, in the order the page holds
     /// them, without repeats
     pub words: Vec<String>,
+    /// Of those, the ones the page puts at the head of a card
+    pub cards: HashSet<String>,
+    /// ...and the ones it writes beside a field, as that field's name
+    pub labels: HashSet<String>,
 }
 
 /// One thing on a screen: what it is called, and the line under it.
@@ -66,6 +70,20 @@ pub struct Page {
     pub title: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub about: String,
+    /// The cards on this screen, each with the things a person sets on it
+    pub cards: Vec<Card>,
+    /// What else this screen says: states, warnings, the wording on buttons.
+    /// Not settings, but somebody who has read one of them may well ask
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub says: Vec<String>,
+}
+
+/// One card on a screen, as the person sees it laid out.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Card {
+    /// Empty for whatever stands above the first card's own heading
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub title: String,
     pub items: Vec<Item>,
 }
 
@@ -300,6 +318,8 @@ fn read_screens(html: &str) -> Vec<Screen> {
                 label_key: e.label_key,
                 sub_key: e.sub_key,
                 words: Vec::new(),
+                cards: HashSet::new(),
+                labels: HashSet::new(),
             },
             named,
         ));
@@ -336,6 +356,12 @@ fn read_screens(html: &str) -> Vec<Screen> {
                 if seen.insert(key.clone()) {
                     screen.words.push(key);
                 }
+            }
+            for (key, role) in roles_in(&orig, span) {
+                match role {
+                    Role::Card => screen.cards.insert(key),
+                    Role::Label => screen.labels.insert(key),
+                };
             }
         }
     }
@@ -410,6 +436,53 @@ struct Entry {
     draws: (usize, usize),
 }
 
+/// What the page is doing with a word where it writes it.
+#[derive(Clone, Copy)]
+enum Role {
+    /// At the head of a card
+    Card,
+    /// Beside a field, as its name
+    Label,
+}
+
+/// How the page says each of those, written once so that a shape that changes
+/// is changed here and nowhere else.
+///
+/// This is the other half of telling a **setting** from a **line of text**.
+/// The dictionary says one thing (a word with a hint under it is a setting);
+/// the page says the other (a word written as a row's label is a setting).
+/// Either is enough, because each catches what the other misses: a field
+/// nobody wrote a hint for, and a hint on something built as the page runs.
+const SAYS: &[(&str, Role)] = &[
+    ("card(T[\"", Role::Card),
+    ("el(\"h2\", {}, T[\"", Role::Card),
+    ("el(\"h3\", {}, T[\"", Role::Card),
+    ("row(T[\"", Role::Label),
+    ("el(\"label\", {}, T[\"", Role::Label),
+];
+
+/// The words a span writes as a card's title or a field's name.
+fn roles_in(orig: &[char], span: (usize, usize)) -> Vec<(String, Role)> {
+    let mut out = Vec::new();
+    for (says, role) in SAYS {
+        let pat: Vec<char> = says.chars().collect();
+        let mut i = span.0;
+        while let Some(at) = find(orig, says, i, span.1) {
+            let from = at + pat.len();
+            let Some(len) = orig[from..span.1.min(orig.len())].iter().position(|c| *c == '"')
+            else {
+                break;
+            };
+            let key: String = orig[from..from + len].iter().collect();
+            if key.starts_with("settings.") && !key.ends_with('.') {
+                out.push((key, *role));
+            }
+            i = from + len;
+        }
+    }
+    out
+}
+
 /// Each screen named in the two lists.
 fn section_entries(code: &[char], orig: &[char]) -> Vec<Entry> {
     let mut out = Vec::new();
@@ -475,10 +548,18 @@ fn find(hay: &[char], needle: &str, from: usize, to: usize) -> Option<usize> {
 
 // ── Turning it into an answer ─────────────────────────────────────
 
-/// The suffixes that belong to the entry above them rather than standing alone.
+/// The suffixes that belong to the word above them rather than standing alone.
+///
+/// This is also what tells a **setting** from a **line of text**: the settings
+/// were written with a label and a line under it, so a word something hangs
+/// under is a thing a person sets, and a word with nothing under it is
+/// something the screen says (a state, a warning, the wording on a button).
+/// The rule comes off how the words were written, not off a guess at what they
+/// look like.
 const UNDER: &[&str] = &[".hint", ".label", ".sub", ".note", ".placeholder", ".ph"];
 
-/// The index in one language. `word` looks a key up.
+/// The index in one language. `word` looks a key up, and answers with the key
+/// itself when there is nothing under it.
 pub fn index(word: &dyn Fn(&str) -> String) -> Index {
     let mut placed: HashSet<&str> = HashSet::new();
     let mut pages = Vec::new();
@@ -491,22 +572,42 @@ pub fn index(word: &dyn Fn(&str) -> String) -> Index {
             },
             &[("name", &title)],
         );
-        let mut items = Vec::new();
+        let mut cards: Vec<Card> = vec![Card { title: String::new(), items: Vec::new() }];
+        let mut says = Vec::new();
         for key in &s.words {
             placed.insert(key.as_str());
-            // Its own name in the list is not a thing on the screen
+            // Its own name in the list is not a thing on the screen, and
+            // neither is a line that hangs under something else
             if *key == s.label_key || *key == s.sub_key || UNDER.iter().any(|u| key.ends_with(u)) {
                 continue;
             }
-            items.push(item(key, word));
+            let text = word(key);
+            if text == *key {
+                continue;
+            }
+            // A card's own heading opens a card, unless the page also writes
+            // it beside a field -- then it is a field, where it was written
+            if s.cards.contains(key) && !s.labels.contains(key) {
+                // A screen with one card names it after itself, and a heading
+                // that repeats the heading above it is a line to scroll past
+                let head = if text == title { String::new() } else { text };
+                cards.push(Card { title: head, items: Vec::new() });
+                continue;
+            }
+            match entry(key, s.labels.contains(key), word) {
+                Some(it) => cards.last_mut().expect("a card is always open").items.push(it),
+                None => says.push(text),
+            }
         }
+        cards.retain(|c| !c.items.is_empty());
         let about = word(&s.sub_key);
         pages.push(Page {
             id: s.id.clone(),
             at,
             title,
             about: if about == s.sub_key { String::new() } else { about },
-            items,
+            cards,
+            says,
         });
     }
     // Everything else the settings say, with no screen to name
@@ -515,26 +616,32 @@ pub fn index(word: &dyn Fn(&str) -> String) -> Index {
         if placed.contains(key.as_str()) || UNDER.iter().any(|u| key.ends_with(u)) {
             continue;
         }
-        loose.push(item(key, word));
+        let text = word(key);
+        if text != *key {
+            loose.push(entry(key, true, word).expect("named, so an entry"));
+        }
     }
-    let keys = crate::keys::shipped()
+    let keys = crate::keys::shipped_in(word)
         .into_iter()
         .map(|(press, does)| Item { label: press, hint: does })
         .collect();
     Index { pages, loose, keys }
 }
 
-/// One entry: its own words, and the line written under it.
-fn item(key: &str, word: &dyn Fn(&str) -> String) -> Item {
-    let label = word(key);
-    let hint = [".hint", ".note"]
+/// One thing a person sets: what it is called, and the line written under it.
+///
+/// `None` when neither source calls it one -- the page does not write it
+/// beside a field, and the dictionary hangs nothing under it -- which makes it
+/// a line the screen says rather than a thing to set.
+fn entry(key: &str, a_label: bool, word: &dyn Fn(&str) -> String) -> Option<Item> {
+    let hint = UNDER
         .iter()
         .map(|u| format!("{key}{u}"))
         .map(|k| (word(&k), k))
         .find(|(text, k)| text != k)
-        .map(|(text, _)| text)
-        .unwrap_or_default();
-    Item { label: if label == key { String::new() } else { label }, hint }
+        .map(|(text, _)| text);
+    (a_label || hint.is_some())
+        .then(|| Item { label: word(key), hint: hint.unwrap_or_default() })
 }
 
 /// Every `settings.*` key the program ships with, in dictionary order.
@@ -549,6 +656,263 @@ pub fn all_settings_words() -> &'static [String] {
             .collect()
     })
     .as_slice()
+}
+
+// ── The reference people read ─────────────────────────────────────
+
+/// The settings written out as a page of markdown, in one language.
+///
+/// The same index the ? answers from, so the two cannot disagree. Written to
+/// `docs/SETTINGS<.code>.md`, from where the site picks it up and the download
+/// carries it.
+pub fn reference(word: &dyn Fn(&str) -> String) -> String {
+    let idx = index(word);
+    let mut out = String::new();
+    let line = |out: &mut String, s: &str| {
+        out.push_str(s);
+        out.push('\n');
+    };
+    line(&mut out, &format!("# {}", word("guide.doc.title")));
+    out.push('\n');
+    line(&mut out, &word("guide.doc.intro"));
+    out.push('\n');
+    line(&mut out, &format!("<!-- {} -->", word("guide.doc.generated")));
+
+    let mut scope = None;
+    for (page, s) in idx.pages.iter().zip(screens()) {
+        if scope != Some(s.scope) {
+            scope = Some(s.scope);
+            out.push('\n');
+            line(
+                &mut out,
+                &format!(
+                    "## {}",
+                    word(match s.scope {
+                        Scope::Program => "guide.doc.program",
+                        Scope::Desk => "guide.doc.desk",
+                    })
+                ),
+            );
+            out.push('\n');
+            line(
+                &mut out,
+                &word(match s.scope {
+                    Scope::Program => "guide.doc.program.about",
+                    Scope::Desk => "guide.doc.desk.about",
+                }),
+            );
+        }
+        out.push('\n');
+        line(&mut out, &format!("### {}", page.title));
+        out.push('\n');
+        if !page.about.is_empty() {
+            line(&mut out, &page.about);
+            out.push('\n');
+        }
+        if page.cards.is_empty() {
+            line(&mut out, &word("guide.doc.nothing"));
+            continue;
+        }
+        for card in &page.cards {
+            if !card.title.is_empty() {
+                line(&mut out, &format!("**{}**", card.title));
+                out.push('\n');
+            }
+            for it in &card.items {
+                match it.hint.is_empty() {
+                    true => line(&mut out, &format!("- **{}**", it.label)),
+                    false => line(&mut out, &format!("- **{}** — {}", it.label, it.hint)),
+                }
+            }
+            out.push('\n');
+        }
+        // The blank line before the next heading is written by whoever opens it
+        while out.ends_with("\n\n") {
+            out.pop();
+        }
+    }
+
+    out.push('\n');
+    line(&mut out, &format!("## {}", word("guide.doc.keys")));
+    out.push('\n');
+    line(&mut out, &word("guide.doc.keys.about"));
+    out.push('\n');
+    for k in &idx.keys {
+        line(&mut out, &format!("- `{}` — {}", k.label, k.hint));
+    }
+    out
+}
+
+/// The lists in the manual that the program fills in for itself.
+///
+/// The manual is prose, and prose is written by a person. But a *list* of what
+/// ships -- every key, every settings screen -- is not prose, and a list
+/// written by hand falls behind: this manual went 63 commits without being
+/// touched while the screen it describes changed 16 times. So the prose stays
+/// hand-written and the lists are written from here, between the marks
+/// `<!-- guide: keys -->` and `<!-- /guide -->`.
+pub fn fill_manual(text: &str, word: &dyn Fn(&str) -> String) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(OPENS) {
+        let from = at + OPENS.len();
+        let Some(len) = rest[from..].find(SHUTS) else { break };
+        let Some((name, _)) = rest[from..from + len].split_once(CLOSES) else { break };
+        let name = name.trim();
+        out.push_str(&rest[..from]);
+        out.push_str(name);
+        out.push_str(CLOSES);
+        out.push_str("\n\n");
+        out.push_str(&filling(name, word));
+        out.push('\n');
+        rest = &rest[from + len..];
+    }
+    out.push_str(rest);
+    out
+}
+
+const OPENS: &str = "<!-- guide: ";
+const CLOSES: &str = " -->";
+const SHUTS: &str = "<!-- /guide -->";
+
+/// What goes between one pair of marks.
+fn filling(name: &str, word: &dyn Fn(&str) -> String) -> String {
+    let mut out = String::new();
+    match name {
+        // Every key as it ships, in the table the manual reads in
+        "keys" => {
+            out.push_str(&format!(
+                "| {} | {} |\n|---|---|\n",
+                word("guide.doc.key"),
+                word("guide.doc.does")
+            ));
+            for (press, does) in crate::keys::shipped_in(word) {
+                let press =
+                    press.split(" / ").map(|k| format!("`{k}`")).collect::<Vec<_>>().join(" / ");
+                out.push_str(&format!("| {press} | {does} |\n"));
+            }
+        }
+        // Every settings screen, so the manual says where things are while the
+        // reference says what each one holds
+        "screens" => {
+            let idx = index(word);
+            let mut scope = None;
+            for (page, s) in idx.pages.iter().zip(screens()) {
+                if scope != Some(s.scope) {
+                    scope = Some(s.scope);
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(&format!(
+                        "**{}**\n\n",
+                        word(match s.scope {
+                            Scope::Program => "guide.doc.program",
+                            Scope::Desk => "guide.doc.desk",
+                        })
+                    ));
+                }
+                match page.about.is_empty() {
+                    true => out.push_str(&format!("- **{}**\n", page.title)),
+                    false => out.push_str(&format!("- **{}** — {}\n", page.title, page.about)),
+                }
+            }
+        }
+        _ => out.push_str(name),
+    }
+    out
+}
+
+/// Where a language's manual is kept.
+pub fn manual_path(root: &std::path::Path, code: &str) -> std::path::PathBuf {
+    root.join("docs").join(match code {
+        "en" => "MANUAL.md".to_string(),
+        other => format!("MANUAL.{other}.md"),
+    })
+}
+
+/// What a piece of prose sends somebody to, of the paths it writes into the
+/// settings, that the settings no longer call that.
+///
+/// "Settings > Basic > Deleting a worktree" is a promise about a screen, and a
+/// screen can be renamed by somebody who never opens the manual. Reading the
+/// promises back out is what lets a test say so -- which is why the manual
+/// writes a path this one way and no other.
+///
+/// A name is matched against what the settings offer rather than read to the
+/// next full stop, because a name has spaces in it ("Default command") and a
+/// sentence carries on afterwards ("...says what runs"). The longest name that
+/// fits is the one meant: `Git` must not answer for `Git accounts`.
+pub fn paths_wrong(text: &str, word: &dyn Fn(&str) -> String, offered: &HashSet<String>) -> Vec<String> {
+    /// What can never be part of a name, so an unknown one stops there
+    const ENDS: &str = "、。（）()「」『』,|\n*`";
+    /// What stands between one name and the next
+    const STEP: &str = " > ";
+    let head = word("guide.doc.path.head");
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(&head) {
+        rest = &rest[at + head.len()..];
+        while let Some(after) = rest.strip_prefix(STEP) {
+            match offered
+                .iter()
+                .filter(|n| after.starts_with(n.as_str()))
+                .max_by_key(|n| n.len())
+            {
+                Some(name) => rest = &after[name.len()..],
+                None => {
+                    let end = after
+                        .find(|c: char| ENDS.contains(c))
+                        .into_iter()
+                        .chain(after.find(STEP))
+                        .min()
+                        .unwrap_or(after.len());
+                    let bad = after[..end].trim();
+                    rest = &after[end..];
+                    if bad.is_empty() {
+                        break;
+                    }
+                    out.push(bad.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// How many paths into the settings a piece of prose writes at all, so a test
+/// can tell "nothing is wrong" from "nothing was read".
+pub fn paths_counted(text: &str, word: &dyn Fn(&str) -> String) -> usize {
+    text.matches(&format!("{} > ", word("guide.doc.path.head"))).count()
+}
+
+/// Every name the settings offer, for checking what prose says against it.
+pub fn names_offered(word: &dyn Fn(&str) -> String) -> HashSet<String> {
+    let idx = index(word);
+    let mut out = HashSet::new();
+    for page in &idx.pages {
+        out.insert(page.title.clone());
+        for card in &page.cards {
+            out.insert(card.title.clone());
+            for it in &card.items {
+                out.insert(it.label.clone());
+            }
+        }
+    }
+    for it in &idx.loose {
+        out.insert(it.label.clone());
+    }
+    // The word the list of a desk's own settings stands under
+    out.insert(word("settings.nav.desk"));
+    out.remove("");
+    out
+}
+
+/// Where a language's reference is kept.
+pub fn reference_path(root: &std::path::Path, code: &str) -> std::path::PathBuf {
+    root.join("docs").join(match code {
+        "en" => "SETTINGS.md".to_string(),
+        other => format!("SETTINGS.{other}.md"),
+    })
 }
 
 #[cfg(test)]
@@ -641,8 +1005,144 @@ mod tests {
         let remote = idx.pages.iter().find(|p| p.id == "remote").expect("the phone's screen");
         assert!(!remote.title.is_empty() && !remote.title.starts_with("settings."));
         assert!(remote.at.contains(&remote.title), "\"{}\" does not say where it is", remote.at);
-        assert!(remote.items.iter().any(|i| !i.label.is_empty()), "the screen lists nothing");
+        assert!(
+            remote.cards.iter().any(|c| !c.items.is_empty()),
+            "the phone's screen lists nothing to set"
+        );
         assert!(!idx.keys.is_empty(), "no key combinations are listed");
     }
 }
 
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+
+    /// Which languages the reference is written in. English is embedded;
+    /// the others are the files beside it, so a translation that arrives is
+    /// carried along without this list being touched.
+    fn languages(root: &std::path::Path) -> Vec<String> {
+        let mut out = vec!["en".to_string()];
+        let Ok(rd) = std::fs::read_dir(root.join("lang")) else { return out };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "json")
+                && let Some(code) = p.file_stem().map(|s| s.to_string_lossy().to_string())
+                && code != "en"
+            {
+                out.push(code);
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// The reference in the tree is the reference this program would write.
+    ///
+    /// It has to be a file in the repository, because the site's build reads
+    /// `docs/` and nothing else -- and a file is a copy, and a copy falls
+    /// behind. This is what stops it: change a word on the settings screen and
+    /// this fails until the reference is written again.
+    ///
+    ///     SHIKISHA_WRITE_DOCS=1 cargo test -p shikisha-core reference
+    #[test]
+    fn the_reference_says_what_the_settings_say() {
+        let root = crate::repo_root();
+        let writing = std::env::var("SHIKISHA_WRITE_DOCS").is_ok();
+        for code in languages(&root) {
+            let dict = crate::i18n::dictionary(&code, &root.join("lang"));
+            let word = |k: &str| dict.get(k).cloned().unwrap_or_else(|| k.to_string());
+            let text = reference(&word);
+            let path = reference_path(&root, &code);
+            if writing {
+                std::fs::write(&path, &text).expect("the reference could be written");
+                continue;
+            }
+            let have = std::fs::read_to_string(&path).unwrap_or_default();
+            assert_eq!(
+                have.replace("\r\n", "\n"),
+                text,
+                "{} is not what the settings now say. Write it again:\n    \
+                 SHIKISHA_WRITE_DOCS=1 cargo test -p shikisha-core reference",
+                path.display()
+            );
+        }
+    }
+
+    /// The manual's own lists are the lists this program ships with.
+    ///
+    /// The prose around them is a person's, and stays a person's. These are
+    /// the parts that were going stale on their own.
+    ///
+    ///     SHIKISHA_WRITE_DOCS=1 cargo test -p shikisha-core reference
+    #[test]
+    fn the_manual_lists_what_ships() {
+        let root = crate::repo_root();
+        let writing = std::env::var("SHIKISHA_WRITE_DOCS").is_ok();
+        for code in languages(&root) {
+            let dict = crate::i18n::dictionary(&code, &root.join("lang"));
+            let word = |k: &str| dict.get(k).cloned().unwrap_or_else(|| k.to_string());
+            let path = manual_path(&root, &code);
+            let Ok(have) = std::fs::read_to_string(&path) else { continue };
+            let have = have.replace("\r\n", "\n");
+            assert!(have.contains(OPENS), "{} fills nothing in for itself", path.display());
+            let want = fill_manual(&have, &word);
+            if writing {
+                std::fs::write(&path, &want).expect("the manual could be written");
+                continue;
+            }
+            assert_eq!(
+                have,
+                want,
+                "{} no longer lists what ships. Write it again:\n    \
+                 SHIKISHA_WRITE_DOCS=1 cargo test -p shikisha-core reference",
+                path.display()
+            );
+        }
+    }
+
+    /// Everything the manual sends somebody to by name is still called that.
+    ///
+    /// A sentence saying "Settings > Basic > Deleting a worktree" is a
+    /// promise about a screen, and a screen can be renamed by someone who
+    /// never opens the manual. This is the only part of the prose a machine
+    /// can hold to the program, which is why the manual writes a path this one
+    /// way and no other.
+    #[test]
+    fn the_manual_sends_people_where_things_are() {
+        let root = crate::repo_root();
+        for code in languages(&root) {
+            let dict = crate::i18n::dictionary(&code, &root.join("lang"));
+            let word = |k: &str| dict.get(k).cloned().unwrap_or_else(|| k.to_string());
+            let Ok(text) = std::fs::read_to_string(manual_path(&root, &code)) else { continue };
+            let offered = names_offered(&word);
+            assert!(
+                paths_counted(&text, &word) > 3,
+                "{code}: the manual names no settings at all"
+            );
+            let wrong = paths_wrong(&text, &word, &offered);
+            assert!(
+                wrong.is_empty(),
+                "{code}: the manual sends people to {wrong:?}, which the settings no longer call that"
+            );
+        }
+    }
+
+    /// A screen's entries read as entries: a name somebody would recognise,
+    /// and a line saying what it does.
+    #[test]
+    fn an_entry_carries_both_halves() {
+        let dict = crate::i18n::dictionary("en", &crate::repo_root().join("lang"));
+        let word = |k: &str| dict.get(k).cloned().unwrap_or_else(|| k.to_string());
+        let idx = index(&word);
+        let entries: Vec<&Item> =
+            idx.pages.iter().flat_map(|p| p.cards.iter().flat_map(|c| c.items.iter())).collect();
+        // Well under what the page holds (107 as this was written): a floor
+        // to catch the reading collapsing, not a count to keep up to date
+        assert!(entries.len() > 80, "only {} entries were found", entries.len());
+        for it in entries {
+            assert!(!it.label.is_empty(), "{it:?} has no name");
+            assert!(!it.label.starts_with("settings."), "{} was never translated", it.label);
+        }
+    }
+}

@@ -13,12 +13,19 @@ handed to the AI by the "let an AI write it" button, *and* it is a page on this 
 documentation change is just editing the markdown and merging. The generated files are
 gitignored — never edit them.
 
+`docs/SETTINGS.md` is not written by hand at all. The program writes it out of its own
+settings screen, and a test fails if the file in the tree is not what it would write, so
+the page here can never describe a setting that has moved. Rewrite it with
+`SHIKISHA_WRITE_DOCS=1 cargo test -p shikisha-core reference`.
+
 `/privacy/` is load-bearing in a way the others are not: the Microsoft Store listing points
 at that URL, and a store listing whose privacy policy 404s is a listing that gets pulled.
 Renaming or removing it means updating the listing in Partner Center first.
 
 | Site page | Comes from |
 |---|---|
+| `/manual/` | `docs/MANUAL.md` |
+| `/settings/` | `docs/SETTINGS.md` (written by the program -- see below) |
 | `/automation/` | `docs/AUTOMATION.md` |
 | `/translating/` | `docs/TRANSLATING.md` |
 | `/privacy/` | `docs/PRIVACY.md` |

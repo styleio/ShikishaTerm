@@ -3116,5 +3116,18 @@
   "err.chrome.said": "ブラウザに断られました: {said}",
   "err.chrome.no_answer": "ブラウザが {method} に答えませんでした。",
   "guide.at.program": "設定の「{name}」",
-  "guide.at.desk": "設定の「デスク」＞「{name}」"
+  "guide.at.desk": "設定の「デスク」＞「{name}」",
+  "guide.doc.title": "設定",
+  "guide.doc.intro": "このソフトにある設定を、画面ごとに、設定の一覧と同じ順で並べた事典です。画面に何があるか・キーで何ができるかは手引きにあります。ここにあるのは、一つ一つの項目が何を決めるかです。",
+  "guide.doc.generated": "このファイルはソフトが自分の設定画面から書き出しています。直すのは設定の側で、このファイルではありません。",
+  "guide.doc.program": "ソフト全体の設定",
+  "guide.doc.program.about": "どのデスクでも同じ設定です。左の一覧のいちばん下の歯車から開きます。",
+  "guide.doc.desk": "デスクごとの設定",
+  "guide.doc.desk.about": "デスクが一つずつ自分で決める設定です。デスクが違えば違う決め方ができます。設定の「デスク」から開きます。",
+  "guide.doc.nothing": "この画面に書き込む欄はありません。出るものは、ほかで決めたことによって変わります。",
+  "guide.doc.keys": "キー",
+  "guide.doc.keys.about": "出荷時のキーです。変えたものは設定の「キー」にあります。",
+  "guide.doc.key": "キー",
+  "guide.doc.does": "何をするか",
+  "guide.doc.path.head": "設定"
 }
