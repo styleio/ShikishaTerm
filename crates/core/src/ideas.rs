@@ -565,6 +565,7 @@ mod tests {
             work_item: None,
             summary: None,
             auto_label: false,
+            drawn: None,
         };
         let one = Desk { folders: vec![folder(&app), folder(&notes)], ..Default::default() };
         let two = Desk { folders: vec![folder(&wt)], ..Default::default() };

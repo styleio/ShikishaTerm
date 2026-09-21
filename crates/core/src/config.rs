@@ -49,6 +49,13 @@ pub struct ProjectSpec {
     /// go out as" always has an answer somebody gave
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_account: Option<String>,
+    /// What every branch of this project is called before its own name: teams
+    /// that keep `yourname/` or `feat/` in front of a branch keep it here once,
+    /// rather than typing it into every dialog and losing it on the one nobody
+    /// typed it into. It stands in front of a name drawn as well as one typed,
+    /// and in front of the one an AI writes later
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_prefix: Option<String>,
     /// What a new worktree of this project is given of what git does not carry:
     /// the files a line of `.gitignore` matches, and files from anywhere else.
     /// A line with no rule here gets the answer [`crate::worktree::default_how`]
@@ -648,6 +655,21 @@ pub struct Config {
     /// setup, kept under Basic
     #[serde(default)]
     pub yolo: bool,
+    /// What writes the automatic names, and the branch names that follow them
+    /// ("claude", "codex", "gemini"). Unset is the assistant AI above. A desk
+    /// may name another ([`DeskSpec::summary_ai`]), which is also where a
+    /// model connection is chosen, since the connections belong to a desk
+    #[serde(default)]
+    pub summary_ai: Option<String>,
+    /// Whether that AI is asked on the smallest model it has, which is what
+    /// makes a name cost a fraction of an answer. Absent is yes.
+    ///
+    /// Off only helps where the small model writes names nobody recognises:
+    /// everything else about the asking (no tools, no thinking, no memory of
+    /// it afterwards) stays as it is, because none of that is a choice a
+    /// person has a reason to make twice
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_small_model: Option<bool>,
     /// Keys that open the tools from any program, by what they open (see
     /// `hotkeys::ACTIONS`): "Alt+Shift+X". Only what was changed is written;
     /// the scissors not written at all have `hotkeys::DEFAULT`, written empty
@@ -1941,6 +1963,11 @@ pub struct DeskSpec {
     /// connections. Unset is the assistant AI chosen under Basic
     #[serde(default)]
     pub summary_ai: Option<String>,
+    /// Whether a folder that names itself also renames its branch, the once,
+    /// while that branch is still the name this app drew and has never been
+    /// pushed (see [`crate::worktree::auto_rename_plan`]). Absent is yes
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename_branch: Option<bool>,
 }
 
 /// Contents of a desk definition file (desks/*.json)
@@ -2426,6 +2453,17 @@ pub struct SourceSpec {
     /// Recorded so that the one question is asked once and never again
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// The branch name this app drew when nobody had one in mind, while it is
+    /// still the name the folder is on.
+    ///
+    /// A drawn name (`mighty-gannet`) is a placeholder until the work has a
+    /// title, so it is the one name an AI may write over later
+    /// ([`crate::worktree::auto_rename_plan`]). A name a person typed is never
+    /// here, and this is dropped the moment the branch is called something
+    /// else -- by the rename itself, or by anybody at a command line -- so the
+    /// offer is made once and to a folder nobody has decided about
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drawn: Option<String>,
 }
 
 /// The same, read: what is actually known about where a folder came from.
@@ -2473,6 +2511,7 @@ impl SourceSpec {
             branch: Some(branch.to_string()),
             base: (!base.trim().is_empty()).then(|| base.to_string()),
             kind: None,
+            drawn: None,
         }
     }
 }
@@ -2527,6 +2566,9 @@ pub struct Folder {
     pub summary: Option<String>,
     /// Whether its name and summary are written from what its AIs are asked
     pub auto_label: bool,
+    /// The branch name this app drew for it, while the folder is still on it
+    /// (see [`SourceSpec::drawn`]). The one name the work may write over
+    pub drawn: Option<String>,
 }
 
 /// A desk resolved at launch time (tabs are flattened; depth preserves the hierarchy)
@@ -2577,6 +2619,9 @@ pub struct Desk {
     pub send_pictures_to: Option<String>,
     /// What writes the folders' automatic names (see [`DeskSpec::summary_ai`])
     pub summary_ai: Option<String>,
+    /// Whether those names reach the branch as well (see
+    /// [`DeskSpec::rename_branch`]). Absent is yes
+    pub rename_branch: Option<bool>,
 }
 
 /// A value that may be written `@name`: the secret by that name, or the value
@@ -3208,6 +3253,13 @@ fn resolve_folders(
             work_item: def.work_item.as_deref().map(str::trim).filter(|w| !w.is_empty()).map(str::to_string),
             summary: def.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
             auto_label: def.auto_label,
+            drawn: def
+                .source
+                .as_ref()
+                .and_then(|s| s.drawn.as_deref())
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .map(str::to_string),
         });
         flatten(&def.tabs, 0, at, &mut tabs);
     }
@@ -3665,6 +3717,47 @@ pub fn set_folder_source_at(
             return Ok(());
         };
         g["source"] = serde_json::to_value(source)?;
+        Ok(())
+    })
+}
+
+/// The branch a folder is on, written where it was already written down, and
+/// whether this app is the one that thought of the name.
+///
+/// Two facts and one write, because they are only ever true together: a folder
+/// is on the branch it was cut for, and that name was either drawn here or
+/// typed by somebody. The rest of `source` -- the remote it came from, what it
+/// grew out of -- is what it was, since a rename changes neither.
+///
+/// `drawn` is dropped by passing `None`, which is what a rename does: the name
+/// is no longer the one nobody chose.
+pub fn set_folder_branch(desk_name: &str, cwd: &Path, branch: &str, drawn: Option<&str>) -> Result<()> {
+    set_folder_branch_at(&config_file_path(), desk_name, cwd, branch, drawn)
+}
+
+/// The same, told which settings file to edit.
+pub fn set_folder_branch_at(
+    path: &Path,
+    desk_name: &str,
+    cwd: &Path,
+    branch: &str,
+    drawn: Option<&str>,
+) -> Result<()> {
+    with_folders(path, desk_name, |folders| {
+        let Some(g) = find_folder(folders, cwd) else {
+            return Ok(());
+        };
+        // A folder written by hand may have no source at all, and one is not
+        // invented here: what a branch grew from cannot be worked out after
+        // the fact, and half a source is worse than none
+        let Some(o) = g.get_mut("source").and_then(|s| s.as_object_mut()) else {
+            return Ok(());
+        };
+        o.insert("branch".into(), serde_json::json!(branch));
+        match drawn {
+            Some(name) => o.insert("drawn".into(), serde_json::json!(name)),
+            None => o.shift_remove("drawn"),
+        };
         Ok(())
     })
 }
@@ -4356,6 +4449,7 @@ impl Config {
                     git_accounts: Vec::new(),
                     send_pictures_to: None,
                     summary_ai: None,
+                    rename_branch: None,
                 });
             }
             return (out, errors);
@@ -4434,6 +4528,7 @@ impl Config {
                 projects: desk.projects.clone(),
                 send_pictures_to: desk.send_pictures_to.as_deref().and_then(one_name),
                 summary_ai: desk.summary_ai.as_deref().and_then(one_name),
+                rename_branch: desk.rename_branch,
             });
         }
         errors.extend(settle_desk_ids(&mut out));
@@ -6085,6 +6180,47 @@ mod tests {
         assert_eq!(desk.folders[0].name.as_deref(), Some("My name"));
         assert_eq!(desk.folders[0].summary.as_deref(), Some("Show why sign-in failed"), "the summary written earlier was lost");
         assert!(!std::fs::read_to_string(&file).unwrap().contains("auto_label"), "Auto off is written as nothing at all");
+    }
+
+    /// The branch a folder is on is written where the folder came from, and
+    /// the drawn name goes when the branch stops being it.
+    ///
+    /// The two are one write because a rename is one event. `drawn` is what
+    /// says a name is still nobody's, and a folder that never had a source --
+    /// settings written by hand -- gets no invented one
+    #[test]
+    fn a_folder_says_which_branch_it_is_on_and_whether_anybody_chose_it() {
+        let at = std::env::temp_dir().join("shikisha-branch-folder");
+        let body = serde_json::json!({"desks": [{"name": "work", "folders": [
+            {"cwd": at.display().to_string(), "name": "mighty-gannet", "tabs": [],
+             "source": {"origin": "https://example.invalid/x.git", "branch": "mighty-gannet", "base": "origin/main"}},
+            {"cwd": at.join("by-hand").display().to_string(), "name": "by hand", "tabs": []}
+        ]}]})
+        .to_string();
+        let (_dir, file) = tabs_file("branch", &body);
+
+        set_folder_branch_at(&file, "work", &at, "mighty-gannet", Some("mighty-gannet")).unwrap();
+        let desk = read_desk(&file);
+        assert_eq!(desk.folders[0].drawn.as_deref(), Some("mighty-gannet"));
+        assert!(
+            matches!(&desk.folders[0].source, Source::Worktree { branch, base, .. }
+                     if branch == "mighty-gannet" && base == "origin/main"),
+            "the rest of where it came from was lost"
+        );
+
+        // Renamed: the folder is on the new branch, and no name here is
+        // waiting to be written over any more
+        set_folder_branch_at(&file, "work", &at, "yourname/login-fix", None).unwrap();
+        let desk = read_desk(&file);
+        assert_eq!(desk.folders[0].drawn, None, "a name that was chosen is still offered up");
+        assert!(matches!(&desk.folders[0].source, Source::Worktree { branch, .. } if branch == "yourname/login-fix"));
+        assert!(!std::fs::read_to_string(&file).unwrap().contains("\"drawn\""), "it is written as nothing at all");
+
+        // A folder that says nothing about where it came from is left saying
+        // nothing: half a source is worse than none
+        let by_hand = at.join("by-hand");
+        set_folder_branch_at(&file, "work", &by_hand, "whatever", Some("whatever")).unwrap();
+        assert_eq!(read_desk(&file).folders[1].source, Source::Unknown);
     }
 
     /// The first-start setup's desk: written beside what the setup already

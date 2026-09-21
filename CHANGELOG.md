@@ -8,7 +8,33 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **A working folder's branch is named after the work, the once.** A folder cut with
+  nobody's name in mind starts on a name this app drew (`mighty-gannet`), and that name is
+  what a pull request, a merge and every list of branches afterwards would have said. The
+  first time the folder names itself from what its AIs were asked, the branch takes that
+  name too -- `yourname/login-form-crash` -- and the folder stays where it is, tabs and
+  builds with it. Only a name this app drew is ever written over, only while the branch is
+  still on it, and never once the branch has been pushed, since renaming then would orphan
+  the branch on the server and any pull request open on it. One line of git, written to the
+  log in git's own words. A desk that would rather keep its drawn names turns it off under
+  "Automatic names".
+- **A project keeps the name that goes in front of its branches.** `yourname/` or `feat/`,
+  typed once in the project's settings, goes in front of every branch made for it -- typed,
+  drawn, or written by an AI afterwards.
+- **Which AI writes those names, and how small a model it may use, are asked app-wide.**
+  Under Basic, beneath the assistant AI: naming a folder is not the work the assistant AI
+  was chosen for, and the smallest model a CLI has writes a name for a fraction of the
+  tokens. A desk can still choose another AI, or a model connection, for itself.
+
 ### Fixed
+- **A desk's choice of AI for automatic names is kept.** It was written into the screen's
+  own copy of the settings and never into the file, so the next save dropped it and the
+  card came up showing the assistant AI again.
+- **A folder made for a branch records the branch, not its label.** What a person typed
+  into the dialog went into the settings as the branch the folder holds, so a folder named
+  in Japanese was written down as a branch git could not be asked for -- and the machine
+  that read those settings could not make the folder again.
 - **"Automatic names" in a desk's settings draws again, and so does an AI tab set to a
   model connection.** Both cards offer a Candidates button that asks a connection which
   models it really has, and the code behind that button went out with a feature it had

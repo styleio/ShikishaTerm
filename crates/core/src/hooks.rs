@@ -1553,6 +1553,9 @@ for try = 1, 2 do
     return shikisha.json_encode({
       name = got.name,
       summary = type(got.summary) == "string" and got.summary or "",
+      -- The same work as a branch name. Missing is not a failure: the folder
+      -- has its name, and the branch keeps the one it was drawn
+      slug = type(got.slug) == "string" and got.slug or "",
     })
   end
   ask = prompt .. "\n\n" .. shikisha.tf("ai.draft.retry", { error = bad or "no name" })

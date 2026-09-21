@@ -1503,6 +1503,78 @@ pub fn rename_plan(folder: &Path, to: &str) -> Result<Rename> {
     Ok(Rename { folder: folder.to_path_buf(), from, to, sent_as: upstream_of(folder) })
 }
 
+/// What a name in front of every branch of a project makes of one name.
+///
+/// Written `yourname/` or `yourname` alike, because a person typing a prefix
+/// thinks of the slash as part of it about half the time. Nothing in front
+/// leaves the name as it was.
+///
+/// A name that already carries the prefix keeps the one it has. Somebody who
+/// typed the whole branch out meant the branch they typed, and an AI asked for
+/// a name writes the prefix back into it often enough that the alternative is
+/// `yourname/yourname/login-fix`
+pub fn with_prefix(prefix: &str, name: &str) -> String {
+    let prefix = prefix.trim().trim_matches('/');
+    let name = name.trim();
+    if prefix.is_empty() || name.is_empty() || name == prefix {
+        return name.to_string();
+    }
+    match name.starts_with(&format!("{prefix}/")) {
+        true => name.to_string(),
+        false => format!("{prefix}/{name}"),
+    }
+}
+
+/// Calling a drawn branch what the work turned out to be, once.
+///
+/// A folder cut with nobody's name in mind is on a drawn one (`mighty-gannet`)
+/// until it has a title, and the AI that writes the folder's name writes a
+/// branch name with it. This says whether that name may be used here, and
+/// what git would be told.
+///
+/// It may, only while every one of these holds:
+///
+/// - the folder is one cut for a branch, not a project's own checkout
+/// - the branch is still the drawn name, exactly. Anybody's `git branch -m`,
+///   or a checkout of something else, ends the offer -- a name somebody chose
+///   is never written over
+/// - the branch has never been pushed. `git branch -m` would leave the remote
+///   branch behind under the old name, and with it any pull request open on
+///   it, so a branch with an upstream is left alone. This is the reason the
+///   rename happens at the start of the work and not at the end
+/// - there is something usable to call it, and it is not what it is called
+///   already
+///
+/// A name already taken by another branch gets `-2`, the same as one drawn
+/// for a new folder does.
+pub fn auto_rename_plan(folder: &Path, drawn: &str, written: &str, prefix: &str) -> Option<Rename> {
+    if !crate::repo::is_linked(folder) {
+        return None;
+    }
+    let now = crate::repo::branch_of(folder)?;
+    if now != drawn.trim() || drawn.trim().is_empty() {
+        return None;
+    }
+    if upstream_of(folder).is_some() {
+        return None;
+    }
+    let wanted = tidy(&with_prefix(prefix, written))?;
+    if wanted == now {
+        return None;
+    }
+    let main = crate::repo::main_checkout(folder)?;
+    let free = match branch_exists(&main, &wanted) {
+        true => next_free(&main, &wanted),
+        false => wanted,
+    };
+    Some(Rename {
+        folder: folder.to_path_buf(),
+        from: now,
+        to: free,
+        sent_as: None,
+    })
+}
+
 /// Does it, and stops the new name from pushing under the old one.
 ///
 /// Git moves `branch.<name>.*` across on its own, the note about where this
@@ -1835,13 +1907,14 @@ pub fn is_free(main: &Path, name: &str) -> bool {
     !branch_exists(main, name) && !folder_for(main, name).exists()
 }
 
-/// A name for the next branch, when nobody has one in mind.
+/// A name for the next branch, when nobody has one in mind, with the project's
+/// own prefix (`yourname/`) already in front of it.
 ///
 /// Short and countable rather than unique-by-construction: this ends up on a
 /// pull request, and `work-3` is something a person can say out loud, which
 /// a timestamp and a handful of hex is not. Free names only -- the first one
 /// that is not already a branch here.
-pub fn suggest(main: &Path) -> String {
+pub fn suggest(main: &Path, prefix: &str) -> String {
     // Two words rather than a number, because this name is what the branch is
     // called for as long as the work has no title, and a list of them has to be
     // readable: `work-2` and `work-3` sit next to each other and say the same
@@ -1857,8 +1930,11 @@ pub fn suggest(main: &Path) -> String {
     // now that working out where a folder goes is arithmetic on a path and
     // no longer a probe
     let free = |name: &str| is_free(main, name);
+    // The project's own prefix is part of the name being drawn, not something
+    // added to it afterwards: `yourname/work-2` is free or taken as a whole
+    let drawn = |name: &str| with_prefix(prefix, name);
     for _ in 0..20 {
-        match petname::petname(2, "-") {
+        match petname::petname(2, "-").map(|n| drawn(&n)) {
             Some(name) if free(&name) => return name,
             // Drawn again: two draws can land on one name, and the list is
             // large enough that they rarely do twice
@@ -1869,7 +1945,7 @@ pub fn suggest(main: &Path) -> String {
     }
     // From two, because the checkout itself is the first piece of work
     for n in 2..200 {
-        let name = format!("work-{n}");
+        let name = drawn(&format!("work-{n}"));
         if free(&name) {
             return name;
         }
@@ -2612,6 +2688,64 @@ tools/conpty.ps1"));
         assert!(rename_plan(&main, "whatever").is_err(), "the main checkout's branch can be renamed");
     }
 
+    /// A name is put in front the same way whichever half the person typed
+    #[test]
+    fn a_projects_prefix_goes_in_front_once() {
+        assert_eq!(with_prefix("yourname/", "mighty-gannet"), "yourname/mighty-gannet");
+        assert_eq!(with_prefix(" yourname ", "mighty-gannet"), "yourname/mighty-gannet");
+        assert_eq!(with_prefix("", "mighty-gannet"), "mighty-gannet");
+        assert_eq!(with_prefix("feat/", ""), "", "nothing to name is not a name of nothing");
+        // Already carrying it, however it was written
+        assert_eq!(with_prefix("yourname/", "yourname/login-fix"), "yourname/login-fix");
+        assert_eq!(with_prefix("yourname", "yourname/login-fix"), "yourname/login-fix");
+        assert_eq!(with_prefix("yourname/", "yourname"), "yourname");
+    }
+
+    /// A drawn name is the one name the work may write over, and only while
+    /// nobody has taken an interest in it.
+    ///
+    /// The gates are the whole of this feature: what it does is one line of
+    /// git, and what makes it safe is refusing four times over.
+    #[test]
+    fn a_drawn_branch_takes_the_name_of_the_work_until_somebody_else_names_it() {
+        let Some(main) = real_repo("auto") else { return };
+        let plan = plan(&main, "mighty-gannet", Some("main")).expect("it can be planned");
+        create(&plan).expect("it can be made");
+        let folder = plan.folder.clone();
+
+        // The project's own checkout is not a folder cut for a branch
+        assert!(auto_rename_plan(&main, "main", "login fix", "").is_none());
+        // A name that is not the one drawn is one somebody chose
+        assert!(auto_rename_plan(&folder, "something-else", "login fix", "").is_none());
+        // Nothing usable written leaves the branch alone
+        assert!(auto_rename_plan(&folder, "mighty-gannet", "ログイン", "").is_none());
+
+        let r = auto_rename_plan(&folder, "mighty-gannet", "login-form-crash", "yourname/")
+            .expect("a drawn name, never pushed, can be written over");
+        assert_eq!((r.from.as_str(), r.to.as_str()), ("mighty-gannet", "yourname/login-form-crash"));
+        assert!(r.line().contains("branch -m mighty-gannet yourname/login-form-crash"), "{}", r.line());
+        rename(&r).expect("it can be renamed");
+        assert_eq!(crate::repo::branch_of(&folder).as_deref(), Some("yourname/login-form-crash"));
+        // The folder stays where it was made, tabs and builds with it
+        assert!(folder.exists(), "the folder moved");
+        // And not twice: the drawn name is no longer what it is on
+        assert!(auto_rename_plan(&folder, "mighty-gannet", "second thoughts", "").is_none());
+
+        // A branch that has been pushed keeps its name, whatever the work
+        // turned out to be: renaming it would orphan the branch on the server
+        // and every pull request open on it
+        let second = super::plan(&main, "polite-marmot", Some("main")).expect("it can be planned");
+        create(&second).expect("it can be made");
+        git(&main, &["remote", "add", "origin", &main.display().to_string()]);
+        git(&second.folder, &["config", "branch.polite-marmot.remote", "origin"]);
+        git(&second.folder, &["config", "branch.polite-marmot.merge", "refs/heads/polite-marmot"]);
+        git(&main, &["update-ref", "refs/remotes/origin/polite-marmot", "HEAD"]);
+        assert!(
+            auto_rename_plan(&second.folder, "polite-marmot", "login-form-crash", "").is_none(),
+            "a branch that has been sent somewhere was renamed anyway"
+        );
+    }
+
     /// A repository git itself made, or nothing. Skipped rather than failed
     /// where git is not installed: this is the only test here that needs it
     fn real_repo(name: &str) -> Option<PathBuf> {
@@ -2642,13 +2776,18 @@ tools/conpty.ps1"));
     fn work_with_no_name_is_offered_two_words() {
         let main = repo("suggest");
         let drawn: std::collections::HashSet<String> =
-            (0..20).map(|_| suggest(&main)).collect();
+            (0..20).map(|_| suggest(&main, "")).collect();
         assert!(drawn.len() > 15, "20 draws gave only {} different names", drawn.len());
         for name in &drawn {
             assert!(name_is_usable(name), "a name git will not take: {name:?}");
             assert_eq!(name.matches('-').count(), 1, "not two words joined: {name:?}");
             assert!(!name.starts_with("work-"), "it fell back to a numbered name: {name:?}");
         }
+        // A project that keeps a name in front of its branches gets it here
+        // too: a drawn name goes to git like any other
+        let under = suggest(&main, "yourname/");
+        assert!(under.starts_with("yourname/"), "the project's prefix is missing: {under:?}");
+        assert!(name_is_usable(&under), "a name git will not take: {under:?}");
     }
 
     /// The whole of it, against a real repository.

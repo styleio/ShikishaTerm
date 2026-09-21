@@ -1107,22 +1107,37 @@ const LIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 /// - Gemini CLI: about 2,800, where started plainly it spent turns looking
 ///   through the folder with its tools. Read-only, its instructions replaced.
 ///   Its own routing already sends a request this small to a small model
-fn light_invocation(name: &str) -> Option<(Vec<String>, Vec<(&'static str, String)>)> {
+///
+/// `small` is the part a person can turn off (`summary_small_model`): the
+/// smallest model Claude Code has, and Codex's lowest reasoning. Everything
+/// else here stays whatever the answer is, because nothing else about it is a
+/// choice with two sides -- a name does not want tools, and nobody wants this
+/// in their list of conversations. Gemini is not asked either way: it routes a
+/// request this small itself, and naming a model there is a way to be wrong
+fn light_invocation(name: &str, small: bool) -> Option<(Vec<String>, Vec<(&'static str, String)>)> {
     let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match name {
-        "claude" => Some((
-            v(&[
-                "-p", "--model", "haiku", "--tools", "", "--no-session-persistence", "--strict-mcp-config",
+        "claude" => {
+            let mut args = v(&["-p"]);
+            if small {
+                args.extend(v(&["--model", "haiku"]));
+            }
+            args.extend(v(&[
+                "--tools", "", "--no-session-persistence", "--strict-mcp-config",
                 "--disable-slash-commands", "--settings", &format!("{{dir}}/{CLAUDE_SETTINGS_FILE}"),
                 "--system-prompt-file", &format!("{{dir}}/{SYSTEM_FILE}"),
-            ]),
-            vec![("MAX_THINKING_TOKENS", "0".to_string())],
-        )),
+            ]));
+            Some((args, vec![("MAX_THINKING_TOKENS", "0".to_string())]))
+        }
         "codex" => {
             let mut args = v(&[
                 "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never",
-                "-c", "model_reasoning_effort=low", "-c", "web_search=disabled", "-c", "mcp_servers={}",
+                "-c", "web_search=disabled", "-c", "mcp_servers={}",
             ]);
+            if small {
+                args.push("-c".into());
+                args.push("model_reasoning_effort=low".into());
+            }
             args.push("-c".into());
             args.push(format!("model_instructions_file={{dir}}/{SYSTEM_FILE}"));
             for feature in [
@@ -1166,7 +1181,12 @@ pub fn ask_local_ai_light(prompt: &str, engine: Option<&str>) -> Result<String> 
 
 /// The light way alone, with nothing to fall back on
 fn ask_light_once(name: &str, prompt: &str) -> Result<String> {
-    let (args, env) = light_invocation(name).with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
+    // Asked of the settings here rather than handed down: every caller of the
+    // light way wants the same answer, and one that reads it for itself cannot
+    // be the one that forgets
+    let small = crate::config::load().and_then(|c| c.summary_small_model).unwrap_or(true);
+    let (args, env) = light_invocation(name, small)
+        .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
     let files: [(&str, &[u8]); 2] = [
         (SYSTEM_FILE, LIGHT_SYSTEM.as_bytes()),
         (CLAUDE_SETTINGS_FILE, br#"{"disableAllHooks": true}"#),
@@ -5647,6 +5667,17 @@ function basicCard() {
         el("span", {class:"hint", id:"aihint"}, "")),
     row(T["settings.yolo"], check(current, "yolo", T["settings.yolo.label"]),
         el("span", {class:"hint warn"}, T["settings.tab.ai.autoapprove_risk"])),
+    // Naming a folder and its branch is not the work the assistant AI above
+    // was chosen for, so it is chosen again here -- and asked in the cheapest
+    // way its CLI allows, which is the row under it
+    row(T["settings.summary_ai"],
+        choose(current, "summary_ai",
+          [["", fill(T["settings.summary_ai.assistant"], {name: aiLabelOf(current.ai_engine)})]]
+            .concat(aiEngines.map(e => [e.id, e.label]))),
+        el("span", {class:"hint"}, T["settings.summary_ai.hint"])),
+    row(T["settings.summary_small"],
+        checkDefaultOn(current, "summary_small_model", T["settings.summary_small.label"]),
+        el("span", {class:"hint"}, T["settings.summary_small.hint"])),
     row(T["settings.browser_data"],
         choose(current, "browser_data", [
           ["", T["settings.browser_data.local"] || "This PC only (recommended)"],
@@ -8664,6 +8695,13 @@ function remoteCard() {
   return box;
 }
 
+// What the assistant AI is called, for the rows that say "the same as that
+// one". Nothing installed and nothing chosen leaves it unnamed rather than
+// naming a CLI this machine does not have
+function aiLabelOf(id) {
+  const found = aiEngines.find(e => e.id === (id || "")) || ((id || "").trim() ? null : aiEngines[0]);
+  return found ? found.label : T["settings.ai_engine.none"];
+}
 function aiSelect() {
   const s = el("select", {id:"aiengine"});
   const hint = () => document.getElementById("aihint");
@@ -8788,7 +8826,10 @@ function deskLabelsCard(desk) {
   return card(T["settings.labels.title"],
     el("div", {class:"hint"}, T["settings.labels.hint"]),
     row(T["settings.labels.ai"], picker, el("span", {class:"hint"}, T["settings.labels.ai.hint"])),
-    modelRow);
+    modelRow,
+    row(T["settings.labels.branch"],
+        checkDefaultOn(desk, "rename_branch", T["settings.labels.branch.label"]),
+        el("span", {class:"hint"}, T["settings.labels.branch.hint"])));
 }
 
 function deskShareCard() {
@@ -9873,10 +9914,22 @@ function projectPane(desk, p) {
     sel.proj = "p:" + e.name;
     refreshSave(); render();
   });
+  // What every branch of this project is called before its own name. Typed
+  // once here instead of into every dialog, and kept by the name an AI writes
+  // later as well
+  const prefixIn = el("input", {type:"text", class:"mono", style:"width:200px",
+    value:(p.entry || {}).branch_prefix || "", placeholder:T["settings.project.branch_prefix.ph"]});
+  prefixIn.addEventListener("input", () => {
+    const e = ensureProject(desk, p);
+    if (prefixIn.value.trim()) e.branch_prefix = prefixIn.value.trim(); else delete e.branch_prefix;
+    refreshSave();
+  });
   box.append(card(T["settings.project.title"],
     row(T["settings.project.name"], nameIn),
     row(T["settings.project.at"], atIn,
       el("span", {class:"hint"}, T["settings.project.at.hint"])),
+    row(T["settings.project.branch_prefix"], prefixIn,
+      el("span", {class:"hint"}, T["settings.project.branch_prefix.hint"])),
     row(T["settings.project.repo"],
       el("span", {class:"hint mono"}, p.family || T["settings.project.repo.none"])),
     p.entry ? null : el("div", {class:"hint"}, T["settings.project.inferred"])));
@@ -11918,6 +11971,11 @@ async function load() {
                  git_accounts: Array.isArray(w.git_accounts) ? w.git_accounts : [],
                  // The assistant AI this desk agreed to send pictures to, by name
                  send_pictures_to: (w.send_pictures_to || "").trim(),
+                 // What writes its automatic names, and whether they reach the
+                 // branch. Read in as well as written out: a setting the page
+                 // never saw is a setting the next save erases
+                 summary_ai: (w.summary_ai || "").trim(),
+                 rename_branch: w.rename_branch !== false,
                  stops: Array.isArray(w.stops) ? w.stops : [],
                  discuss: w.discuss || null };
     if (desk.file) {
@@ -12114,7 +12172,7 @@ function payload() {
     const projs = (w.projects || []).filter(p => p && (p.name || "").trim())
       .map(p => {
         const c = Object.assign({}, p);
-        for (const k of ["at", "setup"]) if (!(c[k] || "").trim()) delete c[k];
+        for (const k of ["at", "setup", "branch_prefix"]) if (!(c[k] || "").trim()) delete c[k];
         // A file from elsewhere with nowhere to come from or go is not one yet
         if (Array.isArray(c.bring)) {
           c.bring = c.bring.filter(r => r && (r.pattern || ((r.from || "").trim() && (r.to || "").trim())));
@@ -12127,6 +12185,11 @@ function payload() {
     const accts = (w.git_accounts || []).filter(a => a && (a.name || "").trim());
     if (accts.length) o.git_accounts = accts;
     if ((w.send_pictures_to || "").trim()) o.send_pictures_to = w.send_pictures_to.trim();
+    // What writes this desk's automatic names, and whether they reach the
+    // branch. Both are the desk's own answer, so a desk that has not given one
+    // stays a short entry and follows the app
+    if ((w.summary_ai || "").trim()) o.summary_ai = w.summary_ai.trim();
+    if (w.rename_branch === false) o.rename_branch = false;
     // Stop conditions (judge). Already written into the file for a file-referenced desk, so don't duplicate it here
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
     // AI vs AI discussion
@@ -12917,6 +12980,64 @@ fn picker() -> Option<&'static dyn shikisha_shared::FilePicker> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The light way of asking stays light when the small model is turned
+    /// off: only the model goes.
+    ///
+    /// The setting is about one thing -- whether a name is written by the
+    /// cheapest model the CLI has -- and everything else that makes this cheap
+    /// (no tools, nothing kept, no thinking) has no second side to argue for.
+    /// A checkbox that quietly turned the rest back on would cost the person
+    /// nine thousand tokens for a folder's name
+    #[test]
+    fn turning_the_small_model_off_turns_off_only_the_model() {
+        let args = |name: &str, small: bool| {
+            super::light_invocation(name, small).expect("this CLI has a light way").0.join(" ")
+        };
+        assert!(args("claude", true).contains("--model haiku"));
+        assert!(!args("claude", false).contains("--model"), "{}", args("claude", false));
+        assert!(args("codex", true).contains("model_reasoning_effort=low"));
+        assert!(!args("codex", false).contains("model_reasoning_effort"), "{}", args("codex", false));
+        for small in [true, false] {
+            let claude = args("claude", small);
+            assert!(claude.contains("--tools  --no-session-persistence"), "{claude}");
+            assert!(claude.contains("--disable-slash-commands"), "{claude}");
+            let codex = args("codex", small);
+            assert!(codex.contains("--ephemeral") && codex.contains("--sandbox read-only"), "{codex}");
+            assert!(codex.contains("web_search=disabled"), "{codex}");
+            // Gemini routes a request this size itself; there is nothing to say
+            assert!(!args("gemini", small).contains("--model"));
+        }
+    }
+
+    /// What the two new answers about automatic names are asked on screen, and
+    /// written down afterwards.
+    ///
+    /// A setting the page shows but never saves is worse than no setting: it
+    /// answers the question in front of the person and forgets it on the next
+    /// press. `summary_ai` was exactly that until this test existed -- the
+    /// desk's card wrote it into the page's own copy, and the save built its
+    /// desks field by field and never asked for it
+    #[test]
+    fn the_naming_settings_are_shown_and_kept() {
+        for held in [
+            // Asked app-wide, under the assistant AI it defaults to
+            r#"choose(current, "summary_ai","#,
+            r#"checkDefaultOn(current, "summary_small_model", T["settings.summary_small.label"])"#,
+            // Asked of a desk, in the card about its automatic names
+            r#"checkDefaultOn(desk, "rename_branch", T["settings.labels.branch.label"])"#,
+            // And kept: read into the page, and written back out
+            r#"summary_ai: (w.summary_ai || "").trim(),"#,
+            r#"rename_branch: w.rename_branch !== false,"#,
+            r#"if ((w.summary_ai || "").trim()) o.summary_ai = w.summary_ai.trim();"#,
+            r#"if (w.rename_branch === false) o.rename_branch = false;"#,
+            // The project's prefix: shown, and kept when it says something
+            r#"e.branch_prefix = prefixIn.value.trim(); else delete e.branch_prefix;"#,
+            r#"for (const k of ["at", "setup", "branch_prefix"])"#,
+        ] {
+            assert!(super::PAGE.contains(held), "the settings page no longer has: {held}");
+        }
+    }
 
     /// Every name a page calls is a name that page has.
     ///

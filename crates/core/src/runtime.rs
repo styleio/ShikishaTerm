@@ -133,6 +133,11 @@ struct Pending {
     link: serde_json::Value,
     /// Whether it names and describes itself from what its AIs are asked
     auto: bool,
+    /// The branch name this app drew, when nobody typed one. Written into the
+    /// folder's source, where it is what lets the work rename the branch once
+    /// (see [`crate::worktree::auto_rename_plan`]). A name somebody typed
+    /// leaves this empty and the branch is theirs
+    drawn: Option<String>,
     carry: Vec<crate::worktree::Carry>,
     /// The folder is there; only writing it down is left (or failed)
     made: bool,
@@ -210,6 +215,13 @@ impl Pending {
             &self.start,
             plan.host.as_ref().map(|h| h.name.as_str()),
         )?;
+        // The branch it is really on, and whether this app is the one that
+        // thought of that name. The line above writes the label as the branch,
+        // which is right for a card and wrong for git: a label keeps what was
+        // typed, in whatever letters it was typed in
+        if plan.host.is_none() {
+            config::set_folder_branch(&self.desk, &plan.folder, &plan.branch, self.drawn.as_deref())?;
+        }
         // Named for its branch until something is asked in it. A folder on
         // another machine is not: what its AIs are asked is not heard here
         if self.auto && plan.host.is_none() {
@@ -4700,9 +4712,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 ("language", &i18n::t("ai.label.language")),
                             ],
                         );
+                        // The desk's own answer, then the app's, then the
+                        // assistant AI. Three steps rather than two because
+                        // the app-wide one is where a person who has one
+                        // assistant AI for code and another for this says so
                         let ai = desk
                             .summary_ai
                             .clone()
+                            .filter(|a| !a.trim().is_empty())
+                            .or_else(|| cfg.as_ref().and_then(|c| c.summary_ai.clone()))
+                            .filter(|a| !a.trim().is_empty())
                             .or_else(|| cfg.as_ref().and_then(|c| c.ai_engine.clone()))
                             .filter(|a| !a.trim().is_empty())
                             .unwrap_or_default();
@@ -4716,12 +4735,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                         label_seq += 1;
                         let tag = format!("{LABEL_TAG}{label_seq}");
+                        // What it would take to call the branch after the
+                        // work, decided here where the desk and its projects
+                        // are in hand. The answer comes back on another turn
+                        let project = desk.project_of(&at);
                         label_jobs.push(LabelJob {
                             tag: tag.clone(),
                             desk: desk.name.clone(),
                             folder: at.clone(),
                             asks,
                             started: now,
+                            drawn: f.drawn.clone(),
+                            prefix: project
+                                .and_then(|p| p.branch_prefix.clone())
+                                .unwrap_or_default(),
+                            rename: desk.rename_branch != Some(false),
                         });
                         eng.start_snippet(&tag, crate::hooks::LABEL_LUA);
                     }
@@ -4737,15 +4765,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let Some(i) = label_jobs.iter().position(|j| j.tag == tag) else { continue };
                     let job = label_jobs.remove(i);
                     let now = Instant::now();
+                    // The branch name is asked for in the same breath as the
+                    // folder's name, so naming the work costs one call and not
+                    // two -- and the two can never disagree about what the
+                    // work is
+                    let mut slug = String::new();
                     let written = said.and_then(|text| {
                         let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
                         let text_of = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
                         let name = crate::labels::fit(&text_of("name"), crate::labels::NAME_ROOM);
                         let summary = crate::labels::fit(&text_of("summary"), crate::labels::SUMMARY_ROOM);
+                        slug = text_of("slug");
                         config::write_folder_label(&job.desk, &job.folder, &name, &summary).map_err(|e| format!("{e:#}"))
                     });
                     match written {
-                        Ok(_) => {
+                        Ok(wrote) => {
+                            if wrote {
+                                rename_drawn_branch(&config::config_file_path(), &job, &slug);
+                            }
                             crate::labels::note_outcome(&job.folder, None);
                             heard.finished(&job.folder, now, None);
                         }
@@ -6305,17 +6342,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // Drawn afresh on each ask, the name changed with every keystroke
             // in another field -- and on the press itself, so the folder that
             // was made was not the one on screen when the button was pressed
-            let wanted = match (crate::worktree::tidy(&name), repo.as_deref()) {
-                (Some(kept), _) => kept,
-                (None, Some(main)) => match drawn_names.get(&ask.from) {
-                    Some(kept) if crate::worktree::is_free(main, kept) => kept.clone(),
-                    _ => {
-                        let fresh = crate::worktree::suggest(main);
-                        drawn_names.insert(ask.from.clone(), fresh.clone());
-                        fresh
-                    }
-                },
-                (None, None) => String::new(),
+            //
+            // What the project puts in front of every branch of it goes in
+            // front of this one, typed or drawn. A person who typed the prefix
+            // themselves is not given it twice
+            let prefix = project.and_then(|p| p.branch_prefix.clone()).unwrap_or_default();
+            let (wanted, drawn) = match (crate::worktree::tidy(&name), repo.as_deref()) {
+                (Some(kept), _) => (crate::worktree::with_prefix(&prefix, &kept), None),
+                (None, Some(main)) => {
+                    let kept = match drawn_names.get(&ask.from) {
+                        Some(kept) if crate::worktree::is_free(main, kept) => kept.clone(),
+                        _ => {
+                            let fresh = crate::worktree::suggest(main, &prefix);
+                            drawn_names.insert(ask.from.clone(), fresh.clone());
+                            fresh
+                        }
+                    };
+                    // Drawn, so the work may write over it once it has a title
+                    (kept.clone(), Some(kept))
+                }
+                (None, None) => (String::new(), None),
             };
             // What the folder's card will be called. This app's own label: it
             // goes in the settings and nowhere near git or the disk, so it
@@ -6487,6 +6533,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 start: start.clone(),
                                 link: ask.link.clone(),
                                 auto: ask.auto,
+                                drawn: drawn.clone(),
                                 carry: carryable.clone(),
                                 made: false,
                                 error: None,
@@ -6532,6 +6579,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // while the others become cards
                     for (ai, plan) in fanned {
                         let Ok(plan) = plan else { continue };
+                        // Each folder's own branch is the drawn name with its
+                        // AI on the end, so each is drawn in its own right
+                        let branch = plan.branch.clone();
                         if makings.iter().any(|p| !p.gone && crate::uistate::same_folder(&p.making.plan.folder, &plan.folder)) {
                             continue;
                         }
@@ -6548,6 +6598,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             start: start_of(&ai, &ai_choices),
                             link: ask.link.clone(),
                             auto: ask.auto,
+                            drawn: drawn.as_ref().map(|_| branch.clone()),
                             carry: carryable.clone(),
                             made: false,
                             error: None,
@@ -9824,6 +9875,48 @@ const LABEL_TAG: &str = "folder_label:";
 /// next time. The AI is given ninety seconds, and asked twice at most
 const LABEL_GIVE_UP: Duration = Duration::from_secs(5 * 60);
 
+/// Calling a drawn branch after the work, now that the work has a name.
+///
+/// A folder cut with nobody's name in mind is on a name this app drew
+/// (`mighty-gannet`), and that name is what a pull request, a merge and every
+/// list of branches afterwards will say. So the AI that writes the folder's
+/// name writes a branch name with it, and it is used here -- once, on the
+/// first name that is written, while the branch is still the drawn one and has
+/// never been pushed ([`crate::worktree::auto_rename_plan`] holds the gates).
+///
+/// The settings file is handed in rather than looked up, so that this can be
+/// run against a scratch one: a test that wrote to the real settings would be
+/// editing the machine it runs on.
+///
+/// Everything here is best-effort: a folder that keeps its drawn name has lost
+/// nothing, so nothing is reported to the person as a failure. What did happen
+/// is written to the log in git's own words, because a command this app ran on
+/// its own is still a command somebody may have to account for.
+fn rename_drawn_branch(settings: &std::path::Path, job: &LabelJob, slug: &str) {
+    if !job.rename || slug.trim().is_empty() {
+        return;
+    }
+    let Some(drawn) = job.drawn.as_deref() else { return };
+    let Some(plan) = crate::worktree::auto_rename_plan(&job.folder, drawn, slug, &job.prefix) else {
+        return;
+    };
+    if let Err(why) = crate::worktree::rename(&plan) {
+        append_hook_log(&format!("the branch in {} kept its name: {why:#}", job.folder.display()));
+        return;
+    }
+    append_hook_log(&format!("{} ({})", plan.line(), job.folder.display()));
+    // The settings hold the branch a folder is on, and no longer a drawn name:
+    // this happens once, and the next name written is only a name
+    if let Err(why) = config::set_folder_branch_at(settings, &job.desk, &job.folder, &plan.to, None) {
+        append_hook_log(&format!(
+            "the branch in {} is now {} and the settings still say {}: {why:#}",
+            job.folder.display(),
+            plan.to,
+            plan.from
+        ));
+    }
+}
+
 /// A folder's name and summary being written: which folder, in which desk,
 /// from which requests (handed back if it fails)
 struct LabelJob {
@@ -9832,6 +9925,13 @@ struct LabelJob {
     folder: std::path::PathBuf,
     asks: Vec<String>,
     started: Instant,
+    /// The branch name this app drew for this folder, while it is still on it.
+    /// Absent for a branch somebody named, which is never renamed here
+    drawn: Option<String>,
+    /// What its project puts in front of every branch of it
+    prefix: String,
+    /// Whether this desk lets an automatic name reach the branch
+    rename: bool,
 }
 
 /// The tags a draft's answer comes back under
@@ -10782,6 +10882,97 @@ mod survey_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole of the renaming, from the AI's answer to the settings, against
+    /// a real repository and a settings file of its own.
+    ///
+    /// The gates are [`crate::worktree::auto_rename_plan`]'s and are tested
+    /// there. What is proved here is the joining: that the folder's project
+    /// prefix is used, that the settings end up saying the branch the folder
+    /// is really on, that the drawn name is gone so this happens once, and
+    /// that a desk which said no is not renamed behind its back
+    #[test]
+    fn the_work_renames_a_drawn_branch_and_the_settings_follow() {
+        let Some(main) = scratch_repo("glue") else { return };
+        let cut = |branch: &str| {
+            let plan = crate::worktree::plan(&main, branch, Some("main")).expect("it can be planned");
+            crate::worktree::create(&plan).expect("it can be made");
+            plan.folder
+        };
+        let folder = cut("mighty-gannet");
+        let settings = main.join("settings.json");
+        let write_settings = |at: &std::path::Path, drawn: &str| {
+            std::fs::write(
+                &settings,
+                serde_json::json!({"desks": [{"name": "work", "folders": [{
+                    "cwd": at.display().to_string(), "name": "mighty-gannet", "tabs": [],
+                    "source": {"origin": "https://example.invalid/x.git", "branch": drawn,
+                               "base": "origin/main", "drawn": drawn},
+                }]}]})
+                .to_string(),
+            )
+            .expect("the settings can be written");
+        };
+        let branch_in_settings = || {
+            let cfg: config::Config =
+                serde_json::from_str(&std::fs::read_to_string(&settings).expect("settings")).expect("json");
+            let desk = cfg.resolve_desks().0.remove(0);
+            (desk.folders[0].source.clone(), desk.folders[0].drawn.clone())
+        };
+        let job = |at: &std::path::Path, rename: bool| LabelJob {
+            tag: "folder_label:1".into(),
+            desk: "work".into(),
+            folder: at.to_path_buf(),
+            asks: Vec::new(),
+            started: Instant::now(),
+            drawn: Some("mighty-gannet".into()),
+            prefix: "yourname/".into(),
+            rename,
+        };
+
+        // A desk that said no keeps the drawn name, whatever the AI wrote
+        write_settings(&folder, "mighty-gannet");
+        rename_drawn_branch(&settings, &job(&folder, false), "login-form-crash");
+        assert_eq!(crate::repo::branch_of(&folder).as_deref(), Some("mighty-gannet"));
+
+        // And with it on: the branch, and the settings, say the work
+        rename_drawn_branch(&settings, &job(&folder, true), "login-form-crash");
+        assert_eq!(crate::repo::branch_of(&folder).as_deref(), Some("yourname/login-form-crash"));
+        let (source, drawn) = branch_in_settings();
+        assert!(
+            matches!(&source, config::Source::Worktree { branch, .. } if branch == "yourname/login-form-crash"),
+            "the settings still name the old branch: {source:?}"
+        );
+        assert_eq!(drawn, None, "it would be renamed again on the next name written");
+
+        // The next name written is only a name: the branch is somebody's now
+        rename_drawn_branch(&settings, &job(&folder, true), "something-else");
+        assert_eq!(crate::repo::branch_of(&folder).as_deref(), Some("yourname/login-form-crash"));
+
+        // An answer with no branch name in it leaves the branch alone
+        let second = cut("polite-marmot");
+        write_settings(&second, "polite-marmot");
+        let mut asked = job(&second, true);
+        asked.drawn = Some("polite-marmot".into());
+        rename_drawn_branch(&settings, &asked, "   ");
+        assert_eq!(crate::repo::branch_of(&second).as_deref(), Some("polite-marmot"));
+    }
+
+    /// A repository of this test's own, or nothing where git is not installed
+    fn scratch_repo(tag: &str) -> Option<std::path::PathBuf> {
+        let at = std::env::temp_dir()
+            .join(format!("shikisha-rename-{tag}-{}", crate::random_hex(6)))
+            .join("proj");
+        std::fs::create_dir_all(&at).ok()?;
+        let git = |args: &[&str]| {
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(&at).args(args);
+            let _ = crate::detach_console(&mut run).output();
+        };
+        git(&["init", "-q", "-b", "main", "."]);
+        git(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "one"]);
+        crate::repo::branch_of(&at).is_some().then_some(at)
+    }
 
     /// A tab a quick command opens is named after the button, and has an
     /// automation name a script can type -- a made-up one when the button's
