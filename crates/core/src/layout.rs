@@ -397,6 +397,16 @@ impl Layout {
         id
     }
 
+    /// Go on counting pane ids from where another arrangement had got to.
+    ///
+    /// The page keeps what it drew by pane id, so an id it has seen must never
+    /// come back meaning a different pane. Two arrangements that were never on
+    /// screen together count from 1 apiece, and the moment one replaces the
+    /// other the page is handed two panes it thinks it knows
+    pub fn renumber_from(&mut self, after: &Layout) {
+        self.next_id = self.next_id.max(after.next_id);
+    }
+
     /// Closes a pane. The last one is never closed — with no pane there would be
     /// nothing to focus and no way to get back.
     ///
@@ -567,46 +577,53 @@ impl Layout {
     /// kept by name, a pane whose tab has gone simply isn't there any more.
     /// `key_of` names a surface (1..), or says it has no name worth keeping.
     pub fn keep(&self, key_of: impl Fn(usize) -> Option<String>) -> Kept {
-        let keys = self
+        let keys: Vec<(PaneId, Option<String>)> = self
             .leaves()
             .into_iter()
             .map(|(id, s)| (id, if s == 0 { None } else { key_of(s) }))
             .collect();
-        Kept { layout: self.clone(), keys }
+        // The shape, and nothing about what is in it: the row numbers a pane
+        // holds mean whatever is in that row today, and this is written into a
+        // settings file that outlives today. `restore` fills every pane from
+        // the names, so a number kept here would be a number nobody reads --
+        // and one a person opening the file would read as meaning something
+        let mut shape = self.clone();
+        for (id, _) in &keys {
+            shape.set_surface(*id, 0);
+        }
+        Kept { layout: shape, keys }
     }
 
     /// Puts a kept arrangement back, as it stands now.
     ///
     /// `index_of` finds a name in today's tab list. A pane whose tab is gone is
-    /// closed rather than left empty -- the split was there for that tab -- and
-    /// the one pane a layout always has shows nothing if that was all there
-    /// was. Nothing left that still exists, and there is nothing to put back.
-    /// `after` is the arrangement being replaced: pane ids go on counting from
-    /// wherever it had got to, so the page never sees an old id reused for a
-    /// different pane.
-    pub fn restore(kept: &Kept, after: &Layout, index_of: impl Fn(&str) -> Option<usize>) -> Option<Layout> {
+    /// left empty, and the arrangement keeps its shape whatever is missing --
+    /// even when everything is. `after` is the arrangement being replaced: pane
+    /// ids go on counting from wherever it had got to, so the page never sees
+    /// an old id reused for a different pane.
+    ///
+    /// The shape is held on to because somebody made it. An arrangement that
+    /// quietly reflows when a tab is closed is one nobody can learn the
+    /// position of: what was bottom-right is suddenly the whole screen, and
+    /// the next thing put there lands somewhere else again. An empty pane says
+    /// what happened and offers its own + to fill it.
+    pub fn restore(kept: &Kept, after: &Layout, index_of: impl Fn(&str) -> Option<usize>) -> Layout {
         let mut out = kept.layout.clone();
         out.next_id = out.next_id.max(after.next_id);
-        let mut alive = 0;
         for (id, key) in &kept.keys {
-            match key.as_deref().and_then(&index_of) {
-                Some(s) => {
-                    out.set_surface(*id, s);
-                    alive += 1;
-                }
-                None => {
-                    if !out.close(*id) {
-                        out.set_surface(*id, 0);
-                    }
-                }
-            }
+            out.set_surface(*id, key.as_deref().and_then(&index_of).unwrap_or(0));
         }
-        (alive > 0).then_some(out)
+        out
     }
 }
 
 /// An arrangement of panes written down by name (see `Layout::keep`).
-#[derive(Debug, Clone, PartialEq)]
+///
+/// This is the form that is kept in a settings file, so it says only what a
+/// person arranged: the shape, and which tab is in each pane by the name
+/// automation calls it. Row numbers are not in it -- they mean whatever is in
+/// that row this minute.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Kept {
     layout: Layout,
     keys: Vec<(PaneId, Option<String>)>,
@@ -646,21 +663,48 @@ mod tests {
         // Meanwhile a tab was added above both: they are rows 3 and 4 now
         let now = ["", "x", "new", "ai", "web"];
         let other = Layout::single(1);
-        let back = Layout::restore(&kept, &other, |k| now.iter().position(|n| *n == k)).unwrap();
+        let back = Layout::restore(&kept, &other, |k| now.iter().position(|n| *n == k));
         assert_eq!(surfaces(&back), vec![3, 4], "it comes back by name, not by number");
         assert_eq!(back.focused_surface(), 4, "it goes back to the pane last looked at");
     }
 
+    /// An arrangement somebody made keeps its shape. A pane whose tab is gone
+    /// goes empty and stays where it is, because the position is what the
+    /// person learned: a split that reflows when a tab closes puts the next
+    /// thing somewhere else again, and there is nothing on screen saying why
     #[test]
-    fn a_pane_whose_tab_is_gone_closes_and_nothing_left_is_nothing_to_restore() {
+    fn a_pane_whose_tab_is_gone_goes_empty_and_the_shape_stays() {
         let mut l = Layout::single(1);
         l.split(Dir::Row, 2);
         let kept = l.keep(|s| Some(["", "ai", "web"][s].to_string()));
         let other = Layout::single(1);
-        let back = Layout::restore(&kept, &other, |k| (k == "ai").then_some(1)).unwrap();
-        assert!(back.is_single(), "the pane of a tab that is gone is closed");
-        assert_eq!(back.focused_surface(), 1);
-        assert!(Layout::restore(&kept, &other, |_| None).is_none(), "if nothing is left, it does not restore");
+        let back = Layout::restore(&kept, &other, |k| (k == "ai").then_some(1));
+        assert!(!back.is_single(), "the arrangement lost a pane and moved everything else");
+        assert_eq!(surfaces(&back), vec![1, 0], "the pane of a tab that is gone is not empty");
+
+        // ...and with nothing left at all it is still that arrangement, two
+        // empty panes waiting to be filled from their own +
+        let nothing = Layout::restore(&kept, &other, |_| None);
+        assert_eq!(surfaces(&nothing), vec![0, 0]);
+    }
+
+    /// What is kept is the shape and the names, never the row numbers: a row
+    /// number means whatever is in that row this minute, and this is written
+    /// into a settings file that outlives the minute
+    #[test]
+    fn what_is_kept_holds_no_row_numbers() {
+        let mut l = Layout::single(2);
+        l.split(Dir::Row, 3);
+        let kept = l.keep(|s| Some(["", "x", "ai", "web"][s].to_string()));
+        let written = serde_json::to_string(&kept).expect("it cannot be written down");
+        assert!(written.contains("\"ai\"") && written.contains("\"web\""), "the names are not in it: {written}");
+        assert_eq!(
+            surfaces(&kept.layout),
+            vec![0, 0],
+            "row numbers were written into the settings: {written}"
+        );
+        let back: Kept = serde_json::from_str(&written).expect("it cannot be read back");
+        assert_eq!(back, kept);
     }
 
     #[test]
@@ -672,7 +716,7 @@ mod tests {
         for s in 2..6 {
             busy.split(Dir::Row, s);
         }
-        let mut back = Layout::restore(&kept, &busy, |k| k.parse().ok()).unwrap();
+        let mut back = Layout::restore(&kept, &busy, |k| k.parse().ok());
         let fresh = back.split(Dir::Col, 3);
         assert!(fresh > 5, "a new pane id collides with a number already used: {fresh}");
     }

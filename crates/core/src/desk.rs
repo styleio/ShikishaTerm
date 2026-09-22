@@ -691,7 +691,6 @@ pub fn switch_desk(
     desks: &[config::Desk],
     active: &mut usize,
     panes: &mut crate::layout::Layout,
-    desk_panes: &mut [crate::layout::Layout],
     rows: u16,
     cols: u16,
     errors: &mut Vec<String>,
@@ -711,18 +710,11 @@ pub fn switch_desk(
         || to >= desks.len()
         || to >= engines.len()
         || to >= desk_tabs.len()
-        || to >= desk_panes.len()
         || *desk_index >= desk_tabs.len()
-        || *desk_index >= desk_panes.len()
     {
         return;
     }
     desk_tabs[*desk_index] = std::mem::take(tabs);
-    // How a desk is divided belongs to that desk. Carrying one
-    // layout across the switch would leave a project split into panes that
-    // point at another project's tab numbers — the screen would look
-    // deliberate and mean nothing.
-    desk_panes[*desk_index] = panes.clone();
     // The Lua environment is kept per desk (so shared variables survive switching)
     engines[*desk_index] = engine.take();
     *desk_index = to;
@@ -754,7 +746,13 @@ pub fn switch_desk(
     started_fired.clear();
     started_fired.resize(tabs.len(), false);
     *active = if tabs.is_empty() { 0 } else { 1 };
-    *panes = std::mem::replace(&mut desk_panes[to], crate::layout::Layout::single(*active));
+    // Undivided, on this desk's first row. A division belongs to the split row
+    // that owns it (`splits.rs`) and split rows belong to folders, so there is
+    // nothing about a desk to carry across a switch -- and the arrangement of
+    // the desk being left is not this desk's to show. It used to be carried in
+    // a parking space of its own, which meant a desk could open divided into
+    // panes pointing at tab numbers that now meant other tabs
+    *panes = crate::layout::Layout::single(*active);
     panes.show(*active);
 }
 

@@ -94,6 +94,9 @@ pub mod elsewhere;
 /// work, and the window that draws it is another process entirely
 #[cfg(windows)]
 pub mod split;
+/// The arrangement each split row owns. One is on screen at a time: the one
+/// belonging to the row in front
+pub mod splits;
 pub mod ssh;
 pub mod tab;
 pub mod tailscale;

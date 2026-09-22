@@ -288,7 +288,13 @@ pub fn close(
                 }
             })
         }
-        Surface::Git { name, .. } | Surface::Sftp { name, .. } | Surface::Failed { name, .. } => {
+        // A split holds nothing of its own, so closing it ends nothing: the
+        // rows it was showing go on standing in their folder. It is put away
+        // like the panels beside it, and opened again from the same list
+        Surface::Git { name, .. }
+        | Surface::Sftp { name, .. }
+        | Surface::Failed { name, .. }
+        | Surface::Split { name, .. } => {
             take(closed, name, None, Ends::Nothing).unwrap_or(Closing::Nothing)
         }
         Surface::Editor { key: editor, name, .. } => take(closed, name, None, Ends::Nothing)
@@ -435,6 +441,7 @@ pub fn row_named(rows: &[Surface], tabs: &[Tab], name: &str) -> Option<usize> {
             | Surface::Sftp { key, .. }
             | Surface::Editor { key, .. }
             | Surface::Failed { key, .. }
+            | Surface::Split { key, .. }
             | Surface::Issues { key } => key == name,
         })
         .map(|i| i + 1)
