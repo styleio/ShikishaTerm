@@ -1130,6 +1130,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // A row was pressed in the list or the strip, so whatever arrangement is
     // in front is being left for it (see `take_selects`)
     let mut left_split = false;
+    // A folder was pressed that had nothing running in it yet, so something
+    // was started there and the press is waiting for it to arrive
+    let mut going_to: Option<(std::path::PathBuf, Instant)> = None;
     // What automation asked of the panes, waiting for the loop's next turn to
     // be carried out where dividing and closing are written once
     let mut lua_splits: Vec<(crate::layout::PaneId, bool)> = Vec::new();
@@ -1521,6 +1524,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             view_drifted = false;
             view_touched_ms = start.elapsed().as_millis() as u64;
         }
+        // The folder somebody pressed, which had nothing in it until the
+        // press started something. Given up on after a while, the same as a
+        // reopened tab: a wait that is never answered must not outlive the
+        // afternoon
+        if let Some((folder, until)) = going_to.clone() {
+            let is_it = |f: &std::path::Path| crate::uistate::same_folder(f, &folder);
+            if let Some(n) = (1..=surface_count)
+                .find(|&s| surface_folder(&surfaces, &tabs, s).is_some_and(is_it))
+            {
+                active = n;
+                left_split = true;
+                going_to = None;
+                board_open = false;
+                view_drifted = false;
+                view_touched_ms = start.elapsed().as_millis() as u64;
+            } else if until.elapsed() > Duration::from_secs(20) {
+                going_to = None;
+            }
+        }
         // A tab just opened again, now that it is here
         if let Some((name, until)) = &reveal {
             if let Some(n) = crate::closed::row_named(&surfaces, &tabs, name) {
@@ -1616,7 +1638,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // with a card and no tab is waiting for
                             let desk = desks.get(desk_index);
                             let listed = desk.is_some_and(|d| {
-                                d.folders.iter().any(|f| f.host.is_none() && f.cwd.as_deref().is_some_and(|c| is_want(c)))
+                                d.folders.iter().any(|f| f.host.is_none() && f.cwd.as_deref().is_some_and(is_want))
                             });
                             if listed && let config::Start::One { name, command } =
                                 config::default_shell_start(cfg.as_ref().and_then(|c| c.default_shell.as_deref()))
@@ -1625,18 +1647,27 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 let desk_name = desk.map(|d| d.name.clone()).unwrap_or_default();
                                 if config::append_tab(&desk_name, tab, Some(&want)) {
                                     said_before_reload = Some((Instant::now(), i18n::tp("msg.shell.opened", &[("name", &name)])));
+                                    // It arrives with the settings this write
+                                    // sets off, and the press was to go there.
+                                    // Without this the press opened something
+                                    // and left the person where they were --
+                                    // in a split of another folder, which is
+                                    // the one place that is most confusing
+                                    going_to = Some((want.clone(), Instant::now()));
                                 }
                             }
                             continue;
                         };
-                        // On its own, not into the pane in front. Put into
-                        // that one pane, the rest of the split stayed as it
-                        // was: a folder of another project on one side and
-                        // this one on the other, a screen belonging to neither
-                        pane_layout = pane_layout.alone(n);
+                        // Where to go, and nothing else. Laying the screen
+                        // out here as well is how a folder press could leave a
+                        // split of ANOTHER folder still counting as the thing
+                        // in front: the tree it owned had been replaced under
+                        // it, and the next pass wrote the replacement back into
+                        // that split as its arrangement
+                        active = n;
+                        left_split = true;
                     }
                 }
-                active = pane_layout.focused_surface();
             }
             board_open = false;
             settings_open = false;
@@ -1645,17 +1676,33 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             view_touched_ms = start.elapsed().as_millis() as u64;
         }
         // What is on screen belongs to the row in front. A split row owns an
-        // arrangement; every other row is itself, undivided.
+        // arrangement; every other row is itself, undivided. This is the one
+        // place that decides it, so that everything which moves the person --
+        // the list, a folder's name, a key, a hand-off, automation -- can say
+        // only WHERE to go and never have to lay the screen out as well.
         //
-        // Read from `active` rather than kept as a second answer to "where am
-        // I", so that every press which moves the person -- the list, a key, a
-        // hand-off, automation -- lands here without knowing this exists.
-        // Leaving a split is going anywhere its arrangement does not hold
-        // Read every pass, whether or not there is a split to leave. Read
-        // inside the test below it was only ever taken when one was open, so a
-        // press made with nothing to leave stayed set -- and left the split
-        // that press was on its way INTO, the moment it was entered
+        // The three tests below, in order: a split that is no longer there, a
+        // split being left, a split being entered.
+        //
+        // `pressed` is taken every pass, whether or not there is a split to
+        // leave. Taken inside the test that uses it, a press made with none
+        // open stayed set, and then left the split that press was on its way
+        // INTO the moment it was entered
         let pressed = std::mem::take(&mut left_split);
+        // A split that is not on this desk's list any more is not in front,
+        // whatever this still says: the desk was switched, the settings were
+        // read again, the row was closed from somewhere else. Checked against
+        // the rows rather than cleared by each of those in turn, because the
+        // one that forgets is the one that is added next
+        if open_split
+            .as_deref()
+            .is_some_and(|k| !surfaces.iter().any(|s| matches!(s, Surface::Split { key, .. } if key == k)))
+        {
+            open_split = None;
+            split_save = None;
+            split_written = None;
+            pane_layout = crate::layout::Layout::single(active);
+        }
         if let Some(key) = open_split.clone()
             && (pressed || pane_layout.pane_of(active).is_none())
         {
@@ -1692,7 +1739,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let now = crate::splits::Splits::written(&pane_layout, |s| {
                 keyed.get(s - 1).and_then(|k| k.id.clone())
             });
-            if now != split_written {
+            // Only ever an arrangement, never the absence of one. A split
+            // is two panes or more, so "nothing to write" here means the tree
+            // in hand is not this row's -- somebody replaced it -- and writing
+            // that would take away, on a timer, the arrangement a person made.
+            // The one thing that legitimately ends an arrangement is closing
+            // the row, and that takes the whole row with it
+            if now.is_some() && now != split_written {
                 split_written = now;
                 split_save = Some((key, Instant::now()));
             }
@@ -1701,7 +1754,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             && at.elapsed() >= SPLIT_SAVE_AFTER
         {
             split_save = None;
-            config::save_tab_panes(&key, split_written.as_ref());
+            if let Some(kept) = split_written.as_ref() {
+                config::save_tab_panes(&key, Some(kept));
+            }
         }
         // Who the terminals are cut to, settled once per pass rather than by
         // whichever viewer last reported (see `terminal_size`). Both viewers
@@ -7485,6 +7540,31 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // notification clicked. What it does is `look_at`'s to say, the same
         // as the number pressed on the keyboard
         for n in shell.mail().take_selects() {
+            // An empty pane is a pane waiting to be filled, and the list is
+            // where the things to fill it with are. Pressing one while the
+            // keyboard stands in an empty pane puts it THERE rather than
+            // leaving the split for it -- which is the only way to show a row
+            // of another folder beside this one, and was otherwise missing
+            // entirely: the pane's own + makes a NEW tab, and nothing put an
+            // existing one anywhere.
+            //
+            // Only while the pane is empty, so a press is never ambiguous: a
+            // pane with something in it is not waiting for anything, and there
+            // a press means what it means everywhere else
+            if open_split.is_some()
+                && pane_layout.focused_surface() == 0
+                && (1..=surface_count).contains(&n)
+                && !matches!(ui_surface_at(&surfaces, n), Some(Surface::Split { .. }))
+            {
+                let into = pane_layout.focus();
+                pane_layout.put(into, n);
+                pane_layout.focus_pane(into);
+                active = pane_layout.focused_surface();
+                board_open = false;
+                view_drifted = false;
+                view_touched_ms = start.elapsed().as_millis() as u64;
+                continue;
+            }
             if let Some(v) = look_at(n, surface_count, active, settings_open) {
                 (active, board_open, settings_open) = (v.active, v.board_open, v.settings_open);
                 // Pressing a row means "show me this row", and a row shown is
