@@ -360,6 +360,27 @@ impl Layout {
         }
     }
 
+    /// Puts a surface in a pane and takes it out of wherever else it was.
+    ///
+    /// The rule this keeps is at the top of the file: a surface is in at most
+    /// one pane, because a terminal has one size and two panes would ask it
+    /// for two. `set_surface` does not keep it -- it is for callers that know
+    /// the surface is nowhere else -- and a caller that knows wrongly gets the
+    /// one failure nobody looks for: the same tab in two panes, one of them
+    /// silently the wrong width.
+    ///
+    /// The pane it came from is left empty rather than closed, so the shape
+    /// somebody arranged stays as they arranged it
+    pub fn put(&mut self, id: PaneId, surface: usize) {
+        if surface != 0
+            && let Some(was) = self.pane_of(surface)
+            && was != id
+        {
+            self.set_surface(was, 0);
+        }
+        self.set_surface(id, surface);
+    }
+
     /// Moves focus to a pane, if it exists.
     pub fn focus_pane(&mut self, id: PaneId) -> bool {
         if self.surface_of(id).is_some() {
@@ -646,6 +667,30 @@ mod tests {
 
     fn surfaces(l: &Layout) -> Vec<usize> {
         l.leaves().into_iter().map(|(_, s)| s).collect()
+    }
+
+    /// A tab put into a pane leaves the pane it was in, because a terminal
+    /// has one size and two panes would ask it for two. The pane it came from
+    /// stays where it is, empty: the shape is somebody's arrangement
+    #[test]
+    fn a_tab_put_in_a_pane_is_in_no_other() {
+        let mut l = Layout::single(1);
+        let right = l.split(Dir::Row, 2);
+        assert_eq!(surfaces(&l), vec![1, 2]);
+        // The one on the left, asked for on the right as well
+        l.put(right, 1);
+        assert_eq!(surfaces(&l), vec![0, 1], "it is in two panes at once");
+        assert_eq!(l.pane_of(1), Some(right));
+
+        // An empty pane filled from nowhere empties nothing
+        let mut l = Layout::single(1);
+        let right = l.split(Dir::Row, 0);
+        l.put(right, 2);
+        assert_eq!(surfaces(&l), vec![1, 2]);
+
+        // ...and putting a tab back where it already is changes nothing
+        l.put(right, 2);
+        assert_eq!(surfaces(&l), vec![1, 2]);
     }
 
     /// Dividing puts the keyboard where the thing is. Into an empty half it
