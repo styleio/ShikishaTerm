@@ -4118,7 +4118,12 @@ function heldDown(id) {
 function rowIsFront(t) {
   if (!t) return false;
   if (t.kind === "split") return !!(S.split_open && t.id === S.split_open);
-  return t.index === S.active;
+  // While a split is in front, the split IS what is in front, and no other row
+  // is. `active` then names the row in its focused pane -- where the keyboard
+  // is, which the pane's own caption already shows. Drawn as the row being
+  // looked at as well, two rows wore the mark at once and the one that had
+  // actually been pressed was the grey one
+  return !S.split_open && t.index === S.active;
 }
 function drawTabs() {
   if (heldDown("tabs") || renameHeld("tabs")) return;
@@ -8553,17 +8558,21 @@ function drawStrip() {
   const strip = document.getElementById("strip");
   if (!strip) return;
   const was = strip.hidden;
-  const active = (S.tabs || []).find(t => t.index === S.active && !t.settings);
-  const mine = !active ? []
-    : (active.group != null
-        ? (S.tabs || []).filter(t => !t.settings && t.group === active.group)
-        : [active]);
+  // The row in front, which while a split is open is the split itself. Its
+  // folder is whose tabs these are: asked of `active` instead, the strip was
+  // the folder of whatever pane the keyboard happened to be in, which is not
+  // what anybody pressed
+  const front = (S.tabs || []).find(t => rowIsFront(t) && !t.settings);
+  const mine = !front ? []
+    : (front.group != null
+        ? (S.tabs || []).filter(t => !t.settings && t.group === front.group)
+        : [front]);
   // Nothing to switch between and nothing to add to: a bar that says only
   // what the pane below it already says is a row of pixels spent on nothing.
   // The Issue tab is that, always: it stands in no folder, and like INDEX it is
   // not closed -- its row in the list is always there, and another tab pressed
   // is the way out of it
-  strip.hidden = !active || S.board || active.kind === "issues";
+  strip.hidden = !front || S.board || front.kind === "issues";
   strip.textContent = "";
   if (strip.hidden) {
     if (was !== strip.hidden) layout();
@@ -8575,7 +8584,7 @@ function drawStrip() {
     // The mark carries the state; the name carries which AI. A tab that is
     // not an AI has no mark to colour, so it keeps a dot
     const st = " st-" + (t.state || "");
-    const one = el("div", {class:"stab" + (t.index === S.active ? " sel" : "")
+    const one = el("div", {class:"stab" + (rowIsFront(t) ? " sel" : "")
           + st + (t.ai ? " aitab ai-" + t.ai : ""),
         title:(t.name || "") + (t.state_label ? " — " + t.state_label : ""),
         onclick:() => send({kind:"select", tab:t.index}),
@@ -8589,7 +8598,7 @@ function drawStrip() {
       serverMark(t.mark),
       el("span", {class:"x", title:T["tui.tab.close"] || "",
           onclick:e => { e.stopPropagation(); closeTab(t); }}, "\u2715"));
-    if (t.index === S.active) sel = one;
+    if (rowIsFront(t)) sel = one;
     tabs.append(one);
   }
   strip.append(tabs);
@@ -8597,7 +8606,7 @@ function drawStrip() {
   // page over the board, because the window's own way of opening them is
   // refused from afar and would do nothing at all. And it carries which folder
   // it was asked from, or the form adds the tab to the first one instead
-  const g = active.group != null ? (S.groups || [])[active.group] : null;
+  const g = front.group != null ? (S.groups || [])[front.group] : null;
   // Into the pane it was pressed above, the way a browser's + opens the new
   // tab where you are looking rather than somewhere off to the side
   strip.append(el("div", {class:"snew", title:T["tui.pane.add"] || "",
@@ -8609,8 +8618,9 @@ function drawStrip() {
   // Switching to a tab that is scrolled out of sight leaves the bar showing
   // somewhere else entirely. Only on the switch, never on every frame: doing
   // it on every frame would drag the row back while somebody is scrolling it
-  if (sel && stripSel !== S.active) {
-    stripSel = S.active;
+  const mark = (S.split_open || "") + ":" + S.active;
+  if (sel && stripSel !== mark) {
+    stripSel = mark;
     sel.scrollIntoView({ inline: "nearest", block: "nearest" });
   }
   // Appearing and disappearing changes how tall every pane is, and a terminal
@@ -19918,7 +19928,14 @@ mod tests {
     min-width:64px;"),
                 "the tabs overflow instead of shrinking");
         // ...and switching to one that is out of sight brings it into sight
-        assert!(PAGE.contains("if (sel && stripSel !== S.active) {"), "the selected tab stays somewhere it cannot be seen");
+        // ...by which row is in front, not by which row the keyboard is in:
+        // inside a split those are two different rows, and the one worth
+        // bringing into sight is the one that was pressed
+        assert!(PAGE.contains("if (sel && stripSel !== mark) {"), "the selected tab stays somewhere it cannot be seen");
+        assert!(
+            PAGE.contains(r#"const mark = (S.split_open || "") + ":" + S.active;"#),
+            "moving between splits does not count as moving"
+        );
     }
 
     /// Every AI this app can name has a mark, and none of them is a logo.
