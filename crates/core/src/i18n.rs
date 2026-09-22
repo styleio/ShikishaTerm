@@ -95,18 +95,28 @@ pub fn lang() -> String {
         .unwrap_or_else(|| "en".into())
 }
 
-/// The language on screen, by its name rather than its code.
+/// Every language this program has been translated into: the code it is
+/// filed under, what it calls itself (for the settings), and its name in
+/// English (for telling another program which language to answer in).
 ///
-/// For the one place a name is needed rather than a lookup: telling somebody
-/// else which language to answer in. A code they have to guess at is a worse
-/// instruction than a name, and an unknown code is passed on as it stands
-/// rather than turned into a wrong guess
+/// One list, because adding a language should be one edit. The settings
+/// screen offers exactly these, and a test says so
+pub const LANGUAGES: &[(&str, &str, &str)] =
+    &[("ja", "日本語", "Japanese"), ("en", "English", "English")];
+
+/// The language on screen, by its English name.
+///
+/// For the one place a name is needed rather than a lookup: telling another
+/// program which language to answer in. A code it has to guess at is a worse
+/// instruction than a name. A language not in the list is passed on as its
+/// code rather than turned into a wrong guess
 pub fn language_name() -> String {
-    match lang().as_str() {
-        "ja" => "Japanese".into(),
-        "en" => "English".into(),
-        other => other.to_string(),
-    }
+    let code = lang();
+    LANGUAGES
+        .iter()
+        .find(|(c, _, _)| *c == code)
+        .map(|(_, _, english)| (*english).to_string())
+        .unwrap_or(code)
 }
 
 /// Looks up a string. An unknown key returns the key itself (so a missing string is noticeable on screen)
@@ -202,6 +212,7 @@ fn os_language() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

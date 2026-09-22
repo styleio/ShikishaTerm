@@ -630,33 +630,56 @@ fn strip_fence(said: &str) -> String {
 /// command, write me a commit message -- differ in what they ask and in
 /// nothing else. Spawning it lived in each of them until there were three
 pub fn ask_local_ai(prompt: &str, engine: Option<&str>) -> Result<String> {
-    let (cmd, args) = pick_local_ai(engine)?;
-    let mut spawner = std::process::Command::new(&cmd);
-    spawner
-        .args(&args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    // Inheriting the console here would kill the mouse (same reason as open_browser)
-    let mut child = crate::detach_console(&mut spawner)
-        .spawn()
-        .with_context(|| crate::i18n::tp("ai.err.cannot_run", &[("cmd", &cmd)]))?;
-    {
-        use std::io::Write as _;
-        let mut stdin = child.stdin.take().context(crate::i18n::t("webui.err.stdin"))?;
-        stdin.write_all(prompt.as_bytes())?;
+    let name = which_assistant(engine)?;
+    // Asked the confined way first: an empty folder of its own, no tools, no
+    // hooks, nothing to reach. Everything asked from this program is a
+    // question -- none of it is a job -- and an assistant AI handed a
+    // question in a project folder treats it as one. Asked why something had
+    // stopped, one of them went and changed code and then said it had fixed
+    // it, which is the whole reason this is written the way it is
+    match ask_confined(name, prompt, ASK_SYSTEM, None, ASK_TIMEOUT) {
+        Ok(said) => Ok(said),
+        // An older CLI that does not know one of those options would fail
+        // outright, and a question that cannot be asked at all is worse than
+        // one asked with fewer walls. It still runs where the confined one
+        // does -- an empty folder, nothing of the person's within reach --
+        // and the instruction rides in the question instead of in a flag
+        Err(e) => {
+            crate::append_hook_log(&format!(
+                "a confined {name} call failed, asking with the plain options: {e:#}"
+            ));
+            ask_in_own_folder_plainly(name, prompt)
+        }
     }
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "{}",
-            crate::i18n::tp(
-                "ai.err.failed",
-                &[("cmd", &cmd), ("error", String::from_utf8_lossy(&out.stderr).trim())]
-            )
-        );
+}
+
+/// What every one-off question is told it is for. Not a prompt about any
+/// particular question -- the one thing true of all of them
+const ASK_SYSTEM: &str = "You are answering a question, not carrying out a task. Everything you need is in the message. Do not change, create, run or open anything.";
+
+/// How long a one-off question may take before it is abandoned
+const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// The last resort: the CLI's plain options, still in a folder of its own.
+///
+/// Fewer walls than [`ask_confined`] -- this one cannot promise the AI has no
+/// tools -- but not none: it is started somewhere empty, so what it can see
+/// is what it was given. Reached only when the confined way would not run
+fn ask_in_own_folder_plainly(name: &str, prompt: &str) -> Result<String> {
+    let (_, args, _) = AI_ENGINES
+        .iter()
+        .find(|(n, _, _)| *n == name)
+        .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    // No flag for it here, so the instruction goes where it cannot be refused
+    let asked = format!("{ASK_SYSTEM}\n\n{prompt}");
+    let files: [(&str, &[u8]); 1] = [(CLAUDE_SETTINGS_FILE, br#"{"disableAllHooks": true}"#)];
+    let ran = run_in_own_folder(name, args, asked, &files, &[], ASK_TIMEOUT)?;
+    if !ran.ok {
+        let why: String = ran.err.trim().chars().take(300).collect();
+        anyhow::bail!("{}", crate::i18n::tp("ai.err.failed", &[("cmd", &ran.cmd), ("error", &why)]));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    Ok(ran.out)
 }
 
 /// One-shot "natural language → one shell command" via the assistant AI
@@ -1195,6 +1218,8 @@ pub fn ask_local_ai_light(prompt: &str, engine: Option<&str>) -> Result<String> 
         Ok(said) => Ok(said),
         Err(e) => {
             crate::append_hook_log(&format!("a light {name} call failed, asking the ordinary way: {e:#}"));
+            // Still confined: `ask_local_ai` runs in a folder of its own
+            // whichever way it ends up asking
             ask_local_ai(prompt, Some(name))
         }
     }
@@ -1214,20 +1239,63 @@ pub fn ask_local_ai_shaped(
     engine: Option<&str>,
     timeout: std::time::Duration,
 ) -> Result<String> {
+    let name = which_assistant(engine)?;
+    ask_confined(name, prompt, system, Some(schema), timeout)
+}
+
+/// Ask a question that needs no tools at all, and take prose back.
+///
+/// For the questions where everything the AI needs is already in the prompt
+/// and the only thing wanted is an opinion on it. **It is given no tools and
+/// its own empty folder**, which is not a nicety: asked the ordinary way, an
+/// assistant AI reads the question as a job and sets about doing it. Asked
+/// why something had stopped, one of them went and changed code, then said
+/// it had fixed it
+pub fn ask_local_ai_confined(
+    prompt: &str,
+    system: &str,
+    engine: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<String> {
+    let name = which_assistant(engine)?;
+    ask_confined(name, prompt, system, None, timeout)
+}
+
+/// Which assistant AI answers, said the same way wherever it is asked
+fn which_assistant(engine: Option<&str>) -> Result<&'static str> {
     let (name, _) = assistant_ai(engine).with_context(|| match engine {
         Some(w) => crate::i18n::tp("webui.err.ai_not_found", &[("name", w)]),
         None => crate::i18n::t("webui.err.ai_missing"),
     })?;
-    // The same setting the short answers read: whoever turned the small
-    // model off did so for everything asked this way
+    Ok(name)
+}
+
+/// One question, in a folder of its own, with no tools and no hooks.
+///
+/// The one way this program asks an assistant AI anything that is not a
+/// conversation. Written once because the alternative is three copies of the
+/// same list of precautions, and the copy that forgets one is the copy that
+/// lets an AI loose in whatever folder the app happened to be started from
+fn ask_confined(
+    name: &str,
+    prompt: &str,
+    system: &str,
+    schema: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<String> {
+    // Asked of the settings here rather than handed down: every caller wants
+    // the same answer, and one that reads it for itself cannot be the one
+    // that forgets
     let small = crate::config::load().and_then(|c| c.summary_small_model).unwrap_or(true);
-    let (args, env) = light_invocation(name, small, Some(schema))
+    let (args, env) = light_invocation(name, small, schema)
         .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
-    let files: [(&str, &[u8]); 3] = [
+    let mut files: Vec<(&str, &[u8])> = vec![
         (SYSTEM_FILE, system.as_bytes()),
-        (SCHEMA_FILE, schema.as_bytes()),
         (CLAUDE_SETTINGS_FILE, br#"{"disableAllHooks": true}"#),
     ];
+    if let Some(shape) = schema {
+        files.push((SCHEMA_FILE, shape.as_bytes()));
+    }
     let ran = run_in_own_folder(name, args, prompt.to_string(), &files, &env, timeout)?;
     if !ran.ok || ran.out.trim().is_empty() {
         let why: String = ran.err.trim().chars().take(300).collect();
@@ -1238,22 +1306,7 @@ pub fn ask_local_ai_shaped(
 
 /// The light way alone, with nothing to fall back on
 fn ask_light_once(name: &str, prompt: &str) -> Result<String> {
-    // Asked of the settings here rather than handed down: every caller of the
-    // light way wants the same answer, and one that reads it for itself cannot
-    // be the one that forgets
-    let small = crate::config::load().and_then(|c| c.summary_small_model).unwrap_or(true);
-    let (args, env) = light_invocation(name, small, None)
-        .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
-    let files: [(&str, &[u8]); 2] = [
-        (SYSTEM_FILE, LIGHT_SYSTEM.as_bytes()),
-        (CLAUDE_SETTINGS_FILE, br#"{"disableAllHooks": true}"#),
-    ];
-    let ran = run_in_own_folder(name, args, prompt.to_string(), &files, &env, LIGHT_TIMEOUT)?;
-    if !ran.ok || ran.out.trim().is_empty() {
-        let why: String = ran.err.trim().chars().take(300).collect();
-        anyhow::bail!("{}", crate::i18n::tp("ai.err.failed", &[("cmd", &ran.cmd), ("error", &why)]));
-    }
-    Ok(ran.out)
+    ask_confined(name, prompt, LIGHT_SYSTEM, None, LIGHT_TIMEOUT)
 }
 
 /// Strips the code fence AIs tend to add
@@ -14025,6 +14078,39 @@ mod tests {
         assert_eq!(strip_fence("```\nline\n"), "line");
     }
 
+    /// The settings screen offers the languages this program has, and no
+    /// others. Two lists that drift apart mean a language that can be chosen
+    /// and has nothing behind it, or one that exists and cannot be reached
+    #[test]
+    fn the_settings_offer_exactly_the_languages_there_are() {
+        let page = super::PAGE;
+        for (code, called, _) in crate::i18n::LANGUAGES {
+            assert!(
+                page.contains(&format!("[\"{code}\", \"{called}\"]")),
+                "the settings do not offer {code} ({called})"
+            );
+        }
+        // ...and offer no others. A code the picker has and this list does
+        // not is a language somebody can choose with nothing behind it
+        let picker = page
+            .split("choose(current, \"language\"")
+            .nth(1)
+            .and_then(|rest| rest.split("]),").next())
+            .expect("the language picker has moved");
+        for line in picker.lines() {
+            let Some(rest) = line.trim().strip_prefix("[\"") else { continue };
+            let Some((code, _)) = rest.split_once('\"') else { continue };
+            // The empty code is "follow the machine", not a language
+            if code.is_empty() {
+                continue;
+            }
+            assert!(
+                crate::i18n::LANGUAGES.iter().any(|(c, _, _)| *c == code),
+                "the settings offer {code}, which this program has no words for"
+            );
+        }
+    }
+
     #[test]
     fn manual_is_embedded_and_usable() {
         // The spec handed to the AI must be obtainable no matter where it's launched from (regardless of language)
@@ -14040,6 +14126,64 @@ mod tests {
     /// This spec is passed to the AI as-is. If asked for an event it doesn't cover,
     /// the AI will honestly and correctly reply "that's not in the spec, so I won't do anything."
     /// If a feature is added but the spec isn't updated, that feature stays invisible to the AI
+    /// Every assistant AI this program starts for a one-off question is
+    /// started with its hands tied.
+    ///
+    /// Not a style rule. Asked an ordinary question in an ordinary folder, an
+    /// assistant AI reads it as a job: asked why the program had stopped, one
+    /// went and edited code and then reported that it had fixed it. Nothing
+    /// this program asks is a job -- every one of these is a question whose
+    /// answer is already in the prompt -- so each CLI is given the strongest
+    /// "read only, no tools" it has.
+    ///
+    /// Checked by name, per program, so that adding a fourth AI fails here
+    /// rather than quietly shipping one that can act
+    #[test]
+    fn a_one_off_question_never_hands_the_ai_any_tools() {
+        // What each program has to be told, in its own words
+        let required: [(&str, &[&str]); 3] = [
+            ("claude", &["--tools", "--no-session-persistence", "--strict-mcp-config", "--disable-slash-commands"]),
+            ("codex", &["--sandbox", "read-only", "--ephemeral"]),
+            ("gemini", &["--approval-mode", "plan", "--extensions", "none"]),
+        ];
+        for (name, must) in required {
+            let (args, _) = super::light_invocation(name, false, None)
+                .unwrap_or_else(|| panic!("{name} has no confined way to be asked"));
+            for want in must {
+                assert!(
+                    args.iter().any(|a| a == want),
+                    "{name} is asked without {want}: {args:?}"
+                );
+            }
+        }
+        // ...and every AI this program knows about is in that list. A new one
+        // added to AI_ENGINES and forgotten here would be the one with tools
+        for (name, _, _) in super::AI_ENGINES {
+            assert!(
+                required.iter().any(|(n, _)| *n == name),
+                "{name} can be started but has no confined way written for it"
+            );
+        }
+    }
+
+    /// The picture tools take the same care. A screenshot is handed over with
+    /// a question about it, which is no more a job than any other question
+    #[test]
+    fn asking_about_a_picture_hands_over_no_tools_either() {
+        let png = [0u8; 4];
+        for (name, must) in [
+            ("claude", vec!["--tools"]),
+            ("codex", vec!["--sandbox", "read-only"]),
+            ("gemini", vec!["--approval-mode", "plan"]),
+        ] {
+            let (args, _, _) = super::picture_invocation(name, "what does this say", &png, "{}")
+                .unwrap_or_else(|| panic!("{name} cannot be asked about a picture"));
+            for want in must {
+                assert!(args.iter().any(|a| a == want), "{name}: {args:?}");
+            }
+        }
+    }
+
     #[test]
     fn the_manual_covers_every_event_the_screen_offers() {
         for (code, text) in EMBEDDED_MANUALS {

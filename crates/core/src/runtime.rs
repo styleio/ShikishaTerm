@@ -5482,8 +5482,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let language = i18n::language_name();
             let said = why_tx.clone();
             std::thread::spawn(move || {
-                let question = crate::lastexit::question(&told.ended, &told.mark, &language);
-                let answer = match crate::webui::ask_local_ai(&question, engine.as_deref()) {
+                let (job, records) = crate::lastexit::question(&told.ended, &told.mark, &language);
+                // Asked with no tools, in a folder of its own. Asked the
+                // ordinary way, an assistant AI treats the question as work
+                // to be done: one of them went off and changed code, then
+                // reported that it had fixed it
+                let answer = match crate::webui::ask_local_ai_confined(
+                    &records,
+                    &job,
+                    engine.as_deref(),
+                    std::time::Duration::from_secs(180),
+                ) {
                     Ok(text) => text,
                     // The reason it could not be explained is itself the
                     // answer to give: "nothing happened" is the one thing a

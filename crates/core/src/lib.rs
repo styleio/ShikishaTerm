@@ -70,6 +70,7 @@ pub mod pwa;
 pub mod quick;
 pub mod reader;
 pub mod remote;
+pub mod revive;
 pub mod reply;
 pub mod repo;
 pub mod session_log;

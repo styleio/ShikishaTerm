@@ -262,6 +262,15 @@ pub enum Cmd {
     Show,
     /// A notice from the notification-area icon (a banner Windows draws)
     TrayNotice { title: String, text: String },
+    /// The screen's own browser died. `memory` says the machine had none
+    /// left, which is the one reason not to rebuild it straight away --
+    /// rebuilding costs more memory than the failure freed
+    DisplayDied { memory: bool },
+    /// Bring the screen back. `asked` means a person pressed for it, which
+    /// also forgets what was tried before -- somebody pressing twice is not
+    /// the same thing as a program retrying in a loop, and must not be
+    /// counted as one. An attempt the program decided on keeps the count
+    DisplayWanted { asked: bool },
     /// Close the window (when the conductor is gone)
     Close,
     /// Open a tool over a picture of the screen, after waiting `delay` seconds
@@ -1417,15 +1426,29 @@ fn run_window(
         };
         b.build(&ev_loop)?
     });
+    // Whether the screen is down and waiting to be asked for. Read by the
+    // icon's handler, which Windows calls from wherever it likes
+    let display_down = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // The notification-area icon. Its presses, and a second copy's request
     // for the window, arrive through the window's own procedure (see tray.rs)
     let tray = {
         use tao::platform::windows::WindowExtWindows;
         let tell = ev_tx.clone();
+        // Pressing the icon while the screen is down means "bring it back",
+        // not "show me the window": there is no window to show. A person
+        // pressing is never a storm, so whatever was tried is forgotten
+        let down = std::sync::Arc::clone(&display_down);
+        let revive = ev_loop.create_proxy();
         crate::tray::Tray::add(
             window.hwnd(),
             title,
             move |pressed| {
+                if matches!(pressed, crate::tray::Pressed::Open)
+                    && down.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    let _ = revive.send_event(Cmd::DisplayWanted { asked: true });
+                    return;
+                }
                 let _ = match pressed {
                     crate::tray::Pressed::Open => tell.send(Ev::TrayOpen),
                     crate::tray::Pressed::Quit => tell.send(Ev::TrayQuit),
@@ -1461,6 +1484,8 @@ fn run_window(
     // from one of the app's addresses is heard in full — see `heard`. The
     // settings server's address joins the list when it starts (Cmd::Trust)
     let own = std::rc::Rc::new(std::cell::RefCell::new(vec![url.to_string()]));
+    // How a dying page tells this loop. Made before the page that uses it
+    let died = ev_loop.create_proxy();
     // The questions put to pages and not yet answered, shared with every
     // page's handler: an answer is taken only from the page that was asked
     let asked = std::rc::Rc::new(std::cell::RefCell::new(Asked::default()));
@@ -1520,6 +1545,15 @@ fn run_window(
                     }
                 })
                 .build(&*window)?;
+            // Hear about it if this page's own processes die. Set here, where
+            // the page is made, so that a page made again after one died is
+            // watched too -- the second failure is the one that matters
+            cdp::on_process_failed(&cdp::webview_of(&view), {
+                let wake = died.clone();
+                move |memory| {
+                    let _ = wake.send_event(Cmd::DisplayDied { memory });
+                }
+            });
             Ok((ctx, view))
         }
     };
@@ -1601,6 +1635,13 @@ fn run_window(
     let snip_tx = ev_tx.clone();
     // The tool's window stepped aside for a save dialog, to come back after it
     let mut snip_aside = false;
+
+    // When the screen last died, so that a screen dying over and over is
+    // told apart from one that died once (see `shikisha_core::revive`).
+    // Measured from a clock of this loop's own, which only goes forwards
+    let started = std::time::Instant::now();
+    let mut display_tried: Vec<u64> = Vec::new();
+    let display_wake = ev_loop.create_proxy();
 
     // Reports are sent from inside the loop too, so grab a sender for "closed" ahead of time
     let closed_tx = ev_tx.clone();
@@ -2235,6 +2276,65 @@ fn run_window(
                     window.set_focus();
                 }
                 Cmd::TrayNotice { title, text } => tray.notice(&title, &text),
+                // The screen's browser died. The program did not: the tabs
+                // are running, the agents are working, and what was lost is
+                // the view of them. So it is put back -- unless putting it
+                // back is the wrong move, which is what `revive` decides
+                Cmd::DisplayDied { memory } => {
+                    shikisha_core::append_hook_log(&format!(
+                        "the screen stopped (out of memory: {memory})"
+                    ));
+                    let now = started.elapsed().as_millis() as u64;
+                    display_tried = shikisha_core::revive::recent(&display_tried, now);
+                    let next = shikisha_core::revive::decide(memory, &display_tried, now);
+                    shikisha_core::append_hook_log(&format!("what to do about the screen: {next:?}"));
+                    match next {
+                        shikisha_core::revive::Next::Now => {
+                            display_tried.push(now);
+                            let _ = display_wake.send_event(Cmd::DisplayWanted { asked: false });
+                        }
+                        // Not this instant. Whatever went wrong is given a
+                        // moment to pass, rather than being asked again
+                        // while it is still going on
+                        shikisha_core::revive::Next::Wait(ms) => {
+                            display_tried.push(now);
+                            let wake = display_wake.clone();
+                            std::thread::spawn(move || {
+                                std::thread::sleep(std::time::Duration::from_millis(ms));
+                                let _ = wake.send_event(Cmd::DisplayWanted { asked: false });
+                            });
+                        }
+                        // Left down on purpose, and said so where it can
+                        // still be said: the icon outlives the page. Pressing
+                        // it brings the screen back, whenever the person is
+                        // ready for it
+                        shikisha_core::revive::Next::Ask => {
+                            display_down.store(true, std::sync::atomic::Ordering::SeqCst);
+                            tray.notice(
+                                &shikisha_core::i18n::t("tray.screen_down.title"),
+                                &shikisha_core::i18n::t("tray.screen_down.body"),
+                            );
+                        }
+                    }
+                }
+                // Put the screen back. Letting go of what died is the same
+                // letting-go a window being put away does; building it again
+                // is what `Show` already does, placed pages raised and all,
+                // so that half is asked for rather than written twice
+                Cmd::DisplayWanted { asked } => {
+                    display_down.store(false, std::sync::atomic::Ordering::SeqCst);
+                    // Only a person clears it. An attempt this code chose is
+                    // exactly what the count is counting
+                    if asked {
+                        display_tried.clear();
+                    }
+                    wakes.remove(&None);
+                    casts.remove(&None);
+                    auths.remove(&None);
+                    dialogs.remove(&None);
+                    shell = None;
+                    let _ = display_wake.send_event(Cmd::Show);
+                }
                 Cmd::Close => {
                     *control = ControlFlow::Exit;
                 }
@@ -2683,6 +2783,43 @@ mod cdp {
     /// The one way a window a script opened can say it is done: its messages
     /// stop arriving once it leaves its first about:blank, and a sign-in
     /// window that closes itself would otherwise stay in front of its page
+    /// Be told when one of this page's processes dies, and why.
+    ///
+    /// A page is drawn by processes of its own, and losing them does not take
+    /// the program with it -- the tabs carry on, the agents carry on, and
+    /// what is lost is the view. So it is worth hearing about: told, the
+    /// window can put the view back.
+    ///
+    /// The reason matters more than the fact. `OUT_OF_MEMORY` means the
+    /// machine had nothing left to give, and a program that answers that by
+    /// building another browser is a program making it worse on a timer
+    pub fn on_process_failed<F: Fn(bool) + 'static>(webview: &ICoreWebView2, f: F) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_PROCESS_FAILED_REASON, COREWEBVIEW2_PROCESS_FAILED_REASON_OUT_OF_MEMORY,
+            ICoreWebView2ProcessFailedEventArgs2,
+        };
+        use windows::core::Interface as _;
+        let handler = webview2_com::ProcessFailedEventHandler::create(Box::new(move |_sender, args| {
+            // The reason is only there on the second version of these
+            // arguments. An older runtime says nothing about why, and
+            // "unknown" is treated as "not memory": worth one attempt
+            let memory = args
+                .as_ref()
+                .and_then(|a| a.cast::<ICoreWebView2ProcessFailedEventArgs2>().ok())
+                .is_some_and(|a2| {
+                    let mut reason = COREWEBVIEW2_PROCESS_FAILED_REASON::default();
+                    unsafe { a2.Reason(&mut reason) }.is_ok()
+                        && reason == COREWEBVIEW2_PROCESS_FAILED_REASON_OUT_OF_MEMORY
+                });
+            f(memory);
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = webview.add_ProcessFailed(&handler, &mut token);
+        }
+    }
+
     pub fn on_close_requested<F: Fn() + 'static>(webview: &ICoreWebView2, f: F) {
         let handler = webview2_com::WindowCloseRequestedEventHandler::create(Box::new(move |_sender, _args| {
             f();

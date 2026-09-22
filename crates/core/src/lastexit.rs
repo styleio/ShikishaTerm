@@ -320,16 +320,18 @@ fn ask_the_system(_mark: &Mark) -> Option<String> {
     None
 }
 
-/// What to put in front of whoever is going to explain this.
+/// What to put in front of whoever is going to explain this: the job, and
+/// the records to do it on.
 ///
-/// Facts only, and named as facts: what the machine recorded, what was
-/// running, and nothing this side has decided. The one instruction is to
-/// answer in the language the person reads, because an explanation they
-/// cannot read is not one
-pub fn question(ended: &Ended, mark: &Mark, language: &str) -> String {
+/// Two pieces because they are two different things -- what is being asked
+/// for, and what there is to look at -- and because the asking half belongs
+/// in the system prompt, where it is not mistaken for something to act on.
+///
+/// Facts only in the second half, and named as facts: what the machine
+/// recorded, what was running, and nothing this side has decided
+pub fn question(ended: &Ended, mark: &Mark, language: &str) -> (String, String) {
+    let job = format!("{ASKING}\n\nAnswer in {language}.");
     let mut out = vec![
-        crate::i18n::t("lastexit.ask.intro"),
-        String::new(),
         format!("- version: {}", mark.version),
         format!("- process id: {}", mark.pid),
     ];
@@ -340,9 +342,9 @@ pub fn question(ended: &Ended, mark: &Mark, language: &str) -> String {
         out.push(format!("- exception code: {}", ended.code));
     }
     out.push(String::new());
-    out.push(crate::i18n::t("lastexit.ask.records"));
+    out.push("What the machine recorded:".into());
     out.push(if ended.evidence.is_empty() {
-        crate::i18n::t("lastexit.ask.nothing_recorded")
+        "(nothing was recorded -- it may have been ended by a power cut, or stopped from outside)".into()
     } else {
         ended.evidence.clone()
     });
@@ -351,13 +353,30 @@ pub fn question(ended: &Ended, mark: &Mark, language: &str) -> String {
     // worth knowing
     if let Some(tail) = crash_log_tail() {
         out.push(String::new());
-        out.push(crate::i18n::t("lastexit.ask.own_log"));
+        out.push(
+            "The last lines the application itself wrote as it fell over (empty is meaningful: \
+             a failed memory allocation writes nothing here):"
+                .into(),
+        );
         out.push(tail);
     }
-    out.push(String::new());
-    out.push(crate::i18n::tp("lastexit.ask.answer_in", &[("language", language)]));
-    out.join("\n")
+    (job, out.join("\n"))
 }
+
+/// What whoever explains this is being asked to do.
+///
+/// In English, and in the code rather than among the words on screen. It is
+/// not something anybody reads: it is an instruction to another program, and
+/// one written once cannot come apart from its translation. Which language
+/// the *answer* comes back in is a line added to the end of it, so a new
+/// language costs nothing here -- see `i18n::language_name`
+const ASKING: &str = "You are reading records, not doing work. Change nothing, run nothing, \
+open nothing, write no files: everything you need is in this message. \
+A terminal application stopped without closing properly. Explain in plain words what most likely \
+happened and what the person should do about it. If the records show another program caused it, \
+say which one. Do not guess beyond what the records support; say plainly what cannot be known \
+from them. Write plain sentences in short paragraphs, with no markdown, no headings and no \
+asterisks -- this is shown in a narrow strip, not on a page.";
 
 /// The last few lines the program itself wrote when it fell over
 fn crash_log_tail() -> Option<String> {
