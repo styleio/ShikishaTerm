@@ -3158,17 +3158,30 @@ impl Tab {
         // What the conversation asks for, turned into arguments. A model tab
         // runs no CLI at all, so there is nothing to resume
         let resume_spec = if opts.model.is_some() { None } else { profile.resume.clone() };
-        // A tab starting on nobody's conversation, in a folder that has been
-        // worked in before, is the one case worth offering a way back from.
-        // Asked here, where the plan is still in hand and before the process
-        // exists: what comes back is the CLI's own records, which are not
-        // affected by anything this launch does
-        let past_here = matches!(plan, Resume::Fresh)
-            && opts.held.is_none()
+        // A tab coming up on a conversation that is not this folder's, where
+        // this folder has one of its own, is the case worth offering a way
+        // back from. Asked here, where the plan is still in hand and before
+        // the process exists: what comes back is the CLI's own records, which
+        // are not affected by anything this launch does.
+        //
+        // Two ways a tab is on nobody's conversation, and the offer is for
+        // both. It started clean -- nothing was handed to it. Or it was handed
+        // one that was had somewhere else: what the app wrote down can be
+        // wrong, and a tab resuming another folder's conversation is exactly
+        // what that looks like from here. Asking "is the one I am carrying a
+        // record of this folder" is what keeps the offer off a tab that is
+        // carrying on precisely where it left off -- its own conversation must
+        // never be offered back to it as a past one
+        let carrying = match &plan {
+            Resume::Id(s) => Some(s.id.clone()),
+            _ => None,
+        };
+        let past_here = opts.held.is_none()
             && resume_spec.as_ref().is_some_and(|r| !r.with_id.is_empty())
             && opts.cwd.as_deref().is_some_and(|at| {
-                !crate::vault::here(argv.first().map(String::as_str).unwrap_or_default(), at, 1)
-                    .is_empty()
+                let prog = argv.first().map(String::as_str).unwrap_or_default();
+                !carrying.as_deref().is_some_and(|id| crate::vault::belongs(prog, at, id))
+                    && !crate::vault::here(prog, at, 1).is_empty()
             });
         let (resumed, session) = plan_launch(resume_spec.as_ref(), argv, plan);
         let session = claimed(session, opts.held.as_ref());
@@ -3434,7 +3447,13 @@ impl Tab {
             keyboard,
             previous: None,
             past_here,
-            lost: opts.lost,
+            // Handed a conversation, and this folder's records say it was not
+            // had here: whatever the app wrote down, what this tab was saying
+            // is not what came back. Said out loud in the same words as a
+            // conversation that has gone, because from where the person sits
+            // it is the same thing -- and said until the way back is taken up,
+            // not until the next key is pressed
+            lost: opts.lost || (past_here && carrying.is_some()),
             spoke: AtomicBool::new(false),
             status: Vec::new(),
             progress: None,

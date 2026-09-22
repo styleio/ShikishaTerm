@@ -14,48 +14,52 @@ use crate::{bridge, config, hooks, i18n, tab};
 
 /// The folders the git panels report on, keyed by their own names.
 ///
-/// Appended after the tabs so that naming a panel resolves to its folder. A
-/// panel is not a tab and has no process, but it is the thing a person clicked
-/// on, so it has to be nameable the same way
+/// A panel is not a tab and has no process, but it is the thing a person
+/// clicked on, so it has to be nameable the same way. Used where a panel is
+/// looked up by its name; the screen-ordered list every screen appears in is
+/// [`crate::runtime::places_by_surface`]
 pub fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
-    surfaces
-        .iter()
-        .filter_map(|s| match s {
-            Surface::Git { key, dir: Some(d), protect, git, .. } => Some(hooks::TabPlace {
-                key: hooks::TabKey { id: Some(key.clone()) },
-                dir: d.clone(),
-                // A git panel reports on a folder on this machine, and is not a
-                // place files can be sent to
-                remote: None,
-                remote_dir: String::new(),
-                protect: protect.clone(),
-                git: git.clone(),
-            }),
-            // The editor works in a folder too, and is named the same way, so
-            // reading and writing the file it is showing goes through the same
-            // fence as everything else
-            Surface::Editor { key, dir: Some(d), .. } => Some(hooks::TabPlace {
-                key: hooks::TabKey { id: Some(key.clone()) },
-                dir: d.clone(),
-                remote: None,
-                remote_dir: String::new(),
-                protect: Vec::new(),
-                git: Default::default(),
-            }),
-            // A file panel is. `sftp_put("that name", …)` reaches the same
-            // server the screen is showing, which is the whole point of the
-            // panel being a tab rather than a window of its own
-            Surface::Sftp { key, dir, at, remote_dir, .. } => Some(hooks::TabPlace {
-                key: hooks::TabKey { id: Some(key.clone()) },
-                dir: dir.clone().unwrap_or_default(),
-                remote: at.clone(),
-                remote_dir: remote_dir.clone(),
-                protect: Vec::new(),
-                git: Default::default(),
-            }),
-            _ => None,
-        })
-        .collect()
+    surfaces.iter().filter_map(panel_place).collect()
+}
+
+/// The one panel's folder, or `None` for a screen that works in no folder of
+/// its own -- a page, a failed tab, the issue list.
+pub fn panel_place(s: &Surface) -> Option<hooks::TabPlace> {
+    match s {
+        Surface::Git { key, dir: Some(d), protect, git, .. } => Some(hooks::TabPlace {
+            key: hooks::TabKey { id: Some(key.clone()) },
+            dir: d.clone(),
+            // A git panel reports on a folder on this machine, and is not a
+            // place files can be sent to
+            remote: None,
+            remote_dir: String::new(),
+            protect: protect.clone(),
+            git: git.clone(),
+        }),
+        // The editor works in a folder too, and is named the same way, so
+        // reading and writing the file it is showing goes through the same
+        // fence as everything else
+        Surface::Editor { key, dir: Some(d), .. } => Some(hooks::TabPlace {
+            key: hooks::TabKey { id: Some(key.clone()) },
+            dir: d.clone(),
+            remote: None,
+            remote_dir: String::new(),
+            protect: Vec::new(),
+            git: Default::default(),
+        }),
+        // A file panel is. `sftp_put("that name", …)` reaches the same
+        // server the screen is showing, which is the whole point of the
+        // panel being a tab rather than a window of its own
+        Surface::Sftp { key, dir, at, remote_dir, .. } => Some(hooks::TabPlace {
+            key: hooks::TabKey { id: Some(key.clone()) },
+            dir: dir.clone().unwrap_or_default(),
+            remote: at.clone(),
+            remote_dir: remote_dir.clone(),
+            protect: Vec::new(),
+            git: Default::default(),
+        }),
+        _ => None,
+    }
 }
 
 pub fn build_engine(
