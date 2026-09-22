@@ -95,7 +95,12 @@ pub fn prompt_for(tool: &str) -> String {
 /// word for word. The prompt holds `{lang}` instead, like every other blank
 /// in the word lists, and the code is filled in here
 fn prompt_in(tool: &str, code: &str) -> String {
-    crate::i18n::tp(&format!("snip.ai.{tool}.prompt"), &[("lang", code)])
+    let asked = match tool {
+        "text" => crate::asking::READ_PICTURE,
+        "noun" => crate::asking::NAME_PICTURE,
+        _ => return String::new(),
+    };
+    crate::i18n::fill(asked, &[("lang", code)])
 }
 
 /// Where a question about sending a picture stands, before anything is sent.
@@ -1224,8 +1229,10 @@ mod tests {
         }
         for t in AI_TOOLS {
             assert!(TOOLS.contains(t), "{t} is not in the list of tools");
-            let key = format!("snip.ai.{t}.prompt");
-            assert_ne!(crate::i18n::t(&key), key, "{key} is not in the word table");
+            // What it asks the AI lives in `crate::asking`, not among the
+            // translations: it is an instruction to a model, not a word on a
+            // screen. A tool with nothing to ask would ask nothing at all
+            assert!(!prompt_in(t, "en").is_empty(), "{t} has nothing to ask the AI");
         }
         assert!(PAGE.contains("let TOOL = ASKED ? Q.get(\"tool\") : null;"), "a tool starts under a name that is not in the list");
         // Every tool can be chosen by a letter, and no two by the same one
@@ -1352,18 +1359,12 @@ mod tests {
     #[test]
     fn nouns_are_asked_for_in_the_language_on_screen() {
         let dir = crate::repo_root().join("lang");
-        let mut seen = 0;
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-            let Some(prompt) = v["snip.ai.noun.prompt"].as_str() else { continue };
-            assert!(prompt.contains("{lang}"), "the noun prompt in {} has no {{lang}} blank", path.display());
-            seen += 1;
-        }
-        assert!(seen >= 2);
+        // Only the naming tool writes words of its own: the reading tool
+        // writes out what is in the picture, in whatever language that is
+        assert!(
+            crate::asking::NAME_PICTURE.contains("{lang}"),
+            "the naming prompt has no {{lang}} blank"
+        );
         let filled = prompt_in("noun", "es");
         assert!(filled.contains("es") && !filled.contains("{lang}"), "the language code was not filled in");
     }

@@ -535,8 +535,8 @@ fn generate_with_local_ai(
     let manual = load_manual(config_path);
 
     // Fix the output format with markers so it doesn't just reply with conversational text
-    let prompt = crate::i18n::tp(
-        "ai.prompt",
+    let prompt = crate::i18n::fill(
+        crate::asking::AUTOMATION,
         &[
             ("event", event),
             ("want", want),
@@ -545,33 +545,7 @@ fn generate_with_local_ai(
         ],
     );
 
-    let (cmd, args) = pick_local_ai(engine)?;
-    let mut spawner = std::process::Command::new(&cmd);
-    spawner
-        .args(&args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    // Inheriting the console here too would kill the mouse (same reason as open_browser)
-    let mut child = crate::detach_console(&mut spawner)
-        .spawn()
-        .with_context(|| crate::i18n::tp("ai.err.cannot_run", &[("cmd", &cmd)]))?;
-    {
-        use std::io::Write as _;
-        let mut stdin = child.stdin.take().context(crate::i18n::t("webui.err.stdin"))?;
-        stdin.write_all(prompt.as_bytes())?;
-    }
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "{}",
-            crate::i18n::tp(
-                "ai.err.failed",
-                &[("cmd", &cmd), ("error", String::from_utf8_lossy(&out.stderr).trim())]
-            )
-        );
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
+    let text = ask_local_ai(&prompt, engine)?;
     extract_lua(&text)
 }
 
@@ -592,7 +566,7 @@ pub fn resolve_conflict(name: &str, body: &str, engine: Option<&str>) -> Result<
     if body.chars().count() > ROOM {
         anyhow::bail!("{}", crate::i18n::tp("err.git.too_big", &[("file", name)]));
     }
-    let prompt = crate::i18n::tp("ai.resolve.prompt", &[("file", name), ("body", body)]);
+    let prompt = crate::i18n::fill(crate::asking::UNTANGLE, &[("file", name), ("body", body)]);
     let said = ask_local_ai(&prompt, engine)?;
     let text = strip_fence(&said);
     if text.trim().is_empty() {
@@ -700,40 +674,15 @@ pub fn suggest_with_local_ai(
     }
     // The environment card (🩺's captured survey) outranks screen guesswork
     let env_block = if env.trim().is_empty() {
-        crate::i18n::t("ai.suggest.env_none")
+        crate::asking::NO_SURVEY.to_string()
     } else {
         env.to_string()
     };
-    let prompt = crate::i18n::tp(
-        "ai.suggest.prompt",
+    let prompt = crate::i18n::fill(
+        crate::asking::ONE_COMMAND,
         &[("want", want), ("shell", shell), ("screen", screen), ("env", &env_block)],
     );
-    let (cmd, args) = pick_local_ai(engine)?;
-    let mut spawner = std::process::Command::new(&cmd);
-    spawner
-        .args(&args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let mut child = crate::detach_console(&mut spawner)
-        .spawn()
-        .with_context(|| crate::i18n::tp("ai.err.cannot_run", &[("cmd", &cmd)]))?;
-    {
-        use std::io::Write as _;
-        let mut stdin = child.stdin.take().context(crate::i18n::t("webui.err.stdin"))?;
-        stdin.write_all(prompt.as_bytes())?;
-    }
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "{}",
-            crate::i18n::tp(
-                "ai.err.failed",
-                &[("cmd", &cmd), ("error", String::from_utf8_lossy(&out.stderr).trim())]
-            )
-        );
-    }
-    extract_cmd(&String::from_utf8_lossy(&out.stdout))
+    extract_cmd(&ask_local_ai(&prompt, engine)?)
 }
 
 /// Extracts the contents of <<<CMD ... >>> (falling back to a lone code
@@ -779,7 +728,6 @@ fn extract_lua(text: &str) -> Result<String> {
     )
 }
 
-/// Decides which AI CLI to use. If none is specified, the first one found in order claude → codex → gemini
 /// What the AI that would answer is called, as a person would name it --
 /// "Claude Code" -- found the same way as the program itself. None when there
 /// is none to run
@@ -789,22 +737,6 @@ pub fn local_ai_label(want: Option<&str>) -> Option<&'static str> {
         .filter(|(name, _, _)| want.is_none_or(|w| w == *name))
         .find(|(name, _, _)| crate::tab::resolve_command(name).is_some())
         .map(|(_, _, label)| *label)
-}
-
-fn pick_local_ai(want: Option<&str>) -> Result<(String, Vec<String>)> {
-    for (name, args, _) in AI_ENGINES {
-        if want.is_some_and(|w| w != name) {
-            continue;
-        }
-        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        if let Some(found) = launcher(name, args) {
-            return Ok(found);
-        }
-    }
-    match want {
-        Some(w) => anyhow::bail!("{}", crate::i18n::tp("webui.err.ai_not_found", &[("name", w)])),
-        None => anyhow::bail!("{}", crate::i18n::t("webui.err.ai_missing")),
-    }
 }
 
 /// How to start an installed AI program with `args`: the program itself, or

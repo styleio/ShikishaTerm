@@ -1445,18 +1445,23 @@ pub fn ask(question: &str, so_far: &[Said], picked: Option<&Picked>) -> anyhow::
 /// answers one of them belongs in the index, where it can be read.
 fn system_for(idx: &Index, picking: bool) -> String {
     let mut out = String::new();
-    out.push_str(&crate::i18n::t("guide.ai.who"));
+    out.push_str(&crate::asking::HELP_WHO);
     out.push('\n');
-    out.push_str(&crate::i18n::t("guide.ai.how"));
+    out.push_str(&crate::asking::HELP_HOW);
     out.push('\n');
-    out.push_str(&crate::i18n::tp(
-        "guide.ai.open",
+    out.push_str(&crate::i18n::fill(
+        crate::asking::HELP_OPEN,
         &[("ids", &idx.pages.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", "))],
     ));
     if picking {
         out.push('\n');
-        out.push_str(&crate::i18n::t("guide.ai.fill"));
+        out.push_str(&crate::asking::HELP_FILL);
     }
+    // The answer is read by whoever asked, so which language to write it
+    // in is said rather than guessed at from the question. Last, where an
+    // instruction is hardest to lose sight of
+    out.push('\n');
+    out.push_str(&crate::asking::answer_in(&crate::i18n::language_name()));
     out
 }
 
@@ -1469,8 +1474,8 @@ fn question_for(idx: &Index, question: &str, so_far: &[Said], picked: Option<&Pi
     }
     out.push_str(&format!("Q: {}\n\n", question.trim()));
     if let Some(p) = picked {
-        out.push_str(&crate::i18n::tp(
-            "guide.ai.picked",
+        out.push_str(&crate::i18n::fill(
+            crate::asking::HELP_PICKED,
             &[("label", &p.label), ("hint", &p.hint), ("kind", &kind_of(p))],
         ));
         out.push_str("\n\n");

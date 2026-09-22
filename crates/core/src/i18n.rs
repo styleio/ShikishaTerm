@@ -134,7 +134,12 @@ pub fn tp(key: &str, args: &[(&str, &str)]) -> String {
 }
 
 /// Performs only the `{name}` substitution
-fn fill(text: &str, args: &[(&str, &str)]) -> String {
+/// Put values into a `{name}`-shaped text.
+///
+/// Public because the things this program says to a *model* live in
+/// `crate::asking` rather than among the translations, and are filled the
+/// same way (see that module)
+pub fn fill(text: &str, args: &[(&str, &str)]) -> String {
     let mut s = text.to_string();
     for (k, v) in args {
         s = s.replace(&format!("{{{k}}}"), v);

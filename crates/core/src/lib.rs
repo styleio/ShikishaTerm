@@ -10,6 +10,7 @@ pub mod ace;
 pub mod addproject;
 pub mod agenthook;
 pub mod api;
+pub mod asking;
 pub mod askpass;
 pub mod asks;
 pub mod attach;

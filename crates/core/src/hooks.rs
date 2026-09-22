@@ -4975,6 +4975,12 @@ end
 -- the browser found, keyed by its number, carrying what a decision needs to
 -- be made on: what it is, what it says, what it currently holds, and whether
 -- it only just appeared
+-- Put values into a {name}-shaped text. The same blanks the translations
+-- use, on texts that are no longer translations (see `crate::asking`)
+local function fill(text, into)
+  return (text:gsub("{(%w+)}", function(k) return tostring(into[k] or "") end))
+end
+
 local function offers(rows, verb)
   local out, any = {}, false
   for _, e in ipairs(rows or {}) do
@@ -5002,16 +5008,16 @@ end
 -- how a run spends a turn learning that
 local function operations(rows)
   local ops = {}
-  ops.WAIT = shikisha.t("words.op.wait")
-  ops.DONE = shikisha.t("words.op.done")
-  ops.STUCK = shikisha.t("words.op.stuck")
-  if offers(rows, "click") then ops.CLICK = shikisha.t("words.op.click") end
-  if offers(rows, "fill") then ops.TYPE = shikisha.t("words.op.type") end
-  if offers(rows, "select") then ops.CHOOSE = shikisha.t("words.op.choose") end
-  if offers(rows, "scroll") then ops.SCROLL_IN = shikisha.t("words.op.scroll_in") end
-  ops.SCROLL_DOWN = shikisha.t("words.op.scroll_down")
-  ops.SCROLL_UP = shikisha.t("words.op.scroll_up")
-  ops.ENTER = shikisha.t("words.op.enter")
+  ops.WAIT = ASK.op_wait
+  ops.DONE = ASK.op_done
+  ops.STUCK = ASK.op_stuck
+  if offers(rows, "click") then ops.CLICK = ASK.op_click end
+  if offers(rows, "fill") then ops.TYPE = ASK.op_type end
+  if offers(rows, "select") then ops.CHOOSE = ASK.op_choose end
+  if offers(rows, "scroll") then ops.SCROLL_IN = ASK.op_scroll_in end
+  ops.SCROLL_DOWN = ASK.op_scroll_down
+  ops.SCROLL_UP = ASK.op_scroll_up
+  ops.ENTER = ASK.op_enter
   return ops
 end
 
@@ -5025,7 +5031,7 @@ local function target_question(goal, rows, verb, op, history)
   return {
     type = "choice",
     criteria = criteria,
-    instructions = { goal = goal, operation = op, rules = shikisha.t("words.rules.target"), done = history },
+    instructions = { goal = goal, operation = op, rules = ASK.rules_target, done = history },
   }
 end
 
@@ -5105,7 +5111,7 @@ function on_step(tab)
     operation = {
       type = "choice",
       criteria = ops,
-      instructions = { goal = goal, rules = shikisha.t("words.rules.operation"), done = past },
+      instructions = { goal = goal, rules = ASK.rules_operation, done = past },
     },
   }
   questions.click_target = target_question(goal, rows, "click", "CLICK", past)
@@ -5178,8 +5184,8 @@ function on_step(tab)
     -- words, from the ones the page actually offers
     local want = shikisha.ai_text({
       model = WORDS_MODEL ~= "" and WORDS_MODEL or nil,
-      system = shikisha.t("words.value.system"),
-      prompt = shikisha.tf("words.value.ask", {
+      system = ASK.value_system,
+      prompt = fill(ASK.value_ask, {
         goal = goal, field = tostring(rows[r] and rows[r].name or r),
         choices = tostring(rows[r] and rows[r].choices or ""),
       }),
@@ -5192,8 +5198,8 @@ function on_step(tab)
     if not r then finish(1, shikisha.t("words.err.no_target"), false) return end
     local value = shikisha.ai_text({
       model = WORDS_MODEL ~= "" and WORDS_MODEL or nil,
-      system = shikisha.t("words.value.system"),
-      prompt = shikisha.tf("words.value.ask", {
+      system = ASK.value_system,
+      prompt = fill(ASK.value_ask, {
         goal = goal, field = tostring(rows[r] and rows[r].name or r), choices = "",
       }),
     })
@@ -5229,11 +5235,19 @@ function on_start(tab)
   say(shikisha.t("words.started"), false)
 end
 "##;
+        // What is said to the model that decides, handed over as a table.
+        // In one language, in `crate::asking`, because none of it is a word
+        // on a screen -- it is the question itself
+        let ask: String = crate::asking::DRIVING
+            .iter()
+            .map(|(field, text)| format!("  {field} = {},\n", lua_str(text)))
+            .collect();
         let src = format!(
             "local BR = {browser:?}\nlocal STOPS = {stops_lua}\n\
              local MAX_ROUNDS, MAX_SEC, MAX_TOK = {}, {}, {}\nlocal ON_LIMIT = {:?}\n\
              local SETTLE_MS = {}\nlocal CONFIRM = {:?}\n\
-             local CHOOSE_MODEL = {:?}\nlocal WORDS_MODEL = {:?}\n{}\n{SRC}",
+             local CHOOSE_MODEL = {:?}\nlocal WORDS_MODEL = {:?}\n\
+             local ASK = {{\n{ask}}}\n{}\n{SRC}",
             op.max_rounds,
             op.max_seconds,
             op.max_tokens,

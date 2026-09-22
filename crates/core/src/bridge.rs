@@ -364,7 +364,7 @@ fn choose_by_words(
         "additionalProperties": false,
     });
     let messages = vec![
-        serde_json::json!({ "role": "system", "content": crate::i18n::t("prompt.choose.system") }),
+        serde_json::json!({ "role": "system", "content": crate::asking::CHOOSING }),
         serde_json::json!({ "role": "user", "content": ask.to_string() }),
     ];
     let reply = complete_shaped(
