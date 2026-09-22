@@ -25,8 +25,8 @@ use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NIM_SETVERSION, NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
-    Shell_NotifyIconW,
+    NIM_SETVERSION, NIN_BALLOONHIDE, NIN_BALLOONSHOW, NIN_BALLOONTIMEOUT, NIN_BALLOONUSERCLICK,
+    NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CallWindowProcW, CreatePopupMenu, DestroyMenu, GWLP_WNDPROC, GetCursorPos,
@@ -66,7 +66,16 @@ const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 /// (`NOTIFYICON_VERSION_4`): the event in the low word of `lParam`, and a
 /// press is `NIN_SELECT`, not a mouse message. The mouse messages are kept as
 /// well, for a shell that still sends them
-const OPEN_EVENTS: [u32; 4] = [NIN_SELECT, NIN_KEYSELECT, WM_LBUTTONUP, WM_LBUTTONDBLCLK];
+/// ...and the banner the icon put up, which is a press on the icon by
+/// another name. The banner says "click this icon to bring the screen back",
+/// and the thing under the pointer when somebody reads that is the banner
+const OPEN_EVENTS: [u32; 5] = [
+    NIN_SELECT,
+    NIN_KEYSELECT,
+    NIN_BALLOONUSERCLICK,
+    WM_LBUTTONUP,
+    WM_LBUTTONDBLCLK,
+];
 const MENU_EVENTS: [u32; 2] = [WM_CONTEXTMENU, WM_RBUTTONUP];
 
 /// What a press on the icon asked for
@@ -225,7 +234,18 @@ fn event(hwnd: isize, lparam: LPARAM, open: &str, quit: &str) -> Pressed {
     // gets its name next time. The pointer passing over, the halves of a
     // press that arrive before the press itself, and the tip opening and
     // closing are the expected traffic of every press, so those are not
-    const EXPECTED: [u32; 5] = [WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_RBUTTONDOWN, NIN_POPUPOPEN, NIN_POPUPCLOSE];
+    // ...and a banner coming and going, which the icon does every time it has
+    // something to say and is nothing anybody pressed
+    const EXPECTED: [u32; 8] = [
+        WM_MOUSEMOVE,
+        WM_LBUTTONDOWN,
+        WM_RBUTTONDOWN,
+        NIN_POPUPOPEN,
+        NIN_POPUPCLOSE,
+        NIN_BALLOONSHOW,
+        NIN_BALLOONHIDE,
+        NIN_BALLOONTIMEOUT,
+    ];
     if !EXPECTED.contains(&event) {
         crate::append_hook_log(&format!("tray: event 0x{event:x} (nothing to do)"));
     }
@@ -325,5 +345,16 @@ mod tests {
         assert_eq!(event(7, ((ID as isize) << 16) | NIN_SELECT as isize, "o", "q"), Pressed::Open);
         assert_eq!(event(7, ((ID as isize) << 16) | NIN_KEYSELECT as isize, "o", "q"), Pressed::Open);
         assert_eq!(event(7, ((ID as isize) << 16) | WM_MOUSEMOVE as isize, "o", "q"), Pressed::Nothing);
+        // The banner the icon put up. Pressed, it is a press on the icon --
+        // the banner is what the pointer is over when somebody reads "click
+        // this icon". Coming and going on its own, it is not
+        assert_eq!(event(7, ((ID as isize) << 16) | NIN_BALLOONUSERCLICK as isize, "o", "q"), Pressed::Open);
+        for quiet in [NIN_BALLOONSHOW, NIN_BALLOONHIDE, NIN_BALLOONTIMEOUT] {
+            assert_eq!(
+                event(7, ((ID as isize) << 16) | quiet as isize, "o", "q"),
+                Pressed::Nothing,
+                "a banner showing itself was taken for a press"
+            );
+        }
     }
 }

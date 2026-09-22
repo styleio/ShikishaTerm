@@ -1513,14 +1513,23 @@ fn open_browser(url: &str) {
 /// it. If the caller is a terminal, borrow that one. Otherwise, open one of
 /// our own. If already attached, do nothing (both calls simply fail harmlessly in that case).
 fn open_console() {
-    use windows_sys::Win32::System::Console::{
-        ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole,
-    };
-    unsafe {
-        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
-            AllocConsole();
-        }
+    use windows_sys::Win32::System::Console::AllocConsole;
+    if !borrow_console() {
+        unsafe { AllocConsole() };
     }
+}
+
+/// Borrow the terminal this was started from, if it was started from one.
+///
+/// True when there is now somewhere to print. False means nobody is reading:
+/// started from a shortcut, from Explorer, or by another copy of this
+/// program. For the window of a split pair that is the ordinary case and the
+/// right answer is silence -- opening a console of its own would put a black
+/// rectangle on the desktop beside the board, saying nothing, for as long as
+/// the program ran
+fn borrow_console() -> bool {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) != 0 }
 }
 
 /// How to show the name. Shrink it if it doesn't fit the screen; if even that
@@ -1983,7 +1992,9 @@ impl shikisha_core::host::Shell for WinSurface {
 /// those belong to whichever machine the runtime is on.
 fn connect_to(url: &str) -> Result<()> {
     use shikisha_shared::Ev;
-    open_console();
+    // Borrowed, never opened. Run by hand from a terminal there is somebody to
+    // tell; started by a runtime this is the window of, there is not
+    let told = borrow_console();
     if url.trim().is_empty() {
         anyhow::bail!(i18n::t("err.connect.no_url"));
     }
@@ -1995,7 +2006,9 @@ fn connect_to(url: &str) -> Result<()> {
     // Named without its query, because the query is the key to the board and
     // this line goes to a console somebody may well be sharing a screen of
     let host = url.split('?').next().unwrap_or(url);
-    println!("{}", i18n::tp("msg.connected", &[("url", host)]));
+    if told {
+        println!("{}", i18n::tp("msg.connected", &[("url", host)]));
+    }
 
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // One place reads what the window says, because there is one queue and
@@ -2008,7 +2021,15 @@ fn connect_to(url: &str) -> Result<()> {
     // it to be closed, because a `main` that returned would take it along
     loop {
         for ev in win.drain() {
-            if matches!(ev, Ev::Closed) {
+            // Both endings, and both are simply an ending. The ✕ asks rather
+            // than closing (`CloseRequested`) because at a window with the
+            // runtime behind it the answer is the runtime's to give -- put
+            // away, or quit, as the setting says. Here there is no runtime to
+            // ask: this process is a window and nothing else, and the way it
+            // answers is by leaving. The runtime it was drawing for reads that
+            // leaving as the ✕ it was (see `keeper::Parting`), and the setting
+            // is applied there, once, where it always was
+            if matches!(ev, Ev::Closed | Ev::CloseRequested) {
                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 return Ok(());
             }

@@ -104,16 +104,15 @@ impl Split {
 
     /// Start a window on this runtime's board.
     ///
-    /// Counted as an attempt whether or not it starts, so a window that cannot
-    /// start at all is tried twice and then left to the icon, exactly like one
-    /// that starts and dies
+    /// A window that cannot start at all looks exactly like one that starts
+    /// and dies at once: the keeper counts the rescue either way, so it is
+    /// tried twice and then left to the icon rather than started for ever
     fn open(&self) {
         let board = self.board.borrow().clone();
         if board.is_empty() {
             return;
         }
         self.resting.set(false);
-        self.keep.borrow_mut().opened(now_ms());
         let program = window_program();
         match std::process::Command::new(&program).arg("--connect").arg(&board).spawn() {
             Ok(child) => {
@@ -316,20 +315,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Nothing is started before there is a board to point it at. A window
-    /// given no address opens on nothing and closes at once, which the keeper
-    /// would then read as a window that died
-    #[test]
-    fn no_window_is_started_before_the_board_is_listening() {
-        let split = Split {
+    /// One with no icon and no board, for reading what it does without a
+    /// notification area to do it in
+    fn bare() -> Split {
+        Split {
             board: RefCell::default(),
             window: RefCell::default(),
             keep: RefCell::new(Keeper::new()),
             icon: None,
             presses: Arc::default(),
             resting: Cell::new(false),
-        };
+        }
+    }
+
+    /// Nothing is started before there is a board to point it at. A window
+    /// given no address opens on nothing and closes at once, which the keeper
+    /// would then read as a window that died
+    #[test]
+    fn no_window_is_started_before_the_board_is_listening() {
+        let split = bare();
         split.open();
         assert!(split.window.borrow().is_none(), "it started a window onto nowhere");
+    }
+
+    /// The icon's two words, in the loop's two words. Windows calls the
+    /// handler on a thread of its own, so what it says is left in a queue and
+    /// read here; getting this pair the wrong way round would answer a
+    /// request to quit with a new window, and a request for a window by
+    /// ending the program with the tabs still at work
+    #[test]
+    fn what_the_icon_says_reaches_the_loop_as_what_it_means() {
+        let split = bare();
+        split.presses.lock().unwrap().push(Pressed::Open);
+        let told = split.heard();
+        assert!(told.open && !told.quit, "a press for a window: {told:?}");
+
+        split.presses.lock().unwrap().push(Pressed::Quit);
+        let told = split.heard();
+        assert!(told.quit && !told.open, "the menu's Quit: {told:?}");
+
+        // The pointer passing over, a menu dismissed -- every press is several
+        // of these, and none of them asks for anything
+        split.presses.lock().unwrap().push(Pressed::Nothing);
+        let told = split.heard();
+        assert!(!told.quit && !told.open && !told.closed, "the pointer moving asked for something: {told:?}");
+
+        // ...and what has been read is not read again
+        assert!(
+            !split.heard().open && !split.heard().quit,
+            "a single press was handed on twice"
+        );
     }
 }

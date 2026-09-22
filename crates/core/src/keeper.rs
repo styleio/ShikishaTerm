@@ -124,7 +124,17 @@ impl Keeper {
         if Parting::of(code) == Parting::Pressed {
             return Do::Closed;
         }
-        match revive::decide(out_of_memory(code), &self.tried, now) {
+        let next = revive::decide(out_of_memory(code), &self.tried, now);
+        // Counted here, and only here, because what is counted is rescues and
+        // not windows. The window opened because the board came up, and the
+        // window opened because somebody pressed the icon, are not attempts at
+        // putting anything right -- counted as if they were, the first screen
+        // to die came back after a five second wait it had not earned
+        if matches!(next, Next::Now | Next::Wait(_)) {
+            self.tried = revive::recent(&self.tried, now);
+            self.tried.push(now);
+        }
+        match next {
             Next::Now => Do::Open,
             Next::Wait(ms) => {
                 self.wake = Some(now.saturating_add(ms));
@@ -153,14 +163,6 @@ impl Keeper {
         self.tried.clear();
         self.wake = None;
         Do::Open
-    }
-
-    /// A window was started. Counted here rather than where `Open` was
-    /// answered, so that an attempt which failed to start still counts as one
-    pub fn opened(&mut self, now: u64) {
-        self.tried = revive::recent(&self.tried, now);
-        self.tried.push(now);
-        self.wake = None;
     }
 
     /// Whether a window is owed at some later moment. What a loop with nothing
@@ -204,14 +206,12 @@ mod tests {
     fn it_stops_trying_before_it_becomes_the_problem() {
         let mut k = Keeper::new();
         assert_eq!(k.parted(Some(1), 1_000), Do::Open);
-        k.opened(1_000);
         assert_eq!(k.parted(Some(1), 2_000), Do::Later(revive::BREATH_MS));
         assert_eq!(k.owed(), Some(2_000 + revive::BREATH_MS));
         // Nothing happens until the breath is over, and then exactly once
         assert_eq!(k.tick(2_000 + revive::BREATH_MS - 1), Do::Nothing);
         assert_eq!(k.tick(2_000 + revive::BREATH_MS), Do::Open);
         assert_eq!(k.tick(2_000 + revive::BREATH_MS), Do::Nothing, "it opened twice for one wait");
-        k.opened(7_000);
         assert_eq!(k.parted(Some(1), 8_000), Do::Offer);
         // ...and a press gets a window anyway, because a person can see the
         // machine and this cannot
@@ -230,10 +230,21 @@ mod tests {
     #[test]
     fn a_bad_afternoon_is_not_held_against_the_evening() {
         let mut k = Keeper::new();
-        k.opened(1_000);
-        k.opened(2_000);
-        let later = 2_000 + revive::WITHIN_MS + 1;
+        k.parted(Some(1), 1_000);
+        k.parted(Some(1), 2_000);
+        assert_eq!(k.parted(Some(1), 3_000), Do::Offer, "it was ready to go on for ever");
+        let later = 3_000 + revive::WITHIN_MS + 1;
         assert_eq!(k.parted(Some(1), later), Do::Open);
+    }
+
+    /// The first screen to die comes straight back. It used to wait five
+    /// seconds, because opening the very first window -- which nothing had
+    /// gone wrong to deserve -- was being counted as a repair
+    #[test]
+    fn the_first_screen_to_die_is_not_made_to_wait() {
+        let mut k = Keeper::new();
+        assert_eq!(k.asked(), Do::Open, "the window somebody opened");
+        assert_eq!(k.parted(Some(1), 1_000), Do::Open, "the first rescue waited");
     }
 
     /// Closing a window that was already being waited on takes the wait back
@@ -241,7 +252,7 @@ mod tests {
     #[test]
     fn a_closing_takes_back_a_wait_that_was_owed() {
         let mut k = Keeper::new();
-        k.opened(1_000);
+        assert_eq!(k.parted(Some(1), 1_000), Do::Open);
         assert_eq!(k.parted(Some(1), 2_000), Do::Later(revive::BREATH_MS));
         assert_eq!(k.parted(Some(0), 2_500), Do::Closed);
         assert_eq!(k.owed(), None);

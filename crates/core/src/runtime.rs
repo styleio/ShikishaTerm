@@ -3604,7 +3604,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             } else {
                 None
             },
-            remote_on: remote_ui.is_some(),
+            // A board put up for this machine's own window is not remote
+            // access, and the badge that says so must not claim it is: a
+            // person reading REMOTE believes their board is reachable from
+            // the network, and this one is not
+            remote_on: remote_ui.as_ref().is_some_and(|r| !r.local_only),
             remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_state_clients()),
             remote_sticky: cfg.as_ref().is_some_and(|c| c.remote.sticky_token),
             aim: aim_of(desks.get(desk_index), &surfaces, &tabs, active),
