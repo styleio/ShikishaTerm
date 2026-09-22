@@ -2577,6 +2577,7 @@
   "tui.state.split": "SPLIT",
   "tui.split.name": "Split",
   "msg.split.not_written": "The split could not be written into the settings, so it will not be here next time.",
+  "msg.split.nothing": "Open something first: a split needs a screen to divide.",
   "tui.branch.in_use.say": "The branch {branch} is already open in this folder:",
   "tui.branch.in_use.ask": "Open that folder here as a working folder?",
   "tui.branch.in_use.ask_listed": "That folder is already in this desk. Open it?",
