@@ -360,3 +360,44 @@ mod tests {
 
 
 }
+
+/// The port this installation serves its board on, when it is serving it to
+/// itself.
+///
+/// The same one every time it can be had. What the board keeps for itself --
+/// how the list is grouped, how big the git panes are -- lives in the
+/// browser's storage, and that storage belongs to an origin, port included:
+/// served from a port picked afresh on every start, the window forgot all of
+/// it every time it opened.
+///
+/// From the folder rather than at random, so that two installations on one
+/// machine do not fight over one port and one installation keeps its own
+/// across every way it can be started -- the window serving its own page, and
+/// the runtime serving a board to a window in another process.
+pub fn board_port(root: &std::path::Path) -> u16 {
+    let mut h: u32 = 2166136261;
+    for b in root.to_string_lossy().to_lowercase().bytes() {
+        h = (h ^ b as u32).wrapping_mul(16777619);
+    }
+    49152 + (h % 16384) as u16
+}
+
+#[cfg(test)]
+mod board_port_tests {
+    /// The same folder always answers the same, whatever case it is spelled
+    /// in: Windows paths are not case-sensitive, and a board that moved port
+    /// because a shortcut spelled the drive differently would lose everything
+    /// the page had kept
+    #[test]
+    fn one_folder_is_always_the_same_port() {
+        let a = super::board_port(std::path::Path::new(r"C:\google\SHIKISHA-TERM"));
+        assert_eq!(a, super::board_port(std::path::Path::new(r"C:\google\SHIKISHA-TERM")));
+        assert_eq!(
+            a,
+            super::board_port(std::path::Path::new(r"c:\GOOGLE\shikisha-term")),
+            "a difference in case gave a different port"
+        );
+        assert!((49152..=65535).contains(&a), "outside the range kept for private use: {a}");
+        assert_ne!(a, super::board_port(std::path::Path::new(r"D:\ShikishaTerm")));
+    }
+}

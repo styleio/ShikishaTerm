@@ -3604,7 +3604,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             } else {
                 None
             },
-            remote_on: remote_ui.is_some(),
+            // A board put up for this machine's own window is not remote
+            // access, and the badge that says so must not claim it is: a
+            // person reading REMOTE believes their board is reachable from
+            // the network, and this one is not
+            remote_on: remote_ui.as_ref().is_some_and(|r| !r.local_only),
             remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_state_clients()),
             remote_sticky: cfg.as_ref().is_some_and(|c| c.remote.sticky_token),
             aim: aim_of(desks.get(desk_index), &surfaces, &tabs, active),
@@ -9326,31 +9330,64 @@ pub fn trim_for_phone(s: &str, max_lines: usize) -> String {
 /// caller is the loop that answers every click). Returns None when remote is
 /// disabled; otherwise a channel that delivers (the server if it came up,
 /// error/note lines for the flash) once the bind settles.
+/// The settings a board has to be served under for this machine's own window
+/// to reach it, when the program is split in two and remote access is off.
+///
+/// `None` where nothing has to change: the program is not split, or remote
+/// access is on and there is already a board listening for the window to use.
+///
+/// The loopback and nowhere else, on the port this installation always uses
+/// (`netaddr::board_port`), so the window's own storage survives a restart.
+/// This is not remote access turned on quietly -- nothing on the network can
+/// reach 127.0.0.1, the listener says so of itself (`local_only`), and the
+/// settings screen goes on reporting remote access as off, because it is
+fn board_for_the_window(c: &config::Config) -> bool {
+    c.split.unwrap_or(false) && !c.remote.enabled
+}
+
 pub fn start_remote_bg(
     cfg: Option<&config::Config>,
     password: Option<&str>,
 ) -> Option<std::sync::mpsc::Receiver<(Option<remote::RemoteUi>, Vec<String>)>> {
-    let c = cfg.filter(|c| c.remote.enabled)?;
+    let c = cfg?;
+    // A board this machine's own window needs, where the settings alone would
+    // have served none
+    let local_only = board_for_the_window(c);
+    if !c.remote.enabled && !local_only {
+        return None;
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     // Resolving the address and token is local and quick — done here, so the
     // thread owns only the part that can actually stall (the bind itself).
     // A fixed token that is too short to be a secret must never quietly
     // become "the usual token instead": the person believes the string they
     // wrote is the key. Refuse to start and say why (status + settings note)
-    if c.remote.sticky_token && c.remote.fixed_token.trim().len() < FIXED_TOKEN_MIN {
+    if !local_only && c.remote.sticky_token && c.remote.fixed_token.trim().len() < FIXED_TOKEN_MIN {
         let _ = tx.send((None, vec![i18n::tp("err.remote.fixed_short", &[("n", &FIXED_TOKEN_MIN.to_string())])]));
         return Some(rx);
     }
-    match netaddr::resolve_bind(&c.remote.bind, c.remote.allow_public) {
+    // A board for the window of a split program answers on the loopback and
+    // nowhere else, on the port this installation always uses. What the
+    // settings say about where remote access should bind is about remote
+    // access, and none of this is that
+    let where_ = match local_only {
+        true => Ok((std::net::Ipv4Addr::LOCALHOST, None)),
+        false => netaddr::resolve_bind(&c.remote.bind, c.remote.allow_public),
+    };
+    match where_ {
         Ok((ip, note)) => {
             let token = remote_token(c, password);
-            let port = c.remote.port;
+            let port = match local_only {
+                true => netaddr::board_port(&config::root_dir()),
+                false => c.remote.port,
+            };
             let remote_password = c.remote.password.clone();
             let sticky = c.remote.sticky_token;
             std::thread::spawn(move || {
                 let mut errors = Vec::new();
                 let ui = match remote::RemoteUi::start_with(ip, port, token, remote_password, sticky) {
                     Ok(mut r) => {
+                        r.local_only = local_only;
                         if let Some(n) = &note {
                             errors.push(n.clone());
                         }
@@ -9388,6 +9425,10 @@ pub fn start_remote_bg(
 pub fn publish_remote(info: &Arc<Mutex<webui::RemoteInfo>>, ui: &Option<remote::RemoteUi>) {
     let mut i = info.lock().unwrap();
     match ui {
+        // A board put up for this machine's own window is not remote access
+        // and is never shown as it: the phone card would offer a code that
+        // scans and reaches nothing
+        Some(r) if r.local_only => *i = Default::default(),
         Some(r) => {
             i.running = true;
             i.url = r.url.clone();

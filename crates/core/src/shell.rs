@@ -3859,10 +3859,19 @@ const TOKEN = (function () {
 // and no runtime behind it, so it decided it was local and waited forever for
 // state that nothing was going to push.
 const REMOTE = {{REMOTE}};
-// A page that is not in this window draws no frame for it: there is nothing
+// ...and a different question, which used to be answered with that one.
+//
+// REMOTE says where the *state* comes from. This says what the page is being
+// drawn *in*: a window this program made, or somebody's browser. They came
+// apart the day a window was pointed at a runtime in another process -- that
+// window is ours and has a frame to draw, and its state still arrives over
+// the wire. Answered from the channel a window of ours always has and a
+// browser never does, so nothing has to be told and nothing can be claimed
+const OURS = !!(window.ipc && window.ipc.postMessage);
+// A page not in a window of ours draws no frame for one: there is nothing
 // there to take hold of, and a ✕ that closed somebody else's window would be
 // a surprise. The class does it once, before the first frame is drawn
-if (REMOTE) document.getElementById("app").classList.add("noframe");
+if (!OURS) document.getElementById("app").classList.add("noframe");
 // The PC ended this session (its "disconnect"). Nothing reconnects afterwards —
 // not the state socket, not the screen relay — until a person opens the link
 // again, which reloads this page and clears the flag with it.
@@ -3873,10 +3882,17 @@ let remoteCut = false;
 // submits half a word. `keyCode === 229` is the older spelling of the same
 // thing, kept because it costs nothing and some inputs still only say that
 const typingIME = e => e.isComposing || e.keyCode === 229;
-const send = REMOTE
-  ? (o => fetch("api/intent?t=" + encodeURIComponent(TOKEN),
-      {method:"POST", body:JSON.stringify(o)}).catch(() => {}))
-  : (o => window.ipc.postMessage(JSON.stringify(o)));
+// Two destinations, not one. Acting on the frame -- dragging it, minimizing
+// it, closing it -- is this window's own business and nobody else's: a
+// runtime in another process has no window to minimize, and a runtime on
+// another machine has one belonging to somebody else. Everything else is
+// about the board, and goes wherever the board is
+const overTheWire = o => fetch("api/intent?t=" + encodeURIComponent(TOKEN),
+  {method:"POST", body:JSON.stringify(o)}).catch(() => {});
+const toThisWindow = o => window.ipc.postMessage(JSON.stringify(o));
+const send = o => (OURS && o && o.kind === "window")
+  ? toThisWindow(o)
+  : (REMOTE ? overTheWire(o) : toThisWindow(o));
 const el = (t, a, ...kids) => {
   const n = document.createElement(t);
   for (const k in (a||{})) {
@@ -3922,7 +3938,7 @@ function drawPushBar() {
   if (!bar) return;
   let later = false;
   try { later = !!sessionStorage.getItem("shikisha_push_later"); } catch (e) {}
-  if (!REMOTE || !S.push_wanted || later) { bar.hidden = true; return; }
+  if (OURS || !S.push_wanted || later) { bar.hidden = true; return; }
   if (!pushKnown) pushKnown = shikishaSubscribed(pushApi);
   pushKnown.then(done => {
     if (done || !S.push_wanted) { bar.hidden = true; return; }
@@ -4261,7 +4277,7 @@ function drawTabs() {
   for (const t of loose) nav.append(tabRow(t, null, false, false));
   // Once, after the first answer an AI has finished here: a star, if you
   // like it. On the window only -- the page it opens is this PC's
-  if (S.thanks && !REMOTE) {
+  if (S.thanks && OURS) {
     const kind = S.thanks;
     nav.append(el("div", {class:"thanks"},
       el("div", {class:"tt"}, T["tui.thanks.title"] || ""),
@@ -5297,11 +5313,11 @@ function drawHolding(t) {
 let setupPick = "";
 let setupYolo = true;
 let setupStep = 1;
-const setupUp = () => !REMOTE && !!(S && S.setup);
+const setupUp = () => OURS && !!(S && S.setup);
 function drawWelcome() {
   const box = document.getElementById("setup");
   if (!box) return;
-  const st = REMOTE ? null : (S && S.setup);
+  const st = OURS ? (S && S.setup) : null;
   box.hidden = !st;
   if (!st) { box.dataset.sig = ""; return; }
   const installed = st.installed || [];
@@ -5959,7 +5975,7 @@ function openSnipMenu(e) {
     const rows = [];
     // The keys that open these from any program, beside what they open. Only
     // keys that are registered and work; a phone has no keys to press
-    const keys = (!REMOTE && S && S.hotkeys) || {};
+    const keys = (OURS && S && S.hotkeys) || {};
     const badge = action => keys[action] ? el("kbd", {class:"snipkey"}, keys[action]) : null;
     if (keys.snip) {
       rows.push(el("div", {class:"sniphead", title:T["tui.snip.key_title"] || ""},
@@ -8933,7 +8949,7 @@ function drawBoard() {
     // destination on both surfaces (the window's child WebView, the phone's own
     // /cfg page), and a bare 'e' would only ever reach the window.
     const own = MENU_OWN[MENU_WORDS[k]];
-    const stuck = REMOTE && !own && MENU_WINDOW_ONLY.includes(k);
+    const stuck = !OURS && !own && MENU_WINDOW_ONLY.includes(k);
     m.append(el("div", {class:"mi" + (stuck ? " windowonly" : ""),
         title: stuck ? T["tui.menu.window_only"] : label,
         onclick: stuck ? null : (own || (() => send({kind:"menu", key:k})))},
@@ -9081,7 +9097,7 @@ let restartArmed = 0;
 // emergency stop, and a stray tap must not take a running conversation — or a
 // filled-in form — down with it. The arming lapses on its own.
 function restartBtn() {
-  if (!REMOTE || !(S && S.restartable)) { restartArmed = 0; return null; }
+  if (OURS || !(S && S.restartable)) { restartArmed = 0; return null; }
   const t = S.tabs.find(x => x.index === S.active);
   const armed = Date.now() < restartArmed;
   return el("span", {id:"restart", class: armed ? "armed" : "",
@@ -9573,7 +9589,7 @@ window.__state = function (json) {
   // over nothing and swallowed every press until the PC was attended to. What
   // the phone is told instead is the toast the app already sends, and its own
   // + opens its own dialog, with a dimming of its own (#cfgwrap)
-  scrim.hidden = REMOTE || !(S.settings_open && S.settings_float);
+  scrim.hidden = !OURS || !(S.settings_open && S.settings_float);
   scrim.onclick = () => send({kind:"closesettings"});
   board.hidden = !S.board;
   document.getElementById("panes").hidden = cover;
@@ -9708,7 +9724,14 @@ window.__state = function (json) {
     drawSftp();
   }
   // While viewing a browser tab, the phone shows the screen relay (canvas).
-  // The window (PC) still layers the real page as before, so it never uses the relay
+  // The window (PC) still layers the real page as before, so it never uses the relay.
+  //
+  // Asked of the wire and not of the surface, unlike the frame and the key
+  // row. A page is opened by whichever machine the runtime is on, so a window
+  // of ours pointed at a runtime in another process has no page of its own to
+  // layer either -- it is in the same position as the phone and wants the same
+  // relay. The one case where a window does draw the page itself is the
+  // browser_draw setting, and that arrives separately, as away
   const cast = document.getElementById("cast");
   // Unless the page is drawn on the device of whoever opened it. Then there is
   // no picture of it to relay -- it is already in front of the one person who
@@ -9737,7 +9760,7 @@ window.__state = function (json) {
     // A phone's, not a laptop's: a browser with a mouse wheel scrolls like the
     // window does, and two round buttons in the middle of a pane covered the
     // terminal they were meant to page
-    const showPager = REMOTE && phoneWidth() && !screen.hidden && !web && !onModelTab();
+    const showPager = !OURS && phoneWidth() && !screen.hidden && !web && !onModelTab();
     pager.classList.toggle("on", showPager);
     if (!showPager) pgReset();
     // 📖 rides with the pager because it answers the same need — reading what
@@ -10214,7 +10237,7 @@ window.__maximized = function (on) {
 };
 function drawTitle() {
   const bar = document.getElementById("titlebar");
-  if (!bar || (typeof REMOTE !== "undefined" && REMOTE)) return;
+  if (!bar || !OURS) return;
   // Rebuilt only when what it would say changed: it is under the pointer, and
   // the page is redrawn several times a second
   const key = [tabWidth() > 0, sideWidth() > 0, winMax].join("|");
@@ -13336,7 +13359,7 @@ let quickShape = "", quickFocusId = "";
 // window are windows of their own, over anything this page draws: they step
 // aside while it does. A phone has none
 function sayCovered() {
-  if (!REMOTE) send({kind:"covered", on: quickOpen || ideasOpen});
+  if (OURS) send({kind:"covered", on: quickOpen || ideasOpen});
 }
 window.__openQuick = function () {
   const v = document.getElementById("quick");
@@ -13346,7 +13369,7 @@ window.__openQuick = function () {
   quickOpen = true;
   quickWalk.path = []; quickWalk.page = 0; quickShape = ""; quickFocusId = "";
   v.classList.remove("still");
-  v.classList.toggle("noframe", !!REMOTE);
+  v.classList.toggle("noframe", !OURS);
   v.hidden = false;
   sayCovered();
   drawQuickLauncher(true);
@@ -13400,7 +13423,7 @@ window.__openIdeas = function () {
   ideasOpen = true;
   IDEAS.project = IDEAS.known ? ideasFrontProject() : null;
   IDEAS.said = "";
-  v.classList.toggle("noframe", !!REMOTE);
+  v.classList.toggle("noframe", !OURS);
   v.hidden = false;
   sayCovered();
   drawIdeas(true);
@@ -13875,7 +13898,7 @@ function drawQuickLauncher(fresh) {
   v.append(el("div", {class:"qhead"}, crumbs,
     el("div", {class:"qplate qtools"},
       // The keys, where there are keys
-      REMOTE ? null : el("span", {class:"qkeys"}, T["tui.quick.keys"] || ""),
+      hardKeys ? el("span", {class:"qkeys"}, T["tui.quick.keys"] || "") : null,
       el("button", {class:"qtool", title:T["tui.quick.edit"] || "Edit",
         onclick:() => { closeQuick(); openSettings("quick", true); }}, "⚙️"),
       el("button", {class:"qtool", title:T["tui.quick.close"] || "Close", onclick:closeQuick}, "✕"))));
@@ -13896,7 +13919,7 @@ function drawQuickLauncher(fresh) {
       go));
     // The keyboard comes here too, as it does to the first button of a grid:
     // left in a text box underneath, Esc would never reach the launcher
-    if (fresh && !REMOTE) go.focus({preventScroll:true});
+    if (fresh && OURS) go.focus({preventScroll:true});
     return;
   }
 
@@ -13965,7 +13988,7 @@ function drawQuickLauncher(fresh) {
   // The keyboard lands on the button it was on, or the first one
   const again = quickFocusId && grid.querySelector('.qbtn[data-id="' + CSS.escape(quickFocusId) + '"]');
   const first = again || grid.querySelector(".qbtn");
-  if (first && !REMOTE) first.focus({preventScroll:true});
+  if (first && OURS) first.focus({preventScroll:true});
   else v.focus({preventScroll:true});
   quickSay(first ? first._tile : null);
 }
@@ -14431,7 +14454,7 @@ function panelOptions() {
   return panelOptionsHere();
 }
 function panelOptionsHere() {
-  const base = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions"] : ["actions"];
+  const base = OURS ? ["actions"] : ["keys", "actions"];
   // A git panel writes its commit message in a box of its own, so the bar
   // over it is the bar over any other panel
   if (gitSurfaceTab()) return base;
@@ -17349,7 +17372,7 @@ function renderPanel() {
   // The keys panel keeps the other way of typing at its right edge, where the
   // keys are and the scrolling isn't (see directBtn). Only away from the window:
   // there the pane already has the caret and this would be a second ✕
-  if (REMOTE && castPanel === "keys") castPanelEl.append(directBtn());
+  if (!OURS && castPanel === "keys") castPanelEl.append(directBtn());
   // A 🎯 that can't aim (the operator still asks for confirmation) gets the
   // same gear: no section, so it opens THIS tab's own card -- where that is
   // switched on -- and comes back here once saved
@@ -17406,7 +17429,7 @@ function ensureBar() {
   // Attach works on both now (phone over HTTP, window over ipc). The backspace
   // key is only useful on the phone, whose on-screen keyboard the composer
   // sometimes covers; the window has a real keyboard. el() skips nulls.
-  castBar = el("div", {id:"castbar"}, castAttEl, fileIn, (REMOTE ? bs : null), castInput, castSendEl, close);
+  castBar = el("div", {id:"castbar"}, castAttEl, fileIn, (OURS ? null : bs), castInput, castSendEl, close);
   // One switchable panel above the input row (keys / actions / target), chosen by
   // a fixed switcher, instead of stacking every row at once. Default: keys on the
   // phone, actions on the desktop.
@@ -18838,7 +18861,7 @@ mod tests {
             "the model pane shows panels other than actions"
         );
         assert!(
-            p.contains(r#"const base = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions"] : ["actions"];"#),
+            p.contains(r#"const base = OURS ? ["actions"] : ["keys", "actions"];"#),
             "the phone's special keys have dropped out of the basic panels"
         );
     }
@@ -18931,7 +18954,7 @@ mod tests {
         assert!(p.contains("function directKeyOf(e) {") && p.contains("S.direct_keys.find("), "the page does not know which combinations to hand on");
         assert!(p.contains("if (e.target === kbd) return;"), "a combination on the terminal would be sent twice");
         // The empty launcher takes the keyboard, or Esc from a text box never reaches it
-        assert!(p.contains("if (fresh && !REMOTE) go.focus({preventScroll:true});"), "the empty quick commands leave the keyboard behind");
+        assert!(p.contains("if (fresh && OURS) go.focus({preventScroll:true});"), "the empty quick commands leave the keyboard behind");
     }
 
     /// A key that types nothing, pressed in the empty input bar, is the pane's.
@@ -19291,9 +19314,12 @@ mod tests {
         assert!(p.contains("if (Math.abs(e.screenX - down.screenX) + Math.abs(e.screenY - down.screenY) < 4) return;"));
         // Whose window this is, at the end a window says it
         assert!(p.contains(r#"src: "/pwa/icon-192.png""#), "the window's picture is not on the bar");
-        // A page that is not in this window draws no frame for it
+        // A page not in a window of ours draws no frame for one. Asked of
+        // the window it is in, not of where its state came from: a window
+        // pointed at a runtime in another process is still ours, and still
+        // has a frame to draw
         assert!(
-            p.contains(r#"if (REMOTE) document.getElementById("app").classList.add("noframe");"#),
+            p.contains(r#"if (!OURS) document.getElementById("app").classList.add("noframe");"#),
             "the window controls show on the phone"
         );
         // The splash must not cover the bar: the frame is ours, and a covered
@@ -19472,7 +19498,7 @@ mod tests {
     #[test]
     fn the_restart_button_follows_what_the_app_says() {
         assert!(
-            PAGE.contains("if (!REMOTE || !(S && S.restartable)) { restartArmed = 0; return null; }"),
+            PAGE.contains("if (OURS || !(S && S.restartable)) { restartArmed = 0; return null; }"),
             "the restart button does not read the app's decision"
         );
         assert!(
@@ -20243,7 +20269,11 @@ mod tests {
     fn the_first_start_setup_is_drawn_answered_and_refreshed() {
         assert!(PAGE.contains(r#"<div id="setup" hidden></div>"#), "there is nowhere to draw it");
         assert!(PAGE.contains("drawWelcome();"), "it is never drawn");
-        assert!(PAGE.contains("const setupUp = () => !REMOTE && !!(S && S.setup);"), "a phone draws it");
+        assert!(PAGE.contains("const setupUp = () => OURS && !!(S && S.setup);"), "a phone draws it");
+        // The first run is something to fill in at the machine itself. Asked
+        // of the window, so that a window driving a runtime elsewhere is
+        // still a window somebody is sitting at
+        assert!(PAGE.contains("const OURS = !!(window.ipc && window.ipc.postMessage);"), "nothing knows which window it is in");
         // Two pages: Continue turns to GitHub, Done there is the one answer
         assert!(PAGE.contains(r#"onclick:() => turn(2)}, T["tui.setup.go"]"#), "Continue does not turn the page");
         assert!(PAGE.contains(r#"send({kind:"setup", ai:setupPick || null, yolo:setupYolo})"#), "Done sends nothing");
@@ -20304,7 +20334,7 @@ mod tests {
         );
         assert!(PAGE.contains("if (t.textContent !== text) t.textContent = text;"), "it rebuilds every frame");
         assert!(PAGE.contains(r#"const next = (S.coach || 0) === 2 ? " pulse" : "";"#), "the + does not light up on step 2");
-        assert!(PAGE.contains("if (S.thanks && !REMOTE) {"), "the thank-you pill shows on the phone");
+        assert!(PAGE.contains("if (S.thanks && OURS) {"), "the thank-you pill shows where nobody is sitting");
         assert!(PAGE.contains(r#"send({kind:"thanks", open:true})"#) && PAGE.contains(r#"send({kind:"thanks", open:false})"#));
         // The update card: the same part, both buttons answer, neither installs
         assert!(PAGE.contains("if (S.update) {"), "there is no update pill");
@@ -21073,7 +21103,7 @@ mod tests {
         // refused the intent that closes it, so the dimming there was a grey
         // sheet over a working board that swallowed every press
         assert!(
-            PAGE.contains("scrim.hidden = REMOTE || !(S.settings_open && S.settings_float);"),
+            PAGE.contains("scrim.hidden = !OURS || !(S.settings_open && S.settings_float);"),
             "a browser still draws the dimming of a dialog it cannot see or close"
         );
         // The window still takes the keystroke path (the WebView is its to open),

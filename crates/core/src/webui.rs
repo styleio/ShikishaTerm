@@ -5852,6 +5852,11 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.confirm_worktree_delete.hint"])),
     row(T["settings.resident"], checkDefaultOn(current, "resident", T["settings.resident.label"]),
         el("span", {class:"hint"}, T["settings.resident.hint"])),
+    // Directly under the ✕, because the ✕ is what it changes the meaning of:
+    // one asks what closing the window costs, the other asks whether the
+    // window is the program at all
+    row(T["settings.split"], check(current, "split", T["settings.split.label"]),
+        el("span", {class:"hint"}, T["settings.split.hint"])),
     row(T["settings.tui_clipboard"], checkDefaultOn(current, "tui_clipboard", T["settings.tui_clipboard.label"]),
         el("span", {class:"hint"}, T["settings.tui_clipboard.hint"])),
     row(T["settings.conpty"], conptyState(),

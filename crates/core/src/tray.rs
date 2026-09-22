@@ -25,8 +25,8 @@ use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NIM_SETVERSION, NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
-    Shell_NotifyIconW,
+    NIM_SETVERSION, NIN_BALLOONHIDE, NIN_BALLOONSHOW, NIN_BALLOONTIMEOUT, NIN_BALLOONUSERCLICK,
+    NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CallWindowProcW, CreatePopupMenu, DestroyMenu, GWLP_WNDPROC, GetCursorPos,
@@ -58,7 +58,7 @@ const MENU_QUIT: usize = 2;
 /// address is the type's alignment, and for `u16` that is 2. Resource 2 does
 /// not exist, so the tray and the taskbar both loaded nothing and showed an
 /// empty square. The tests pin the number so that cannot happen quietly again
-pub(crate) const OUR_ICON: *const u16 = std::ptr::without_provenance(1);
+pub const OUR_ICON: *const u16 = std::ptr::without_provenance(1);
 
 /// A press made with the keyboard (Enter or Space on the icon)
 const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
@@ -66,7 +66,16 @@ const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 /// (`NOTIFYICON_VERSION_4`): the event in the low word of `lParam`, and a
 /// press is `NIN_SELECT`, not a mouse message. The mouse messages are kept as
 /// well, for a shell that still sends them
-const OPEN_EVENTS: [u32; 4] = [NIN_SELECT, NIN_KEYSELECT, WM_LBUTTONUP, WM_LBUTTONDBLCLK];
+/// ...and the banner the icon put up, which is a press on the icon by
+/// another name. The banner says "click this icon to bring the screen back",
+/// and the thing under the pointer when somebody reads that is the banner
+const OPEN_EVENTS: [u32; 5] = [
+    NIN_SELECT,
+    NIN_KEYSELECT,
+    NIN_BALLOONUSERCLICK,
+    WM_LBUTTONUP,
+    WM_LBUTTONDBLCLK,
+];
 const MENU_EVENTS: [u32; 2] = [WM_CONTEXTMENU, WM_RBUTTONUP];
 
 /// What a press on the icon asked for
@@ -150,7 +159,7 @@ impl Tray {
             d.Anonymous.uVersion = NOTIFYICON_VERSION_4;
             let versioned = Shell_NotifyIconW(NIM_SETVERSION, &d);
             if added == 0 || versioned == 0 {
-                shikisha_core::append_hook_log(&format!(
+                crate::append_hook_log(&format!(
                     "tray: the icon could not be put up (add={added}, version={versioned})"
                 ));
             }
@@ -198,7 +207,7 @@ unsafe extern "system" fn procedure(hwnd: *mut c_void, msg: u32, w: WPARAM, l: L
         }
         return 0;
     }
-    if shikisha_core::instance::is_show_id(msg) {
+    if crate::instance::is_show_id(msg) {
         if let Some(sink) = SINK.lock().unwrap().as_ref() {
             (sink.on)(Pressed::Open);
         }
@@ -225,9 +234,20 @@ fn event(hwnd: isize, lparam: LPARAM, open: &str, quit: &str) -> Pressed {
     // gets its name next time. The pointer passing over, the halves of a
     // press that arrive before the press itself, and the tip opening and
     // closing are the expected traffic of every press, so those are not
-    const EXPECTED: [u32; 5] = [WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_RBUTTONDOWN, NIN_POPUPOPEN, NIN_POPUPCLOSE];
+    // ...and a banner coming and going, which the icon does every time it has
+    // something to say and is nothing anybody pressed
+    const EXPECTED: [u32; 8] = [
+        WM_MOUSEMOVE,
+        WM_LBUTTONDOWN,
+        WM_RBUTTONDOWN,
+        NIN_POPUPOPEN,
+        NIN_POPUPCLOSE,
+        NIN_BALLOONSHOW,
+        NIN_BALLOONHIDE,
+        NIN_BALLOONTIMEOUT,
+    ];
     if !EXPECTED.contains(&event) {
-        shikisha_core::append_hook_log(&format!("tray: event 0x{event:x} (nothing to do)"));
+        crate::append_hook_log(&format!("tray: event 0x{event:x} (nothing to do)"));
     }
     Pressed::Nothing
 }
@@ -286,8 +306,14 @@ mod tests {
     #[test]
     fn the_icon_is_asked_for_by_the_number_it_is_filed_under() {
         assert_eq!(OUR_ICON as usize, 1, "the resource number is off");
+        // ...which is the window program's build script, two folders up
+        // from this crate: the picture is a resource of the exe that shows
+        // the icon, not of the library the code now lives in
         let build = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("build.rs"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("build.rs"),
         )
         .expect("build.rs cannot be read");
         // `set_icon` files it as the first icon, number 1. A different id
@@ -319,5 +345,16 @@ mod tests {
         assert_eq!(event(7, ((ID as isize) << 16) | NIN_SELECT as isize, "o", "q"), Pressed::Open);
         assert_eq!(event(7, ((ID as isize) << 16) | NIN_KEYSELECT as isize, "o", "q"), Pressed::Open);
         assert_eq!(event(7, ((ID as isize) << 16) | WM_MOUSEMOVE as isize, "o", "q"), Pressed::Nothing);
+        // The banner the icon put up. Pressed, it is a press on the icon --
+        // the banner is what the pointer is over when somebody reads "click
+        // this icon". Coming and going on its own, it is not
+        assert_eq!(event(7, ((ID as isize) << 16) | NIN_BALLOONUSERCLICK as isize, "o", "q"), Pressed::Open);
+        for quiet in [NIN_BALLOONSHOW, NIN_BALLOONHIDE, NIN_BALLOONTIMEOUT] {
+            assert_eq!(
+                event(7, ((ID as isize) << 16) | quiet as isize, "o", "q"),
+                Pressed::Nothing,
+                "a banner showing itself was taken for a press"
+            );
+        }
     }
 }

@@ -48,7 +48,6 @@ mod picker;
 mod hotkeys;
 mod snip;
 mod wintoast;
-mod tray;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -199,24 +198,40 @@ fn boot() -> Result<()> {
     if std::env::args().nth(1).as_deref() == Some("--mcp") {
         return shikisha_core::mcp::run();
     }
+    // Whether this copy is only a window onto a runtime somewhere else.
+    //
+    // Everything below this line that WRITES to the home folder is the
+    // runtime's to do, and only the runtime's. A client window is started
+    // while a runtime is very often already running out of the same folder --
+    // that is the whole point of the local split -- and the housekeeping
+    // below assumes it is alone with those files. Swept by a second copy, the
+    // exchange area loses hand-offs a live tab is in the middle of, the
+    // throwaway browser folders are deleted out from under open private
+    // pages, and a migration rewrites the layout the running one is reading.
+    //
+    // Asked once, here, so that this and the branch further down can never
+    // disagree about which copy this is
+    let client = std::env::args().nth(1).as_deref() == Some("--connect");
     // A copy started to finish an update waits for the copy that started it
     // to leave, so nothing below reads files the old one is still writing
     update::wait_for_handoff();
-    // An update that was interrupted mid-swap is put back, and one that
-    // finished is tidied, before any of the files it touched is read
-    update::finish_last();
-    // Old layouts are moved into place, and the first start of a version
-    // keeps a copy of the files and carries them forward (migrate.rs). Before
-    // anything reads them, so what is read is already in this version's shape
-    migrate::prepare();
-    // Clean up the exchange hand-off area. Sweep old run folders left behind by an abnormal
-    // exit, collecting them at startup (temp files from a normal exit are already gone by
-    // the time they're consumed). Anything older than 30 days.
-    exchange::sweep_old(30);
-    // Wipe the scratch area for private (throwaway) browsers. The premise is that it
-    // disappears when closed, so if anything is left from a previous abnormal exit, it's
-    // all garbage.
-    browser::sweep_private();
+    if !client {
+        // An update that was interrupted mid-swap is put back, and one that
+        // finished is tidied, before any of the files it touched is read
+        update::finish_last();
+        // Old layouts are moved into place, and the first start of a version
+        // keeps a copy of the files and carries them forward (migrate.rs). Before
+        // anything reads them, so what is read is already in this version's shape
+        migrate::prepare();
+        // Clean up the exchange hand-off area. Sweep old run folders left behind by an abnormal
+        // exit, collecting them at startup (temp files from a normal exit are already gone by
+        // the time they're consumed). Anything older than 30 days.
+        exchange::sweep_old(30);
+        // Wipe the scratch area for private (throwaway) browsers. The premise is that it
+        // disappears when closed, so if anything is left from a previous abnormal exit, it's
+        // all garbage.
+        browser::sweep_private();
+    }
     // Where WebView2's user data (cookies, cache) lives is decided per WebView, from
     // the folder config names — see browser::profiles_root. It is NOT set process-wide
     // here: WEBVIEW2_USER_DATA_FOLDER applies to every WebView at once, which quietly
@@ -243,7 +258,7 @@ fn boot() -> Result<()> {
     // server, and no single-instance lock. The lock in particular would be
     // wrong: connecting to a server is not a second copy of this app fighting
     // over this machine's files, and wanting both at once is the ordinary case.
-    if std::env::args().nth(1).as_deref() == Some("--connect") {
+    if client {
         return connect_to(&std::env::args().nth(2).unwrap_or_default());
     }
     // Settings-only mode (edit settings in a browser without launching the main app)
@@ -300,8 +315,45 @@ fn boot() -> Result<()> {
     // reads a tab's output would stop that tab for as long as wsl.exe takes.
     discover::learn_wsl_distros();
 
+    // Two programs or one. Split, this process keeps the tabs and draws
+    // nothing, and the window is started as a second copy of this same
+    // executable -- so the window can be taken, for its memory or by a crash,
+    // and everything at work in the tabs carries on. Together is still the
+    // default, because the split costs a second process and a board on this
+    // machine's loopback for the window to reach.
+    //
+    // Asked of the settings, or said on the command line for a run that is
+    // trying it out
+    let split = std::env::args().nth(1).as_deref() == Some("--split")
+        || config::load().and_then(|c| c.split).unwrap_or(false);
+    if split {
+        return run_split();
+    }
     // Running it pops up the window. Only add a launcher in front when there's a reason to.
     run_in_window()
+}
+
+/// The runtime half of the pair: the same loop the window drives, given a
+/// shell that draws nothing and keeps a window over it in another process.
+///
+/// Everything that made this hard is already elsewhere. `serve::run` is the
+/// loop with no window; `split::Split` starts the window, watches it and puts
+/// it back; the notification-area icon is this process's, because it is the
+/// one that goes on running with nothing on screen. What is here is only the
+/// joining of the three.
+#[cfg(windows)]
+fn run_split() -> Result<()> {
+    append_hook_log("Starting as two programs: this one keeps the work, another draws it");
+    let minder = Box::new(shikisha_core::split::Split::new());
+    shikisha_core::serve::run_minded(minder)
+}
+
+/// Nowhere else yet. The pieces that make the pair work -- the icon, and the
+/// invisible window it hangs on -- are Windows' own, and a runtime on a server
+/// is already what `shikisha-serve` is
+#[cfg(not(windows))]
+fn run_split() -> Result<()> {
+    anyhow::bail!("running as two programs is only available on Windows")
 }
 
 /// `--cast-test <url>`: opens a browser, starts screen relaying, saves the first frame
@@ -997,7 +1049,7 @@ fn run_in_window() -> Result<()> {
         );
         std::process::exit(1);
     }
-    let win = std::rc::Rc::new(browser::Browser::spawn(
+    let win = std::rc::Rc::new(browser::Browser::spawn_resident(
         &format!("http://127.0.0.1:{port}/"),
         "SHIKISHA-TERM",
     )?);
@@ -1461,14 +1513,23 @@ fn open_browser(url: &str) {
 /// it. If the caller is a terminal, borrow that one. Otherwise, open one of
 /// our own. If already attached, do nothing (both calls simply fail harmlessly in that case).
 fn open_console() {
-    use windows_sys::Win32::System::Console::{
-        ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole,
-    };
-    unsafe {
-        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
-            AllocConsole();
-        }
+    use windows_sys::Win32::System::Console::AllocConsole;
+    if !borrow_console() {
+        unsafe { AllocConsole() };
     }
+}
+
+/// Borrow the terminal this was started from, if it was started from one.
+///
+/// True when there is now somewhere to print. False means nobody is reading:
+/// started from a shortcut, from Explorer, or by another copy of this
+/// program. For the window of a split pair that is the ordinary case and the
+/// right answer is silence -- opening a console of its own would put a black
+/// rectangle on the desktop beside the board, saying nothing, for as long as
+/// the program ran
+fn borrow_console() -> bool {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) != 0 }
 }
 
 /// How to show the name. Shrink it if it doesn't fit the screen; if even that
@@ -1931,7 +1992,9 @@ impl shikisha_core::host::Shell for WinSurface {
 /// those belong to whichever machine the runtime is on.
 fn connect_to(url: &str) -> Result<()> {
     use shikisha_shared::Ev;
-    open_console();
+    // Borrowed, never opened. Run by hand from a terminal there is somebody to
+    // tell; started by a runtime this is the window of, there is not
+    let told = borrow_console();
     if url.trim().is_empty() {
         anyhow::bail!(i18n::t("err.connect.no_url"));
     }
@@ -1943,7 +2006,9 @@ fn connect_to(url: &str) -> Result<()> {
     // Named without its query, because the query is the key to the board and
     // this line goes to a console somebody may well be sharing a screen of
     let host = url.split('?').next().unwrap_or(url);
-    println!("{}", i18n::tp("msg.connected", &[("url", host)]));
+    if told {
+        println!("{}", i18n::tp("msg.connected", &[("url", host)]));
+    }
 
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // One place reads what the window says, because there is one queue and
@@ -1956,7 +2021,15 @@ fn connect_to(url: &str) -> Result<()> {
     // it to be closed, because a `main` that returned would take it along
     loop {
         for ev in win.drain() {
-            if matches!(ev, Ev::Closed) {
+            // Both endings, and both are simply an ending. The ✕ asks rather
+            // than closing (`CloseRequested`) because at a window with the
+            // runtime behind it the answer is the runtime's to give -- put
+            // away, or quit, as the setting says. Here there is no runtime to
+            // ask: this process is a window and nothing else, and the way it
+            // answers is by leaving. The runtime it was drawing for reads that
+            // leaving as the ✕ it was (see `keeper::Parting`), and the setting
+            // is applied there, once, where it always was
+            if matches!(ev, Ev::Closed | Ev::CloseRequested) {
                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 return Ok(());
             }

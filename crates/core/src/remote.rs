@@ -386,6 +386,13 @@ const CUT_MESSAGE: &str = "{\"cut\":true}";
 
 pub struct RemoteUi {
     pub url: String,
+    /// Whether this board is listening for this machine alone -- the window
+    /// of a program split in two, and nothing else. Such a listener is not
+    /// remote access and must never be shown as it: a link to 127.0.0.1 in
+    /// the phone card would be a code that scans and then reaches nothing,
+    /// and a person reading "remote access is on" would believe their board
+    /// was on the network when it is not
+    pub local_only: bool,
     /// The origin (scheme://host:port) without the token, kept so `url` can be
     /// rebuilt when the token is rotated. Not necessarily where the server is
     /// listening -- see `reached_at`.
@@ -950,6 +957,11 @@ impl RemoteUi {
         });
         Ok(Self {
             url,
+            // Said by whoever asked for it, because only they know what it is
+            // for: the same bind on the same loopback is a board for this
+            // machine's own window when the program is split, and a board a
+            // person deliberately put there when it is not
+            local_only: false,
             origin,
             port: real_port,
             token,

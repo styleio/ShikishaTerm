@@ -577,6 +577,18 @@ pub struct Config {
     /// rather than quitting (default: yes). Put away, the tabs go on working
     /// and the phone stays connected; the icon's menu is where quitting is
     pub resident: Option<bool>,
+    /// Whether the window and the runtime run as two programs (default: no).
+    ///
+    /// Together, they fail together: nearly all the memory is the window's
+    /// browser engine, and an allocation that cannot be met ends the process
+    /// holding every conversation as well. Apart, the window can be taken --
+    /// killed for its memory, gone in a crash -- and the work goes on while a
+    /// new one is put over it.
+    ///
+    /// The cost is a second process and a board served on this machine's own
+    /// loopback for the window to reach. Nothing is put on the network by it:
+    /// remote access is a separate setting and goes on saying what it says
+    pub split: Option<bool>,
     /// Whether to ask Claude's service how much of the subscription's 5-hour
     /// and 7-day allowance is used, with the sign-in Claude Code keeps on
     /// this PC, and show it while a Claude tab is in view (default: yes).
