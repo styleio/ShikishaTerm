@@ -131,11 +131,26 @@ fn main() {
                 }
             }
             let carried = desk::carried_conversation(Some(&saved), d, &argv, &ft.cfg, &cwd, &title);
+            // Whose conversation the tab would come up on. The CLI's own
+            // records say where each one was had, and a tab carrying one that
+            // was had somewhere else is the shape of a report written down
+            // against the wrong tab -- two tabs on one conversation, and
+            // another tab's gone
+            let elsewhere = match (&carried.plan, cwd.as_deref()) {
+                (tab::Resume::Id(s), Some(at)) => {
+                    let prog = argv.first().map(String::as_str).unwrap_or_default();
+                    !shikisha_core::vault::belongs(prog, at, &s.id)
+                }
+                _ => false,
+            };
             match carried.plan {
                 tab::Resume::Id(s) => println!("    -> carries {} (#{})", s.id, s.digest()),
                 other => println!("    -> {other:?}"),
             }
-            if carried.lost {
+            if elsewhere {
+                println!("    -> but that conversation was had in ANOTHER FOLDER (somebody else's)");
+            }
+            if carried.lost || elsewhere {
                 println!("    -> and says so: the tab keeps the offer of the way back");
             }
         }

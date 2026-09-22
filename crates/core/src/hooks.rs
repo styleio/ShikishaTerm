@@ -4117,10 +4117,22 @@ impl HookEngine {
         params: &[serde_json::Value],
     ) -> std::result::Result<serde_json::Value, String> {
         let previously = self.current_origin.get();
+        // Which screen is calling. Looked up among the screens (`places`, one
+        // row per screen in screen order) and not among the tabs, because the
+        // number that comes out of this is `origin`: what every report the call
+        // makes -- the conversation it is running, what it was just asked, what
+        // state it is in -- is then written down against.
+        //
+        // The loop carries those out by screen number. Counting the tabs
+        // instead gave the right answer only while every screen was a tab: put
+        // a page anywhere but last and a tab's report landed on whichever tab
+        // stood at that position -- one CLI's conversation id written against
+        // another tab, which at the next start resumed one conversation in two
+        // places and lost the other
         let origin = caller
             .and_then(|c| {
-                let states = self.states.borrow();
-                let keys: Vec<TabKey> = states.iter().map(|(k, _)| k.clone()).collect();
+                let places = self.places.borrow();
+                let keys: Vec<TabKey> = places.iter().map(|p| p.key.clone()).collect();
                 TabRef::Name(c.to_string()).resolve(&keys)
             })
             .unwrap_or(0);
@@ -4288,9 +4300,15 @@ impl HookEngine {
         *self.ai_engine.borrow_mut() = engine;
     }
 
-    /// Where each tab is working, and what its folder guards. Pushed in on the
-    /// same tick as the states, so that naming a tab is enough to name the
-    /// repository it sits in
+    /// Where each screen is working, and what its folder guards. Pushed in on
+    /// the same tick as the states, so that naming a tab is enough to name the
+    /// repository it sits in.
+    ///
+    /// **One row per screen, in screen order** -- what
+    /// [`crate::runtime::places_by_surface`] builds, and nothing else. It is
+    /// not only a lookup table: a row's position is the number a call from
+    /// that screen is credited with (`call_primitive_from`), and that number
+    /// is what the loop carries the call's reports out under
     pub fn set_places(&self, places: Vec<TabPlace>) {
         *self.places.borrow_mut() = places;
     }
@@ -7823,6 +7841,46 @@ mod tests {
             }
         }
         live
+    }
+
+    /// A tab's report is written down against the tab that made it, whatever
+    /// else is on the screen beside it.
+    ///
+    /// The number a call is credited with is the number the report is then
+    /// carried out under, and the loop carries it out by screen. A page takes
+    /// a screen of its own, so counting the tabs instead moved every tab
+    /// behind that page up by one: the second CLI's conversation id was
+    /// written against the first CLI's tab, and at the next start one
+    /// conversation came back in two tabs while the other was gone for good.
+    #[test]
+    fn a_call_is_credited_to_the_screen_it_came_from() {
+        let mut e = HookEngine::new().unwrap();
+        let page = TabKey { id: Some("swift".into()) };
+        let near = TabKey { id: Some("hippo".into()) };
+        let far = TabKey { id: Some("raven".into()) };
+        // Screen 1 is a page, so the two CLIs are screens 2 and 3 -- while
+        // among the tabs alone they are 1 and 2
+        e.set_states(vec![(near.clone(), "WAIT".into()), (far.clone(), "WAIT".into())]);
+        e.set_places(vec![
+            TabPlace { key: page, ..Default::default() },
+            TabPlace { key: near, ..Default::default() },
+            TabPlace { key: far, ..Default::default() },
+        ]);
+        e.call_primitive_as(
+            Some("raven"),
+            crate::grants::Subject::Ai,
+            "set_session",
+            &[serde_json::json!("3cacb9ce-f140-41ea-bfae-7ab3c3b92ba5")],
+        )
+        .unwrap();
+        let said = e.drain_commands();
+        assert!(
+            matches!(
+                said.as_slice(),
+                [Command::SetSession { id, origin: 3 }] if id == "3cacb9ce-f140-41ea-bfae-7ab3c3b92ba5"
+            ),
+            "the conversation was written down against somebody else: {said:?}"
+        );
     }
 
     #[test]

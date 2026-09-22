@@ -183,6 +183,33 @@ pub fn here(program: &str, cwd: &Path, most: usize) -> Vec<Hit> {
     here_in(&src, cwd, most)
 }
 
+/// Whether that conversation is one this folder's own.
+///
+/// Asked of the CLI's records, which are the one account of what was said
+/// where that nothing the app writes down can spoil. A tab handed a
+/// conversation that was had somewhere else is carrying somebody else's, and
+/// the folder it is sitting in still has its own waiting to be picked back up.
+///
+/// An id with no record yet is not this folder's: a conversation minted for a
+/// CLI that has not spoken exists nowhere but in the launch that made it
+pub fn belongs(program: &str, cwd: &Path, id: &str) -> bool {
+    sources()
+        .into_iter()
+        .find(|s| s.program == program)
+        .is_some_and(|src| belongs_in(&src, cwd, id))
+}
+
+/// The same question asked of one CLI's records, so a test can supply its own.
+fn belongs_in(src: &Source, cwd: &Path, id: &str) -> bool {
+    let Some(path) = crate::sessionfind::locate(&src.verify, id) else {
+        return false;
+    };
+    let Some(head) = read_some(&path, FOLDER_CAP) else {
+        return false;
+    };
+    cwd_of(&head, src).is_some_and(|at| crate::uistate::same_folder(Path::new(&at), cwd))
+}
+
 /// The same question asked of one CLI's records, so a test can supply its own.
 fn here_in(src: &Source, cwd: &Path, most: usize) -> Vec<Hit> {
     let mut files: Vec<(SystemTime, PathBuf)> = list(&src.verify)
@@ -462,6 +489,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// Whether a conversation was had in this folder, asked of the records.
+    ///
+    /// What a tab coming back has to be able to ask. The app's own note of
+    /// which tab was running what can be wrong -- a report credited to the
+    /// wrong tab writes one CLI's conversation against another's name -- and
+    /// then two tabs resume the same conversation and a third is gone. The
+    /// records say where each one was actually had, and they say it whatever
+    /// the app believes
+    #[test]
+    fn a_conversation_says_which_folder_it_was_had_in() {
+        let root = tmp("belongs");
+        let proj = root.join("proj-a");
+        let line = |cwd: &str| {
+            format!(
+                r#"{{"type":"user","cwd":"{cwd}","message":{{"role":"user","content":"hello"}}}}"#
+            )
+        };
+        let here = "aaaa1111-0000-0000-0000-000000000001";
+        let elsewhere = "cccc3333-0000-0000-0000-000000000003";
+        write(&proj.join(format!("{here}.jsonl")), &[&line("D:/work/here"), ""]);
+        write(&proj.join(format!("{elsewhere}.jsonl")), &[&line("D:/work/elsewhere"), ""]);
+        let src = Source {
+            program: "claude".into(),
+            with_id: vec!["--resume".into(), "{id}".into()],
+            verify: with_seps(&format!("{}/*/{{id}}.jsonl", root.display())),
+            id_path: None,
+            cwd_path: None,
+            asks: None,
+        };
+        let at = Path::new("D:/work/here");
+        assert!(belongs_in(&src, at, here), "its own conversation was called somebody else's");
+        assert!(
+            !belongs_in(&src, at, elsewhere),
+            "a conversation had in another folder was taken for this tab's"
+        );
+        assert!(
+            !belongs_in(&src, at, "dddd4444-0000-0000-0000-000000000004"),
+            "a conversation with no record yet is nobody's"
+        );
     }
 
     /// What was said in one folder before, newest first, and nothing from

@@ -459,34 +459,60 @@ pub fn plain_error(said: &str) -> String {
 /// empty path is a model conversation or a terminal on another machine, and
 /// both of those are genuinely in no folder of ours
 pub fn tab_places(tabs: &[Tab]) -> Vec<hooks::TabPlace> {
-    tabs.iter()
-        .map(|t| {
-            let dir = match t.cwd().map(std::path::Path::to_path_buf) {
-                Some(p) if p.is_absolute() => p,
-                Some(p) => std::env::current_dir().map(|c| c.join(&p)).unwrap_or(p),
-                None => std::path::PathBuf::new(),
-            };
-            hooks::TabPlace {
-                key: t.key(),
-                dir,
-                remote: match (t.remote(), t.cloud()) {
-                    (Some(spec), _) => Some(crate::elsewhere::Elsewhere::Ssh(spec.clone())),
-                    (None, Some(host)) => {
-                        Some(crate::elsewhere::Elsewhere::Cloud(host.clone()))
-                    }
-                    (None, None) => None,
-                },
-                // A terminal tab was given an address, not a folder over there
-                // -- a shell starts wherever signing in puts it. So there is
-                // nothing on that end for a path to be outside of, and the
-                // fence that does hold is this tab's own working folder. A
-                // file panel is the one that was given both (`panel_places`)
-                remote_dir: String::new(),
-                protect: t.protect().to_vec(),
-                git: t.git_use.clone(),
-            }
+    tabs.iter().map(tab_place).collect()
+}
+/// Where every screen is working, in the order the screens are in.
+///
+/// This is the list `origin` -- "which screen is asking" -- is a number into.
+/// A screen number is not a tab number: a page, a git panel, an editor or a
+/// file panel takes a place in the row of screens, so the moment one of them
+/// sits anywhere but last, the third screen and the third tab are two
+/// different things. Handing the engine the tabs with the panels bolted on the
+/// end made them agree only by luck, and when they disagreed a tab's own
+/// report -- the conversation it is running -- was written down against
+/// whoever happened to be standing in that position.
+///
+/// So: one row per screen, in screen order, always. A screen that works in no
+/// folder still gets a row, under the name automation knows it by, because
+/// what has to hold is that row *n* is screen *n*.
+pub fn places_by_surface(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabPlace> {
+    surfaces
+        .iter()
+        .zip(surface_keys(surfaces, tabs))
+        .map(|(s, key)| match s {
+            Surface::Session(i) => tabs
+                .get(*i)
+                .map(tab_place)
+                .unwrap_or(hooks::TabPlace { key, ..Default::default() }),
+            panel => crate::desk::panel_place(panel)
+                .unwrap_or(hooks::TabPlace { key, ..Default::default() }),
         })
         .collect()
+}
+/// Where one tab is working, and what its folder guards.
+fn tab_place(t: &Tab) -> hooks::TabPlace {
+    let dir = match t.cwd().map(std::path::Path::to_path_buf) {
+        Some(p) if p.is_absolute() => p,
+        Some(p) => std::env::current_dir().map(|c| c.join(&p)).unwrap_or(p),
+        None => std::path::PathBuf::new(),
+    };
+    hooks::TabPlace {
+        key: t.key(),
+        dir,
+        remote: match (t.remote(), t.cloud()) {
+            (Some(spec), _) => Some(crate::elsewhere::Elsewhere::Ssh(spec.clone())),
+            (None, Some(host)) => Some(crate::elsewhere::Elsewhere::Cloud(host.clone())),
+            (None, None) => None,
+        },
+        // A terminal tab was given an address, not a folder over there -- a
+        // shell starts wherever signing in puts it. So there is nothing on that
+        // end for a path to be outside of, and the fence that does hold is this
+        // tab's own working folder. A file panel is the one that was given both
+        // (`desk::panel_place`)
+        remote_dir: String::new(),
+        protect: t.protect().to_vec(),
+        git: t.git_use.clone(),
+    }
 }
 pub fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'static str>) {
     if !keep {
@@ -2345,11 +2371,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // Let the loop read the current state (shikisha.state)
                 eng.set_ai_engine(cfg.as_ref().and_then(|c| c.ai_engine.clone()).filter(|s| !s.is_empty()));
                 eng.set_states(tab_states(&tabs));
-                // The tabs, and then the git panels: naming either one names
-                // the folder it is looking at
-                let mut folders = tab_places(&tabs);
-                folders.extend(panel_places(&surfaces));
-                eng.set_places(folders);
+                // Every screen, in screen order: naming any one of them names
+                // the folder it is looking at, and its position is the number
+                // its own calls arrive under
+                eng.set_places(places_by_surface(&surfaces, &tabs));
                 // ...and each tab's latest reply, so an operator can read the AI
                 // tab it's driving (shikisha.tab_output).
                 eng.set_outputs(
@@ -2738,12 +2763,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // Who exists, before anything is answered. An engine
                         // made a line ago to serve this very call has been
                         // told nothing yet, and "which tab is calling" is
-                        // answered out of this list — the first call from a
+                        // answered out of the screens — the first call from a
                         // tab used to be credited to nobody and thrown away,
                         // and the first call is the one carrying the id of the
-                        // conversation to come back to
+                        // conversation to come back to.
+                        //
+                        // The screens, not the tabs: a caller is credited the
+                        // number its report is then carried out under, and the
+                        // two lists are not the same one (`places_by_surface`)
                         eng.set_states(tab_states(&tabs));
-                        eng.set_places(tab_places(&tabs));
+                        eng.set_places(places_by_surface(&surfaces, &tabs));
                         let who = subject_of(call.caller.as_deref(), &tabs);
                         eng.call_primitive_as(
                             call.caller.as_deref(),
@@ -4290,10 +4319,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
                 }
                 let Some(eng) = engine.as_mut() else { continue };
-                let mut folders = tab_places(&tabs);
-                folders.extend(panel_places(&surfaces));
                 eng.set_states(tab_states(&tabs));
-                eng.set_places(folders);
+                eng.set_places(places_by_surface(&surfaces, &tabs));
                 // This desk's, which is already either its own or the
                 // app's handed down (see Config::resolve_desks)
                 let spec = desks.get(desk_index).map(|w| w.git.clone()).unwrap_or_default();
@@ -4559,10 +4586,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
             }
             let Some(eng) = engine.as_mut() else { continue };
-            let mut folders = tab_places(&tabs);
-            folders.extend(panel_places(&surfaces));
             eng.set_states(tab_states(&tabs));
-            eng.set_places(folders);
+            eng.set_places(places_by_surface(&surfaces, &tabs));
             let who = serde_json::Value::String(panel.clone());
             let files = serde_json::json!(paths);
             let (method, params): (&str, Vec<serde_json::Value>) = match act.as_str() {
@@ -5402,10 +5427,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
                 let Some(eng) = engine.as_mut() else { continue };
-                let mut folders = tab_places(&tabs);
-                folders.extend(panel_places(&surfaces));
                 eng.set_states(tab_states(&tabs));
-                eng.set_places(folders);
+                eng.set_places(places_by_surface(&surfaces, &tabs));
                 let mut job = args.clone();
                 job["tab"] = serde_json::json!(panel);
                 eng.fire_template(crate::hooks::FOLDER_MOVE_LUA, &panel_ctx(at + 1, &panel), &job);
@@ -11740,6 +11763,49 @@ mod tests {
             value: value.into(),
             xpath,
             hint: hint.into(),
+        }
+    }
+
+    /// Row *n* of the folders is screen *n*, whatever is standing there.
+    ///
+    /// The engine is handed this list, and a call arriving from a tab is
+    /// credited its position in it -- the number every report that call makes
+    /// is then written down under. Handing over the tabs with the panels
+    /// bolted on the end made the two agree only while every screen was a tab.
+    #[test]
+    fn the_folders_are_in_the_order_of_the_screens() {
+        let opts = tab::TabOptions { cwd: Some(std::env::temp_dir()), ..Default::default() };
+        let mut tabs = vec![
+            Tab::spawn("hippo".into(), &[crate::test_shell()], None, 10, 40, opts.clone()).unwrap(),
+            Tab::spawn("raven".into(), &[crate::test_shell()], None, 10, 40, opts).unwrap(),
+        ];
+        tabs[0].id = Some("hippo".into());
+        tabs[1].id = Some("raven".into());
+        // A page sitting in front of both of them, as the settings put it
+        let surfaces = vec![
+            Surface::Browser { key: "swift".into(), name: "検索".into(), dir: None },
+            Surface::Session(0),
+            Surface::Session(1),
+        ];
+        let places = places_by_surface(&surfaces, &tabs);
+        let keys: Vec<_> = places.iter().map(|p| p.key.id.clone()).collect();
+        assert_eq!(
+            keys,
+            surface_keys(&surfaces, &tabs).iter().map(|k| k.id.clone()).collect::<Vec<_>>(),
+            "the folders are not in the order of the screens"
+        );
+        assert_eq!(
+            hooks::TabRef::Name("raven".into()).resolve(
+                &places.iter().map(|p| p.key.clone()).collect::<Vec<_>>()
+            ),
+            Some(3),
+            "a tab's own calls arrive under somebody else's number"
+        );
+        // The page has no folder of its own, and still holds its place
+        assert_eq!(places[0].dir, std::path::PathBuf::new());
+        assert_eq!(places[2].dir, std::env::temp_dir());
+        for t in &mut tabs {
+            t.kill();
         }
     }
 
