@@ -3943,6 +3943,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     pane_layout.split(dir, 0);
                     active = pane_layout.focused_surface();
                 }
+                // Nothing is in front -- the board itself is, or the last
+                // row went. A split of nothing is nothing: two empty panes,
+                // in no folder, under a row nobody asked for. Pressed from
+                // there it says so instead
+                false if active == 0 => flash = Some(i18n::t("msg.split.nothing")),
                 false => {
                     // Empty, not filled with whatever row happens to come
                     // next. Pulling in the next one was how a split in one
