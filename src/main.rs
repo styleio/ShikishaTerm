@@ -199,24 +199,40 @@ fn boot() -> Result<()> {
     if std::env::args().nth(1).as_deref() == Some("--mcp") {
         return shikisha_core::mcp::run();
     }
+    // Whether this copy is only a window onto a runtime somewhere else.
+    //
+    // Everything below this line that WRITES to the home folder is the
+    // runtime's to do, and only the runtime's. A client window is started
+    // while a runtime is very often already running out of the same folder --
+    // that is the whole point of the local split -- and the housekeeping
+    // below assumes it is alone with those files. Swept by a second copy, the
+    // exchange area loses hand-offs a live tab is in the middle of, the
+    // throwaway browser folders are deleted out from under open private
+    // pages, and a migration rewrites the layout the running one is reading.
+    //
+    // Asked once, here, so that this and the branch further down can never
+    // disagree about which copy this is
+    let client = std::env::args().nth(1).as_deref() == Some("--connect");
     // A copy started to finish an update waits for the copy that started it
     // to leave, so nothing below reads files the old one is still writing
     update::wait_for_handoff();
-    // An update that was interrupted mid-swap is put back, and one that
-    // finished is tidied, before any of the files it touched is read
-    update::finish_last();
-    // Old layouts are moved into place, and the first start of a version
-    // keeps a copy of the files and carries them forward (migrate.rs). Before
-    // anything reads them, so what is read is already in this version's shape
-    migrate::prepare();
-    // Clean up the exchange hand-off area. Sweep old run folders left behind by an abnormal
-    // exit, collecting them at startup (temp files from a normal exit are already gone by
-    // the time they're consumed). Anything older than 30 days.
-    exchange::sweep_old(30);
-    // Wipe the scratch area for private (throwaway) browsers. The premise is that it
-    // disappears when closed, so if anything is left from a previous abnormal exit, it's
-    // all garbage.
-    browser::sweep_private();
+    if !client {
+        // An update that was interrupted mid-swap is put back, and one that
+        // finished is tidied, before any of the files it touched is read
+        update::finish_last();
+        // Old layouts are moved into place, and the first start of a version
+        // keeps a copy of the files and carries them forward (migrate.rs). Before
+        // anything reads them, so what is read is already in this version's shape
+        migrate::prepare();
+        // Clean up the exchange hand-off area. Sweep old run folders left behind by an abnormal
+        // exit, collecting them at startup (temp files from a normal exit are already gone by
+        // the time they're consumed). Anything older than 30 days.
+        exchange::sweep_old(30);
+        // Wipe the scratch area for private (throwaway) browsers. The premise is that it
+        // disappears when closed, so if anything is left from a previous abnormal exit, it's
+        // all garbage.
+        browser::sweep_private();
+    }
     // Where WebView2's user data (cookies, cache) lives is decided per WebView, from
     // the folder config names — see browser::profiles_root. It is NOT set process-wide
     // here: WEBVIEW2_USER_DATA_FOLDER applies to every WebView at once, which quietly
@@ -243,7 +259,7 @@ fn boot() -> Result<()> {
     // server, and no single-instance lock. The lock in particular would be
     // wrong: connecting to a server is not a second copy of this app fighting
     // over this machine's files, and wanting both at once is the ordinary case.
-    if std::env::args().nth(1).as_deref() == Some("--connect") {
+    if client {
         return connect_to(&std::env::args().nth(2).unwrap_or_default());
     }
     // Settings-only mode (edit settings in a browser without launching the main app)
