@@ -4002,30 +4002,42 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
         for id in shell.mail().take_close_panes() {
-            if pane_layout.close(id) {
+            let closed = pane_layout.close(id);
+            if closed {
                 active = pane_layout.focused_surface();
                 view_touched_ms = start.elapsed().as_millis() as u64;
-            } else if let Some(key) = open_split.clone()
+            }
+            // A split is two panes or more. Down to one it is a row pretending
+            // to be an arrangement: pressing it puts you on the one thing it
+            // holds, which is where pressing that thing's own row already puts
+            // you, so it looks like a row that cannot be pressed at all.
+            //
+            // So the row goes as soon as there is nothing left to divide --
+            // whether the last ✕ took the second pane (`closed`) or was aimed
+            // at the only one (`!closed`). Taking it away ends nothing: what it
+            // was showing goes on standing in its own folder, which is the
+            // whole point of the row. Through the same door that row's own ✕
+            // goes through, so it leaves the settings in one place and not two
+            let alone = pane_layout.is_single();
+            if let Some(key) = open_split.clone().filter(|_| alone)
                 && let Some(at) = surfaces
                     .iter()
                     .position(|s| matches!(s, Surface::Split { key: k, .. } if *k == key))
                     .map(|i| i + 1)
             {
-                // The last pane of a split is the split. Closing it takes the
-                // row away rather than refusing, because a split of one pane
-                // is a row pretending to be an arrangement -- and taking it
-                // away ends nothing: what it was showing goes on standing in
-                // its own folder, which is the whole point of the row.
-                //
-                // Through the same door a ✕ on that row goes through, so the
-                // row is written out of the settings in one place and not two
                 let gone = surface_key(&surfaces[at - 1], &tabs);
                 shell.mail().close_tabs.push((at, gone, true));
                 splits.forget(&key);
                 split_save = None;
                 split_written = None;
+                open_split = None;
+                // What it was showing is in front now, on its own. Left to the
+                // row going, the screen would first flash whatever the list
+                // put in its place
+                active = pane_layout.focused_surface();
+                pane_layout = crate::layout::Layout::single(active);
                 view_touched_ms = start.elapsed().as_millis() as u64;
-            } else {
+            } else if !closed {
                 flash = Some(i18n::t("msg.pane_last"));
             }
         }
