@@ -48,7 +48,6 @@ mod picker;
 mod hotkeys;
 mod snip;
 mod wintoast;
-mod tray;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -316,8 +315,45 @@ fn boot() -> Result<()> {
     // reads a tab's output would stop that tab for as long as wsl.exe takes.
     discover::learn_wsl_distros();
 
+    // Two programs or one. Split, this process keeps the tabs and draws
+    // nothing, and the window is started as a second copy of this same
+    // executable -- so the window can be taken, for its memory or by a crash,
+    // and everything at work in the tabs carries on. Together is still the
+    // default, because the split costs a second process and a board on this
+    // machine's loopback for the window to reach.
+    //
+    // Asked of the settings, or said on the command line for a run that is
+    // trying it out
+    let split = std::env::args().nth(1).as_deref() == Some("--split")
+        || config::load().and_then(|c| c.split).unwrap_or(false);
+    if split {
+        return run_split();
+    }
     // Running it pops up the window. Only add a launcher in front when there's a reason to.
     run_in_window()
+}
+
+/// The runtime half of the pair: the same loop the window drives, given a
+/// shell that draws nothing and keeps a window over it in another process.
+///
+/// Everything that made this hard is already elsewhere. `serve::run` is the
+/// loop with no window; `split::Split` starts the window, watches it and puts
+/// it back; the notification-area icon is this process's, because it is the
+/// one that goes on running with nothing on screen. What is here is only the
+/// joining of the three.
+#[cfg(windows)]
+fn run_split() -> Result<()> {
+    append_hook_log("Starting as two programs: this one keeps the work, another draws it");
+    let minder = Box::new(shikisha_core::split::Split::new());
+    shikisha_core::serve::run_minded(minder)
+}
+
+/// Nowhere else yet. The pieces that make the pair work -- the icon, and the
+/// invisible window it hangs on -- are Windows' own, and a runtime on a server
+/// is already what `shikisha-serve` is
+#[cfg(not(windows))]
+fn run_split() -> Result<()> {
+    anyhow::bail!("running as two programs is only available on Windows")
 }
 
 /// `--cast-test <url>`: opens a browser, starts screen relaying, saves the first frame
@@ -1013,7 +1049,7 @@ fn run_in_window() -> Result<()> {
         );
         std::process::exit(1);
     }
-    let win = std::rc::Rc::new(browser::Browser::spawn(
+    let win = std::rc::Rc::new(browser::Browser::spawn_resident(
         &format!("http://127.0.0.1:{port}/"),
         "SHIKISHA-TERM",
     )?);

@@ -39,7 +39,6 @@ pub mod files;
 pub mod folders;
 pub mod git;
 pub mod github;
-pub mod goodbye;
 pub mod grants;
 pub mod guest;
 pub mod guide;
@@ -73,6 +72,10 @@ pub mod pwa;
 pub mod quick;
 pub mod reader;
 pub mod remote;
+/// Standing by in the notification area with no window to be seen in. What a
+/// runtime split from its window is, between one window and the next
+#[cfg(windows)]
+pub mod resident;
 pub mod revive;
 pub mod reply;
 pub mod repo;
@@ -87,11 +90,19 @@ pub mod snip;
 pub mod devcontainer;
 pub mod e2b;
 pub mod elsewhere;
+/// The runtime half of a program split in two on one machine: it keeps the
+/// work, and the window that draws it is another process entirely
+#[cfg(windows)]
+pub mod split;
 pub mod ssh;
 pub mod tab;
 pub mod tailscale;
 pub mod theme;
 pub mod toast;
+/// The icon in the notification area. Windows' own, and the only place a
+/// runtime with no window of its own can be seen or ended from
+#[cfg(windows)]
+pub mod tray;
 pub mod transfer;
 pub mod trust;
 pub mod tunnel;

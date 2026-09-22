@@ -58,7 +58,7 @@ const MENU_QUIT: usize = 2;
 /// address is the type's alignment, and for `u16` that is 2. Resource 2 does
 /// not exist, so the tray and the taskbar both loaded nothing and showed an
 /// empty square. The tests pin the number so that cannot happen quietly again
-pub(crate) const OUR_ICON: *const u16 = std::ptr::without_provenance(1);
+pub const OUR_ICON: *const u16 = std::ptr::without_provenance(1);
 
 /// A press made with the keyboard (Enter or Space on the icon)
 const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
@@ -150,7 +150,7 @@ impl Tray {
             d.Anonymous.uVersion = NOTIFYICON_VERSION_4;
             let versioned = Shell_NotifyIconW(NIM_SETVERSION, &d);
             if added == 0 || versioned == 0 {
-                shikisha_core::append_hook_log(&format!(
+                crate::append_hook_log(&format!(
                     "tray: the icon could not be put up (add={added}, version={versioned})"
                 ));
             }
@@ -198,7 +198,7 @@ unsafe extern "system" fn procedure(hwnd: *mut c_void, msg: u32, w: WPARAM, l: L
         }
         return 0;
     }
-    if shikisha_core::instance::is_show_id(msg) {
+    if crate::instance::is_show_id(msg) {
         if let Some(sink) = SINK.lock().unwrap().as_ref() {
             (sink.on)(Pressed::Open);
         }
@@ -227,7 +227,7 @@ fn event(hwnd: isize, lparam: LPARAM, open: &str, quit: &str) -> Pressed {
     // closing are the expected traffic of every press, so those are not
     const EXPECTED: [u32; 5] = [WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_RBUTTONDOWN, NIN_POPUPOPEN, NIN_POPUPCLOSE];
     if !EXPECTED.contains(&event) {
-        shikisha_core::append_hook_log(&format!("tray: event 0x{event:x} (nothing to do)"));
+        crate::append_hook_log(&format!("tray: event 0x{event:x} (nothing to do)"));
     }
     Pressed::Nothing
 }
@@ -286,8 +286,14 @@ mod tests {
     #[test]
     fn the_icon_is_asked_for_by_the_number_it_is_filed_under() {
         assert_eq!(OUR_ICON as usize, 1, "the resource number is off");
+        // ...which is the window program's build script, two folders up
+        // from this crate: the picture is a resource of the exe that shows
+        // the icon, not of the library the code now lives in
         let build = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("build.rs"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("build.rs"),
         )
         .expect("build.rs cannot be read");
         // `set_icon` files it as the first icon, number 1. A different id

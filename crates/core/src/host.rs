@@ -100,6 +100,47 @@ pub trait Shell {
     fn draw(&mut self, tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> anyhow::Result<()>;
 }
 
+/// Somebody keeping a window over a runtime that draws nothing itself.
+///
+/// A runtime with no window is usually a server nobody is sitting at, and then
+/// there is nothing to keep. Split in two on somebody's own machine it is the
+/// other half of a pair (`split::Split`): it starts the window, watches it,
+/// and puts it back when it is taken -- which is the whole reason the two are
+/// separate programs.
+///
+/// Everything it notices is said in the words a window would have used, so the
+/// loop reads them where it already reads them and nothing about what a ✕
+/// costs is decided twice.
+///
+/// Every method takes `&self` because the shell is asked these while the loop
+/// holds it; what has to change keeps itself.
+pub trait Minder {
+    /// The board is listening at this address. Nothing can be pointed at it
+    /// before this
+    fn board_is_at(&self, url: &str);
+    /// Once round the loop. What came of it, in the loop's own words
+    fn tick(&self) -> Told;
+    /// A window was asked for
+    fn show(&self);
+    /// No window, and none wanted until one is asked for
+    fn hide(&self);
+    /// Say, once, that the program is still there and where to find it
+    fn say_where_it_went(&self);
+    /// Whether to stop with this many tabs at work
+    fn confirm_quit(&self, busy: usize) -> bool;
+}
+
+/// What a minder noticed, in the words the loop already knows
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Told {
+    /// A window's ✕ was pressed
+    pub closed: bool,
+    /// Ending the program was asked for
+    pub quit: bool,
+    /// A window was asked for
+    pub open: bool,
+}
+
 /// A runtime with nothing showing it.
 ///
 /// Every question has an honest answer: it measured a terminal of the size it
@@ -121,6 +162,9 @@ pub struct Headless {
     /// is handed here. Dropping them, which is what this did, left a server
     /// that could be watched and not driven
     typed: std::collections::VecDeque<Event>,
+    /// Somebody keeping a window over this runtime, when this runtime is half
+    /// of a pair. None on a server, where there is nobody to draw for
+    minder: Option<Box<dyn Minder>>,
 }
 
 /// How big a page is, with no window to fit it into.
@@ -146,7 +190,15 @@ impl Headless {
             last: None,
             pages,
             typed: std::collections::VecDeque::new(),
+            minder: None,
         }
+    }
+
+    /// The same runtime, with somebody keeping a window over it. What makes
+    /// this half of a split pair rather than a server
+    pub fn minded_by(mut self, minder: Box<dyn Minder>) -> Self {
+        self.minder = Some(minder);
+        self
     }
 
     /// Take in whatever the pages have said since last time.
@@ -165,9 +217,13 @@ impl Shell for Headless {
         &mut self.mail
     }
 
-    /// Nobody to ask, so nothing is in the way of stopping
-    fn confirm_quit(&mut self, _busy: usize) -> bool {
-        true
+    /// Nobody to ask, so nothing is in the way of stopping -- unless there
+    /// is a window over this runtime, and therefore a desktop to ask on
+    fn confirm_quit(&mut self, busy: usize) -> bool {
+        match &self.minder {
+            Some(m) => m.confirm_quit(busy),
+            None => true,
+        }
     }
 
     /// A Store update needs a desktop to show itself on. There is none
@@ -212,15 +268,39 @@ impl Shell for Headless {
     fn push_lua_done(&self, err_json: &str) { let _ = err_json; }
     fn push_actions(&self, actions_json: &str) { let _ = actions_json; }
     fn push_theme(&self) {}
-    fn hide(&mut self) {}
-    fn show(&mut self) {}
-    fn say_where_it_went(&self) {}
+    /// Nothing to put away on a server. Where there is a window over this
+    /// runtime, these are the same three things they have always been -- the
+    /// window is simply somewhere else
+    fn hide(&mut self) {
+        if let Some(m) = &self.minder {
+            m.hide();
+        }
+    }
+    fn show(&mut self) {
+        if let Some(m) = &self.minder {
+            m.show();
+        }
+    }
+    fn say_where_it_went(&self) {
+        if let Some(m) = &self.minder {
+            m.say_where_it_went();
+        }
+    }
     fn size(&self) -> anyhow::Result<Size> { Ok(Size { width: self.cols.saturating_mul(8), height: self.rows.saturating_mul(16) }) }
     /// Nobody presses anything here, so this only ever waits -- but it waits
     /// in slices, because the pages are talking on their own threads and a
     /// frame from one of them is worth going round the loop for.
     fn poll(&mut self, timeout: Duration, active_tab: Option<&Tab>) -> anyhow::Result<Option<Event>> {
         let _ = active_tab;
+        // What the window over this runtime did since the last turn, put into
+        // the mailbox as though a window in this process had done it. The loop
+        // reads it a few lines on, in the one place it reads all of this
+        if let Some(m) = &self.minder {
+            let told = m.tick();
+            self.mail.close_requested |= told.closed;
+            self.mail.tray_quit |= told.quit;
+            self.mail.tray_open |= told.open;
+        }
         let until = std::time::Instant::now() + timeout;
         loop {
             // What somebody pressed comes first, and one at a time: the loop
@@ -258,6 +338,11 @@ impl Shell for Headless {
         let line = crate::i18n::tp("msg.serve.board_at", &[("url", url)]);
         println!("{line}");
         crate::append_hook_log(&line);
+        // ...and where there is a window to open on it, it is opened now: the
+        // address is the one thing it could not be started without
+        if let Some(m) = &self.minder {
+            m.board_is_at(url);
+        }
     }
 
     /// Read from the config, and re-read whenever it changes

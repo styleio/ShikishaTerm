@@ -602,14 +602,32 @@ pub fn runtime_version() -> Option<String> {
 
 impl Browser {
     /// Open the window and get it ready to accept instructions
+    /// A window, and nothing beside it. What a client, a probe and a
+    /// self-check want: the window is the whole of the program's presence,
+    /// and when it closes the program is finished
     pub fn spawn(url: &str, title: &str) -> Result<Self> {
+        Self::opened(url, title, false)
+    }
+
+    /// The same, wearing the program's icon in the notification area.
+    ///
+    /// For the one window whose process outlives it. The icon's promise is
+    /// "the work is still going with nothing on screen", and a window that
+    /// takes its process with it has no such promise to make -- a second icon
+    /// from a client or a probe would only be a second thing to press that
+    /// answers for the wrong copy
+    pub fn spawn_resident(url: &str, title: &str) -> Result<Self> {
+        Self::opened(url, title, true)
+    }
+
+    fn opened(url: &str, title: &str, tray: bool) -> Result<Self> {
         if !is_openable(url) {
             return Err(anyhow!(shikisha_core::i18n::tp("err.browser.bad_url", &[("url", url)])));
         }
-        Self::start(url, title)
+        Self::start(url, title, tray)
     }
 
-    fn start(url: &str, title: &str) -> Result<Self> {
+    fn start(url: &str, title: &str, tray: bool) -> Result<Self> {
         let (proxy_tx, proxy_rx) = channel();
         let (ev_tx, ev_rx) = channel();
         let url = url.to_string();
@@ -620,7 +638,7 @@ impl Browser {
         std::thread::Builder::new()
             .name("shikisha-browser".into())
             .spawn(move || {
-                if let Err(e) = run_window(&url, &title, proxy_tx, ev_tx.clone(), its_sound_pid) {
+                if let Err(e) = run_window(&url, &title, tray, proxy_tx, ev_tx.clone(), its_sound_pid) {
                     shikisha_core::append_hook_log(&shikisha_core::i18n::tp(
                         "err.browser.log_open_failed",
                         &[("e", &format!("{e}"))],
@@ -1351,7 +1369,7 @@ fn wear_our_own_icon(hwnd: isize) {
         GetSystemMetrics, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW,
         SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SendMessageW, WM_SETICON,
     };
-    use crate::tray::OUR_ICON;
+    use shikisha_core::tray::OUR_ICON;
     unsafe {
         let module = GetModuleHandleW(std::ptr::null());
         let hwnd = hwnd as *mut std::ffi::c_void;
@@ -1377,9 +1395,13 @@ fn wear_our_own_icon(hwnd: isize) {
     }
 }
 
+// `wears_the_icon`: whether this window carries the program's icon in the
+// notification area. The one window whose process outlives it does; a client,
+// a probe and a self-check do not (see `Browser::spawn_resident`)
 fn run_window(
     url: &str,
     title: &str,
+    wears_the_icon: bool,
     proxy_tx: Sender<tao::event_loop::EventLoopProxy<Cmd>>,
     ev_tx: Sender<Ev>,
     // Filled in with the process that plays the page being cast, for a phone
@@ -1431,7 +1453,7 @@ fn run_window(
     let display_down = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // The notification-area icon. Its presses, and a second copy's request
     // for the window, arrive through the window's own procedure (see tray.rs)
-    let tray = {
+    let tray = wears_the_icon.then(|| {
         use tao::platform::windows::WindowExtWindows;
         let tell = ev_tx.clone();
         // Pressing the icon while the screen is down means "bring it back",
@@ -1439,26 +1461,26 @@ fn run_window(
         // pressing is never a storm, so whatever was tried is forgotten
         let down = std::sync::Arc::clone(&display_down);
         let revive = ev_loop.create_proxy();
-        crate::tray::Tray::add(
+        shikisha_core::tray::Tray::add(
             window.hwnd(),
             title,
             move |pressed| {
-                if matches!(pressed, crate::tray::Pressed::Open)
+                if matches!(pressed, shikisha_core::tray::Pressed::Open)
                     && down.load(std::sync::atomic::Ordering::SeqCst)
                 {
                     let _ = revive.send_event(Cmd::DisplayWanted { asked: true });
                     return;
                 }
                 let _ = match pressed {
-                    crate::tray::Pressed::Open => tell.send(Ev::TrayOpen),
-                    crate::tray::Pressed::Quit => tell.send(Ev::TrayQuit),
-                    crate::tray::Pressed::Nothing => Ok(()),
+                    shikisha_core::tray::Pressed::Open => tell.send(Ev::TrayOpen),
+                    shikisha_core::tray::Pressed::Quit => tell.send(Ev::TrayQuit),
+                    shikisha_core::tray::Pressed::Nothing => Ok(()),
                 };
             },
             &shikisha_core::i18n::t("tray.open"),
             &shikisha_core::i18n::t("tray.quit"),
         )
-    };
+    });
     #[cfg(windows)]
     {
         use tao::platform::windows::WindowExtWindows;
@@ -2275,7 +2297,11 @@ fn run_window(
                     }
                     window.set_focus();
                 }
-                Cmd::TrayNotice { title, text } => tray.notice(&title, &text),
+                Cmd::TrayNotice { title, text } => {
+                    if let Some(tray) = &tray {
+                        tray.notice(&title, &text);
+                    }
+                }
                 // The screen's browser died. The program did not: the tabs
                 // are running, the agents are working, and what was lost is
                 // the view of them. So it is put back -- unless putting it
@@ -2310,10 +2336,12 @@ fn run_window(
                         // ready for it
                         shikisha_core::revive::Next::Ask => {
                             display_down.store(true, std::sync::atomic::Ordering::SeqCst);
-                            tray.notice(
-                                &shikisha_core::i18n::t("tray.screen_down.title"),
-                                &shikisha_core::i18n::t("tray.screen_down.body"),
-                            );
+                            if let Some(tray) = &tray {
+                                tray.notice(
+                                    &shikisha_core::i18n::t("tray.screen_down.title"),
+                                    &shikisha_core::i18n::t("tray.screen_down.body"),
+                                );
+                            }
                         }
                     }
                 }
@@ -2544,7 +2572,9 @@ fn run_window(
         }
     });
 
-    tray.remove();
+    if let Some(tray) = &tray {
+        tray.remove();
+    }
     let _ = closed_tx.send(Ev::Closed);
     Ok(())
 }

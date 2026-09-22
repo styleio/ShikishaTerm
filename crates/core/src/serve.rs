@@ -21,9 +21,23 @@ const COLS: u16 = 140;
 
 /// Boot the runtime and keep going until it is stopped.
 pub fn run() -> Result<()> {
+    started(Headless::new(ROWS, COLS))
+}
+
+/// The same, with somebody keeping a window over it in another process.
+///
+/// This is a program split in two on one machine rather than a server nobody
+/// is sitting at, and the difference is entirely the minder's: it starts the
+/// window, watches it, puts it back when it is taken, and holds the icon that
+/// says the work is still going while nothing is on screen. The loop below
+/// does not know which of the two it is running
+pub fn run_minded(minder: Box<dyn crate::host::Minder>) -> Result<()> {
+    started(Headless::new(ROWS, COLS).minded_by(minder))
+}
+
+fn started(mut shell: Headless) -> Result<()> {
     // The same carrying-forward the window does before it reads anything: a
     // settings file from an older version is as likely to be on a server
     crate::migrate::prepare();
-    let mut shell = Headless::new(ROWS, COLS);
     crate::runtime::run(&mut shell)
 }
