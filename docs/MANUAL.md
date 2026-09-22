@@ -286,7 +286,7 @@ settings screen, so it cannot fall behind.
 - **Secrets** — Passwords and tokens
 - **AI × AI discussion** — Several AI tabs discussing or working together
 - **Stop conditions** — When the joint work ends
-- **Tools** — Sending pictures to the AI
+- **Tools** — What may be sent out: pictures of the screen, and pages
 - **Automatic names** — The AI that names and describes working folders
 - **Automation doors** — Files and URLs a script can reach
 - **Export** — This desk as one file

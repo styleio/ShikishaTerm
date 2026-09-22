@@ -805,6 +805,125 @@ fn build_sandbox_env(
         }
         Ok((check("browser_fill", rep.state.as_str(), &opts)?, rep.echo))
     });
+    // Ask a model to decide between answers that are spelled out for it, and
+    // get back which one and how sure it was. The whole point is that the
+    // caller writes this once: a service built for choosing and an ordinary
+    // conversational model both answer it, and only the speed differs
+    bind!("ai_choose", Table, |lua_, c, _al, spec| {
+        let model: Option<String> = spec.get("model").ok();
+        let ask = serde_json::json!({
+            "state": lua_to_json(&spec.get::<Value>("state").unwrap_or(Value::Nil)),
+            "questions": lua_to_json(&spec.get::<Value>("questions").unwrap_or(Value::Nil)),
+        });
+        let out = c
+            .ai_choose(model.as_deref(), &ask)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        json_to_lua(lua_, &out)
+    });
+    // Ask a model for words. `shape` (a JSON Schema) makes the answer a shape
+    // instead of a paragraph, which is how a field value or an extracted
+    // record comes back usable rather than wrapped in pleasantries
+    bind!("ai_text", Table, |lua_, c, _al, spec| {
+        let model: Option<String> = spec.get("model").ok();
+        let system: Option<String> = spec.get("system").ok();
+        let prompt: String = spec.get("prompt").unwrap_or_default();
+        let shape = match spec.get::<Value>("shape") {
+            Ok(Value::Nil) | Err(_) => None,
+            Ok(v) => Some(lua_to_json(&v)),
+        };
+        c.ai_text(model.as_deref(), &prompt, system.as_deref(), shape.as_ref())
+            .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
+    // A native dropdown is not a menu drawn on the page: clicking one opens
+    // something the page cannot see into, so it gets its own verb. The value
+    // is the text a person reads ("Economy"), not the value attribute
+    bind!("browser_select", (String, Value, String, Option<Table>), |lua_, c, al, (name, sel, value, opts)| {
+        guard(&name, &al)?;
+        let sel = sel_of(&sel)?;
+        let rep = c
+            .browser_select(&name, &sel, &value)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        match sel_replay(&sel, &rep.anchor) {
+            Some(s) => c.push_replay(format!(
+                "browser_select({}, {}, {})",
+                lua_str(&name),
+                s,
+                lua_str(&value)
+            )),
+            None => c.push_replay(format!(
+                "-- select ({}): {}",
+                crate::i18n::t("replay.no_anchor"),
+                rep.echo.clone().unwrap_or_default()
+            )),
+        }
+        Ok((check("browser_select", rep.state.as_str(), &opts)?, rep.echo))
+    });
+    // Scroll by screenfuls. Without a selector the page moves; with one, the
+    // box that selector names moves instead. The second return value says how
+    // far it actually went, so "there is more" and "that was the end" are
+    // different answers rather than the same silence
+    bind!("browser_scroll", (String, Value, Option<Value>), |lua_, c, al, (name, amount, sel)| {
+        guard(&name, &al)?;
+        let amount = match &amount {
+            Value::String(s) => serde_json::Value::String(s.to_str()?.to_string()),
+            Value::Integer(i) => serde_json::json!(*i),
+            Value::Number(n) => serde_json::json!(*n),
+            _ => return Err(mlua::Error::runtime(crate::i18n::t("err.browser.scroll_amount"))),
+        };
+        let sel = match sel {
+            Some(Value::Nil) | None => None,
+            Some(v) => Some(sel_of(&v)?),
+        };
+        let (state, how_far) = c
+            .browser_scroll(&name, sel.as_ref(), &amount)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        // How far to go, spelled the way Lua would have said it
+        let far = match &amount {
+            serde_json::Value::String(s) => lua_str(s),
+            other => other.to_string(),
+        };
+        match sel.as_ref().map(|s| sel_replay(s, &None)) {
+            // The page itself: nothing to address, so the line is complete
+            None => c.push_replay(format!("browser_scroll({}, {})", lua_str(&name), far)),
+            Some(Some(spelled)) => c.push_replay(format!(
+                "browser_scroll({}, {}, {})",
+                lua_str(&name),
+                far,
+                spelled
+            )),
+            // A ref with nothing durable behind it: the journal says so
+            // rather than writing a line that would scroll the wrong thing
+            Some(None) => c.push_replay(format!(
+                "-- scroll ({})",
+                crate::i18n::t("replay.no_anchor")
+            )),
+        }
+        Ok((state.as_str().to_string(), how_far))
+    });
+    // Wait for the page to stop reacting to the last move, rather than
+    // sleeping a fixed amount and hoping. Returns how many milliseconds it
+    // waited and whether the page really went still
+    bind!("browser_settle", (String, Option<Table>), |lua_, c, al, (name, opts)| {
+        guard(&name, &al)?;
+        let expect = opts
+            .as_ref()
+            .and_then(|t| t.get::<String>("expect").ok())
+            .unwrap_or_else(|| "quiet".to_string());
+        let cap = opts
+            .as_ref()
+            .and_then(|t| t.get::<u64>("ms").ok())
+            .unwrap_or(1_200);
+        // How long to wait for the page to react at all before believing it
+        // never will. The page's own default, said in one place
+        let first = opts
+            .as_ref()
+            .and_then(|t| t.get::<u64>("first").ok())
+            .unwrap_or(300);
+        let (ms, why) = c
+            .browser_settle(&name, &expect, cap, first)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        Ok((ms, why))
+    });
     // Press a single named key (enter/tab/escape/…) on the focused element.
     // browser_fill only sets a value; this is how the AI submits a form or
     // runs a search: fill the box, then browser_press(BR, "enter").
@@ -866,6 +985,17 @@ fn build_sandbox_env(
         c.browser_digest(&name)
             .map(|s| c.redact(&s))
             .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
+    // The same reading as browser_digest, as a table: one row per element,
+    // carrying its number, what it is, what it says, and which verbs apply.
+    // For automation that builds a question out of the page rather than
+    // showing it to somebody
+    bind!("browser_elements", String, |lua_, c, al, name| {
+        guard(&name, &al)?;
+        let rows = c
+            .browser_elements(&name)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        json_to_lua(lua_, &rows)
     });
     bind!("browser_fetch", (String, String, Option<Table>), |lua_, c, al, (name, url, opts)| {
         guard(&name, &al)?;
@@ -1076,6 +1206,11 @@ pub enum Command {
     /// `SendPrompt` for a pane that must be told something without being asked
     /// anything
     Note { target: TabRef, text: String },
+    /// A line about a run being driven from words, for the panel on the page
+    /// it is driving. A browser tab has no screen to write a `Note` on -- the
+    /// page is drawn over it -- so what is happening is said in the one strip
+    /// the person is already looking at
+    WordsNote { text: String, bad: bool },
     /// The rally's final result (an exit code and reason the AI produces by
     /// judging whether the goal was met). Written to data/last-result.json,
     /// the log, and the UI
@@ -2004,6 +2139,26 @@ impl HookEngine {
                         c.borrow_mut().push(Command::Note {
                             target: tab_ref_of(&target)?,
                             text: text.to_string_lossy(),
+                        });
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // The same act as `note`, for a run that is being watched on a
+            // page rather than on a screen of text. A browser tab's own screen
+            // is the page itself, so there is nowhere to write a line: this
+            // goes to the strip under the page, where the person already is
+            let c = Rc::clone(&commands);
+            shikisha
+                .set(
+                    "words_note",
+                    lua.create_function(move |_, (_browser, text, bad): (Value, mlua::LuaString, Option<bool>)| {
+                        c.borrow_mut().push(Command::WordsNote {
+                            text: text.to_string_lossy(),
+                            bad: bad.unwrap_or(false),
                         });
                         Ok(())
                     })
@@ -4273,32 +4428,17 @@ impl HookEngine {
         Ok(self.scripts.len() - 1)
     }
 
-    /// Load the built-in orchestrator for browser-operation mode, targeting
-    /// the given browser (chat-style).
+    /// The parts of driving a page that do not depend on who is deciding:
+    /// the judge (the configured stop conditions), the runaway budget, the
+    /// transcript, and the brake that holds a risky move for a person.
     ///
-    /// The user never writes Lua. The goal is **typed into the input
-    /// field**, not configured. What's typed (chain 0) is picked up as a
-    /// new goal/correction, and the AI repeats: write one browser move at a
-    /// time to in.lua -> execute -> return the screen. Once the AI reports
-    /// instead of writing a move, that's treated as a checkpoint and it
-    /// waits for the next input. Runaway loops are always stopped by the
-    /// safety net. BR (the id of the browser being operated) is injected up
-    /// front
-    pub fn load_browser_agent(&mut self, browser: &str, stops_lua: &str) -> Result<usize> {
-        // Runaway limits and the on-limit policy come from config; fold them into
-        // the cache key so editing them in settings yields a fresh script.
-        let op = crate::config::operate();
-        let key = format!(
-            "<browser-agent:{browser}>{stops_lua}|{}|{}|{}|{}|{}|{}",
-            op.max_rounds, op.max_seconds, op.max_tokens, op.on_limit, op.settle_ms, op.confirm
-        );
-        if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
-            return Ok(i);
-        }
-        // Built-in orchestrator (function-definition layout). BR, STOPS and the
-        // limits (MAX_ROUNDS/MAX_SEC/MAX_TOK) plus ON_LIMIT are injected below.
-        const SRC: &str = r##"
-
+    /// Shared rather than copied, because the two modes are one run seen
+    /// from two sides -- an AI writing the moves, or a decision picked from
+    /// the moves that are possible. A second copy of the judge is a day when
+    /// a stop condition works in one mode and not in the other and nobody
+    /// can say why. BR, STOPS, CONFIRM and the limits are injected by the
+    /// loader, the same way for both
+    const SHARED_LUA: &str = r##"
 -- Judge: evaluate the configured stop conditions (STOPS) top to bottom and
 -- return the one that matched (nil if none did).
 -- screen/css/xpath look at the tab (default BR). console looks at this
@@ -4328,6 +4468,80 @@ local function judge(screen_out)
   end
   return nil
 end
+
+local function reset_budget()
+  shikisha.set_var("rally_round", 0)
+  shikisha.set_var("rally_t0", shikisha.epoch_ms())
+  shikisha.set_var("rally_tok", 0)
+end
+
+-- Append one entry to the human-readable record (transcript). Used for downloads
+local function tx(entry)
+  local p = shikisha.get_var("rally_tx")
+  if p then shikisha.exchange_append(p, entry) end
+end
+
+-- Cut a string to at most n bytes without splitting a UTF-8 character
+-- (a naive sub() would leave a broken half-character at the cut)
+local function clip(s, n)
+  if #s <= n then return s end
+  local cut = n
+  while cut > 0 do
+    local b = s:byte(cut + 1)
+    if not b or b < 0x80 or b >= 0xC0 then break end
+    cut = cut - 1
+  end
+  return s:sub(1, cut) .. "…"
+end
+
+-- Does this move submit/click/authenticate (vs. only read)? Used by the brake in
+-- CONFIRM="sends" mode to pause before a step that changes the page.
+local function touches_send(code)
+  code = code or ""
+  return code:find("browser_press", 1, true) ~= nil
+    or code:find("browser_click", 1, true) ~= nil
+    or code:find("browser_auth", 1, true) ~= nil
+    or code:find("browser_fill_secret", 1, true) ~= nil
+end
+
+-- The brake (CONFIRM). Before a move runs, optionally hold for a person to approve
+-- it via a button on the page. Returns true to proceed, false if it wasn't approved.
+local function brake_ok(code)
+  if CONFIRM ~= "all" and not (CONFIRM == "sends" and touches_send(code)) then return true end
+  shikisha.show(BR)
+  local r = shikisha.browser_wait(BR, {
+    ask = shikisha.tf("agent.brake.ask", { code = code }),
+    label = shikisha.t("agent.brake.go"),
+  })
+  return r == "button"
+end
+"##;
+
+    /// Load the built-in orchestrator for browser-operation mode, targeting
+    /// the given browser (chat-style).
+    ///
+    /// The user never writes Lua. The goal is **typed into the input
+    /// field**, not configured. What's typed (chain 0) is picked up as a
+    /// new goal/correction, and the AI repeats: write one browser move at a
+    /// time to in.lua -> execute -> return the screen. Once the AI reports
+    /// instead of writing a move, that's treated as a checkpoint and it
+    /// waits for the next input. Runaway loops are always stopped by the
+    /// safety net. BR (the id of the browser being operated) is injected up
+    /// front
+    pub fn load_browser_agent(&mut self, browser: &str, stops_lua: &str) -> Result<usize> {
+        // Runaway limits and the on-limit policy come from config; fold them into
+        // the cache key so editing them in settings yields a fresh script.
+        let op = crate::config::operate();
+        let key = format!(
+            "<browser-agent:{browser}>{stops_lua}|{}|{}|{}|{}|{}|{}",
+            op.max_rounds, op.max_seconds, op.max_tokens, op.on_limit, op.settle_ms, op.confirm
+        );
+        if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
+            return Ok(i);
+        }
+        // Built-in orchestrator (function-definition layout). BR, STOPS and the
+        // limits (MAX_ROUNDS/MAX_SEC/MAX_TOK) plus ON_LIMIT are injected below.
+        const SRC: &str = r##"
 
 -- A model brain can't write files, so it hands over the next move as a fenced
 -- ```lua block in its reply. Pull that block out (any/no language tag). Fall
@@ -4384,6 +4598,7 @@ local function protocol(run)
     "    browser_go(\"" .. BR .. "\", \"to\"|\"reload\"|\"back\"|\"forward\", url?)",
     "    browser_digest(\"" .. BR .. "\")",
     "    browser_click(\"" .. BR .. "\", sel)   browser_fill(\"" .. BR .. "\", sel, value)   browser_press(\"" .. BR .. "\", key)",
+    "    browser_select(\"" .. BR .. "\", sel, \"" .. shikisha.t("agent.browser.choice_name") .. "\")   browser_scroll(\"" .. BR .. "\", 1|-1|\"top\"|\"bottom\", sel?)",
     "    browser_fill_secret(\"" .. BR .. "\", sel, " .. shikisha.t("agent.browser.secret_name") .. ")   browser_auth(\"" .. BR .. "\", " .. shikisha.t("agent.browser.secret_name") .. ")",
     "    browser_text(\"" .. BR .. "\", sel)   browser_find(\"" .. BR .. "\", sel)",
     shikisha.t("agent.browser.proto.sel_note"),
@@ -4394,31 +4609,6 @@ local function protocol(run)
     shikisha.t("agent.browser.proto.done_note"),
     shikisha.contract(),
   }, "\n")
-end
-
-local function reset_budget()
-  shikisha.set_var("rally_round", 0)
-  shikisha.set_var("rally_t0", shikisha.epoch_ms())
-  shikisha.set_var("rally_tok", 0)
-end
-
--- Append one entry to the human-readable record (transcript). Used for downloads
-local function tx(entry)
-  local p = shikisha.get_var("rally_tx")
-  if p then shikisha.exchange_append(p, entry) end
-end
-
--- Cut a string to at most n bytes without splitting a UTF-8 character
--- (a naive sub() would leave a broken half-character at the cut)
-local function clip(s, n)
-  if #s <= n then return s end
-  local cut = n
-  while cut > 0 do
-    local b = s:byte(cut + 1)
-    if not b or b < 0x80 or b >= 0xC0 then break end
-    cut = cut - 1
-  end
-  return s:sub(1, cut) .. "…"
 end
 
 -- Where to tell the AI to put its next move. A CLI agent writes a file; a
@@ -4436,16 +4626,6 @@ local function next_hint(tab, infile)
   return shikisha.t("agent.browser.next_action.before") .. infile .. shikisha.t("agent.browser.next_action.after")
 end
 
--- Does this move submit/click/authenticate (vs. only read)? Used by the brake in
--- CONFIRM="sends" mode to pause before a step that changes the page.
-local function touches_send(code)
-  code = code or ""
-  return code:find("browser_press", 1, true) ~= nil
-    or code:find("browser_click", 1, true) ~= nil
-    or code:find("browser_auth", 1, true) ~= nil
-    or code:find("browser_fill_secret", 1, true) ~= nil
-end
-
 -- Hand the turn back to the AI, with the screen on it. These two go together on
 -- every path here: the AI is about to work and watching it is the whole point.
 -- Passing work no longer moves the screen by itself, so asking for it is the job
@@ -4453,18 +4633,6 @@ end
 local function back_to_ai(ai, msg)
   shikisha.show(ai)
   shikisha.send_to_tab(ai, msg)
-end
-
--- The brake (CONFIRM). Before a move runs, optionally hold for a person to approve
--- it via a button on the page. Returns true to proceed, false if it wasn't approved.
-local function brake_ok(code)
-  if CONFIRM ~= "all" and not (CONFIRM == "sends" and touches_send(code)) then return true end
-  shikisha.show(BR)
-  local r = shikisha.browser_wait(BR, {
-    ask = shikisha.tf("agent.brake.ask", { code = code }),
-    label = shikisha.t("agent.brake.go"),
-  })
-  return r == "button"
 end
 
 function on_start(tab)
@@ -4599,25 +4767,17 @@ function on_done(tab)
     shikisha.set_var("rally_round", n)
     -- Record the executed move in the human-readable transcript (4-space indent = Markdown code block)
     tx("\n### " .. shikisha.t("transcript.rally.action") .. " " .. n .. "\n    " .. code:gsub("\n", "\n    ") .. "\n")
-    -- Settle: wait until the page's body text stops changing (stable across two
-    -- reads) or SETTLE_MS elapses, watching stop conditions meanwhile. Reading a
-    -- half-rendered page would otherwise feed the operator a partial screen. The
-    -- loop is skipped entirely when SETTLE_MS = 0.
+    -- Settle: wait for the page to stop reacting to what just ran, then read
+    -- it. The page says when it is done -- usually within a frame or two --
+    -- and SETTLE_MS is only the point at which we stop waiting for it. This
+    -- used to sleep 180ms at a time and re-read the whole page between naps,
+    -- which cost most of a second on every move that needed no wait at all.
+    -- Skipped entirely when SETTLE_MS = 0
     local v = nil
-    local prev = nil
-    local waited = 0
-    while waited < SETTLE_MS do
-      shikisha.sleep(180)
-      waited = waited + 180
-      local t = shikisha.browser_text(BR, "body")
-      if t and #(t:gsub("%s", "")) > 0 then
-        v = judge(said)
-        if v then break end
-        if prev and t == prev then break end   -- unchanged => settled
-        prev = t
-      end
+    if SETTLE_MS > 0 then
+      pcall(shikisha.browser_settle, BR, { ms = SETTLE_MS })
     end
-    if not v then v = judge(said) end   -- evaluate stops even when settle was off/short
+    v = judge(said)
     local body0 = shikisha.browser_text(BR, "body") or ""
     tx("- " .. shikisha.t("transcript.rally.screen") .. ": " .. (clip(body0, 400):gsub("%s+", " ")) .. "\n")
     if out and #out > 0 then
@@ -4750,8 +4910,323 @@ end
         let src = format!(
             "local BR = {browser:?}\nlocal STOPS = {stops_lua}\n\
              local MAX_ROUNDS, MAX_SEC, MAX_TOK = {}, {}, {}\nlocal ON_LIMIT = {:?}\n\
-             local SETTLE_MS = {}\nlocal CONFIRM = {:?}\n{SRC}",
-            op.max_rounds, op.max_seconds, op.max_tokens, op.on_limit, op.settle_ms, op.confirm
+             local SETTLE_MS = {}\nlocal CONFIRM = {:?}\n{}\n{SRC}",
+            op.max_rounds,
+            op.max_seconds,
+            op.max_tokens,
+            op.on_limit,
+            op.settle_ms,
+            op.confirm,
+            Self::SHARED_LUA
+        );
+        self.load_source(&key, &src)
+    }
+
+    /// Load the built-in loop that carries out a goal written in ordinary
+    /// words, deciding each move itself rather than asking an AI to write one.
+    ///
+    /// The same run as [`Self::load_browser_agent`], turned around. There, an
+    /// AI is shown the page and writes the move; here, the page is turned into
+    /// a list of the moves that are *possible* and a model picks one of them.
+    /// That is what makes it quick and what makes it safe: nothing the model
+    /// says becomes a selector, a coordinate or a line of code -- it answers
+    /// with a number that this side minted, or it does not answer at all.
+    ///
+    /// One call of `on_step` is one move. The loop is not written as a loop,
+    /// because a loop here would hold the whole program while a page loads;
+    /// whoever started the run asks for the next step when it is ready for one
+    pub fn load_browser_words(&mut self, browser: &str, stops_lua: &str) -> Result<usize> {
+        let op = crate::config::operate();
+        let key = format!(
+            "<browser-words:{browser}>{stops_lua}|{}|{}|{}|{}|{}|{}|{}|{}",
+            op.max_rounds,
+            op.max_seconds,
+            op.max_tokens,
+            op.on_limit,
+            op.settle_ms,
+            op.confirm,
+            op.choose_model.as_deref().unwrap_or(""),
+            op.words_model.as_deref().unwrap_or(""),
+        );
+        if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
+            return Ok(i);
+        }
+        const SRC: &str = r##"
+
+-- What the page offers, as the answers to a question. One entry per element
+-- the browser found, keyed by its number, carrying what a decision needs to
+-- be made on: what it is, what it says, what it currently holds, and whether
+-- it only just appeared
+local function offers(rows, verb)
+  local out, any = {}, false
+  for _, e in ipairs(rows or {}) do
+    local ok = false
+    for _, v in ipairs(e.can or {}) do if v == verb then ok = true end end
+    if ok then
+      any = true
+      out[tostring(e.ref)] = {
+        element = "[" .. e.ref .. "] " .. (e.role or "") .. " " .. (e.name or ""),
+        holds = e.value or "",
+        choices = e.choices or "",
+        section = e.section or "",
+        is_new = e.new and "yes" or "no",
+        on_screen = e.off_screen and "no" or "yes",
+      }
+    end
+  end
+  if not any then return nil end
+  return out
+end
+
+-- The operations worth offering on this page, in the words the decision is
+-- made in. Only what can actually be carried out here: an operation with
+-- nothing to perform it on is a move that cannot be made, and offering it is
+-- how a run spends a turn learning that
+local function operations(rows)
+  local ops = {}
+  ops.WAIT = shikisha.t("words.op.wait")
+  ops.DONE = shikisha.t("words.op.done")
+  ops.STUCK = shikisha.t("words.op.stuck")
+  if offers(rows, "click") then ops.CLICK = shikisha.t("words.op.click") end
+  if offers(rows, "fill") then ops.TYPE = shikisha.t("words.op.type") end
+  if offers(rows, "select") then ops.CHOOSE = shikisha.t("words.op.choose") end
+  if offers(rows, "scroll") then ops.SCROLL_IN = shikisha.t("words.op.scroll_in") end
+  ops.SCROLL_DOWN = shikisha.t("words.op.scroll_down")
+  ops.SCROLL_UP = shikisha.t("words.op.scroll_up")
+  ops.ENTER = shikisha.t("words.op.enter")
+  return ops
+end
+
+-- Which element, for an operation that needs one. Asked at the same time as
+-- the operation and answered independently: the two together are one round
+-- trip instead of two, and the answer to a question whose operation was not
+-- chosen is simply never read
+local function target_question(goal, rows, verb, op, history)
+  local criteria = offers(rows, verb)
+  if not criteria then return nil end
+  return {
+    type = "choice",
+    criteria = criteria,
+    instructions = { goal = goal, operation = op, rules = shikisha.t("words.rules.target"), done = history },
+  }
+end
+
+-- What has happened so far, short enough to carry every round. A decision
+-- that cannot see the last few moves repeats them
+local function history()
+  local h = shikisha.get_var("words_history") or {}
+  local out = {}
+  for i = math.max(1, #h - 8), #h do out[#out + 1] = h[i] end
+  return out
+end
+
+local function remember(line)
+  local h = shikisha.get_var("words_history") or {}
+  h[#h + 1] = line
+  shikisha.set_var("words_history", h)
+end
+
+-- Say what is happening, where the person is looking. The run is watched from
+-- the page itself, so the page is where it reports
+local function say(text, bad)
+  shikisha.words_note(BR, text, bad and true or false)
+end
+
+local function finish(code, why, good)
+  shikisha.set_var("words_running", 0)
+  tx("\n## " .. shikisha.t("agent.verdict.label") .. ": " .. why .. "\n")
+  say(why, not good)
+  shikisha.set_result(code, why)
+end
+
+-- One move: read the page, decide, carry it out, write down what was done.
+-- Called again for the next one, by whoever is driving this run
+function on_step(tab)
+  if (shikisha.get_var("words_running") or 0) == 0 then return end
+  local goal = shikisha.get_var("words_goal")
+  if not goal or goal == "" then return end
+
+  -- Let the page finish reacting to the last move before reading it. Waiting
+  -- on the page itself rather than on the clock: usually a frame or two
+  if SETTLE_MS > 0 then
+    pcall(shikisha.browser_settle, BR, { ms = SETTLE_MS, expect = shikisha.get_var("words_expect") or "quiet" })
+  end
+  shikisha.set_var("words_expect", "quiet")
+
+  local okr, rows = pcall(shikisha.browser_elements, BR)
+  if not okr or type(rows) ~= "table" then
+    finish(1, shikisha.t("words.err.unreadable"), false)
+    return
+  end
+
+  -- The stop conditions get their say before a move is chosen, so a run that
+  -- has already arrived does not take one more step past the finish line
+  local verdict = judge(nil)
+  if verdict then
+    finish(verdict.code or 0, verdict.reason or verdict.outcome,
+      verdict.outcome == "success")
+    return
+  end
+
+  local n = (shikisha.get_var("rally_round") or 0)
+  local t0 = shikisha.get_var("rally_t0") or shikisha.epoch_ms()
+  local over = (MAX_ROUNDS > 0 and n >= MAX_ROUNDS)
+    or (MAX_SEC > 0 and (shikisha.epoch_ms() - t0) >= MAX_SEC * 1000)
+  if over then
+    if ON_LIMIT == "continue" then
+      reset_budget()
+    else
+      finish(1, shikisha.t("words.err.too_long"), false)
+      return
+    end
+  end
+
+  local past = history()
+  local ops = operations(rows)
+  local questions = {
+    operation = {
+      type = "choice",
+      criteria = ops,
+      instructions = { goal = goal, rules = shikisha.t("words.rules.operation"), done = past },
+    },
+  }
+  questions.click_target = target_question(goal, rows, "click", "CLICK", past)
+  questions.type_target = target_question(goal, rows, "fill", "TYPE", past)
+  questions.choose_target = target_question(goal, rows, "select", "CHOOSE", past)
+  questions.scroll_target = target_question(goal, rows, "scroll", "SCROLL_IN", past)
+
+  local where = shikisha.browser_text(BR, "body") or ""
+  local okc, answers = pcall(shikisha.ai_choose, {
+    model = CHOOSE_MODEL ~= "" and CHOOSE_MODEL or nil,
+    state = { page = { text = clip(where, 6000) }, elements = rows, done = past },
+    questions = questions,
+  })
+  if not okc or type(answers) ~= "table" or not answers.operation then
+    finish(1, shikisha.tf("words.err.no_decision", { why = tostring(answers) }), false)
+    return
+  end
+
+  local op = answers.operation.choice
+  local function chosen(name)
+    local a = answers[name]
+    return a and tonumber(a.choice) or nil
+  end
+
+  if op == "DONE" then
+    finish(0, shikisha.t("words.done"), true)
+    return
+  elseif op == "STUCK" then
+    finish(1, shikisha.t("words.stuck"), false)
+    return
+  end
+
+  -- What is about to happen, in one line: the brake asks about it, the
+  -- transcript keeps it, and the person watching reads it
+  local plan = shikisha.tf("words.doing", { op = op })
+  if not brake_ok(plan) then
+    say(shikisha.t("words.held"), false)
+    shikisha.set_var("words_running", 0)
+    return
+  end
+
+  local did, ok = nil, true
+  if op == "WAIT" then
+    shikisha.set_var("words_expect", "quiet")
+    did = shikisha.t("words.did.wait")
+  elseif op == "SCROLL_DOWN" then
+    ok = pcall(shikisha.browser_scroll, BR, 0.9)
+    did = shikisha.t("words.did.scroll_down")
+  elseif op == "SCROLL_UP" then
+    ok = pcall(shikisha.browser_scroll, BR, -0.9)
+    did = shikisha.t("words.did.scroll_up")
+  elseif op == "ENTER" then
+    ok = pcall(shikisha.browser_press, BR, "enter")
+    did = shikisha.t("words.did.enter")
+  elseif op == "SCROLL_IN" then
+    local r = chosen("scroll_target")
+    if not r then finish(1, shikisha.t("words.err.no_target"), false) return end
+    ok = pcall(shikisha.browser_scroll, BR, 0.9, { ref = r })
+    did = shikisha.t("words.did.scroll_in") .. " [" .. r .. "]"
+  elseif op == "CLICK" then
+    local r = chosen("click_target")
+    if not r then finish(1, shikisha.t("words.err.no_target"), false) return end
+    local okc2, _, echo = pcall(shikisha.browser_click, BR, { ref = r })
+    ok = okc2
+    did = shikisha.t("words.did.click") .. " [" .. r .. "] " .. tostring(echo or "")
+  elseif op == "CHOOSE" then
+    local r = chosen("choose_target")
+    if not r then finish(1, shikisha.t("words.err.no_target"), false) return end
+    -- Which of the list's own choices: written by the model that writes
+    -- words, from the ones the page actually offers
+    local want = shikisha.ai_text({
+      model = WORDS_MODEL ~= "" and WORDS_MODEL or nil,
+      system = shikisha.t("words.value.system"),
+      prompt = shikisha.tf("words.value.ask", {
+        goal = goal, field = tostring(rows[r] and rows[r].name or r),
+        choices = tostring(rows[r] and rows[r].choices or ""),
+      }),
+    })
+    local oks, _, echo = pcall(shikisha.browser_select, BR, { ref = r }, (want or ""):gsub("^%s*(.-)%s*$", "%1"))
+    ok = oks
+    did = shikisha.t("words.did.choose") .. " [" .. r .. "] " .. tostring(echo or "")
+  elseif op == "TYPE" then
+    local r = chosen("type_target")
+    if not r then finish(1, shikisha.t("words.err.no_target"), false) return end
+    local value = shikisha.ai_text({
+      model = WORDS_MODEL ~= "" and WORDS_MODEL or nil,
+      system = shikisha.t("words.value.system"),
+      prompt = shikisha.tf("words.value.ask", {
+        goal = goal, field = tostring(rows[r] and rows[r].name or r), choices = "",
+      }),
+    })
+    value = (value or ""):gsub("^%s*(.-)%s*$", "%1")
+    if value == "" then finish(1, shikisha.t("words.err.no_value"), false) return end
+    local okf = pcall(shikisha.browser_fill, BR, { ref = r }, value)
+    ok = okf
+    -- A box that suggests as you type is quiet for a moment before the
+    -- suggestions arrive; reading it then means choosing from an empty list
+    shikisha.set_var("words_expect", "options")
+    did = shikisha.t("words.did.type") .. " [" .. r .. "] " .. value
+  else
+    finish(1, shikisha.tf("words.err.unknown_op", { op = tostring(op) }), false)
+    return
+  end
+
+  shikisha.set_var("rally_round", n + 1)
+  remember(did)
+  tx("\n### " .. shikisha.t("transcript.rally.action") .. " " .. (n + 1) .. "\n    " .. did .. "\n")
+  say(did, not ok)
+end
+
+function on_start(tab)
+  local run = shikisha.exchange_new()
+  shikisha.set_var("rally_run", run)
+  shikisha.set_var("rally_tx", run .. "/transcript.md")
+  shikisha.set_var("words_history", {})
+  shikisha.set_var("words_expect", "quiet")
+  shikisha.set_var("words_running", 1)
+  reset_budget()
+  shikisha.take_replay()
+  tx(shikisha.t("transcript.rally.header") .. "\n")
+  say(shikisha.t("words.started"), false)
+end
+"##;
+        let src = format!(
+            "local BR = {browser:?}\nlocal STOPS = {stops_lua}\n\
+             local MAX_ROUNDS, MAX_SEC, MAX_TOK = {}, {}, {}\nlocal ON_LIMIT = {:?}\n\
+             local SETTLE_MS = {}\nlocal CONFIRM = {:?}\n\
+             local CHOOSE_MODEL = {:?}\nlocal WORDS_MODEL = {:?}\n{}\n{SRC}",
+            op.max_rounds,
+            op.max_seconds,
+            op.max_tokens,
+            op.on_limit,
+            // The settle here is a ceiling on an event-driven wait, not a
+            // sleep: the old fixed pause is far too long to spend every move
+            op.settle_ms.min(1_500),
+            op.confirm,
+            op.choose_model.clone().unwrap_or_default(),
+            op.words_model.clone().unwrap_or_default(),
+            Self::SHARED_LUA
         );
         self.load_source(&key, &src)
     }
@@ -5481,6 +5956,68 @@ end
         ));
         self.fire("on_start", ctx, None);
         Ok(())
+    }
+
+    /// Start driving a page from a goal written in ordinary words.
+    ///
+    /// The script is attached to the browser's own pane, because that is
+    /// where the run belongs: nobody is operating it from another tab, and
+    /// the panel the person watches is the one under that page
+    pub fn start_words(
+        &mut self,
+        pane: usize,
+        browser: &str,
+        stops_lua: &str,
+        goal: &str,
+        ctx: &TabCtx,
+    ) -> Result<()> {
+        let id = self.load_browser_words(browser, stops_lua)?;
+        self.lend_tab(pane, id);
+        crate::append_hook_log(&format!("words: driving {browser:?} from pane{pane}"));
+        self.fire("on_start", ctx, None);
+        self.set_goal_in_words(goal);
+        Ok(())
+    }
+
+    /// Give the run its goal, or a correction to it while it is running
+    pub fn set_goal_in_words(&self, goal: &str) {
+        let _ = self.call_primitive_as(
+            None,
+            crate::grants::Subject::Human,
+            "set_var",
+            &[serde_json::json!("words_goal"), serde_json::json!(goal)],
+        );
+    }
+
+    /// Take one more move. Answers whether the run is still going, so the
+    /// caller knows when to stop asking
+    pub fn step_words(&mut self, ctx: &TabCtx) -> bool {
+        self.fire("on_step", ctx, None);
+        self.words_running()
+    }
+
+    /// The durable spelling of everything that has run since the last look
+    pub fn take_replay_lines(&self) -> Vec<String> {
+        self.caps.take_replay()
+    }
+
+    /// Whether a words-driven run is still going
+    pub fn words_running(&self) -> bool {
+        matches!(
+            self.call_primitive("get_var", &[serde_json::json!("words_running")]),
+            Ok(v) if v.as_i64().unwrap_or(0) != 0
+        )
+    }
+
+    /// Stop a words-driven run and give the pane its own automation back
+    pub fn stop_words(&mut self, pane: usize) {
+        let _ = self.call_primitive_as(
+            None,
+            crate::grants::Subject::Human,
+            "set_var",
+            &[serde_json::json!("words_running"), serde_json::json!(0)],
+        );
+        self.stop_operate(pane);
     }
 
     /// Detach an ad-hoc operate: the source tab goes back to being a plain tab
@@ -6253,6 +6790,7 @@ mod tests {
         ));
         let mut eng = super::HookEngine::with_caps(caps).expect("engine");
         eng.load_browser_agent("BR", "{}").expect("browser rally template");
+        eng.load_browser_words("BR", "{}").expect("driven-from-words template");
         eng.load_ai_agent("target").expect("operate template");
         // Loaded the way `fire_template` loads it, but not run: running it
         // wants a server. A typo would otherwise wait until somebody sent a
@@ -6275,16 +6813,20 @@ mod tests {
         // fine and blows up only when that path is actually walked — which, for
         // a branch like "the AI got stuck", can be weeks later
         let file = include_str!("hooks.rs");
+        // What every template is loaded with in front of it, so a helper that
+        // lives there counts as defined (see `HookEngine::SHARED_LUA`)
+        let shared = super::HookEngine::SHARED_LUA;
         let mut checked = 0;
         for chunk in file.split("const SRC: &str = r##\"").skip(1) {
             let body = chunk.split("\"##;").next().unwrap_or("");
-            for helper in ["back_to_ai", "next_hint", "fix_hint", "retry_hint", "clip"] {
+            for helper in ["back_to_ai", "next_hint", "fix_hint", "retry_hint", "clip", "judge", "brake_ok"] {
                 if !body.contains(&format!("{helper}(")) {
                     continue;
                 }
                 assert!(
-                    body.contains(&format!("local function {helper}(")),
-                    "a template calls {helper} but does not define it within itself"
+                    body.contains(&format!("local function {helper}("))
+                        || shared.contains(&format!("local function {helper}(")),
+                    "a template calls {helper} but neither it nor the shared prelude defines it"
                 );
                 checked += 1;
             }
@@ -6504,6 +7046,42 @@ mod tests {
         assert!(content.contains(r##"shikisha.browser_click("br", "#login")"##));
         assert!(content.contains(r##"shikisha.browser_fill("br", "#body", "hi")"##));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The run driven from words: starting it says so on the page it is
+    /// driving, a step taken after it has stopped does nothing at all, and
+    /// stopping it leaves the pane the automation it came with.
+    ///
+    /// The last of those is the one worth a test: a step that kept running
+    /// after the end would keep spending somebody's money on a page nobody
+    /// is watching
+    #[test]
+    fn a_run_driven_from_words_starts_says_so_and_stays_stopped() {
+        let _g = OwnRally::new();
+        let mut e = HookEngine::new().unwrap();
+        let id = e.load_browser_words("br", "{}").expect("the template cannot be read");
+        e.set_tab(1, id);
+        e.fire("on_start", &ctx(1, ""), None);
+
+        // It reports on the page, because a browser tab has no screen of text
+        let said = e.drain_commands();
+        assert!(
+            said.iter().any(|c| matches!(c, Command::WordsNote { .. })),
+            "starting is said where the person is looking: {said:?}"
+        );
+        assert!(e.words_running(), "and the run is going");
+
+        // Stopped, a step is not a step. Nothing is asked of any model, and
+        // nothing reaches the page -- with no goal and no model configured,
+        // a step that did run would fail loudly instead of quietly doing
+        // nothing, which is what this is really checking
+        e.stop_words(1);
+        assert!(!e.words_running());
+        assert!(!e.step_words(&ctx(1, "")), "a stopped run stays stopped");
+        assert!(
+            e.drain_commands().is_empty(),
+            "and it says nothing, because nothing happened"
+        );
     }
 
     #[test]

@@ -333,6 +333,21 @@ impl BrowserHost for Far {
     fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Option<String>> {
         crate::pageops::text(self, to, sel, timeout_ms)
     }
+    fn select(&self, to: Option<&str>, sel: &Sel, value: &str, timeout_ms: u64) -> anyhow::Result<OpReport> {
+        crate::pageops::select(self, to, sel, value, timeout_ms)
+    }
+    fn scroll(
+        &self,
+        to: Option<&str>,
+        sel: Option<&Sel>,
+        amount: &serde_json::Value,
+        timeout_ms: u64,
+    ) -> anyhow::Result<(shikisha_shared::Found, String)> {
+        crate::pageops::scroll(self, to, sel, amount, timeout_ms)
+    }
+    fn settle(&self, to: Option<&str>, expect: &str, cap_ms: u64, first_ms: u64, timeout_ms: u64) -> anyhow::Result<(u64, String)> {
+        crate::pageops::settle(self, to, expect, cap_ms, first_ms, timeout_ms)
+    }
     fn href(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
         crate::pageops::href(self, to, timeout_ms)
     }
@@ -341,6 +356,9 @@ impl BrowserHost for Far {
     }
     fn digest(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
         crate::pageops::digest(self, to, timeout_ms)
+    }
+    fn elements(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<serde_json::Value> {
+        crate::pageops::elements(self, to, timeout_ms)
     }
     fn snapshot(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<Vec<u8>> {
         crate::pageops::snapshot(self, to, timeout_ms)
@@ -820,6 +838,21 @@ mod tests {
         fn trust(&self, _u: &str) -> anyhow::Result<()> { Ok(()) }
         fn record_all_off(&self) {}
         fn record(&self, _t: Option<&str>, _o: bool) -> anyhow::Result<()> { Ok(()) }
+        fn select(&self, t: Option<&str>, sel: &Sel, v: &str, ms: u64) -> anyhow::Result<OpReport> {
+            crate::pageops::select(self, t, sel, v, ms)
+        }
+        fn scroll(
+            &self,
+            t: Option<&str>,
+            sel: Option<&Sel>,
+            amount: &serde_json::Value,
+            ms: u64,
+        ) -> anyhow::Result<(shikisha_shared::Found, String)> {
+            crate::pageops::scroll(self, t, sel, amount, ms)
+        }
+        fn settle(&self, t: Option<&str>, expect: &str, cap: u64, first: u64, ms: u64) -> anyhow::Result<(u64, String)> {
+            crate::pageops::settle(self, t, expect, cap, first, ms)
+        }
         fn go(&self, _t: Option<&str>, _g: Go) -> anyhow::Result<()> { Ok(()) }
         fn focus(&self, _t: Option<&str>) -> anyhow::Result<()> { Ok(()) }
         fn ask_where(&self, _t: Option<&str>) -> anyhow::Result<()> { Ok(()) }
@@ -847,6 +880,9 @@ mod tests {
         }
         fn digest(&self, to: Option<&str>, ms: u64) -> anyhow::Result<String> {
             crate::pageops::digest(self, to, ms)
+        }
+        fn elements(&self, to: Option<&str>, ms: u64) -> anyhow::Result<serde_json::Value> {
+            crate::pageops::elements(self, to, ms)
         }
         fn snapshot(&self, to: Option<&str>, ms: u64) -> anyhow::Result<Vec<u8>> {
             crate::pageops::snapshot(self, to, ms)

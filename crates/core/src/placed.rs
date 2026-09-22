@@ -227,6 +227,21 @@ impl BrowserHost for Placed {
     fn text(&self, to: Option<&str>, sel: &Sel, ms: u64) -> anyhow::Result<Option<String>> {
         self.on(to, |b| b.text(to, sel, ms))
     }
+    fn select(&self, to: Option<&str>, sel: &Sel, value: &str, ms: u64) -> anyhow::Result<OpReport> {
+        self.on(to, |b| b.select(to, sel, value, ms))
+    }
+    fn scroll(
+        &self,
+        to: Option<&str>,
+        sel: Option<&Sel>,
+        amount: &serde_json::Value,
+        ms: u64,
+    ) -> anyhow::Result<(shikisha_shared::Found, String)> {
+        self.on(to, |b| b.scroll(to, sel, amount, ms))
+    }
+    fn settle(&self, to: Option<&str>, expect: &str, cap_ms: u64, first_ms: u64, ms: u64) -> anyhow::Result<(u64, String)> {
+        self.on(to, |b| b.settle(to, expect, cap_ms, first_ms, ms))
+    }
     fn href(&self, to: Option<&str>, ms: u64) -> anyhow::Result<String> {
         self.on(to, |b| b.href(to, ms))
     }
@@ -235,6 +250,9 @@ impl BrowserHost for Placed {
     }
     fn digest(&self, to: Option<&str>, ms: u64) -> anyhow::Result<String> {
         self.on(to, |b| b.digest(to, ms))
+    }
+    fn elements(&self, to: Option<&str>, ms: u64) -> anyhow::Result<serde_json::Value> {
+        self.on(to, |b| b.elements(to, ms))
     }
     fn snapshot(&self, to: Option<&str>, ms: u64) -> anyhow::Result<Vec<u8>> {
         self.on(to, |b| b.snapshot(to, ms))

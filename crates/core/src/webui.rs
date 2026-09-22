@@ -5817,7 +5817,9 @@ function renderDetail() {
     const secs = globalSections();
     const sec = secs.find(s => s.id === sel.section) || secs[0];
     sel.section = sec.id;
-    return d.append(sec.build());
+    // A section may be more than one card: both belong to it, and both
+    // are its own siblings rather than one wrapped inside the other
+    return d.append(...[].concat(sec.build()));
   }
   const desk = desks[sel.desk];
   if (!desk) return;
@@ -5831,7 +5833,7 @@ function renderDetail() {
       const secs = deskSections(desk);
       const sec = secs.find(s => s.id === sel.dsection) || secs[0];
       sel.dsection = sec.id;
-      return d.append(sec.build(desk));
+      return d.append(...[].concat(sec.build(desk)));
     }
     const g = (desk.folders || [])[sel.grp];
     if (!g) { sel.grp = null; return renderDetail(); }
@@ -7238,6 +7240,7 @@ function providersCard(desk) {
         el("span", {class:"hint mono secretdesc"}, p.base_url || T["settings.providers.no_url"]),
         el("span", {class:"hint"}, held ? "••••" : T["settings.providers.key_none"]),
         el("span", {class:"hint secretsite"}, waitText(p.timeout_sec)),
+        el("span", {class:"hint"}, p.speaks === "choice" ? T["settings.providers.speaks.choice"] : ""),
         el("span", {class:"go"}, "›")));
     }
     listBox.append(rows);
@@ -7306,6 +7309,13 @@ function providerDialog(desk, name, redraw) {
   const waitIn = el("input", {type:"number", min:"0", step:"1", class:"mono narrow",
     placeholder:"180",
     value: (p.timeout_sec === undefined || p.timeout_sec === null) ? "" : String(p.timeout_sec)});
+  const speaksIn = el("select");
+  for (const [v, label] of [["chat", T["settings.providers.speaks.chat"]],
+                            ["choice", T["settings.providers.speaks.choice"]]]) {
+    const o = el("option", {value:v}, label);
+    if ((p.speaks || "chat") === v) o.selected = true;
+    speaksIn.append(o);
+  }
 
   const save = el("button", {class:"primary"}, T["common.save"]);
   const why = el("span", {class:"why"});
@@ -7375,7 +7385,8 @@ function providerDialog(desk, name, redraw) {
             editing ? T["settings.providers.name_fixed"] : T["settings.providers.name_hint"]),
       field(T["settings.providers.url_label"], urlIn, T["settings.providers.url_hint"]),
       field(T["settings.providers.key_label"], keyIn, T["settings.providers.key_hint"]),
-      field(T["settings.providers.wait_label"], waitIn, T["settings.providers.wait_hint"])),
+      field(T["settings.providers.wait_label"], waitIn, T["settings.providers.wait_hint"]),
+      field(T["settings.providers.speaks_label"], speaksIn, T["settings.providers.speaks_hint"])),
     el("div", {class:"mfoot"},
       editing
         ? el("button", {class:"danger", onclick: async () => {
@@ -7410,6 +7421,8 @@ function providerDialog(desk, name, redraw) {
     it.base_url = urlIn.value.trim();
     const w = waitIn.value.trim();
     if (w === "") delete it.timeout_sec; else it.timeout_sec = Math.max(0, Math.floor(Number(w)));
+    // The ordinary kind is left unwritten: the file says what is unusual
+    if (speaksIn.value === "choice") it.speaks = "choice"; else delete it.speaks;
     // The key never sits in config.json: it goes to the secrets file, under
     // this desk, and only the name of it is kept here
     if (keyIn.value.trim()) {
@@ -7570,6 +7583,34 @@ function operateCard() {
     conf.append(opt);
   }
   conf.addEventListener("change", () => { o.confirm = conf.value; refreshSave(); });
+  // Which model does what, when a page is driven from a goal written in
+  // ordinary words. The list is this desk's own connections: what is not set
+  // up here is not offered, because it could not be reached
+  const models = () => {
+    const out = [];
+    (current.desks || []).forEach(w => {
+      Object.keys(w.providers || {}).forEach(name => {
+        const speaks = ((w.providers[name] || {}).speaks || "chat");
+        (w.providers[name].models || []).forEach(m => out.push([name + "/" + m, speaks]));
+        out.push([name + "/", speaks]);
+      });
+    });
+    return out;
+  };
+  const pick = (key, hint) => {
+    const e = el("input", {type:"text", style:"width:260px", placeholder:"connection/model"});
+    e.value = (o[key] || "");
+    e.setAttribute("list", "words-models");
+    e.addEventListener("input", () => { o[key] = e.value.trim(); refreshSave(); });
+    return e;
+  };
+  const list = el("datalist", {id:"words-models"});
+  const seen = {};
+  models().forEach(([name]) => {
+    if (!name || name.endsWith("/") || seen[name]) return;
+    seen[name] = 1;
+    list.append(el("option", {value:name}));
+  });
   return card(T["settings.operate.title"],
     el("div", {class:"hint"}, T["settings.operate.hint"]),
     row(T["settings.operate.max_rounds"], num("max_rounds", 40), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
@@ -7577,7 +7618,13 @@ function operateCard() {
     row(T["settings.operate.max_tokens"], num("max_tokens", 400000), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
     row(T["settings.operate.on_limit"], pol, el("span", {class:"hint"}, T["settings.operate.on_limit.hint"])),
     row(T["settings.operate.settle"], num("settle_ms", 1800), el("span", {class:"hint"}, T["settings.operate.settle.hint"])),
-    row(T["settings.operate.confirm"], conf, el("span", {class:"hint"}, T["settings.operate.confirm.hint"])));
+    row(T["settings.operate.confirm"], conf, el("span", {class:"hint"}, T["settings.operate.confirm.hint"])),
+    el("div", {class:"hint"}, T["settings.words.hint"]),
+    row(T["settings.words.choose_model"], pick("choose_model"),
+        el("span", {class:"hint"}, T["settings.words.choose_model.hint"])),
+    row(T["settings.words.words_model"], pick("words_model"),
+        el("span", {class:"hint"}, T["settings.words.words_model.hint"])),
+    list);
 }
 
 // Who may run which command: the person's own automation in one column, an AI
@@ -8990,7 +9037,46 @@ function deskToolsCard(desk) {
     draw();
   });
   draw();
-  return card(T["settings.desk.pictures.title"], el("div", {class:"row"}, tick), said);
+  return [
+    card(T["settings.desk.pictures.title"], el("div", {class:"row"}, tick), said),
+    deskPagesCard(desk),
+  ];
+}
+
+// Whether a page may be handed to a model so that a goal written in ordinary
+// words can be carried out on it. Stored as the models it was agreed for, so
+// pointing the setting at a different company asks again rather than assuming
+function deskPagesCard(desk) {
+  const o = current.operate || {};
+  const now = [o.choose_model, o.words_model]
+    .map(x => (x || "").trim()).filter(x => x)
+    .filter((x, i, a) => a.indexOf(x) === i).sort().join(" + ");
+  const box = el("input", {type:"checkbox"});
+  box.checked = !!desk.send_pages_to;
+  box.disabled = !now && !desk.send_pages_to;
+  const tick = el("label", {class:"check"});
+  tick.append(box, document.createTextNode(T["settings.desk.pages.label"]));
+  const said = el("div", {class:"hint"});
+  const draw = () => {
+    const agreed = (desk.send_pages_to || "").trim();
+    if (!now) said.textContent = agreed
+      ? fill(T["settings.desk.pages.agreed"], {by: agreed}) + " " + T["settings.desk.pages.none"]
+      : T["settings.desk.pages.none"];
+    else if (!agreed) said.textContent = fill(T["settings.desk.pages.service"], {by: now})
+      + " " + T["settings.desk.pages.unticked"];
+    else if (agreed !== now) said.textContent = fill(T["settings.desk.pages.changed"], {by: agreed, now: now});
+    else said.textContent = fill(T["settings.desk.pages.agreed"], {by: now})
+      + " " + fill(T["settings.desk.pages.service"], {by: now})
+      + " " + T["settings.desk.pages.withdraw"];
+  };
+  box.addEventListener("change", () => {
+    desk.send_pages_to = box.checked && now ? now : "";
+    box.checked = !!desk.send_pages_to;
+    refreshSave();
+    draw();
+  });
+  draw();
+  return card(T["settings.desk.pages.title"], el("div", {class:"row"}, tick), said);
 }
 
 // Which AI writes the names and summaries of this desk's folders that have
@@ -12186,6 +12272,7 @@ async function load() {
                  git_accounts: Array.isArray(w.git_accounts) ? w.git_accounts : [],
                  // The assistant AI this desk agreed to send pictures to, by name
                  send_pictures_to: (w.send_pictures_to || "").trim(),
+                 send_pages_to: (w.send_pages_to || "").trim(),
                  // What writes its automatic names, and whether they reach the
                  // branch. Read in as well as written out: a setting the page
                  // never saw is a setting the next save erases
@@ -12295,11 +12382,16 @@ function payload() {
     });
     const isDefault = (o.max_rounds ?? 40) === 40 && (o.max_seconds ?? 900) === 900
       && (o.max_tokens ?? 400000) === 400000 && (o.on_limit || "stop") === "stop"
-      && (o.settle_ms ?? 1800) === 1800 && (o.confirm || "off") === "off";
+      && (o.settle_ms ?? 1800) === 1800 && (o.confirm || "off") === "off"
+      && !(o.choose_model || "").trim() && !(o.words_model || "").trim();
     if (isDefault) delete out.operate;
-    else out.operate = { max_rounds:(o.max_rounds ?? 40), max_seconds:(o.max_seconds ?? 900),
-                         max_tokens:(o.max_tokens ?? 400000), on_limit:(o.on_limit || "stop"),
-                         settle_ms:(o.settle_ms ?? 1800), confirm:(o.confirm || "off") };
+    else {
+      out.operate = { max_rounds:(o.max_rounds ?? 40), max_seconds:(o.max_seconds ?? 900),
+                      max_tokens:(o.max_tokens ?? 400000), on_limit:(o.on_limit || "stop"),
+                      settle_ms:(o.settle_ms ?? 1800), confirm:(o.confirm || "off") };
+      if ((o.choose_model || "").trim()) out.operate.choose_model = o.choose_model.trim();
+      if ((o.words_model || "").trim()) out.operate.words_model = o.words_model.trim();
+    }
   }
   // Quick commands, written in one shape whatever state the editor left them
   // in: what is the default is left out (the app reads it back the same), a
@@ -12400,6 +12492,7 @@ function payload() {
     const accts = (w.git_accounts || []).filter(a => a && (a.name || "").trim());
     if (accts.length) o.git_accounts = accts;
     if ((w.send_pictures_to || "").trim()) o.send_pictures_to = w.send_pictures_to.trim();
+    if ((w.send_pages_to || "").trim()) o.send_pages_to = w.send_pages_to.trim();
     // What writes this desk's automatic names, and whether they reach the
     // branch. Both are the desk's own answer, so a desk that has not given one
     // stays a short entry and follows the app

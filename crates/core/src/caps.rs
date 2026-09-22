@@ -256,6 +256,15 @@ pub struct Capabilities {
 
 /// Default wait time when touching a page.
 /// Just checking whether an element exists, so there's no point making this longer
+/// Which of the two jobs a model is being fetched for (see `Caps::model_for`)
+#[derive(Clone, Copy)]
+enum Deciding {
+    /// Pick one of the answers offered
+    Choosing,
+    /// Write the words
+    Writing,
+}
+
 const OP_MS: u64 = 5_000;
 
 /// Wait window for actions (click/fill). Actions auto-wait for the element
@@ -791,6 +800,97 @@ impl Capabilities {
         self.with(name, |b, to| b.fill(to, sel, value, ACT_MS))
     }
 
+    /// Ask a model to decide: a state, a set of questions each listing the
+    /// answers it allows, and back comes one answer per question.
+    ///
+    /// The model is named `<connection>/<model>`; left out, it is whichever
+    /// one the settings nominate for deciding, and failing that the one that
+    /// writes words. Which of the two kinds of service answers is not this
+    /// side's business -- the shape of the answer is the same either way
+    pub fn ai_choose(&self, model: Option<&str>, ask: &serde_json::Value) -> Result<serde_json::Value> {
+        let conn = self.model_for(model, Deciding::Choosing)?;
+        crate::bridge::choose(&conn, ask)
+    }
+
+    /// Ask a model for words: what to type in a field, what a page amounts to.
+    /// With `shape` (a JSON Schema), the answer is held to that shape
+    pub fn ai_text(
+        &self,
+        model: Option<&str>,
+        prompt: &str,
+        system: Option<&str>,
+        shape: Option<&serde_json::Value>,
+    ) -> Result<String> {
+        let conn = self.model_for(model, Deciding::Writing)?;
+        let mut messages = Vec::new();
+        if let Some(s) = system.filter(|s| !s.trim().is_empty()) {
+            messages.push(serde_json::json!({ "role": "system", "content": s }));
+        }
+        messages.push(serde_json::json!({ "role": "user", "content": prompt }));
+        crate::bridge::complete_shaped(
+            &conn.url,
+            &conn.model,
+            &conn.headers,
+            conn.timeout,
+            &messages,
+            shape,
+        )
+    }
+
+    /// Resolve which model answers: the one asked for, else the one the
+    /// settings nominate for this job. A name that reaches nothing is said
+    /// plainly rather than quietly becoming a different model
+    fn model_for(&self, asked: Option<&str>, job: Deciding) -> Result<crate::bridge::ModelConn> {
+        let op = crate::config::operate();
+        let name = asked
+            .map(str::to_string)
+            .or_else(|| match job {
+                // Deciding can fall back to the one that writes: slower, and
+                // it is the difference between "works without" and "needs"
+                Deciding::Choosing => op.choose_model.clone().or_else(|| op.words_model.clone()),
+                Deciding::Writing => op.words_model.clone(),
+            })
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.choose.no_model")))?;
+        crate::bridge::conn_named(&name)
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.choose.unknown_model", &[("name", &name)])))
+    }
+
+    /// Choose a value in a native dropdown. The report echoes what was chosen,
+    /// which is how a near-miss ("Economy class" for "Economy") is caught
+    pub fn browser_select(
+        &self,
+        name: &str,
+        sel: &shikisha_shared::Sel,
+        value: &str,
+    ) -> Result<shikisha_shared::OpReport> {
+        self.with(name, |b, to| b.select(to, sel, value, ACT_MS))
+    }
+
+    /// Scroll by screenfuls: `"top"`, `"bottom"`, or a number (negative is
+    /// back up). With a selector, the box that selector names scrolls instead
+    /// of the page
+    pub fn browser_scroll(
+        &self,
+        name: &str,
+        sel: Option<&shikisha_shared::Sel>,
+        amount: &serde_json::Value,
+    ) -> Result<(shikisha_shared::Found, String)> {
+        self.with(name, |b, to| b.scroll(to, sel, amount, ACT_MS))
+    }
+
+    /// Wait for the page to stop reacting to the last move.
+    ///
+    /// Capped at what the caller allows, and it usually returns in a couple
+    /// of animation frames. `expect = "options"` additionally waits for a
+    /// suggestion to be visible, for the type-then-choose pattern
+    pub fn browser_settle(&self, name: &str, expect: &str, cap_ms: u64, first_ms: u64) -> Result<(u64, String)> {
+        let cap = cap_ms.clamp(0, 30_000);
+        let first = first_ms.min(cap);
+        self.with(name, |b, to| b.settle(to, expect, cap, first, cap + OP_MS))
+    }
+
     pub fn browser_text(&self, name: &str, sel: &shikisha_shared::Sel) -> Result<Option<String>> {
         self.with(name, |b, to| b.text(to, sel, OP_MS))
     }
@@ -804,6 +904,12 @@ impl Capabilities {
     /// trips, and the accessibility tree of a heavy page takes a moment
     pub fn browser_digest(&self, name: &str) -> Result<String> {
         self.with(name, |b, to| b.digest(to, 20_000))
+    }
+
+    /// The same reading as `browser_digest`, as a list rather than as lines —
+    /// for automation that has to build a question out of the elements
+    pub fn browser_elements(&self, name: &str) -> Result<serde_json::Value> {
+        self.with(name, |b, to| b.elements(to, 20_000))
     }
 
     /// Make a request from inside the page, returning a `{status,ok,url,headers,body}` JSON string

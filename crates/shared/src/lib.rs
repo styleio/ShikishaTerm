@@ -463,6 +463,11 @@ pub enum Ev {
     /// `target` (0 = detach) and, if `goal` is non-empty, hand it that goal. The
     /// AI then writes Lua to drive the target (reuses the browser-agent loop).
     Operate { target: usize, goal: String },
+    /// 🗣 drive this page from a goal written in ordinary words. `on` starts
+    /// or stops the run; `goal` is what was typed, and may also arrive while a
+    /// run is going, as a correction. Which page is driven is the one being
+    /// shown -- the panel this comes from belongs to it
+    Words { on: bool, goal: String },
     /// 📼 record mode toggled in the composer. On arms the Lua recorder on the
     /// shown browser (the loop resolves which one that is); off silences it
     /// everywhere — there's only ever one recorder.
@@ -834,9 +839,20 @@ pub trait BrowserHost {
     fn click(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<OpReport>;
     fn fill(&self, to: Option<&str>, sel: &Sel, value: &str, timeout_ms: u64) -> anyhow::Result<OpReport>;
     fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Option<String>>;
+    /// Choose a value in a native dropdown, by the text a person reads
+    fn select(&self, to: Option<&str>, sel: &Sel, value: &str, timeout_ms: u64) -> anyhow::Result<OpReport>;
+    /// Scroll the page, or one box in it, by screenfuls. Answers how far it
+    /// actually moved, so the end of a list is tellable from the middle
+    fn scroll(&self, to: Option<&str>, sel: Option<&Sel>, amount: &serde_json::Value, timeout_ms: u64)
+        -> anyhow::Result<(Found, String)>;
+    /// Wait for the page to stop reacting, and say how long that took
+    fn settle(&self, to: Option<&str>, expect: &str, cap_ms: u64, first_ms: u64, timeout_ms: u64)
+        -> anyhow::Result<(u64, String)>;
     fn href(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String>;
     fn html(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String>;
     fn digest(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String>;
+    /// The same reading as `digest`, as data rather than as lines
+    fn elements(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<serde_json::Value>;
     fn snapshot(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<Vec<u8>>;
 
     fn cookies_out(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<serde_json::Value>;
@@ -1228,6 +1244,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .to_string(),
+        },
+        // 🗣 "carry this out on the page in front of me": the goal as typed,
+        // and whether the run is to be going at all
+        Some("words") => Ev::Words {
+            on: v.get("on").and_then(|x| x.as_bool()).unwrap_or(true),
+            goal: v.get("goal").and_then(|x| x.as_str()).unwrap_or("").to_string(),
         },
         // A file pasted/attached in the desktop composer. Saved beside the active
         // tab; the result is handed back by eval-ing window.__attachDone(id, …).

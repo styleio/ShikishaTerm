@@ -200,6 +200,159 @@ pub fn fill(
     Ok(OpReport::bare(out?))
 }
 
+/// Wait for the page to stop reacting to whatever was just done to it, and
+/// answer how long that took and whether it really settled.
+///
+/// The honest replacement for "sleep a bit and hope". `cap_ms` is the whole
+/// budget and `first_ms` how long to wait for anything to happen at all
+/// before believing that nothing will -- a click whose handler sets a timer
+/// changes nothing for a moment, and leaving then is reading the page as it
+/// was before the click. `expect` is `"quiet"` normally, or `"options"` right
+/// after typing into a box that suggests as you type -- there, quiet arrives
+/// before the suggestions do, and leaving on quiet means choosing from an
+/// empty list
+pub fn settle(
+    s: &dyn Speaks,
+    to: Option<&str>,
+    expect: &str,
+    cap_ms: u64,
+    first_ms: u64,
+    timeout_ms: u64,
+) -> anyhow::Result<(u64, String)> {
+    let v = call(
+        s,
+        to,
+        "__shikisha_settle",
+        &[serde_json::json!({ "ms": cap_ms, "expect": expect, "first": first_ms })],
+        timeout_ms,
+    )?;
+    let parsed: serde_json::Value = serde_json::from_str(&v).unwrap_or_default();
+    Ok((
+        parsed.get("ms").and_then(serde_json::Value::as_u64).unwrap_or(0),
+        parsed
+            .get("why")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("still")
+            .to_string(),
+    ))
+}
+
+/// Scroll the page, or one box inside it, by screenfuls.
+///
+/// `amount` is `"top"`, `"bottom"`, or a number of screens (negative goes
+/// back up). The answer says how far it actually moved, so a caller can
+/// tell "there was more" from "that was the end" without guessing
+pub fn scroll(
+    s: &dyn Speaks,
+    to: Option<&str>,
+    sel: Option<&Sel>,
+    amount: &serde_json::Value,
+    timeout_ms: u64,
+) -> anyhow::Result<(Found, String)> {
+    let target = match sel {
+        // A ref names a live node, which a CSS selector cannot: hand the
+        // in-page side a durable address for that same element
+        Some(Sel::Ref(r)) => {
+            let oid = ref_object(s, to, *r, timeout_ms)?;
+            match element_anchor(s, to, &oid, timeout_ms) {
+                Some((kind, v)) if kind == "xpath" => serde_json::json!({ "xpath": v }),
+                Some((_, v)) => serde_json::json!({ "css": v }),
+                None => {
+                    return Err(anyhow::anyhow!(crate::i18n::tp(
+                        "err.browser.ref_unreachable",
+                        &[("ref", &r.to_string())]
+                    )))
+                }
+            }
+        }
+        Some(other) => other.json(),
+        None => serde_json::Value::Null,
+    };
+    let v = call(s, to, "__shikisha_scroll", &[target, amount.clone()], timeout_ms)?;
+    let parsed: serde_json::Value = serde_json::from_str(&v).unwrap_or_default();
+    let state = Found::parse(
+        parsed.get("state").and_then(serde_json::Value::as_str).unwrap_or("not_found"),
+    );
+    let moved = parsed.get("moved").and_then(serde_json::Value::as_i64).unwrap_or(0);
+    let at = parsed.get("at").and_then(serde_json::Value::as_i64).unwrap_or(0);
+    let of = parsed.get("of").and_then(serde_json::Value::as_i64).unwrap_or(0);
+    Ok((state, crate::i18n::tp(
+        "browser.scrolled",
+        &[("moved", &moved.to_string()), ("at", &at.to_string()), ("of", &of.to_string())],
+    )))
+}
+
+/// Choose a value in a real `<select>`, by what a person would read.
+///
+/// Its own verb rather than a click, because a native list is not a menu
+/// on the page: clicking it opens something the page cannot see into, and
+/// the choice never lands
+pub fn select(
+    s: &dyn Speaks,
+    to: Option<&str>,
+    sel: &Sel,
+    value: &str,
+    timeout_ms: u64,
+) -> anyhow::Result<OpReport> {
+    let target = match sel {
+        Sel::Ref(r) => {
+            let oid = ref_object(s, to, *r, timeout_ms)?;
+            match element_anchor(s, to, &oid, timeout_ms) {
+                Some((kind, v)) if kind == "xpath" => serde_json::json!({ "xpath": v }),
+                Some((_, v)) => serde_json::json!({ "css": v }),
+                None => {
+                    return Err(anyhow::anyhow!(crate::i18n::tp(
+                        "err.browser.ref_unreachable",
+                        &[("ref", &r.to_string())]
+                    )))
+                }
+            }
+        }
+        other => other.json(),
+    };
+    let v = call(
+        s,
+        to,
+        "__shikisha_select",
+        &[target.clone(), serde_json::Value::String(value.to_string())],
+        timeout_ms,
+    )?;
+    let parsed: serde_json::Value = serde_json::from_str(&v).unwrap_or_default();
+    let state = parsed.get("state").and_then(serde_json::Value::as_str).unwrap_or("not_found");
+    // A list that does not hold what was asked for says what it does hold.
+    // Failing with the answer in hand is the difference between one more
+    // move and a loop of guesses
+    if state == "no_such_choice" {
+        let choices: Vec<String> = parsed
+            .get("choices")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        return Err(anyhow::anyhow!(crate::i18n::tp(
+            "err.browser.no_such_choice",
+            &[("value", value), ("choices", &choices.join(" | "))]
+        )));
+    }
+    if state == "not_a_list" {
+        return Err(anyhow::anyhow!(crate::i18n::t("err.browser.not_a_list")));
+    }
+    // The durable spelling of what was just touched, for the replay journal
+    let anchor = ["css", "xpath"].iter().find_map(|kind| {
+        target
+            .get(*kind)
+            .and_then(serde_json::Value::as_str)
+            .map(|v| ((*kind).to_string(), v.to_string()))
+    });
+    Ok(OpReport {
+        state: Found::parse(state),
+        echo: parsed
+            .get("chose")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        anchor,
+    })
+}
+
 /// The full parsed HTML
 pub fn html(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
     let v = call(s, to, "__shikisha_html", &[], timeout_ms)?;
@@ -330,11 +483,26 @@ pub fn fetch(
 /// Distill the page into its operable elements (see `crate::digest`), and
 /// remember the ref-number → backendNodeId mapping for `{ref=N}` calls
 pub fn digest(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
+    Ok(read_page(s, to, timeout_ms)?.text)
+}
+
+/// The same reading, as data rather than as lines.
+///
+/// For a caller that has to build a question out of the elements instead of
+/// showing them to somebody. One reader, two shapes -- the numbers are the
+/// same numbers, because they came from the same pass
+pub fn elements(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<serde_json::Value> {
+    Ok(serde_json::Value::Array(read_page(s, to, timeout_ms)?.elements))
+}
+
+fn read_page(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<crate::digest::Digest> {
     let metrics = s.cdp(to, "Page.getLayoutMetrics", serde_json::json!({}), timeout_ms)?;
     let snap = s.cdp(
         to,
         "DOMSnapshot.captureSnapshot",
-        serde_json::json!({ "computedStyles": ["cursor"] }),
+        // `includeDOMRects` is what tells a box that scrolls from one that
+        // merely looks tall: it carries the drawn size beside the real one
+        serde_json::json!({ "computedStyles": ["cursor"], "includeDOMRects": true }),
         timeout_ms,
     )?;
     // Roles and accessible names, as the browser itself computed them
@@ -344,12 +512,21 @@ pub fn digest(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Resu
         serde_json::json!({}),
         timeout_ms,
     )?;
-    let d = crate::digest::build(&ax, &snap, &metrics);
+    // The numbers from the digest before this one, so the new lines can be
+    // marked as new (see `digest::build_against`)
+    let before = s
+        .refs()
+        .lock()
+        .unwrap()
+        .get(&to.map(str::to_string))
+        .cloned()
+        .unwrap_or_default();
+    let d = crate::digest::build_against(&ax, &snap, &metrics, &before);
     s.refs()
         .lock()
         .unwrap()
-        .insert(to.map(str::to_string), d.refs);
-    Ok(d.text)
+        .insert(to.map(str::to_string), d.refs.clone());
+    Ok(d)
 }
 
 /// Resolve `{ref=N}` against the latest digest of that page

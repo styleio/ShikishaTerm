@@ -22,12 +22,19 @@ pub struct Digest {
     pub text: String,
     /// `refs[N-1]` = the backendNodeId behind `[N]`
     pub refs: Vec<i64>,
+    /// The same elements as data, for a caller that has to build a question
+    /// out of them rather than show them to somebody. Same numbers, same
+    /// order, same source -- written here rather than parsed back out of the
+    /// text, because a second reader of our own format is a second format
+    pub elements: Vec<serde_json::Value>,
 }
 
 /// Hard ceiling on emitted lines. Never truncates silently: when hit, the tail
 /// line says how many elements were left out
 const MAX_LINES: usize = 1200;
 const NAME_MAX: usize = 80;
+/// How far in a line may be indented before the indent costs more than it says
+const MAX_DEPTH: usize = 6;
 const HREF_MAX: usize = 160;
 const VALUE_MAX: usize = 60;
 
@@ -52,8 +59,25 @@ struct SnapDoc {
     cursor_pointer: HashSet<usize>,
     /// document-coordinate [x, y, w, h] for laid-out nodes
     bounds: HashMap<usize, [f64; 4]>,
+    /// How tall a node's box is on screen, and how tall its content really is.
+    /// The two differ exactly where something scrolls inside the page
+    boxes: HashMap<usize, (f64, f64)>,
     scroll: (f64, f64),
     children: Vec<Vec<usize>>,
+}
+
+impl SnapDoc {
+    /// How many screenfuls hide inside this node, when it is a scrolling box
+    /// of its own. `None` when everything it holds is already in view
+    fn scrolls(&self, at: usize) -> Option<f64> {
+        let (client, content) = self.boxes.get(&at).copied()?;
+        // A few pixels of slack: sub-pixel layout makes almost every box
+        // "scrollable" by a hair, and saying so about all of them says nothing
+        if client <= 0.0 || content <= client + 8.0 {
+            return None;
+        }
+        Some(content / client)
+    }
 }
 
 fn f64_of(v: Option<&Value>) -> f64 {
@@ -145,6 +169,24 @@ fn parse_doc(doc: &Value, strings: &[&str]) -> SnapDoc {
             }
         }
     }
+    // Drawn height against content height. `clientRects`/`scrollRects` arrive
+    // only when the snapshot was asked for DOM rects; without them nothing is
+    // reported as scrollable, which is the honest answer rather than a guess
+    let mut boxes = HashMap::new();
+    if let (Some(cr), Some(sr)) = (
+        layout.and_then(|l| l.get("clientRects")).and_then(Value::as_array),
+        layout.and_then(|l| l.get("scrollRects")).and_then(Value::as_array),
+    ) {
+        for (li, (c, s)) in cr.iter().zip(sr).enumerate() {
+            let (Some(&ni), Some(c), Some(s)) = (l_nodes.get(li), c.as_array(), s.as_array()) else {
+                continue;
+            };
+            let Ok(ni) = usize::try_from(ni) else { continue };
+            if c.len() == 4 && s.len() == 4 {
+                boxes.insert(ni, (f64_of(c.get(3)), f64_of(s.get(3))));
+            }
+        }
+    }
     if let Some(styles) = layout.and_then(|l| l.get("styles")).and_then(Value::as_array) {
         for (li, row) in styles.iter().enumerate() {
             let (Some(&ni), Some(row)) = (l_nodes.get(li), row.as_array()) else { continue };
@@ -172,6 +214,7 @@ fn parse_doc(doc: &Value, strings: &[&str]) -> SnapDoc {
         content_doc: rare_bool(nodes.and_then(|x| x.get("contentDocumentIndex"))),
         cursor_pointer,
         bounds,
+        boxes,
         scroll: (
             f64_of(doc.get("scrollOffsetX")),
             f64_of(doc.get("scrollOffsetY")),
@@ -282,9 +325,107 @@ struct Entry {
     name: String,
     extras: Vec<String>,
     off_screen: bool,
+    /// Which verbs apply here: any of "click", "fill", "select", "scroll".
+    /// Offering an element for an operation it cannot perform is how a
+    /// decision becomes a wasted move
+    ops: Vec<&'static str>,
 }
 
+/// Which verbs apply to an element of this role.
+///
+/// The one place that decides it, because two places would eventually offer
+/// a button for typing into. `listed` says the element is a real `<select>`,
+/// which is the difference between choosing a value and typing one
+fn verbs_for(role: &str, listed: bool, scrolls: bool) -> Vec<&'static str> {
+    let mut ops: Vec<&'static str> = match role {
+        "heading" | "iframe" => Vec::new(),
+        // `listed` on an option means it belongs to a real <select>
+        "option" if listed => Vec::new(),
+        "combobox" if listed => vec!["select", "click"],
+        "textbox" | "combobox" | "spinbutton" => vec!["fill", "click"],
+        "scrollbox" => Vec::new(),
+        _ => vec!["click"],
+    };
+    if scrolls {
+        ops.push("scroll");
+    }
+    ops
+}
+
+/// The select's own choices, written onto its line.
+///
+/// A dropdown whose options are only discoverable by opening it costs a whole
+/// move to look inside; the browser already knows them, so they are simply
+/// said. Capped, because a country list would otherwise be the whole digest
+fn select_options(d: &SnapDoc, at: usize) -> Option<String> {
+    const SHOWN: usize = 6;
+    let mut labels: Vec<String> = Vec::new();
+    // Pushed back to front, so popping walks the options the way they are read
+    let mut stack: Vec<usize> =
+        d.children.get(at).map(|k| k.iter().rev().copied().collect()).unwrap_or_default();
+    let mut total = 0usize;
+    while let Some(i) = stack.pop() {
+        match d.tag.get(i).map(String::as_str) {
+            // optgroup holds its options one level further down
+            Some("optgroup") => {
+                if d.attrs.get(i).is_some_and(|a| a.contains_key("disabled")) {
+                    continue;
+                }
+                if let Some(kids) = d.children.get(i) {
+                    stack.extend(kids.iter().rev().copied());
+                }
+            }
+            Some("option") => {
+                // Only what can actually be chosen. Listing a choice the page
+                // refuses is how a decision becomes a wasted move, and the
+                // one refusing it is the same code that wrote this line
+                if d.attrs.get(i).is_some_and(|a| a.contains_key("disabled")) {
+                    continue;
+                }
+                total += 1;
+                if labels.len() < SHOWN {
+                    let text = harvest_text(d, i);
+                    if !text.is_empty() {
+                        labels.push(text);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if total == 0 {
+        return None;
+    }
+    let mut out = format!("choices={total}");
+    if !labels.is_empty() {
+        out.push_str(&format!(" [{}", labels.join(" | ")));
+        out.push_str(if total > labels.len() { " | …]" } else { "]" });
+    }
+    Some(out)
+}
+
+/// Everything the reader is told, in one place, so that adding a mark means
+/// adding its explanation (a legend that drifts from the lines is worse than
+/// no legend: it teaches the reader something untrue)
+const LEGEND: &str = "# operable elements — act by number: browser_click(BR,{ref=N}) / browser_fill(BR,{ref=N},\"text\")\n\
+     # indenting shows what sits inside what; + marks what appeared since the last look; §… names the section (heading) an element sits under\n\
+     # roles marked * are JS-clickables without a standard role; scrolls=N means N screenfuls hide inside it — browser_scroll(BR, \"down\", {ref=N})\n\
+     # take a new digest after the page changes\n";
+
 pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
+    build_against(ax, snap, metrics, &[])
+}
+
+/// As [`build`], marking what was not in `prev` (the refs of the digest taken
+/// just before this one) with a leading `+`.
+///
+/// Knowing which three lines are new is the difference between reading a
+/// menu that just opened and reading the whole page again. There is no
+/// page identity to compare against -- the browser hands out fresh node ids
+/// for a fresh document -- so a wholesale change is taken for what it almost
+/// always is, a different page, and nothing is marked at all. Marking every
+/// line says no more than marking none, and costs a screenful
+pub fn build_against(ax: &Value, snap: &Value, metrics: &Value, prev: &[i64]) -> Digest {
     let strings: Vec<&str> = snap
         .get("strings")
         .and_then(Value::as_array)
@@ -408,6 +549,14 @@ pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
                         extras.push(format!("placeholder=\"{}\"", tidy(p, VALUE_MAX)));
                     }
             }
+            // A real <select>: say what it offers, so choosing costs no move
+            if d.tag.get(ni).map(String::as_str) == Some("select")
+                && let Some(o) = select_options(d, ni) {
+                    extras.push(o);
+                }
+            if let Some(times) = d.scrolls(ni) {
+                extras.push(format!("scrolls={times:.1}"));
+            }
         }
         if (role == "textbox" || role == "combobox") && !value.is_empty() {
             extras.push(format!("value=\"{}\"", tidy(&value, VALUE_MAX)));
@@ -429,6 +578,17 @@ pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
             // ordered after everything else
             None => ((usize::MAX, ai), false),
         };
+        // Whether this really is a native list, or one of its choices. Both
+        // are worked through the list itself, and neither is clicked: a click
+        // on a native dropdown opens something the page cannot see into
+        let native_list = pos
+            .and_then(|(di, ni)| docs.get(di).and_then(|d| d.tag.get(ni)))
+            .is_some_and(|t| t == "select" || t == "option");
+        let ops = verbs_for(
+            role,
+            native_list,
+            extras.iter().any(|x| x.starts_with("scrolls=")),
+        );
         entries.push(Entry {
             order,
             backend: Some(backend),
@@ -436,6 +596,7 @@ pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
             name,
             extras,
             off_screen: off,
+            ops,
         });
     }
 
@@ -501,6 +662,10 @@ pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
             if let Some(h) = href {
                 extras.push(tidy(&h, HREF_MAX));
             }
+            if let Some(times) = d.scrolls(i) {
+                extras.push(format!("scrolls={times:.1}"));
+            }
+            let ops = verbs_for("", false, d.scrolls(i).is_some());
             entries.push(Entry {
                 order: (di, i),
                 backend: Some(backend),
@@ -508,6 +673,35 @@ pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
                 name,
                 extras,
                 off_screen: off_screen(di, i),
+                ops,
+            });
+        }
+
+        // ---- Lane 3: boxes that scroll on their own.
+        // A results list inside a panel holds the rest of the answer, and
+        // nothing above would have listed it: it takes no clicks and has no
+        // role. Without a number for it, the only scroll anyone can ask for
+        // is the window's, which moves the wrong thing
+        for i in 0..n {
+            let backend = *d.backend.get(i).unwrap_or(&-1);
+            if backend < 0 || included.contains(&backend) || d.node_type.get(i) != Some(&1) {
+                continue;
+            }
+            let Some(times) = d.scrolls(i) else { continue };
+            // The document's own scrolling box is the page, which is said once
+            // in the header rather than as an element
+            if matches!(d.tag.get(i).map(String::as_str), Some("html" | "body")) {
+                continue;
+            }
+            included.insert(backend);
+            entries.push(Entry {
+                order: (di, i),
+                backend: Some(backend),
+                role: "scrollbox".into(),
+                name: harvest_text(d, i),
+                extras: vec![format!("scrolls={times:.1}")],
+                off_screen: off_screen(di, i),
+                ops: vec!["scroll"],
             });
         }
 
@@ -530,6 +724,7 @@ pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
                     name: tidy(&src, HREF_MAX),
                     extras: vec!["content out of reach".into()],
                     off_screen: off_screen(di, i),
+                    ops: Vec::new(),
                 });
             }
         }
@@ -537,12 +732,59 @@ pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
 
     entries.sort_by_key(|e| e.order);
 
+    // ---- Nesting. An element's depth is how many *listed* elements it sits
+    // inside, not how deep the HTML happens to be: a form five wrappers down
+    // reads as one step in, which is what a person would say about it
+    let mut listed: Vec<HashSet<usize>> = vec![HashSet::new(); docs.len()];
+    for e in &entries {
+        let (di, ni) = e.order;
+        if let Some(set) = listed.get_mut(di) {
+            set.insert(ni);
+        }
+    }
+    let depth_of = |di: usize, ni: usize| -> usize {
+        let (Some(d), Some(set)) = (docs.get(di), listed.get(di)) else { return 0 };
+        let mut depth = 0usize;
+        let mut anc = *d.parent.get(ni).unwrap_or(&-1);
+        while let Ok(p) = usize::try_from(anc) {
+            if p >= d.parent.len() {
+                break;
+            }
+            if set.contains(&p) {
+                depth += 1;
+                // Past a certain point the indent stops carrying meaning and
+                // starts eating the line
+                if depth >= MAX_DEPTH {
+                    break;
+                }
+            }
+            anc = *d.parent.get(p).unwrap_or(&-1);
+        }
+        depth
+    };
+
+    // ---- What is new since the last look (see `build_against`)
+    let seen: HashSet<i64> = prev.iter().copied().collect();
+    let fresh = |b: Option<i64>| b.map(|b| !seen.contains(&b)).unwrap_or(false);
+    let newcomers = entries.iter().filter(|e| fresh(e.backend)).count();
+    let mark_new =
+        !seen.is_empty() && !entries.is_empty() && newcomers * 10 < entries.len() * 7;
+
     // ---- Render
-    let mut text = String::from(
-        "# operable elements — act by number: browser_click(BR,{ref=N}) / browser_fill(BR,{ref=N},\"text\")\n\
-         # roles marked * are JS-clickables without a standard role; §… names the section (heading) an element sits under; take a new digest after the page changes\n",
-    );
+    let mut text = String::from(LEGEND);
+    // How much of the page is out of sight. Said once, at the top, because it
+    // is the page's own fact and not any element's
+    let content_h = f64_of(metrics.get("cssContentSize").and_then(|c| c.get("height")));
+    if vh > 0.0 && content_h > vh + 8.0 {
+        let page_y = f64_of(vp.and_then(|v| v.get("pageY")));
+        text.push_str(&format!(
+            "# the page is {:.1} screens tall and you are {:.1} screens down — browser_scroll(BR, \"down\")\n",
+            content_h / vh,
+            page_y / vh
+        ));
+    }
     let mut refs = Vec::new();
+    let mut elements: Vec<serde_json::Value> = Vec::new();
     let total = entries.len();
     // Each element carries the section it sits under (the nearest preceding
     // heading), so "the search-results link" and "the same link quoted in an
@@ -560,7 +802,9 @@ pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
             }
             None => "[-]".to_string(),
         };
-        let mut line = format!("{head} {}", e.role);
+        let indent = "  ".repeat(if e.order.0 < docs.len() { depth_of(e.order.0, e.order.1) } else { 0 });
+        let new = if mark_new && fresh(e.backend) { "+" } else { "" };
+        let mut line = format!("{indent}{new}{head} {}", e.role);
         if !e.name.is_empty() {
             line.push_str(&format!(" \"{}\"", e.name));
         }
@@ -576,6 +820,21 @@ pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
         }
         line.push('\n');
         text.push_str(&line);
+        // The same element as data. Built here, from the same entry that made
+        // the line, so the two can never come to disagree about what [7] is
+        if e.backend.is_some() {
+            elements.push(serde_json::json!({
+                "ref": refs.len(),
+                "role": e.role,
+                "name": e.name,
+                "value": e.extras.iter().find_map(|x| x.strip_prefix("value=\"")).map(|v| v.trim_end_matches('\"')),
+                "choices": e.extras.iter().find_map(|x| x.strip_prefix("choices=")),
+                "section": section,
+                "off_screen": e.off_screen,
+                "new": mark_new && fresh(e.backend),
+                "can": e.ops,
+            }));
+        }
     }
     if total > MAX_LINES {
         text.push_str(&format!(
@@ -583,7 +842,7 @@ pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
             total - MAX_LINES
         ));
     }
-    Digest { text, refs }
+    Digest { text, refs, elements }
 }
 
 #[cfg(test)]
@@ -783,6 +1042,204 @@ mod tests {
         ]});
         let d = build(&ax, &snap, &metrics());
         assert!(d.refs.is_empty(), "nothing should be listed: {}", d.text);
+    }
+
+    /// A snapshot document that also carries how tall each box is drawn and
+    /// how tall its content really is -- the pair that says "this scrolls"
+    fn snap_doc_scrolling(
+        nodes: &[SnapNode<'_>],
+        layout: &[(usize, [f64; 4], &str)],
+        clickable: &[usize],
+        heights: &[(usize, f64, f64)],
+    ) -> (Value, Vec<String>) {
+        let (mut doc, strings) = snap_doc(nodes, layout, clickable);
+        let order: Vec<usize> = layout.iter().map(|(ni, _, _)| *ni).collect();
+        let mut client = Vec::new();
+        let mut scroll = Vec::new();
+        for ni in &order {
+            let found = heights.iter().find(|(at, _, _)| at == ni);
+            let (c, sc) = found.map(|(_, c, s)| (*c, *s)).unwrap_or((0.0, 0.0));
+            client.push(json!([0.0, 0.0, 0.0, c]));
+            scroll.push(json!([0.0, 0.0, 0.0, sc]));
+        }
+        doc["layout"]["clientRects"] = json!(client);
+        doc["layout"]["scrollRects"] = json!(scroll);
+        (doc, strings)
+    }
+
+    #[test]
+    fn a_dropdowns_own_choices_are_on_its_line() {
+        // Reading what a list offers costs a move if it is not simply said, and
+        // the browser already knows: the page has to be opened, looked into,
+        // and taken in again. So the choices ride on the line, capped
+        let (doc, strings) = snap_doc(
+            &[
+                (-1, 9, "#document", "", 1, &[]),
+                (0, 1, "select", "", 30, &[("name", "class")]),
+                (1, 1, "option", "", 31, &[]),
+                (2, 3, "#text", "Economy", 32, &[]),
+                (1, 1, "option", "", 33, &[]),
+                (4, 3, "#text", "Business", 34, &[]),
+            ],
+            &[(1, [0.0, 0.0, 200.0, 24.0], "auto")],
+            &[],
+        );
+        let snap = json!({"documents": [doc], "strings": strings});
+        let ax = json!({"nodes": [
+            ax_node("RootWebArea", "", 1),
+            ax_node("comboBox", "Class", 30),
+        ]});
+        let d = build(&ax, &snap, &metrics());
+        assert!(d.text.contains("choices=2"), "{}", d.text);
+        assert!(d.text.contains("Economy | Business"), "{}", d.text);
+        // ...and the element says that choosing, not typing, is what it takes
+        let can = d.elements[0]["can"].as_array().expect("verbs").iter()
+            .map(|v| v.as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+        assert!(can.contains(&"select".to_string()), "{:?}", can);
+        assert!(!can.contains(&"fill".to_string()), "a list is chosen from, not typed into: {can:?}");
+    }
+
+    #[test]
+    fn a_box_that_scrolls_gets_a_number_of_its_own() {
+        // The rest of a result list is inside a panel that takes no clicks and
+        // has no role. Without a number for it, the only scroll anyone can ask
+        // for is the window's, which moves the wrong thing
+        let (doc, strings) = snap_doc_scrolling(
+            &[
+                (-1, 9, "#document", "", 1, &[]),
+                (0, 1, "div", "", 40, &[]),
+                (1, 3, "#text", "Results", 41, &[]),
+            ],
+            &[(1, [0.0, 0.0, 300.0, 200.0], "auto")],
+            &[],
+            &[(1, 200.0, 900.0)],
+        );
+        let snap = json!({"documents": [doc], "strings": strings});
+        let ax = json!({"nodes": [ax_node("RootWebArea", "", 1)]});
+        let d = build(&ax, &snap, &metrics());
+        assert!(d.text.contains("scrollbox"), "{}", d.text);
+        assert!(d.text.contains("scrolls=4.5"), "{}", d.text);
+        assert_eq!(d.refs, vec![40], "it has to be addressable to be scrolled: {}", d.text);
+    }
+
+    #[test]
+    fn what_is_new_is_marked_and_a_new_page_is_not() {
+        // Knowing which two lines are new is the difference between reading a
+        // menu that just opened and reading the page again. A page that
+        // changed wholesale gets no marks at all -- marking every line says no
+        // more than marking none, and costs a screenful
+        let page = |extra: bool| {
+            let mut nodes: Vec<SnapNode<'_>> = vec![
+                (-1, 9, "#document", "", 1, &[]),
+                (0, 1, "a", "", 50, &[("href", "https://example.com/one")]),
+                (1, 3, "#text", "One", 51, &[]),
+                (0, 1, "a", "", 52, &[("href", "https://example.com/two")]),
+                (3, 3, "#text", "Two", 53, &[]),
+            ];
+            if extra {
+                nodes.push((0, 1, "a", "", 54, &[("href", "https://example.com/three")]));
+                nodes.push((5, 3, "#text", "Three", 55, &[]));
+            }
+            let layout: Vec<(usize, [f64; 4], &str)> = vec![
+                (1, [0.0, 0.0, 100.0, 20.0], "pointer"),
+                (3, [0.0, 30.0, 100.0, 20.0], "pointer"),
+                (5, [0.0, 60.0, 100.0, 20.0], "pointer"),
+            ];
+            let n = if extra { 3 } else { 2 };
+            snap_doc(&nodes, &layout[..n], &[])
+        };
+        let ax = |extra: bool| {
+            let mut v = vec![
+                ax_node("RootWebArea", "", 1),
+                ax_node("link", "One", 50),
+                ax_node("link", "Two", 52),
+            ];
+            if extra {
+                v.push(ax_node("link", "Three", 54));
+            }
+            json!({ "nodes": v })
+        };
+        let (doc, strings) = page(false);
+        let first = build(&ax(false), &json!({"documents": [doc], "strings": strings}), &metrics());
+        assert!(!first.text.contains("+["), "nothing is new on a first look: {}", first.text);
+
+        let (doc, strings) = page(true);
+        let then = build_against(
+            &ax(true),
+            &json!({"documents": [doc], "strings": strings}),
+            &metrics(),
+            &first.refs,
+        );
+        assert!(then.text.contains("+[3] link \"Three\""), "{}", then.text);
+        assert_eq!(then.text.matches("+[").count(), 1, "only the new one: {}", then.text);
+
+        // A different page: every number is different, and none is marked
+        let (doc, strings) = page(true);
+        let elsewhere = build_against(
+            &ax(true),
+            &json!({"documents": [doc], "strings": strings}),
+            &metrics(),
+            &[900, 901],
+        );
+        assert!(!elsewhere.text.contains("+["), "a new page is not news, line by line: {}", elsewhere.text);
+    }
+
+    #[test]
+    fn what_sits_inside_what_is_shown_by_the_indent() {
+        // A flat list of forty lines says nothing about which button belongs to
+        // which row. The depth counts listed elements, not tags, so five
+        // wrappers deep still reads as one step in
+        let (doc, strings) = snap_doc(
+            &[
+                (-1, 9, "#document", "", 1, &[]),
+                (0, 1, "div", "", 60, &[("role", "listbox")]),
+                (1, 1, "div", "", 61, &[("role", "option")]),
+                (2, 3, "#text", "One", 63, &[]),
+                (1, 1, "div", "", 62, &[("role", "option")]),
+                (4, 3, "#text", "Two", 64, &[]),
+            ],
+            &[
+                (1, [0.0, 0.0, 300.0, 100.0], "auto"),
+                (2, [0.0, 10.0, 280.0, 20.0], "pointer"),
+                (4, [0.0, 40.0, 280.0, 20.0], "pointer"),
+            ],
+            &[],
+        );
+        let snap = json!({"documents": [doc], "strings": strings});
+        let ax = json!({"nodes": [
+            ax_node("RootWebArea", "", 1),
+            ax_node("listBox", "Pick one", 60),
+            ax_node("option", "One", 61),
+            ax_node("option", "Two", 62),
+        ]});
+        let d = build(&ax, &snap, &metrics());
+        assert!(d.text.contains("[1] combobox"), "{}", d.text);
+        assert!(d.text.contains("\n  [2] option \"One\""), "an option sits inside its list: {}", d.text);
+        assert!(d.text.contains("\n  [3] option \"Two\""), "{}", d.text);
+        assert_eq!(d.elements[1]["ref"], 2, "{}", d.text);
+    }
+
+    #[test]
+    fn how_far_down_the_page_goes_is_said_once() {
+        // A fact about the page, not about any element on it, and the thing a
+        // reader needs before deciding whether what they want is simply below
+        let (doc, strings) = snap_doc(
+            &[(-1, 9, "#document", "", 1, &[]), (0, 1, "a", "", 70, &[("href", "https://example.com")])],
+            &[(1, [0.0, 0.0, 100.0, 20.0], "pointer")],
+            &[1],
+        );
+        let snap = json!({"documents": [doc], "strings": strings});
+        let ax = json!({"nodes": [ax_node("RootWebArea", "", 1), ax_node("link", "Down", 70)]});
+        let tall = json!({
+            "cssVisualViewport": {"clientWidth": 1000.0, "clientHeight": 800.0, "pageY": 800.0},
+            "cssContentSize": {"height": 3200.0},
+        });
+        let d = build(&ax, &snap, &tall);
+        assert!(d.text.contains("4.0 screens tall"), "{}", d.text);
+        assert!(d.text.contains("1.0 screens down"), "{}", d.text);
+        // A page that fits says nothing at all about scrolling
+        let short = build(&ax, &snap, &metrics());
+        assert!(!short.text.contains("screens tall"), "{}", short.text);
     }
 
     #[test]

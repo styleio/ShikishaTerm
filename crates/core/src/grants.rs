@@ -141,6 +141,7 @@ pub const CATALOG: &[Entry] = &[
     e("restart", Group::Tabs, true, false, false),
     // -- Reporting, and telling a person ------------------------------------
     e("note", Group::Report, true, true, false),
+    e("words_note", Group::Report, true, true, false),
     e("notify", Group::Report, true, true, false),
     e("remote_url", Group::Report, true, true, false),
     // Writing a reply link hands out the ability to type into that tab, to
@@ -166,11 +167,18 @@ pub const CATALOG: &[Entry] = &[
     e("browser_click", Group::Browser, true, true, true),
     e("browser_fill", Group::Browser, true, true, true),
     e("browser_press", Group::Browser, true, true, true),
+    e("browser_select", Group::Browser, true, true, true),
+    e("browser_scroll", Group::Browser, true, true, true),
+    e("browser_settle", Group::Browser, true, true, true),
+    // -- Asking a model ------------------------------------------------------
+    e("ai_choose", Group::Browser, true, true, true),
+    e("ai_text", Group::Browser, true, true, true),
     e("browser_fill_secret", Group::Browser, true, true, true),
     e("browser_auth", Group::Browser, true, true, true),
     e("browser_text", Group::Browser, true, true, true),
     e("browser_html", Group::Browser, true, true, true),
     e("browser_digest", Group::Browser, true, true, true),
+    e("browser_elements", Group::Browser, true, true, true),
     e("browser_fetch", Group::Browser, true, true, true),
     e("browser_state_save", Group::Browser, true, true, true),
     e("browser_state_load", Group::Browser, true, true, true),

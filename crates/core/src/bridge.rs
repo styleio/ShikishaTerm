@@ -45,6 +45,9 @@ pub struct ModelConn {
     /// extracts it and hands it to the same rally orchestrator. Toggles the
     /// rally system prompt and per-turn `on_done` firing in the tab's chat.
     pub drives: Option<String>,
+    /// Which protocol the far end answers: `"chat"` or `"choice"`
+    /// (see [`crate::config::ProviderSpec::speaks`])
+    pub speaks: String,
 }
 
 /// The `--bridge` child process (for direct terminal execution via pipes).
@@ -114,6 +117,30 @@ pub fn complete(
     complete_messages(base_url, model, headers, timeout, &messages)
 }
 
+/// The agents, kept alive between calls, one per wait-length.
+///
+/// A new agent per request is a new TCP connection and a new TLS handshake
+/// per request. Measured from here that is roughly 280ms paid before the far
+/// end has read a single byte -- nothing at all when a turn is a person
+/// typing, and more than the whole answer when the loop is driving a page.
+/// Agents pool their connections, so keeping them is keeping the handshake
+static AGENTS: Mutex<Option<HashMap<u64, ureq::Agent>>> = Mutex::new(None);
+
+/// The pooled agent for this wait-length (0 = wait as long as it takes)
+fn agent_for(timeout: Option<std::time::Duration>) -> ureq::Agent {
+    let key = timeout.map(|t| t.as_secs().max(1)).unwrap_or(0);
+    let mut g = AGENTS.lock().unwrap_or_else(|e| e.into_inner());
+    let map = g.get_or_insert_with(HashMap::new);
+    map.entry(key)
+        .or_insert_with(|| {
+            ureq::Agent::config_builder()
+                .timeout_global(timeout)
+                .build()
+                .new_agent()
+        })
+        .clone()
+}
+
 /// Like `complete`, but takes a full pre-built message list. Used for
 /// multi-turn chat: the bridge is stateless, so the whole conversation is
 /// replayed each call. `messages` is an OpenAI-style array of
@@ -125,13 +152,36 @@ pub fn complete_messages(
     timeout: Option<std::time::Duration>,
     messages: &[serde_json::Value],
 ) -> Result<String> {
-    let endpoint = chat_endpoint(base_url);
-    let body = serde_json::json!({ "model": model, "messages": messages, "stream": false });
+    complete_shaped(base_url, model, headers, timeout, messages, None)
+}
 
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(timeout)
-        .build()
-        .new_agent();
+/// As `complete_messages`, with the shape of the answer demanded up front.
+///
+/// `shape` is a JSON Schema. Asking for a shape beats asking in words and
+/// hoping: told to answer with an object, a model that feels chatty writes
+/// "Sure! Here it is:" first and the parse fails on text nobody needed
+pub fn complete_shaped(
+    base_url: &str,
+    model: &str,
+    headers: &HashMap<String, String>,
+    timeout: Option<std::time::Duration>,
+    messages: &[serde_json::Value],
+    shape: Option<&serde_json::Value>,
+) -> Result<String> {
+    let endpoint = chat_endpoint(base_url);
+    let mut body = serde_json::json!({ "model": model, "messages": messages, "stream": false });
+    if let Some(schema) = shape
+        && let Some(map) = body.as_object_mut() {
+            map.insert(
+                "response_format".into(),
+                serde_json::json!({
+                    "type": "json_schema",
+                    "json_schema": { "name": "answer", "strict": true, "schema": schema },
+                }),
+            );
+        }
+
+    let agent = agent_for(timeout);
     let mut req = agent.post(&endpoint);
     for (k, v) in headers {
         req = req.header(k.as_str(), v.as_str());
@@ -211,6 +261,177 @@ fn models_endpoint(base: &str) -> String {
 /// Append `/chat/completions` to base_url if needed.
 /// If it's already a full path (e.g. Azure) or has a query string, use it
 /// as-is.
+/// Ask for a decision: here is the state, here are the answers allowed, which
+/// one -- and how sure are you.
+///
+/// Two very different services answer this. One is built for it: it is handed
+/// the allowed answers and returns one of them with a probability for each,
+/// in a fraction of the time a sentence would take to write. The other is an
+/// ordinary conversational model, told the same thing in words and held to
+/// the same shape. **The answer comes back identical either way**, because
+/// everything above this line is written once and must not care which is
+/// installed -- that is what lets the whole feature work for somebody who has
+/// only an ordinary AI, slower and otherwise the same.
+///
+/// `ask` is `{"state": …, "questions": {name: {type, criteria, instructions}}}`.
+/// The answer is `{name: {"choice": …, "confidence": …, "probabilities": …}}`,
+/// where a `score` question answers with `score` and a `noul` with `noul`
+pub fn choose(conn: &ModelConn, ask: &serde_json::Value) -> Result<serde_json::Value> {
+    let questions = ask
+        .get("questions")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| anyhow!(crate::i18n::t("err.choose.no_questions")))?;
+    if questions.is_empty() {
+        return Err(anyhow!(crate::i18n::t("err.choose.no_questions")));
+    }
+    let answers = if conn.speaks == crate::config::SPEAKS_CHOICE {
+        choose_direct(conn, ask)?
+    } else {
+        choose_by_words(conn, ask, questions)?
+    };
+    validate_answers(&answers, questions)?;
+    Ok(answers)
+}
+
+/// The service built for choosing: state and questions in, typed answers out
+fn choose_direct(conn: &ModelConn, ask: &serde_json::Value) -> Result<serde_json::Value> {
+    // The address is used exactly as it was typed. What lives at which path
+    // is the far end's business, and writing a guess here would make this
+    // work for one company and silently fail for the next
+    let endpoint = conn.url.trim().to_string();
+    let mut body = ask.clone();
+    if let Some(map) = body.as_object_mut() {
+        map.insert("model".into(), serde_json::Value::String(conn.model.clone()));
+    }
+    let agent = agent_for(conn.timeout);
+    let mut req = agent.post(&endpoint);
+    for (k, v) in &conn.headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let mut resp = req
+        .send_json(&body)
+        .map_err(|e| anyhow!(why_it_failed(&e, &endpoint, conn.timeout)))?;
+    let v: serde_json::Value = resp
+        .body_mut()
+        .read_json()
+        .with_context(|| crate::i18n::t("err.bridge.bad_response_json"))?;
+    v.get("answers")
+        .cloned()
+        .ok_or_else(|| anyhow!(crate::i18n::tp("err.choose.no_answers", &[("v", &v.to_string())])))
+}
+
+/// An ordinary model, told the same thing in words and held to the same shape
+fn choose_by_words(
+    conn: &ModelConn,
+    ask: &serde_json::Value,
+    questions: &serde_json::Map<String, serde_json::Value>,
+) -> Result<serde_json::Value> {
+    let mut props = serde_json::Map::new();
+    for (name, q) in questions {
+        let kind = q.get("type").and_then(serde_json::Value::as_str).unwrap_or("choice");
+        let answer = match kind {
+            "noul" => serde_json::json!({
+                "type": "object",
+                "properties": { "noul": { "type": "number", "minimum": 0, "maximum": 1 } },
+                "required": ["noul"], "additionalProperties": false,
+            }),
+            // Both of the others pick one of a fixed set, so both are spelled
+            // as an enum: a model that cannot name an answer outside the list
+            // cannot invent one, which is the whole point of asking this way
+            _ => {
+                let field = if kind == "score" { "score" } else { "choice" };
+                let mut fields = serde_json::Map::new();
+                fields.insert(field.into(), serde_json::json!({ "enum": offered(q) }));
+                fields.insert(
+                    "confidence".into(),
+                    serde_json::json!({ "type": "number", "minimum": 0, "maximum": 1 }),
+                );
+                serde_json::json!({
+                    "type": "object",
+                    "properties": fields,
+                    "required": [field, "confidence"],
+                    "additionalProperties": false,
+                })
+            }
+        };
+        props.insert(name.clone(), answer);
+    }
+    let required: Vec<String> = questions.keys().cloned().collect();
+    let shape = serde_json::json!({
+        "type": "object",
+        "properties": props,
+        "required": required,
+        "additionalProperties": false,
+    });
+    let messages = vec![
+        serde_json::json!({ "role": "system", "content": crate::i18n::t("prompt.choose.system") }),
+        serde_json::json!({ "role": "user", "content": ask.to_string() }),
+    ];
+    let reply = complete_shaped(
+        &conn.url,
+        &conn.model,
+        &conn.headers,
+        conn.timeout,
+        &messages,
+        Some(&shape),
+    )?;
+    // A model that ignored the shape still tends to put the object inside
+    // something. Take the outermost object rather than refusing outright
+    let body = reply
+        .find('{')
+        .and_then(|i| reply.rfind('}').map(|j| &reply[i..=j]))
+        .unwrap_or(reply.as_str());
+    serde_json::from_str(body)
+        .with_context(|| crate::i18n::tp("err.choose.unreadable", &[("reply", &reply)]))
+}
+
+/// The answers a question allows, as plain strings
+fn offered(q: &serde_json::Value) -> Vec<String> {
+    match q.get("criteria") {
+        // choice: a map of option -> what it means
+        Some(serde_json::Value::Object(m)) => m.keys().cloned().collect(),
+        // score: the levels, in order, answered by their position
+        Some(serde_json::Value::Array(a)) => (1..=a.len()).map(|i| i.to_string()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Refuse an answer that is not one of the ones offered.
+///
+/// Whoever answered, the caller is about to act on this. An option the
+/// question never listed is not a decision, it is a typo with consequences
+fn validate_answers(
+    answers: &serde_json::Value,
+    questions: &serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    for (name, q) in questions {
+        let kind = q.get("type").and_then(serde_json::Value::as_str).unwrap_or("choice");
+        let Some(a) = answers.get(name) else {
+            return Err(anyhow!(crate::i18n::tp("err.choose.missing", &[("name", name)])));
+        };
+        if kind == "noul" {
+            let ok = a
+                .get("noul")
+                .and_then(serde_json::Value::as_f64)
+                .is_some_and(|n| (0.0..=1.0).contains(&n));
+            if !ok {
+                return Err(anyhow!(crate::i18n::tp("err.choose.missing", &[("name", name)])));
+            }
+            continue;
+        }
+        let field = if kind == "score" { "score" } else { "choice" };
+        let picked = a.get(field).and_then(serde_json::Value::as_str).unwrap_or("");
+        let allowed = offered(q);
+        if allowed.is_empty() || !allowed.iter().any(|o| o == picked) {
+            return Err(anyhow!(crate::i18n::tp(
+                "err.choose.not_offered",
+                &[("name", name), ("picked", picked), ("allowed", &allowed.join(", "))]
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn chat_endpoint(base: &str) -> String {
     let b = base.trim();
     if b.contains("/chat/completions") || b.contains('?') {
@@ -292,6 +513,14 @@ pub fn why_not(argv: &[String]) -> Option<String> {
     (!known).then(|| crate::i18n::tp("err.model.unknown_provider", &[("name", provider)]))
 }
 
+/// The connection a `<connection>/<model>` name reaches on the desk on
+/// screen, for the places that hold such a name in a setting rather than on
+/// a tab's command line
+pub fn conn_named(name: &str) -> Option<ModelConn> {
+    let argv = vec!["model".to_string(), name.trim().to_string()];
+    launch_for(&argv)
+}
+
 /// If this is `model <provider>/<model>`, the connection it names on the desk
 /// on screen (None if that desk has none by that name). The model name may
 /// itself contain "/" (Ollama tags), so split on the first "/" only.
@@ -317,6 +546,7 @@ pub fn conn_in(
         model: model.to_string(),
         headers: conn.headers,
         timeout: conn.timeout,
+        speaks: conn.speaks,
         persona: None,
         drives: None,
     })
@@ -325,6 +555,83 @@ pub fn conn_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn questions() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::json!({
+            "operation": {
+                "type": "choice",
+                "criteria": { "CLICK": "press something", "DONE": "it is finished" },
+            },
+            "how_well": { "type": "score", "criteria": ["bad", "fine", "good"] },
+            "is_signed_in": { "type": "noul" },
+        })
+        .as_object()
+        .cloned()
+        .unwrap()
+    }
+
+    /// An answer is about to be acted on. One that names something the
+    /// question never offered is not a decision -- it is a typo with
+    /// consequences, and it is refused whoever produced it
+    #[test]
+    fn an_answer_outside_what_was_offered_is_refused() {
+        let q = questions();
+        let good = serde_json::json!({
+            "operation": {"choice": "CLICK", "confidence": 0.9},
+            "how_well": {"score": "2", "confidence": 0.5},
+            "is_signed_in": {"noul": 0.8},
+        });
+        assert!(validate_answers(&good, &q).is_ok());
+
+        let invented = serde_json::json!({
+            "operation": {"choice": "LOG_IN", "confidence": 1.0},
+            "how_well": {"score": "2", "confidence": 0.5},
+            "is_signed_in": {"noul": 0.8},
+        });
+        let why = validate_answers(&invented, &q).unwrap_err().to_string();
+        assert!(why.contains("LOG_IN"), "the refusal names what was answered: {why}");
+
+        // A score is answered by which level, so a level that does not exist
+        // is the same mistake wearing a number
+        let past_the_end = serde_json::json!({
+            "operation": {"choice": "DONE", "confidence": 1.0},
+            "how_well": {"score": "4", "confidence": 0.5},
+            "is_signed_in": {"noul": 0.8},
+        });
+        assert!(validate_answers(&past_the_end, &q).is_err());
+
+        // Nothing at all for a question is not an answer either
+        let short = serde_json::json!({ "operation": {"choice": "DONE", "confidence": 1.0} });
+        assert!(validate_answers(&short, &q).is_err());
+
+        // A yes/no outside 0..1 is not a probability
+        let impossible = serde_json::json!({
+            "operation": {"choice": "DONE", "confidence": 1.0},
+            "how_well": {"score": "1", "confidence": 0.5},
+            "is_signed_in": {"noul": 4.0},
+        });
+        assert!(validate_answers(&impossible, &q).is_err());
+    }
+
+    /// What each kind of question allows, which is what an ordinary model is
+    /// held to and what every answer is checked against. Both readings come
+    /// from the same function, so the two can never drift apart
+    #[test]
+    fn the_answers_a_question_allows_are_read_the_same_way_everywhere() {
+        let q = questions();
+        assert_eq!(
+            {
+                let mut v = offered(&q["operation"]);
+                v.sort();
+                v
+            },
+            vec!["CLICK".to_string(), "DONE".to_string()]
+        );
+        // A score is answered by position, so the levels become 1..n
+        assert_eq!(offered(&q["how_well"]), vec!["1", "2", "3"]);
+        // A yes/no offers nothing to pick from; its answer is a number
+        assert!(offered(&q["is_signed_in"]).is_empty());
+    }
 
     /// A model line reaches only the connection its own desk registered by that
     /// name. The account behind a connection is billed for the work and handed
@@ -336,6 +643,7 @@ mod tests {
             url: url.to_string(),
             headers: HashMap::new(),
             timeout: None,
+            speaks: crate::config::SPEAKS_CHAT.to_string(),
         };
         let work: HashMap<_, _> = [("claude".to_string(), conn("https://work.example/v1"))].into();
         let mine: HashMap<_, _> = [("mine".to_string(), conn("http://localhost:11434/v1"))].into();

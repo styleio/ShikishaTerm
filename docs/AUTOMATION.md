@@ -865,6 +865,7 @@ written at all.
 | `shikisha.send(tab, "text")` | Raw keystrokes (newline is `\r`). For answering a prompt, not for instructing |
 | `shikisha.draft_to_tab(tab, "text")` | Leave the text in the tab's input box **without** running it — a person finishes and sends |
 | `shikisha.note(tab, "text")` | Write a line **on** that tab's screen. For the person watching only: nothing reaches what runs there, and nobody is asked to answer |
+| `shikisha.words_note(id, "text", bad)` | The same act for a page: a line in the strip under it. A browser tab's screen is the page itself, so there is nowhere to write one otherwise |
 | `shikisha.state(tab)` | The state right now: `WAIT` / `BUSY` / `DONE` / `ASK` / `EXIT` |
 | `shikisha.wait_state(tab, "DONE", ms)` | Wait until it reaches that state; `true` if it did |
 | `shikisha.tab_output(tab)` | Another tab's latest reply (`""` if there is none yet) |
@@ -959,9 +960,13 @@ A page is addressed by the id you gave it. See "Driving a browser" above.
 | `shikisha.browser_fill(id, sel, "text", opts)` | Type into it. **Does not submit** — follow with `browser_press`. `opts` is the same as `browser_click`'s |
 | `shikisha.browser_fill_secret(id, sel, "name")` | Fill in a registered secret. The value never reaches the script (see below) |
 | `shikisha.browser_press(id, "enter")` | Press a key on the page |
+| `shikisha.browser_select(id, sel, "Economy")` | Choose a value in a native dropdown, by the text a person reads. Its own verb because clicking one opens something the page cannot see into |
+| `shikisha.browser_scroll(id, 1, sel)` | Scroll by screenfuls: a number (negative goes back up), `"top"` or `"bottom"`. Without `sel` the page moves; with it, that box does. Also answers how far it actually went, so the end of a list is tellable from the middle |
+| `shikisha.browser_settle(id, {ms=1200, expect="quiet"})` | Wait for the page to stop reacting to the last move -- usually a frame or two, `ms` is only where waiting stops. `expect="options"` also waits for a suggestion to appear, for the type-then-choose pattern |
 | `shikisha.browser_text(id, sel)` | The visible text |
 | `shikisha.browser_html(id)` | The whole document |
 | `shikisha.browser_digest(id)` | The operable elements, numbered — what to read before deciding a move |
+| `shikisha.browser_elements(id)` | The same reading as a table: one row per element with `ref`, `role`, `name`, `value`, `choices`, `section`, `new` and `can` (which of click / fill / select / scroll apply). For building a question out of a page rather than showing it to somebody |
 | `shikisha.browser_fetch(id, url, opts)` | Request from inside the page (keeps its cookies). Returns `{status, ok, url, headers, body}` |
 | `shikisha.browser_auth(id, "name")` | Answer basic-auth from a registered secret (as above) |
 | `shikisha.browser_state_save(id, "label")` | Save this page's login — its cookies and its localStorage — under a name. Returns how many cookies were saved. Sign in once, then a later rally can load it |
@@ -971,6 +976,27 @@ A page is addressed by the id you gave it. See "Driving a browser" above.
 | `shikisha.browser_pressed(id)` | Has it been pressed? |
 | `shikisha.browser_unask(id)` | Take the banner away |
 | `shikisha.browser_wait(id, {ask=..., selector=..., timeout_ms=...})` | Wait for whichever comes first. Returns `"selector"` / `"button"` / `"timeout"` |
+
+### Asking a model
+
+Two commands, and between them everything a page can be driven with.
+
+| Command | What it does |
+| --- | --- |
+| `shikisha.ai_choose({ state = ..., questions = {...}, model = "conn/name" })` | Hand over a state and a set of questions, each listing the answers it allows, and get one answer per question back: `{ choice = "CLICK", confidence = 0.9 }`. A `type = "score"` question answers with `score`, a `type = "noul"` one with `noul` (0 to 1). An answer that was not one of the ones offered is refused rather than acted on |
+| `shikisha.ai_text({ prompt = "...", system = "...", shape = {...}, model = "conn/name" })` | Ask for words: what to type in a field, what a page amounts to. `shape` is a JSON Schema, and with it the answer comes back in that shape instead of as a paragraph |
+
+`model` is `connection/model`, the same spelling a model tab's command line
+uses. Left out, the settings decide (Browser › *Picks the move* and *Writes the
+words*).
+
+**Two very different services answer `ai_choose`, and the answer is the same
+shape either way.** One is built for it: told what the allowed answers are, it
+returns one of them with a probability for each, in a fraction of the time a
+sentence takes to write. The other is an ordinary conversational model, told
+the same thing in words and held to the same shape. That is what lets a page be
+driven by whoever has only the ordinary kind -- slower, and otherwise the same.
+Set which a connection is under its own settings (*Answers*).
 
 ### Secrets (passwords and tokens)
 

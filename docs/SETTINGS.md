@@ -110,6 +110,8 @@ Limits for 🎯 driving another tab
 - **When a limit is reached** — "Keep going" resets the budget and trusts the operator to finish on its own — pick it if the operate stops on you too often.
 - **Settle wait (ms)** — After each action, wait until the page stops changing (up to this long) before reading it. 0 = don't wait.
 - **Ask before acting** — A brake: pause for you to approve a step on the page before it runs. Declining holds the run.
+- **Picks the move** — connection/model. A connection set to answer choices is far quicker here. Left empty, the model below decides as well.
+- **Writes the words** — connection/model. Needed for any goal that involves typing something.
 
 ### Claude's allowance
 
@@ -277,7 +279,7 @@ This screen has nothing to fill in. What it shows depends on what is set elsewhe
 
 ### Tools
 
-Sending pictures to the AI
+What may be sent out: pictures of the screen, and pages
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 

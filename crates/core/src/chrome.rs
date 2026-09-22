@@ -1375,6 +1375,22 @@ impl shikisha_shared::BrowserHost for Pages {
     fn text(&self, to: Option<&str>, sel: &shikisha_shared::Sel, timeout_ms: u64) -> anyhow::Result<Option<String>> {
         crate::pageops::text(self, to, sel, timeout_ms)
     }
+    fn select(&self, to: Option<&str>, sel: &shikisha_shared::Sel, value: &str, timeout_ms: u64)
+        -> anyhow::Result<shikisha_shared::OpReport> {
+        crate::pageops::select(self, to, sel, value, timeout_ms)
+    }
+    fn scroll(
+        &self,
+        to: Option<&str>,
+        sel: Option<&shikisha_shared::Sel>,
+        amount: &serde_json::Value,
+        timeout_ms: u64,
+    ) -> anyhow::Result<(shikisha_shared::Found, String)> {
+        crate::pageops::scroll(self, to, sel, amount, timeout_ms)
+    }
+    fn settle(&self, to: Option<&str>, expect: &str, cap_ms: u64, first_ms: u64, timeout_ms: u64) -> anyhow::Result<(u64, String)> {
+        crate::pageops::settle(self, to, expect, cap_ms, first_ms, timeout_ms)
+    }
     fn href(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
         crate::pageops::href(self, to, timeout_ms)
     }
@@ -1383,6 +1399,9 @@ impl shikisha_shared::BrowserHost for Pages {
     }
     fn digest(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
         crate::pageops::digest(self, to, timeout_ms)
+    }
+    fn elements(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<serde_json::Value> {
+        crate::pageops::elements(self, to, timeout_ms)
     }
     fn snapshot(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<Vec<u8>> {
         crate::pageops::snapshot(self, to, timeout_ms)

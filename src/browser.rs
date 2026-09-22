@@ -3941,6 +3941,142 @@ mod tests {
         std::thread::sleep(Duration::from_millis(600));
     }
 
+    /// The three verbs a page needs beyond click and type, against a real
+    /// page: choosing in a native list, scrolling a box that holds more than
+    /// it shows, and waiting for the page to stop reacting instead of
+    /// sleeping. Also that the list's own choices reach the digest, so
+    /// choosing costs no extra look.
+    ///
+    ///   cargo test choose_scroll_settle -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn choose_scroll_and_settle_on_a_real_page() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let body = r#"<title>t</title><body>
+                  <label for="c">クラス</label>
+                  <select id="c" onchange="document.getElementById('log').textContent='chose ' + this.value">
+                    <option value="e">エコノミー</option>
+                    <option value="b">ビジネス</option>
+                    <option value="f" disabled>ファースト</option>
+                  </select>
+                  <div id="panel" style="height:120px;overflow:auto;border:1px solid #000">
+                    <div style="height:900px">なかみ</div>
+                  </div>
+                  <button id="slow" onclick="setTimeout(() => { document.getElementById('late').textContent='arrived'; }, 250)">おそい</button>
+                  <div id="late"></div>
+                  <div id="log"></div>
+                  <div style="height:3000px">たけ</div>"#;
+                let _ = req.respond(
+                    tiny_http::Response::from_string(body).with_header(
+                        tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"text/html; charset=utf-8"[..],
+                        )
+                        .unwrap(),
+                    ),
+                );
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/");
+        let b = Browser::spawn(&url, "SHIKISHA-TERM page verbs probe").expect("the window does not open");
+
+        let text = b.digest(None, 20_000).expect("the digest could not be taken");
+        println!("{text}");
+        // The list says what it offers, so choosing takes no extra look
+        assert!(text.contains("choices=2"), "a disabled option is not on offer:\n{text}");
+        assert!(text.contains("エコノミー"), "{text}");
+        // The panel holds more than it shows, and has a number to scroll by
+        assert!(text.contains("scrolls="), "the scrolling box is listed:\n{text}");
+        // And the page itself says how far down it goes
+        assert!(text.contains("screens tall"), "{text}");
+
+        let ref_of = |needle: &str| -> u32 {
+            text.lines()
+                .find(|l| l.contains(needle))
+                .and_then(|l| l.trim_start().strip_prefix('['))
+                .and_then(|l| l.split(']').next())
+                .and_then(|n| n.parse().ok())
+                .unwrap_or_else(|| panic!("no ref found: {needle}\n{text}"))
+        };
+
+        // Choosing by the text a person reads, not by the value attribute
+        let rc = ref_of("クラス");
+        let rep = b.select(None, &Sel::Ref(rc), "ビジネス", 10_000).unwrap();
+        assert_eq!(rep.state, Found::Visible);
+        assert_eq!(rep.echo.as_deref(), Some("ビジネス"), "it echoes what it chose");
+        std::thread::sleep(Duration::from_millis(300));
+        let id = b.eval("return document.getElementById('log').textContent;").unwrap();
+        assert_eq!(
+            b.wait_result(id, Duration::from_secs(10)).unwrap(),
+            "\"chose b\"",
+            "the page's own change handler ran"
+        );
+
+        // A choice the list does not hold is refused, and the refusal says
+        // what it does hold -- one more move instead of a loop of guesses
+        let err = b.select(None, &Sel::Ref(rc), "ファースト", 10_000).unwrap_err().to_string();
+        println!("disabled -> {err}");
+        assert!(err.contains("エコノミー"), "it says what is on offer: {err}");
+
+        // Scrolling the box moves the box, not the window
+        let rp = ref_of("scrollbox");
+        let (state, how_far) = b
+            .scroll(None, Some(&Sel::Ref(rp)), &serde_json::json!(1), 10_000)
+            .unwrap();
+        println!("panel -> {state:?} {how_far}");
+        assert_eq!(state, Found::Visible);
+        let id = b.eval("return document.getElementById('panel').scrollTop;").unwrap();
+        let moved: f64 = b
+            .wait_result(id, Duration::from_secs(10))
+            .unwrap()
+            .parse()
+            .unwrap_or(0.0);
+        assert!(moved > 50.0, "the panel scrolled: {moved}");
+        let id = b.eval("return window.scrollY;").unwrap();
+        assert_eq!(b.wait_result(id, Duration::from_secs(10)).unwrap(), "0", "the window did not");
+
+        // ...and the window scrolls when nothing is named
+        let (_, how_far) = b.scroll(None, None, &serde_json::json!(1), 10_000).unwrap();
+        println!("window -> {how_far}");
+        let id = b.eval("return window.scrollY;").unwrap();
+        let y: f64 = b.wait_result(id, Duration::from_secs(10)).unwrap().parse().unwrap_or(0.0);
+        assert!(y > 100.0, "the page moved: {y}");
+        let (_, at_end) = b.scroll(None, None, &serde_json::json!("bottom"), 10_000).unwrap();
+        println!("bottom -> {at_end}");
+        let (_, no_more) = b.scroll(None, None, &serde_json::json!(1), 10_000).unwrap();
+        assert!(no_more.contains('0'), "at the end it says it did not move: {no_more}");
+
+        // Settling returns as soon as the page is still, not when a clock says
+        // so: the quiet page is the fast case, and the one still working is
+        // waited out
+        let quiet = std::time::Instant::now();
+        let (ms, why) = b.settle(None, "quiet", 2_000, 300, 10_000).unwrap();
+        println!("quiet -> {ms}ms {why} (wall {}ms)", quiet.elapsed().as_millis());
+        assert_eq!(why, "nothing_happened", "a page nothing was done to says exactly that");
+        assert!(
+            quiet.elapsed() < Duration::from_millis(1_000),
+            "and it costs the short grace, not the whole budget"
+        );
+
+        b.click(None, &Sel::Ref(ref_of("おそい")), 10_000).unwrap();
+        let (ms, why) = b.settle(None, "quiet", 3_000, 300, 12_000).unwrap();
+        println!("after the slow one -> {ms}ms {why}");
+        assert_eq!(why, "still", "it waited for the reaction, then for it to finish");
+        assert!(ms >= 250, "which cannot have happened in less than the page took: {ms}ms");
+        let id = b.eval("return document.getElementById('late').textContent;").unwrap();
+        assert_eq!(
+            b.wait_result(id, Duration::from_secs(10)).unwrap(),
+            "\"arrived\"",
+            "settling waited for what the click set off, without being told how long"
+        );
+
+        drop(b);
+        std::thread::sleep(Duration::from_millis(600));
+    }
+
     /// A hidden page (bounds 0×0, as during an operate rally showing the AI
     /// tab) has no compositor, so genuine mouse acks never come — the click
     /// must fall back to the synthetic path and still land. Key events and
@@ -4367,6 +4503,21 @@ impl BrowserHost for Browser {
     fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Option<String>> {
         pageops::text(self, to, sel, timeout_ms)
     }
+    fn select(&self, to: Option<&str>, sel: &Sel, value: &str, timeout_ms: u64) -> Result<OpReport> {
+        pageops::select(self, to, sel, value, timeout_ms)
+    }
+    fn scroll(
+        &self,
+        to: Option<&str>,
+        sel: Option<&Sel>,
+        amount: &serde_json::Value,
+        timeout_ms: u64,
+    ) -> Result<(Found, String)> {
+        pageops::scroll(self, to, sel, amount, timeout_ms)
+    }
+    fn settle(&self, to: Option<&str>, expect: &str, cap_ms: u64, first_ms: u64, timeout_ms: u64) -> Result<(u64, String)> {
+        pageops::settle(self, to, expect, cap_ms, first_ms, timeout_ms)
+    }
     fn href(&self, to: Option<&str>, timeout_ms: u64) -> Result<String> {
         pageops::href(self, to, timeout_ms)
     }
@@ -4375,6 +4526,9 @@ impl BrowserHost for Browser {
     }
     fn digest(&self, to: Option<&str>, timeout_ms: u64) -> Result<String> {
         pageops::digest(self, to, timeout_ms)
+    }
+    fn elements(&self, to: Option<&str>, timeout_ms: u64) -> Result<serde_json::Value> {
+        pageops::elements(self, to, timeout_ms)
     }
     fn snapshot(&self, to: Option<&str>, timeout_ms: u64) -> Result<Vec<u8>> {
         pageops::snapshot(self, to, timeout_ms)

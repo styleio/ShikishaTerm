@@ -937,6 +937,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The current ad-hoc "operate a target" attachment, as (source pane, target),
     // so a repeated goal to the same target doesn't re-brief from scratch.
     let mut operating: Option<(usize, usize)> = None;
+    // The page currently being driven from words (🗣), as (its pane, its key).
+    // One at a time: a second one would be a second thing typing into pages
+    // while the person watches only one of them
+    let mut driving: Option<(usize, String)> = None;
     // ✨ finished command suggestions arrive from worker threads (the
     // assistant AI call takes seconds); polled once per tick below
     let (suggest_tx, suggest_rx) = std::sync::mpsc::channel::<String>();
@@ -2866,6 +2870,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // fills (drained and run against the active tab below).
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::RunAction { index }) => {
                         shell.mail().run_actions.push(index);
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Words { on, goal }) => {
+                        shell.mail().words.push((on, goal));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Operate { target, goal }) => {
                         shell.mail().operates.push((target, goal));
@@ -5417,6 +5424,93 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             shell.push_sftp(&js);
             if let Some(r) = remote_ui.as_ref() {
                 r.push_state(format!("{{\"sftp\":{js}}}"));
+            }
+        }
+
+        // 🗣 drive the shown page from a goal written in ordinary words. The
+        // run is attached to the page's own pane: nobody is operating it from
+        // another tab, and the strip the person watches belongs to that page
+        for (on, goal) in shell.mail().take_words() {
+            let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) else {
+                flash = Some(i18n::t("msg.words.browser_only"));
+                continue;
+            };
+            let key = key.clone();
+            if !on {
+                if let (Some(eng), Some((pane, _))) = (engine.as_mut(), driving.take()) {
+                    eng.stop_words(pane);
+                }
+                continue;
+            }
+            // Sending page contents to a company's service is the person's
+            // decision to make, once, knowingly -- the same gate the picture
+            // tools pass through, and refused here rather than half-started
+            match config::pages_gate(desks.get(desk_index)) {
+                config::PageGate::Ready { .. } => {}
+                refused => {
+                    flash = Some(refused.why());
+                    continue;
+                }
+            }
+            if engine.is_none() {
+                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+            }
+            let Some(eng) = engine.as_mut() else { continue };
+            let ctx = browser_ctx(active, &key);
+            // A goal typed while a run is going is a correction to it, not a
+            // second run: the same page, told something more
+            if driving.as_ref().map(|(p, _)| *p) == Some(active) && eng.words_running() {
+                eng.set_goal_in_words(&goal);
+                continue;
+            }
+            let stops = desks
+                .get(desk_index)
+                .map(|w| config::stops_to_lua(&w.stops))
+                .unwrap_or_else(|| "{}".to_string());
+            match eng.start_words(active, &key, &stops, &goal, &ctx) {
+                Ok(()) => driving = Some((active, key)),
+                Err(e) => {
+                    append_hook_log(&format!("words start failed: {e:#}"));
+                    flash = Some(format!("{e}"));
+                }
+            }
+        }
+
+        // One move per pass while a words-driven run is going. Written as a
+        // step rather than a loop on purpose: each move waits on a page, and a
+        // loop that waited here would hold everything else in the program
+        // still for as long as the whole task took
+        if let Some((pane, key)) = driving.clone() {
+            let ctx = browser_ctx(pane, &key);
+            let still = match engine.as_mut() {
+                Some(eng) => eng.step_words(&ctx),
+                None => false,
+            };
+            if !still {
+                if let Some(eng) = engine.as_mut() {
+                    eng.stop_words(pane);
+                }
+                driving = None;
+            }
+            // Whatever ran is on the journal in its durable spelling. Onto the
+            // sheet it goes, so the run leaves a script behind and not only a
+            // result: do it once, and the second time is a ▶ away
+            if let Some(eng) = engine.as_mut() {
+                for line in eng.take_replay_lines() {
+                    let js = serde_json::to_string(&line).unwrap_or_default();
+                    shell.push_recorded(&js);
+                    if let Some(r) = remote_ui.as_ref() {
+                        r.push_state(format!("{{\"recorded\":{js}}}"));
+                    }
+                }
+            }
+        }
+        for (text, bad) in take_words_notes() {
+            let js = serde_json::to_string(&serde_json::json!({"text": text, "bad": bad}))
+                .unwrap_or_else(|_| "null".into());
+            shell.push_words_note(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"words\":{js}}}"));
             }
         }
 
@@ -10275,6 +10369,31 @@ pub fn ready_to_receive(t: &Tab, now_ms: u64) -> bool {
 }
 /// How long to hold before giving up. Whoever wrote it isn't watching anymore by the time this long has passed.
 pub const WAIT_FOR_TAB_MS: u64 = 30_000;
+/// Lines waiting to be shown in the panel of the page being driven from words.
+///
+/// A queue rather than an argument threaded through every caller, for the
+/// same reason the hook log is one: this is something said on the way past,
+/// by code that is in the middle of doing something else, to a screen that is
+/// nowhere near it
+static WORDS_NOTES: std::sync::Mutex<Vec<(String, bool)>> = std::sync::Mutex::new(Vec::new());
+
+/// Say a line in the panel of the page being driven (see [`WORDS_NOTES`])
+pub fn say_in_words_panel(text: String, bad: bool) {
+    if let Ok(mut g) = WORDS_NOTES.lock() {
+        // A person reads the last line, not the hundredth: an unattended run
+        // must not grow a queue nobody will ever look at
+        if g.len() > 64 {
+            g.remove(0);
+        }
+        g.push((text, bad));
+    }
+}
+
+/// Everything said since the last look
+pub fn take_words_notes() -> Vec<(String, bool)> {
+    WORDS_NOTES.lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default()
+}
+
 /// Executes the operation requests queued by Lua hooks.
 /// Auto-sends inherit chain depth (the invisible ball) and stop once the cap is hit.
 #[allow(clippy::too_many_arguments)]
@@ -10535,6 +10654,10 @@ pub fn exec_commands(
                         log_excerpt(&text, 60)
                     ));
                 }
+            }
+            Command::WordsNote { text, bad } => {
+                append_hook_log(&format!("words: {}", log_excerpt(&text, 80)));
+                say_in_words_panel(text, bad);
             }
             Command::Note { target, text } => {
                 // Display only: no chain depth, no ball, no submit reservation,

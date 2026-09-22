@@ -513,6 +513,11 @@ impl WinSurface {
         let _ = self.win.eval(&format!("window.__recorded({line_json});"));
     }
 
+    /// Say what the words-driven run is doing, in the strip under the page
+    fn push_words_note(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__wordsNote({json});"));
+    }
+
     /// Takes the pending ✨ suggestion requests since the last drain.
     /// Route a Vault intent that arrived from the phone into the same queues a
     /// window-origin one uses, so both are drained in one place
@@ -704,6 +709,8 @@ impl WinSurface {
                 Ev::RunAction { index } => self.mail.run_actions.push(index),
                 // Operate-a-target request; the loop has the engine to attach it.
                 Ev::Operate { target, goal } => self.mail.operates.push((target, goal)),
+                // 🗣 drive the shown page from words
+                Ev::Words { on, goal } => self.mail.words.push((on, goal)),
                 // Save the newest replay.lua to Downloads (the board can't
                 // download over HTTP; the loop owns the answer message).
                 Ev::ReplaySave => self.mail.replay_saves = true,
@@ -1866,6 +1873,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn push_ideas(&self, json: &str) { WinSurface::push_ideas(self, json) }
     fn push_sftp(&self, json: &str) { WinSurface::push_sftp(self, json) }
     fn push_recorded(&self, line_json: &str) { WinSurface::push_recorded(self, line_json) }
+    fn push_words_note(&self, json: &str) { WinSurface::push_words_note(self, json) }
     fn queue_ui(&mut self, ev: shikisha_shared::Ev) { WinSurface::queue_ui(self, ev) }
     fn push_suggested(&self, json: &str) { WinSurface::push_suggested(self, json) }
     fn push_surveyed(&self, json: &str) { WinSurface::push_surveyed(self, json) }

@@ -791,10 +791,95 @@ pub struct ProviderSpec {
     /// not something the app can know — so it is asked.
     #[serde(default)]
     pub timeout_sec: Option<u64>,
+    /// What language this endpoint speaks.
+    ///
+    /// `"chat"` (the default) is the usual one: a conversation in, written
+    /// words out. `"choice"` is a different kind of service altogether --
+    /// it is handed a state and a list of the answers that are allowed,
+    /// and returns which one, with how sure it is. It cannot write prose
+    /// and is not asked to; what it buys is an answer in a fraction of the
+    /// time, which is what makes driving a page at a person's pace possible.
+    ///
+    /// Named by what it does rather than by whose it is, because the
+    /// endpoint is typed in by hand and more than one company will answer
+    /// this shape before long
+    #[serde(default)]
+    pub speaks: Option<String>,
 }
 
 /// How long to wait for a whole reply from a provider that does not say.
 pub const PROVIDER_TIMEOUT_DEFAULT_SEC: u64 = 180;
+
+/// The two kinds of endpoint a provider can be (see [`ProviderSpec::speaks`])
+pub const SPEAKS_CHAT: &str = "chat";
+pub const SPEAKS_CHOICE: &str = "choice";
+
+/// Whether a page may be handed to a model, and to which one.
+///
+/// The answer to one question, asked in one place, so that the screen that
+/// offers the agreement and the run that relies on it can never differ about
+/// what was agreed to
+pub enum PageGate {
+    /// Agreed, to these models, and they are the ones that would be asked
+    Ready { models: String },
+    /// These models would be asked, and this desk has not agreed to them
+    Consent { models: String },
+    /// Agreed to something else. Pointing the setting at a different company
+    /// is a fresh question, so it is asked again rather than assumed
+    Changed { agreed: String, models: String },
+    /// Nothing is set to ask
+    NoModel,
+    /// There is no desk to remember an answer on
+    NoDesk,
+}
+
+impl PageGate {
+    /// Why this is not going ahead, in the words the person reads
+    pub fn why(&self) -> String {
+        match self {
+            PageGate::Ready { .. } => String::new(),
+            PageGate::Consent { models } => crate::i18n::tp("msg.words.consent", &[("by", models)]),
+            PageGate::Changed { agreed, models } => {
+                crate::i18n::tp("msg.words.changed", &[("agreed", agreed), ("by", models)])
+            }
+            PageGate::NoModel => crate::i18n::t("msg.words.no_model"),
+            PageGate::NoDesk => crate::i18n::t("msg.words.no_desk"),
+        }
+    }
+}
+
+/// The models a words-driven run would hand the page to, named the way they
+/// are reached. Both of them, because both see the page: the one that decides
+/// the move and the one that writes what to type
+pub fn page_models() -> Vec<String> {
+    let op = operate();
+    let mut names: Vec<String> = [op.choose_model, op.words_model]
+        .into_iter()
+        .flatten()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Whether this desk has agreed to hand pages to the models that would be
+/// asked (see [`DeskSpec::send_pages_to`])
+pub fn pages_gate(desk: Option<&Desk>) -> PageGate {
+    let models = page_models().join(" + ");
+    if models.is_empty() {
+        return PageGate::NoModel;
+    }
+    let Some(desk) = desk else {
+        return PageGate::NoDesk;
+    };
+    match desk.send_pages_to.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(agreed) if agreed == models => PageGate::Ready { models },
+        Some(agreed) => PageGate::Changed { agreed: agreed.to_string(), models },
+        None => PageGate::Consent { models },
+    }
+}
 
 /// A provider resolved into what one request needs.
 ///
@@ -807,6 +892,8 @@ pub struct ProviderConn {
     pub headers: std::collections::HashMap<String, String>,
     /// `None` means wait as long as it takes (the person asked for 0).
     pub timeout: Option<std::time::Duration>,
+    /// Which protocol this endpoint answers (see [`ProviderSpec::speaks`])
+    pub speaks: String,
 }
 
 /// The tab bar's width as the window should open it, in pixels.
@@ -1058,6 +1145,20 @@ pub struct OperateSpec {
     /// Approval is a button shown on the target page; declining holds the run.
     #[serde(default = "default_operate_confirm")]
     pub confirm: String,
+    /// Which model decides the next move when a page is driven from a goal
+    /// written in ordinary words, as `<connection>/<model>`.
+    ///
+    /// Left unset, [`Self::words_model`] decides as well -- slower, and it
+    /// works. Set to a connection whose `speaks` is `"choice"`, the decision
+    /// is a single typed question rather than a written reply, which is the
+    /// difference between a move a second and a move every few seconds
+    #[serde(default)]
+    pub choose_model: Option<String>,
+    /// Which model writes the words: what to type in a field, and what a page
+    /// says when it is asked a question about it. `<connection>/<model>`.
+    /// Unset means no goal that needs typing can be carried out
+    #[serde(default)]
+    pub words_model: Option<String>,
 }
 
 impl Default for OperateSpec {
@@ -1069,6 +1170,8 @@ impl Default for OperateSpec {
             on_limit: default_operate_on_limit(),
             settle_ms: default_operate_settle_ms(),
             confirm: default_operate_confirm(),
+            choose_model: None,
+            words_model: None,
         }
     }
 }
@@ -1957,6 +2060,17 @@ pub struct DeskSpec {
     /// question, and a stored yes would answer it for the person
     #[serde(default)]
     pub send_pictures_to: Option<String>,
+    /// The model this desk agreed to hand the contents of a page to, by the
+    /// `<connection>/<model>` name it is reached by: what a page says and
+    /// what can be done on it, sent out so that a goal written in ordinary
+    /// words can be carried out on that page. Unset is no.
+    ///
+    /// A name and not a yes, for the same reason as [`Self::send_pictures_to`]:
+    /// the agreement was to send it to *that* one. Pointing the setting at a
+    /// different company is a fresh question, and a stored yes would answer
+    /// it on the person's behalf
+    #[serde(default)]
+    pub send_pages_to: Option<String>,
     /// What writes the names and summaries of the folders that ask for them
     /// (`auto_label`): an assistant AI by name ("claude", "codex", "gemini"),
     /// or `model <connection>/<model>` for one of this desk's model
@@ -2632,6 +2746,9 @@ pub struct Desk {
     /// The assistant AI this desk agreed to hand pictures to (see
     /// [`DeskSpec::send_pictures_to`])
     pub send_pictures_to: Option<String>,
+    /// The model this desk agreed to hand page contents to (see
+    /// [`DeskSpec::send_pages_to`])
+    pub send_pages_to: Option<String>,
     /// What writes the folders' automatic names (see [`DeskSpec::summary_ai`])
     pub summary_ai: Option<String>,
     /// Whether those names reach the branch as well (see
@@ -2700,6 +2817,10 @@ pub fn provider_conn(p: &ProviderSpec, look: &dyn Fn(&str) -> Option<String>) ->
     }
     Some(ProviderConn {
         url: p.base_url.trim().to_string(),
+        speaks: match p.speaks.as_deref().map(str::trim) {
+            Some(SPEAKS_CHOICE) => SPEAKS_CHOICE.to_string(),
+            _ => SPEAKS_CHAT.to_string(),
+        },
         headers,
         timeout: match p.timeout_sec.unwrap_or(PROVIDER_TIMEOUT_DEFAULT_SEC) {
             0 => None,
@@ -4616,6 +4737,7 @@ impl Config {
                     git,
                     git_accounts: Vec::new(),
                     send_pictures_to: None,
+                    send_pages_to: None,
                     summary_ai: None,
                     rename_branch: None,
                 });
@@ -4695,6 +4817,7 @@ impl Config {
                 git_accounts: desk.git_accounts.clone(),
                 projects: desk.projects.clone(),
                 send_pictures_to: desk.send_pictures_to.as_deref().and_then(one_name),
+                send_pages_to: desk.send_pages_to.as_deref().and_then(one_name),
                 summary_ai: desk.summary_ai.as_deref().and_then(one_name),
                 rename_branch: desk.rename_branch,
             });

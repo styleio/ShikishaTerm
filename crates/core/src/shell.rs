@@ -12265,6 +12265,8 @@ if (REMOTE) {
     // 📼 pushes: a recorded Lua line for the composer, or a ▶ run's verdict
     // (null = clean, so test for the key's presence, not its truthiness).
     if (d.recorded != null) window.__recorded(d.recorded);
+    // What the run driven from words is doing, for a phone watching it
+    if (d.words) window.__wordsNote(d.words);
     // A panel's answers. The window gets these by being called directly; from
     // here they arrive down the same socket as everything else, and without
     // this line a panel opened on a phone asks its questions into the dark and
@@ -14560,9 +14562,13 @@ function buildLuaPanel() {
     const r = el("input", {type:"radio", name:"luamode", value:mode});
     if (luaMode === mode) r.checked = true;
     r.onchange = () => {
+      const was = luaMode;
       luaMode = mode;
       luaNote = null;
       send({kind:"record", on: mode === "rec"});
+      // Leaving 🗣 stops the run. Entering it starts nothing: a run begins
+      // when there is a goal to begin it with, which is what Send is for
+      if (was === "words" && mode !== "words") send({kind:"words", on:false, goal:""});
       renderPanel();
     };
     lab.append(r, document.createTextNode(glyph + " " + label));
@@ -14571,6 +14577,7 @@ function buildLuaPanel() {
   wrap.append(
     mk("rec", "⏺", T["tui.cast.lua.rec"] || "Record"),
     mk("run", "▶", T["tui.cast.lua.run"] || "Run"),
+    mk("words", "🗣", T["tui.cast.lua.words"] || "In words"),
     el("button", {class:"castbtn", style:"flex:none",
       title: T["tui.cast.lua.copy"] || "Copy the recorded Lua",
       onclick: copySheet}, "📋"));
@@ -14579,6 +14586,10 @@ function buildLuaPanel() {
 // The 📼 panel's line: the last result if there is one, else what the mode does
 function luaNoteLine() {
   if (luaNote) return { text: luaNote.text, tone: luaNote.bad ? "bad" : "good" };
+  if (luaMode === "words") {
+    return { tone: "", text: T["tui.cast.lua.wordshint"]
+      || "Write what you want done on this page and Send. Each step it takes is added to the Lua, so ▶ repeats it." };
+  }
   return { tone: "", text: luaMode === "rec"
     ? (T["tui.cast.lua.rechint"] || "Type and tap as usual — every step is recorded. ▶ shows the Lua.")
     : (T["tui.cast.lua.runhint"] || "The recorded Lua — edit it, Run it, 📋 copies it.") };
@@ -14595,6 +14606,14 @@ function copySheet() {
 // A recorded step arrived (window: eval'd in; phone: over /ws-state). It goes
 // on the Lua sheet (shown in ▶ run mode); while ⏺ recording, the panel's hint
 // echoes the newest line so there's live proof the recorder is listening.
+// The run being driven from words says what it is up to. Same slot as 📼's
+// own status, because it is the same question: what just happened on my page
+window.__wordsNote = function (note) {
+  try {
+    ensureBar();
+    luaFlash("🗣 " + (note && note.text || ""), !!(note && note.bad));
+  } catch (e) {}
+};
 window.__recorded = function (line) {
   try {
     ensureBar();
@@ -17167,7 +17186,9 @@ function syncComposerSlot() {
   // walking from a terminal to a model pane swaps where a Send goes without
   // swapping the document, and a field that still said "type here to send"
   // would be describing the tab we just left.
-  castInput.placeholder = want === "lua"
+  castInput.placeholder = castPanel === "lua" && luaMode === "words"
+    ? (T["tui.cast.lua.wordsph"] || "What should this page do? e.g. find the cheapest one and open it")
+    : want === "lua"
     ? (T["tui.cast.lua.ph"] || "Recorded Lua appears here — edit, Run, or write your own")
     : onModelTab()
       ? (T["tui.chat.ph"] || "Message {model}\u2026").split("{model}").join((activeTab() || {}).name || "model")
@@ -17187,7 +17208,9 @@ function syncSendLabel() {
   castSendEl.textContent =
     castPanel === "lua" && luaMode === "run"
       ? (T["tui.cast.lua.exec"] || "Run")
-      : (T["tui.cast.send"] || "Send");
+      : castPanel === "lua" && luaMode === "words"
+        ? (T["tui.cast.lua.go"] || "Go")
+        : (T["tui.cast.send"] || "Send");
 }
 // (Re)fill the panel area: the fixed switcher (only when there's more than one
 // choice) plus the current panel's content. The switcher sits outside the
@@ -17454,7 +17477,7 @@ function sendLine(text, tab) {
 // keystrokes, and a model pane has no line to take one from: there such a key
 // does nothing, as in any empty field.
 function keysGoOn() {
-  if (castPanel === "lua" && luaMode === "run") return false;
+  if (castPanel === "lua" && (luaMode === "run" || luaMode === "words")) return false;
   if (drivingBrowser()) return true;
   return !castTarget && !onModelTab();
 }
@@ -17467,6 +17490,16 @@ function sendBar() {
   // (and that injection is what the recorder captures).
   if (castPanel === "lua" && luaMode === "run") {
     if (t) { luaNote = null; renderPanel(); send({kind:"runlua", code: t}); }
+    return;
+  }
+  // 🗣: the line is a goal for this page, not something to type into it. Sent
+  // while a run is going, it is a correction to the goal rather than a new run
+  if (castPanel === "lua" && luaMode === "words") {
+    if (t) {
+      send({kind:"words", on:true, goal:t});
+      castInput.value = "";
+      growCastInput();
+    }
     return;
   }
   if (drivingBrowser()) {

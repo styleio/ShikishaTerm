@@ -229,6 +229,137 @@ pub const AUTOMATION: &str = r##"
     return document.documentElement.outerHTML;
   };
 
+  // Wait until the page stops moving, and say why it stopped.
+  //
+  // What replaced a fixed sleep. A sleep long enough for a slow page wastes
+  // that long on every fast one, and the wait that matters is not "some
+  // milliseconds" but "the page finished reacting to what I just did".
+  //
+  // Two phases, because a page that has not reacted *yet* looks exactly like
+  // a page that is never going to. First: give the reaction a moment to
+  // start (`o.first`). A click whose handler sets a timer changes nothing for
+  // a quarter of a second, and a reader that left after two frames would be
+  // reading the page as it was before the click. Then: once something has
+  // moved, leave on the second frame that brings nothing new. So an inert
+  // page costs the short grace and a busy one costs exactly as long as it is
+  // busy -- neither pays the whole budget, which is what `o.ms` is.
+  //
+  // `o.expect === "options"` is the one case worth naming: after typing into
+  // a search box, the page is quiet for a moment *before* the suggestions
+  // arrive, and leaving then means choosing from an empty list. There, quiet
+  // is not enough -- a visible option has to exist too.
+  window.__shikisha_settle = function (o) {
+    o = o || {};
+    const cap = o.ms || 1200;
+    const want = o.expect || "quiet";
+    // How long to wait for anything to happen at all, before believing that
+    // nothing will. Never longer than the whole budget
+    const grace = Math.min(o.first == null ? 300 : o.first, cap);
+    const t0 = performance.now();
+    return new Promise(function (resolve) {
+      let changed = false, moved = false, quiet = 0, done = false;
+      const obs = new MutationObserver(function () { changed = true; moved = true; });
+      try {
+        obs.observe(document.documentElement, {
+          subtree: true, childList: true, attributes: true, characterData: true,
+        });
+      } catch (e) {}
+      const finish = function (why) {
+        if (done) return;
+        done = true;
+        obs.disconnect();
+        resolve({ ms: Math.round(performance.now() - t0), why: why });
+      };
+      const options = function () {
+        const all = document.querySelectorAll('[role="option"], [role="listbox"] li, datalist option');
+        for (const e of all) {
+          const r = e.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight) return true;
+        }
+        return false;
+      };
+      const tick = function () {
+        if (done) return;
+        const spent = performance.now() - t0;
+        if (spent >= cap) return finish("gave_up");
+        if (changed) { changed = false; quiet = 0; }
+        else quiet++;
+        // Nothing has stirred and the grace is not up: keep waiting for it to
+        const waiting_to_start = !moved && spent < grace;
+        if (!waiting_to_start && quiet >= 2 && (want !== "options" || options())) {
+          return finish(moved ? "still" : "nothing_happened");
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+      // A page that never stops (a spinner, a clock) still has to be answered
+      setTimeout(function () { finish("gave_up"); }, cap);
+    });
+  };
+
+  // Scroll the window, or one box inside it. `amount` is in screenfuls of
+  // whatever is being scrolled, so "one more screen" is 1 whether the thing
+  // is the page or a panel in the corner of it. Returns where it ended up,
+  // because "it did not move" is an answer the caller needs: at the bottom
+  // of a list, scrolling again forever is the loop that never ends
+  window.__shikisha_scroll = async function (sel, amount, deadline_ms) {
+    const deadline = performance.now() + (deadline_ms || 4000);
+    let box = null;
+    if (sel !== null && sel !== undefined && sel !== "") {
+      box = await window.__shikisha_resolve(sel, deadline);
+      if (!box) return { state: "not_found" };
+      box.scrollIntoView({ block: "center" });
+    }
+    const view = box || document.scrollingElement || document.documentElement;
+    const seen = box ? box.clientHeight : innerHeight;
+    const whole = view.scrollHeight;
+    const before = view.scrollTop;
+    let to = before;
+    if (amount === "top") to = 0;
+    else if (amount === "bottom") to = whole;
+    else to = before + seen * Number(amount || 0);
+    view.scrollTo({ top: to, behavior: "instant" });
+    await new Promise(function (r) { requestAnimationFrame(function () { requestAnimationFrame(r); }); });
+    const after = view.scrollTop;
+    return {
+      state: "visible",
+      moved: Math.round(after - before),
+      at: Math.round(after),
+      of: Math.round(Math.max(0, whole - seen)),
+    };
+  };
+
+  // Choose a value in a real <select>. Matched on what a person would read
+  // (the option's text) first, then on the value attribute, because the goal
+  // came from a person and says "Economy", not "e". Never invents a choice:
+  // an unmatched value is reported, not approximated
+  window.__shikisha_select = async function (sel, want, deadline_ms) {
+    const deadline = performance.now() + (deadline_ms || 4000);
+    const el = await window.__shikisha_resolve(sel, deadline);
+    if (!el) return { state: "not_found" };
+    if (!(el instanceof HTMLSelectElement)) return { state: "not_a_list" };
+    await window.__shikisha_ready(el, { deadline: deadline - performance.now(), enabled: true });
+    const same = function (a, b) {
+      return String(a == null ? "" : a).trim().toLowerCase() === String(b == null ? "" : b).trim().toLowerCase();
+    };
+    const usable = [...el.options].filter(function (o) {
+      return !o.disabled && !(o.closest && o.closest("optgroup[disabled]"));
+    });
+    let pick = usable.find(function (o) { return same(o.label || o.text, want); })
+      || usable.find(function (o) { return same(o.value, want); })
+      || usable.find(function (o) {
+        return String(o.label || o.text).trim().toLowerCase().indexOf(String(want).trim().toLowerCase()) >= 0;
+      });
+    if (!pick) {
+      return { state: "no_such_choice",
+               choices: usable.slice(0, 20).map(function (o) { return o.label || o.text; }) };
+    }
+    el.value = pick.value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { state: "visible", chose: pick.label || pick.text };
+  };
+
   // Make the request from inside the page so we can read the status/body/
   // headers (the WebView doesn't expose raw HTTP directly, so we have the
   // page itself make the call and hand back the result). credentials:"include"

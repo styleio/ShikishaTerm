@@ -889,6 +889,7 @@ Model Context Protocol を話すAIクライアント（Claude Code など）に�
 | `shikisha.send(タブ, "文字列")` | 生のキー入力（改行は `\r`）。指示ではなく、確認への返答用 |
 | `shikisha.draft_to_tab(タブ, "文字列")` | 入力欄に置くだけで**実行しない**。人が書き足して送ります |
 | `shikisha.note(タブ, "文字列")` | そのタブの画面**に**一行書く。見ている人へのお知らせで、中で動いているものには何も届かず、返事も求めません |
+| `shikisha.words_note(id, "文字列", bad)` | ページに対する同じ行為。ページの下の帯に一行出す。ブラウザタブの画面はページそのものなので、ほかに書く場所がありません |
 | `shikisha.state(タブ)` | 今の状態: `WAIT` / `BUSY` / `DONE` / `ASK` / `EXIT` |
 | `shikisha.wait_state(タブ, "DONE", ミリ秒)` | その状態になるまで待つ。なれば `true` |
 | `shikisha.tab_output(タブ)` | 他のタブの最新の返答（まだ無ければ `""`） |
@@ -982,9 +983,13 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.browser_fill(id, セレクタ, "文字列", opts)` | 入力する。**送信はしません** — 続けて `browser_press`。`opts` は `browser_click` と同じ |
 | `shikisha.browser_fill_secret(id, セレクタ, "名前")` | 登録済みの秘密情報を入力する。値はスクリプトに渡りません（下の「秘密情報」） |
 | `shikisha.browser_press(id, "enter")` | ページ上でキーを押す |
+| `shikisha.browser_select(id, セレクタ, "エコノミー")` | ネイティブのドロップダウンで、画面に出ている文字で値を選ぶ。押すとページからは中が見えないものが開くため、クリックとは別の動詞 |
+| `shikisha.browser_scroll(id, 1, セレクタ)` | 画面数でスクロールする。数値（負は上へ）・`"top"`・`"bottom"`。セレクタ無しはページ、有りはその箱。実際に動いた量も返すので、一覧の途中と末尾を区別できる |
+| `shikisha.browser_settle(id, {ms=1200, expect="quiet"})` | 直前の操作へのページの反応が収まるまで待つ。通常は1〜2フレームで、`ms` は待つのをやめる上限。`expect="options"` は候補が見えるまで待つ（入力してから選ぶ操作向け） |
 | `shikisha.browser_text(id, セレクタ)` | 見えている文字 |
 | `shikisha.browser_html(id)` | 文書全体 |
 | `shikisha.browser_digest(id)` | 操作できる要素の一覧（番号付き）。次の手を決める前に読むもの |
+| `shikisha.browser_elements(id)` | 同じ内容を表で返す。1行が1要素で `ref` `role` `name` `value` `choices` `section` `new` `can`（click / fill / select / scroll のどれが使えるか）を持つ。ページを人に見せるのではなく、質問を組み立てるためのもの |
 | `shikisha.browser_fetch(id, url, opts)` | ページの中から通信する（cookieを引き継ぐ）。`{status, ok, url, headers, body}` を返す |
 | `shikisha.browser_auth(id, "名前")` | 登録済みの秘密情報でBasic認証に答える（同上） |
 | `shikisha.browser_state_save(id, "名前")` | このページのログイン（cookie と localStorage）を名前を付けて保存。保存した cookie 数を返す。一度ログインすれば後のラリーで読み込める |
@@ -994,6 +999,25 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.browser_pressed(id)` | 押されたか |
 | `shikisha.browser_unask(id)` | 帯を消す |
 | `shikisha.browser_wait(id, {ask=…, selector=…, timeout_ms=…})` | 早い者勝ちで待つ。`"selector"` / `"button"` / `"timeout"` を返す |
+
+### モデルに尋ねる
+
+2つだけで、ページを動かすのに必要なことが揃います。
+
+| コマンド | 何をするか |
+| --- | --- |
+| `shikisha.ai_choose({ state = …, questions = {…}, model = "接続名/モデル名" })` | 状態と、答えの選択肢を列挙した質問を渡すと、質問ごとに1つの答えが返る: `{ choice = "CLICK", confidence = 0.9 }`。`type = "score"` の質問は `score`、`type = "noul"` は `noul`（0〜1）で答える。提示していない答えが返った場合は、実行せずに拒否する |
+| `shikisha.ai_text({ prompt = "…", system = "…", shape = {…}, model = "接続名/モデル名" })` | 文字を書いてもらう。欄に入れる値、ページの要約など。`shape` は JSON Schema で、渡すと文章ではなくその形で返る |
+
+`model` は `接続名/モデル名`。モデルタブのコマンド行と同じ書き方です。省略すると
+設定（ブラウザ ›「操作を選ぶ」「文字を書く」）が決めます。
+
+**`ai_choose` には性質の違う2種類のサービスが答えられ、どちらでも返る形は同じです。**
+一方はそのために作られていて、許される答えを渡すと、その中の1つを確率つきで、
+文章を書くよりはるかに短い時間で返します。もう一方はふつうの会話モデルで、同じことを
+言葉で伝え、同じ形に従わせます。ふつうのモデルしか無い人でもページを動かせるのは
+このためです（遅いだけで、ほかは同じ）。どちらの接続かは、その接続の設定（「返すもの」）で
+選びます。
 
 ### 秘密情報（パスワードやトークン）
 

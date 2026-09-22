@@ -162,6 +162,9 @@ pub struct Mailbox {
     /// "Operate a target tab" requests from the 🎯 panel: (target tab index, goal).
     /// target 0 = detach. The loop attaches the active AI as the target's operator.
     pub operates: Vec<(usize, String)>,
+    /// 🗣 requests from the panel: (still running, the goal as typed). The
+    /// loop attaches the words-driven run to the page being shown
+    pub words: Vec<(bool, String)>,
     /// 📼 record-mode toggles from the composer (true = arm the shown browser's
     /// recorder, false = silence recording everywhere).
     pub record_arms: Vec<bool>,
@@ -429,6 +432,10 @@ impl Mailbox {
     /// Takes the 📼 record-mode toggles since the last drain.
     pub fn take_record_arms(&mut self) -> Vec<bool> {
         std::mem::take(&mut self.record_arms)
+    }
+    /// Takes what the 🗣 panel has asked for since the last drain
+    pub fn take_words(&mut self) -> Vec<(bool, String)> {
+        std::mem::take(&mut self.words)
     }
     /// Takes the composer Lua awaiting a sandboxed run (▶) since the last drain.
     pub fn take_run_luas(&mut self) -> Vec<String> {

@@ -169,6 +169,7 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // Aiming the active AI at another tab and handing it a goal — the same
         // reach as typing that instruction into the AI from the phone.
         Ev::Operate { .. } => true,
+        Ev::Words { .. } => true,
         // 📼 arming the page recorder and ▶ running composer Lua. Both stay
         // inside the run_scoped jail on the shown browser — no more reach than
         // the input injection and quick actions already allowed above.
