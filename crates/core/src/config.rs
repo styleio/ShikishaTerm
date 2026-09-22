@@ -2345,6 +2345,15 @@ pub struct TabConfig {
     /// Used to recover from an SSH disconnect or after a CLI tool self-updates
     #[serde(default)]
     pub auto_restart: bool,
+    /// How a split row is divided, and which tab is in each pane, by the name
+    /// automation calls it (`layout::Kept`). Only a split row has one.
+    ///
+    /// Written by name rather than by row number because a row number means
+    /// whatever is in that row this minute, and this outlives the minute. A
+    /// pane whose tab is gone comes back empty, with the arrangement's shape
+    /// unchanged -- the position is what somebody learned
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panes: Option<crate::layout::Kept>,
     /// What this tab is aimed at (🎯): the id of the tab it drives, or absent.
     ///
     /// Written by the picker on screen -- picking IS the setting, so there is no
@@ -3140,8 +3149,24 @@ pub fn is_editor_panel(argv: &[String]) -> bool {
     matches!(argv, [head] if head.eq_ignore_ascii_case("editor"))
 }
 
+/// Whether this tab is a split: a row that runs nothing and shows several
+/// other rows at once, divided.
+///
+/// Told apart the same way the git panel and the editor are, by the word on
+/// its own: `split` with anything after it is somebody wanting to run a
+/// program called split, and taking that away would be rude.
+///
+/// It is a row and not a mode of the board because an arrangement belongs to
+/// whoever made it. Kept as a mode, one arrangement was shared by every folder
+/// on a desk, so a split made in one folder was waiting in the next one with
+/// nobody able to say where it came from. As a row it has a name, a place in a
+/// folder, and its own ✕.
+pub fn is_split_panel(argv: &[String]) -> bool {
+    matches!(argv, [head] if head.eq_ignore_ascii_case("split"))
+}
+
 /// Whether this tab is drawn by the app itself rather than run as a program:
-/// a page, the git panel, a file transfer or the editor.
+/// a page, the git panel, a file transfer, the editor or a split.
 ///
 /// One list for every place that starts a folder's programs. Each of those
 /// places once kept its own, and the editor was left out of them: a folder
@@ -3152,6 +3177,7 @@ pub fn is_app_panel(argv: &[String]) -> bool {
         || is_git_panel(argv)
         || is_sftp_panel(argv)
         || is_editor_panel(argv)
+        || is_split_panel(argv)
 }
 
 
@@ -3549,7 +3575,7 @@ fn one_name(s: &str) -> Option<String> {
 /// worse than an error: loading moves on to the next candidate, so the app
 /// comes up with settings from somewhere else entirely and the edit the person
 /// just made appears to have done nothing.
-fn without_bom(text: &str) -> &str {
+pub fn without_bom(text: &str) -> &str {
     text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
@@ -5205,32 +5231,46 @@ pub fn append_tab_at(
 /// (see `hooks::TabKey`): matching the name on screen as well would let an aim
 /// land on a stranger that happens to be *called* what this one is *addressed* as
 fn write_aim(v: &mut serde_json::Value, tab_name: &str, target: Option<&str>, written: &mut bool) {
+    let value = target.map(|t| serde_json::Value::String(t.to_string()));
+    write_on_tab(v, tab_name, "drives", value.as_ref(), written);
+}
+
+/// Put one key on the tab with this automation name, wherever in the settings
+/// that tab was written, and say whether it was found.
+///
+/// `None` takes the key away rather than writing an empty one: a key with
+/// nothing in it is a question somebody opening the file would have to answer
+/// for themselves.
+fn write_on_tab(
+    v: &mut serde_json::Value,
+    tab_name: &str,
+    key: &str,
+    value: Option<&serde_json::Value>,
+    written: &mut bool,
+) {
     match v {
         serde_json::Value::Array(list) => {
             for item in list {
-                write_aim(item, tab_name, target, written);
+                write_on_tab(item, tab_name, key, value, written);
             }
         }
         serde_json::Value::Object(obj) => {
             let named =
                 obj.get("id").and_then(|v| v.as_str()).map(str::trim) == Some(tab_name);
             if named {
-                match target {
+                match value {
                     Some(t) => {
-                        obj.insert("drives".into(), serde_json::Value::String(t.to_string()));
+                        obj.insert(key.into(), t.clone());
                     }
-                    // Cleared aims leave nothing behind: an empty key in a
-                    // person's file is a question they would have to answer
-                    // for themselves
                     None => {
-                        obj.shift_remove("drives");
+                        obj.shift_remove(key);
                     }
                 }
                 *written = true;
             }
             for (k, child) in obj.iter_mut() {
                 if matches!(k.as_str(), "tabs" | "children" | "folders" | "desks") {
-                    write_aim(child, tab_name, target, written);
+                    write_on_tab(child, tab_name, key, value, written);
                 }
             }
         }
@@ -5489,6 +5529,36 @@ pub fn save_tab_aim(tab_name: &str, target: Option<&str>) -> bool {
     };
     let mut written = false;
     write_aim(&mut doc, tab_name, target, &mut written);
+    if !written {
+        return false;
+    }
+    match serde_json::to_string_pretty(&doc) {
+        Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Write down how a split row is divided, beside the row itself.
+///
+/// The same road the aim takes, and for the same reason: the row is found by
+/// the name automation calls it, wherever in the file it was written. `None`
+/// takes the division away, which is what a split reduced to one pane is --
+/// and an empty key left in somebody's file is a question they would have to
+/// answer for themselves.
+pub fn save_tab_panes(tab_name: &str, panes: Option<&crate::layout::Kept>) -> bool {
+    let value = match panes.map(serde_json::to_value) {
+        Some(Ok(v)) => Some(v),
+        Some(Err(_)) => return false,
+        None => None,
+    };
+    let path = config_file_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(without_bom(&text)) else {
+        crate::append_hook_log("could not record the split: settings are not readable");
+        return false;
+    };
+    let mut written = false;
+    write_on_tab(&mut doc, tab_name, "panes", value.as_ref(), &mut written);
     if !written {
         return false;
     }

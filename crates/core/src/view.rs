@@ -268,7 +268,8 @@ pub fn surface_dir(p: &Surface, tabs: &[Tab]) -> Option<std::path::PathBuf> {
         | Surface::Sftp { dir, .. }
         | Surface::Editor { dir, .. }
         | Surface::Failed { dir, .. }
-        | Surface::Git { dir, .. } => dir.clone(),
+        | Surface::Git { dir, .. }
+        | Surface::Split { dir, .. } => dir.clone(),
         Surface::Issues { .. } => None,
     }
 }
@@ -492,6 +493,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         settings_float: ui.settings && ui.settings_float,
         auto_enabled: ui.auto.unwrap_or(true),
         remote_on: ui.remote_on,
+        split_open: ui.split_open.clone(),
         remote_conn: ui.remote_conn,
         remote_sticky: ui.remote_sticky,
         aim: ui.aim,
@@ -623,6 +625,17 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     Some(t)
                 }
                 Surface::Issues { key } => Some(crate::uistate::TabState::issues(i + 1, key)),
+                Surface::Split { key, name, dir } => {
+                    // It stands under its folder's heading and folds away with
+                    // it, like every other row written there. What it shows may
+                    // well be rows of another folder -- it points at them, it
+                    // does not hold them -- and that changes nothing about
+                    // where the row itself lives
+                    let group = dir.as_deref().and_then(|d| {
+                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
+                    });
+                    Some(crate::uistate::TabState::split(i + 1, key, name, group))
+                }
                 Surface::Failed { key, name, dir, why, install_url, machine } => {
                     let group = dir.as_deref().and_then(|d| {
                         groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
@@ -715,7 +728,9 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                 | Surface::Sftp { .. }
                 | Surface::Editor { .. }
                 | Surface::Failed { .. }
-                | Surface::Issues { .. } => false,
+                | Surface::Issues { .. }
+                // ...and a split is a way of looking at rows, not one of them
+                | Surface::Split { .. } => false,
             });
             let ring_idle = matches!(ui.ball.phase(ui.now_ms), crate::ball::Phase::Idle);
             !anyone_active && ring_idle
@@ -1235,6 +1250,17 @@ pub fn surfaces_written(
             if argv.is_empty() {
                 continue;
             }
+            if config::is_split_panel(&argv) {
+                let key = ft
+                    .cfg
+                    .id
+                    .clone()
+                    .or_else(|| ft.cfg.name.clone())
+                    .unwrap_or_else(|| "split".into());
+                let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
+                out.push((Surface::Split { key, name, dir: desk.cwd_of(ft) }, Some(written)));
+                continue;
+            }
             if config::is_editor_panel(&argv) {
                 let key = ft
                     .cfg
@@ -1470,6 +1496,9 @@ pub struct Ui {
     pub qr: Option<String>,
     /// Whether the remote UI is listening (shown at all times so it's never a mystery)
     pub remote_on: bool,
+    /// The split row whose arrangement is on screen, by the name automation
+    /// calls it (`splits.rs`)
+    pub split_open: Option<String>,
     /// Whether a phone/browser is connected over the remote link right now
     pub remote_conn: bool,
     /// Whether the pairing token is the fixed one from settings (it decides
@@ -1698,6 +1727,26 @@ pub enum Surface {
         /// puts you
         remote_dir: String,
     },
+    /// A split: several rows shown at once, divided.
+    ///
+    /// The only row that shows other rows. Everything else here is a leaf --
+    /// it has a process, a page or a panel of its own -- and this one runs
+    /// nothing and owns nothing. It is a view, and the rows it shows go on
+    /// standing in their folder exactly as they did: closing this row takes
+    /// away the arrangement and not one of them.
+    ///
+    /// It is a row rather than a mode of the board because an arrangement
+    /// belongs to whoever made it. As a mode there was one per desk, shared by
+    /// every folder, so a split made in one folder was waiting in the next
+    /// with nothing to say where it came from
+    Split {
+        key: String,
+        name: String,
+        /// The folder it was written under, so it stands in that folder's part
+        /// of the list. It runs nothing there -- this is where it lives, not
+        /// where it works
+        dir: Option<std::path::PathBuf>,
+    },
 }
 
 /// What a row is, for as long as it is on screen, whatever number it has.
@@ -1717,6 +1766,7 @@ pub fn surface_key(s: &Surface, tabs: &[Tab]) -> String {
         Surface::Editor { key, .. } => format!("editor:{key}"),
         Surface::Failed { key, .. } => format!("failed:{key}"),
         Surface::Issues { key } => format!("issues:{key}"),
+        Surface::Split { key, .. } => format!("split:{key}"),
     }
 }
 

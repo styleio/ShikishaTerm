@@ -697,22 +697,6 @@ fn restarted(t: &mut Tab, plan: tab::Resume, why: Option<&'static str>, rows: u1
 /// settings: it exists while it is open and is gone when it is closed.
 pub const EDITOR_SCRATCH: &str = "editor.here";
 
-pub fn split_focused(
-    l: &mut crate::layout::Layout,
-    dir: crate::layout::Dir,
-    surface_count: usize,
-    active: usize,
-) -> usize {
-    let next = free_surface(l, surface_count, active);
-    l.split(dir, next);
-    l.focused_surface()
-}
-pub fn free_surface(l: &crate::layout::Layout, surface_count: usize, from: usize) -> usize {
-    (1..=surface_count)
-        .map(|n| (from + n) % (surface_count + 1))
-        .find(|n| *n != 0 && l.pane_of(*n).is_none())
-        .unwrap_or(0)
-}
 pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The mode flag is not a command to launch.
     // Forgetting to filter it out would send us looking for a program named `--window`.
@@ -1134,13 +1118,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // learned, a desk switched) are worth writing at once; a divider being
     // dragged is not, and a delay keeps a drag from writing a file per frame
     let mut save_at: Option<std::time::Instant> = None;
-    // Each working folder's screen as it was left: which tab was in front and
-    // the split it stood in, so pressing the folder's name brings that back.
-    // For this run only, like which folders are folded -- `view_folder` is the
-    // folder in front now, and `view_kept` how its screen looked last pass
-    let mut folder_views: Vec<(std::path::PathBuf, crate::layout::Kept)> = Vec::new();
-    let mut view_folder: Option<std::path::PathBuf> = None;
-    let mut view_kept: Option<crate::layout::Kept> = None;
+    // The arrangement each split row owns, parked while that row is not in
+    // front, and the name of the one in front now.
+    //
+    // This is where the division of the screen lives. It used to belong to the
+    // desk -- one of them, shared by every folder on it, owned by nobody --
+    // and a split made while working in one folder was waiting in the next
+    // one, showing tabs from a folder nobody had opened
+    let mut splits = crate::splits::Splits::new();
+    let mut open_split: Option<String> = None;
+    // What automation asked of the panes, waiting for the loop's next turn to
+    // be carried out where dividing and closing are written once
+    let mut lua_splits: Vec<(crate::layout::PaneId, bool)> = Vec::new();
+    let mut lua_shuts: Vec<crate::layout::PaneId> = Vec::new();
+    // What was last written down for the row in front, and a division waiting
+    // to be written. Dragging a divider changes the arrangement on every frame
+    // of the drag, and each one of those is not a setting somebody made
+    let mut split_written: Option<crate::layout::Kept> = None;
+    let mut split_save: Option<(String, Instant)> = None;
     // The zoom level waiting to be written down, and when to write it
     let mut font_size: Option<u8> = None;
     // The editors as they stand: which folder each works in, and which file it
@@ -1315,10 +1310,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Each desk keeps its own set of tabs, launched the first time it's activated.
     // Launched tabs live in `tabs`; the shelf reserves space for the remaining desks.
     let mut desk_tabs: Vec<Vec<Tab>> = Vec::new();
-    // One pane tree per desk, parked here while that desk is off screen
-    let mut desk_panes: Vec<crate::layout::Layout> = Vec::new();
     desk_tabs.resize_with(desks.len(), Vec::new);
-    desk_panes.resize_with(desks.len(), || crate::layout::Layout::single(0));
     // Watch the config file for changes (saving takes effect without a restart)
     let mut watcher = watch::Watcher::new(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
     // Look for a newer version: now, and once a day while this runs. Looking
@@ -1599,25 +1591,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 view_drifted = false;
                 view_touched_ms = start.elapsed().as_millis() as u64;
             }
-        // A working folder's name was pressed: back to what was on screen the
-        // last time that folder was the one being looked at. Kept by the names
-        // of what each pane showed, so tabs opened or closed since elsewhere do
-        // not turn it into somebody else's view. Never looked at this run, it
-        // opens on its first tab, undivided. Already the folder in front, nothing moves --
-        // the press is somebody finding their place, not asking to be moved
+        // A working folder's name was pressed: to that folder's first row.
+        // Already the folder in front, nothing moves -- the press is somebody
+        // finding their place, not asking to be moved.
+        //
+        // It used to put back the arrangement that folder was last seen in,
+        // kept in a cache of its own that nothing on screen mentioned. An
+        // arrangement is a row now (`splits.rs`), so it is in the folder's own
+        // list with a name and a ✕, and pressing the folder goes to the folder
         for want in shell.mail().take_folder_views() {
             let want = std::path::PathBuf::from(want);
             let is_want = |f: &std::path::Path| crate::uistate::same_folder(f, &want);
             if folder_press_moves(surface_folder(&surfaces, &tabs, active), &want, board_open || settings_open) {
-                let keyed = surface_keys(&surfaces, &tabs);
-                let back = folder_views.iter().find(|(f, _)| is_want(f)).and_then(|(_, kept)| {
-                    crate::layout::Layout::restore(kept, &pane_layout, |k| {
-                        keyed.iter().position(|t| t.matches(k)).map(|i| i + 1)
-                    })
-                });
-                match back {
-                    Some(l) => pane_layout = l,
-                    None => {
+                {
+                    {
                         let Some(n) = (1..=surface_count)
                             .find(|&s| surface_folder(&surfaces, &tabs, s).is_some_and(is_want))
                         else {
@@ -1654,36 +1641,59 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             view_drifted = false;
             view_touched_ms = start.elapsed().as_millis() as u64;
         }
+        // What is on screen belongs to the row in front. A split row owns an
+        // arrangement; every other row is itself, undivided.
+        //
+        // Read from `active` rather than kept as a second answer to "where am
+        // I", so that every press which moves the person -- the list, a key, a
+        // hand-off, automation -- lands here without knowing this exists.
+        // Leaving a split is going anywhere its arrangement does not hold
+        if let Some(key) = open_split.clone()
+            && pane_layout.pane_of(active).is_none()
+        {
+            splits.park(&key, pane_layout.clone());
+            open_split = None;
+            pane_layout = crate::layout::Layout::single(active);
+        }
+        if open_split.is_none()
+            && let Some(key) = split_at(&surfaces, active)
+        {
+            let written = desks
+                .get(desk_index)
+                .and_then(|d| d.tabs.iter().find(|t| t.cfg.id.as_deref() == Some(key.as_str())))
+                .and_then(|t| t.cfg.panes.clone());
+            let keyed = surface_keys(&surfaces, &tabs);
+            pane_layout = splits.take(&key, written.as_ref(), &pane_layout, |k| {
+                keyed.iter().position(|t| t.matches(k)).map(|i| i + 1)
+            });
+            open_split = Some(key);
+            active = pane_layout.focused_surface();
+        }
+        if open_split.is_none() && (!pane_layout.is_single() || pane_layout.focused_surface() != active) {
+            pane_layout = crate::layout::Layout::single(active);
+        }
         if pane_layout.focused_surface() != active {
             pane_layout.show(active);
         }
-        // Which working folder is in front, and how the screen looked while it
-        // was. Written down every pass rather than at the moment of leaving,
-        // because by the time a press has moved to another folder the panes
-        // have already changed: the arrangement worth keeping is the one from
-        // the pass before. A pane on something in no folder (a page) does not
-        // count as leaving -- a page beside the terminal is part of the view
-        if !board_open && !settings_open {
-            if let Some(here) = surface_folder(&surfaces, &tabs, active) {
-                if let Some(left) = view_folder.as_ref().filter(|f| !crate::uistate::same_folder(f, here))
-                    && let Some(kept) = view_kept.take()
-                {
-                    folder_views.retain(|(f, _)| !crate::uistate::same_folder(f, left));
-                    folder_views.push((left.clone(), kept));
-                }
-                if !view_folder.as_deref().is_some_and(|f| crate::uistate::same_folder(f, here)) {
-                    view_folder = Some(here.to_path_buf());
-                }
+        // The arrangement in front, written down beside the row that owns it,
+        // so the next start finds it as it was left. Held to the same delay a
+        // dragged divider is -- this runs every pass, and a file per frame is
+        // not a saved setting, it is a disk being worn out
+        if let Some(key) = open_split.clone() {
+            let keyed = surface_keys(&surfaces, &tabs);
+            let now = crate::splits::Splits::written(&pane_layout, |s| {
+                keyed.get(s - 1).and_then(|k| k.id.clone())
+            });
+            if now != split_written {
+                split_written = now;
+                split_save = Some((key, Instant::now()));
             }
-            // Kept only while what is in front works in that folder. With a
-            // tab of no folder in front -- the Issue tab, a page -- the folder
-            // was still counted as the one being looked at, and the view kept
-            // for it became that tab: pressing the folder brought the Issue
-            // tab back instead of the folder's own
-            if view_folder.is_some() && surface_folder(&surfaces, &tabs, active).is_some() {
-                let keyed = surface_keys(&surfaces, &tabs);
-                view_kept = Some(pane_layout.keep(|s| keyed.get(s - 1).and_then(|k| k.id.clone())));
-            }
+        }
+        if let Some((key, at)) = split_save.clone()
+            && at.elapsed() >= SPLIT_SAVE_AFTER
+        {
+            split_save = None;
+            config::save_tab_panes(&key, split_written.as_ref());
         }
         // Who the terminals are cut to, settled once per pass rather than by
         // whichever viewer last reported (see `terminal_size`). Both viewers
@@ -1788,13 +1798,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // desk can't index out of bounds; each inactive desk's engine
                 // is rebuilt on demand on the next switch (the active one is rebuilt below).
                 engines = (0..new_ws.len().max(1)).map(|_| None).collect();
-                // The parked pane trees are indexed the same way, so they shift
-                // with it. A tree kept against a moved position would divide the
-                // wrong desk into panes pointing at the wrong tabs, which
-                // looks deliberate and is not — start those over instead.
-                desk_panes = (0..new_ws.len().max(1))
-                    .map(|_| crate::layout::Layout::single(0))
-                    .collect();
                 desks = new_ws;
                 // A project's git account is part of each tab's place, so the
                 // places are looked at again against the settings just read
@@ -2150,7 +2153,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             &mut tabs,
                             &surfaces,
                             &mut pane_layout,
-                            surface_count,
                             max_chain,
                             auto_enabled,
                             now_ms,
@@ -2162,6 +2164,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             &mut pending_send,
                             &mut waiting,
                             &mut active,
+                            &mut lua_splits,
+                            &mut lua_shuts,
                             ViewMove { allowed: auto_switch, touched_ms: view_touched_ms, settings_open },
                         );
                     }
@@ -2634,7 +2638,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         &mut tabs,
                         &surfaces,
                         &mut pane_layout,
-                        surface_count,
                         max_chain,
                         auto_enabled,
                         now_ms,
@@ -2646,6 +2649,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         &mut pending_send,
                         &mut waiting,
                         &mut active,
+                        &mut lua_splits,
+                        &mut lua_shuts,
                         ViewMove { allowed: auto_switch, touched_ms: view_touched_ms, settings_open },
                     );
                 }
@@ -3219,7 +3224,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     &mut tabs,
                     &surfaces,
                     &mut pane_layout,
-                    surface_count,
                     max_chain,
                     auto_enabled,
                     now_ms,
@@ -3231,6 +3235,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     &mut pending_send,
                     &mut waiting,
                     &mut active,
+                    &mut lua_splits,
+                    &mut lua_shuts,
                     ViewMove { allowed: auto_switch, touched_ms: view_touched_ms, settings_open },
                 );
             }
@@ -3404,6 +3410,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         view_settled_at = active;
         let ui = Ui {
             ais: ai_choices.clone(),
+            split_open: open_split.clone(),
             // What is still being typed into a tab, so the composer can say so
             // rather than emptying and leaving the person guessing. Taken from
             // the sends themselves, here, where they are: a second tally kept
@@ -3915,12 +3922,61 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
 
         // ⊞ / ⊟ in a pane's caption. Divides that pane, not whichever one had
         // focus: the button is attached to a pane, so it must mean that one
+        for (id, down) in std::mem::take(&mut lua_splits) {
+            shell.mail().pane_splits.push((id, down));
+        }
+        for id in std::mem::take(&mut lua_shuts) {
+            shell.mail().close_panes.push(id);
+        }
         for (id, down) in shell.mail().take_pane_splits() {
             if !pane_layout.focus_pane(id) {
                 continue;
             }
             let dir = if down { layout::Dir::Col } else { layout::Dir::Row };
-            active = split_focused(&mut pane_layout, dir, surface_count, active);
+            // Inside a split, it divides that split. Outside one it makes a
+            // split: a row of its own in this row's folder, holding what was
+            // in front and an empty pane beside it. That row is where the
+            // arrangement lives from then on -- it has a name, a place in a
+            // list, and a ✕ that takes it away again
+            match open_split.is_some() {
+                true => {
+                    pane_layout.split(dir, 0);
+                    active = pane_layout.focused_surface();
+                }
+                false => {
+                    // Empty, not filled with whatever row happens to come
+                    // next. Pulling in the next one was how a split in one
+                    // folder came up showing another folder's tabs, and
+                    // nobody had asked for either of them
+                    let mut made = crate::layout::Layout::single(active);
+                    made.split(dir, 0);
+                    let keyed = surface_keys(&surfaces, &tabs);
+                    let panes = made.keep(|s| keyed.get(s - 1).and_then(|k| k.id.clone()));
+                    let here = surface_folder(&surfaces, &tabs, active).map(|d| d.to_path_buf());
+                    let desk_name = desks.get(desk_index).map(|d| d.name.clone()).unwrap_or_default();
+                    // Named here rather than left to the write, because this
+                    // row is gone to the moment it arrives and the way to go
+                    // to a row is by the name automation calls it
+                    let taken = std::fs::read_to_string(config::config_file_path())
+                        .ok()
+                        .and_then(|t| serde_json::from_str::<serde_json::Value>(config::without_bom(&t)).ok())
+                        .map(|v| config::tab_ids_in(&v))
+                        .unwrap_or_default();
+                    let id = config::pet_id(&taken);
+                    let row = serde_json::json!({
+                        "name": i18n::t("tui.split.name"),
+                        "id": id,
+                        "command": "split",
+                        "panes": panes,
+                    });
+                    if config::append_tab(&desk_name, row, here.as_deref()) {
+                        // It arrives with the settings this write sets off
+                        reveal = Some((id, Instant::now() + Duration::from_secs(20)));
+                    } else {
+                        flash = Some(i18n::t("msg.split.not_written"));
+                    }
+                }
+            }
             view_touched_ms = start.elapsed().as_millis() as u64;
         }
         // ↻ / ⟲ in a pane's caption. Focus moves to that pane first, and not
@@ -3943,6 +3999,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for id in shell.mail().take_close_panes() {
             if pane_layout.close(id) {
                 active = pane_layout.focused_surface();
+                view_touched_ms = start.elapsed().as_millis() as u64;
+            } else if let Some(key) = open_split.clone()
+                && let Some(at) = surfaces
+                    .iter()
+                    .position(|s| matches!(s, Surface::Split { key: k, .. } if *k == key))
+                    .map(|i| i + 1)
+            {
+                // The last pane of a split is the split. Closing it takes the
+                // row away rather than refusing, because a split of one pane
+                // is a row pretending to be an arrangement -- and taking it
+                // away ends nothing: what it was showing goes on standing in
+                // its own folder, which is the whole point of the row.
+                //
+                // Through the same door a ✕ on that row goes through, so the
+                // row is written out of the settings in one place and not two
+                let gone = surface_key(&surfaces[at - 1], &tabs);
+                shell.mail().close_tabs.push((at, gone, true));
+                splits.forget(&key);
+                split_save = None;
+                split_written = None;
                 view_touched_ms = start.elapsed().as_millis() as u64;
             } else {
                 flash = Some(i18n::t("msg.pane_last"));
@@ -7584,7 +7660,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     &desks,
                                     &mut active,
                                     &mut pane_layout,
-                                    &mut desk_panes,
                                     rows,
                                     cols,
                                     &mut startup_errors,
@@ -7730,7 +7805,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     &desks,
                                     &mut active,
                                     &mut pane_layout,
-                                    &mut desk_panes,
                                     rows,
                                     cols,
                                     &mut startup_errors,
@@ -7846,7 +7920,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 KeyCode::Char('%') | KeyCode::Char('|') => layout::Dir::Row,
                                 _ => layout::Dir::Col,
                             };
-                            active = split_focused(&mut pane_layout, dir, surface_count, active);
+                            // Asked for on the pane the keyboard is in, and
+                            // answered where every other ask to divide is
+                            // answered: dividing a split is one thing and
+                            // making one is another, and neither is written
+                            // twice
+                            let id = pane_layout.focus();
+                            shell.mail().pane_splits.push((id, matches!(dir, layout::Dir::Col)));
                             view_touched_ms = start.elapsed().as_millis() as u64;
                         }
                         // Ctrl+B s puts the tab bar away, and brings it back
@@ -8458,6 +8538,9 @@ pub fn to_live(t: &Tab) {
 /// The pressable/unpressable appearance lags by this much. It's not worth
 /// asking every frame, but it shouldn't lag enough for a human to notice either.
 pub const WHERE_EVERY_MS: u64 = 400;
+/// How long a division has to stand still before it is written down. Long
+/// enough that a divider being dragged is one write and not one per frame
+pub const SPLIT_SAVE_AFTER: Duration = Duration::from_millis(600);
 /// The page placed in the focused pane, if that is what is there.
 ///
 /// Two things need this and must agree: the pen (which that page draws for
@@ -8473,6 +8556,7 @@ pub fn focused_page(layout: &crate::layout::Layout, surfaces: &[Surface]) -> Opt
         | Surface::Sftp { .. }
         | Surface::Editor { .. }
         | Surface::Failed { .. }
+        | Surface::Split { .. }
         | Surface::Issues { .. } => None,
     }
 }
@@ -9244,6 +9328,16 @@ pub fn arrived_row(was: &[String], now: &[(usize, String)]) -> Option<usize> {
         .then(|| now.iter().find(|(_, k)| !was.contains(k)).map(|(n, _)| *n))
         .flatten()
 }
+/// The name of the split row at this number, when that is what is there.
+///
+/// A split row shows other rows, so it is the one row whose number does not
+/// say what is on screen. This is how the loop tells the two apart
+pub fn split_at(surfaces: &[Surface], at: usize) -> Option<String> {
+    match surfaces.get(at.checked_sub(1)?)? {
+        Surface::Split { key, .. } => Some(key.clone()),
+        _ => None,
+    }
+}
 pub fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
     match surfaces.get(active.checked_sub(1)?)? {
         Surface::Session(i) => Some(*i),
@@ -9252,6 +9346,7 @@ pub fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
         | Surface::Sftp { .. }
         | Surface::Editor { .. }
         | Surface::Failed { .. }
+        | Surface::Split { .. }
         | Surface::Issues { .. } => None,
     }
 }
@@ -10436,7 +10531,8 @@ pub fn surface_folder<'a>(surfaces: &'a [Surface], tabs: &'a [Tab], surface: usi
         Surface::Git { dir, .. }
         | Surface::Editor { dir, .. }
         | Surface::Sftp { dir, .. }
-        | Surface::Failed { dir, .. } => dir.as_deref(),
+        | Surface::Failed { dir, .. }
+        | Surface::Split { dir, .. } => dir.as_deref(),
         Surface::Browser { .. } | Surface::Issues { .. } => None,
     }
 }
@@ -10452,6 +10548,7 @@ pub fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
             | Surface::Sftp { key, .. }
             | Surface::Editor { key, .. }
             | Surface::Failed { key, .. }
+            | Surface::Split { key, .. }
             | Surface::Issues { key } => hooks::TabKey { id: Some(key.clone()) },
         })
         .collect()
@@ -10523,7 +10620,6 @@ pub fn exec_commands(
     tabs: &mut [Tab],
     surfaces: &[Surface],
     panes: &mut crate::layout::Layout,
-    surface_count: usize,
     max_chain: u32,
     auto_enabled: bool,
     now_ms: u64,
@@ -10535,6 +10631,13 @@ pub fn exec_commands(
     pending_send: &mut Vec<PendingSend>,
     waiting: &mut Vec<Waiting>,
     active: &mut usize,
+    // `asked`: divisions automation wants, for the loop to carry out on its
+    // next turn. Not done here because what dividing means depends on whether
+    // a split row is in front, which the loop knows and this does not.
+    // `shut`: panes it wants closed, for the same reason -- the last pane of a
+    // split is the split, and taking that row away is the loop's business
+    asked: &mut Vec<(crate::layout::PaneId, bool)>,
+    shut: &mut Vec<crate::layout::PaneId>,
     // Whether automation may move the view right now (see ViewMove)
     view: ViewMove,
 ) {
@@ -10630,16 +10733,19 @@ pub fn exec_commands(
             Command::Pane(op) => {
                 use crate::hooks::PaneOp;
                 match op {
+                    // Handed to the loop rather than carried out here, so
+                    // that automation, the keys and the pane's own button all
+                    // divide the same way: inside a split it divides that
+                    // split, outside one it makes a split row. Which of those
+                    // it is depends on what is in front, and that is the
+                    // loop's to know
                     PaneOp::Split(dir) => {
-                        *active = split_focused(panes, dir, surface_count, *active);
-                        append_hook_log(&format!("pane split {dir:?} (lua) -> surface {active}"));
+                        asked.push((panes.focus(), matches!(dir, crate::layout::Dir::Col)));
+                        append_hook_log(&format!("pane split {dir:?} (lua)"));
                     }
                     PaneOp::Close => {
-                        if panes.close(panes.focus()) {
-                            *active = panes.focused_surface();
-                        } else {
-                            *flash = Some(i18n::t("msg.pane_last"));
-                        }
+                        shut.push(panes.focus());
+                        append_hook_log("pane closed (lua)");
                     }
                     PaneOp::Focus(dir) => {
                         if panes.focus_move(dir) {

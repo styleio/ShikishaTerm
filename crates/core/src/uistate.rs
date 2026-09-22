@@ -1799,6 +1799,15 @@ pub struct UiState {
     #[serde(default)]
     pub settings_float: bool,
     pub auto_enabled: bool,
+    /// The split row whose arrangement is on screen, by the name automation
+    /// calls it. Absent when what is in front is one row, undivided.
+    ///
+    /// The list needs it because `active` cannot say: inside a split, `active`
+    /// is the row in the focused pane, which is where the keyboard is and not
+    /// what is in front. Without this the split row is the one row that is
+    /// never drawn as the one being looked at
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_open: Option<String>,
     pub remote_on: bool,
     /// Whether at least one phone/browser is currently connected over the remote
     /// link. Drives the window's "remote connected — click to disconnect" pill.
@@ -2056,6 +2065,19 @@ impl TabState {
             kind: "editor".into(),
             state: "EDIT".into(),
             state_label: crate::i18n::t("tui.state.editor"),
+            restartable: false,
+            ..Self::browser(index, key, name, group)
+        }
+    }
+
+    /// A split: several rows shown at once, divided. It runs nothing, so it
+    /// has nothing to restart and nothing to stop -- what it holds are other
+    /// rows, and each of those keeps its own ✕
+    pub fn split(index: usize, key: &str, name: &str, group: Option<usize>) -> Self {
+        Self {
+            kind: "split".into(),
+            state: "SPLIT".into(),
+            state_label: crate::i18n::t("tui.state.split"),
             restartable: false,
             ..Self::browser(index, key, name, group)
         }

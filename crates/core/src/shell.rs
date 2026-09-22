@@ -4111,6 +4111,15 @@ function heldDown(id) {
 }
 
 // ── Left tab bar ────────────────────────────
+// Whether this row is the one being looked at. Nearly always that is the row
+// `active` points at -- but a split row shows OTHER rows, so while one is open
+// `active` is the row in its focused pane, which is where the keyboard is and
+// not what is in front. The split says so itself (`split_open`)
+function rowIsFront(t) {
+  if (!t) return false;
+  if (t.kind === "split") return !!(S.split_open && t.id === S.split_open);
+  return t.index === S.active;
+}
 function drawTabs() {
   if (heldDown("tabs") || renameHeld("tabs")) return;
   const nav = document.getElementById("tabs");
@@ -4169,6 +4178,13 @@ function drawTabs() {
     if (t.settings) continue;
     // The Issue tab has its own row, above
     if (t.kind === "issues") continue;
+    // A split shows several rows at once, divided, and a phone has no room to
+    // divide anything: the panes are not sent to one at all. The rows it was
+    // showing are not hidden with it -- it points at them, it does not hold
+    // them -- so everything is still one tap away from this same list. Asked
+    // of the width and not of the wire, because a laptop looking at this
+    // board from elsewhere has the room and wants it
+    if (t.kind === "split" && phoneWidth()) continue;
     if (t.group != null && inside[t.group]) inside[t.group].push(t);
     else loose.push(t);
   }
@@ -6580,7 +6596,7 @@ function tabRow(t, g, deep, head) {
   // inserted before the dot, so every row's dot sits at the same x and the
   // column reads as one line down the sidebar.
   const brand = t.ai ? " aitab ai-" + t.ai : "";
-  const row = el("div", {class:"tab intab" + (S.active === t.index ? " sel" : "") + brand
+  const row = el("div", {class:"tab intab" + (rowIsFront(t) ? " sel" : "") + brand
         + (deep ? " deep" : ""),
       onclick:() => send({kind:"select", tab:t.index})},
     el("span", {class:"dot " + t.state}),
