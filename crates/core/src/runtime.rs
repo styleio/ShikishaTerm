@@ -1127,6 +1127,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // one, showing tabs from a folder nobody had opened
     let mut splits = crate::splits::Splits::new();
     let mut open_split: Option<String> = None;
+    // A row was pressed in the list or the strip, so whatever arrangement is
+    // in front is being left for it (see `take_selects`)
+    let mut left_split = false;
     // What automation asked of the panes, waiting for the loop's next turn to
     // be carried out where dividing and closing are written once
     let mut lua_splits: Vec<(crate::layout::PaneId, bool)> = Vec::new();
@@ -1648,8 +1651,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // I", so that every press which moves the person -- the list, a key, a
         // hand-off, automation -- lands here without knowing this exists.
         // Leaving a split is going anywhere its arrangement does not hold
+        // Read every pass, whether or not there is a split to leave. Read
+        // inside the test below it was only ever taken when one was open, so a
+        // press made with nothing to leave stayed set -- and left the split
+        // that press was on its way INTO, the moment it was entered
+        let pressed = std::mem::take(&mut left_split);
         if let Some(key) = open_split.clone()
-            && pane_layout.pane_of(active).is_none()
+            && (pressed || pane_layout.pane_of(active).is_none())
         {
             splits.park(&key, pane_layout.clone());
             open_split = None;
@@ -7479,6 +7487,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for n in shell.mail().take_selects() {
             if let Some(v) = look_at(n, surface_count, active, settings_open) {
                 (active, board_open, settings_open) = (v.active, v.board_open, v.settings_open);
+                // Pressing a row means "show me this row", and a row shown is
+                // shown on its own. Inside a split, some of the rows in the
+                // list are also in one of its panes, and without this a press
+                // on one of those only moved the keyboard from pane to pane:
+                // the split stayed in front, its mark stayed on the split, and
+                // there was no row left to press that would get out of it.
+                //
+                // Moving between the panes is done in the panes -- that is what
+                // they are, rectangles to point at
+                left_split = true;
                 view_touched_ms = start.elapsed().as_millis() as u64;
             }
         }
