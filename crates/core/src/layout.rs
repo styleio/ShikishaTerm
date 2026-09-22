@@ -375,6 +375,15 @@ impl Layout {
     /// The new pane takes the second half, so a split to the right puts the new
     /// one on the right — the direction the user asked for is the direction the
     /// new thing appears in.
+    /// Divides the focused pane, putting `surface` in the new half.
+    ///
+    /// The keyboard follows, except into an empty half. A pane with nothing in
+    /// it is a pane nothing can be typed into, and everything that asks "what
+    /// am I looking at" -- the folder's tab strip, the composer, the buttons
+    /// over a page -- answers from the focused pane's row. Focused on an empty
+    /// one they all answer "nothing", and the screen empties out around a
+    /// division that was meant to add to it. The half is filled from its own
+    /// +, which does not need the keyboard to be standing in it.
     pub fn split(&mut self, dir: Dir, surface: usize) -> PaneId {
         let id = self.next_id;
         self.next_id += 1;
@@ -392,7 +401,9 @@ impl Layout {
                 a: Box::new(kept),
                 b: Box::new(Node::leaf(id, surface)),
             };
-            self.focus = id;
+            if surface != 0 {
+                self.focus = id;
+            }
         }
         id
     }
@@ -635,6 +646,22 @@ mod tests {
 
     fn surfaces(l: &Layout) -> Vec<usize> {
         l.leaves().into_iter().map(|(_, s)| s).collect()
+    }
+
+    /// Dividing puts the keyboard where the thing is. Into an empty half it
+    /// stays where it was: an empty pane is one nothing can be typed into, and
+    /// everything that asks what is in front answers from the focused pane
+    #[test]
+    fn the_keyboard_does_not_follow_a_division_into_nothing() {
+        let mut l = Layout::single(1);
+        let empty = l.split(Dir::Row, 0);
+        assert_ne!(l.focus(), empty, "the keyboard went to stand in an empty pane");
+        assert_eq!(l.focused_surface(), 1, "what is in front became nothing");
+
+        // ...and with something in it, it follows as it always did
+        let mut l = Layout::single(1);
+        let filled = l.split(Dir::Row, 2);
+        assert_eq!(l.focus(), filled);
     }
 
     /// A folder opened on its own replaces the whole split, whichever side was
