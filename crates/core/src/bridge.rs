@@ -613,6 +613,87 @@ mod tests {
         assert!(validate_answers(&impossible, &q).is_err());
     }
 
+    /// The decision, against a service that really answers it.
+    ///
+    /// Not run by default: it needs an endpoint, a key and a model, which are
+    /// the person's own. What it proves is the part no offline test can --
+    /// that what goes out is what the far end expects, and that what comes
+    /// back fits through `validate_answers` without being coaxed.
+    ///
+    ///   SHIKISHA_PROBE_URL=... SHIKISHA_PROBE_KEY=... SHIKISHA_PROBE_MODEL=... \
+    ///   SHIKISHA_PROBE_SPEAKS=choice \
+    ///   cargo test -p shikisha-core choosing_for_real -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn choosing_for_real() {
+        let var = |k: &str| std::env::var(k).unwrap_or_default();
+        let url = var("SHIKISHA_PROBE_URL");
+        assert!(!url.is_empty(), "SHIKISHA_PROBE_URL is what this needs");
+        let mut headers = HashMap::new();
+        let key = var("SHIKISHA_PROBE_KEY");
+        if !key.is_empty() {
+            headers.insert("Authorization".to_string(), format!("Bearer {key}"));
+        }
+        let conn = ModelConn {
+            provider: "probe".into(),
+            url,
+            model: var("SHIKISHA_PROBE_MODEL"),
+            headers,
+            timeout: Some(std::time::Duration::from_secs(30)),
+            persona: None,
+            drives: None,
+            speaks: match var("SHIKISHA_PROBE_SPEAKS").as_str() {
+                "choice" => crate::config::SPEAKS_CHOICE.to_string(),
+                _ => crate::config::SPEAKS_CHAT.to_string(),
+            },
+        };
+        // A page with one empty box and one button, and a goal that can only
+        // be met by typing first. Small enough to read, and the right answer
+        // is not a matter of taste
+        let ask = serde_json::json!({
+            "state": {
+                "page": { "text": "Search\nQuery\nSearch" },
+                "elements": [
+                    { "ref": 1, "role": "textbox", "name": "Query", "value": "", "can": ["fill", "click"] },
+                    { "ref": 2, "role": "button", "name": "Search", "can": ["click"] },
+                ],
+                "done": [],
+            },
+            "questions": {
+                "operation": {
+                    "type": "choice",
+                    "criteria": {
+                        "CLICK": "Click an element.",
+                        "TYPE": "Put text into a field.",
+                        "DONE": "The goal is visibly satisfied.",
+                    },
+                    "instructions": { "goal": "Search for cats", "rules": "Advance the goal from the page as it is." },
+                },
+                "type_target": {
+                    "type": "choice",
+                    "criteria": { "1": { "element": "[1] textbox Query", "holds": "" } },
+                    "instructions": { "goal": "Search for cats", "operation": "TYPE", "rules": "Pick the element." },
+                },
+            },
+        });
+        let began = std::time::Instant::now();
+        // `choose` refuses an answer that was not one of the ones offered, so
+        // getting here at all is the thing being proved: what went out was
+        // what the far end expects, and what came back fits
+        let answers = choose(&conn, &ask).expect("the decision came back unusable");
+        let picked = answers["operation"]["choice"].as_str().unwrap_or_default();
+        println!("{}ms -> {answers}", began.elapsed().as_millis());
+        assert_eq!(answers["type_target"]["choice"].as_str(), Some("1"));
+        // Whether it picked *well* is the model's business, not this code's --
+        // a small model gets this wrong some of the time and is still being
+        // driven correctly. Said out loud rather than asserted, so the probe
+        // reports the quality of the model without failing over it
+        match picked {
+            "TYPE" => println!("picked the sensible move (the box is empty)"),
+            other => println!("picked {other} — this model is not reliable for deciding"),
+        }
+    }
+
     /// What each kind of question allows, which is what an ordinary model is
     /// held to and what every answer is checked against. Both readings come
     /// from the same function, so the two can never drift apart
