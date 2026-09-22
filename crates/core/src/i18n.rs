@@ -95,6 +95,20 @@ pub fn lang() -> String {
         .unwrap_or_else(|| "en".into())
 }
 
+/// The language on screen, by its name rather than its code.
+///
+/// For the one place a name is needed rather than a lookup: telling somebody
+/// else which language to answer in. A code they have to guess at is a worse
+/// instruction than a name, and an unknown code is passed on as it stands
+/// rather than turned into a wrong guess
+pub fn language_name() -> String {
+    match lang().as_str() {
+        "ja" => "Japanese".into(),
+        "en" => "English".into(),
+        other => other.to_string(),
+    }
+}
+
 /// Looks up a string. An unknown key returns the key itself (so a missing string is noticeable on screen)
 pub fn t(key: &str) -> String {
     dict()

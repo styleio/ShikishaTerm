@@ -50,6 +50,7 @@ pub mod job;
 pub mod keymap;
 pub mod keys;
 pub mod labels;
+pub mod lastexit;
 pub mod lastsession;
 pub mod layout;
 pub mod limits;

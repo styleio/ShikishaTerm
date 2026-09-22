@@ -497,6 +497,16 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         aim: ui.aim,
         first_run: ui.first_run,
         push_wanted: ui.push_wanted,
+        // A fact about the program rather than about anything on screen, so
+        // it is read from where it was written down rather than carried here
+        // through every frame that does not have one
+        last_exit: crate::lastexit::told().map(|t| crate::uistate::LastExit {
+            code: t.ended.code,
+            when: t.ended.when,
+            why: t.why,
+            asking: ui.asking_why,
+            by: ui.ask_why_by.clone(),
+        }),
         ais: ui.ais.clone(),
         coach: ui.coach,
         discard_unasked: ui.discard_unasked,
@@ -1422,6 +1432,10 @@ pub struct Ui {
     /// Whether the settings name a phone as somewhere answers go (see
     /// UiState::push_wanted)
     pub push_wanted: bool,
+    /// Whether somebody is being asked why the last run ended badly
+    pub asking_why: bool,
+    /// Who would be asked (see `UiState`'s `LastExit::by`)
+    pub ask_why_by: String,
     /// Whether what's in view can be put back the way it started (see
     /// `restartable_page`). Drives the restart button beside the stop button
     pub restartable: bool,

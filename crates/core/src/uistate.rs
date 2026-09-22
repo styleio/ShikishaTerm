@@ -1663,6 +1663,29 @@ mod browse_tests {
     }
 }
 
+/// What the screen shows about a run that ended badly
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct LastExit {
+    /// As the machine spells it (`0xc0000409`). Empty when it kept no record
+    #[serde(default)]
+    pub code: String,
+    /// When it happened, in the machine's own words. Empty when unknown
+    #[serde(default)]
+    pub when: String,
+    /// The explanation, once somebody has been asked for one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Whether the asking is under way, so the button can say so instead of
+    /// looking like it did nothing
+    #[serde(default)]
+    pub asking: bool,
+    /// The assistant AI that would be asked, by the name it goes by on
+    /// screen. Empty when there is none installed, which is why the button
+    /// cannot be pressed -- said rather than left to be discovered
+    #[serde(default)]
+    pub by: String,
+}
+
 /// Current position of the automation ring
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct BallState {
@@ -1848,6 +1871,13 @@ pub struct UiState {
     /// to become it (src/shell.rs, drawPushBar).
     #[serde(default)]
     pub push_wanted: bool,
+    /// How the run before this one ended, when it did not end properly.
+    ///
+    /// A program that disappears without a word leaves the person with
+    /// nothing to go on, so the next start says what the machine recorded --
+    /// and offers to have it explained (src/shell.rs, drawCrashBar)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit: Option<LastExit>,
     pub tabs: Vec<TabState>,
     pub ball: BallState,
     /// Transient notification (saved, emergency stop, etc.)

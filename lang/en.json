@@ -3284,5 +3284,19 @@
   "grant.browser_settle": "Wait for the page to stop reacting",
   "grant.browser_elements": "Read what can be operated on the page, as a list",
   "grant.ai_choose": "Ask a model to choose between the answers given to it",
-  "grant.ai_text": "Ask a model to write a piece of text"
+  "grant.ai_text": "Ask a model to write a piece of text",
+  "lastexit.ask.intro": "This terminal application stopped without closing properly. Explain in plain words what most likely happened and what the person should do about it. If the records show another program caused it, say which one. Do not guess beyond what the records support; say what is not knowable from them. Write plain sentences in short paragraphs, with no markdown, no headings and no asterisks -- this is shown in a narrow strip, not on a page.",
+  "lastexit.ask.records": "What the machine recorded:",
+  "lastexit.ask.nothing_recorded": "(nothing was recorded — the run may have been ended by a power cut, or by being stopped from outside)",
+  "lastexit.ask.own_log": "The last lines the application itself wrote when it fell over (empty is meaningful: a failed memory allocation writes nothing here):",
+  "lastexit.ask.answer_in": "Answer in {language}, in a few short sentences.",
+  "lastexit.failed": "The explanation could not be fetched: {why}",
+  "tui.crash.title": "It stopped with an error last time",
+  "tui.crash.code": "Code {code}",
+  "tui.crash.unknown": "The machine kept no record of why.",
+  "tui.crash.ask": "Find out why",
+  "tui.crash.asking": "Looking into it…",
+  "tui.crash.close": "Close",
+  "tui.crash.sends": "What the machine recorded is sent to {by}.",
+  "tui.crash.no_ai": "Choose an assistant AI in the settings to have this explained."
 }

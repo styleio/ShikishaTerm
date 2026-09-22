@@ -2145,6 +2145,33 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #pushbar button { flex:none; padding:8px 14px; border-radius:var(--r-ctl); border:0; font:inherit; font-weight:700; }
   #pushbar .pb-go { background:var(--brand); color:var(--bg); animation:pulse 1.2s step-end infinite; }
   #pushbar .pb-later { background:transparent; color:var(--muted); }
+  /* The notice about a run that ended badly. Floated over whatever is in
+     view rather than put on the board: the person who needs it has just
+     reopened the app and is looking at their work, not at INDEX. It waits
+     until it is read -- there is no second chance to tell somebody why their
+     terminal disappeared */
+  #crashbar { position:absolute; left:var(--fx); right:var(--fr); top:var(--fy); z-index:25;
+    display:flex; align-items:flex-start; gap:var(--s3); flex-wrap:wrap;
+    padding:11px 16px; background:linear-gradient(180deg,var(--tint),var(--panel));
+    border-bottom:2px solid var(--danger); box-shadow:0 8px 22px rgba(0,0,0,.55); }
+  #crashbar[hidden] { display:none; }
+  #crashbar .cb-ico { font-size:16px; flex:none; line-height:1.5; }
+  #crashbar .cb-text { flex:1 1 220px; min-width:0; }
+  #crashbar .cb-title { font-weight:700; color:var(--text); font-size:13px; }
+  #crashbar .cb-code { color:var(--dim); font-size:12px; font-family:var(--mono); margin-top:2px; }
+  /* The explanation, once it arrives. Kept scrollable rather than allowed to
+     push the whole window down: it is somebody's paragraphs, not our text */
+  #crashbar .cb-why { flex:1 1 100%; margin-top:var(--s2); padding:10px 12px;
+    background:var(--bg); border:1px solid var(--line); border-radius:var(--r-ctl);
+    color:var(--text); font-size:13px; line-height:1.55; white-space:pre-wrap;
+    max-height:38vh; overflow:auto; }
+  #crashbar .cb-sends { flex:1 1 100%; color:var(--dim); font-size:12px; margin-top:-2px; }
+  #crashbar .cb-actions { flex:none; margin-left:auto; display:flex; gap:8px; }
+  #crashbar button { flex:none; padding:8px 16px; border-radius:var(--r-ctl); border:0;
+    font:inherit; font-weight:700; cursor:pointer; font-size:13px; }
+  #crashbar .cb-ask { background:var(--brand); color:#04121c; }
+  #crashbar .cb-ask[disabled] { opacity:.6; cursor:default; }
+  #crashbar .cb-close { background:transparent; color:var(--muted); }
   #topicbar { position:absolute; left:var(--fx); right:var(--fr); top:var(--fy); z-index:24;
     display:flex; align-items:center; gap:var(--s3); flex-wrap:wrap;
     padding:11px 16px; background:linear-gradient(180deg,var(--tint),var(--panel));
@@ -3548,6 +3575,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <pre id="tprobe"></pre>
     <div id="back" hidden></div>
     {{TOAST_HTML}}
+    <div id="crashbar" hidden></div>
     <div id="topicbar" hidden></div>
     <div id="thinking" hidden></div>
     <div id="pageui">
@@ -3910,6 +3938,55 @@ function drawPushBar() {
         }}, T["tui.push.later"] || "")));
     bar.hidden = false;
   });
+}
+
+// The notice about a run that ended badly: what stopped, the code the
+// machine kept, and a button to have it explained. Redrawn only when what it
+// says changes -- it holds a button somebody may be reaching for
+let crashSig = null;
+function drawCrashBar() {
+  const bar = document.getElementById("crashbar");
+  if (!bar) return;
+  const x = S.last_exit;
+  if (!x) { bar.hidden = true; crashSig = null; return; }
+  const sig = [x.code, x.when, x.asking, x.why || ""].join("|");
+  if (crashSig === sig) { bar.hidden = false; return; }
+  crashSig = sig;
+  bar.textContent = "";
+  const by = x.by || "";
+  const said = el("div", {class:"cb-text"},
+    el("div", {class:"cb-title"}, T["tui.crash.title"] || "It stopped with an error last time"),
+    el("div", {class:"cb-code"}, x.code
+      ? ((T["tui.crash.code"] || "Code {code}").split("{code}").join(x.code)
+         + (x.when ? "  ·  " + x.when.replace("T", " ") : ""))
+      : (T["tui.crash.unknown"] || "")));
+  const ask = el("button", {class:"cb-ask", onclick: () => {
+    send({kind:"whystopped", ask:true});
+    // Say so at once: the asking happens elsewhere and the answer takes
+    // seconds, and a button that looks untouched gets pressed again
+    ask.disabled = true;
+    ask.textContent = T["tui.crash.asking"] || "Looking into it…";
+  }}, x.asking ? (T["tui.crash.asking"] || "") : (T["tui.crash.ask"] || "Find out why"));
+  if (x.asking || !by) ask.disabled = true;
+  // Emptied out before appending, not while. `el` drops the empty children it
+  // is handed; appending to an element does not, and a null put there lands
+  // on screen as the word "null" -- which is what it did
+  bar.append(...[
+    el("span", {class:"cb-ico"}, "\u26A0\uFE0F"),
+    said,
+    el("span", {class:"cb-actions"},
+      x.why ? null : ask,
+      el("button", {class:"cb-close", onclick: () => {
+        send({kind:"whystopped", ask:false});
+        bar.hidden = true;
+      }}, T["tui.crash.close"] || "Close")),
+    // What leaves this machine if the button is pressed, said before it is
+    x.why ? null : el("div", {class:"cb-sends"}, by
+      ? (T["tui.crash.sends"] || "").split("{by}").join(by)
+      : (T["tui.crash.no_ai"] || "")),
+    x.why ? el("div", {class:"cb-why"}, x.why) : null,
+  ].filter(Boolean));
+  bar.hidden = false;
 }
 
 // Where the toast sits in this window. The composer bar owns the bottom edge
@@ -9707,6 +9784,7 @@ window.__state = function (json) {
   drawRepair();
   drawBrowse();
   drawPushBar();
+  drawCrashBar();
   // While scrolled back through history, say so — clicking jumps back to the present
   const b = document.getElementById("back");
   const away = !screen.hidden && S.scrolled > 0;

@@ -17,6 +17,7 @@
 #![windows_subsystem = "windows"]
 
 use shikisha_core::tab::RecordedStep;
+use shikisha_core::lastexit;
 use shikisha_core::runtime::{WORDMARK, config_file_dir, WORDMARK_SMALL, keys_for, run, session_at, tab_cwd_abs};
 use shikisha_core::view::{
     Size, ScreenPush, Ui, panes_json, screen_push, ui_state_of,
@@ -711,6 +712,8 @@ impl WinSurface {
                 Ev::Operate { target, goal } => self.mail.operates.push((target, goal)),
                 // 🗣 drive the shown page from words
                 Ev::Words { on, goal } => self.mail.words.push((on, goal)),
+                // The notice about a run that ended badly
+                Ev::WhyStopped { ask } => self.mail.why_stopped.push(ask),
                 // Save the newest replay.lua to Downloads (the board can't
                 // download over HTTP; the loop owns the answer message).
                 Ev::ReplaySave => self.mail.replay_saves = true,
@@ -1023,7 +1026,25 @@ fn run_in_window() -> Result<()> {
     surface.hotkeys = hotkeys::Hotkeys::start(move |action| {
         opener.open(if action == "snip" { "" } else { action });
     });
-    run(&mut surface)
+    // What the run before this one left behind, looked at before this one
+    // claims the mark. Asking the machine *why* is slow, so it happens on a
+    // thread of its own and the answer catches up with the window
+    if let Some(mark) = shikisha_core::lastexit::left_behind() {
+        shikisha_core::append_hook_log(&format!(
+            "the run before this one (pid {}) did not close properly",
+            mark.pid
+        ));
+        std::thread::spawn(move || {
+            let ended = lastexit::why(&mark);
+            shikisha_core::lastexit::remember(mark, ended);
+        });
+    }
+    shikisha_core::lastexit::mark_running();
+    let out = run(&mut surface);
+    // Only a run that got here finished. Anything else -- a crash, a power
+    // cut, being stopped from outside -- leaves the mark for the next start
+    shikisha_core::lastexit::mark_closed();
+    out
 }
 
 /// What a newly split pane should show.

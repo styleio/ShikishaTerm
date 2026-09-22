@@ -967,6 +967,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // One at a time: a second one would be a second thing typing into pages
     // while the person watches only one of them
     let mut driving: Option<(usize, String)> = None;
+    // Whether somebody is being asked why the last run ended badly, and the
+    // way their answer gets back to the loop
+    let mut asking_why = false;
+    let (why_tx, why_rx) = std::sync::mpsc::channel::<String>();
     // ✨ finished command suggestions arrive from worker threads (the
     // assistant AI call takes seconds); polled once per tick below
     let (suggest_tx, suggest_rx) = std::sync::mpsc::channel::<String>();
@@ -2903,6 +2907,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Words { on, goal }) => {
                         shell.mail().words.push((on, goal));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::WhyStopped { ask }) => {
+                        shell.mail().why_stopped.push(ask);
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Operate { target, goal }) => {
                         shell.mail().operates.push((target, goal));
                     }
@@ -3465,6 +3472,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .iter()
                 .flat_map(|d| d.notify.values())
                 .any(|d| matches!(d, notify::Destination::Phone {})),
+            asking_why,
+            ask_why_by: crate::webui::assistant_ai(
+                cfg.as_ref().and_then(|c| c.ai_engine.as_deref()),
+            )
+            .map(|(_, label)| label.to_string())
+            .unwrap_or_default(),
             active,
             board: board_open,
             settings: settings_open,
@@ -5448,6 +5461,41 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if let Some(r) = remote_ui.as_ref() {
                 r.push_state(format!("{{\"sftp\":{js}}}"));
             }
+        }
+
+        // "Why did it stop?" -- the notice about a run that ended badly.
+        // Explaining it means reading a system log and asking an AI, neither
+        // of which belongs on the loop that draws, so it happens on a thread
+        // and the answer arrives through the same door as everything else
+        for ask in shell.mail().take_why_stopped() {
+            if !ask {
+                crate::lastexit::dismiss();
+                asking_why = false;
+                continue;
+            }
+            let Some(told) = crate::lastexit::told() else { continue };
+            if asking_why {
+                continue;
+            }
+            asking_why = true;
+            let engine = cfg.as_ref().and_then(|c| c.ai_engine.clone());
+            let language = i18n::language_name();
+            let said = why_tx.clone();
+            std::thread::spawn(move || {
+                let question = crate::lastexit::question(&told.ended, &told.mark, &language);
+                let answer = match crate::webui::ask_local_ai(&question, engine.as_deref()) {
+                    Ok(text) => text,
+                    // The reason it could not be explained is itself the
+                    // answer to give: "nothing happened" is the one thing a
+                    // button must never do
+                    Err(e) => i18n::tp("lastexit.failed", &[("why", &format!("{e:#}"))]),
+                };
+                let _ = said.send(answer);
+            });
+        }
+        while let Ok(said) = why_rx.try_recv() {
+            crate::lastexit::explained(said);
+            asking_why = false;
         }
 
         // 🗣 drive the shown page from a goal written in ordinary words. The

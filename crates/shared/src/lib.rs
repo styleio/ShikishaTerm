@@ -468,6 +468,9 @@ pub enum Ev {
     /// run is going, as a correction. Which page is driven is the one being
     /// shown -- the panel this comes from belongs to it
     Words { on: bool, goal: String },
+    /// "Why did it stop?" -- have the last run's ending explained, or put the
+    /// notice away once it has been read. `ask` false is the putting away
+    WhyStopped { ask: bool },
     /// 📼 record mode toggled in the composer. On arms the Lua recorder on the
     /// shown browser (the loop resolves which one that is); off silences it
     /// everywhere — there's only ever one recorder.
@@ -1250,6 +1253,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("words") => Ev::Words {
             on: v.get("on").and_then(|x| x.as_bool()).unwrap_or(true),
             goal: v.get("goal").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        },
+        // The notice about a run that ended badly: explain it, or put it away
+        Some("whystopped") => Ev::WhyStopped {
+            ask: v.get("ask").and_then(|x| x.as_bool()).unwrap_or(true),
         },
         // A file pasted/attached in the desktop composer. Saved beside the active
         // tab; the result is handed back by eval-ing window.__attachDone(id, …).

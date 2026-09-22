@@ -165,6 +165,8 @@ pub struct Mailbox {
     /// 🗣 requests from the panel: (still running, the goal as typed). The
     /// loop attaches the words-driven run to the page being shown
     pub words: Vec<(bool, String)>,
+    /// Presses on the notice about a run that ended badly (true = explain it)
+    pub why_stopped: Vec<bool>,
     /// 📼 record-mode toggles from the composer (true = arm the shown browser's
     /// recorder, false = silence recording everywhere).
     pub record_arms: Vec<bool>,
@@ -436,6 +438,10 @@ impl Mailbox {
     /// Takes what the 🗣 panel has asked for since the last drain
     pub fn take_words(&mut self) -> Vec<(bool, String)> {
         std::mem::take(&mut self.words)
+    }
+    /// Takes the presses on the "why did it stop" notice since the last drain
+    pub fn take_why_stopped(&mut self) -> Vec<bool> {
+        std::mem::take(&mut self.why_stopped)
     }
     /// Takes the composer Lua awaiting a sandboxed run (▶) since the last drain.
     pub fn take_run_luas(&mut self) -> Vec<String> {
