@@ -506,6 +506,8 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             why: t.why,
             asking: ui.asking_why,
             by: ui.ask_why_by.clone(),
+            carried: crate::lastexit::carried().0,
+            lost: crate::lastexit::carried().1,
         }),
         ais: ui.ais.clone(),
         coach: ui.coach,

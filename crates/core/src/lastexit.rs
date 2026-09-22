@@ -106,6 +106,31 @@ pub fn explained(said: String) {
         }
 }
 
+/// How many tabs that could have carried a conversation did, and how many
+/// started clean instead.
+///
+/// The question somebody actually has when their terminal vanishes is not
+/// which exception code Windows recorded -- it is whether their work came
+/// back. Counted as the tabs start, because that is the only moment anything
+/// knows
+static CARRIED: std::sync::Mutex<(u32, u32)> = std::sync::Mutex::new((0, 0));
+
+/// One tab has decided what it is starting with
+pub fn count_carry(carried: bool) {
+    if let Ok(mut g) = CARRIED.lock() {
+        if carried {
+            g.0 += 1;
+        } else {
+            g.1 += 1;
+        }
+    }
+}
+
+/// (carried, started clean) since this run began
+pub fn carried() -> (u32, u32) {
+    CARRIED.lock().map(|g| *g).unwrap_or((0, 0))
+}
+
 /// The person has read it. Nothing is kept: the next start says nothing
 /// unless there is something new to say
 pub fn dismiss() {

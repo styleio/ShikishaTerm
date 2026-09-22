@@ -1491,6 +1491,13 @@ fn launch_plan(
     if let tab::Resume::Id(s) = &carried.plan {
         append_hook_log(&format!("launching \"{title}\" carrying {}", s.short()));
     }
+    // Kept count, so that somebody whose program disappeared can be told
+    // whether their conversations came back with it. A tab that never had one
+    // -- a shell -- is not a tab that lost one, so only the ones that could
+    // have carried something are counted
+    if cfg.resume.is_some() || carried.lost || matches!(carried.plan, tab::Resume::Id(_)) {
+        crate::lastexit::count_carry(matches!(carried.plan, tab::Resume::Id(_)));
+    }
     carried
 }
 

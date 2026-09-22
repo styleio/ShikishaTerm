@@ -2159,6 +2159,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #crashbar .cb-text { flex:1 1 220px; min-width:0; }
   #crashbar .cb-title { font-weight:700; color:var(--text); font-size:13px; }
   #crashbar .cb-code { color:var(--dim); font-size:12px; font-family:var(--mono); margin-top:2px; }
+  /* Whether the work came back. The good case is said in the ordinary text
+     colour rather than a cheerful one: it is a fact, not a congratulation */
+  #crashbar .cb-kept { color:var(--text); font-size:13px; margin-top:3px; }
   /* The explanation, once it arrives. Kept scrollable rather than allowed to
      push the whole window down: it is somebody's paragraphs, not our text */
   #crashbar .cb-why { flex:1 1 100%; margin-top:var(--s2); padding:10px 12px;
@@ -3949,13 +3952,18 @@ function drawCrashBar() {
   if (!bar) return;
   const x = S.last_exit;
   if (!x) { bar.hidden = true; crashSig = null; return; }
-  const sig = [x.code, x.when, x.asking, x.why || ""].join("|");
+  const sig = [x.code, x.when, x.asking, x.carried, x.lost, x.why || ""].join("|");
   if (crashSig === sig) { bar.hidden = false; return; }
   crashSig = sig;
   bar.textContent = "";
   const by = x.by || "";
   const said = el("div", {class:"cb-text"},
     el("div", {class:"cb-title"}, T["tui.crash.title"] || "It stopped with an error last time"),
+    // What they actually want to know first: whether their work came back.
+    // The code is for whoever ends up reporting it, and comes second
+    (x.carried || x.lost) ? el("div", {class:"cb-kept"}, x.lost
+      ? (T["tui.crash.some_lost"] || "").split("{kept}").join(x.carried).split("{lost}").join(x.lost)
+      : (T["tui.crash.all_kept"] || "").split("{kept}").join(x.carried)) : null,
     el("div", {class:"cb-code"}, x.code
       ? ((T["tui.crash.code"] || "Code {code}").split("{code}").join(x.code)
          + (x.when ? "  ·  " + x.when.replace("T", " ") : ""))

@@ -1684,6 +1684,12 @@ pub struct LastExit {
     /// cannot be pressed -- said rather than left to be discovered
     #[serde(default)]
     pub by: String,
+    /// How many conversations came back with the tabs, and how many did not.
+    /// The question somebody has after their terminal disappears
+    #[serde(default)]
+    pub carried: u32,
+    #[serde(default)]
+    pub lost: u32,
 }
 
 /// Current position of the automation ring

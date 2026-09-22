@@ -3269,5 +3269,7 @@
   "tui.crash.sends": "What the machine recorded is sent to {by}.",
   "tui.crash.no_ai": "Choose an assistant AI in the settings to have this explained.",
   "tray.screen_down.title": "The screen stopped",
-  "tray.screen_down.body": "Your work is still running. Click this icon to bring the screen back, once the machine has room again."
+  "tray.screen_down.body": "Your work is still running. Click this icon to bring the screen back, once the machine has room again.",
+  "tui.crash.all_kept": "All {kept} conversations came back with their tabs.",
+  "tui.crash.some_lost": "{kept} conversations came back; {lost} started fresh. A tab that lost one offers the way back to it."
 }
