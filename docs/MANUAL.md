@@ -181,7 +181,7 @@ quieter. Rest the pointer on a folder to read its name and summary; on a phone t
 card carries a line of the summary, and holding a card down opens its menu with the
 whole summary at the top. Changing the name or the summary by hand turns Auto off.
 Which AI writes them is chosen under Settings > Desk > Automatic names: the
-assistant AI, asked the lightest way it can be, or one of the desk's model connections.
+assistant AI, asked the lightest way it can be, or one of the desk's AI providers.
 
 Worktrees made from a terminal or another tool show up under the heading as "Hiding N
 found worktrees". Open it and **Show in the worktree list**, or press ✕ to keep them hidden.
@@ -285,7 +285,7 @@ settings screen, so it cannot fall behind.
 
 - **Basics** — Name, automation name, automation folder
 - **Notifications** — Chats, this PC, phones
-- **Model connections** — The APIs this desk's tabs use
+- **AI providers** — The model APIs this desk's tabs use, local models included
 - **Browser** — What this desk's browser tabs follow
 - **Automation permissions** — What a person and an AI may run
 - **git** — Protected branches, commit messages

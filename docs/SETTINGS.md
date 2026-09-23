@@ -26,7 +26,7 @@ Tab width, chaining, language
 - **Default command** — What a project opens with when it is added, and what an empty folder opens when pressed. A PC without Git Bash opens PowerShell.
 - **Assistant AI**
 - **Yolo mode** — New AI tabs skip the AI's permission checks
-- **AI for automatic names** — Writes the name and summary of a working folder with Auto on, and the branch name that follows them. A desk can choose another one, and that is also where a model connection is chosen.
+- **AI for automatic names** — Writes the name and summary of a working folder with Auto on, and the branch name that follows them. A desk can choose another one, and that is also where an AI provider is chosen.
 - **Model for those names** — A name costs a fraction of an answer this way. Turn it off if the names it writes are not recognisable.
 - **Browser data** — Where the browser cache and login state live. Sharing carries logins across PCs but adds Drive sync load
 - **Where pages are drawn** — Only matters when a device is connected to this one. Drawn here, a page can be watched from a phone, keeps working with nobody connected, and is one signed-in session for every device. Drawn on the connected device it is faster and sharper, but it needs that device to be there and only it can see the page. Either way the page reaches the network through this machine, so a port opened here means the same thing on both sides. New pages only — a page already open stays where it is.
@@ -211,9 +211,9 @@ Chats, this PC, phones
 - **Chat id**
 - **The main destination**
 
-### Model connections
+### AI providers
 
-The APIs this desk's tabs use
+The model APIs this desk's tabs use, local models included
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 
@@ -297,7 +297,7 @@ The AI that names and describes working folders
 
 **Automatic names and summaries**
 
-- **AI** — An assistant AI is asked the lightest way it can be: no tools, and the smallest model it has when Basic says to use one. A model connection runs on that connection's account.
+- **AI** — An assistant AI is asked the lightest way it can be: no tools, and the smallest model it has when Basic says to use one. An AI provider runs on that provider's account.
 - **Branch name** — The first name written replaces the one this app drew (mighty-gannet), once. A branch you named yourself, and one that has already been pushed, keep their names.
 
 ### Automation doors
