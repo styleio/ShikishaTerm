@@ -1949,6 +1949,69 @@ pub fn terminal_size(window: (u16, u16), phone: Option<(u16, u16)>, watched: boo
     }
 }
 
+/// ...and the same question for the panes behind the one in front: **the far
+/// viewer's measurements while it is the one being drawn for, the window's
+/// otherwise.**
+///
+/// The same rule as [`terminal_size`], for the same reason, and it has to be
+/// the same rule: the pane in front and the ones behind it drawn to two
+/// different viewers' numbers is a division whose halves disagree about how
+/// wide the whole is.
+///
+/// This used to be the window's alone, because a small screen was never sent
+/// the division at all. It is now -- a screen with no room for it says so and
+/// offers to show it anyway -- and a pane nobody is typing into is exactly
+/// where a wrong width is never noticed: nothing is pressed there, so nothing
+/// makes the program draw again, and the picture stays wrong until somebody
+/// goes and touches it. Which is the one thing a terminal must not do.
+///
+/// An empty report is no report: a viewer that has not laid any panes out yet
+/// -- a page still starting up -- must not take the panes away from the one
+/// that has.
+pub fn panes_geom<'a>(
+    window: &'a [shikisha_shared::PaneGeom],
+    far: &'a [shikisha_shared::PaneGeom],
+    watched: bool,
+) -> &'a [shikisha_shared::PaneGeom] {
+    if watched && !far.is_empty() { far } else { window }
+}
+
+#[cfg(test)]
+mod panes_geom_tests {
+    use super::panes_geom;
+    use shikisha_shared::PaneGeom;
+
+    fn geom(id: u32, cols: u16) -> PaneGeom {
+        PaneGeom { id, rows: 40, cols, rect: (0, 0, 100, 100) }
+    }
+
+    /// Nobody watching from afar: the window's numbers, which are the only
+    /// ones being drawn
+    #[test]
+    fn the_window_decides_while_it_is_the_only_one_looking() {
+        let win = [geom(1, 100)];
+        let far = [geom(1, 30)];
+        assert_eq!(panes_geom(&win, &far, false)[0].cols, 100);
+    }
+
+    /// Somebody is: the division they can see is the one the terminals are cut
+    /// to, exactly as the pane in front already is (`terminal_size`)
+    #[test]
+    fn a_viewer_from_afar_decides_the_panes_it_is_drawing() {
+        let win = [geom(1, 100)];
+        let far = [geom(1, 30)];
+        assert_eq!(panes_geom(&win, &far, true)[0].cols, 30);
+    }
+
+    /// A page that has not laid anything out yet says nothing, which is not
+    /// the same as saying there are no panes
+    #[test]
+    fn saying_nothing_is_not_the_same_as_saying_no_panes() {
+        let win = [geom(1, 100)];
+        assert_eq!(panes_geom(&win, &[], true)[0].cols, 100);
+    }
+}
+
 /// Turn text a human typed into a destination we're allowed to open.
 ///
 /// Works like a browser's combined address/search box: text that reads as a

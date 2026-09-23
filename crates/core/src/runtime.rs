@@ -1581,10 +1581,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .position(|s| matches!(s, Surface::Editor { key: k, .. } if *k == key))
                 .map(|i| i + 1)
             {
-                match pane_layout.pane_of(n) {
+                // The keyboard is standing in a pane with nothing in it:
+                // that is where it goes, and no room has to be made. This is
+                // what a file dropped on an empty pane arrives as -- the drop
+                // puts the keyboard there first, and the rest of this is about
+                // finding room where there is none
+                let into_empty = (pane_layout.focused_surface() == 0).then(|| pane_layout.focus());
+                match into_empty.or_else(|| pane_layout.pane_of(n)) {
                     // Already on screen: look at it rather than opening a
                     // second window onto the same file
                     Some(id) => {
+                        pane_layout.put(id, n);
                         pane_layout.focus_pane(id);
                     }
                     None => {
@@ -1763,10 +1770,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // re-measure and re-report as they redraw, so reading it here — from
         // who is actually looking — is what keeps the two of them from taking
         // the terminal off each other.
+        let watched_afar = remote_ui.as_ref().is_some_and(|r| r.watched());
         (rows, cols) = pty_dims(terminal_size(
             (shell.geom_rows(), shell.geom_cols()),
             shell.phone_size(),
-            remote_ui.as_ref().is_some_and(|r| r.watched()),
+            watched_afar,
         ));
         // This is the only place a terminal is resized — two places deciding
         // meant a split pane was told its size twice per frame, and whichever
@@ -1776,7 +1784,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 tabs.len(),
                 &pane_layout,
                 &surfaces,
-                shell.geom_panes(),
+                // The panes behind the one in front, drawn to the same
+                // viewer's numbers the one in front is
+                crate::view::panes_geom(shell.geom_panes(), shell.phone_panes(), watched_afar),
                 (rows, cols),
             );
             for (t, (r, c)) in tabs.iter().zip(want) {
@@ -2962,8 +2972,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // that positions the window's own browser child view, which the
                     // phone doesn't use (it watches the relay), so the window keeps
                     // the placement it measured for itself.
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Resize { rows, cols, .. }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Resize { rows, cols, panes, .. }) => {
                         shell.set_phone_size(Some((rows, cols)));
+                        // ...and how it has laid the division out, which it
+                        // draws too now (`view::panes_geom`). Dropped here, a
+                        // pane nobody was typing into kept whatever width the
+                        // window had given it and never got another
+                        shell.set_phone_panes(panes);
                         shell.queue_input(Event::Resize(cols, rows));
                     }
                     // A Lua quick-action fired from the phone. It's not a keystroke,

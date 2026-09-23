@@ -932,6 +932,26 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The panes themselves. Only the ones that aren't focused draw anything here
      — the focused pane's rectangle is filled by the full renderer above. */
   #panes { position:absolute; inset:0; top:var(--striph, 0px); }
+  /* The line above a division too wide for this screen: what it is doing, and
+     the other way of reading it. It sits under the folder's tabs and takes its
+     own height out of the panes, the way the tabs do -- drawn over them, every
+     terminal underneath would claim rows that are behind an opaque bar */
+  #narrowsplit[hidden] { display:none; }
+  #narrowsplit { position:absolute; left:0; right:0; top:var(--striptop, 0px);
+    height:30px; z-index:2; display:flex; align-items:center; gap:var(--s2);
+    padding:0 var(--s2); background:var(--panel); border-bottom:1px solid var(--line);
+    font-size:11px; color:var(--dim); overflow:hidden; }
+  #narrowsplit .nq { flex:1 1 auto; min-width:0; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  /* Which pane of how many, between the two arrows. It keeps its width where
+     the question gives its up: three characters that must not be cut */
+  #narrowsplit .ncount { flex:none; color:var(--text); }
+  #narrowsplit .nspace { flex:1 1 auto; }
+  #narrowsplit .nbtn { flex:none; height:22px; padding:0 8px; cursor:pointer;
+    font:inherit; font-size:11px; color:var(--text); background:var(--raise);
+    border:1px solid var(--line); border-radius:var(--r-ctl); }
+  #narrowsplit .nbtn:hover { background:var(--hover); }
+  #narrowsplit .nstep { padding:0 6px; }
   .pane { position:absolute; overflow:hidden; background:var(--bg); }
   .pane.focused { pointer-events:none; }
   .pane .phead { pointer-events:auto; display:none; align-items:center; gap:var(--s2);
@@ -986,16 +1006,25 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* A pane with nothing in it. Division is not refused for want of a free
      tab -- the room is made first and filled after, which is the order a
      person does it in */
+  /* What an empty pane offers, in the middle of it. The area around the
+     buttons takes no pointer: pressing a pane you are not in should move you
+     there, and for a while this whole rectangle WAS the add-a-tab button, so
+     there was nowhere in an empty pane to press that did not open a form.
+     The buttons themselves come up to the level of the layers drawn over a
+     focused pane (the terminal, the board, a placed page), which is where
+     they have to be to be pressed at all */
   .pane .pnew { position:absolute; inset:0; display:none; align-items:center;
-    justify-content:center; cursor:pointer; color:var(--dim); font-size:13px;
-    /* The focused pane lets the pointer through to whatever is drawn over it,
-       and the layers that do that -- the terminal, the board, a placed page --
-       are painted above #panes whether or not they have anything to show. An
-       empty pane has none of them, and this is the only thing in it worth
-       pressing, so it comes up to their level and takes the pointer itself */
-    pointer-events:auto; z-index:4; }
+    justify-content:center; gap:var(--s3); pointer-events:none; z-index:4; }
   .pane.empty .pnew { display:flex; }
-  .pane .pnew:hover { color:var(--brand); background:var(--hover); }
+  /* A pane about to take what is over it. Only an empty one ever lights up */
+  .pane.drop { outline:2px dashed var(--brand); outline-offset:-4px; background:var(--hover); }
+  .pane .pnew .pbtn { pointer-events:auto; cursor:pointer; color:var(--dim);
+    font-size:13px; font-family:inherit; padding:var(--s2) var(--s3);
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--r2); }
+  .pane .pnew .pbtn:hover { color:var(--brand); border-color:var(--brand); background:var(--hover); }
+  /* Side by side needs room. Narrow, they stack rather than shrink to
+     nothing: two buttons cut to four letters each say less than one line */
+  .pane.thin .pnew { flex-direction:column; gap:var(--s2); }
   /* Above an empty pane's "+ Add tab" (4), which fills its pane edge to edge:
      under it, the half of the handle hanging over an empty pane was that
      button, and grabbing the divider there opened the add-tab form */
@@ -3126,6 +3155,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-top:1px solid var(--line); border-radius:0; margin-top:var(--s1);
     padding-top:var(--s2); }
   .fmenu div.note:hover { background:transparent; }
+  /* ...except this one, which is the way back up a level */
+  .fmenu div.note.back { cursor:pointer; color:var(--text); }
+  .fmenu div.note.back:hover { background:var(--hover); color:var(--brand); }
   /* The same quiet line heading a list rather than closing one */
   .fmenu div.note:first-child { border-top:0; margin-top:0; padding-top:var(--s1); }
   /* A list too long for a phone's height scrolls inside itself */
@@ -3495,6 +3527,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <div id="tabgrip"></div>
   <div id="main">
     <div id="strip" hidden></div>
+    <!-- Only ever seen above a division this screen has no room for -->
+    <div id="narrowsplit" hidden></div>
     <div id="panes"></div>
     <div id="pushbar" hidden></div>
     <div id="nav" hidden></div>
@@ -4183,13 +4217,6 @@ function drawTabs() {
     if (t.settings) continue;
     // The Issue tab has its own row, above
     if (t.kind === "issues") continue;
-    // A split shows several rows at once, divided, and a phone has no room to
-    // divide anything: the panes are not sent to one at all. The rows it was
-    // showing are not hidden with it -- it points at them, it does not hold
-    // them -- so everything is still one tap away from this same list. Asked
-    // of the width and not of the wire, because a laptop looking at this
-    // board from elsewhere has the room and wants it
-    if (t.kind === "split" && phoneWidth()) continue;
     if (t.group != null && inside[t.group]) inside[t.group].push(t);
     else loose.push(t);
   }
@@ -6663,6 +6690,9 @@ function tabRow(t, g, deep, head) {
   if (t.status) {
     row.append(el("span", {class:"said", title:t.status}, t.status));
   }
+  // Dragged onto an empty pane, this row goes into it. The same thing the
+  // strip's tabs carry, so a pane never has to ask which list a drop came from
+  dragRow(row, t.index);
   return row;
 }
 
@@ -8599,6 +8629,7 @@ function drawStrip() {
       el("span", {class:"x", title:T["tui.tab.close"] || "",
           onclick:e => { e.stopPropagation(); closeTab(t); }}, "\u2715"));
     if (rowIsFront(t)) sel = one;
+    dragRow(one, t.index);
     tabs.append(one);
   }
   strip.append(tabs);
@@ -8656,6 +8687,86 @@ function closedMenu(e, here) {
       el("span", {class:"cw"},
         [c.folder && !(here && trim(here.folder) === trim(c.folder)) ? nameOf(c.folder) : "",
          whenSay(c.at)].filter(Boolean).join(" · "))))), list.length > 6);
+}
+
+// Put a row that is already running into a pane: project, then folder, then
+// the tab. One list at a time with a way back, rather than one long list --
+// a desk with four worktrees of two projects is forty rows, and the folder a
+// tab is in is most of what tells two of them apart.
+//
+// This desk only. A tab of another desk cannot be shown here at all: its
+// pseudo console is not running, its row is not on this list, and a pane
+// pointing at a number from another desk points at whatever happens to hold
+// that number here. The desks are the one wall in this program that does not
+// move, and this does not put a door in it.
+//
+// Levels with one entry are skipped. On a desk with one project, being asked
+// to choose the project is being asked to confirm that there is only one.
+function pickIntoPane(anchor, pane) {
+  const rows = (S && S.tabs) || [];
+  const groups = (S && S.groups) || [];
+  // What can be put in a pane: a row that is something to look at. A split
+  // row shows other rows, so putting one inside a pane would be a split
+  // inside a split, which is not what a split is (see splits.rs)
+  const takeable = rows.filter(t => t && !t.settings && t.kind !== "split" && t.index);
+  const nameOfProject = g => (g && g.project) || (g && g.name) || "";
+
+  const chooseTab = (list, back) => {
+    const items = list.map(t => el("div", {class:"closed",
+        onclick:() => { closeFolderMenu(); send({kind:"select", tab:t.index}); }},
+      el("span", {class:"cn"}, t.name || ""),
+      el("span", {class:"cw"}, t.state_label || t.kind || "")));
+    openList(anchor, (back ? [back] : []).concat(
+      items.length ? items : [el("div", {class:"note"}, T["tui.pane.take.none"] || "")]), items.length > 8);
+  };
+
+  const chooseFolder = (folders, back) => {
+    if (folders.length === 1) return chooseTab(inFolder(folders[0]), back);
+    openList(anchor, (back ? [back] : []).concat(folders.map(g =>
+      el("div", {class:"closed", title:g.folder || "",
+          onclick:() => { closeFolderMenu(); chooseFolder([g], backRow(() => start())); }},
+        el("span", {class:"cn"}, g.name || ""),
+        el("span", {class:"cw"}, String(inFolder(g).length))))), folders.length > 8);
+  };
+
+  const inFolder = g => takeable.filter(t => groups[t.group] === g);
+  const backRow = go => el("div", {class:"note back", onclick:() => { closeFolderMenu(); go(); }},
+    "‹ " + (T["tui.pane.take.back"] || "Back"));
+
+  const start = () => {
+    // Rows in no folder at all -- the Issue tab, a page opened by automation
+    const loose = takeable.filter(t => t.group == null || !groups[t.group]);
+    const used = groups.filter(g => inFolder(g).length);
+    const projects = [];
+    for (const g of used) {
+      const key = nameOfProject(g);
+      const at = projects.find(p2 => p2.key === key);
+      if (at) at.folders.push(g); else projects.push({ key, folders: [g] });
+    }
+    if (!projects.length && !loose.length) {
+      openList(anchor, [el("div", {class:"note"}, T["tui.pane.take.none"] || "")]);
+      return;
+    }
+    if (projects.length === 1 && !loose.length) return chooseFolder(projects[0].folders, null);
+    const items = projects.map(pr =>
+      el("div", {class:"closed",
+          onclick:() => { closeFolderMenu(); chooseFolder(pr.folders, backRow(start)); }},
+        el("span", {class:"cn"}, pr.key),
+        el("span", {class:"cw"}, String(pr.folders.reduce((n, g) => n + inFolder(g).length, 0)))));
+    if (loose.length) {
+      items.push(el("div", {class:"closed",
+          onclick:() => { closeFolderMenu(); chooseTab(loose, backRow(start)); }},
+        el("span", {class:"cn"}, T["tui.pane.take.loose"] || ""),
+        el("span", {class:"cw"}, String(loose.length))));
+    }
+    openList(anchor, items, items.length > 8);
+  };
+
+  // The pane it is going into is the one that was pressed, and the press the
+  // list answers with is the ordinary "show me this row" -- which, with the
+  // keyboard standing in an empty pane, fills that pane (see take_selects)
+  send({kind:"focuspane", id:pane});
+  start();
 }
 
 // The question the app asks before closing a tab whose work would be cut off.
@@ -9533,7 +9644,13 @@ function layout() {
   // rather than of one pane: they belong to the folder, and the folder is what
   // every pane in it is showing a piece of
   const strip = document.getElementById("strip");
-  main.style.setProperty("--striph", (!strip || strip.hidden) ? "0px" : "32px");
+  const striph = (!strip || strip.hidden) ? 0 : 32;
+  main.style.setProperty("--striptop", striph + "px");
+  // ...and, under them, the line about a division this screen has no room for.
+  // Both come out of the panes in one number, so a terminal's rows are worked
+  // out from what is left in one place rather than in two that can disagree
+  const nbar = document.getElementById("narrowsplit");
+  main.style.setProperty("--striph", (striph + ((!nbar || nbar.hidden) ? 0 : 30)) + "px");
   main.style.setProperty("--navh", n.hidden ? "0px" : "36px");
   // ...and the bar asking the person something, out of the bottom
   main.style.setProperty("--askh", a.hidden ? "0px" : "44px");
@@ -9550,10 +9667,7 @@ window.__state = function (json) {
   gitAfterWork(before);
   // First of all, and before anything below reads PANES: the rectangles and
   // the rows in them are the same moment as the rest of this state
-  if (S && S.panes) {
-    const shape = JSON.stringify(S.panes);
-    if (shape !== laidOut) { laidOut = shape; layPanes(S.panes); }
-  }
+  if (S && S.panes && paneKey(S.panes) !== laidOut) layPanes(S.panes);
   // A page older than the app it's talking to keeps rendering yesterday's
   // UI — a phone leaves the board open across app updates, and every "the
   // button is still the old one" report traces back to that. The state
@@ -9878,13 +9992,135 @@ window.__state = function (json) {
 // the dashboard, a placed browser and its bar). The rest get a read-only view
 // of their terminal, which is all a pane you are not typing into can show.
 let PANES = null;
+// The division as it arrived, before this screen's answer about it was applied.
+// The screen can change without the division changing -- a phone turned on its
+// side -- and then this is what it is laid out from again
+let panesRaw = null;
+// How narrow a pane may be and still be one: 32 columns of the board's own
+// type, and what a terminal sets in from its edges. Measured rather than named
+// in pixels, because the type is a setting -- at a larger size the same screen
+// has room for less, and a number of pixels would be right at one size only.
+// Before anything has been measured (a cold page) the width of the face at its
+// default size stands in
+const PANE_MIN_COLS = 32;
+function paneFloorW() {
+  return Math.round(PANE_MIN_COLS * (cellW || 8.5)) + 24;
+}
+// The content area in real pixels, asked of the element and not of the window:
+// the tab bar on the left takes its width out of this first
+function contentWidth() {
+  const host = document.getElementById("panes");
+  const w = host ? host.getBoundingClientRect().width : 0;
+  return w || window.innerWidth;
+}
+// Is there room across for this division?
+//
+// Asked of the width and of the shape -- never of "is this a phone". A tablet
+// held upright and the same tablet turned are two different answers, a laptop
+// is wide enough whichever way it is turned, and a phone on its side often is
+// too. Halves stacked one above the other cannot run out of room this way, so
+// a division downwards is shown as it is at every height: it is only the
+// division across the middle that has a width to run out of
+function roomAcross(P) {
+  if (!P || P.single || !P.panes) return true;
+  const w = contentWidth(), floor = paneFloorW();
+  return !P.panes.some(p => p.w < 0.995 && p.w * w < floor);
+}
+// What this screen has been told to do with a division it has no room for:
+// "" = never asked, "both" = show it anyway, "one" = one pane at a time.
+// Kept per browser, because it is an answer about this screen and not about
+// the division -- the same division on the window is not affected by it
+function narrowChoice() {
+  try { return localStorage.getItem("splitNarrow") || ""; } catch (e) { return ""; }
+}
+function chooseNarrow(v) {
+  try { localStorage.setItem("splitNarrow", v); } catch (e) {}
+  if (panesRaw) layPanes(panesRaw);
+}
+// What the content area was laid out from: the division and the answer this
+// screen gives about it. Either changing is a reason to lay it out again
+function paneKey(P) {
+  return JSON.stringify(P) + "|" + (roomAcross(P) ? "w" : "n") + narrowChoice();
+}
+// The division as this screen will draw it. Where there is no room across and
+// nobody has said to show it anyway, the pane you are in fills the area on its
+// own. Nothing is taken away by that: the division is still there, the rows it
+// points at are still in the tab bar, and the line above says which pane you
+// are on and offers the other reading
+function fitPanes(P) {
+  if (roomAcross(P) || narrowChoice() === "both") return P;
+  const one = P.panes.find(p => p.focused) || P.panes[0];
+  if (!one) return P;
+  return {single: P.single, focus: P.focus,
+          panes: [{...one, x: 0, y: 0, w: 1, h: 1}], dividers: []};
+}
+// The line above a division this screen has no room for. It is the whole of
+// the answer to "a small screen cannot show this": the question is asked once,
+// nothing is hidden either way, and whichever way it was answered the other
+// way is one press away. A division that fits is never mentioned at all
+function narrowBar(P) {
+  const bar = document.getElementById("narrowsplit");
+  if (!bar) return;
+  const show = !!(P && !P.single && P.panes && P.panes.length > 1 && !roomAcross(P));
+  const shown = !bar.hidden;
+  const choice = narrowChoice();
+  const i = Math.max(0, (P && P.panes ? P.panes.findIndex(p => p.focused) : 0));
+  const key = show ? (choice + ":" + i + ":" + (P.panes.length)) : "";
+  // Rebuilt only when what it says changes: a state push every few frames
+  // would take the button out from under a finger on its way down
+  if (bar.dataset.on === key) return;
+  bar.dataset.on = key;
+  bar.hidden = !show;
+  bar.textContent = "";
+  if (show && !choice) {
+    bar.append(el("span", {class: "nq"}, T["tui.pane.narrow.ask"] || ""));
+    for (const [v, k] of [["both", "tui.pane.narrow.both"], ["one", "tui.pane.narrow.one"]]) {
+      const b = el("button", {type: "button", class: "nbtn"}, T[k] || "");
+      b.onclick = () => chooseNarrow(v);
+      bar.append(b);
+    }
+  } else if (show && choice === "one") {
+    // Which of them is in front, and the way to the others. Without this the
+    // panes beside it could only be reached by leaving the division
+    const go = (d) => {
+      const n = P.panes[(i + d + P.panes.length) % P.panes.length];
+      if (n) send({kind: "focuspane", id: n.id});
+    };
+    for (const [glyph, d] of [["\u25C0", -1], ["\u25B6", 1]]) {
+      const b = el("button", {type: "button", class: "nbtn nstep"}, glyph);
+      b.onclick = () => go(d);
+      if (d < 0) bar.append(b, el("span", {class: "ncount"}, (i + 1) + " / " + P.panes.length));
+      else bar.append(b, el("span", {class: "nspace"}));
+    }
+    const b = el("button", {type: "button", class: "nbtn"}, T["tui.pane.narrow.both"] || "");
+    b.onclick = () => chooseNarrow("both");
+    bar.append(b);
+  } else if (show) {
+    bar.append(el("span", {class: "nq"}, T["tui.pane.narrow.wide"] || ""));
+    const b = el("button", {type: "button", class: "nbtn"}, T["tui.pane.narrow.one"] || "");
+    b.onclick = () => chooseNarrow("one");
+    bar.append(b);
+  }
+  if (show !== shown) layout();
+}
+// Turning the phone changes the answer without changing the division: no state
+// arrives to say so, because nothing about the app has moved -- the screen has
+addEventListener("resize", () => {
+  if (panesRaw && paneKey(panesRaw) !== laidOut) layPanes(panesRaw);
+});
 // Lay the content area out. Called from __state with the division that came
 // with it -- never on its own, because the division and what is in it are one
 // moment. Drawn from two messages, the page painted once in between with the
 // new answer to "which row am I on" and the old rectangles: a tab nobody had
 // asked for flashed up, and then the pane went empty
-function layPanes(P) {
-  if (!P || !P.panes) return;
+function layPanes(RAW) {
+  if (!RAW || !RAW.panes) return;
+  panesRaw = RAW;
+  laidOut = paneKey(RAW);
+  // What this screen has room to draw, and the line that says so. Both before
+  // anything below reads PANES
+  narrowBar(RAW);
+  const P = fitPanes(RAW);
   PANES = P;
   const host = document.getElementById("panes");
   const seen = new Set();
@@ -9911,7 +10147,9 @@ function layPanes(P) {
         '<span class="rs rf">&#10226;</span>' +
         '<span class="cl">&#10005;</span></div>' +
         '<div class="pbody"><pre class="pscreen notranslate" translate="no"></pre>' +
-        '<div class="pnew"></div><div class="pask"></div></div>';
+        '<div class="pnew"><button type="button" class="pbtn pmake"></button>' +
+        '<button type="button" class="pbtn ptake"></button></div>' +
+        '<div class="pask"></div></div>';
       // The hints are set as properties, not written into the markup: the key
       // to split downwards is Ctrl+B ", and a quote spliced into an attribute
       // ends the attribute there -- the hint read "Split down (Ctrl+B " and
@@ -9920,6 +10158,7 @@ function layPanes(P) {
                                 [".rs.rk", "tui.pane.restart_keep"], [".rs.rf", "tui.pane.restart_fresh"]]) {
         el.querySelector(sel).title = T[key] || "";
       }
+      paneTakesDrops(el, p.id);
       // Clicking anywhere in a pane you are not in moves you there. The close
       // control is the one thing inside it that means something else.
       el.onmousedown = (e) => {
@@ -9934,14 +10173,25 @@ function layPanes(P) {
       // opens on its add-a-tab form, and saving puts the new tab in THIS pane
       // -- the one that was pressed, not whichever had focus by the time the
       // form was done with
-      el.querySelector(".pnew").textContent = T["tui.pane.add"] || "+ Add tab";
-      el.querySelector(".pnew").onclick = (e) => {
+      const make = el.querySelector(".pmake");
+      make.textContent = T["tui.pane.add"] || "+ Add tab";
+      make.onclick = (e) => {
         e.stopPropagation();
         // The same road the tab bar's + takes, and carrying a folder as well
         // as the pane. Without the folder the form fell back to the first
         // folder in the settings, so splitting while working in the third one
         // and pressing its invitation added a tab to the first
         addTabHere(activeFolder(), p.id);
+      };
+      // ...and the other half of the offer: something that is already running.
+      // Making a tab was the only way to fill a pane, so a split could never
+      // be used for the thing it is for -- two tabs that already exist, beside
+      // each other
+      const take = el.querySelector(".ptake");
+      take.textContent = T["tui.pane.take"] || "Existing tab";
+      take.onclick = (e) => {
+        e.stopPropagation();
+        pickIntoPane(take, p.id);
       };
       // The way back asks rather than acts: two tabs of one CLI in one folder
       // leave two conversations that look alike, and putting the wrong one
@@ -9987,6 +10237,11 @@ function layPanes(P) {
     el.style.width = (p.w * 100) + "%";
     el.style.height = (p.h * 100) + "%";
     el.classList.toggle("focused", !!p.focused);
+    // Too narrow for two buttons beside each other. Measured against the
+    // content area rather than guessed from the number of panes: three
+    // divisions of a wide window are each wider than one of a narrow one
+    const host_w = host.getBoundingClientRect().width || window.innerWidth;
+    el.classList.toggle("thin", p.w * host_w < 320);
     // Captioned even when it is the only one. The caption is where ▥ and ▤
     // live, and without it the first division could only be asked for with the
     // keyboard -- a whole feature with no way in for a hand on the mouse. The
@@ -10018,6 +10273,61 @@ let armedPane = null;
 // state push now, and rebuilding the panes on each one would take the caret
 // out of a field sixty times a second
 let laidOut = "";
+
+// Dragging a row, from wherever rows are listed: the tab bar on the left and
+// the folder's strip along the top both carry the same thing, so a pane taking
+// a drop never has to ask where it came from. A file carries its path instead
+// and arrives as the editor.
+//
+// `text/plain` goes along for the ride because a drag carrying nothing a
+// browser recognises is a drag some of them will not start at all
+function dragRow(el, index) {
+  el.draggable = true;
+  el.addEventListener("dragstart", ev => {
+    ev.dataTransfer.setData("text/x-row", String(index));
+    ev.dataTransfer.setData("text/plain", String(index));
+    ev.dataTransfer.effectAllowed = "copy";
+  });
+}
+function dragFile(el, path) {
+  el.draggable = true;
+  el.addEventListener("dragstart", ev => {
+    ev.stopPropagation();
+    ev.dataTransfer.setData("text/x-file", path);
+    ev.dataTransfer.setData("text/plain", path);
+    ev.dataTransfer.effectAllowed = "copy";
+  });
+}
+
+// What an empty pane accepts. Only an empty one: a pane with something in it
+// is not waiting for anything, and a drop that quietly replaced what was there
+// would be the one gesture in this program that can lose your place by accident
+function paneTakesDrops(el, id) {
+  const empty = () => el.classList.contains("empty");
+  el.addEventListener("dragover", ev => {
+    if (!empty()) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "copy";
+    el.classList.add("drop");
+  });
+  el.addEventListener("dragleave", () => el.classList.remove("drop"));
+  el.addEventListener("drop", ev => {
+    el.classList.remove("drop");
+    if (!empty()) return;
+    ev.preventDefault();
+    const row = ev.dataTransfer.getData("text/x-row");
+    const file = ev.dataTransfer.getData("text/x-file");
+    // The keyboard goes to the pane that was dropped on FIRST: what fills an
+    // empty pane is "show me this row" arriving while the keyboard stands in
+    // one, and the editor finds its way in the same way (see open_editor)
+    send({kind:"focuspane", id});
+    if (row) { send({kind:"select", tab:Number(row)}); return; }
+    if (file) {
+      const t = folderTab();
+      if (t) send({kind:"editopen", panel: t.id || t.name || "", path: file});
+    }
+  });
+}
 
 // The tab a pane is showing, if it is showing one.
 function paneTab(p) {
@@ -10066,6 +10376,11 @@ function paintPaneHeads() {
     // The Issue tab is a page that takes its pane whole: dividing it from its
     // own caption is not something it is for
     for (const cls of [".sr", ".sd"]) el.querySelector(cls).hidden = !!(t && t.kind === "issues");
+    // An empty pane offers what it can do and nothing else: fill it, divide
+    // it, close it. The name is nobody's, the mark says nothing, and the two
+    // restarts and the earlier-conversation button are hidden already by
+    // having no tab to act on -- this is the rest of it
+    el.querySelector(".pmark").hidden = !t;
     // A panel -- git, files, the editor, a tab that could not start -- is drawn
     // for the tab in front only, from what was fetched for that tab. In a pane
     // without the focus it left the pane blank, which reads as broken; it says
@@ -10951,6 +11266,7 @@ function filesRow(name, path, dir, depth, hit) {
       // On a phone the list is covering the very thing it just opened
       if (phoneWidth()) { sideStoodAside = true; drawSide(); }
     }});
+  if (!dir) dragFile(row, path);
   row.append(el("span", {class: "car"}, dir ? (FS.open[path] ? "\u25be" : "\u25b8") : ""));
   // A result is a file from anywhere under here, so it says where. The tree
   // does not: its rows are already standing under the folder they are in
@@ -12344,7 +12660,7 @@ report();
 // line of output). If the socket can't hold — a flaky link, an older server — a
 // slow poll takes over until it reconnects.
 if (REMOTE) {
-  let wsUp = false, sws = null, downSince = 0, socketPanes = false;
+  let wsUp = false, sws = null, downSince = 0;
   // Say what happened when the feed stops. The PC can end this session
   // deliberately (its "disconnect": every request then answers 403 and this
   // page is done until someone opens the link again), or the link can simply
@@ -12437,11 +12753,12 @@ if (REMOTE) {
     if (remoteCut) return;
     try {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      // A laptop lays the board out in panes, as the window does; a phone shows
-      // one thing at a time and is not sent pictures of panes it never draws
-      socketPanes = !phoneWidth();
+      // Pictures of the panes nobody is looking at, at every size. Undivided
+      // there are none to send and this costs nothing (PaneRelay skips the
+      // pane in front); divided, they are wanted on a phone as well, which
+      // draws the division too and can be asked to show all of it at once
       sws = new WebSocket(proto + "//" + location.host + "/ws-state?t=" + encodeURIComponent(TOKEN) +
-        (socketPanes ? "&panes=1" : ""));
+        "&panes=1");
     } catch (e) { setTimeout(connectState, 1500); return; }
     sws.onopen = () => { wsUp = true; connected(); };
     sws.onmessage = (e) => { try { applyState(JSON.parse(e.data)); } catch (x) {} };
@@ -12449,21 +12766,6 @@ if (REMOTE) {
     sws.onerror = () => { try { sws.close(); } catch (x) {} };
   };
   connectState();
-  // A window dragged across the phone width, or a tablet turned: the line is
-  // opened again asking for what this shape draws. Going narrow, the panes are
-  // taken down here and now -- the pane in front goes back to being the whole
-  // screen, which is what a phone shows
-  addEventListener("resize", () => {
-    if (!wsUp || remoteCut || socketPanes === !phoneWidth()) return;
-    if (phoneWidth()) {
-      PANES = null;
-      document.getElementById("panes").textContent = "";
-      paintDividers([]);
-      measureFocused();
-      report();
-    }
-    try { sws.close(); } catch (x) {}
-  });
   // Fallback poll — only does anything while the socket is down. It's also the
   // reliable place to notice a revoked token: a WS handshake failure is opaque,
   // but a plain fetch returns the 403 outright.
@@ -19916,7 +20218,7 @@ mod tests {
             "the panes are not moved down by the strip's height"
         );
         assert!(
-            PAGE.contains(r#"main.style.setProperty("--striph", (!strip || strip.hidden) ? "0px" : "32px");"#),
+            PAGE.contains(r#"main.style.setProperty("--striph", (striph + ((!nbar || nbar.hidden) ? 0 : 30)) + "px");"#),
             "the strip's height does not take up room"
         );
         // Without panes (a phone) the content area is measured too, and it also

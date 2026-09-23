@@ -7,15 +7,25 @@
 //! number — `active`. They still are: `active` is the surface in the *focused*
 //! pane. Everything else on screen hangs off this tree.
 //!
-//! Two rules keep the thing predictable, and both are enforced here rather than
+//! One rule keeps the thing predictable, and it is enforced here rather than
 //! left to callers:
 //!
-//!   - **A surface is in at most one pane.** Otherwise the same PTY would be
-//!     asked to be two different sizes at once, and one of the two views would
-//!     silently render at the wrong width. Selecting a surface that already sits
-//!     in another pane *swaps* the two panes' surfaces instead of duplicating it.
 //!   - **There is always at least one pane.** Closing the last one is refused,
 //!     so there is never a state with nothing to focus.
+//!
+//! There used to be a second: a surface was in at most one pane, because a
+//! pseudo console has ONE size and two panes would ask it for two. That rule
+//! is gone, and what replaced it is an answer to the same question rather
+//! than a refusal of it: **the focused pane decides the size.** The terminal
+//! is drawn live at the focused pane's measurements; every other pane showing
+//! the same surface gets the read-only copy that unfocused panes have always
+//! got (`__panescreen`). So the same tab can stand in two panes, one of them
+//! the real thing and the rest pictures of it, and moving the keyboard from
+//! one to the other is what changes which is which.
+//!
+//! That is why [`put`](Layout::put) no longer empties the pane a surface came
+//! from, and why nothing here stops a caller putting one surface in several
+//! panes.
 //!
 //! Geometry here is normalised (0.0–1.0), never pixels. The page owns real
 //! pixels — it knows the font metrics, the dividers and the top bar — and
@@ -360,25 +370,21 @@ impl Layout {
         }
     }
 
-    /// Puts a surface in a pane and takes it out of wherever else it was.
+    /// Puts a surface in a pane, leaving any other pane showing it alone.
     ///
-    /// The rule this keeps is at the top of the file: a surface is in at most
-    /// one pane, because a terminal has one size and two panes would ask it
-    /// for two. `set_surface` does not keep it -- it is for callers that know
-    /// the surface is nowhere else -- and a caller that knows wrongly gets the
-    /// one failure nobody looks for: the same tab in two panes, one of them
-    /// silently the wrong width.
-    ///
-    /// The pane it came from is left empty rather than closed, so the shape
-    /// somebody arranged stays as they arranged it
+    /// One tab can stand in several panes (see the top of this file). The
+    /// focused one is the live terminal at its own size; the others are the
+    /// read-only picture that an unfocused pane always shows. Looking at the
+    /// same conversation beside itself -- the top of it in one half, the end
+    /// in the other -- is a thing people do, and the old rule refused it to
+    /// answer a question (which size?) that the focus already answers.
     pub fn put(&mut self, id: PaneId, surface: usize) {
-        if surface != 0
-            && let Some(was) = self.pane_of(surface)
-            && was != id
-        {
-            self.set_surface(was, 0);
-        }
         self.set_surface(id, surface);
+    }
+
+    /// Every pane showing this surface. More than one is ordinary now
+    pub fn panes_of(&self, surface: usize) -> Vec<PaneId> {
+        self.leaves().into_iter().filter(|(_, s)| *s == surface).map(|(p, _)| p).collect()
     }
 
     /// Moves focus to a pane, if it exists.
@@ -409,11 +415,6 @@ impl Layout {
         let id = self.next_id;
         self.next_id += 1;
         let focus = self.focus;
-        // A surface may only be in one pane, so take it away from wherever it is
-        if let Some(other) = self.pane_of(surface)
-            && other != focus {
-                self.set_surface(other, 0);
-            }
         if let Some(node) = self.root.find_mut(focus) {
             let kept = node.clone();
             *node = Node::Split {
@@ -669,18 +670,18 @@ mod tests {
         l.leaves().into_iter().map(|(_, s)| s).collect()
     }
 
-    /// A tab put into a pane leaves the pane it was in, because a terminal
-    /// has one size and two panes would ask it for two. The pane it came from
-    /// stays where it is, empty: the shape is somebody's arrangement
+    /// One tab can stand in two panes. The focused one is the live terminal
+    /// at its own size; the other is the picture an unfocused pane always
+    /// shows, so there is no second answer to "how wide is it"
     #[test]
-    fn a_tab_put_in_a_pane_is_in_no_other() {
+    fn one_tab_can_stand_in_two_panes() {
         let mut l = Layout::single(1);
         let right = l.split(Dir::Row, 2);
         assert_eq!(surfaces(&l), vec![1, 2]);
         // The one on the left, asked for on the right as well
         l.put(right, 1);
-        assert_eq!(surfaces(&l), vec![0, 1], "it is in two panes at once");
-        assert_eq!(l.pane_of(1), Some(right));
+        assert_eq!(surfaces(&l), vec![1, 1], "the pane it came from was emptied");
+        assert_eq!(l.panes_of(1).len(), 2);
 
         // An empty pane filled from nowhere empties nothing
         let mut l = Layout::single(1);
@@ -691,6 +692,7 @@ mod tests {
         // ...and putting a tab back where it already is changes nothing
         l.put(right, 2);
         assert_eq!(surfaces(&l), vec![1, 2]);
+        assert_eq!(l.panes_of(2), vec![right]);
     }
 
     /// Dividing puts the keyboard where the thing is. Into an empty half it
@@ -897,13 +899,17 @@ mod tests {
         assert_eq!(l.leaves().iter().filter(|(_, s)| *s == 3).count(), 1);
     }
 
+    /// Dividing a pane and putting into the new half something that is
+    /// already on screen leaves it on screen twice. That is the point: the
+    /// end of a conversation beside the top of it is a thing people want, and
+    /// which of the two is the live terminal is decided by the focus
     #[test]
-    fn splitting_off_a_shown_surface_takes_it_away_from_the_old_pane() {
+    fn dividing_off_a_surface_already_shown_leaves_it_in_both() {
         let mut l = Layout::single(1);
         l.split(Dir::Row, 2);
         l.split(Dir::Col, 1); // 1 is currently in the left pane
         assert_eq!(l.focused_surface(), 1);
-        assert_eq!(l.leaves().iter().filter(|(_, s)| *s == 1).count(), 1);
+        assert_eq!(l.panes_of(1).len(), 2, "the pane it came from was emptied");
     }
 
     #[test]
