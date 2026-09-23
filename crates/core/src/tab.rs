@@ -5397,17 +5397,32 @@ mod resize_survival_tests {
             );
         }
 
-        // Confirm output is still being received all the way through
+        // Confirm output is still being received all the way through. Waited
+        // for by what it says, not by a pause: the shell is still answering
+        // the lines typed above, and on a slow machine (the CI runner, 2026-09-23)
+        // it paused for longer than any quiet spell this could wait for, so
+        // the test gave up on a screen that was alive and one answer behind
         tab.write_passthrough(b"echo ALIVE\r").unwrap();
-        settle(&tab, 500);
-        let text = {
-            let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
-            crate::tab::visible_text(p.screen())
-        };
+        let text = shows(&tab, "ALIVE", Duration::from_secs(30));
         assert!(
             text.contains("ALIVE"),
             "reading stopped after shrinking: {text:?}"
         );
+    }
+
+    /// The screen as soon as it says `needle`, or as it stands when `limit` runs out
+    fn shows(tab: &Tab, needle: &str, limit: Duration) -> String {
+        let start = Instant::now();
+        loop {
+            let text = {
+                let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
+                crate::tab::visible_text(p.screen())
+            };
+            if text.contains(needle) || start.elapsed() > limit {
+                return text;
+            }
+            std::thread::sleep(Duration::from_millis(60));
+        }
     }
 }
 
