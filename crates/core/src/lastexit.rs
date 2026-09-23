@@ -255,7 +255,7 @@ fn pick(mark: &Mark, found: &serde_json::Value) -> Ended {
     // usually die on its own, and the thing that took it down says so here --
     // Windows writes a low-memory diagnosis naming the programs that took it
     for e in &exhaustion {
-        if near(&ended.when, &text_of(e, "when")) {
+        if led_to(&text_of(e, "when"), &ended.when) {
             evidence.push(stamped(e));
         }
     }
@@ -276,12 +276,43 @@ fn text_of(v: &serde_json::Value, key: &str) -> String {
     v.get(key).and_then(serde_json::Value::as_str).unwrap_or_default().to_string()
 }
 
-/// Whether two `2026-09-22T14:19:27`-shaped stamps are the same moment.
+/// Whether what the machine said at `said` can be what ended a run at `ended`,
+/// both `2026-09-22T14:19:27`-shaped stamps.
 ///
-/// The same second, because these two records are written by the same event:
-/// Windows diagnoses the shortage and the program dies of it together
-fn near(a: &str, b: &str) -> bool {
-    !a.is_empty() && !b.is_empty() && a[..a.len().min(19)] == b[..b.len().min(19)]
+/// Not "the same second". Windows diagnoses the shortage and the program dies
+/// of it as one event, but the two records are written by two writers, and
+/// they land on either side of a second as often as not: 2026-09-23 had the
+/// diagnosis at 15:13:33 and the crash at 15:13:34, the diagnosis was left
+/// out, and the explanation blamed the program for what a 17 GB python did.
+///
+/// So a window instead: a shortage from the few minutes before, while the
+/// memory was running out, or a moment after, when the diagnosis is written
+/// late. Hours before is another afternoon's shortage
+fn led_to(said: &str, ended: &str) -> bool {
+    const BEFORE: i64 = 5 * 60;
+    const AFTER: i64 = 10;
+    match (stamp_secs(said), stamp_secs(ended)) {
+        (Some(s), Some(e)) => (e - BEFORE..=e + AFTER).contains(&s),
+        _ => false,
+    }
+}
+
+/// `2026-09-22T14:19:27` as seconds on one line, for comparing two of them.
+///
+/// Both stamps come from the same machine's clock in the same zone, so no
+/// zone is read: only the distance between them matters
+fn stamp_secs(stamp: &str) -> Option<i64> {
+    let num = |range: std::ops::Range<usize>| stamp.get(range)?.parse::<i64>().ok();
+    let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (h, mi, s) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    // Days since 1970-01-01 in the proleptic Gregorian calendar
+    let (y, mo) = if mo <= 2 { (y - 1, mo + 9) } else { (y, mo - 3) };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * mo + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3_600 + mi * 60 + s)
 }
 
 /// The machine's own account of the last day, as JSON.
@@ -375,16 +406,15 @@ pub fn question(ended: &Ended, mark: &Mark, language: &str) -> (String, String) 
     });
     // What the program wrote about itself, when it managed to. A panic leaves
     // a line here; a failed allocation leaves none, and that absence is itself
-    // worth knowing
-    if let Some(tail) = crash_log_tail() {
-        out.push(String::new());
-        out.push(
-            "The last lines the application itself wrote as it fell over (empty is meaningful: \
-             a failed memory allocation writes nothing here):"
-                .into(),
-        );
-        out.push(tail);
-    }
+    // worth knowing -- so it is said either way, rather than left for the
+    // reader to notice a section missing
+    out.push(String::new());
+    out.push("What the application itself wrote as it fell over:".into());
+    out.push(crash_log_tail(mark).unwrap_or_else(|| {
+        "(nothing: this run wrote no panic message. A failed memory allocation ends a run \
+         without one, and so does being stopped from outside)"
+            .into()
+    }));
     (job, out.join("\n"))
 }
 
@@ -403,11 +433,52 @@ say which one. Do not guess beyond what the records support; say plainly what ca
 from them. Write plain sentences in short paragraphs, with no markdown, no headings and no \
 asterisks -- this is shown in a narrow strip, not on a page.";
 
-/// The last few lines the program itself wrote when it fell over
-fn crash_log_tail() -> Option<String> {
+/// One panic, as it is written to `crash.log`: which run wrote it and when,
+/// then the panic itself, on one line.
+///
+/// The run and the moment are what let [`crash_log_tail`] hand over only what
+/// the run that ended wrote. The file is appended to for as long as the
+/// program is installed, and its last lines are whatever the last *panic*
+/// was -- on 2026-09-23 that was a shutdown eight days earlier, and it was
+/// handed over as the account of a run that had died of a memory shortage and
+/// written nothing. One line per panic, because the message of one spans
+/// several and a reader going line by line must not split it
+pub fn crash_entry(what: &str) -> String {
+    format!(
+        "[pid {} at {}] {}",
+        std::process::id(),
+        now_secs(),
+        what.lines().map(str::trim_end).collect::<Vec<_>>().join(" / ")
+    )
+}
+
+/// The last few panics the run that ended wrote as it fell over.
+///
+/// Only its own: an entry from another run, or one written before this
+/// format said whose it was, is somebody else's story
+fn crash_log_tail(mark: &Mark) -> Option<String> {
     let text = std::fs::read_to_string(crate::config::logs_dir().join("crash.log")).ok()?;
-    let tail: Vec<&str> = text.lines().rev().take(6).collect();
-    (!tail.is_empty()).then(|| tail.into_iter().rev().collect::<Vec<_>>().join("\n"))
+    let tail = written_by(&text, mark);
+    (!tail.is_empty()).then(|| tail.join("\n"))
+}
+
+/// The entries in a crash log that `mark`'s run wrote, the last few of them.
+///
+/// Matched on the process id *and* on being written after that run began:
+/// process ids come round again, and a log that is never emptied will
+/// eventually hold one run's id written by another
+fn written_by<'a>(log: &'a str, mark: &Mark) -> Vec<&'a str> {
+    let ours = |line: &str| {
+        let Some(rest) = line.strip_prefix("[pid ") else { return false };
+        let mut head = rest.split(']').next().unwrap_or_default().split(" at ");
+        let pid = head.next().and_then(|p| p.trim().parse::<u32>().ok());
+        let at = head.next().and_then(|t| t.trim().parse::<u64>().ok());
+        pid == Some(mark.pid) && at.is_some_and(|t| t >= mark.started)
+    };
+    let mut mine: Vec<&str> = log.lines().filter(|l| ours(l)).collect();
+    let skip = mine.len().saturating_sub(6);
+    mine.drain(..skip);
+    mine
 }
 
 #[cfg(test)]
@@ -517,11 +588,75 @@ mod tests {
         assert_eq!(one(""), "", "and nothing recorded stays nothing");
     }
 
-    /// The same second is the same event; a minute apart is a coincidence
+    /// A shortage the moment before is what ended the run; one from another
+    /// hour is a coincidence
     #[test]
-    fn only_what_happened_at_the_same_moment_is_brought_along() {
-        assert!(near("2026-09-22T14:19:27", "2026-09-22T14:19:27"));
-        assert!(!near("2026-09-22T14:19:27", "2026-09-22T14:20:27"));
-        assert!(!near("", "2026-09-22T14:19:27"));
+    fn only_what_happened_around_that_moment_is_brought_along() {
+        let crash = "2026-09-22T14:19:27";
+        assert!(led_to("2026-09-22T14:19:27", crash), "the same second");
+        assert!(led_to("2026-09-22T14:19:26", crash), "the second before, as 2026-09-23 had it");
+        assert!(led_to("2026-09-22T14:16:00", crash), "while the memory was running out");
+        assert!(led_to("2026-09-22T14:19:30", crash), "written a moment late");
+        assert!(!led_to("2026-09-22T14:10:00", crash), "another shortage, nine minutes before");
+        assert!(!led_to("2026-09-22T14:21:00", crash), "after the run had already gone");
+        assert!(!led_to("2026-09-21T14:19:27", crash), "the same time on another day");
+        assert!(led_to("2026-09-30T23:59:58", "2026-10-01T00:00:01"), "across a month's end");
+        assert!(!led_to("", crash));
+        assert!(!led_to("yesterday", crash));
+    }
+
+    /// The real afternoon this was written for: the diagnosis a second
+    /// before the crash, which the old same-second match threw away
+    #[test]
+    fn a_shortage_the_second_before_is_part_of_the_account() {
+        let mark = Mark { pid: 5560, version: "0.18.0".into(), started: 0 };
+        let found = serde_json::json!({
+            "crashes": [crashed("2026-09-23T15:13:34", 5560, "c0000409", "SHIKISHA-TERM.exe")],
+            "exhaustion": [
+                said("2026-09-23T15:13:33", "low virtual memory: python.exe (11164) consumed 17478479872 bytes"),
+                said("2026-09-23T01:38:21", "low virtual memory, in the night"),
+            ],
+        });
+        let ended = pick(&mark, &found);
+        assert!(ended.evidence.contains("python.exe (11164)"), "{}", ended.evidence);
+        assert!(!ended.evidence.contains("in the night"), "{}", ended.evidence);
+    }
+
+    /// A panic goes into the log saying whose it is and when, on one line
+    #[test]
+    fn a_crash_entry_says_whose_it_is_on_one_line() {
+        let e = crash_entry("src/x.rs:3: panicked at src/x.rs:3:9:\ncannot move state from Destroyed\n");
+        assert!(e.starts_with(&format!("[pid {} at ", std::process::id())), "{e}");
+        assert!(!e.contains('\n'), "{e}");
+        assert!(e.ends_with("panicked at src/x.rs:3:9: / cannot move state from Destroyed"), "{e}");
+        let mark = Mark { pid: std::process::id(), version: String::new(), started: 0 };
+        assert_eq!(written_by(&e, &mark), vec![e.as_str()], "and is read back as this run's");
+    }
+
+    /// Only the run that ended speaks for it.
+    ///
+    /// The log on 2026-09-23 ended with a panic from eight days before, in the
+    /// format that said nobody's name, and it was handed over as the account
+    /// of a run that had written nothing at all
+    #[test]
+    fn only_the_run_that_ended_speaks_for_it() {
+        let log = "\
+C:\\tao\\runner.rs:371: panicked at runner.rs:371:25: / cannot move state from Destroyed
+[pid 5560 at 1000] an old run that had the same number
+[pid 4242 at 2000] another copy, running beside it
+[pid 5560 at 2001] ours: index out of bounds
+[pid 5560 at 2002] ours again
+";
+        let mark = Mark { pid: 5560, version: String::new(), started: 2000 };
+        assert_eq!(
+            written_by(log, &mark),
+            vec!["[pid 5560 at 2001] ours: index out of bounds", "[pid 5560 at 2002] ours again"]
+        );
+        let silent = Mark { pid: 5560, version: String::new(), started: 3000 };
+        assert!(written_by(log, &silent).is_empty(), "a run that wrote nothing has nothing to show");
+        let many: String = (0..10).map(|i| format!("[pid 1 at {}] n{i}\n", 10 + i)).collect();
+        let last = written_by(&many, &Mark { pid: 1, version: String::new(), started: 0 });
+        assert_eq!(last.len(), 6);
+        assert_eq!(last.last().copied(), Some("[pid 1 at 19] n9"));
     }
 }

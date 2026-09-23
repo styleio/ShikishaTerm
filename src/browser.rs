@@ -1669,6 +1669,9 @@ fn run_window(
     let closed_tx = ev_tx.clone();
     // The channel that answers "where are we now". Only known from inside the window, so it answers from here
     let where_tx = ev_tx.clone();
+    // Whether this program asked the loop to end. A loop that ends without
+    // being asked is Windows ending the session (see `Event::LoopDestroyed`)
+    let mut asked_to_end = false;
     ev_loop.run_return(move |event, elwt, control| {
         *control = ControlFlow::Wait;
         match event {
@@ -2364,6 +2367,7 @@ fn run_window(
                     let _ = display_wake.send_event(Cmd::Show);
                 }
                 Cmd::Close => {
+                    asked_to_end = true;
                     *control = ControlFlow::Exit;
                 }
                 Cmd::Snip { tool, delay } => {
@@ -2567,6 +2571,22 @@ fn run_window(
                 if let Some(v) = main_view(&shell) {
                     let _ = unsafe { v.controller().NotifyParentWindowPositionChanged() };
                 }
+            }
+            // Windows is ending the session: signing out, restarting, shutting
+            // down, or an installer asking programs to let go of their files.
+            // tao hears `WM_ENDSESSION`, calls the loop finished and keeps
+            // pumping -- and the next message any window of this thread gets
+            // is a panic ("cannot move state from Destroyed") inside a window
+            // procedure, where a panic cannot unwind, so the process aborts.
+            // Four of those are in the log, each at a shutdown, each leaving a
+            // crash report and a "did not close properly" for the next start
+            // to explain. Windows ends the process as soon as this message is
+            // answered anyway, so it is ended here, on purpose, before
+            // anything else can arrive
+            Event::LoopDestroyed if !asked_to_end => {
+                shikisha_core::append_hook_log("Windows is ending the session: closing");
+                shikisha_core::lastexit::mark_closed();
+                std::process::exit(0);
             }
             _ => {}
         }

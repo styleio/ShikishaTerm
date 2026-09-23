@@ -74,7 +74,7 @@ fn install_crash_log() {
             .open(config::logs_dir().join("crash.log"))
         {
             use std::io::Write as _;
-            let _ = writeln!(f, "{where_}: {info}");
+            let _ = writeln!(f, "{}", shikisha_core::lastexit::crash_entry(&format!("{where_}: {info}")));
         }
         prev(info);
     }));
