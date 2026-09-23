@@ -33,6 +33,19 @@ pub struct Window {
     pub resets_at: Option<i64>,
 }
 
+impl Window {
+    /// The window as it stands at `now`. One whose reset has passed since
+    /// it was read has started again, so it is unused and its next reset is
+    /// unknown -- unless the AI ran somewhere this program cannot see, and
+    /// then there is no way to know
+    fn at(self, now: i64) -> Window {
+        match self.resets_at {
+            Some(at) if at <= now => Window { pct: 0, resets_at: None },
+            _ => self,
+        }
+    }
+}
+
 /// Both windows, and when they were read.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Limits {
@@ -80,15 +93,30 @@ impl Source {
         }
     }
 
-    /// One reading, now. Blocks for as long as the asking takes (up to
-    /// [`ASK`] for Claude), so it is called off the drawing thread
+    /// The reading as it stands. Blocks for as long as the asking takes (up
+    /// to [`ASK`] for Claude), so it is called off the drawing thread.
+    ///
+    /// Claude's goes through [`CLAUDE`]: a reading taken within the last
+    /// minute is handed out again rather than asked for twice, a service that
+    /// has stopped answering is asked less and less often, and while it is
+    /// not answering the last good reading is handed out with its time on it
     pub fn read(self) -> Option<Limits> {
-        // A panic anywhere in the reading is one more "no answer"
-        std::panic::catch_unwind(|| match self {
-            Source::Claude => token().and_then(|t| fetch(&t)),
-            Source::Codex => codex_reading(now_ms() / 1000),
-        })
-        .unwrap_or(None)
+        let now = now_ms() / 1000;
+        match self {
+            Source::Claude => claude_read(now),
+            // A panic anywhere in the reading is one more "no answer"
+            Source::Codex => std::panic::catch_unwind(|| codex_reading(now)).unwrap_or(None),
+        }
+    }
+
+    /// How old a reading may be and still stand on the status line. Claude's
+    /// numbers move while nobody can see them; Codex's are as new as the last
+    /// turn here, and a window whose reset has passed is already shown as such
+    fn stale_after(self) -> Option<i64> {
+        match self {
+            Source::Claude => Some(KEEP.as_secs() as i64),
+            Source::Codex => None,
+        }
     }
 
     /// Whether this PC has what the reading needs: Claude Code's sign-in, or
@@ -141,7 +169,13 @@ impl Meter {
                 if !due {
                     continue;
                 }
-                let got = source.read();
+                // A remembered reading stands on the status line only while
+                // it is still roughly true (the settings screen shows it
+                // longer, with its time on it)
+                let got = source.read().filter(|l| match (source.stale_after(), l.as_of) {
+                    (Some(max), Some(at)) => now_ms() / 1000 - at <= max,
+                    _ => true,
+                });
                 let Ok(mut s) = mine.lock() else { break };
                 s.asked = Some(Instant::now());
                 match got {
@@ -208,6 +242,123 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// A reading this new is handed out again instead of asking a second time:
+/// the status line and the settings screen asking within the same minute
+/// get one answer between them
+const FRESH: i64 = 55;
+/// A reading older than this is handed out with its time on it
+const DATED: i64 = 120;
+/// How long to leave the service alone after it did not answer: this long
+/// the first time, twice as long each time after, up to [`QUIET_MOST`].
+/// The service answers a sign-in that asks too often with 429 and goes on
+/// answering it so for minutes (measured 2026-09-23: every ask in two
+/// minutes, 20 seconds apart, was turned away); asking every minute through
+/// that only keeps it going
+const QUIET_FIRST: i64 = 60;
+const QUIET_MOST: i64 = 15 * 60;
+
+/// What has been learnt of Claude's service: the last good reading and when
+/// it was taken, and how long to leave the service alone.
+///
+/// One for the whole program, so the status line and the settings screen
+/// share it, and kept on disk, so a start while the service is turning
+/// asks away still has something to show, with its time on it
+#[derive(Debug, Clone, PartialEq)]
+struct Book {
+    last: Option<(Limits, i64)>,
+    quiet_until: i64,
+    quiet: i64,
+    loaded: bool,
+}
+
+static CLAUDE: Mutex<Book> = Mutex::new(Book { last: None, quiet_until: 0, quiet: 0, loaded: false });
+
+impl Book {
+    /// Whether to ask the service now, rather than hand out what is known
+    fn should_ask(&self, now: i64) -> bool {
+        let fresh = self.last.as_ref().is_some_and(|(_, at)| now - at < FRESH);
+        !fresh && now >= self.quiet_until
+    }
+
+    /// Writes down how an ask went
+    fn record(&mut self, got: Option<Limits>, now: i64) {
+        match got {
+            Some(l) => {
+                self.last = Some((l, now));
+                self.quiet = 0;
+                self.quiet_until = 0;
+            }
+            None => {
+                self.quiet = if self.quiet == 0 { QUIET_FIRST } else { (self.quiet * 2).min(QUIET_MOST) };
+                self.quiet_until = now + self.quiet;
+            }
+        }
+    }
+
+    /// The last good reading as it stands at `now`, dated when it is not
+    /// from just now
+    fn answer(&self, now: i64) -> Option<Limits> {
+        self.last.as_ref().map(|(l, at)| Limits {
+            five_hour: l.five_hour.clone().map(|w| w.at(now)),
+            seven_day: l.seven_day.clone().map(|w| w.at(now)),
+            as_of: (now - at >= DATED).then_some(*at),
+        })
+    }
+}
+
+fn claude_read(now: i64) -> Option<Limits> {
+    let ask = {
+        let Ok(mut b) = CLAUDE.lock() else { return None };
+        if !b.loaded {
+            b.loaded = true;
+            b.last = load_claude();
+        }
+        b.should_ask(now)
+    };
+    if ask {
+        // A panic anywhere in the asking is one more "no answer"
+        let got = std::panic::catch_unwind(|| token().and_then(|t| fetch(&t))).unwrap_or(None);
+        let Ok(mut b) = CLAUDE.lock() else { return None };
+        b.record(got.clone(), now);
+        if let Some(l) = &got {
+            save_claude(l, now);
+        }
+    }
+    CLAUDE.lock().ok()?.answer(now)
+}
+
+/// Where the last good reading of Claude's is kept between starts
+fn claude_file() -> std::path::PathBuf {
+    crate::config::state_path("claude-usage.json")
+}
+
+fn save_claude(l: &Limits, at: i64) {
+    let _ = crate::crypto::write_atomic(&claude_file(), &book_json(l, at).to_string());
+}
+
+fn load_claude() -> Option<(Limits, i64)> {
+    let text = std::fs::read_to_string(claude_file()).ok()?;
+    book_of(&serde_json::from_str(&text).ok()?)
+}
+
+fn book_json(l: &Limits, at: i64) -> serde_json::Value {
+    let w = |w: &Option<Window>| w.as_ref().map(|w| serde_json::json!({"pct": w.pct, "resets_at": w.resets_at}));
+    serde_json::json!({"at": at, "five": w(&l.five_hour), "week": w(&l.seven_day)})
+}
+
+fn book_of(v: &serde_json::Value) -> Option<(Limits, i64)> {
+    let w = |k: &str| -> Option<Window> {
+        let w = v.get(k).filter(|w| w.is_object())?;
+        Some(Window {
+            pct: w.get("pct")?.as_u64()?.min(100) as u32,
+            resets_at: w.get("resets_at").and_then(|r| r.as_i64()),
+        })
+    };
+    let (five_hour, seven_day) = (w("five"), w("week"));
+    let at = v.get("at")?.as_i64()?;
+    (five_hour.is_some() || seven_day.is_some()).then_some((Limits { five_hour, seven_day, as_of: None }, at))
 }
 
 /// One ask. The endpoint and the header are the ones Claude Code itself uses
@@ -361,10 +512,7 @@ fn parse_codex(line: &str, now: i64) -> Option<Limits> {
         let resets_at = w.get("resets_at").and_then(|r| r.as_i64()).or_else(|| {
             Some(written? + w.get("resets_in_seconds")?.as_i64()?)
         });
-        let window = match resets_at {
-            Some(at) if at <= now => Window { pct: 0, resets_at: None },
-            _ => Window { pct: pct.round().clamp(0.0, 100.0) as u32, resets_at },
-        };
+        let window = Window { pct: pct.round().clamp(0.0, 100.0) as u32, resets_at }.at(now);
         match w.get("window_minutes").and_then(|m| m.as_u64()) {
             Some(300) => five_hour = Some(window),
             Some(10_080) => seven_day = Some(window),
@@ -484,6 +632,51 @@ mod tests {
         m.want(false);
         assert_eq!(m.current(), None, "it remembers though it was cut");
         assert!(!m.shared.lock().unwrap().want);
+    }
+
+    /// Asked once a minute at most; left alone longer and longer while it
+    /// does not answer; and what was last read is handed out meanwhile,
+    /// with its time on it once it is not from just now.
+    #[test]
+    fn claude_is_asked_sparingly_and_the_last_reading_stands_in() {
+        let mut b = Book { last: None, quiet_until: 0, quiet: 0, loaded: true };
+        assert!(b.should_ask(1_000), "nothing known, and nothing asked");
+        let l = Limits { five_hour: Some(Window { pct: 6, resets_at: Some(9_000) }), seven_day: None, as_of: None };
+        b.record(Some(l.clone()), 1_000);
+        assert!(!b.should_ask(1_030), "asked again within the minute");
+        assert_eq!(b.answer(1_030), Some(l.clone()), "a reading from just now was dated");
+        assert!(b.should_ask(1_060));
+        // Turned away: left alone 1, 2, 4 ... minutes, never more than 15
+        b.record(None, 1_060);
+        assert!(!b.should_ask(1_100) && b.should_ask(1_120), "not left alone for a minute");
+        b.record(None, 1_120);
+        assert!(!b.should_ask(1_230) && b.should_ask(1_240), "the wait did not grow");
+        for _ in 0..10 {
+            b.record(None, 2_000);
+        }
+        assert_eq!(b.quiet, QUIET_MOST, "the wait grew past its cap");
+        // Meanwhile the last reading stands in, dated
+        let seen = b.answer(1_240).unwrap();
+        assert_eq!(seen.as_of, Some(1_000), "an old reading was handed out as new");
+        assert_eq!(seen.five_hour.as_ref().map(|w| w.pct), Some(6));
+        // Past its reset, the window has started again
+        assert_eq!(b.answer(9_000).unwrap().five_hour, Some(Window { pct: 0, resets_at: None }));
+        // An answer puts everything back
+        b.record(Some(l), 3_000);
+        assert_eq!((b.quiet, b.quiet_until), (0, 0));
+    }
+
+    /// What is kept between starts reads back as it was written.
+    #[test]
+    fn the_kept_claude_reading_reads_back() {
+        let l = Limits {
+            five_hour: Some(Window { pct: 6, resets_at: Some(1_789_000_000) }),
+            seven_day: Some(Window { pct: 35, resets_at: None }),
+            as_of: None,
+        };
+        assert_eq!(book_of(&book_json(&l, 42)), Some((l, 42)));
+        assert_eq!(book_of(&serde_json::json!({"at": 1, "five": null, "week": null})), None);
+        assert_eq!(book_of(&serde_json::json!("nonsense")), None);
     }
 
     /// A turn's record line as Codex wrote it on 2026-09-18, the token

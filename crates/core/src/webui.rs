@@ -7758,8 +7758,9 @@ function aiUsageCard() {
     }
     if (r.five) part.append(windowRow(T["settings.ai_usage.five"], r.five));
     if (r.week) part.append(windowRow(T["settings.ai_usage.week"], r.week));
-    // A reading taken off a record is as old as the record, and says so
-    if (r.as_of) part.append(el("div", {class:"hint"}, fill(T["settings.ai_usage.as_of"], {when: clock(r.as_of)})));
+    // A reading that is not from just now says how old it is: Codex's is as
+    // old as its record, and Claude's is the last one the service gave
+    if (r.as_of) part.append(el("div", {class:"hint"}, fill(T["settings.ai_usage." + key + ".as_of"], {when: clock(r.as_of)})));
     return part;
   };
   fetch("/api/usage", {headers:{"X-Token":TOKEN}}).then(r => r.json()).then(j => {
