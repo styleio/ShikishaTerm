@@ -111,8 +111,6 @@ Limits for 🎯 driving another tab
 - **When a limit is reached** — "Keep going" resets the budget and trusts the operator to finish on its own — pick it if the operate stops on you too often.
 - **Settle wait (ms)** — After each action, wait until the page stops changing (up to this long) before reading it. 0 = don't wait.
 - **Ask before acting** — A brake: pause for you to approve a step on the page before it runs. Declining holds the run.
-- **Picks the move** — connection/model. A decision model's connection is far quicker here. Left empty, the model below decides as well.
-- **Writes the words** — connection/model. Needed for any goal that involves typing something.
 
 ### Claude's allowance
 
@@ -219,6 +217,13 @@ The APIs this desk's tabs use
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 
+### Browser
+
+What this desk's browser tabs follow
+
+- **Decision model** — Picks the next move on the page. A decision model is far quicker; a conversation model works too.
+- **Conversation model** — Writes what is typed into the page. Only a conversation model can.
+
 ### Automation permissions
 
 What a person and an AI may run
@@ -280,7 +285,7 @@ This screen has nothing to fill in. What it shows depends on what is set elsewhe
 
 ### Tools
 
-What may be sent out: pictures of the screen, and pages
+What may be sent out: pictures of the screen
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 

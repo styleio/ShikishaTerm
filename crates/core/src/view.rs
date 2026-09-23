@@ -619,6 +619,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     // it is drawn on. Filled in here with everything else about
                     // the tab, so no second pass can disagree about it
                     t.away = ui.away.iter().find(|(k, _)| k == key).map(|(_, who)| who.clone());
+                    t.words_unset = ui.words_unset.iter().any(|k| k == key);
                     Some(t)
                 }
                 Surface::Sftp { key, name, dir, at, .. } => {
@@ -1367,12 +1368,7 @@ pub fn surfaces_written(
                 continue;
             }
             if config::browser_url_of(&argv).is_some() {
-            let key = ft
-                    .cfg
-                    .id
-                    .clone()
-                    .or_else(|| ft.cfg.name.clone())
-                    .unwrap_or_else(|| "browser".into());
+                let key = ft.page_key();
                 // Keeps a position even if it isn't open. If numbering shifted
                 // based on open order, whatever a script points to would change
                 // on every run.
@@ -1606,6 +1602,9 @@ pub struct Ui {
     /// rather than here, by the same name, each with what that device is
     /// called (`caps::drawn_away`)
     pub away: Vec<(String, String)>,
+    /// Which of this desk's pages cannot be driven in plain words yet,
+    /// because a model it needs is not chosen, by the same name
+    pub words_unset: Vec<String>,
     /// How many lines back from the current screen we're scrolled (0 = live)
     pub scrolled: usize,
     /// The AIs this machine can start, for the dialog that makes a folder

@@ -4953,8 +4953,14 @@ end
     /// One call of `on_step` is one move. The loop is not written as a loop,
     /// because a loop here would hold the whole program while a page loads;
     /// whoever started the run asks for the next step when it is ready for one
-    pub fn load_browser_words(&mut self, browser: &str, stops_lua: &str) -> Result<usize> {
+    pub fn load_browser_words(
+        &mut self,
+        browser: &str,
+        stops_lua: &str,
+        models: &crate::config::WordsModels,
+    ) -> Result<usize> {
         let op = crate::config::operate();
+        let (choose, words) = (models.choose().unwrap_or_default(), models.words().unwrap_or_default());
         let key = format!(
             "<browser-words:{browser}>{stops_lua}|{}|{}|{}|{}|{}|{}|{}|{}",
             op.max_rounds,
@@ -4963,8 +4969,8 @@ end
             op.on_limit,
             op.settle_ms,
             op.confirm,
-            op.choose_model.as_deref().unwrap_or(""),
-            op.words_model.as_deref().unwrap_or(""),
+            choose,
+            words,
         );
         if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
             return Ok(i);
@@ -5256,8 +5262,8 @@ end
             // sleep: the old fixed pause is far too long to spend every move
             op.settle_ms.min(1_500),
             op.confirm,
-            op.choose_model.clone().unwrap_or_default(),
-            op.words_model.clone().unwrap_or_default(),
+            choose,
+            words,
             Self::SHARED_LUA
         );
         self.load_source(&key, &src)
@@ -6001,9 +6007,10 @@ end
         browser: &str,
         stops_lua: &str,
         goal: &str,
+        models: &crate::config::WordsModels,
         ctx: &TabCtx,
     ) -> Result<()> {
-        let id = self.load_browser_words(browser, stops_lua)?;
+        let id = self.load_browser_words(browser, stops_lua, models)?;
         self.lend_tab(pane, id);
         crate::append_hook_log(&format!("words: driving {browser:?} from pane{pane}"));
         self.fire("on_start", ctx, None);
@@ -6822,7 +6829,7 @@ mod tests {
         ));
         let mut eng = super::HookEngine::with_caps(caps).expect("engine");
         eng.load_browser_agent("BR", "{}").expect("browser rally template");
-        eng.load_browser_words("BR", "{}").expect("driven-from-words template");
+        eng.load_browser_words("BR", "{}", &Default::default()).expect("driven-from-words template");
         eng.load_ai_agent("target").expect("operate template");
         // Loaded the way `fire_template` loads it, but not run: running it
         // wants a server. A typo would otherwise wait until somebody sent a
@@ -7091,7 +7098,7 @@ mod tests {
     fn a_run_driven_from_words_starts_says_so_and_stays_stopped() {
         let _g = OwnRally::new();
         let mut e = HookEngine::new().unwrap();
-        let id = e.load_browser_words("br", "{}").expect("the template cannot be read");
+        let id = e.load_browser_words("br", "{}", &Default::default()).expect("the template cannot be read");
         e.set_tab(1, id);
         e.fire("on_start", &ctx(1, ""), None);
 

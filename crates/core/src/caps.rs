@@ -252,6 +252,10 @@ pub struct Capabilities {
     /// door*, this says *who is knocking*. Swapped out on reload with the
     /// rest of what comes from config
     grants: std::cell::RefCell<crate::grants::Grants>,
+    /// The models the desk on screen drives pages with in plain words, for a
+    /// script that asks for a decision without naming a model. Swapped with
+    /// the desk (`desk::hand_over`)
+    words: std::cell::RefCell<crate::config::WordsModels>,
 }
 
 /// Default wait time when touching a page.
@@ -295,6 +299,7 @@ impl Capabilities {
             open_result: std::cell::RefCell::new(None),
             replay: std::cell::RefCell::new(Vec::new()),
             grants: std::cell::RefCell::new(crate::grants::Grants::default()),
+            words: std::cell::RefCell::new(crate::config::WordsModels::default()),
         }
     }
 
@@ -373,6 +378,11 @@ impl Capabilities {
     /// therefore allowed to in the one with the company's repository in it
     pub fn set_grants(&self, spec: crate::grants::GrantSpec) {
         *self.grants.borrow_mut() = crate::grants::Grants::new(spec);
+    }
+
+    /// The desk's models for driving a page in plain words
+    pub fn set_words_models(&self, models: crate::config::WordsModels) {
+        *self.words.borrow_mut() = models;
     }
 
     /// Communication runs on a dedicated thread so it doesn't block the UI
@@ -841,14 +851,16 @@ impl Capabilities {
     /// settings nominate for this job. A name that reaches nothing is said
     /// plainly rather than quietly becoming a different model
     fn model_for(&self, asked: Option<&str>, job: Deciding) -> Result<crate::bridge::ModelConn> {
-        let op = crate::config::operate();
+        // The desk's, and before any desk has been handed over, the app-wide
+        // ones settings from before desks had their own still name
+        let mine = self.words.borrow().over(&crate::config::operate().words);
         let name = asked
             .map(str::to_string)
             .or_else(|| match job {
                 // Deciding can fall back to the one that writes: slower, and
                 // it is the difference between "works without" and "needs"
-                Deciding::Choosing => op.choose_model.clone().or_else(|| op.words_model.clone()),
-                Deciding::Writing => op.words_model.clone(),
+                Deciding::Choosing => mine.choose().or_else(|| mine.words()),
+                Deciding::Writing => mine.words(),
             })
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())

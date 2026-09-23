@@ -6963,7 +6963,7 @@ function globalSections() {
 // Links that name one of a desk's settings (the git panel's gear asks for
 // "git"): the desk in view, at that entry, since there is no copy of the
 // program's to land on. Older names for the same places are kept here
-const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", "git-pr":"git", "git-merge":"git", "git-ci":"git", protect:"git", gitaccounts:"gitaccounts", providers:"providers",
+const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", "git-pr":"git", "git-merge":"git", "git-ci":"git", protect:"git", gitaccounts:"gitaccounts", providers:"providers", browser:"browser", words:"browser",
                     permissions:"permissions", caps:"caps", tools:"tools"};
 
 // ── Update ─────────────────────────────────────────────────────
@@ -7328,7 +7328,9 @@ const PROVIDER_PRESETS = [
 ];
 
 // Adding a connection to a desk, or changing one. `name` is null for a new one.
-function providerDialog(desk, name, redraw) {
+// `saved(name)`, when given, is told the name once it is saved: a picker that
+// sent the person here selects what they came back with
+function providerDialog(desk, name, redraw, saved) {
   const editing = !!name;
   const p = editing ? (desk.providers[name] || {}) : {};
   const nameIn = el("input", {type:"text", class:"mono", placeholder:T["settings.providers.name_ph"]});
@@ -7357,8 +7359,24 @@ function providerDialog(desk, name, redraw) {
     urlHint.textContent = T[choice ? "settings.providers.url_hint_choice" : "settings.providers.url_hint"];
     urlIn.placeholder = choice ? "https://api.typesafe.ai/v1/systemone" : "https://api.deepseek.com";
   };
+  // The model this connection is used with, so choosing the connection
+  // somewhere is enough. A conversation service can be asked what it has
+  const modelIn = el("input", {type:"text", class:"mono", style:"flex:1;min-width:0"});
+  modelIn.value = (p.models || [])[0] || "";
+  const cand = modelCandidates(() => ({base_url: urlIn.value.trim(),
+    api_key: keyIn.value.trim() || p.api_key || "", headers: p.headers || {}}),
+    id => { modelIn.value = id; cand.chips.textContent = ""; });
+  const modelHint = el("div", {class:"hint"});
+  const sayModel = () => {
+    const choice = speaksIn.value === "choice";
+    cand.btn.hidden = choice;
+    if (choice) cand.chips.textContent = "";
+    modelHint.textContent = T[choice ? "settings.providers.model_hint_choice" : "settings.providers.model_hint"];
+  };
   speaksIn.addEventListener("change", sayUrl);
+  speaksIn.addEventListener("change", sayModel);
   sayUrl();
+  sayModel();
 
   // A known service, picked to fill the fields below. Only when adding: the
   // name of a saved connection is fixed, and its address is changed by hand
@@ -7389,7 +7407,10 @@ function providerDialog(desk, name, redraw) {
     }
     urlIn.value = preset.url;
     speaksIn.value = preset.speaks;
+    modelIn.value = (preset.models || [])[0] || "";
+    cand.chips.textContent = "";
     sayUrl();
+    sayModel();
     if (preset.here) presetHint.textContent = T["settings.providers.preset_here_hint"];
     else if (preset.keys) presetHint.append(T["settings.providers.preset_keys"],
       el("a", {class:"mono", href:preset.keys, target:"_blank"}, preset.keys));
@@ -7469,6 +7490,9 @@ function providerDialog(desk, name, redraw) {
       field(T["settings.providers.speaks_label"], speaksIn, T["settings.providers.speaks_hint"]),
       field(T["settings.providers.url_label"], urlIn, urlHint),
       field(T["settings.providers.key_label"], keyIn, T["settings.providers.key_hint"]),
+      field(T["settings.providers.model_label"],
+        el("div", {class:"row", style:"padding:0;flex-wrap:nowrap"}, modelIn, cand.btn),
+        el("div", {}, modelHint, cand.chips)),
       field(T["settings.providers.wait_label"], waitIn, T["settings.providers.wait_hint"])),
     el("div", {class:"mfoot"},
       editing
@@ -7506,9 +7530,13 @@ function providerDialog(desk, name, redraw) {
     if (w === "") delete it.timeout_sec; else it.timeout_sec = Math.max(0, Math.floor(Number(w)));
     // The ordinary kind is left unwritten: the file says what is unusual
     if (speaksIn.value === "choice") it.speaks = "choice"; else delete it.speaks;
-    // The service's model names come along only while the address is still
-    // that service's: an address changed by hand is somebody else's machine
-    if (preset && preset.models && it.base_url === preset.url) it.models = preset.models.slice();
+    // The model it is used with comes first. The service's other model names
+    // come along only while the address is still that service's: an address
+    // changed by hand is somebody else's machine
+    const m = modelIn.value.trim();
+    const known = (preset && preset.models && it.base_url === preset.url) ? preset.models : (it.models || []);
+    const models = (m ? [m] : []).concat(known.filter(x => x !== m));
+    if (models.length) it.models = models; else delete it.models;
     // The key never sits in config.json: it goes to the secrets file, under
     // this desk, and only the name of it is kept here
     if (keyIn.value.trim()) {
@@ -7520,9 +7548,147 @@ function providerDialog(desk, name, redraw) {
     }
     refreshSave(); shut(); redraw();
     toast(fill(T["settings.providers.saved"], {name: n}));
+    if (saved) saved(n);
   });
   recheck();
   setTimeout(() => (editing ? urlIn : nameIn).focus(), 0);
+}
+
+// ── Driving a page from plain words ─────────────────────────────
+// Two models do it: one picks each move, one writes what is typed. Chosen
+// for the desk (Desk › Browser) and, where a browser tab wants otherwise, on
+// the tab; a tab that leaves one unset has the desk's.
+const WORDS_KEYS = ["choose_model", "words_model"];
+// "connection/model" split at the first slash: a model's own name may hold one
+const splitModel = v => {
+  const t = (v || "").trim(), at = t.indexOf("/");
+  return at < 0 ? {conn: t, model: ""} : {conn: t.slice(0, at), model: t.slice(at + 1).trim()};
+};
+// What is wrong with a choice, or null. The writer has to be a conversation
+// model: a decision model answers questions and cannot write a word
+function wordsFault(desk, key, value) {
+  const v = (value || "").trim();
+  if (!v) return null;
+  const {conn, model} = splitModel(v);
+  const prov = (desk.providers || {})[conn];
+  if (!prov) return fill(T["settings.words.gone"], {name: conn});
+  if (!model) return fill(T["settings.words.no_model"], {name: conn});
+  if (key === "words_model" && prov.speaks === "choice") return T["settings.words.not_writer"];
+  return null;
+}
+// Every choice on this desk and its browser tabs that cannot be saved, with
+// where it is, for save() to refuse and go to
+function wordsFaults(di) {
+  const desk = desks[di], out = [];
+  if (!desk) return out;
+  const b = desk.browser || {};
+  for (const k of WORDS_KEYS) {
+    const why = wordsFault(desk, k, b[k]);
+    if (why) out.push({tab: null, why});
+  }
+  (desk.tabs || []).forEach((t, i) => {
+    if (catOf(cmdToText(t.command).trim()) !== "browser") return;
+    for (const k of WORDS_KEYS) {
+      const why = wordsFault(desk, k, t[k]);
+      if (why) out.push({tab: i, why});
+    }
+  });
+  return out;
+}
+// One of the two models, picked from this desk's connections. `holder[key]`
+// is where the answer is written ("connection/model"). `under`, on a tab, is
+// what the desk says, followed while nothing is chosen here; `adopt` is told
+// a model added from here, so the desk can take it when it has none
+function wordsPicker(desk, holder, key, under, adopt) {
+  const writer = key === "words_model";
+  const wrap = el("div", {style:"display:flex;flex-direction:column;gap:var(--s2);flex:1 1 100%;min-width:0"});
+  const draw = () => {
+    wrap.textContent = "";
+    const provs = desk.providers || {};
+    const now = (holder[key] || "").trim();
+    const {conn, model} = splitModel(now);
+    const pick = el("select", {style:"width:100%;max-width:420px"});
+    const followsDesk = under !== undefined;
+    pick.append(el("option", {value:""}, followsDesk
+      ? fill(T["settings.words.follow"], {name: (under || "").trim() || T["settings.words.unset"]})
+      : T["settings.providers.preset_none"]));
+    // The deciding one takes either kind, a decision model first; the
+    // writing one only a conversation model. Each shows the model it is used with
+    const kinds = writer ? ["chat"] : ["choice", "chat"];
+    for (const kind of kinds) {
+      const names = Object.keys(provs).filter(n => (provs[n].speaks || "chat") === kind).sort();
+      if (!names.length) continue;
+      const group = el("optgroup", {label: T["settings.providers.speaks." + kind]});
+      for (const n of names) {
+        const m = (provs[n].models || [])[0] || DEFAULT_MODEL[n] || "";
+        group.append(el("option", {value:n}, m ? n + " / " + m : n));
+      }
+      pick.append(group);
+    }
+    // What is written, even when it is not on offer -- a decision model put
+    // where writing is needed, a connection since removed -- so the screen
+    // shows what the settings say, with what is wrong under it
+    if (conn && !Array.from(pick.options).some(o => o.value === conn)) {
+      pick.append(el("option", {value:conn}, now));
+    }
+    pick.append(el("option", {value:"@add"}, T["settings.words.add"]));
+    pick.value = conn;
+    // The model, for a connection with more than one on offer
+    const modelIn = el("input", {type:"text", class:"mono", style:"flex:1;min-width:0;max-width:300px"});
+    modelIn.value = model;
+    const cand = modelCandidates(() => provs[pick.value] || {}, id => { modelIn.value = id; store(); });
+    const modelRow = el("div", {class:"row", style:"padding:0;flex-wrap:nowrap"}, modelIn, cand.btn);
+    modelRow.hidden = !conn || !provs[conn];
+    if (provs[conn] && provs[conn].speaks === "choice") cand.btn.hidden = true;
+    const warn = wordsFault(desk, key, now);
+    const store = () => {
+      const c = pick.value, m = modelIn.value.trim();
+      if (c) holder[key] = c + "/" + m; else delete holder[key];
+      refreshSave();
+      draw();
+    };
+    pick.addEventListener("change", () => {
+      if (pick.value === "@add") {
+        pick.value = conn;
+        providerDialog(desk, null, () => {}, n => {
+          const m = ((desk.providers[n] || {}).models || [])[0] || DEFAULT_MODEL[n] || "";
+          holder[key] = n + "/" + m;
+          if (adopt) adopt(holder[key]);
+          refreshSave();
+          draw();
+        });
+        return;
+      }
+      const c = pick.value;
+      modelIn.value = c ? ((provs[c] || {}).models || [])[0] || DEFAULT_MODEL[c] || "" : "";
+      store();
+    });
+    modelIn.addEventListener("change", store);
+    wrap.append(pick, modelRow, cand.chips);
+    if (warn) wrap.append(el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, warn)));
+  };
+  draw();
+  return wrap;
+}
+// The two pickers under their heading, the way the desk and a tab both show them
+function wordsRows(desk, holder, under, adopt) {
+  return [
+    el("div", {class:"hint"}, T["settings.words.hint"]),
+    row(T["settings.words.choose_model"],
+      wordsPicker(desk, holder, "choose_model", under ? (under.choose_model || "") : undefined, adopt && (v => adopt("choose_model", v))),
+      el("span", {class:"hint"}, T["settings.words.choose_model.hint"])),
+    row(T["settings.words.words_model"],
+      wordsPicker(desk, holder, "words_model", under ? (under.words_model || "") : undefined, adopt && (v => adopt("words_model", v))),
+      el("span", {class:"hint"}, T["settings.words.words_model.hint"])),
+  ];
+}
+// Desk › Browser: what this desk's browser tabs follow, and whether pages may
+// be sent to those models at all
+function deskBrowserCard(desk) {
+  desk.browser = desk.browser || {};
+  const words = card(T["settings.words.title"], ...wordsRows(desk, desk.browser));
+  words.id = "desk-words";
+  return [words, deskPagesCard(desk)];
 }
 
 // Claude's allowance, read with Claude Code's own sign-in on this PC. Its own
@@ -7669,34 +7835,6 @@ function operateCard() {
     conf.append(opt);
   }
   conf.addEventListener("change", () => { o.confirm = conf.value; refreshSave(); });
-  // Which model does what, when a page is driven from a goal written in
-  // ordinary words. The list is this desk's own connections: what is not set
-  // up here is not offered, because it could not be reached
-  const models = () => {
-    const out = [];
-    (current.desks || []).forEach(w => {
-      Object.keys(w.providers || {}).forEach(name => {
-        const speaks = ((w.providers[name] || {}).speaks || "chat");
-        (w.providers[name].models || []).forEach(m => out.push([name + "/" + m, speaks]));
-        out.push([name + "/", speaks]);
-      });
-    });
-    return out;
-  };
-  const pick = (key, hint) => {
-    const e = el("input", {type:"text", style:"width:260px", placeholder:"connection/model"});
-    e.value = (o[key] || "");
-    e.setAttribute("list", "words-models");
-    e.addEventListener("input", () => { o[key] = e.value.trim(); refreshSave(); });
-    return e;
-  };
-  const list = el("datalist", {id:"words-models"});
-  const seen = {};
-  models().forEach(([name]) => {
-    if (!name || name.endsWith("/") || seen[name]) return;
-    seen[name] = 1;
-    list.append(el("option", {value:name}));
-  });
   return card(T["settings.operate.title"],
     el("div", {class:"hint"}, T["settings.operate.hint"]),
     row(T["settings.operate.max_rounds"], num("max_rounds", 40), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
@@ -7704,13 +7842,7 @@ function operateCard() {
     row(T["settings.operate.max_tokens"], num("max_tokens", 400000), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
     row(T["settings.operate.on_limit"], pol, el("span", {class:"hint"}, T["settings.operate.on_limit.hint"])),
     row(T["settings.operate.settle"], num("settle_ms", 1800), el("span", {class:"hint"}, T["settings.operate.settle.hint"])),
-    row(T["settings.operate.confirm"], conf, el("span", {class:"hint"}, T["settings.operate.confirm.hint"])),
-    el("div", {class:"hint"}, T["settings.words.hint"]),
-    row(T["settings.words.choose_model"], pick("choose_model"),
-        el("span", {class:"hint"}, T["settings.words.choose_model.hint"])),
-    row(T["settings.words.words_model"], pick("words_model"),
-        el("span", {class:"hint"}, T["settings.words.words_model.hint"])),
-    list);
+    row(T["settings.operate.confirm"], conf, el("span", {class:"hint"}, T["settings.operate.confirm.hint"])));
 }
 
 // Who may run which command: the person's own automation in one column, an AI
@@ -9073,6 +9205,7 @@ function deskSections(desk) {
     s("basic", deskBasic),
     s("notify", notifyCard),
     s("providers", providersCard),
+    s("browser", deskBrowserCard),
     s("permissions", permissionsCard),
     s("git", gitCard),
     s("gitaccounts", gitAccountsCard),
@@ -9123,19 +9256,24 @@ function deskToolsCard(desk) {
     draw();
   });
   draw();
-  return [
-    card(T["settings.desk.pictures.title"], el("div", {class:"row"}, tick), said),
-    deskPagesCard(desk),
-  ];
+  return card(T["settings.desk.pictures.title"], el("div", {class:"row"}, tick), said);
 }
 
 // Whether a page may be handed to a model so that a goal written in ordinary
 // words can be carried out on it. Stored as the models it was agreed for, so
 // pointing the setting at a different company asks again rather than assuming
 function deskPagesCard(desk) {
-  const o = current.operate || {};
-  const now = [o.choose_model, o.words_model]
-    .map(x => (x || "").trim()).filter(x => x)
+  // Every model a page on this desk would be handed to: the desk's, and each
+  // browser tab's own where it has one. One agreement covers them all, and
+  // the app checks each page against it
+  const b = desk.browser || {};
+  const names = [];
+  for (const k of WORDS_KEYS) names.push(b[k]);
+  (desk.tabs || []).forEach(t => {
+    if (catOf(t.command) !== "browser") return;
+    for (const k of WORDS_KEYS) names.push((t[k] || "").trim() || b[k]);
+  });
+  const now = names.map(x => (x || "").trim()).filter(x => x)
     .filter((x, i, a) => a.indexOf(x) === i).sort().join(" + ");
   const box = el("input", {type:"checkbox"});
   box.checked = !!desk.send_pages_to;
@@ -9150,7 +9288,8 @@ function deskPagesCard(desk) {
       : T["settings.desk.pages.none"];
     else if (!agreed) said.textContent = fill(T["settings.desk.pages.service"], {by: now})
       + " " + T["settings.desk.pages.unticked"];
-    else if (agreed !== now) said.textContent = fill(T["settings.desk.pages.changed"], {by: agreed, now: now});
+    else if (!now.split(" + ").every(n => agreed.split(" + ").includes(n)))
+      said.textContent = fill(T["settings.desk.pages.changed"], {by: agreed, now: now});
     else said.textContent = fill(T["settings.desk.pages.agreed"], {by: now})
       + " " + fill(T["settings.desk.pages.service"], {by: now})
       + " " + T["settings.desk.pages.withdraw"];
@@ -11822,6 +11961,13 @@ function marksCard() {
   return c;
 }
 
+// The controls a browser tab can show over its page, in the order they are
+// offered, each with its label. Saving writes the same list, so one offered
+// here cannot be dropped by the next save
+const NAV_PARTS = ["back", "forward", "reload", "reload_hard", "url", "point"];
+const NAV_LABEL = {back:"tui.nav.back", forward:"tui.nav.forward", reload:"tui.nav.reload",
+  reload_hard:"tui.nav.reload_hard.short", url:"tui.nav.url", point:"tui.nav.point"};
+
 function kindPanel(t, cmdInput, rebuild, real) {
   if (catOf(t.command) === "ai") return aiPanel(t, cmdInput, rebuild, real);
   const box = el("div");
@@ -11914,13 +12060,19 @@ function kindPanel(t, cmdInput, rebuild, real) {
       l.append(c, document.createTextNode(label));
       return l;
     };
+    // Plain words: this page's own models, else the desk's. A model added
+    // from here is also the desk's when the desk has none, so the next
+    // browser tab starts with it
+    const here = desks[sel.desk];
+    here.browser = here.browser || {};
+    const wordsBox = el("div", {id:"tab-words"},
+      el("div", {class:"row"}, el("label", {}, T["settings.words.title"])),
+      ...wordsRows(here, t, here.browser, (k, v) => {
+        if (!(here.browser[k] || "").trim()) here.browser[k] = v;
+      }));
+    box.append(wordsBox);
     box.append(el("div", {class:"row"}, el("label", {}, T["settings.browser.nav"]),
-      part("back", T["tui.nav.back"]),
-      part("forward", T["tui.nav.forward"]),
-      part("reload", T["tui.nav.reload"]),
-      part("reload_hard", T["tui.nav.reload_hard.short"]),
-      part("url", T["tui.nav.url"]),
-      part("point", T["tui.nav.point"])));
+      ...NAV_PARTS.map(k => part(k, T[NAV_LABEL[k]]))));
     box.append(el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["settings.browser.nav.hint"])));
 
@@ -12254,6 +12406,7 @@ function flatten(tabs, depth, group, out) {
                drives: t.drives || "",
                browser_profile: t.browser_profile || "", private: !!t.private,
                user_agent: t.user_agent || "",
+               choose_model: t.choose_model || "", words_model: t.words_model || "",
                locked: !!t.locked, auto_restart: !!t.auto_restart,
                encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
                notify_on_done: t.notify_on_done || "", notify_reply: !!t.notify_reply,
@@ -12278,6 +12431,7 @@ function nest(flat) {
     if (f.browser_profile) node.browser_profile = f.browser_profile;
     if (f.private) node.private = true;
     if (f.user_agent) node.user_agent = f.user_agent;
+    for (const k of WORDS_KEYS) if ((f[k] || "").trim()) node[k] = f[k].trim();
     if (f.locked) node.locked = true;
     if (f.auto_restart) node.auto_restart = true;
     if (f.encoding) node.encoding = f.encoding;
@@ -12288,7 +12442,7 @@ function nest(flat) {
     // Don't write it if none are enabled. Leaving a block of all-false values just hurts readability
     if (f.nav && Object.values(f.nav).some(Boolean)) {
       node.nav = {};
-      for (const k of ["back", "forward", "reload", "url"])
+      for (const k of NAV_PARTS)
         if (f.nav[k]) node.nav[k] = true;
     }
     // A server connection's own settings, written only when there is
@@ -12382,6 +12536,9 @@ async function load() {
                  // The assistant AI this desk agreed to send pictures to, by name
                  send_pictures_to: (w.send_pictures_to || "").trim(),
                  send_pages_to: (w.send_pages_to || "").trim(),
+                 // What its browser tabs follow. Whole, so a browser setting
+                 // this page does not show yet survives being saved from it
+                 browser: isObj(w.browser) ? Object.assign({}, w.browser) : {},
                  // What writes its automatic names, and whether they reach the
                  // branch. Read in as well as written out: a setting the page
                  // never saw is a setting the next save erases
@@ -12403,6 +12560,15 @@ async function load() {
       if (!desk.discuss && f.discuss) desk.discuss = f.discuss;
     } else readFolders(desk, w);
     desks.push(desk);
+  }
+  // The two models that drive a page from plain words were once the whole
+  // app's. They are each desk's now: a desk with none of its own takes them,
+  // and they are not written up there again
+  const op = current.operate || {};
+  for (const k of WORDS_KEYS) {
+    const v = (op[k] || "").trim();
+    if (v) for (const d of desks) if (!(d.browser[k] || "").trim()) d.browser[k] = v;
+    delete op[k];
   }
   if (sel.desk >= desks.length) sel = {desk:0, tab:null, global:true};
   render();
@@ -12433,6 +12599,24 @@ async function save() {
   // Two things answering to the same automation name is not a preference to
   // save: whichever came first would quietly take everything addressed to
   // either. Say which name, and let the person choose who keeps it
+  // A model that cannot do the job it is chosen for -- a decision model set
+  // to write, a connection since removed, one with no model named -- is not
+  // saved: the page it would drive would stop at the first move. Go to it
+  for (let di = 0; di < desks.length; di++) {
+    const bad = wordsFaults(di)[0];
+    if (!bad) continue;
+    if (bad.tab == null) {
+      sel = {desk:di, grp:null, tab:null, global:false};
+      goDeskSection("browser", "center");
+    } else {
+      sel = {desk:di, grp:desks[di].tabs[bad.tab].group || 0, tab:bad.tab, global:false};
+      render();
+      const at = document.getElementById("tab-words");
+      if (at) at.scrollIntoView({block:"center"});
+    }
+    result(fill(T["settings.words.cannot_save"], {why: bad.why}), true);
+    return;
+  }
   const clash = collidingIds();
   if (clash.length) { result(fill(T["settings.id.duplicate"], {names: clash.join(", ")}), true); return; }
   const btn = document.getElementById("savebtn");
@@ -12491,15 +12675,12 @@ function payload() {
     });
     const isDefault = (o.max_rounds ?? 40) === 40 && (o.max_seconds ?? 900) === 900
       && (o.max_tokens ?? 400000) === 400000 && (o.on_limit || "stop") === "stop"
-      && (o.settle_ms ?? 1800) === 1800 && (o.confirm || "off") === "off"
-      && !(o.choose_model || "").trim() && !(o.words_model || "").trim();
+      && (o.settle_ms ?? 1800) === 1800 && (o.confirm || "off") === "off";
     if (isDefault) delete out.operate;
     else {
       out.operate = { max_rounds:(o.max_rounds ?? 40), max_seconds:(o.max_seconds ?? 900),
                       max_tokens:(o.max_tokens ?? 400000), on_limit:(o.on_limit || "stop"),
                       settle_ms:(o.settle_ms ?? 1800), confirm:(o.confirm || "off") };
-      if ((o.choose_model || "").trim()) out.operate.choose_model = o.choose_model.trim();
-      if ((o.words_model || "").trim()) out.operate.words_model = o.words_model.trim();
     }
   }
   // Quick commands, written in one shape whatever state the editor left them
@@ -12602,6 +12783,10 @@ function payload() {
     if (accts.length) o.git_accounts = accts;
     if ((w.send_pictures_to || "").trim()) o.send_pictures_to = w.send_pictures_to.trim();
     if ((w.send_pages_to || "").trim()) o.send_pages_to = w.send_pages_to.trim();
+    // What its browser tabs follow; an unchosen model is not written
+    const br = Object.assign({}, w.browser || {});
+    for (const k of WORDS_KEYS) if ((br[k] || "").trim()) br[k] = br[k].trim(); else delete br[k];
+    if (some(br)) o.browser = br;
     // What writes this desk's automatic names, and whether they reach the
     // branch. Both are the desk's own answer, so a desk that has not given one
     // stays a short entry and follows the app
@@ -12897,6 +13082,23 @@ load().then(() => {
       return;
     }
   }
+  // ?tabkey=<name> lands on a browser tab, by the name its page goes by (its
+  // id, else its name). &section=words then shows its models: what the board
+  // opens when a page is to be driven in words and has none chosen
+  const tabKey = (q.get("tabkey") || "").trim();
+  const keyDesk = idx("desk");
+  if (tabKey && desks[keyDesk]) {
+    const tabs = desks[keyDesk].tabs || [];
+    const ti = tabs.findIndex(t => catOf(t.command) === "browser"
+      && ((t.id || "").trim() || (t.name || "").trim() || "browser") === tabKey);
+    if (ti >= 0) {
+      sel = {desk:keyDesk, grp:tabs[ti].group || 0, tab:ti, global:false};
+      render();
+      const words = sec === "words" && document.getElementById("tab-words");
+      if (words) words.scrollIntoView({block:"start"}); else showSelected("center");
+      return;
+    }
+  }
   // One of a desk's settings: that desk, at that entry
   if (sec && DESK_LINKS[sec]) {
     const at = idx("desk");
@@ -12963,7 +13165,7 @@ load().then(() => {
       };
       tabs.forEach((t, i) => { if ((t.group || 0) === gi && terminal(t)) here.push(i); });
       const titleOf = t => ((t.name || "").trim()
-        || (cmdToText(t.command).trim().split(/s+/)[0] || "").split(/[\/]/).pop().replace(/.[^.]*$/, "")).toLowerCase();
+        || (cmdToText(t.command).trim().split(/\s+/)[0] || "").split(/[\/]/).pop().replace(/\.[^.]*$/, "")).toLowerCase();
       const named = tabName ? here.filter(i => titleOf(tabs[i]) === tabName) : [];
       const ti = named.length === 1 ? named[0] : here[tabPos];
       if (ti != null) {

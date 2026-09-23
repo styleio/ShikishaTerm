@@ -15,6 +15,9 @@
  * A scene file default-exports { config, scenes, langs, looks, sizes }:
  * `config` is the settings to start from, and each scene is the JavaScript
  * that puts the page into the state being judged (it may return a promise).
+ * A scene may instead be `{ query, run }`: the page is opened with `query`
+ * added to its address, the way the board opens it on one place, and `run`
+ * (optional) is the JavaScript.
  *
  * Needs Chrome and cargo. The light scheme's colours are laid over the page
  * the way page_dump lays them, so the machine's own scheme does not decide it.
@@ -125,7 +128,10 @@ for (const lang of langs) {
         for (const [size, w, h] of sizes) {
           await chrome.send('Emulation.setDeviceMetricsOverride',
             { width: w, height: h, deviceScaleFactor: 2, mobile: size === 'phone' });
-          await chrome.send('Page.navigate', { url: server.url });
+          const query = typeof scene === 'object' ? scene.query || '' : '';
+          const run = typeof scene === 'object' ? scene.run || '"ok"' : scene;
+          await chrome.send('Page.navigate',
+            { url: server.url + (query ? (server.url.includes('?') ? '&' : '?') + query : '') });
           // Loaded once the settings have been read and drawn
           for (let i = 0; i < 80; i++) {
             const ready = await chrome.run('typeof desks !== "undefined" && document.querySelector("#detail") && document.querySelector("#detail").childElementCount > 0').catch(() => false);
@@ -136,7 +142,7 @@ for (const lang of langs) {
             await chrome.run('(() => { const s = document.createElement("style"); s.textContent = '
               + JSON.stringify(light) + '; document.head.append(s); })()');
           }
-          await chrome.run(scene);
+          await chrome.run(run);
           await sleep(900);
           const shot = await chrome.send('Page.captureScreenshot', { format: 'png' });
           const out = path.join(OUT, 'settings-' + name + '-' + lang + '-' + look + '-' + size + '.png');

@@ -868,34 +868,82 @@ impl PageGate {
     }
 }
 
-/// The models a words-driven run would hand the page to, named the way they
-/// are reached. Both of them, because both see the page: the one that decides
-/// the move and the one that writes what to type
-pub fn page_models() -> Vec<String> {
-    let op = operate();
-    let mut names: Vec<String> = [op.choose_model, op.words_model]
-        .into_iter()
-        .flatten()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    names.sort();
-    names.dedup();
-    names
+/// Which models carry out a goal written in plain words on a page, each as
+/// `<connection>/<model>`: the one that picks every move, and the one that
+/// writes what is typed. Both see the page.
+///
+/// Written in three places, each standing in for the next when it says
+/// nothing: a browser tab's own, its desk's (`browser` in the desk), and,
+/// from settings written before desks had one, the app-wide `operate`
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub struct WordsModels {
+    /// The one that picks the next move. A decision model is far quicker at
+    /// it; left unset, [`Self::words_model`] decides as well
+    #[serde(default)]
+    pub choose_model: Option<String>,
+    /// The one that writes: what to type in a field, and what a page says
+    /// when it is asked about. Only a conversation model can
+    #[serde(default)]
+    pub words_model: Option<String>,
 }
 
-/// Whether this desk has agreed to hand pages to the models that would be
-/// asked (see [`DeskSpec::send_pages_to`])
-pub fn pages_gate(desk: Option<&Desk>) -> PageGate {
-    let models = page_models().join(" + ");
-    if models.is_empty() {
-        return PageGate::NoModel;
+impl WordsModels {
+    fn named(v: &Option<String>) -> Option<String> {
+        v.as_deref().and_then(one_name)
     }
+
+    pub fn choose(&self) -> Option<String> {
+        Self::named(&self.choose_model)
+    }
+
+    pub fn words(&self) -> Option<String> {
+        Self::named(&self.words_model)
+    }
+
+    /// These, with each one left unset taken from `under`
+    pub fn over(&self, under: &WordsModels) -> WordsModels {
+        WordsModels {
+            choose_model: self.choose().or_else(|| under.choose()),
+            words_model: self.words().or_else(|| under.words()),
+        }
+    }
+
+    /// Whether both are chosen: a page is not driven in words before they are
+    pub fn complete(&self) -> bool {
+        self.choose().is_some() && self.words().is_some()
+    }
+
+    /// Both names, once each, in order -- what page contents are handed to
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = [self.choose(), self.words()].into_iter().flatten().collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+}
+
+/// What a desk agreed to send pages to, one name per model. Written joined
+/// with " + ", the way the settings screen shows it
+fn agreed_names(agreed: &str) -> Vec<String> {
+    agreed.split(" + ").filter_map(one_name).collect()
+}
+
+/// Whether this desk has agreed to hand the page `key` to the models that
+/// would be asked (see [`DeskSpec::send_pages_to`]). Agreed means every one
+/// of them was agreed to: a desk that agreed for all its pages at once has
+/// agreed for each
+pub fn pages_gate(desk: Option<&Desk>, key: Option<&str>) -> PageGate {
     let Some(desk) = desk else {
         return PageGate::NoDesk;
     };
+    let wanted = desk.words_models(key);
+    if !wanted.complete() {
+        return PageGate::NoModel;
+    }
+    let names = wanted.names();
+    let models = names.join(" + ");
     match desk.send_pages_to.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(agreed) if agreed == models => PageGate::Ready { models },
+        Some(agreed) if names.iter().all(|n| agreed_names(agreed).contains(n)) => PageGate::Ready { models },
         Some(agreed) => PageGate::Changed { agreed: agreed.to_string(), models },
         None => PageGate::Consent { models },
     }
@@ -1165,20 +1213,12 @@ pub struct OperateSpec {
     /// Approval is a button shown on the target page; declining holds the run.
     #[serde(default = "default_operate_confirm")]
     pub confirm: String,
-    /// Which model decides the next move when a page is driven from a goal
-    /// written in ordinary words, as `<connection>/<model>`.
-    ///
-    /// Left unset, [`Self::words_model`] decides as well -- slower, and it
-    /// works. Set to a connection whose `speaks` is `"choice"`, the decision
-    /// is a single typed question rather than a written reply, which is the
-    /// difference between a move a second and a move every few seconds
-    #[serde(default)]
-    pub choose_model: Option<String>,
-    /// Which model writes the words: what to type in a field, and what a page
-    /// says when it is asked a question about it. `<connection>/<model>`.
-    /// Unset means no goal that needs typing can be carried out
-    #[serde(default)]
-    pub words_model: Option<String>,
+    /// The models that drive a page from plain words, from settings written
+    /// before each desk had its own (see [`WordsModels`]). Read, never
+    /// written: the settings screen moves them to every desk that has none,
+    /// and until it does, a desk without its own falls back to these
+    #[serde(default, flatten)]
+    pub words: WordsModels,
 }
 
 impl Default for OperateSpec {
@@ -1190,8 +1230,7 @@ impl Default for OperateSpec {
             on_limit: default_operate_on_limit(),
             settle_ms: default_operate_settle_ms(),
             confirm: default_operate_confirm(),
-            choose_model: None,
-            words_model: None,
+            words: WordsModels::default(),
         }
     }
 }
@@ -1975,6 +2014,15 @@ pub fn delete_secret(
     write_secrets_value(path, password, &root)
 }
 
+/// A desk's browser settings: what its browser tabs follow when they do not
+/// say otherwise
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DeskBrowserSpec {
+    /// The models that carry out a goal written in plain words
+    #[serde(default, flatten)]
+    pub words: WordsModels,
+}
+
 /// A desk entry inside config.json. Either inline tabs or a reference to a definition file
 #[derive(Debug, Deserialize)]
 pub struct DeskSpec {
@@ -2091,6 +2139,10 @@ pub struct DeskSpec {
     /// it on the person's behalf
     #[serde(default)]
     pub send_pages_to: Option<String>,
+    /// This desk's browser settings: what its browser tabs follow when they
+    /// say nothing of their own
+    #[serde(default)]
+    pub browser: DeskBrowserSpec,
     /// What writes the names and summaries of the folders that ask for them
     /// (`auto_label`): an assistant AI by name ("claude", "codex", "gemini"),
     /// or `model <connection>/<model>` for one of this desk's model
@@ -2428,6 +2480,11 @@ pub struct TabConfig {
     /// serves something different to anything calling itself Chrome
     #[serde(default)]
     pub user_agent: Option<String>,
+    /// On a browser tab: the models a goal written in plain words is carried
+    /// out by on this page. Either one left unset is the desk's
+    /// ([`DeskSpec::browser`])
+    #[serde(default, flatten)]
+    pub words: WordsModels,
     /// Banner shown below a browser tab (text and button label)
     #[serde(default)]
     pub ask: Option<AskSpec>,
@@ -2778,6 +2835,10 @@ pub struct Desk {
     /// The model this desk agreed to hand page contents to (see
     /// [`DeskSpec::send_pages_to`])
     pub send_pages_to: Option<String>,
+    /// What this desk's browser tabs follow (see [`DeskSpec::browser`]),
+    /// with anything it leaves unset already taken from older app-wide
+    /// settings
+    pub browser: DeskBrowserSpec,
     /// What writes the folders' automatic names (see [`DeskSpec::summary_ai`])
     pub summary_ai: Option<String>,
     /// Whether those names reach the branch as well (see
@@ -2859,6 +2920,24 @@ pub fn provider_conn(p: &ProviderSpec, look: &dyn Fn(&str) -> Option<String>) ->
 }
 
 impl Desk {
+    /// The browser tab written here that goes by `key`: the name its page is
+    /// opened under, and the one automation addresses it by
+    pub fn page_tab(&self, key: &str) -> Option<&FlatTab> {
+        self.tabs
+            .iter()
+            .find(|t| browser_url_of(&t.cfg.command.argv()).is_some() && t.page_key() == key)
+    }
+
+    /// The models that carry out a goal written in plain words on the page
+    /// `key`: the tab's own, and for whatever it leaves unset, this desk's.
+    /// A page not written in the settings has only the desk's
+    pub fn words_models(&self, key: Option<&str>) -> WordsModels {
+        key.and_then(|k| self.page_tab(k))
+            .map(|t| t.cfg.words.clone())
+            .unwrap_or_default()
+            .over(&self.browser.words)
+    }
+
     /// The working folder a tab belongs to. Everything about where it runs
     /// lives there, because a tab has nothing of its own to disagree with
     pub fn folder_of(&self, t: &FlatTab) -> Option<&Folder> {
@@ -3210,6 +3289,19 @@ pub struct FlatTab {
     /// Which of the desk's working folders this tab belongs to, and
     /// therefore where it starts
     pub folder: usize,
+}
+
+impl FlatTab {
+    /// What a panel or a page written here is known by: its id, else its
+    /// name. The runtime opens a page under this name, and automation
+    /// addresses it by the same
+    pub fn page_key(&self) -> String {
+        self.cfg
+            .id
+            .clone()
+            .or_else(|| self.cfg.name.clone())
+            .unwrap_or_else(|| "browser".into())
+    }
 }
 
 /// A 5-character stand-in for a name that has no letters of its own.
@@ -4784,6 +4876,9 @@ impl Config {
                     git_accounts: Vec::new(),
                     send_pictures_to: None,
                     send_pages_to: None,
+                    browser: DeskBrowserSpec {
+                        words: WordsModels::default().over(&self.operate.words),
+                    },
                     summary_ai: None,
                     rename_branch: None,
                 });
@@ -4864,6 +4959,11 @@ impl Config {
                 projects: desk.projects.clone(),
                 send_pictures_to: desk.send_pictures_to.as_deref().and_then(one_name),
                 send_pages_to: desk.send_pages_to.as_deref().and_then(one_name),
+                // Settings from before a desk had its own models name them for
+                // the whole app; a desk that says nothing still has those
+                browser: DeskBrowserSpec {
+                    words: desk.browser.words.over(&self.operate.words),
+                },
                 summary_ai: desk.summary_ai.as_deref().and_then(one_name),
                 rename_branch: desk.rename_branch,
             });
@@ -6270,6 +6370,85 @@ mod tests {
     /// machine next door, which took 320 seconds to answer "just say OK" — at
     /// the old fixed 180 it could never once finish, and said so in words
     /// ("timeout: global") that named neither the wait nor its length.
+    /// The models a page is driven with in plain words: the tab's own, the
+    /// desk's for whatever the tab leaves unset, and for a desk that says
+    /// nothing, the app-wide ones older settings wrote. A page nobody wrote
+    /// down (opened by a script) has the desk's
+    #[test]
+    fn a_page_is_driven_by_its_own_models_then_its_desks_then_the_old_ones() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"operate": {"choose_model": "old/pick", "words_model": "old/write"},
+                "desks": [
+                  {"name": "A", "browser": {"words_model": "desk/write"},
+                   "folders": [{"tabs": [
+                     {"id": "shop", "command": "browser https://example.com", "choose_model": "jev/jev-latest"},
+                     {"id": "news", "command": "browser https://example.org"},
+                     {"id": "term", "command": "cmd", "choose_model": "not/a-page"}]}]},
+                  {"name": "B", "folders": [{"tabs": []}]}]}"#,
+        )
+        .expect("the settings read");
+        let (desks, _) = cfg.resolve_desks();
+        let a = &desks[0];
+        let shop = a.words_models(Some("shop"));
+        assert_eq!(shop.choose().as_deref(), Some("jev/jev-latest"), "the tab's own choice");
+        assert_eq!(shop.words().as_deref(), Some("desk/write"), "left unset on the tab, the desk's");
+        let news = a.words_models(Some("news"));
+        assert_eq!(news.choose().as_deref(), Some("old/pick"), "unset on both, the old app-wide one");
+        assert_eq!(news.words().as_deref(), Some("desk/write"));
+        assert_eq!(
+            a.words_models(Some("term")).choose().as_deref(),
+            Some("old/pick"),
+            "a terminal is no page, whatever it says"
+        );
+        assert_eq!(a.words_models(Some("opened-by-a-script")), a.words_models(None));
+        let b = desks[1].words_models(Some("anything"));
+        assert_eq!(b.names(), vec!["old/pick".to_string(), "old/write".to_string()]);
+    }
+
+    /// Agreeing for the desk's pages at once covers each of them: a page is
+    /// ready when every model it would be handed to is among those agreed
+    /// to, and asks again when one of them is not
+    #[test]
+    fn a_page_is_ready_when_each_of_its_models_was_agreed_to() {
+        let desk_with = |agreed: &str| {
+            let json = format!(
+                r#"{{"desks": [{{"name": "A", "send_pages_to": {agreed:?},
+                    "browser": {{"choose_model": "jev/jev-latest", "words_model": "ds/chat"}},
+                    "folders": [{{"tabs": [
+                      {{"id": "shop", "command": "browser https://example.com", "words_model": "oa/gpt"}},
+                      {{"id": "news", "command": "browser https://example.org"}}]}}]}}]}}"#
+            );
+            let cfg: Config = serde_json::from_str(&json).expect("the settings read");
+            cfg.resolve_desks().0.remove(0)
+        };
+        let all = desk_with("ds/chat + jev/jev-latest + oa/gpt");
+        assert!(matches!(pages_gate(Some(&all), Some("shop")), PageGate::Ready { .. }));
+        assert!(matches!(pages_gate(Some(&all), Some("news")), PageGate::Ready { .. }));
+        let some = desk_with("ds/chat + jev/jev-latest");
+        assert!(matches!(pages_gate(Some(&some), Some("news")), PageGate::Ready { .. }));
+        assert!(
+            matches!(pages_gate(Some(&some), Some("shop")), PageGate::Changed { .. }),
+            "the page's own writer was never agreed to"
+        );
+        let none = desk_with("");
+        assert!(matches!(pages_gate(Some(&none), Some("news")), PageGate::Consent { .. }));
+        assert!(matches!(pages_gate(None, Some("news")), PageGate::NoDesk));
+    }
+
+    /// Neither model chosen anywhere, or only one: the page is not driven,
+    /// and the refusal says what is missing rather than asking for consent
+    #[test]
+    fn a_page_missing_a_model_is_refused_as_missing_a_model() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"desks": [{"name": "A", "send_pages_to": "x/y",
+                "browser": {"choose_model": "x/y"},
+                "folders": [{"tabs": [{"id": "p", "command": "browser https://example.com"}]}]}]}"#,
+        )
+        .expect("the settings read");
+        let desk = cfg.resolve_desks().0.remove(0);
+        assert!(matches!(pages_gate(Some(&desk), Some("p")), PageGate::NoModel));
+    }
+
     #[test]
     fn the_wait_for_a_reply_is_settable_and_zero_means_forever() {
         let resolved = |secs: Option<u64>| {

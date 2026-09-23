@@ -284,13 +284,14 @@ settings screen, so it cannot fall behind.
 - **Basics** — Name, automation name, automation folder
 - **Notifications** — Chats, this PC, phones
 - **Model connections** — The APIs this desk's tabs use
+- **Browser** — What this desk's browser tabs follow
 - **Automation permissions** — What a person and an AI may run
 - **git** — Protected branches, commit messages
 - **Git accounts** — What fetch, pull and push sign in as
 - **Secrets** — Passwords and tokens
 - **AI × AI discussion** — Several AI tabs discussing or working together
 - **Stop conditions** — When the joint work ends
-- **Tools** — What may be sent out: pictures of the screen, and pages
+- **Tools** — What may be sent out: pictures of the screen
 - **Automatic names** — The AI that names and describes working folders
 - **Automation doors** — Files and URLs a script can reach
 - **Export** — This desk as one file

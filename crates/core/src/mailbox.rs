@@ -25,6 +25,8 @@ pub struct SettingsWanted {
     /// ...and which of its tabs, by place and by the name it goes by
     pub tabpos: Option<u32>,
     pub tabname: Option<String>,
+    /// ...or a browser tab, by the name its page goes by
+    pub tabkey: Option<String>,
     /// Stood over the board rather than given the whole window: the ask named
     /// one thing, so the board it was asked from stays drawn around it
     pub sheet: bool,

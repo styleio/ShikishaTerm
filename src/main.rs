@@ -712,13 +712,14 @@ impl WinSurface {
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
                 Ev::CloseSettings => self.mail.close_settings = true,
                 Ev::SettingsFull => self.mail.settings_full = true,
-                Ev::OpenSettings { section, ret, folder, tabpos, tabname, sheet } => {
+                Ev::OpenSettings { section, ret, folder, tabpos, tabname, tabkey, sheet } => {
                     self.mail.open_settings = Some(shikisha_core::mailbox::SettingsWanted {
                         section,
                         ret,
                         folder,
                         tabpos,
                         tabname,
+                        tabkey,
                         sheet,
                     })
                 }

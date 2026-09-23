@@ -3389,7 +3389,7 @@ mod nav_tests {
         assert!(matches!(read(r#"{"kind":"opendesk"}"#), Some(Ev::OpenDesk)));
         // The gear names the tab in view by its place in the folder
         match read(r#"{"kind":"opensettings","tabpos":1,"folder":"D:/work","tabname":"PowerShell"}"#) {
-            Some(Ev::OpenSettings { tabpos, folder, section, ret, tabname, sheet: _ }) => {
+            Some(Ev::OpenSettings { tabpos, folder, section, ret, tabname, tabkey: _, sheet: _ }) => {
                 assert_eq!(tabpos, Some(1), "the position of the tab being looked at was dropped");
                 assert_eq!(tabname.as_deref(), Some("PowerShell"), "the tab's name was dropped");
                 assert_eq!(folder.as_deref(), Some("D:/work"));

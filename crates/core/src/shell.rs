@@ -9955,8 +9955,14 @@ window.__state = function (json) {
   // so the radio never claims a recording that moved out from under it. The
   // server side disarms every page on off, so this can't miss the right one.
   if (S.active !== lastCastActive && luaMode === "rec") {
-    luaMode = "run";
+    luaMode = "words";
     send({kind:"record", on:false});
+  }
+  // 🗣's line says whether this page still needs its models chosen. That
+  // changes when the settings are saved, not when anything here is pressed
+  if (wordsUnsetHere() !== lastWordsUnset) {
+    lastWordsUnset = wordsUnsetHere();
+    if (castPanel === "lua" && castDock && castDock.style.display === "flex") renderPanel();
   }
   // The panel area follows the active tab: which panels exist (a browser tab has
   // no 🎯 target panel, so the switcher itself comes and goes) and the target
@@ -14549,9 +14555,11 @@ let castPanel = null, castPanelEl = null;
 // The panel the PERSON last picked. Renders fall back when a tab switch makes
 // it unavailable, but never overwrite this — only an explicit pick does
 let userPanel = null;
-// 📼's chosen mode ("rec" | "run"). "run" until the user opts into recording —
-// arming a recorder is never a side effect of merely opening the panel.
-let luaMode = "run";
+// 📼's chosen mode ("words" | "rec" | "run"). 🗣 first: telling a page what
+// to do is what the panel is opened for most. Choosing it starts nothing (a
+// run begins with a goal), and a recorder is never armed by merely opening
+// the panel -- ⏺ is picked or it is not on.
+let luaMode = "words";
 // The composer is ONE box holding TWO documents: the ordinary draft (text
 // bound for the page/terminal — on the phone it's the only way to type into
 // a browser) and 📼's Lua sheet (recorded steps; editable, runnable,
@@ -14581,8 +14589,16 @@ function openSettings(section, ret, folder, tab) {
   const sheet = !!(section || folder || tab);
   let tabpos = null;
   let tabname = null;
+  let tabkey = null;
   if (tab || (!section && !folder && S && !S.board)) {
     const at = tab || (S.tabs || []).find(t => t.index === S.active);
+    // A page is named by the name it goes by: the settings do not count
+    // pages among the terminals, so a place would land on the wrong one
+    if (at && at.kind === "browser" && !at.settings && at.id) {
+      tabkey = at.id;
+      const g = at.group != null ? (S.groups || [])[at.group] : null;
+      if (g && g.folder) folder = g.folder;
+    }
     if (at && at.kind === "pty" && !at.settings) {
       const grp = at.group == null ? null : at.group;
       // Its ordinal among the terminal tabs of the same folder, in order.
@@ -14606,12 +14622,13 @@ function openSettings(section, ret, folder, tab) {
     if (folder) p.folder = folder;
     if (tabpos != null) p.tabpos = tabpos;
     if (tabname) p.tabname = tabname;
+    if (tabkey) p.tabkey = tabkey;
     // One thing's settings arrive framed over the board, the size the window
     // stands them at; the settings themselves take the screen
     if (sheet) { p.sheet = "1"; openCfgLayer(p, "sheet"); } else walkToSettings(p);
   } else {
     send({kind:"opensettings", section: section || null, ret: !!ret, folder: folder || null,
-          tabpos: tabpos, tabname: tabname, sheet});
+          tabpos: tabpos, tabname: tabname, tabkey: tabkey, sheet});
   }
 }
 // The way in from a browser: hand the token over once (the proxy trades it for
@@ -15031,6 +15048,22 @@ window.__suggested = (r) => {
 // top of the HTML, so anything outside the dock's reserved band is invisible.
 let luaNote = null;
 function luaFlash(text, bad) { luaNote = {text: text, bad: !!bad}; if (castPanel === "lua") renderPanel(); }
+// 🗣 on a page whose models are not chosen yet. The panel's line says so for
+// as long as it is true (luaNoteLine), and the page's own settings are stood
+// over the board at the two pickers, so the person chooses them where they
+// are and comes straight back. Opened once per page while the mode is shown
+// -- closing the settings without choosing is an answer for now, and opening
+// them again at every redraw would trap the person in them
+let wordsAskedFor = null, lastWordsUnset = false;
+const wordsUnsetHere = () => { const t = activeTab(); return !!(t && t.kind === "browser" && t.words_unset); };
+function wordsNeedModels(force) {
+  const t = activeTab();
+  if (!wordsUnsetHere()) return false;
+  if (!force && wordsAskedFor === t.index) return true;
+  wordsAskedFor = t.index;
+  openSettings("words", true, null, t);
+  return true;
+}
 function buildLuaPanel() {
   const wrap = el("div", {id:"castlua"});
   const mk = (mode, glyph, label) => {
@@ -15051,9 +15084,9 @@ function buildLuaPanel() {
     return lab;
   };
   wrap.append(
+    mk("words", "🗣", T["tui.cast.lua.words"] || "In words"),
     mk("rec", "⏺", T["tui.cast.lua.rec"] || "Record"),
     mk("run", "▶", T["tui.cast.lua.run"] || "Run"),
-    mk("words", "🗣", T["tui.cast.lua.words"] || "In words"),
     el("button", {class:"castbtn", style:"flex:none",
       title: T["tui.cast.lua.copy"] || "Copy the recorded Lua",
       onclick: copySheet}, "📋"));
@@ -15061,6 +15094,9 @@ function buildLuaPanel() {
 }
 // The 📼 panel's line: the last result if there is one, else what the mode does
 function luaNoteLine() {
+  if (luaMode === "words" && wordsUnsetHere()) {
+    return { tone: "bad", text: T["tui.cast.lua.words_setup"] || "Choose the models this page uses first." };
+  }
   if (luaNote) return { text: luaNote.text, tone: luaNote.bad ? "bad" : "good" };
   if (luaMode === "words") {
     return { tone: "", text: T["tui.cast.lua.wordshint"]
@@ -17746,6 +17782,16 @@ function renderPanel() {
   if (castPanel === "target" && !operatorCanDrive()) {
     castPanelEl.append(gearTo(null, T["tui.cast.target.settings"] || "Settings"));
   }
+  // 🗣 names the models it drives with on this page's settings: the gear goes
+  // there, and a page with none chosen asks for them as the mode is shown
+  if (castPanel === "lua" && luaMode === "words") {
+    const page = activeTab();
+    if (page && page.kind === "browser") {
+      castPanelEl.append(el("button", {class:"castgear", title: T["tui.cast.lua.words_settings"] || "Models for this page",
+        onclick: () => openSettings("words", true, null, page)}, "⚙️"));
+      wordsNeedModels(false);
+    }
+  } else wordsAskedFor = null;
   // The panel's sentence comes last, and takes a line of its own under the
   // row (it is the only child allowed to wrap): there it can be read whole
   // on a phone, where the row's fixed parts leave it no room beside them
@@ -17971,6 +18017,9 @@ function sendBar() {
   // 🗣: the line is a goal for this page, not something to type into it. Sent
   // while a run is going, it is a correction to the goal rather than a new run
   if (castPanel === "lua" && luaMode === "words") {
+    // Nothing to drive the page with yet: ask for that, and keep the goal
+    // in the box for when it is chosen
+    if (wordsNeedModels(true)) { renderPanel(); return; }
     if (t) {
       send({kind:"words", on:true, goal:t});
       castInput.value = "";
@@ -20549,7 +20598,17 @@ mod tests {
             PAGE.contains("const p = {desk: (S && S.desk_index) || 0};"),
             "the desk is not carried on the phone's path (without it, it falls back to the basic card)"
         );
-        assert!(PAGE.contains("tabpos: tabpos, tabname: tabname, sheet});"), "the position is not carried on the window's path");
+        assert!(
+            PAGE.contains("tabpos: tabpos, tabname: tabname, tabkey: tabkey, sheet});"),
+            "the position is not carried on the window's path"
+        );
+        // A page is not counted among the terminals, so it is named instead:
+        // counted, the gear on a page landed on whichever terminal stood there
+        assert!(
+            PAGE.contains("if (at && at.kind === \"browser\" && !at.settings && at.id) {")
+                && PAGE.contains("if (tabkey) p.tabkey = tabkey;"),
+            "a browser tab is not carried by its name"
+        );
     }
 
     /// The subscription's reading is shown only over a Claude tab, and only

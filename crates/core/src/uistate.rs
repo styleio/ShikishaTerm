@@ -45,6 +45,11 @@ pub struct TabState {
     pub group: Option<usize>,
     /// "pty" or "browser". Changes how it's displayed
     pub kind: String,
+    /// A page that cannot be driven in plain words yet: one of the two models
+    /// it needs is not chosen, on the tab or on its desk. The board asks for
+    /// them before 🗣 is used rather than after
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub words_unset: bool,
     /// This pty tab is a model bridge (OpenAI-compatible API). The shell offers
     /// a chat input box for it instead of leaving it as a silent idle screen.
     #[serde(default)]
@@ -2003,6 +2008,7 @@ impl TabState {
             activity: t.activity().to_vec(),
             group: None,
             kind: "pty".into(),
+            words_unset: false,
             restartable: true,
             past: t.past_here && (!t.spoke() || t.lost),
             lost: t.lost,
@@ -2142,6 +2148,7 @@ impl TabState {
             activity: Vec::new(),
             group,
             kind: "browser".into(),
+            words_unset: false,
             // A page has no conversation to have been having
             past: false,
             lost: false,
@@ -2574,6 +2581,7 @@ mod tests {
             activity: vec![0; 4],
             group: None,
             kind: "pty".into(),
+            words_unset: false,
             restartable: true,
             model: false,
             busy: false,

@@ -3700,6 +3700,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             nav,
             asks: caps.asks_now(),
             away: caps.drawn_away(),
+            // Worked out from the same settings a run is started from, so the
+            // board's "choose a model first" and the refusal cannot disagree
+            words_unset: desks
+                .get(desk_index)
+                .map(|w| {
+                    surfaces
+                        .iter()
+                        .filter_map(|s| match s {
+                            Surface::Browser { key, .. } => Some(key.clone()),
+                            _ => None,
+                        })
+                        .filter(|k| !w.words_models(Some(k)).complete())
+                        .collect()
+                })
+                .unwrap_or_default(),
             scrolled: session_at(&surfaces, active)
                 .and_then(|i| tabs.get(i))
                 .map(|t| {
@@ -5700,7 +5715,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // Sending page contents to a company's service is the person's
             // decision to make, once, knowingly -- the same gate the picture
             // tools pass through, and refused here rather than half-started
-            match config::pages_gate(desks.get(desk_index)) {
+            match config::pages_gate(desks.get(desk_index), Some(&key)) {
                 config::PageGate::Ready { .. } => {}
                 refused => {
                     flash = Some(refused.why());
@@ -5722,7 +5737,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .get(desk_index)
                 .map(|w| config::stops_to_lua(&w.stops))
                 .unwrap_or_else(|| "{}".to_string());
-            match eng.start_words(active, &key, &stops, &goal, &ctx) {
+            // This page's own models, and the desk's where it has none
+            let models = desks.get(desk_index).map(|w| w.words_models(Some(&key))).unwrap_or_default();
+            match eng.start_words(active, &key, &stops, &goal, &models, &ctx) {
                 Ok(()) => driving = Some((active, key)),
                 Err(e) => {
                     append_hook_log(&format!("words start failed: {e:#}"));
@@ -7393,6 +7410,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             if let Some(t) = want.tabname {
                 query += &format!("&tabname={}", urlish(&t));
+            }
+            if let Some(k) = want.tabkey {
+                query += &format!("&tabkey={}", urlish(&k));
             }
             if let Some(s) = want.section {
                 query += &format!("&section={s}");

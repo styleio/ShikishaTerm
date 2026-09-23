@@ -665,6 +665,7 @@ pub fn hand_over(
     crate::bridge::use_desk(config::desk_providers(desk, &look));
     caps.set_capabilities(desk.capabilities.clone());
     caps.set_grants(desk.automation_permissions.clone());
+    caps.set_words_models(desk.browser.words.clone());
     // A script's `token` means this desk's, and no other's
     caps.set_desk_id(&desk.id);
     // The tokens pull request numbers are read with, one per git account of
