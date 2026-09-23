@@ -2405,7 +2405,7 @@
   "err.browser.no_snapshot": "the page did not return a picture",
   "err.browser.no_snapshot_decode": "the picture the page returned could not be read: {e}",
   "settings.sec.snapshots": "Snapshots",
-  "settings.sec.snapshots.sub": "Page pictures a rally took",
+  "settings.sec.snapshots.sub": "Snapshot pictures taken by automation",
   "settings.snapshots.intro": "Pictures of browser pages, taken with browser_snapshot. A rally can keep a visual record of what it did; here you can look back and clear them out.",
   "settings.snapshots.none": "No snapshots yet.",
   "//grant": "Automation permissions: one line per command, shown on the settings card",

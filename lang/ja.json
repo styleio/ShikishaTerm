@@ -2395,7 +2395,7 @@
   "err.browser.no_snapshot": "ページが画像を返しませんでした",
   "err.browser.no_snapshot_decode": "ページが返した画像を読み取れませんでした: {e}",
   "settings.sec.snapshots": "スナップショット",
-  "settings.sec.snapshots.sub": "ラリーが撮ったページ画像",
+  "settings.sec.snapshots.sub": "自動化で取ったスナップショット画像",
   "settings.snapshots.intro": "browser_snapshot で撮ったブラウザページの画像です。ラリーが「何をしたか」の視覚記録を残せます。ここで見返して削除できます。",
   "settings.snapshots.none": "スナップショットはまだありません。",
   "//grant": "Automation permissions: one line per command, shown on the settings card",

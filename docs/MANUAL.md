@@ -267,8 +267,6 @@ settings screen, so it cannot fall behind.
 - **Update** — Newer versions, and going back
 - **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt
-- **Saved logins** — Browser logins kept for reuse
-- **Snapshots** — Page pictures a rally took
 - **Quick actions** — One-tap buttons in the input bar
 - **Where it runs** — Places to open a branch other than this PC
 - **Server names** — Tell production from staging at a glance
@@ -280,6 +278,8 @@ settings screen, so it cannot fall behind.
 - **Files** — Automation & secrets paths
 - **Run results** — Download past rally logs
 - **Notifications** — The phones that receive notifications
+- **Saved logins** — Browser logins kept for reuse
+- **Snapshots** — Snapshot pictures taken by automation
 
 **A desk's settings**
 

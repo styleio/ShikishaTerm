@@ -59,18 +59,6 @@ Buttons that send a command or a prompt
 - **Sends to**
 - **Press Enter at the end** — Untick to leave the text typed in, not sent.
 
-### Saved logins
-
-Browser logins kept for reuse
-
-This screen has nothing to fill in. What it shows depends on what is set elsewhere.
-
-### Snapshots
-
-Page pictures a rally took
-
-This screen has nothing to fill in. What it shows depends on what is set elsewhere.
-
 ### Quick actions
 
 One-tap buttons in the input bar
@@ -168,6 +156,18 @@ The phones that receive notifications
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 
+### Saved logins
+
+Browser logins kept for reuse
+
+This screen has nothing to fill in. What it shows depends on what is set elsewhere.
+
+### Snapshots
+
+Snapshot pictures taken by automation
+
+This screen has nothing to fill in. What it shows depends on what is set elsewhere.
+
 ## A desk's settings
 
 Each desk answers these for itself, so two desks can work in different ways. Open them from Desk in the settings.
@@ -182,8 +182,6 @@ Name, automation name, automation folder
 - **Update** — Newer versions, and going back
 - **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt
-- **Saved logins** — Browser logins kept for reuse
-- **Snapshots** — Page pictures a rally took
 - **Quick actions** — One-tap buttons in the input bar
 - **Where it runs** — Places to open a branch other than this PC
 - **Server names** — Tell production from staging at a glance
@@ -195,6 +193,8 @@ Name, automation name, automation folder
 - **Files** — Automation & secrets paths
 - **Run results** — Download past rally logs
 - **Notifications** — The phones that receive notifications
+- **Saved logins** — Browser logins kept for reuse
+- **Snapshots** — Snapshot pictures taken by automation
 
 **Desk**
 
@@ -258,8 +258,6 @@ Several AI tabs discussing or working together
 - **Update** — Newer versions, and going back
 - **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt
-- **Saved logins** — Browser logins kept for reuse
-- **Snapshots** — Page pictures a rally took
 - **Quick actions** — One-tap buttons in the input bar
 - **Where it runs** — Places to open a branch other than this PC
 - **Server names** — Tell production from staging at a glance
@@ -271,6 +269,8 @@ Several AI tabs discussing or working together
 - **Files** — Automation & secrets paths
 - **Run results** — Download past rally logs
 - **Notifications** — The phones that receive notifications
+- **Saved logins** — Browser logins kept for reuse
+- **Snapshots** — Snapshot pictures taken by automation
 - **Participants**
 - **Turn order**
 - **Round limit**

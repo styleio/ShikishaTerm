@@ -6946,8 +6946,6 @@ function globalSections() {
     {id:"keys",      label:T["settings.sec.keys"],      sub:T["settings.sec.keys.sub"],
      build:() => el("div", {}, hotkeysCard(), keysCard())},
     {id:"quick",     label:T["settings.sec.quick"],     sub:T["settings.sec.quick.sub"],     build:quickCard},
-    {id:"logins",    label:T["settings.sec.logins"],    sub:T["settings.sec.logins.sub"],    build:loginsCard},
-    {id:"snapshots", label:T["settings.sec.snapshots"], sub:T["settings.sec.snapshots.sub"], build:snapshotsCard},
     {id:"actions",   label:T["settings.sec.actions"],   sub:T["settings.sec.actions.sub"],   build:actionsCard},
     {id:"hosts",     label:T["settings.sec.hosts"],     sub:T["settings.sec.hosts.sub"],     build:hostsCard},
     {id:"servers",   label:T["settings.sec.servers"],   sub:T["settings.sec.servers.sub"],   build:marksCard},
@@ -6961,6 +6959,9 @@ function globalSections() {
     // The phones themselves are this machine's: a phone signs itself up once.
     // Which desk's messages reach it is that desk's page's question
     {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],    build:phoneNotifyCard},
+    // What automation left behind on this machine: kept last, as housekeeping
+    {id:"logins",    label:T["settings.sec.logins"],    sub:T["settings.sec.logins.sub"],    build:loginsCard},
+    {id:"snapshots", label:T["settings.sec.snapshots"], sub:T["settings.sec.snapshots.sub"], build:snapshotsCard},
   ];
 }
 
