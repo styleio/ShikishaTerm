@@ -7284,6 +7284,49 @@ function modelCandidates(getProv, onPick) {
 const waitText = v => (v === undefined || v === null) ? fill(T["settings.providers.wait_default"], {n: 180})
   : (Number(v) === 0 ? T["settings.providers.wait_forever"] : fill(T["settings.providers.wait_n"], {n: v}));
 
+// Services whose address is already known, so adding one is a pick rather
+// than a search through somebody's documentation. `speaks` sorts them into the
+// two kinds the type field names; `keys` is where that service hands out an
+// API key; `here` marks a runner on this PC, which takes no key; `models` are
+// the names to offer for a service that has no listing to ask (a decision
+// endpoint answers questions and nothing else). Addresses checked against each
+// service's own documentation, 2026-09
+const PROVIDER_PRESETS = [
+  {label:"OpenAI", name:"openai", speaks:"chat", url:"https://api.openai.com/v1",
+   keys:"https://platform.openai.com/api-keys"},
+  {label:"Anthropic (Claude)", name:"anthropic", speaks:"chat", url:"https://api.anthropic.com/v1/",
+   keys:"https://platform.claude.com/settings/keys"},
+  {label:"Google Gemini", name:"gemini", speaks:"chat", url:"https://generativelanguage.googleapis.com/v1beta/openai/",
+   keys:"https://aistudio.google.com/apikey"},
+  {label:"DeepSeek", name:"deepseek", speaks:"chat", url:"https://api.deepseek.com",
+   keys:"https://platform.deepseek.com/api_keys"},
+  {label:"xAI (Grok)", name:"xai", speaks:"chat", url:"https://api.x.ai/v1",
+   keys:"https://console.x.ai"},
+  {label:"Mistral", name:"mistral", speaks:"chat", url:"https://api.mistral.ai/v1",
+   keys:"https://console.mistral.ai"},
+  {label:"Moonshot AI (Kimi)", name:"kimi", speaks:"chat", url:"https://api.moonshot.ai/v1",
+   keys:"https://platform.kimi.ai/console/api-keys"},
+  {label:"MiniMax", name:"minimax", speaks:"chat", url:"https://api.minimax.io/v1"},
+  {label:"Groq", name:"groq", speaks:"chat", url:"https://api.groq.com/openai/v1",
+   keys:"https://console.groq.com/keys"},
+  {label:"Cerebras", name:"cerebras", speaks:"chat", url:"https://api.cerebras.ai/v1",
+   keys:"https://cloud.cerebras.ai"},
+  {label:"OpenRouter", name:"openrouter", speaks:"chat", url:"https://openrouter.ai/api/v1",
+   keys:"https://openrouter.ai/keys"},
+  {label:"Together AI", name:"together", speaks:"chat", url:"https://api.together.ai/v1",
+   keys:"https://api.together.ai/settings/api-keys"},
+  {label:"Hugging Face", name:"huggingface", speaks:"chat", url:"https://router.huggingface.co/v1",
+   keys:"https://huggingface.co/settings/tokens"},
+  {label:"NVIDIA NIM", name:"nvidia", speaks:"chat", url:"https://integrate.api.nvidia.com/v1",
+   keys:"https://build.nvidia.com"},
+  {label:"Ollama", name:"ollama", speaks:"chat", url:"http://localhost:11434/v1", here:true},
+  {label:"LM Studio", name:"lmstudio", speaks:"chat", url:"http://localhost:1234/v1", here:true},
+  {label:"Jev (TypeSafe)", name:"jev", speaks:"choice", url:"https://api.typesafe.ai/v1/systemone",
+   keys:"https://console.typesafe.ai", models:["jev-latest"]},
+  {label:"Laya (impossibl)", name:"laya", speaks:"choice", url:"https://api.impossibl.com/v1/systemone",
+   models:["convaiinnovations/laya", "convaiinnovations/laya-multilingual"]},
+];
+
 // Adding a connection to a desk, or changing one. `name` is null for a new one.
 function providerDialog(desk, name, redraw) {
   const editing = !!name;
@@ -7291,7 +7334,7 @@ function providerDialog(desk, name, redraw) {
   const nameIn = el("input", {type:"text", class:"mono", placeholder:T["settings.providers.name_ph"]});
   nameIn.value = name || "";
   nameIn.disabled = editing;
-  const urlIn = el("input", {type:"text", class:"mono", placeholder:"https://api.deepseek.com/v1"});
+  const urlIn = el("input", {type:"text", class:"mono"});
   urlIn.value = p.base_url || "";
   const hasKey = (p.api_key || "").startsWith("@");
   const keyIn = el("input", {type:"password",
@@ -7306,6 +7349,54 @@ function providerDialog(desk, name, redraw) {
     if ((p.speaks || "chat") === v) o.selected = true;
     speaksIn.append(o);
   }
+  // What the address box asks for follows the type: a conversation is found
+  // under a base URL, a decision endpoint is the whole address
+  const urlHint = el("div", {class:"hint"});
+  const sayUrl = () => {
+    const choice = speaksIn.value === "choice";
+    urlHint.textContent = T[choice ? "settings.providers.url_hint_choice" : "settings.providers.url_hint"];
+    urlIn.placeholder = choice ? "https://api.typesafe.ai/v1/systemone" : "https://api.deepseek.com";
+  };
+  speaksIn.addEventListener("change", sayUrl);
+  sayUrl();
+
+  // A known service, picked to fill the fields below. Only when adding: the
+  // name of a saved connection is fixed, and its address is changed by hand
+  let preset = null;
+  let autoName = "";
+  const presetHint = el("div", {class:"hint"}, T["settings.providers.preset_hint"]);
+  const presetIn = el("select");
+  presetIn.append(el("option", {value:""}, T["settings.providers.preset_none"]));
+  for (const kind of ["chat", "choice"]) {
+    const group = el("optgroup", {label:T["settings.providers.speaks." + kind]});
+    PROVIDER_PRESETS.forEach((s, i) => {
+      if (s.speaks !== kind) return;
+      group.append(el("option", {value:String(i)},
+        s.here ? fill(T["settings.providers.preset_here"], {name: s.label}) : s.label));
+    });
+    presetIn.append(group);
+  }
+  presetIn.addEventListener("change", () => {
+    preset = presetIn.value === "" ? null : PROVIDER_PRESETS[Number(presetIn.value)];
+    presetHint.textContent = "";
+    if (!preset) { presetHint.textContent = T["settings.providers.preset_hint"]; return; }
+    // The name is the service's own, unless the person has typed one; taken
+    // already, it gets the first free number after it
+    if (!nameIn.value.trim() || nameIn.value.trim() === autoName) {
+      let n = preset.name, i = 2;
+      while (desk.providers[n]) n = preset.name + "-" + (i++);
+      nameIn.value = autoName = n;
+    }
+    urlIn.value = preset.url;
+    speaksIn.value = preset.speaks;
+    sayUrl();
+    if (preset.here) presetHint.textContent = T["settings.providers.preset_here_hint"];
+    else if (preset.keys) presetHint.append(T["settings.providers.preset_keys"],
+      el("a", {class:"mono", href:preset.keys, target:"_blank"}, preset.keys));
+    else presetHint.textContent = T["settings.providers.preset_keys_elsewhere"];
+    recheck();
+    (preset.here ? waitIn : keyIn).focus();
+  });
 
   const save = el("button", {class:"primary"}, T["common.save"]);
   const why = el("span", {class:"why"});
@@ -7361,9 +7452,10 @@ function providerDialog(desk, name, redraw) {
   }
   for (const i of [nameIn, urlIn, waitIn]) i.addEventListener("input", recheck);
 
+  // The hint is words, or a line of its own that changes with the choices
   const field = (label, control, hint) => el("div", {class:"field"},
     el("label", {}, label), el("div", {class:"fieldctl"}, control),
-    hint ? el("div", {class:"hint"}, hint) : null);
+    !hint ? null : (hint instanceof Node ? hint : el("div", {class:"hint"}, hint)));
 
   const shut = () => back.remove();
   const back = openModal(
@@ -7371,12 +7463,13 @@ function providerDialog(desk, name, redraw) {
       el("h2", {}, editing ? T["settings.providers.edit_title"] : T["settings.providers.add_title"]),
       el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
     el("div", {class:"mbody"},
+      editing ? null : field(T["settings.providers.preset_label"], presetIn, presetHint),
       field(T["settings.providers.name_label"], nameIn,
             editing ? T["settings.providers.name_fixed"] : T["settings.providers.name_hint"]),
-      field(T["settings.providers.url_label"], urlIn, T["settings.providers.url_hint"]),
+      field(T["settings.providers.speaks_label"], speaksIn, T["settings.providers.speaks_hint"]),
+      field(T["settings.providers.url_label"], urlIn, urlHint),
       field(T["settings.providers.key_label"], keyIn, T["settings.providers.key_hint"]),
-      field(T["settings.providers.wait_label"], waitIn, T["settings.providers.wait_hint"]),
-      field(T["settings.providers.speaks_label"], speaksIn, T["settings.providers.speaks_hint"])),
+      field(T["settings.providers.wait_label"], waitIn, T["settings.providers.wait_hint"])),
     el("div", {class:"mfoot"},
       editing
         ? el("button", {class:"danger", onclick: async () => {
@@ -7413,6 +7506,9 @@ function providerDialog(desk, name, redraw) {
     if (w === "") delete it.timeout_sec; else it.timeout_sec = Math.max(0, Math.floor(Number(w)));
     // The ordinary kind is left unwritten: the file says what is unusual
     if (speaksIn.value === "choice") it.speaks = "choice"; else delete it.speaks;
+    // The service's model names come along only while the address is still
+    // that service's: an address changed by hand is somebody else's machine
+    if (preset && preset.models && it.base_url === preset.url) it.models = preset.models.slice();
     // The key never sits in config.json: it goes to the secrets file, under
     // this desk, and only the name of it is kept here
     if (keyIn.value.trim()) {

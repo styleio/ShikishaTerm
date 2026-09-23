@@ -773,7 +773,8 @@ pub struct Config {
     pub cast_keys: Option<Vec<String>>,
 }
 
-/// Connection info for an OpenAI-compatible API (DeepSeek cloud / Ollama local / OpenRouter / Azure etc).
+/// Connection info for a model API: an OpenAI-compatible conversation (DeepSeek cloud /
+/// Ollama local / OpenRouter / Azure etc), or a decision endpoint (see `speaks`).
 /// Two orthogonal axes -- "connection (base_url + auth)" x "model name" -- let cloud/local and model kind vary independently
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ProviderSpec {
@@ -817,6 +818,13 @@ pub struct ProviderSpec {
     /// this shape before long
     #[serde(default)]
     pub speaks: Option<String>,
+    /// Model names this connection is known to have, offered by the pickers
+    /// that ask for `connection/model`. Filled when a connection is added
+    /// from the list of known services; a decision endpoint has no model
+    /// listing to ask, so without this its model name could only be typed
+    /// from memory. Nothing is refused for not being here
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 /// How long to wait for a whole reply from a provider that does not say.
