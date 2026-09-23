@@ -206,8 +206,12 @@ export const en: LpCopy = {
     title: "Frequently asked",
     items: [
       {
-        q: "Do I need API keys?",
-        a: "No. It drives the command-line tools you have already installed and signed in to, using the subscriptions you already pay for. It stores no keys and asks for none.",
+        q: "Can I keep using the subscriptions I already pay for?",
+        a: "Yes. It drives the AI tools already installed on your PC, signed in as they are, on the subscriptions you already pay for. Used that way, it asks for no API key and stores none.",
+      },
+      {
+        q: "Can I bring my own API key? (BYOK)",
+        a: "Yes. Register an OpenAI-compatible (or TypeSafe-compatible) endpoint as a model connection, and a tab can call that model directly. Bringing your own contract and your own key is what BYOK — bring your own key — means. The key you register is kept on your own PC, and it is never shown again once it is registered.",
       },
       {
         q: "Does it replace Claude Code or Codex?",
