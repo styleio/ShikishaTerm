@@ -1799,6 +1799,14 @@ pub struct UiState {
     #[serde(default)]
     pub settings_float: bool,
     pub auto_enabled: bool,
+    /// How the content area is divided right now.
+    ///
+    /// Here, and not in a message of its own, because it is part of the same
+    /// moment as everything else in this struct. Sent separately, the page
+    /// learned it a beat late and drew one frame with the new answer to
+    /// "which row am I on" and the old rectangles (see `view::PanesState`)
+    #[serde(default)]
+    pub panes: crate::view::PanesState,
     /// The split row whose arrangement is on screen, by the name automation
     /// calls it. Absent when what is in front is one row, undivided.
     ///

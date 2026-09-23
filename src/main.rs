@@ -1412,12 +1412,15 @@ impl WinSurface {
                     ));
                     w.last = Some(state);
                 }
-                // The division of the content area. The focused pane keeps the
-                // full renderer below (cursor, composer, board, browser chrome);
-                // this only tells the page where each pane sits.
+                // The division of the content area went with the state
+                // above: it is part of it (`view::PanesState`). What is left
+                // here is the bookkeeping that went with sending it -- the
+                // read-only copies below are kept per pane, and a pane that is
+                // gone, or has just taken the focus, must not be remembered as
+                // already sent
                 let lay = panes_json(&ui.layout);
                 if w.last_layout != lay {
-                    w.last_layout = lay.clone();
+                    w.last_layout = lay;
                     let live: std::collections::HashSet<_> =
                         ui.layout.leaves().into_iter().map(|(id, _)| id).collect();
                     w.last_pane_screens.retain(|id, _| live.contains(id));
@@ -1429,10 +1432,6 @@ impl WinSurface {
                     // have changed and nothing would be sent. The pane you had
                     // just left was the one that went blank
                     w.last_pane_screens.remove(&ui.layout.focus());
-                    let _ = w.win.eval(&format!(
-                        "return window.__panes({});",
-                        serde_json::to_string(&lay).unwrap_or_default()
-                    ));
                 }
                 // Every pane that isn't focused gets a read-only view of its
                 // terminal. A browser pane needs nothing here — the page placed
