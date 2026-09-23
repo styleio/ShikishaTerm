@@ -221,8 +221,8 @@ This screen has nothing to fill in. What it shows depends on what is set elsewhe
 
 What this desk's browser tabs follow
 
-- **Decision model** — Picks the next move on the page. A decision model is far quicker; a conversation model works too.
-- **Conversation model** — Writes what is typed into the page. Only a conversation model can.
+- **Decision model** — Picks the next move on the page. A decision model is far quicker; a conversation model or a subscription AI works too.
+- **Conversation model** — Writes what is typed into the page. Choose a conversation model or a subscription AI.
 
 ### Automation permissions
 

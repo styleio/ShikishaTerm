@@ -1078,17 +1078,25 @@ const LIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 /// split as [`picture_invocation`], for the same reason: it is what each of
 /// them accepts. Whoever asks reads the answer as that shape and copes when it
 /// is not one
+///
+/// `model`, when given, is the model it answers with, named the way that CLI
+/// names its models; it outranks `small`'s choice of model. Given only by
+/// whoever has been told a model by the person (see [`ask_installed`]), and
+/// only once [`model_name_fault`] has passed it
 fn light_invocation(
     name: &str,
     small: bool,
+    model: Option<&str>,
     schema: Option<&str>,
 ) -> Option<(Vec<String>, Vec<(&'static str, String)>)> {
     let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match name {
         "claude" => {
             let mut args = v(&["-p"]);
-            if small {
-                args.extend(v(&["--model", "haiku"]));
+            match model {
+                Some(m) => args.extend(v(&["--model", m])),
+                None if small => args.extend(v(&["--model", "haiku"])),
+                None => {}
             }
             args.extend(v(&[
                 "--tools", "", "--no-session-persistence", "--strict-mcp-config",
@@ -1106,6 +1114,9 @@ fn light_invocation(
                 "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never",
                 "-c", "web_search=disabled", "-c", "mcp_servers={}",
             ]);
+            if let Some(m) = model {
+                args.extend(v(&["--model", m]));
+            }
             if small {
                 args.push("-c".into());
                 args.push("model_reasoning_effort=low".into());
@@ -1127,12 +1138,34 @@ fn light_invocation(
             args.push("-".into());
             Some((args, Vec::new()))
         }
-        "gemini" => Some((
-            v(&["--extensions", "none", "--allowed-mcp-server-names", "none", "--approval-mode", "plan", "-p", ""]),
-            vec![("GEMINI_SYSTEM_MD", format!("{{dir}}/{SYSTEM_FILE}"))],
-        )),
+        "gemini" => {
+            let mut args = v(&["--extensions", "none", "--allowed-mcp-server-names", "none", "--approval-mode", "plan"]);
+            if let Some(m) = model {
+                args.extend(v(&["--model", m]));
+            }
+            args.extend(v(&["-p", ""]));
+            Some((args, vec![("GEMINI_SYSTEM_MD", format!("{{dir}}/{SYSTEM_FILE}"))]))
+        }
         _ => None,
     }
+}
+
+/// Whether [`light_invocation`] can hold this AI to a shape by itself. The one
+/// that cannot is told the shape in its instructions instead (see
+/// [`ask_confined_as`]), which is all there is for it
+fn holds_shape(name: &str) -> bool {
+    matches!(name, "claude" | "codex")
+}
+
+/// Why a model name cannot be handed to an installed AI, or `None` when it
+/// can. Two of the three are started through cmd.exe, which reads `&`, `|`,
+/// `%` and quotes as its own; a model's name never needs any of them, so a
+/// name is held to what model names are written with
+/// (`haiku`, `gpt-5-codex`, `gemini-2.5-flash`, `sonnet[1m]`)
+pub fn model_name_fault(model: &str) -> Option<String> {
+    let ok = !model.is_empty()
+        && model.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '[' | ']'));
+    (!ok).then(|| crate::i18n::tp("err.choose.bad_model_name", &[("model", model)]))
 }
 
 /// Ask the assistant AI for a short answer, as cheaply as it can be asked
@@ -1219,8 +1252,28 @@ fn ask_confined(
     // the same answer, and one that reads it for itself cannot be the one
     // that forgets
     let small = crate::config::load().and_then(|c| c.summary_small_model).unwrap_or(true);
-    let (args, env) = light_invocation(name, small, schema)
+    ask_confined_as(name, small, None, prompt, system, schema, timeout)
+}
+
+/// [`ask_confined`], with the model decided by the caller: `small` as that
+/// setting says, `model` as the person named one
+fn ask_confined_as(
+    name: &str,
+    small: bool,
+    model: Option<&str>,
+    prompt: &str,
+    system: &str,
+    schema: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<String> {
+    let (args, env) = light_invocation(name, small, model, schema)
         .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
+    // The one that cannot be held to a shape is told it, where it cannot be
+    // missed. Whoever asked still reads the answer leniently
+    let system = match schema {
+        Some(shape) if !holds_shape(name) => format!("{system}\n\n{SHAPE_TOLD}\n{shape}"),
+        _ => system.to_string(),
+    };
     let mut files: Vec<(&str, &[u8])> = vec![
         (SYSTEM_FILE, system.as_bytes()),
         (CLAUDE_SETTINGS_FILE, br#"{"disableAllHooks": true}"#),
@@ -1234,6 +1287,36 @@ fn ask_confined(
         anyhow::bail!("{}", crate::i18n::tp("ai.err.failed", &[("cmd", &ran.cmd), ("error", &why)]));
     }
     Ok(ran.out)
+}
+
+/// What an AI that cannot be held to a shape is told about it, before the shape
+const SHAPE_TOLD: &str = "Answer with a single JSON value that matches this JSON Schema, and nothing else:";
+
+/// How long an installed AI is given to answer a page-driving question: a
+/// whole page goes in, and a large model reading one takes its time
+const INSTALLED_TIMEOUT: std::time::Duration = ASK_TIMEOUT;
+
+/// Ask the installed AI `name` (`claude`, `codex`, `gemini`) the way a model
+/// connection is asked, on the person's own subscription: `prompt` under
+/// `system`, the answer held to `schema` when there is one, with `model` or,
+/// left out, the model that AI uses by itself.
+///
+/// Asked the confined way ([`ask_confined`]): an empty folder, no tools, no
+/// hooks, nothing kept. The page it is shown is data it judges, and an AI
+/// given tools and a page that says "delete this" is an AI that might
+pub fn ask_installed(
+    name: &str,
+    model: Option<&str>,
+    prompt: &str,
+    system: Option<&str>,
+    schema: Option<&str>,
+) -> Result<String> {
+    if let Some(why) = model.and_then(model_name_fault) {
+        anyhow::bail!("{why}");
+    }
+    let name = which_assistant(Some(name))?;
+    let system = system.filter(|s| !s.trim().is_empty()).unwrap_or(ASK_SYSTEM);
+    ask_confined_as(name, false, model, prompt, system, schema, INSTALLED_TIMEOUT)
 }
 
 /// The light way alone, with nothing to fall back on
@@ -7606,12 +7689,37 @@ const splitModel = v => {
   const t = (v || "").trim(), at = t.indexOf("/");
   return at < 0 ? {conn: t, model: ""} : {conn: t.slice(0, at), model: t.slice(at + 1).trim()};
 };
+// An AI installed on this PC answers on the person's own subscription. Its
+// name is the program's with a mark in front -- "@claude", "@claude/haiku" --
+// which a connection's name can never start with (bridge.rs, INSTALLED_MARK)
+const INSTALLED_MARK = "@";
+const INSTALLED_AIS = AI_CLIS.filter(c => c.check);
+const installedAi = conn => (conn || "").startsWith(INSTALLED_MARK)
+  ? INSTALLED_AIS.find(c => INSTALLED_MARK + c.cmd === conn) || null : null;
+// Model names each installed AI takes whatever the account: Claude Code's
+// own short names. The others name models by account, so nothing is guessed
+const INSTALLED_MODELS = {claude: ["haiku", "sonnet", "opus"]};
+// The same characters bridge.rs lets through to the program (model_name_fault)
+const installedModelOk = m => [...(m || "")].every(ch => /[A-Za-z0-9]/.test(ch) || "._:[]-".includes(ch));
+// A choice as a person reads it: an installed AI by its name, marked as a
+// subscription the same way the list marks it; a connection as it is written
+function wordsShown(value) {
+  const {conn, model} = splitModel(value);
+  const ai = installedAi(conn);
+  if (!ai) return (value || "").trim();
+  return fill(T["settings.words.installed_item"], {name: ai.label}) + (model ? " / " + model : "");
+}
 // What is wrong with a choice, or null. The writer has to be a conversation
 // model: a decision model answers questions and cannot write a word
 function wordsFault(desk, key, value) {
   const v = (value || "").trim();
   if (!v) return null;
   const {conn, model} = splitModel(v);
+  if (conn.startsWith(INSTALLED_MARK)) {
+    if (!installedAi(conn)) return fill(T["settings.words.gone"], {name: conn});
+    if (!installedModelOk(model)) return fill(T["settings.words.installed_bad_model"], {model});
+    return null;
+  }
   const prov = (desk.providers || {})[conn];
   if (!prov) return fill(T["settings.words.gone"], {name: conn});
   if (!model) return fill(T["settings.words.no_model"], {name: conn});
@@ -7652,8 +7760,21 @@ function wordsPicker(desk, holder, key, under, adopt) {
     const pick = el("select", {style:"width:100%;max-width:420px"});
     const followsDesk = under !== undefined;
     pick.append(el("option", {value:""}, followsDesk
-      ? fill(T["settings.words.follow"], {name: (under || "").trim() || T["settings.words.unset"]})
+      ? fill(T["settings.words.follow"], {name: wordsShown(under) || T["settings.words.unset"]})
       : T["settings.providers.preset_none"]));
+    // The AIs installed on this PC come first, on the subscription the person
+    // already pays for: nothing to register, no key. Both jobs take them, since
+    // each one writes as well as it decides. Marked in the text itself, which
+    // is all a <select> is sure to show
+    const here = INSTALLED_AIS.filter(c => aiEngines.some(e => e.id === c.cmd));
+    if (here.length) {
+      const group = el("optgroup", {label: T["settings.words.installed"]});
+      for (const c of here) {
+        group.append(el("option", {value: INSTALLED_MARK + c.cmd},
+          fill(T["settings.words.installed_item"], {name: c.label})));
+      }
+      pick.append(group);
+    }
     // The deciding one takes either kind, a decision model first; the
     // writing one only a conversation model. Each shows the model it is used with
     const kinds = writer ? ["chat"] : ["choice", "chat"];
@@ -7671,26 +7792,46 @@ function wordsPicker(desk, holder, key, under, adopt) {
     // where writing is needed, a connection since removed -- so the screen
     // shows what the settings say, with what is wrong under it
     if (conn && !Array.from(pick.options).some(o => o.value === conn)) {
-      pick.append(el("option", {value:conn}, now));
+      pick.append(el("option", {value:conn}, wordsShown(now)));
     }
-    pick.append(el("option", {value:"@add"}, T["settings.words.add"]));
+    // Not a name a connection or an installed AI can have, so never taken for one
+    pick.append(el("option", {value:"+add"}, T["settings.words.add"]));
     pick.value = conn;
-    // The model, for a connection with more than one on offer
+    const ai = installedAi(conn);
+    // The model, for a connection with more than one on offer, and for an
+    // installed AI, where blank is the model it uses by itself
     const modelIn = el("input", {type:"text", class:"mono", style:"flex:1;min-width:0;max-width:300px"});
     modelIn.value = model;
-    const cand = modelCandidates(() => provs[pick.value] || {}, id => { modelIn.value = id; store(); });
+    if (ai) modelIn.placeholder = fill(T["settings.words.installed_model_ph"], {name: ai.label});
+    const pickModel = id => { modelIn.value = id; store(); };
+    const cand = modelCandidates(() => provs[pick.value] || {}, pickModel);
     const modelRow = el("div", {class:"row", style:"padding:0;flex-wrap:nowrap"}, modelIn, cand.btn);
-    modelRow.hidden = !conn || !provs[conn];
-    if (provs[conn] && provs[conn].speaks === "choice") cand.btn.hidden = true;
-    const warn = wordsFault(desk, key, now);
+    modelRow.hidden = !conn || (!provs[conn] && !ai);
+    if (ai || (provs[conn] && provs[conn].speaks === "choice")) cand.btn.hidden = true;
+    // An installed AI has no list to ask for: the model names every account
+    // has are offered as they are, and the hint says what blank means
+    const aiHelp = [];
+    if (ai) {
+      for (const id of INSTALLED_MODELS[ai.cmd] || []) {
+        cand.chips.append(el("button", {class:"quiet", type:"button",
+          style:"font-size:12px;padding:var(--s1) var(--s2)", onclick:() => pickModel(id)}, id));
+      }
+      aiHelp.push(el("div", {class:"hint"}, fill(T["settings.words.installed_hint"], {name: ai.label})));
+    }
+    // Chosen, and not on this PC. The settings may be shared with a PC that
+    // has it, so it is said here and kept rather than refused on save
+    const missing = ai && !aiEngines.some(e => e.id === ai.cmd)
+      ? fill(T["settings.words.installed_missing"], {name: ai.label}) : null;
+    const warn = wordsFault(desk, key, now) || missing;
     const store = () => {
       const c = pick.value, m = modelIn.value.trim();
-      if (c) holder[key] = c + "/" + m; else delete holder[key];
+      // An installed AI with no model named is written bare: "@claude"
+      if (c) holder[key] = installedAi(c) && !m ? c : c + "/" + m; else delete holder[key];
       refreshSave();
       draw();
     };
     pick.addEventListener("change", () => {
-      if (pick.value === "@add") {
+      if (pick.value === "+add") {
         pick.value = conn;
         providerDialog(desk, null, () => {}, n => {
           const m = ((desk.providers[n] || {}).models || [])[0] || DEFAULT_MODEL[n] || "";
@@ -7702,11 +7843,12 @@ function wordsPicker(desk, holder, key, under, adopt) {
         return;
       }
       const c = pick.value;
-      modelIn.value = c ? ((provs[c] || {}).models || [])[0] || DEFAULT_MODEL[c] || "" : "";
+      // An installed AI starts on the model it uses by itself
+      modelIn.value = c && !installedAi(c) ? ((provs[c] || {}).models || [])[0] || DEFAULT_MODEL[c] || "" : "";
       store();
     });
     modelIn.addEventListener("change", store);
-    wrap.append(pick, modelRow, cand.chips);
+    wrap.append(pick, modelRow, cand.chips, ...aiHelp);
     if (warn) wrap.append(el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, warn)));
   };
   draw();
@@ -9353,15 +9495,17 @@ function deskPagesCard(desk) {
   const said = el("div", {class:"hint"});
   const draw = () => {
     const agreed = (desk.send_pages_to || "").trim();
+    // Agreed to under the names written; said the way a person reads them
+    const shown = list => list.split(" + ").map(wordsShown).join(" + ");
     if (!now) said.textContent = agreed
-      ? fill(T["settings.desk.pages.agreed"], {by: agreed}) + " " + T["settings.desk.pages.none"]
+      ? fill(T["settings.desk.pages.agreed"], {by: shown(agreed)}) + " " + T["settings.desk.pages.none"]
       : T["settings.desk.pages.none"];
-    else if (!agreed) said.textContent = fill(T["settings.desk.pages.service"], {by: now})
+    else if (!agreed) said.textContent = fill(T["settings.desk.pages.service"], {by: shown(now)})
       + " " + T["settings.desk.pages.unticked"];
     else if (!now.split(" + ").every(n => agreed.split(" + ").includes(n)))
-      said.textContent = fill(T["settings.desk.pages.changed"], {by: agreed, now: now});
-    else said.textContent = fill(T["settings.desk.pages.agreed"], {by: now})
-      + " " + fill(T["settings.desk.pages.service"], {by: now})
+      said.textContent = fill(T["settings.desk.pages.changed"], {by: shown(agreed), now: shown(now)});
+    else said.textContent = fill(T["settings.desk.pages.agreed"], {by: shown(now)})
+      + " " + fill(T["settings.desk.pages.service"], {by: shown(now)})
       + " " + T["settings.desk.pages.withdraw"];
   };
   box.addEventListener("change", () => {
@@ -13806,10 +13950,31 @@ mod tests {
     /// (no tools, nothing kept, no thinking) has no second side to argue for.
     /// A checkbox that quietly turned the rest back on would cost the person
     /// nine thousand tokens for a folder's name
+    /// A model the person named is the model each program is started with,
+    /// and it outranks the small one; a name cmd.exe would read as its own
+    /// never reaches a command line
+    #[test]
+    fn a_named_model_reaches_each_installed_ai() {
+        for name in ["claude", "codex", "gemini"] {
+            let (args, _) = super::light_invocation(name, true, Some("m-1"), None).expect("a light way");
+            let at = args.iter().position(|a| a == "--model").unwrap_or_else(|| panic!("{name}: {args:?}"));
+            assert_eq!(args[at + 1], "m-1", "{name}: {args:?}");
+            assert_eq!(args.iter().filter(|a| *a == "--model").count(), 1, "{name}: {args:?}");
+        }
+        for fine in ["haiku", "gpt-5-codex", "gemini-2.5-flash", "sonnet[1m]", "qwen3:8b"] {
+            assert!(super::model_name_fault(fine).is_none(), "{fine}");
+        }
+        for bad in ["a&calc", "x|y", "%PATH%", "a b", "\"q\"", ""] {
+            assert!(super::model_name_fault(bad).is_some(), "{bad}");
+        }
+        assert!(!super::holds_shape("gemini"), "gemini is told the shape in words");
+        assert!(super::holds_shape("claude") && super::holds_shape("codex"));
+    }
+
     #[test]
     fn turning_the_small_model_off_turns_off_only_the_model() {
         let args = |name: &str, small: bool| {
-            super::light_invocation(name, small, None).expect("this CLI has a light way").0.join(" ")
+            super::light_invocation(name, small, None, None).expect("this CLI has a light way").0.join(" ")
         };
         assert!(args("claude", true).contains("--model haiku"));
         assert!(!args("claude", false).contains("--model"), "{}", args("claude", false));
@@ -14505,7 +14670,7 @@ mod tests {
             ("gemini", &["--approval-mode", "plan", "--extensions", "none"]),
         ];
         for (name, must) in required {
-            let (args, _) = super::light_invocation(name, false, None)
+            let (args, _) = super::light_invocation(name, false, None, None)
                 .unwrap_or_else(|| panic!("{name} has no confined way to be asked"));
             for want in must {
                 assert!(

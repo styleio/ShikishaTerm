@@ -987,8 +987,13 @@ Two commands, and between them everything a page can be driven with.
 | `shikisha.ai_text({ prompt = "...", system = "...", shape = {...}, model = "conn/name" })` | Ask for words: what to type in a field, what a page amounts to. `shape` is a JSON Schema, and with it the answer comes back in that shape instead of as a paragraph |
 
 `model` is `connection/model`, the same spelling a model tab's command line
-uses. Left out, the settings decide (Browser › *Picks the move* and *Writes the
-words*).
+uses. Left out, the settings decide (Browser › *Decision model* and
+*Conversation model*).
+
+An AI installed on this PC answers too, on the plan it is signed in with and
+with no key: `model = "@claude"`, `"@codex"` or `"@gemini"`, and with a model
+of its own after a slash (`"@claude/haiku"`). It is asked with no tools, in an
+empty folder of its own, and answers the way a conversational model does.
 
 **Two very different services answer `ai_choose`, and the answer is the same
 shape either way.** One is built for it: told what the allowed answers are, it

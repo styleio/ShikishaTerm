@@ -9,8 +9,10 @@
  * browser tab of its own. The scenes: the desk's Browser page (the old
  * models moved onto it), a browser tab following the desk, the tab with a
  * decision model put where the writer goes (warned, and the save refused),
- * and a model added from the picker's last line (it lands selected, on the
- * desk too when the desk had none).
+ * a model added from the picker's last line (it lands selected, on the
+ * desk too when the desk had none), and an AI installed on this PC chosen
+ * from the top of the list (marked as a subscription, with its own models
+ * offered and blank meaning its own).
  */
 const wait = (ms) => 'new Promise(r => setTimeout(r, ' + ms + '))';
 const deskPage = '(async () => { sel = {desk:0, grp:null, tab:null, global:false}; goDeskSection("browser", "start"); await ' + wait(300) + '; })()';
@@ -62,7 +64,7 @@ export default {
       + ' desks[0].browser = {};'
       + ' render(); await ' + wait(200) + '; document.getElementById("tab-words").scrollIntoView({block:"start"});'
       + ' const s = ' + pickers + '[1];'
-      + ' s.value = "@add"; s.dispatchEvent(new Event("change")); await ' + wait(300) + ';'
+      + ' s.value = "+add"; s.dispatchEvent(new Event("change")); await ' + wait(300) + ';'
       + ' const box = document.querySelector(".modal:last-of-type");'
       + ' const pre = box.querySelector(".mbody select");'
       + ' pre.value = [...pre.options].find(o => o.textContent.startsWith("OpenAI")).value; pre.dispatchEvent(new Event("change"));'
@@ -72,6 +74,18 @@ export default {
       + ' if (t.words_model !== "openai/gpt-6-sol") throw new Error("not selected: " + t.words_model);'
       + ' if (desks[0].browser.words_model !== "openai/gpt-6-sol") throw new Error("the desk did not take it");'
       + ' document.getElementById("tab-words").scrollIntoView({block:"start"}); })()',
+    // The AIs installed here head the list, marked, and each is chosen with
+    // no model (its own) or with one of the names every account has
+    subscription: '(async () => { await ' + deskPage + ';'
+      + ' const s = document.querySelector("#desk-words select");'
+      + ' const first = s.querySelector("optgroup");'
+      + ' if (!first || !first.querySelector("option[value=\\"@claude\\"]")) throw new Error("the installed AIs are not first: " + (first && first.label));'
+      + ' s.value = "@claude"; s.dispatchEvent(new Event("change")); await ' + wait(200) + ';'
+      + ' if (desks[0].browser.choose_model !== "@claude") throw new Error("written as " + desks[0].browser.choose_model);'
+      + ' const chip = [...document.querySelectorAll("#desk-words button")].find(b => b.textContent === "haiku");'
+      + ' chip.click(); await ' + wait(200) + ';'
+      + ' if (desks[0].browser.choose_model !== "@claude/haiku") throw new Error("written as " + desks[0].browser.choose_model);'
+      + ' document.getElementById("desk-words").scrollIntoView({block:"start"}); })()',
   },
   langs: ['ja', 'en'],
   sizes: [['wide', 1280, 900], ['phone', 390, 820]],

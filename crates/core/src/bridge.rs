@@ -50,6 +50,60 @@ pub struct ModelConn {
     pub speaks: String,
 }
 
+/// Who answers a question asked from automation (`ai_choose`, `ai_text`)
+#[derive(Debug, Clone)]
+pub enum Answerer {
+    /// A model reached over the network, on a connection the desk registered
+    Api(ModelConn),
+    /// An AI program installed on this PC (`claude`, `codex`, `gemini`),
+    /// answering on the person's own subscription. `model` left out is the
+    /// model that program uses by itself
+    Installed { ai: String, model: Option<String> },
+}
+
+/// What marks an installed AI in a `<connection>/<model>` name: `@claude`,
+/// `@claude/haiku`. A connection's own name cannot begin with it -- settings
+/// hold those to letters, digits and `_ . -` -- so the two never collide
+pub const INSTALLED_MARK: char = '@';
+
+/// The installed AI a name means, and the model it names, when it names one:
+/// `@claude` -> ("claude", None), `@claude/haiku` -> ("claude", Some("haiku")).
+/// `None` for a connection's name, and for an AI this program does not know
+pub fn installed_named(name: &str) -> Option<(String, Option<String>)> {
+    let rest = name.trim().strip_prefix(INSTALLED_MARK)?;
+    let (ai, model) = match rest.split_once('/') {
+        Some((ai, model)) => (ai.trim(), Some(model.trim()).filter(|m| !m.is_empty())),
+        None => (rest.trim(), None),
+    };
+    crate::webui::assistant_label(ai)?;
+    Some((ai.to_string(), model.map(str::to_string)))
+}
+
+/// Who a name held in a setting reaches: an installed AI (`@claude/haiku`),
+/// or a connection of the desk on screen (`deepseek/deepseek-chat`)
+pub fn answerer_named(name: &str) -> Option<Answerer> {
+    if name.trim().starts_with(INSTALLED_MARK) {
+        let (ai, model) = installed_named(name)?;
+        return Some(Answerer::Installed { ai, model });
+    }
+    conn_named(name).map(Answerer::Api)
+}
+
+/// A name as a person reads it: an installed AI by the name it is known by
+/// (`Claude Code`, `Claude Code / haiku`), a connection as it is written
+pub fn shown_name(name: &str) -> String {
+    match installed_named(name) {
+        Some((ai, model)) => {
+            let label = crate::webui::assistant_label(&ai).unwrap_or_default();
+            match model {
+                Some(m) => format!("{label} / {m}"),
+                None => label.to_string(),
+            }
+        }
+        None => name.trim().to_string(),
+    }
+}
+
 /// The `--bridge` child process (for direct terminal execution via pipes).
 /// Reads stdin once and returns the response to stdout.
 pub fn run() -> Result<()> {
@@ -276,7 +330,10 @@ fn models_endpoint(base: &str) -> String {
 /// `ask` is `{"state": …, "questions": {name: {type, criteria, instructions}}}`.
 /// The answer is `{name: {"choice": …, "confidence": …, "probabilities": …}}`,
 /// where a `score` question answers with `score` and a `noul` with `noul`
-pub fn choose(conn: &ModelConn, ask: &serde_json::Value) -> Result<serde_json::Value> {
+///
+/// An AI installed on this PC answers the way an ordinary model does, asked
+/// through its own program rather than over the network
+pub fn choose(who: &Answerer, ask: &serde_json::Value) -> Result<serde_json::Value> {
     let questions = ask
         .get("questions")
         .and_then(serde_json::Value::as_object)
@@ -284,13 +341,38 @@ pub fn choose(conn: &ModelConn, ask: &serde_json::Value) -> Result<serde_json::V
     if questions.is_empty() {
         return Err(anyhow!(crate::i18n::t("err.choose.no_questions")));
     }
-    let answers = if conn.speaks == crate::config::SPEAKS_CHOICE {
-        choose_direct(conn, ask)?
-    } else {
-        choose_by_words(conn, ask, questions)?
+    let answers = match who {
+        Answerer::Api(conn) if conn.speaks == crate::config::SPEAKS_CHOICE => choose_direct(conn, ask)?,
+        _ => choose_by_words(who, ask, questions)?,
     };
     validate_answers(&answers, questions)?;
     Ok(answers)
+}
+
+/// Ask for words: `prompt` under `system`, held to `shape` (a JSON Schema)
+/// when there is one. Whoever answers, what comes back is the answer's text
+pub fn text(
+    who: &Answerer,
+    prompt: &str,
+    system: Option<&str>,
+    shape: Option<&serde_json::Value>,
+) -> Result<String> {
+    let system = system.filter(|s| !s.trim().is_empty());
+    match who {
+        Answerer::Api(conn) => {
+            let mut messages = Vec::new();
+            if let Some(s) = system {
+                messages.push(serde_json::json!({ "role": "system", "content": s }));
+            }
+            messages.push(serde_json::json!({ "role": "user", "content": prompt }));
+            complete_shaped(&conn.url, &conn.model, &conn.headers, conn.timeout, &messages, shape)
+        }
+        Answerer::Installed { ai, model } => {
+            let schema = shape.map(serde_json::Value::to_string);
+            let said = crate::webui::ask_installed(ai, model.as_deref(), prompt, system, schema.as_deref())?;
+            Ok(strip_think(&said).trim().to_string())
+        }
+    }
 }
 
 /// The service built for choosing: state and questions in, typed answers out
@@ -322,7 +404,7 @@ fn choose_direct(conn: &ModelConn, ask: &serde_json::Value) -> Result<serde_json
 
 /// An ordinary model, told the same thing in words and held to the same shape
 fn choose_by_words(
-    conn: &ModelConn,
+    who: &Answerer,
     ask: &serde_json::Value,
     questions: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<serde_json::Value> {
@@ -363,18 +445,7 @@ fn choose_by_words(
         "required": required,
         "additionalProperties": false,
     });
-    let messages = vec![
-        serde_json::json!({ "role": "system", "content": crate::asking::CHOOSING }),
-        serde_json::json!({ "role": "user", "content": ask.to_string() }),
-    ];
-    let reply = complete_shaped(
-        &conn.url,
-        &conn.model,
-        &conn.headers,
-        conn.timeout,
-        &messages,
-        Some(&shape),
-    )?;
+    let reply = text(who, &ask.to_string(), Some(crate::asking::CHOOSING), Some(&shape))?;
     // A model that ignored the shape still tends to put the object inside
     // something. Take the outermost object rather than refusing outright
     let body = reply
@@ -570,6 +641,54 @@ mod tests {
         .unwrap()
     }
 
+    /// Each AI installed on this PC answers a decision, and words, the way a
+    /// conversational model does. Asks the real programs, on the account
+    /// signed in here, so it is run by hand:
+    ///     cargo test -p shikisha-core installed_ais_answer -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn installed_ais_answer() {
+        let ask = serde_json::json!({
+            "state": {"page": "A shop. The basket holds one book. There is a Checkout button."},
+            "questions": {"operation": {"type": "choice", "criteria": {
+                "CLICK_CHECKOUT": "press the Checkout button", "DONE": "the goal is met"},
+                "instructions": "Goal: buy what is in the basket"}},
+        });
+        for name in ["@claude/haiku", "@codex", "@gemini"] {
+            if crate::webui::assistant_ai(installed_named(name).map(|(a, _)| a).as_deref()).is_none() {
+                continue;
+            }
+            let who = answerer_named(name).expect("an installed AI");
+            let t = std::time::Instant::now();
+            let answers = choose(&who, &ask).unwrap_or_else(|e| panic!("{name}: {e:#}"));
+            println!("{name} chose {answers} in {:?}", t.elapsed());
+            let t = std::time::Instant::now();
+            let said = text(&who, "Write the word 'apple' and nothing else.", None, None)
+                .unwrap_or_else(|e| panic!("{name}: {e:#}"));
+            println!("{name} wrote {said:?} in {:?}", t.elapsed());
+            assert!(said.to_lowercase().contains("apple"), "{name}: {said}");
+        }
+    }
+
+    /// An AI installed on this PC is named with the mark in front, and a
+    /// connection never is: the two spellings cannot be taken for each other
+    #[test]
+    fn an_installed_ai_is_told_from_a_connection_by_its_mark() {
+        assert_eq!(installed_named("@claude"), Some(("claude".into(), None)));
+        assert_eq!(installed_named(" @codex/gpt-5-codex "), Some(("codex".into(), Some("gpt-5-codex".into()))));
+        assert_eq!(installed_named("@gemini/"), Some(("gemini".into(), None)), "a slash with nothing after it names no model");
+        assert_eq!(installed_named("claude/haiku"), None, "a connection called claude is a connection");
+        assert_eq!(installed_named("@aider"), None, "an AI this program cannot ask is not an installed AI");
+        assert!(answerer_named("@nobody").is_none(), "an unknown one is refused, not taken for a connection");
+        assert!(matches!(
+            answerer_named("@claude/haiku"),
+            Some(Answerer::Installed { ref ai, model: Some(ref m) }) if ai == "claude" && m == "haiku"
+        ));
+        assert_eq!(shown_name("@claude/haiku"), "Claude Code / haiku");
+        assert_eq!(shown_name("@codex"), "Codex CLI");
+        assert_eq!(shown_name("deepseek/deepseek-chat"), "deepseek/deepseek-chat");
+    }
+
     /// An answer is about to be acted on. One that names something the
     /// question never offered is not a decision -- it is a typo with
     /// consequences, and it is refused whoever produced it
@@ -680,7 +799,7 @@ mod tests {
         // `choose` refuses an answer that was not one of the ones offered, so
         // getting here at all is the thing being proved: what went out was
         // what the far end expects, and what came back fits
-        let answers = choose(&conn, &ask).expect("the decision came back unusable");
+        let answers = choose(&Answerer::Api(conn), &ask).expect("the decision came back unusable");
         let picked = answers["operation"]["choice"].as_str().unwrap_or_default();
         println!("{}ms -> {answers}", began.elapsed().as_millis());
         assert_eq!(answers["type_target"]["choice"].as_str(), Some("1"));

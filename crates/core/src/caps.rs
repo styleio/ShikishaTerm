@@ -818,8 +818,8 @@ impl Capabilities {
     /// writes words. Which of the two kinds of service answers is not this
     /// side's business -- the shape of the answer is the same either way
     pub fn ai_choose(&self, model: Option<&str>, ask: &serde_json::Value) -> Result<serde_json::Value> {
-        let conn = self.model_for(model, Deciding::Choosing)?;
-        crate::bridge::choose(&conn, ask)
+        let who = self.model_for(model, Deciding::Choosing)?;
+        crate::bridge::choose(&who, ask)
     }
 
     /// Ask a model for words: what to type in a field, what a page amounts to.
@@ -831,26 +831,15 @@ impl Capabilities {
         system: Option<&str>,
         shape: Option<&serde_json::Value>,
     ) -> Result<String> {
-        let conn = self.model_for(model, Deciding::Writing)?;
-        let mut messages = Vec::new();
-        if let Some(s) = system.filter(|s| !s.trim().is_empty()) {
-            messages.push(serde_json::json!({ "role": "system", "content": s }));
-        }
-        messages.push(serde_json::json!({ "role": "user", "content": prompt }));
-        crate::bridge::complete_shaped(
-            &conn.url,
-            &conn.model,
-            &conn.headers,
-            conn.timeout,
-            &messages,
-            shape,
-        )
+        let who = self.model_for(model, Deciding::Writing)?;
+        crate::bridge::text(&who, prompt, system, shape)
     }
 
     /// Resolve which model answers: the one asked for, else the one the
     /// settings nominate for this job. A name that reaches nothing is said
-    /// plainly rather than quietly becoming a different model
-    fn model_for(&self, asked: Option<&str>, job: Deciding) -> Result<crate::bridge::ModelConn> {
+    /// plainly rather than quietly becoming a different model. `@claude` and
+    /// its kind name an AI installed on this PC (see [`crate::bridge::Answerer`])
+    fn model_for(&self, asked: Option<&str>, job: Deciding) -> Result<crate::bridge::Answerer> {
         // The desk's, and before any desk has been handed over, the app-wide
         // ones settings from before desks had their own still name
         let mine = self.words.borrow().over(&crate::config::operate().words);
@@ -865,7 +854,7 @@ impl Capabilities {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.choose.no_model")))?;
-        crate::bridge::conn_named(&name)
+        crate::bridge::answerer_named(&name)
             .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.choose.unknown_model", &[("name", &name)])))
     }
 

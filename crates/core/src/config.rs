@@ -947,10 +947,14 @@ pub fn pages_gate(desk: Option<&Desk>, key: Option<&str>) -> PageGate {
         return PageGate::NoModel;
     }
     let names = wanted.names();
-    let models = names.join(" + ");
+    // Said the way the person reads them; agreed to under the names written
+    let models = names.iter().map(|n| crate::bridge::shown_name(n)).collect::<Vec<_>>().join(" + ");
     match desk.send_pages_to.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(agreed) if names.iter().all(|n| agreed_names(agreed).contains(n)) => PageGate::Ready { models },
-        Some(agreed) => PageGate::Changed { agreed: agreed.to_string(), models },
+        Some(agreed) => PageGate::Changed {
+            agreed: agreed_names(agreed).iter().map(|n| crate::bridge::shown_name(n)).collect::<Vec<_>>().join(" + "),
+            models,
+        },
         None => PageGate::Consent { models },
     }
 }
