@@ -85,7 +85,7 @@ since every one of them can be changed in the settings.
 
 A few keys need no prefix: `Ctrl+Shift+K` opens the quick commands and
 `Ctrl+Shift+M` the ideas, even while the caret is in a text box. Under
-Settings > Keys, choose the box beside an action and press the combination you
+Settings > Shortcuts, choose the box beside an action and press the combination you
 want (`Ctrl+Shift+D`, `Alt+F4`, `F5`) to give it one of its own.
 
 The digits are the tabs themselves: `Ctrl+B 0`–`9` goes to that tab (`0` is INDEX).
@@ -263,7 +263,7 @@ settings screen, so it cannot fall behind.
 
 - **Basic** — Tab width, chaining, language
 - **Update** — Newer versions, and going back
-- **Keys** — What each key does
+- **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt
 - **Saved logins** — Browser logins kept for reuse
 - **Snapshots** — Page pictures a rally took

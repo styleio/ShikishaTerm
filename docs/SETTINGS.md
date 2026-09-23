@@ -41,7 +41,7 @@ Newer versions, and going back
 
 - **Looking** — One request to api.github.com for the newest version number; nothing is sent. The Store copy asks the Store instead. Installing is always the button above.
 
-### Keys
+### Shortcuts
 
 What each key does
 
@@ -180,7 +180,7 @@ Name, automation name, automation folder
 
 - **Basic** — Tab width, chaining, language
 - **Update** — Newer versions, and going back
-- **Keys** — What each key does
+- **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt
 - **Saved logins** — Browser logins kept for reuse
 - **Snapshots** — Page pictures a rally took
@@ -256,7 +256,7 @@ Several AI tabs discussing or working together
 
 - **Basic** — Tab width, chaining, language
 - **Update** — Newer versions, and going back
-- **Keys** — What each key does
+- **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt
 - **Saved logins** — Browser logins kept for reuse
 - **Snapshots** — Page pictures a rally took
@@ -312,9 +312,9 @@ This desk as one file
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 
-## Keys
+## Shortcuts
 
-As the program ships. Whatever has been changed is under Settings > Keys.
+As the program ships. Whatever has been changed is under Settings > Shortcuts.
 
 - `Ctrl+B q` — Quit
 - `Ctrl+B n` — Next tab
