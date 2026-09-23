@@ -208,7 +208,11 @@ pub fn watch(say: impl Fn(String, String) -> bool + Send + 'static) {
             let Some((left, _)) = room() else { continue };
             // Read first, before anything here allocates: the log line
             // below is the first thing that would be refused
+            #[cfg(windows)]
             let rescued = crate::reserve::take_spent();
+            // No reserve is kept where allocations are not refused
+            #[cfg(not(windows))]
+            let rescued = false;
             let turn = gauge.read(left);
             if rescued {
                 crate::append_hook_log(&format!(
@@ -220,6 +224,7 @@ pub fn watch(say: impl Fn(String, String) -> bool + Send + 'static) {
                 crate::append_hook_log(&format!("memory: {turn:?} with {} of commit left", size(left)));
             }
             // Put back once the machine could lose it and still have room
+            #[cfg(windows)]
             if !crate::reserve::armed() && left > crate::reserve::SIZE as u64 * 8 && crate::reserve::arm() {
                 crate::append_hook_log("memory: the reserve is set aside again");
             }

@@ -17,6 +17,7 @@
 //! back, ends it the way Rust ends a refused program -- which is the point
 //! the probe stops at on purpose rather than crashing into.
 
+#[cfg(windows)]
 #[global_allocator]
 static ALLOC: shikisha_core::reserve::Reserve = shikisha_core::reserve::Reserve;
 

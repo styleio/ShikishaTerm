@@ -73,10 +73,11 @@ pub mod pwa;
 pub mod quick;
 pub mod reader;
 pub mod remote;
+#[cfg(windows)]
+pub mod reserve;
 /// Standing by in the notification area with no window to be seen in. What a
 /// runtime split from its window is, between one window and the next
 #[cfg(windows)]
-pub mod reserve;
 pub mod resident;
 pub mod revive;
 pub mod reply;
