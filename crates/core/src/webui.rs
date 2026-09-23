@@ -1294,7 +1294,7 @@ const SHAPE_TOLD: &str = "Answer with a single JSON value that matches this JSON
 
 /// How long an installed AI is given to answer a page-driving question: a
 /// whole page goes in, and a large model reading one takes its time
-const INSTALLED_TIMEOUT: std::time::Duration = ASK_TIMEOUT;
+pub const INSTALLED_TIMEOUT: std::time::Duration = ASK_TIMEOUT;
 
 /// Ask the installed AI `name` (`claude`, `codex`, `gemini`) the way a model
 /// connection is asked, on the person's own subscription: `prompt` under

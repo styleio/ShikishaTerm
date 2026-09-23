@@ -3230,6 +3230,7 @@
   "words.err.no_decision": "判断が返ってきませんでした: {why}",
   "words.err.no_target": "その操作の対象になる要素が選ばれませんでした",
   "words.err.no_value": "その欄に入れる文字が返ってきませんでした",
+  "words.err.no_text": "入力する文字が返ってきませんでした: {why}",
   "words.err.unknown_op": "知らない操作です: {op}",
   "tui.cast.lua.words": "言葉で指示",
   "tui.cast.lua.go": "実行",

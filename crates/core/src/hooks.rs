@@ -701,17 +701,59 @@ fn build_sandbox_env(
             env.set(name, v)?;
         }
     }
+    let sh = room_verbs(lua, caps, subject, Some(browser))?;
+    // Anything the catalog marks as part of this room, taken from the outside
+    // table as it stands. Browser verbs are bound in `room_verbs` with a page
+    // guard of their own; this is how a command with no page to guard (a
+    // query, say) joins the vocabulary by being marked rather than by being
+    // written twice
+    let outside: Table = lua.globals().get("shikisha")?;
+    for c in crate::grants::CATALOG.iter().filter(|c| c.scoped) {
+        if sh.contains_key(c.name)? {
+            continue;
+        }
+        if let Ok(Value::Function(f)) = outside.get::<Value>(c.name) {
+            sh.set(c.name, f)?;
+        }
+    }
+    // In the one-line Lua the AI writes, calling by bare name
+    // (browser_go(...)) reads naturally. Place the same functions as
+    // shikisha.* directly on the sandbox env's bare globals too (this adds
+    // no new capability — it's just an alias for the same function). This
+    // also matches how the prompt describes them
+    for pair in sh.pairs::<String, Value>() {
+        let (k, v) = pair?;
+        env.set(k, v)?;
+    }
+    env.set("shikisha", sh)?;
+    Ok(env)
+}
+
+/// The page verbs, each bound once: to one page for the room an AI's Lua runs
+/// in (`allowed`), or to any page for the outside table (`None`), which takes
+/// the ones it has no version of its own of.
+///
+/// One set for both, because the built-in page drivers run in the outside
+/// table and call the same verbs the room hands an AI. Bound only in the room,
+/// `browser_elements`, `browser_settle`, `browser_scroll`, `browser_select`
+/// and the model questions were nil where the words run looked for them, and
+/// the run stopped at its first move with "the page could not be read"
+fn room_verbs(
+    lua: &mlua::Lua,
+    caps: &Caps,
+    subject: &Rc<Cell<crate::grants::Subject>>,
+    allowed: Option<&str>,
+) -> mlua::Result<Table> {
     let sh = lua.create_table()?;
-    let allowed = browser.to_string();
+    let allowed: Option<String> = allowed.map(str::to_string);
     // Check whether the called browser name matches the one allowed for this rally
-    fn guard(name: &str, allowed: &str) -> mlua::Result<()> {
-        if name == allowed {
-            Ok(())
-        } else {
-            Err(mlua::Error::runtime(crate::i18n::tp(
+    fn guard(name: &str, allowed: &Option<String>) -> mlua::Result<()> {
+        match allowed {
+            Some(only) if name != only => Err(mlua::Error::runtime(crate::i18n::tp(
                 "err.hooks.browser_not_allowed",
-                &[("name", name), ("allowed", allowed)],
-            )))
+                &[("name", name), ("allowed", only)],
+            ))),
+            _ => Ok(()),
         }
     }
     macro_rules! bind {
@@ -1060,30 +1102,7 @@ fn build_sandbox_env(
             })?,
         )?;
     }
-    // Anything the catalog marks as part of this room, taken from the outside
-    // table as it stands. Browser verbs are bound above with a page guard of
-    // their own; this is how a command with no page to guard (a query, say)
-    // joins the vocabulary by being marked rather than by being written twice
-    let outside: Table = lua.globals().get("shikisha")?;
-    for c in crate::grants::CATALOG.iter().filter(|c| c.scoped) {
-        if sh.contains_key(c.name)? {
-            continue;
-        }
-        if let Ok(Value::Function(f)) = outside.get::<Value>(c.name) {
-            sh.set(c.name, f)?;
-        }
-    }
-    // In the one-line Lua the AI writes, calling by bare name
-    // (browser_go(...)) reads naturally. Place the same functions as
-    // shikisha.* directly on the sandbox env's bare globals too (this adds
-    // no new capability — it's just an alias for the same function). This
-    // also matches how the prompt describes them
-    for pair in sh.pairs::<String, Value>() {
-        let (k, v) = pair?;
-        env.set(k, v)?;
-    }
-    env.set("shikisha", sh)?;
-    Ok(env)
+    Ok(sh)
 }
 
 /// Map a JSON value directly to a Lua value (so browser_fetch results can be
@@ -1359,6 +1378,13 @@ enum WaitKind {
         rx: std::sync::mpsc::Receiver<Result<String, String>>,
         deadline: Instant,
     },
+    /// Waiting on a model's decision or its words (`ai_choose`, `ai_text`),
+    /// asked on a thread of its own for the same reason. The answer is JSON:
+    /// a decision is a table, words are a string
+    Model {
+        rx: std::sync::mpsc::Receiver<Result<serde_json::Value, String>>,
+        deadline: Instant,
+    },
     Screen {
         tab: usize,
         re: regex::Regex,
@@ -1383,6 +1409,43 @@ struct Pending {
     origin: usize,
     wait: WaitKind,
 }
+
+/// `browser_settle` for the outside table: the same wait, taken a slice at a
+/// time with the program going on between slices.
+///
+/// Waiting for a page to stop moving is waiting on the page, and the page is
+/// reached from the program's own loop. Taken whole, the wait held every tab
+/// still for as long as it lasted -- a second and a half after each thing
+/// typed, since the suggestions it waits for there never come on most forms.
+/// The room keeps the whole wait: a rally's Lua is run straight through, not
+/// as something that can stop in the middle.
+///
+/// The answer is the whole wait's: how long it took, and `still`,
+/// `nothing_happened` or `gave_up`, as the page would have said it
+const SLICED_SETTLE: &str = r#"
+local once = shikisha.browser_settle
+local SLICE_MS = 100
+function shikisha.browser_settle(name, opts)
+  opts = opts or {}
+  local cap = opts.ms or 1200
+  local grace = math.min(opts.first or 300, cap)
+  local spent, moved = 0, false
+  while true do
+    local slice = math.min(SLICE_MS, cap - spent)
+    if slice <= 0 then return spent, "gave_up" end
+    -- The grace is the whole wait's, not each slice's: once it is used up,
+    -- a slice leaves on the first quiet it sees
+    local first = math.max(0, math.min(grace - spent, slice))
+    local ms, why = once(name, { ms = slice, expect = opts.expect, first = first })
+    -- A slice past the grace that ran out was a page still moving
+    if why == "gave_up" and spent >= grace then moved = true end
+    spent = spent + math.max(tonumber(ms) or 0, 1)
+    if why == "still" then return spent, "still" end
+    if why == "nothing_happened" then return spent, moved and "still" or "nothing_happened" end
+    shikisha.sleep(0)
+  end
+end
+"#;
 
 const PRELUDE: &str = r#"
 shikisha.__vars = {}
@@ -1488,6 +1551,17 @@ end
 function shikisha.sleep(ms)
   return coroutine.yield({ op = "sleep", ms = ms })
 end
+-- Ask a model to decide, or to write. The same questions the room's versions
+-- ask, written as a yield: a model takes seconds to answer, an installed AI
+-- several more, and the program goes on drawing every tab meanwhile. Raises
+-- on failure, as those do
+local function model(op, spec)
+  local got, err = coroutine.yield({ op = op, spec = spec })
+  if err then error(err, 0) end
+  return got
+end
+function shikisha.ai_choose(spec) return model("ai_choose", spec) end
+function shikisha.ai_text(spec) return model("ai_text", spec) end
 "#;
 
 /// A single Lua script. Loaded with its own environment (_ENV), so
@@ -1866,6 +1940,15 @@ pub fn ending_hook(state: crate::detect::TabState) -> &'static str {
 /// Session state doesn't apply to a page, so the vocabulary is kept
 /// separate. Add more only once there's a reason to
 pub const PAGE_HOOK_NAMES: [&str; 2] = ["on_load", "on_press"];
+
+/// The one move of a run driven from plain words, asked for by the loop
+/// rather than set off by anything a tab did (see [`HookEngine::step_words`]).
+///
+/// Nobody writes one in a file, so it is in neither list above; a loaded
+/// script that defines it is still found by it. Left out of what a script
+/// was looked through for, the words run started and then never moved: every
+/// pass asked for a move and found nothing to ask
+pub const STEP_HOOK: &str = "on_step";
 
 impl HookEngine {
     /// Load a single script and attach it as the base config (for tests / simple setups)
@@ -4054,6 +4137,20 @@ impl HookEngine {
         }
         lua.globals().set("shikisha", shikisha).map_err(lerr)?;
         lua.load(PRELUDE).exec().map_err(lerr)?;
+        // The page verbs the room binds and this table has no version of,
+        // reaching any page. After the prelude, whose own `ai_choose` and
+        // `ai_text` wait without holding the program still, and so are kept
+        {
+            let room = room_verbs(&lua, &caps, &subject, None).map_err(lerr)?;
+            let outside: Table = lua.globals().get("shikisha").map_err(lerr)?;
+            for pair in room.pairs::<String, Value>() {
+                let (k, v) = pair.map_err(lerr)?;
+                if !outside.contains_key(k.as_str()).map_err(lerr)? {
+                    outside.set(k, v).map_err(lerr)?;
+                }
+            }
+        }
+        lua.load(SLICED_SETTLE).exec().map_err(lerr)?;
         // Last, so it covers the prelude's commands as well as Rust's
         guard_table(&lua, &caps, &subject).map_err(lerr)?;
 
@@ -4219,7 +4316,27 @@ impl HookEngine {
                     ]),
                 })
             }
+            WaitKind::Model { rx, deadline } => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                let said = rx
+                    .recv_timeout(left)
+                    .unwrap_or_else(|_| Err(crate::i18n::t("err.hooks.ai_timeout")));
+                Ok(self.model_answer(said))
+            }
             WaitKind::Screen { .. } => Err(crate::i18n::t("err.hooks.no_screen_wait")),
+        }
+    }
+
+    /// What `ai_choose` and `ai_text` hand back: the answer, or nothing and
+    /// why, which the prelude raises
+    fn model_answer(&self, said: Result<serde_json::Value, String>) -> MultiValue {
+        let answer = said.and_then(|v| json_to_lua(&self.lua, &v).map_err(|e| e.to_string()));
+        match answer {
+            Ok(v) => MultiValue::from_vec(vec![v]),
+            Err(why) => MultiValue::from_vec(vec![
+                Value::Nil,
+                self.lua.create_string(&why).map(Value::String).unwrap_or(Value::Nil),
+            ]),
         }
     }
 
@@ -4433,7 +4550,7 @@ impl HookEngine {
 
         let mut defined = HashSet::new();
         // Check both session hooks and browser hooks
-        for name in HOOK_NAMES.iter().chain(PAGE_HOOK_NAMES.iter()) {
+        for name in HOOK_NAMES.iter().chain(PAGE_HOOK_NAMES.iter()).chain([&STEP_HOOK]) {
             if env.get::<mlua::Function>(*name).is_ok() {
                 defined.insert(name.to_string());
             }
@@ -5069,10 +5186,31 @@ local function finish(code, why, good)
   shikisha.set_result(code, why)
 end
 
+local function stopped()
+  return (shikisha.get_var("words_running") or 0) == 0
+end
+
+-- What to put in a field, written by the model that writes words. Nil when
+-- the run is over: stopped while it was asked, or ended here because no
+-- words came back
+local function write(into)
+  local ok, said = pcall(shikisha.ai_text, {
+    model = WORDS_MODEL ~= "" and WORDS_MODEL or nil,
+    system = ASK.value_system,
+    prompt = fill(ASK.value_ask, into),
+  })
+  if stopped() then return nil end
+  if not ok then
+    finish(1, shikisha.tf("words.err.no_text", { why = tostring(said) }), false)
+    return nil
+  end
+  return tostring(said or "")
+end
+
 -- One move: read the page, decide, carry it out, write down what was done.
 -- Called again for the next one, by whoever is driving this run
 function on_step(tab)
-  if (shikisha.get_var("words_running") or 0) == 0 then return end
+  if stopped() then return end
   local goal = shikisha.get_var("words_goal")
   if not goal or goal == "" then return end
 
@@ -5131,6 +5269,9 @@ function on_step(tab)
     state = { page = { text = clip(where, 6000) }, elements = rows, done = past },
     questions = questions,
   })
+  -- Asking takes seconds and the program went on meanwhile: a run stopped
+  -- while it was asked is not carried on with the answer
+  if stopped() then return end
   if not okc or type(answers) ~= "table" or not answers.operation then
     finish(1, shikisha.tf("words.err.no_decision", { why = tostring(answers) }), false)
     return
@@ -5188,28 +5329,22 @@ function on_step(tab)
     if not r then finish(1, shikisha.t("words.err.no_target"), false) return end
     -- Which of the list's own choices: written by the model that writes
     -- words, from the ones the page actually offers
-    local want = shikisha.ai_text({
-      model = WORDS_MODEL ~= "" and WORDS_MODEL or nil,
-      system = ASK.value_system,
-      prompt = fill(ASK.value_ask, {
-        goal = goal, field = tostring(rows[r] and rows[r].name or r),
-        choices = tostring(rows[r] and rows[r].choices or ""),
-      }),
+    local want = write({
+      goal = goal, field = tostring(rows[r] and rows[r].name or r),
+      choices = tostring(rows[r] and rows[r].choices or ""),
     })
+    if not want then return end
     local oks, _, echo = pcall(shikisha.browser_select, BR, { ref = r }, (want or ""):gsub("^%s*(.-)%s*$", "%1"))
     ok = oks
     did = shikisha.t("words.did.choose") .. " [" .. r .. "] " .. tostring(echo or "")
   elseif op == "TYPE" then
     local r = chosen("type_target")
     if not r then finish(1, shikisha.t("words.err.no_target"), false) return end
-    local value = shikisha.ai_text({
-      model = WORDS_MODEL ~= "" and WORDS_MODEL or nil,
-      system = ASK.value_system,
-      prompt = fill(ASK.value_ask, {
-        goal = goal, field = tostring(rows[r] and rows[r].name or r), choices = "",
-      }),
+    local value = write({
+      goal = goal, field = tostring(rows[r] and rows[r].name or r), choices = "",
     })
-    value = (value or ""):gsub("^%s*(.-)%s*$", "%1")
+    if not value then return end
+    value = value:gsub("^%s*(.-)%s*$", "%1")
     if value == "" then finish(1, shikisha.t("words.err.no_value"), false) return end
     local okf = pcall(shikisha.browser_fill, BR, { ref = r }, value)
     ok = okf
@@ -6029,9 +6164,19 @@ end
     }
 
     /// Take one more move. Answers whether the run is still going, so the
-    /// caller knows when to stop asking
+    /// caller knows when to stop asking.
+    ///
+    /// A move waiting on its model is carried on rather than joined by a
+    /// second one: a move takes as long as its model does, and this is asked
+    /// every pass of the loop. Carried on here and not only by
+    /// [`Self::tick_pending`], because a run a person started from the input
+    /// bar goes on while automation is stopped, the way a panel's transfer does
     pub fn step_words(&mut self, ctx: &TabCtx) -> bool {
-        self.fire("on_step", ctx, None);
+        let pane = ctx.index;
+        self.tick_pending_where(&|p| Self::is_words_step(p, pane), &|_| None);
+        if !self.pending.iter().any(|p| Self::is_words_step(p, pane)) {
+            self.fire(STEP_HOOK, ctx, None);
+        }
         self.words_running()
     }
 
@@ -6056,6 +6201,15 @@ end
             "set_var",
             &[serde_json::json!("words_running"), serde_json::json!(0)],
         );
+        // A move still waiting on its model is dropped with the run. Resumed
+        // later, it would act on an answer given to a goal nobody holds now
+        let (gone, kept): (Vec<Pending>, Vec<Pending>) = std::mem::take(&mut self.pending)
+            .into_iter()
+            .partition(|p| Self::is_words_step(p, pane));
+        self.pending = kept;
+        for p in gone {
+            let _ = self.lua.remove_registry_value(p.key);
+        }
         self.stop_operate(pane);
     }
 
@@ -6137,6 +6291,11 @@ end
         self.tick_pending_where(&|_| true, screens)
     }
 
+    /// Whether this waiting coroutine is a words-run move on `pane`
+    fn is_words_step(p: &Pending, pane: usize) -> bool {
+        p.hook == STEP_HOOK && p.origin == pane
+    }
+
     /// Move on only what a person started from a panel.
     ///
     /// Stopping automation stops automation -- a hook, a quick command, a
@@ -6147,18 +6306,18 @@ end
     /// was on. Without this it sat at "looking through the folder" for as long
     /// as automation stayed stopped
     pub fn tick_panel_pending(&mut self) {
-        self.tick_pending_where(&|hook| hook == PANEL_HOOK, &|_| None)
+        self.tick_pending_where(&|p| p.hook == PANEL_HOOK, &|_| None)
     }
 
     fn tick_pending_where(
         &mut self,
-        wanted: &dyn Fn(&str) -> bool,
+        wanted: &dyn Fn(&Pending) -> bool,
         screens: &dyn Fn(usize) -> Option<String>,
     ) {
         let now = Instant::now();
         let pending = std::mem::take(&mut self.pending);
         for p in pending {
-            if !wanted(&p.hook) {
+            if !wanted(&p) {
                 self.pending.push(p);
                 continue;
             }
@@ -6214,6 +6373,29 @@ end
                     }
                 }
             }
+            // A model answers with a decision or with words, as JSON
+            if let WaitKind::Model { rx, deadline } = &p.wait {
+                let said = match rx.try_recv() {
+                    Ok(said) => said,
+                    Err(std::sync::mpsc::TryRecvError::Empty) if now < *deadline => {
+                        self.pending.push(p);
+                        continue;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => Err(crate::i18n::t("err.hooks.ai_timeout")),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(crate::i18n::t("err.hooks.ai_gone")),
+                };
+                let args = self.model_answer(said);
+                self.current_origin.set(p.origin);
+                match self.lua.registry_value::<Thread>(&p.key) {
+                    Ok(thread) => self.resume_thread(thread, &p.hook, p.origin, args),
+                    Err(e) => self.push_log(crate::i18n::tp(
+                        "err.hooks.lua_resume",
+                        &[("e", &format!("{e}"))],
+                    )),
+                }
+                let _ = self.lua.remove_registry_value(p.key);
+                continue;
+            }
             // The far end answers with a listing, a file or nothing at all --
             // never with a flag -- so it hands back what to resume with, the
             // same way the AI does
@@ -6246,7 +6428,7 @@ end
             let ready: Option<bool> = match &p.wait {
                 WaitKind::Sleep { deadline } => (now >= *deadline).then_some(true),
                 // Handled above: they answer with what they found, not with a flag
-                WaitKind::Ai { .. } | WaitKind::File { .. } => None,
+                WaitKind::Ai { .. } | WaitKind::File { .. } | WaitKind::Model { .. } => None,
                 WaitKind::Screen { tab, re, deadline } => match screens(*tab) {
                     Some(text) if re.is_match(&text) => Some(true),
                     _ if now >= *deadline => Some(false),
@@ -6411,6 +6593,46 @@ end
                     deadline: Instant::now()
                         + Duration::from_millis(ms.unwrap_or(180_000).clamp(1_000, 900_000)),
                 })
+            }
+            "ai_choose" | "ai_text" => {
+                let spec: Table = t.get("spec").map_err(lerr)?;
+                let named: Option<String> = spec.get::<Option<String>>("model").ok().flatten();
+                // Who answers is settled here, where the desk's models are
+                // known; the thread only asks
+                let deciding = op == "ai_choose";
+                let who = if deciding {
+                    self.caps.answerer_to_choose(named.as_deref())?
+                } else {
+                    self.caps.answerer_to_write(named.as_deref())?
+                };
+                let text = |k: &str| spec.get::<Option<String>>(k).ok().flatten();
+                let (prompt, system) = (text("prompt").unwrap_or_default(), text("system"));
+                let json = |k: &str| match spec.get::<Value>(k) {
+                    Ok(Value::Nil) | Err(_) => None,
+                    Ok(v) => Some(lua_to_json(&v)),
+                };
+                let ask = serde_json::json!({
+                    "state": json("state").unwrap_or(serde_json::Value::Null),
+                    "questions": json("questions").unwrap_or(serde_json::Value::Null),
+                });
+                let shape = json("shape");
+                // A breath past what the asking itself waits, so the one that
+                // says the model did not answer in time is the asking
+                let deadline = Instant::now()
+                    + crate::bridge::patience(&who)
+                        .map(|d| d + Duration::from_secs(30))
+                        .unwrap_or(Duration::from_secs(24 * 3600));
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let said = if deciding {
+                        crate::bridge::choose(&who, &ask)
+                    } else {
+                        crate::bridge::text(&who, &prompt, system.as_deref(), shape.as_ref())
+                            .map(serde_json::Value::String)
+                    };
+                    let _ = tx.send(said.map_err(|e| e.to_string()));
+                });
+                Ok(WaitKind::Model { rx, deadline })
             }
             "file" => {
                 let act: String = t.get("act").map_err(lerr)?;
@@ -6884,6 +7106,97 @@ mod tests {
         assert!(super::lint_lua("if true then").is_some());
         assert!(super::lint_lua("local = = 3").is_some());
         assert!(super::lint_lua("send_to_tab(tab,").is_some());
+    }
+
+    /// Every built-in template runs in the outside table, so every command
+    /// one calls has to be there. The page verbs once lived only in the room
+    /// an AI's Lua runs in, and the words run stopped at its first move,
+    /// reading the page with a command that was nil
+    #[test]
+    fn every_command_a_built_in_template_calls_is_there() {
+        let e = HookEngine::new().unwrap();
+        let sh: Table = e.lua.globals().get("shikisha").unwrap();
+        let file = include_str!("hooks.rs");
+        let called = regex::Regex::new(r"shikisha\.([a-z_]+)\(").unwrap();
+        let mut checked = 0;
+        for chunk in file.split("const SRC: &str = r##\"").skip(1) {
+            let body = chunk.split("\"##;").next().unwrap_or("");
+            for name in called.captures_iter(body).map(|c| c[1].to_string()) {
+                assert!(
+                    matches!(sh.get::<Value>(name.as_str()), Ok(Value::Function(_))),
+                    "a template calls shikisha.{name}, which the table it runs in does not have"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 20, "only {checked} calls were checked (did the marker change?)");
+    }
+
+    /// Asking a model does not hold the program still. The hook stops where
+    /// it asked, the loop goes on, and the answer resumes it when it comes --
+    /// here from a model that takes a second and a half to say one word
+    #[test]
+    fn asking_a_model_waits_without_holding_the_program() {
+        use std::io::{Read as _, Write as _};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = server.accept() {
+                // The whole request, so closing does not reset it unread
+                let mut got = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    got.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&got).to_string();
+                    let full = text.split_once("\r\n\r\n").is_some_and(|(head, body)| {
+                        let len = head
+                            .lines()
+                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().to_string()))
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        body.len() >= len
+                    });
+                    if n == 0 || full {
+                        break;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1500));
+                let body = r#"{"choices":[{"message":{"content":"pear"}}]}"#;
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        crate::bridge::use_desk(std::collections::HashMap::from([(
+            "slowpoke".to_string(),
+            crate::config::ProviderConn {
+                url: format!("http://127.0.0.1:{port}/v1"),
+                headers: Default::default(),
+                timeout: Some(Duration::from_secs(20)),
+                speaks: crate::config::SPEAKS_CHAT.to_string(),
+            },
+        )]));
+        let mut e = HookEngine::new().unwrap();
+        let started = Instant::now();
+        e.fire_action(
+            "local said = shikisha.ai_text({ model = 'slowpoke/m', prompt = 'a fruit' }) shikisha.log('said ' .. said)",
+            &ctx(1, ""),
+        );
+        assert!(started.elapsed() < Duration::from_millis(500), "the hook held the program for {:?}", started.elapsed());
+        assert_eq!(e.pending.len(), 1, "it stopped to wait for the answer");
+        let mut said = Vec::new();
+        while said.is_empty() && started.elapsed() < Duration::from_secs(15) {
+            std::thread::sleep(Duration::from_millis(50));
+            e.tick_pending(&|_| None);
+            said.extend(e.drain_commands().into_iter().filter_map(|c| match c {
+                Command::Log(m) if m.contains("said") || m.contains("error") => Some(m),
+                _ => None,
+            }));
+        }
+        assert!(said.iter().any(|l| l.contains("said pear")), "{said:?}");
     }
 
     fn ctx(index: usize, output: &str) -> TabCtx {

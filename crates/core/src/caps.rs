@@ -835,6 +835,18 @@ impl Capabilities {
         crate::bridge::text(&who, prompt, system, shape)
     }
 
+    /// Who answers `ai_choose` when it is asked of a waiting script: the same
+    /// answer [`Self::ai_choose`] reaches, handed out so the asking can be
+    /// done on a thread of its own
+    pub fn answerer_to_choose(&self, model: Option<&str>) -> Result<crate::bridge::Answerer> {
+        self.model_for(model, Deciding::Choosing)
+    }
+
+    /// Who answers `ai_text` when it is asked of a waiting script
+    pub fn answerer_to_write(&self, model: Option<&str>) -> Result<crate::bridge::Answerer> {
+        self.model_for(model, Deciding::Writing)
+    }
+
     /// Resolve which model answers: the one asked for, else the one the
     /// settings nominate for this job. A name that reaches nothing is said
     /// plainly rather than quietly becoming a different model. `@claude` and

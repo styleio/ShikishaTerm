@@ -18,6 +18,9 @@
     -Cdp      the window's DevTools port, for driving its page directly. Same rule
     -Mcp      where to write the client's MCP settings (default: <At>\mcp.json)
     -Name     what the server is called in those settings (default: shikisha)
+    -Config   a JSON file of settings to start with, laid over the default one
+              key by key ({work} in it is the -Work folder). The door and the
+              board stay this script's, so the lines printed below stay true
     -Stop     stop the copy at -At and leave
 
   **Ports come from 9400-9499**, two at a time: an even one for the board and
@@ -47,6 +50,7 @@ param(
     [int]$Cdp,
     [string]$Mcp,
     [string]$Name = 'shikisha',
+    [string]$Config,
     [switch]$Stop
 )
 $ErrorActionPreference = 'Stop'
@@ -166,6 +170,21 @@ $settings = [ordered]@{
             tabs = @([ordered]@{ name = 'shell'; id = 'shell'; command = 'cmd.exe' })
         })
     })
+}
+# Laid over key by key: a scene names the desks it needs and keeps the door
+# and the board this copy was given
+if ($Config) {
+    $over = (Get-Content $Config -Raw -Encoding UTF8).Replace('{work}', ($Work -replace '\\', '/')) | ConvertFrom-Json
+    foreach ($p in $over.PSObject.Properties) {
+        if ($p.Name -in @('external_api')) { continue }
+        if ($p.Name -eq 'remote') {
+            foreach ($q in $p.Value.PSObject.Properties) {
+                if ($q.Name -notin @('enabled', 'bind', 'port')) { $settings.remote[$q.Name] = $q.Value }
+            }
+            continue
+        }
+        $settings[$p.Name] = $p.Value
+    }
 }
 $cfgDir = Join-Path $app 'config'
 New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null

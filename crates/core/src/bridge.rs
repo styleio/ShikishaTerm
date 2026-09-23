@@ -89,6 +89,16 @@ pub fn answerer_named(name: &str) -> Option<Answerer> {
     conn_named(name).map(Answerer::Api)
 }
 
+/// How long an answer is waited for, as the asking itself waits: a
+/// connection's own setting (`None` is as long as it takes), and an installed
+/// AI's fixed limit
+pub fn patience(who: &Answerer) -> Option<std::time::Duration> {
+    match who {
+        Answerer::Api(conn) => conn.timeout,
+        Answerer::Installed { .. } => Some(crate::webui::INSTALLED_TIMEOUT),
+    }
+}
+
 /// A name as a person reads it: an installed AI by the name it is known by
 /// (`Claude Code`, `Claude Code / haiku`), a connection as it is written
 pub fn shown_name(name: &str) -> String {

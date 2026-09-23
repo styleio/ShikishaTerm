@@ -3252,6 +3252,7 @@
   "words.err.no_decision": "No decision came back: {why}",
   "words.err.no_target": "No element was chosen for that operation",
   "words.err.no_value": "No text came back for that field",
+  "words.err.no_text": "No text came back to type: {why}",
   "words.err.unknown_op": "Unknown operation: {op}",
   "tui.cast.lua.words": "In words",
   "tui.cast.lua.go": "Go",

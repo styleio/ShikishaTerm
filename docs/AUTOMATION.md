@@ -995,6 +995,11 @@ with no key: `model = "@claude"`, `"@codex"` or `"@gemini"`, and with a model
 of its own after a slash (`"@claude/haiku"`). It is asked with no tools, in an
 empty folder of its own, and answers the way a conversational model does.
 
+**The app keeps running while a model thinks**, in a hook or a quick action:
+both stop where they asked, the way `sleep` and `ai_ask` do, and other tabs
+and the screen carry on. So does `browser_settle` there. Lua an AI writes for
+a page runs straight through instead, and waits where it stands.
+
 **Two very different services answer `ai_choose`, and the answer is the same
 shape either way.** One is built for it: told what the allowed answers are, it
 returns one of them with a probability for each, in a fraction of the time a
