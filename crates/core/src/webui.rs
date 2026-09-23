@@ -7005,7 +7005,7 @@ function globalSections() {
 // Links that name one of a desk's settings (the git panel's gear asks for
 // "git"): the desk in view, at that entry, since there is no copy of the
 // program's to land on. Older names for the same places are kept here
-const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", "git-pr":"git", "git-merge":"git", "git-ci":"git", protect:"git", gitaccounts:"gitaccounts", providers:"providers", browser:"browser", words:"browser",
+const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", "git-pr":"git", "git-merge":"git", "git-ci":"git", protect:"git", gitaccounts:"git", providers:"providers", browser:"browser", words:"browser",
                     permissions:"permissions", caps:"caps", tools:"tools"};
 
 // ── Update ─────────────────────────────────────────────────────
@@ -9276,8 +9276,9 @@ function deskSections(desk) {
     s("providers", providersCard),
     s("browser", deskBrowserCard),
     s("permissions", permissionsCard),
-    s("git", gitCard),
-    s("gitaccounts", gitAccountsCard),
+    // Who the desk signs in as first, then what it does with that: one
+    // page, since a person setting up git on a desk wants both
+    s("git", desk => [gitAccountsCard(desk), gitCard(desk)]),
     s("secrets", deskSecretsCard),
     s("discuss", deskDiscussCard),
     s("stops", deskStopsCard),
@@ -9549,7 +9550,7 @@ function gitAccountsWindow(desk, done) {
   const shut = () => { back.remove(); done(); };
   const back = openModal(
     el("div", {class:"mhead"},
-      el("h2", {}, (desk.name || T["settings.nav.desk"]) + " › " + T["settings.dsec.gitaccounts"]),
+      el("h2", {}, (desk.name || T["settings.nav.desk"]) + " › " + T["settings.gitacct.title"]),
       el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
     el("div", {class:"mbody"}, ...gitAccountsParts(desk)),
     el("div", {class:"mfoot"},
@@ -13178,6 +13179,7 @@ load().then(() => {
     sel = {desk:(desks[at] ? at : sel.desk), grp:null, tab:null, global:false};
     goDeskSection(DESK_LINKS[sec], "center");
     // Asked for one field, not the card: that field, marked
+    if (sec === "gitaccounts") lookAtCard("desk-gitaccounts", 50);
     if (sec === "git-message") lookAtCard("desk-git-message", 50);
     if (sec === "git-issue") lookAtCard("desk-git-issue", 50);
     if (sec === "git-pr") lookAtCard("desk-git-pr", 50);

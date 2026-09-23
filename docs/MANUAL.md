@@ -288,8 +288,7 @@ settings screen, so it cannot fall behind.
 - **AI providers** — The model APIs this desk's tabs use, local models included
 - **Browser** — What this desk's browser tabs follow
 - **Automation permissions** — What a person and an AI may run
-- **git** — Protected branches, commit messages
-- **Git accounts** — What fetch, pull and push sign in as
+- **git** — Accounts, protected branches, commit messages
 - **Secrets** — Passwords and tokens
 - **AI × AI discussion** — Several AI tabs discussing or working together
 - **Stop conditions** — When the joint work ends

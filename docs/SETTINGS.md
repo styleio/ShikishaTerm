@@ -232,13 +232,9 @@ This screen has nothing to fill in. What it shows depends on what is set elsewhe
 
 ### git
 
-Protected branches, commit messages
+Accounts, protected branches, commit messages
 
-This screen has nothing to fill in. What it shows depends on what is set elsewhere.
-
-### Git accounts
-
-What fetch, pull and push sign in as
+**Git accounts**
 
 - **Token**
 

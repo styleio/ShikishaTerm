@@ -45,6 +45,9 @@ export default {
     }],
   },
   scenes: {
+    // The desk's git page: who it signs in as on top, what it does below
+    desk: '(async () => { sel = {desk:0, tab:null, global:true}; goDeskSection("git");'
+      + ' await ' + wait(600) + '; window.scrollTo(0, 0); })()',
     // Nothing chosen and nothing to choose: the picker's own way out
     picker: projectPage,
     // The desk's accounts, over the page that asked for them
