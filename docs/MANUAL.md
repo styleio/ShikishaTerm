@@ -265,6 +265,7 @@ settings screen, so it cannot fall behind.
 
 - **Basic** — Tab width, chaining, language
 - **Update** — Newer versions, and going back
+- **Remote access** — Remote control & QR
 - **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt
 - **Quick actions** — One-tap buttons in the input bar
@@ -272,7 +273,6 @@ settings screen, so it cannot fall behind.
 - **Server names** — Tell production from staging at a glance
 - **Operate a tab** — Limits for 🎯 driving another tab
 - **AI allowance** — The 5-hour and 7-day windows of Claude and Codex
-- **Phone access** — Remote control & QR
 - **External control** — Let programs drive this app
 - **Carrying conversations** — What survives a restart
 - **Files** — Automation & secrets paths
