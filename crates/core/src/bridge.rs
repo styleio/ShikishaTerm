@@ -173,6 +173,49 @@ pub fn run() -> Result<()> {
 /// a setting, and the person reading this is the one who can change it — and
 /// with a model on their own machine, the honest answer is often "it was still
 /// thinking".
+/// The body of an answer, as JSON -- or, when the far end refused the
+/// request, the refusal in its own words: its status and what it said was
+/// wrong (a `message` or `error` field where it gave one, else the start of
+/// what it sent). "http status: 400" alone names no field and no limit, and
+/// left nobody able to tell a key that expired from a page that was too long
+fn answer_of(
+    mut resp: ureq::http::Response<ureq::Body>,
+    endpoint: &str,
+) -> Result<serde_json::Value> {
+    let status = resp.status().as_u16();
+    if (200..300).contains(&status) {
+        return resp
+            .body_mut()
+            .read_json()
+            .with_context(|| crate::i18n::t("err.bridge.bad_response_json"));
+    }
+    let text = resp.body_mut().read_to_string().unwrap_or_default();
+    Err(anyhow!(crate::i18n::tp(
+        "err.bridge.refused",
+        &[("endpoint", endpoint), ("status", &status.to_string()), ("said", &refusal_said(&text))]
+    )))
+}
+
+/// What a refusal says, short enough to read in one line: the message a
+/// service put in its error, wherever it put it, or the start of the body
+fn refusal_said(body: &str) -> String {
+    let v: Option<serde_json::Value> = serde_json::from_str(body.trim()).ok();
+    let said = v.as_ref().and_then(|v| {
+        [
+            "/error/message", "/message", "/detail", "/error", "/detail/0/msg", "/errors/0/message",
+        ]
+        .iter()
+        .find_map(|p| v.pointer(p).and_then(|m| m.as_str()).map(str::to_string))
+        .or_else(|| v.pointer("/detail").map(|d| d.to_string()))
+    });
+    let said = said.unwrap_or_else(|| body.trim().to_string());
+    let one_line: String = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    match one_line.char_indices().nth(300) {
+        Some((at, _)) => format!("{}…", &one_line[..at]),
+        None => one_line,
+    }
+}
+
 fn why_it_failed(e: &ureq::Error, endpoint: &str, timeout: Option<std::time::Duration>) -> String {
     match (e, timeout) {
         (ureq::Error::Timeout(_), Some(t)) => crate::i18n::tp(
@@ -220,8 +263,12 @@ fn agent_for(timeout: Option<std::time::Duration>) -> ureq::Agent {
     let map = g.get_or_insert_with(HashMap::new);
     map.entry(key)
         .or_insert_with(|| {
+            // A refusal is read like an answer (see `answer_of`): what the far
+            // end says is wrong with the request is the one thing that says
+            // how to put it right, and treated as an error it was thrown away
             ureq::Agent::config_builder()
                 .timeout_global(timeout)
+                .http_status_as_error(false)
                 .build()
                 .new_agent()
         })
@@ -273,13 +320,10 @@ pub fn complete_shaped(
     for (k, v) in headers {
         req = req.header(k.as_str(), v.as_str());
     }
-    let mut resp = req
+    let resp = req
         .send_json(&body)
         .map_err(|e| anyhow!(why_it_failed(&e, &endpoint, timeout)))?;
-    let v: serde_json::Value = resp
-        .body_mut()
-        .read_json()
-        .with_context(|| crate::i18n::t("err.bridge.bad_response_json"))?;
+    let v = answer_of(resp, &endpoint)?;
     let content = v
         .pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
@@ -423,13 +467,10 @@ fn choose_direct(conn: &ModelConn, ask: &serde_json::Value) -> Result<serde_json
     for (k, v) in &conn.headers {
         req = req.header(k.as_str(), v.as_str());
     }
-    let mut resp = req
+    let resp = req
         .send_json(&body)
         .map_err(|e| anyhow!(why_it_failed(&e, &endpoint, conn.timeout)))?;
-    let v: serde_json::Value = resp
-        .body_mut()
-        .read_json()
-        .with_context(|| crate::i18n::t("err.bridge.bad_response_json"))?;
+    let v = answer_of(resp, &endpoint)?;
     v.get("answers")
         .cloned()
         .ok_or_else(|| anyhow!(crate::i18n::tp("err.choose.no_answers", &[("v", &v.to_string())])))
@@ -701,6 +742,16 @@ mod tests {
             println!("{name} wrote {said:?} in {:?}", t.elapsed());
             assert!(said.to_lowercase().contains("apple"), "{name}: {said}");
         }
+    }
+
+    /// A refusal is said in the far end's own words, wherever it put them
+    #[test]
+    fn a_refusal_says_what_the_far_end_said() {
+        assert_eq!(refusal_said(r#"{"error": {"message": "state is too large"}}"#), "state is too large");
+        assert_eq!(refusal_said(r#"{"detail": "model not found"}"#), "model not found");
+        assert_eq!(refusal_said(r#"{"detail": [{"loc": ["body"], "msg": "field required"}]}"#), "field required");
+        assert_eq!(refusal_said("Bad Request\n\n  nothing more"), "Bad Request nothing more");
+        assert!(refusal_said(&"x".repeat(1000)).chars().count() <= 301);
     }
 
     /// An AI installed on this PC is named with the mark in front, and a

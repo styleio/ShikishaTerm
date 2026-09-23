@@ -1775,6 +1775,7 @@
   "err.bridge.url_unset": "SHIKISHA_BRIDGE_URL is not set",
   "err.bridge.model_unset": "SHIKISHA_BRIDGE_MODEL is not set",
   "err.bridge.connect_failed": "Connection failed ({endpoint}): {e}",
+  "err.bridge.refused": "{endpoint} refused the request ({status}): {said}",
   "err.bridge.timed_out": "No reply after waiting {secs} seconds ({endpoint}). A model on your own machine can take longer than this to load and think; the wait is set per provider in Settings, and 0 waits as long as it takes.",
   "err.bridge.bad_response_json": "Could not read the response JSON",
   "err.choose.no_questions": "A decision needs at least one question, each listing the answers it allows",

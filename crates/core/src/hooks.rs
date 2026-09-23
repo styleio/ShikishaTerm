@@ -5094,34 +5094,63 @@ end
         }
         const SRC: &str = r##"
 
--- What the page offers, as the answers to a question. One entry per element
--- the browser found, keyed by its number, carrying what a decision needs to
--- be made on: what it is, what it says, what it currently holds, and whether
--- it only just appeared
 -- Put values into a {name}-shaped text. The same blanks the translations
 -- use, on texts that are no longer translations (see `crate::asking`)
 local function fill(text, into)
   return (text:gsub("{(%w+)}", function(k) return tostring(into[k] or "") end))
 end
 
-local function offers(rows, verb)
-  local out, any = {}, false
+-- How big a question is asked, largest first: how much of the page's text
+-- goes with it, how many elements one question offers, how many the page is
+-- summed up by, and how long a label may be. A decision service holds a
+-- question to a number of choices (Jev: 255) and a question as a whole to a
+-- size, and refuses the whole of it past either -- an article on Wikipedia
+-- is past both. Refused, the move is asked again one size down
+local SIZES = {
+  { text = 4000, offered = 255, seen = 120, label = 80 },
+  { text = 1500, offered = 100, seen = 50, label = 50 },
+}
+
+-- What the page offers, as the answers to a question. One entry per element
+-- the browser found, keyed by its number, carrying what a decision needs to
+-- be made on: what it is, what it says, what it currently holds, and whether
+-- it only just appeared
+local function offers(rows, verb, size)
+  size = size or SIZES[1]
+  local can = {}
   for _, e in ipairs(rows or {}) do
-    local ok = false
-    for _, v in ipairs(e.can or {}) do if v == verb then ok = true end end
-    if ok then
-      any = true
-      out[tostring(e.ref)] = {
-        element = "[" .. e.ref .. "] " .. (e.role or "") .. " " .. (e.name or ""),
-        holds = e.value or "",
-        choices = e.choices or "",
-        section = e.section or "",
-        is_new = e.new and "yes" or "no",
-        on_screen = e.off_screen and "no" or "yes",
-      }
+    for _, v in ipairs(e.can or {}) do
+      if v == verb then can[#can + 1] = e break end
     end
   end
-  if not any then return nil end
+  if #can == 0 then return nil end
+  -- Past the most: what is on the screen first, then what just appeared,
+  -- then the rest in page order -- the rest is still reached by scrolling
+  if #can > size.offered then
+    local first, next_, rest = {}, {}, {}
+    for _, e in ipairs(can) do
+      if not e.off_screen then first[#first + 1] = e
+      elseif e.new then next_[#next_ + 1] = e
+      else rest[#rest + 1] = e end
+    end
+    can = {}
+    for _, group in ipairs({ first, next_, rest }) do
+      for _, e in ipairs(group) do
+        if #can < size.offered then can[#can + 1] = e end
+      end
+    end
+  end
+  local out = {}
+  for _, e in ipairs(can) do
+    out[tostring(e.ref)] = {
+      element = "[" .. e.ref .. "] " .. (e.role or "") .. " " .. clip(e.name or "", size.label),
+      holds = clip(e.value or "", size.label),
+      choices = clip(e.choices or "", size.label * 2),
+      section = e.section or "",
+      is_new = e.new and "yes" or "no",
+      on_screen = e.off_screen and "no" or "yes",
+    }
+  end
   return out
 end
 
@@ -5148,8 +5177,8 @@ end
 -- the operation and answered independently: the two together are one round
 -- trip instead of two, and the answer to a question whose operation was not
 -- chosen is simply never read
-local function target_question(goal, rows, verb, op, history)
-  local criteria = offers(rows, verb)
+local function target_question(goal, rows, verb, op, history, size)
+  local criteria = offers(rows, verb, size)
   if not criteria then return nil end
   return {
     type = "choice",
@@ -5251,27 +5280,46 @@ function on_step(tab)
 
   local past = history()
   local ops = operations(rows)
-  local questions = {
-    operation = {
-      type = "choice",
-      criteria = ops,
-      instructions = { goal = goal, rules = ASK.rules_operation, done = past },
-    },
-  }
-  questions.click_target = target_question(goal, rows, "click", "CLICK", past)
-  questions.type_target = target_question(goal, rows, "fill", "TYPE", past)
-  questions.choose_target = target_question(goal, rows, "select", "CHOOSE", past)
-  questions.scroll_target = target_question(goal, rows, "scroll", "SCROLL_IN", past)
-
   local where = shikisha.browser_text(BR, "body") or ""
-  local okc, answers = pcall(shikisha.ai_choose, {
-    model = CHOOSE_MODEL ~= "" and CHOOSE_MODEL or nil,
-    state = { page = { text = clip(where, 6000) }, elements = rows, done = past },
-    questions = questions,
-  })
-  -- Asking takes seconds and the program went on meanwhile: a run stopped
-  -- while it was asked is not carried on with the answer
-  if stopped() then return end
+  -- One question, at one size. The page is summed up by what is on the
+  -- screen first, as one short line per element: the questions below list
+  -- the elements themselves, and the page whole a second time is what made
+  -- a long article too big to ask about
+  local function ask(size)
+    local questions = {
+      operation = {
+        type = "choice",
+        criteria = ops,
+        instructions = { goal = goal, rules = ASK.rules_operation, done = past },
+      },
+    }
+    questions.click_target = target_question(goal, rows, "click", "CLICK", past, size)
+    questions.type_target = target_question(goal, rows, "fill", "TYPE", past, size)
+    questions.choose_target = target_question(goal, rows, "select", "CHOOSE", past, size)
+    questions.scroll_target = target_question(goal, rows, "scroll", "SCROLL_IN", past, size)
+    local seen = {}
+    for _, onscreen in ipairs({ true, false }) do
+      for _, e in ipairs(rows) do
+        if #seen < size.seen and (not e.off_screen) == onscreen then
+          seen[#seen + 1] = "[" .. e.ref .. "] " .. (e.role or "") .. " " .. clip(e.name or "", size.label)
+        end
+      end
+    end
+    return pcall(shikisha.ai_choose, {
+      model = CHOOSE_MODEL ~= "" and CHOOSE_MODEL or nil,
+      state = { page = { text = clip(where, size.text) }, elements = seen, done = past },
+      questions = questions,
+    })
+  end
+  local okc, answers
+  for _, size in ipairs(SIZES) do
+    okc, answers = ask(size)
+    -- Asking takes seconds and the program went on meanwhile: a run stopped
+    -- while it was asked is not carried on with the answer
+    if stopped() then return end
+    if okc and type(answers) == "table" and answers.operation then break end
+    shikisha.log("words: asked again with a smaller question: " .. tostring(answers))
+  end
   if not okc or type(answers) ~= "table" or not answers.operation then
     finish(1, shikisha.tf("words.err.no_decision", { why = tostring(answers) }), false)
     return

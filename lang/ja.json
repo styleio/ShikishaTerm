@@ -1765,6 +1765,7 @@
   "err.bridge.url_unset": "SHIKISHA_BRIDGE_URL 未設定",
   "err.bridge.model_unset": "SHIKISHA_BRIDGE_MODEL 未設定",
   "err.bridge.connect_failed": "接続失敗 ({endpoint}): {e}",
+  "err.bridge.refused": "{endpoint} が要求を断りました ({status}): {said}",
   "err.bridge.timed_out": "{secs}秒待っても応答がありませんでした ({endpoint})。手元のモデルは読み込みと思考にこれ以上かかることがあります。待ち時間は設定のプロバイダごとに変えられ、0 なら待ち続けます。",
   "err.bridge.bad_response_json": "応答JSONが読めない",
   "err.choose.no_questions": "判断には、答えの選択肢を持つ質問が少なくとも1つ必要です",

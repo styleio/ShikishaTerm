@@ -8,6 +8,10 @@
  *     node tools/debug/words-installed.win.mjs --ai assistant
  *     node tools/debug/words-installed.win.mjs --ai assistant --unagreed
  *
+ * `--url <address> --goal <words>` drives a real page instead of the form,
+ * for as long as `--seconds` (default 90), and prints what the run said on
+ * its way. Nothing is checked but that the program kept moving.
+ *
  * `--unagreed` writes no agreement to send pages. The goal is refused, and
  * then sent again the way "Agree and run" beside that refusal sends it: the
  * run has to start, and the agreement has to be in the settings file.
@@ -52,7 +56,10 @@ const TOKEN = 'words-token-0123456789abcdef';
 const JEV = process.argv.includes('--choose') && process.argv[process.argv.indexOf('--choose') + 1] === 'jev';
 if (JEV && !process.env.JEV_API_KEY) { console.error('--choose jev needs JEV_API_KEY'); process.exit(2); }
 const CHOOSE = JEV ? 'jev/jev-latest' : AI;
-const GOAL = 'Type Alice in the name box and send the form.';
+const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
+const URL_ = arg('--url');
+const GOAL = arg('--goal') || 'Type Alice in the name box and send the form.';
+const SECONDS = Number(arg('--seconds') || 90);
 const LIMIT_MS = 1500;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -91,7 +98,7 @@ fs.writeFileSync(scene, JSON.stringify({
     send_pages_to: UNAGREED ? undefined : UNSET ? '@claude' : [...new Set([CHOOSE, AI])].sort().join(' + '),
     providers: JEV ? { jev: { base_url: 'https://api.typesafe.ai/v1/systemone', speaks: 'choice',
       models: ['jev-latest'], api_key: process.env.JEV_API_KEY } } : {},
-    browsers: [{ id: 'form', url: `http://127.0.0.1:${pagePort}/` }],
+    browsers: [{ id: 'form', url: URL_ || `http://127.0.0.1:${pagePort}/` }],
     folders: [{ cwd: '{work}', tabs: [{ id: 'clock', name: 'clock',
       // Encoded, because a command line is split on its quotes before PowerShell
       // ever reads it
@@ -157,7 +164,12 @@ try {
     await intent({ kind: 'words', on: true, goal: GOAL, agree: true });
   }
   const started = Date.now();
-  const longest = await watch(180000, () => sent !== null);
+  const longest = await watch(URL_ ? SECONDS * 1000 : 180000, () => sent !== null);
+  if (URL_) {
+    const said = fs.readFileSync(path.join(AT, 'app', 'logs', 'hooks.log'), 'utf8')
+      .split(/\r?\n/).filter((l) => /words|Result code/.test(l));
+    console.log(said.join('\n'));
+  }
   console.log(`sent: ${JSON.stringify(sent)} after ${((Date.now() - started) / 1000).toFixed(1)}s`);
   console.log(`the longest the clock tab stood still: ${longest}ms`);
   if (UNAGREED) {
@@ -166,7 +178,8 @@ try {
     console.log(`the desk now agrees to: ${agreed}`);
     if (agreed !== '@claude') failed = `the agreement was written as ${JSON.stringify(agreed)}`;
   }
-  if (sent !== 'Alice') failed = `the form was not sent with Alice (${JSON.stringify(sent)})`;
+  if (URL_) { /* a real page: what it said is the result */ }
+  else if (sent !== 'Alice') failed = `the form was not sent with Alice (${JSON.stringify(sent)})`;
   else if (longest > LIMIT_MS) failed = `the clock tab stood still for ${longest}ms`;
 } catch (e) {
   failed = String(e && e.stack || e);
