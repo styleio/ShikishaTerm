@@ -661,6 +661,25 @@ pub fn restart_tab(t: &mut Tab, alone: bool, keep: bool, rows: u16, cols: u16) -
 /// person is looking at a list of what was said in this folder and has chosen
 /// one. Down the same road, so a tab put back this way is an ordinary resumed
 /// tab in every other respect
+/// What was said before in the folder of the tab on screen `which`.
+///
+/// `which` is the number the screen drew the tab under, which counts pages and
+/// panels too. Read as a place in the tab list instead, a page anywhere in
+/// front of the tab pointed it at the tab after it, or past the last one --
+/// and then no answer came back at all, so the list sat open under its
+/// heading with nothing in it
+fn past_of(surfaces: &[Surface], tabs: &[Tab], which: usize) -> Option<crate::uistate::PastState> {
+    let t = tabs.get(session_at(surfaces, which)?)?;
+    Some(crate::uistate::PastState {
+        tab: which,
+        name: t.title.clone(),
+        hits: t
+            .cwd()
+            .map(|c| crate::vault::here(t.program(), c, 12))
+            .unwrap_or_default(),
+    })
+}
+
 pub fn resume_tab_into(t: &mut Tab, id: String, rows: u16, cols: u16) -> String {
     let s = tab::Session { id, source: tab::SessionSource::Store };
     restarted(t, tab::Resume::Id(s), None, rows, cols)
@@ -5891,27 +5910,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // up on a conversation of nobody's, and answered from the CLI's own
         // records -- the app's memory of that tab is exactly what is missing
         for which in shell.mail().take_past_lists() {
-            let at = (which as usize).saturating_sub(1);
-            past_view = tabs.get(at).map(|t| crate::uistate::PastState {
-                tab: which as usize,
-                name: t.title.clone(),
-                hits: t
-                    .cwd()
-                    .map(|c| crate::vault::here(t.program(), c, 12))
-                    .unwrap_or_default(),
-            });
+            past_view = past_of(&surfaces, &tabs, which as usize);
             // Asking is the moment the loss has been seen, so the caption goes
             // back to its ordinary manners: the offer stands while nobody has
             // spoken here, and no longer holds itself open past that
-            if let Some(t) = tabs.get_mut(at) {
+            if let Some(t) = session_at(&surfaces, which as usize).and_then(|i| tabs.get_mut(i)) {
                 t.lost = false;
             }
         }
         // One of them chosen: that tab is relaunched into it, the way every
-        // other resume relaunches a tab
+        // other resume relaunches a tab. By its screen number, like the list
+        // it was chosen from -- counted along the tabs instead, a page in
+        // front of it would relaunch its neighbour into this conversation
         for (which, id) in shell.mail().take_past_resumes() {
-            let at = (which as usize).saturating_sub(1);
-            if let Some(t) = tabs.get_mut(at) {
+            if let Some(t) = session_at(&surfaces, which as usize).and_then(|i| tabs.get_mut(i)) {
                 flash = Some(resume_tab_into(t, id, rows, cols));
             }
             past_view = None;
@@ -12191,6 +12203,35 @@ mod tests {
         // The page has no folder of its own, and still holds its place
         assert_eq!(places[0].dir, std::path::PathBuf::new());
         assert_eq!(places[2].dir, std::env::temp_dir());
+        for t in &mut tabs {
+            t.kill();
+        }
+    }
+
+    /// The way back is asked for by the number the screen drew the tab under,
+    /// and a page in front of the tabs must not move it onto another tab.
+    #[test]
+    fn the_way_back_answers_for_the_tab_that_was_pressed() {
+        let opts = tab::TabOptions { cwd: Some(std::env::temp_dir()), ..Default::default() };
+        let mut tabs = vec![
+            Tab::spawn("hippo".into(), &[crate::test_shell()], None, 10, 40, opts.clone()).unwrap(),
+            Tab::spawn("raven".into(), &[crate::test_shell()], None, 10, 40, opts).unwrap(),
+        ];
+        // A page and the settings in front, as they were on 2026-09-23 when
+        // the list opened empty: raven is screen 4, and the tab list has two
+        let surfaces = vec![
+            Surface::Browser { key: "shrimp".into(), name: "検索".into(), dir: None },
+            Surface::Browser { key: "settings".into(), name: "settings".into(), dir: None },
+            Surface::Session(0),
+            Surface::Session(1),
+        ];
+        let asked = |n| past_of(&surfaces, &tabs, n).map(|p| (p.tab, p.name));
+        assert_eq!(asked(3), Some((3, "hippo".into())), "screen 3 is hippo");
+        assert_eq!(asked(4), Some((4, "raven".into())), "raven's list never came back");
+        // A page has no conversation to go back to
+        assert_eq!(asked(1), None);
+        // What the choice relaunches is found the same way
+        assert_eq!(session_at(&surfaces, 4), Some(1));
         for t in &mut tabs {
             t.kill();
         }
