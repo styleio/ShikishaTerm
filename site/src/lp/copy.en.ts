@@ -186,9 +186,9 @@ export const en: LpCopy = {
     ],
     stars: {
       label: "stars on GitHub",
-      ask: "Help us remove the warning on the ZIP file.",
+      ask: "If you like it, give it a star on GitHub",
       button: "Star it",
-      why: "To get a free open-source code signing certificate that silences it, we need to prove the app has a solid reputation. GitHub stars are the best way to show this. Your one-click support will save the next user the hassle.",
+      why: "Help us remove the warning on the ZIP file. To get a free open-source code signing certificate that silences it, we need to prove the app has a solid reputation. GitHub stars are the best way to show this. Your one-click support will save the next user the hassle.",
     },
   },
   steps: {
