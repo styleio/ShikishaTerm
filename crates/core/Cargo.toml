@@ -21,6 +21,13 @@ path = "src/bin/sign.rs"
 name = "qr"
 path = "src/bin/qr.rs"
 
+# Does the reserve keep a program alive when its memory is refused? Limits
+# only itself, with a job object, so nothing else on the machine is touched
+# (crates/core/src/bin/reserve_probe.rs). Not part of any download.
+[[bin]]
+name = "reserve_probe"
+path = "src/bin/reserve_probe.rs"
+
 # Does the video path reach a browser? Run by hand against a real browser,
 # because that is the only thing that can answer it (crates/core/src/bin/video_probe.rs).
 # Not part of any download.
@@ -133,7 +140,7 @@ libc = "0.2"
 # the terminal library uses -- so "is this program installed" is asked of the
 # same list the launch will search. Already in the tree through portable-pty
 winreg = "0.10.1"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
 # The macro that makes a Rust type into a COM callback writes `windows_core`
 # paths, so the crate has to be here under that name as well (vaudio.rs: the
 # only way Windows reports that a process's sound is ready to be taken)

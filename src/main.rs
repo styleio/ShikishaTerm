@@ -144,6 +144,13 @@ fn say_fatally_with_page(text: &str, url: &str) {
     }
 }
 
+/// The system's allocator, with memory set aside for the moment the machine
+/// has none (see `shikisha_core::reserve`). Without it, a build that uses up
+/// the machine's commit for a second ends this program -- and every AI at
+/// work in it -- over whatever few bytes it asked for next
+#[global_allocator]
+static ALLOC: shikisha_core::reserve::Reserve = shikisha_core::reserve::Reserve;
+
 fn main() -> Result<()> {
     // This process owns a desktop, so it is the one that can put a banner on it.
     // Told once, before anything has cause to send one
@@ -326,6 +333,13 @@ fn boot() -> Result<()> {
     // trying it out
     let split = std::env::args().nth(1).as_deref() == Some("--split")
         || config::load().and_then(|c| c.split).unwrap_or(false);
+    // Set aside here, in the process that holds the work and runs for hours,
+    // and not in the short-lived ones above: a hook that runs for a moment
+    // has nothing to ride out, and would only take commit from a machine
+    // that may be short of it
+    if !shikisha_core::reserve::arm() {
+        shikisha_core::append_hook_log("memory: no reserve could be set aside");
+    }
     if split {
         return run_split();
     }

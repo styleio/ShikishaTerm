@@ -3263,10 +3263,11 @@
   "tui.crash.no_ai": "原因を調べるには、設定でアシスタントAIを選んでください。",
   "tray.screen_down.title": "画面が止まりました",
   "tray.screen_down.body": "作業は動き続けています。メモリに余裕ができたら、このアイコンを押すと画面が戻ります。",
-  "tray.memory_low.title": "メモリを空けるため画面を閉じました",
-  "tray.memory_low.body": "このPCのメモリが尽きかけたので、ほかが落ちる前に画面を閉じました。タブとAIは動き続けています。このアイコンを押すと画面が戻ります。",
-  "tray.memory_eased.title": "メモリに余裕が戻りました",
-  "tray.memory_eased.body": "このアイコンを押すと画面が戻ります。",
+  "tray.memory_low.title": "このPCのメモリが残りわずかです",
+  "tray.memory_rescued.title": "このPCのメモリが一時的に尽きました",
+  "tray.memory.still_working": "SHIKISHA-TERM は動き続けていて、作業は無事です。",
+  "tray.memory.heaviest": "いちばん多く使っているのは {name}（{size}）です。不要なら終了してください。",
+  "tray.memory.nobody": "使っていないプログラムを終了してください。",
   "tui.crash.all_kept": "会話は {kept} 件すべて、タブと一緒に戻っています。",
   "tui.crash.some_lost": "会話は {kept} 件戻りました。{lost} 件は新しく始まっています。戻れなかったタブには、戻る案内が出ています。"
 }

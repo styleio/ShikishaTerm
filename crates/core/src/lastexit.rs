@@ -428,9 +428,16 @@ pub fn question(ended: &Ended, mark: &Mark, language: &str) -> (String, String) 
 const ASKING: &str = "You are reading records, not doing work. Change nothing, run nothing, \
 open nothing, write no files: everything you need is in this message. \
 A terminal application stopped without closing properly. Explain in plain words what most likely \
-happened and what the person should do about it. If the records show another program caused it, \
-say which one. Do not guess beyond what the records support; say plainly what cannot be known \
-from them. Write plain sentences in short paragraphs, with no markdown, no headings and no \
+happened and what the person should do about it. \
+Keep where it stopped apart from why it stopped. The crash record always names this application, \
+because it is the program that stopped; that tells where, not why. Programs are often stopped from \
+outside: the machine running out of memory (the program that was refused memory is usually the \
+victim, so name the programs the records show holding it), Windows shutting down or updating, the \
+program being ended by another program or by the person, security software, a failing driver or \
+disk, or a loss of power. Say the application itself is at fault only when the records show an \
+error raised inside it during this run, such as a message it wrote as it fell over, and when they \
+do, say so plainly. If the records do not show the cause, say that rather than choosing one. \
+Do not guess beyond what the records support. Write plain sentences in short paragraphs, with no markdown, no headings and no \
 asterisks -- this is shown in a narrow strip, not on a page.";
 
 /// One panic, as it is written to `crash.log`: which run wrote it and when,

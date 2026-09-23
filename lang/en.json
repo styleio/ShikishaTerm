@@ -3285,10 +3285,11 @@
   "tui.crash.no_ai": "Choose an assistant AI in the settings to have this explained.",
   "tray.screen_down.title": "The screen stopped",
   "tray.screen_down.body": "Your work is still running. Click this icon to bring the screen back, once the machine has room again.",
-  "tray.memory_low.title": "The screen was closed to save memory",
-  "tray.memory_low.body": "This PC was about to run out of memory, so the screen was closed before anything else could fail. Your tabs and AIs are still running. Click this icon to bring the screen back.",
-  "tray.memory_eased.title": "Memory is available again",
-  "tray.memory_eased.body": "Click this icon to bring the screen back.",
+  "tray.memory_low.title": "This PC is running low on memory",
+  "tray.memory_rescued.title": "This PC ran out of memory for a moment",
+  "tray.memory.still_working": "SHIKISHA-TERM kept running and your work is safe.",
+  "tray.memory.heaviest": "The program using the most memory is {name} ({size}). Close it if you do not need it.",
+  "tray.memory.nobody": "Close programs you are not using.",
   "tui.crash.all_kept": "All {kept} conversations came back with their tabs.",
   "tui.crash.some_lost": "{kept} conversations came back; {lost} started fresh. A tab that lost one offers the way back to it."
 }
