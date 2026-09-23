@@ -9363,6 +9363,12 @@ type PictureKey = (usize, u64, u16, u16, usize);
 
 impl PaneRelay {
     /// The messages that bring a viewer up to date with how things are now.
+    /// The read-only copies of the panes nobody is looking at.
+    ///
+    /// The division itself is not here: it travels with the state, because it
+    /// is part of the same moment (`view::PanesState`). What this still does
+    /// with it is notice when it changed, so the copies of panes that are gone
+    /// -- or that have just taken the focus -- stop being remembered as sent
     pub fn changes(&mut self, layout: &crate::layout::Layout, surfaces: &[Surface], tabs: &[Tab]) -> Vec<String> {
         let mut out = Vec::new();
         let lay = crate::view::panes_json(layout);
@@ -9373,7 +9379,6 @@ impl PaneRelay {
             // emptied on the page; forget it, or it would not be sent again
             // once focus moves on
             self.screens.remove(&layout.focus());
-            out.push(format!("{{\"panes\":{lay}}}"));
             self.layout = lay;
         }
         for (id, surface) in layout.leaves() {
@@ -9402,13 +9407,14 @@ impl PaneRelay {
     }
 
     /// Everything, for a viewer who has only just arrived
+    /// What a viewer that has just arrived is told: a picture of every pane
+    /// it is not looking at.
+    ///
+    /// Not the division. That arrives with the state, which a viewer is always
+    /// sent on its first frame -- told here as well it would be two messages
+    /// for one moment, which is the thing `view::PanesState` exists to end
     pub fn seed(&self) -> Vec<String> {
-        if self.layout.is_empty() {
-            return Vec::new();
-        }
-        let mut out = vec![format!("{{\"panes\":{}}}", self.layout)];
-        out.extend(self.screens.iter().map(|(id, (_, html))| pane_screen_message(*id, html)));
-        out
+        self.screens.iter().map(|(id, (_, html))| pane_screen_message(*id, html)).collect()
     }
 }
 
@@ -12154,22 +12160,23 @@ mod tests {
             }
         }
 
-        // Undivided: the division, and no other pane to picture
+        // Undivided: nothing to picture. The division itself is not sent
+        // from here at all -- it travels with the state, because it is the
+        // same moment as what is in it (`view::PanesState`)
         let first = relay.changes(&layout, &surfaces, &tabs);
-        assert_eq!(first.len(), 1, "{first:?}");
-        assert!(first[0].starts_with("{\"panes\":"));
-        assert!(relay.changes(&layout, &surfaces, &tabs).is_empty(), "it sends though nothing changed");
+        assert!(first.is_empty(), "the division is being sent twice again: {first:?}");
 
-        // Divided: the new division, and a picture of the pane left behind
+        // Divided: a picture of the pane left behind, and only that
         layout.split(crate::layout::Dir::Row, 2);
         let split = relay.changes(&layout, &surfaces, &tabs);
-        assert!(split[0].starts_with("{\"panes\":"), "{split:?}");
-        assert_eq!(split.iter().filter(|m| m.contains("\"panescreen\"")).count(), 1, "{split:?}");
+        assert_eq!(split.len(), 1, "{split:?}");
+        assert!(split[0].contains("\"panescreen\""), "{split:?}");
         assert!(relay.changes(&layout, &surfaces, &tabs).is_empty(), "it sends the same picture again");
 
-        // A viewer who just arrived is told all of it
+        // A viewer who just arrived is told the pictures it has not seen
         let seed = relay.seed();
-        assert_eq!(seed.len(), 2, "{seed:?}");
+        assert_eq!(seed.len(), 1, "{seed:?}");
+        assert!(seed[0].contains("\"panescreen\""), "{seed:?}");
         for t in tabs.iter_mut() {
             t.kill();
         }

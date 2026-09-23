@@ -16,31 +16,58 @@ use std::time::Duration;
 /// state dot, whether it is a browser — the page already has from `__state`,
 /// looked up by surface number. Sending it twice would let the two copies
 /// disagree, and the pane would caption itself with a stale name.
-pub fn panes_json(l: &crate::layout::Layout) -> String {
-    #[derive(serde::Serialize)]
-    struct Pane {
-        id: crate::layout::PaneId,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        surface: usize,
-        focused: bool,
-    }
-    /// One divider, in the same fractions. `i` is its position in
-    /// `Layout::dividers()`, which is how a drag names it coming back
-    #[derive(serde::Serialize)]
-    struct Divider {
-        i: usize,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        /// The first half's share, so the page can draw the handle on the line
-        ratio: f32,
-        /// true = the halves are stacked, so the divider lies across
-        down: bool,
-    }
+/// One pane as the page draws it: a rectangle in fractions of the content
+/// area, and which row is in it
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PaneBox {
+    pub id: crate::layout::PaneId,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub surface: usize,
+    pub focused: bool,
+}
+
+/// One divider, in the same fractions. `i` is its position in
+/// `Layout::dividers()`, which is how a drag names it coming back
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DividerBox {
+    pub i: usize,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// The first half's share, so the page can draw the handle on the line
+    pub ratio: f32,
+    /// true = the halves are stacked, so the divider lies across
+    pub down: bool,
+}
+
+/// How the content area is divided, as the page needs it.
+///
+/// Part of [`crate::uistate::UiState`] rather than a message of its own. It
+/// used to travel by a door of its own -- `window.__panes` at the window, a
+/// second socket message on the wire -- and the page therefore learned the
+/// division a moment after it learned everything else. One press that changed
+/// both (opening a split row) was drawn once in between with the new answer to
+/// "which row am I on" and the old rectangles: a tab flashed up that nobody
+/// had asked for, and then the pane went empty. Two messages for one moment
+/// can always be drawn between; one cannot
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct PanesState {
+    /// Whether the content area is undivided. The page draws nothing of the
+    /// pane furniture then, and the one rectangle is the whole area
+    pub single: bool,
+    pub focus: crate::layout::PaneId,
+    pub panes: Vec<PaneBox>,
+    pub dividers: Vec<DividerBox>,
+}
+
+/// The division, as the page needs it
+pub fn panes_of(l: &crate::layout::Layout) -> PanesState {
+    type Pane = PaneBox;
+    type Divider = DividerBox;
     let focus = l.focus();
     let surfaces: std::collections::HashMap<_, _> = l.leaves().into_iter().collect();
     let panes: Vec<Pane> = l
@@ -70,13 +97,12 @@ pub fn panes_json(l: &crate::layout::Layout) -> String {
             down: dir == crate::layout::Dir::Col,
         })
         .collect();
-    serde_json::json!({
-        "single": l.is_single(),
-        "focus": focus,
-        "panes": panes,
-        "dividers": dividers,
-    })
-    .to_string()
+    PanesState { single: l.is_single(), focus, panes, dividers }
+}
+
+/// The same, written out. Still used where a message is built by hand
+pub fn panes_json(l: &crate::layout::Layout) -> String {
+    serde_json::to_string(&panes_of(l)).unwrap_or_default()
 }
 
 /// What the page has to be told about a screen that has just been rendered.
@@ -493,6 +519,8 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         settings_float: ui.settings && ui.settings_float,
         auto_enabled: ui.auto.unwrap_or(true),
         remote_on: ui.remote_on,
+        // The division, in the same breath as what is in it
+        panes: panes_of(&ui.layout),
         split_open: ui.split_open.clone(),
         remote_conn: ui.remote_conn,
         remote_sticky: ui.remote_sticky,

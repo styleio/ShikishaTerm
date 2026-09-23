@@ -9548,6 +9548,12 @@ window.__state = function (json) {
   const before = S;
   S = JSON.parse(json);
   gitAfterWork(before);
+  // First of all, and before anything below reads PANES: the rectangles and
+  // the rows in them are the same moment as the rest of this state
+  if (S && S.panes) {
+    const shape = JSON.stringify(S.panes);
+    if (shape !== laidOut) { laidOut = shape; layPanes(S.panes); }
+  }
   // A page older than the app it's talking to keeps rendering yesterday's
   // UI — a phone leaves the board open across app updates, and every "the
   // button is still the old one" report traces back to that. The state
@@ -9872,8 +9878,13 @@ window.__state = function (json) {
 // the dashboard, a placed browser and its bar). The rest get a read-only view
 // of their terminal, which is all a pane you are not typing into can show.
 let PANES = null;
-window.__panes = function (json) {
-  const P = JSON.parse(json);
+// Lay the content area out. Called from __state with the division that came
+// with it -- never on its own, because the division and what is in it are one
+// moment. Drawn from two messages, the page painted once in between with the
+// new answer to "which row am I on" and the old rectangles: a tab nobody had
+// asked for flashed up, and then the pane went empty
+function layPanes(P) {
+  if (!P || !P.panes) return;
   PANES = P;
   const host = document.getElementById("panes");
   const seen = new Set();
@@ -9995,13 +10006,18 @@ window.__panes = function (json) {
   lastRC = "";
   report();
   if (lastCur) window.__cursor(lastCur[0], lastCur[1], lastCur[2]);
-};
+}
 
 // Which restart is one press away from firing, as "<class><pane id>". At most
 // one at a time, and never held on the element: the captions are repainted on
 // every state push, and an arming kept there would be wiped a moment after it
 // was asked for
 let armedPane = null;
+
+// What the content area was last laid out from. The division rides in every
+// state push now, and rebuilding the panes on each one would take the caret
+// out of a field sixty times a second
+let laidOut = "";
 
 // The tab a pane is showing, if it is showing one.
 function paneTab(p) {
@@ -12395,8 +12411,10 @@ if (REMOTE) {
     // The panes, the way the window is given them: how the content area is
     // divided, and a picture of each pane not in front. Only asked for by a
     // screen wide enough to lay them out (see `connectState`)
-    if (d.panes && !phoneWidth()) window.__panes(JSON.stringify(d.panes));
-    if (d.panescreen && !phoneWidth()) window.__panescreen(d.panescreen.id, d.panescreen.html);
+    // The division is no longer a message of its own -- it rides in the state
+    // above, because it is the same moment as what is in it. Only the
+    // read-only copies of the panes nobody is looking at still arrive here
+    if (d.panescreen) window.__panescreen(d.panescreen.id, d.panescreen.html);
     // 📼 pushes: a recorded Lua line for the composer, or a ▶ run's verdict
     // (null = clean, so test for the key's presence, not its truthiness).
     if (d.recorded != null) window.__recorded(d.recorded);
