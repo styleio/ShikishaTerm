@@ -970,6 +970,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // One at a time: a second one would be a second thing typing into pages
     // while the person watches only one of them
     let mut driving: Option<(usize, String)> = None;
+    // A words run taken out of an engine that was built again, waiting to be
+    // taken up by the new one (HookEngine::words_carry)
+    let mut words_carried: Option<serde_json::Value> = None;
     // Whether somebody is being asked why the last run ended badly, and the
     // way their answer gets back to the loop
     let mut asking_why = false;
@@ -1942,6 +1945,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 if let Some(eng) = engine.as_ref() {
                     eng.set_ai_engine(newcfg.ai_engine.clone().filter(|s| !s.is_empty()));
+                }
+                // A words run goes on across the reload: the settings are
+                // written in the middle of one as a matter of course
+                if let Some((pane, _)) = driving.as_ref() {
+                    words_carried = engine.as_ref().and_then(|e| e.words_carry(*pane));
+                    if words_carried.is_none() {
+                        driving = None;
+                    }
                 }
                 engine = build_engine(
                     Some(&newcfg),
@@ -3009,8 +3020,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::RunAction { index }) => {
                         shell.mail().run_actions.push(index);
                     }
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Words { on, goal }) => {
-                        shell.mail().words.push((on, goal));
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Words { on, goal, agree }) => {
+                        shell.mail().words.push((on, goal, agree));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::WhyStopped { ask }) => {
                         shell.mail().why_stopped.push(ask);
@@ -5726,7 +5737,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // 🗣 drive the shown page from a goal written in ordinary words. The
         // run is attached to the page's own pane: nobody is operating it from
         // another tab, and the strip the person watches belongs to that page
-        for (on, goal) in shell.mail().take_words() {
+        for (on, goal, agree) in shell.mail().take_words() {
             let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) else {
                 flash = Some(i18n::t("msg.words.browser_only"));
                 continue;
@@ -5741,12 +5752,37 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // Sending page contents to a company's service is the person's
             // decision to make, once, knowingly -- the same gate the picture
             // tools pass through, and refused here rather than half-started
-            match config::pages_gate(desks.get(desk_index), Some(&key)) {
-                config::PageGate::Ready { .. } => {}
-                refused => {
-                    flash = Some(refused.why());
+            let mut gate = config::pages_gate(desks.get(desk_index), Some(&key));
+            // "Agree and run", pressed beside that question: the agreement is
+            // written on the desk, the way ticking it in the settings writes it
+            if agree
+                && let (Some(write), Some(desk)) = (gate.agree().map(str::to_string), desks.get_mut(desk_index))
+            {
+                if config::save_desk_setting(&desk.id, "send_pages_to", Some(serde_json::json!(write))) {
+                    append_hook_log(&format!("words: agreed to send pages to {write}"));
+                    desk.send_pages_to = Some(write);
+                    gate = config::pages_gate(desks.get(desk_index), Some(&key));
+                } else {
+                    flash = Some(i18n::t("msg.words.not_saved"));
                     continue;
                 }
+            }
+            if !matches!(gate, config::PageGate::Ready { .. }) {
+                append_hook_log(&format!("words: not started: {}", gate.why()));
+                // Said on the 🗣 line, where the goal was typed, and with the
+                // button that agrees when agreeing is what is missing. A flash
+                // alone went by in a moment, and read as nothing happening
+                let note = match gate.why_here() {
+                    // A question with its answer beside it, not a fault
+                    Some(text) => serde_json::json!({"text": text, "bad": false, "agree": goal}),
+                    None => serde_json::json!({"text": gate.why(), "bad": true}),
+                };
+                let js = note.to_string();
+                shell.push_words_note(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"words\":{js}}}"));
+                }
+                continue;
             }
             if engine.is_none() {
                 engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
@@ -5779,6 +5815,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // loop that waited here would hold everything else in the program
         // still for as long as the whole task took
         if let Some((pane, key)) = driving.clone() {
+            // Carried over a reload: taken up by the engine built in its place,
+            // with the page's models and stops as the settings now say. A desk
+            // with no automation of its own has no engine until one is needed
+            if words_carried.is_some() && engine.is_none() {
+                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+            }
+            if let (Some(carried), Some(eng)) = (words_carried.take(), engine.as_mut()) {
+                let stops = desks
+                    .get(desk_index)
+                    .map(|w| config::stops_to_lua(&w.stops))
+                    .unwrap_or_else(|| "{}".to_string());
+                let models = desks.get(desk_index).map(|w| w.words_models(Some(&key))).unwrap_or_default();
+                if let Err(e) = eng.resume_words(pane, &key, &stops, &models, &carried) {
+                    append_hook_log(&format!("words could not carry on: {e:#}"));
+                }
+            }
             let ctx = browser_ctx(pane, &key);
             let still = match engine.as_mut() {
                 Some(eng) => eng.step_words(&ctx),

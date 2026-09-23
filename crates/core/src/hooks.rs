@@ -6185,6 +6185,61 @@ end
         self.caps.take_replay()
     }
 
+    /// Where a words-driven run on `pane` stands, to be carried into the
+    /// engine that replaces this one: its goal, what it has done, its count
+    /// of moves and its transcript -- every variable it keeps (`words_*`,
+    /// `rally_*`). `None` when no run is going.
+    ///
+    /// The engine is built again whenever the settings are read again, and
+    /// the settings are written in the middle of a run as a matter of course:
+    /// agreeing to send the page is itself a write. A run left behind in the
+    /// old engine stopped without a word after its first "reading the page"
+    pub fn words_carry(&self, pane: usize) -> Option<serde_json::Value> {
+        if !self.words_running() || !self.attach.lent.contains_key(&pane) {
+            return None;
+        }
+        let vars: Value = self
+            .lua
+            .load(
+                r#"local o = {}
+for k, v in pairs(shikisha.__vars) do
+  if type(k) == "string" and (k:sub(1, 6) == "words_" or k:sub(1, 6) == "rally_") then o[k] = v end
+end
+return o"#,
+            )
+            .eval()
+            .ok()?;
+        Some(lua_to_json(&vars))
+    }
+
+    /// Take up a words-driven run carried from the engine this one replaced
+    /// ([`Self::words_carry`]): the same loop on the same page, standing where
+    /// that one stood. Nothing is started again -- no new transcript, no
+    /// "reading the page" -- the next move is simply the next one
+    pub fn resume_words(
+        &mut self,
+        pane: usize,
+        browser: &str,
+        stops_lua: &str,
+        models: &crate::config::WordsModels,
+        carried: &serde_json::Value,
+    ) -> Result<()> {
+        let id = self.load_browser_words(browser, stops_lua, models)?;
+        self.lend_tab(pane, id);
+        if let Some(vars) = carried.as_object() {
+            for (k, v) in vars {
+                let _ = self.call_primitive_as(
+                    None,
+                    crate::grants::Subject::Human,
+                    "set_var",
+                    &[serde_json::json!(k), v.clone()],
+                );
+            }
+        }
+        crate::append_hook_log(&format!("words: carried on driving {browser:?} after the settings were read again"));
+        Ok(())
+    }
+
     /// Whether a words-driven run is still going
     pub fn words_running(&self) -> bool {
         matches!(

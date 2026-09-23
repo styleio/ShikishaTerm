@@ -817,7 +817,7 @@ impl WinSurface {
                 // Operate-a-target request; the loop has the engine to attach it.
                 Ev::Operate { target, goal } => self.mail.operates.push((target, goal)),
                 // 🗣 drive the shown page from words
-                Ev::Words { on, goal } => self.mail.words.push((on, goal)),
+                Ev::Words { on, goal, agree } => self.mail.words.push((on, goal, agree)),
                 // The notice about a run that ended badly
                 Ev::WhyStopped { ask } => self.mail.why_stopped.push(ask),
                 // Save the newest replay.lua to Downloads (the board can't

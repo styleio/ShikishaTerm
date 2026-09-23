@@ -1296,6 +1296,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .castgear { flex:none; margin:var(--s2) 0; padding:6px 8px; font-size:14px; cursor:pointer;
     background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:var(--r-ctl); }
   .castgear:active { background:var(--brand); color:#04121c; }
+  /* "Agree and run" under 🗣's reason: the one way on, so it reads as the
+     thing to press -- the brand's edge and letters, on the line after */
+  .castagree { margin-top:0; margin-bottom:var(--s2); font-size:13px; color:var(--brand); border-color:var(--brand); }
   /* Keys / actions rows fill the rest and scroll horizontally under the switcher. */
   #castkeys, #castactions { display:flex; gap:var(--s2); overflow-x:auto; white-space:nowrap;
     flex:1 1 0; min-width:0; padding:6px 0;
@@ -15129,6 +15132,10 @@ window.__wordsNote = function (note) {
   try {
     ensureBar();
     luaFlash("🗣 " + (note && note.text || ""), !!(note && note.bad));
+    // Stopped for want of an agreement: the goal rides along, so the button
+    // beside the reason can agree and carry it out in one press
+    if (luaNote && note && typeof note.agree === "string") luaNote.agree = note.agree;
+    if (castPanel === "lua") renderPanel();
   } catch (e) {}
 };
 window.__recorded = function (line) {
@@ -17803,6 +17810,16 @@ function renderPanel() {
   const note = castPanel === "target" ? targetNote() : castPanel === "lua" ? luaNoteLine() : null;
   if (note && note.text) {
     castPanelEl.append(el("span", {class:"castnote" + (note.tone ? " " + note.tone : ""), title: note.text}, note.text));
+  }
+  // 🗣 stopped because sending the page was never agreed to: the fix is on
+  // the same line as the reason, and it carries out the goal that was sent
+  if (castPanel === "lua" && luaMode === "words" && luaNote && typeof luaNote.agree === "string") {
+    const goal = luaNote.agree;
+    castPanelEl.append(el("button", {class:"castgear castagree", onclick: () => {
+      luaNote = null;
+      send({kind:"words", on:true, goal: goal, agree:true});
+      renderPanel();
+    }}, T["tui.cast.lua.words_agree"] || "Agree and run"));
   }
   // After the reset above, castPanel is final for this render — load the
   // panel's composer document and relabel Send to its verb.

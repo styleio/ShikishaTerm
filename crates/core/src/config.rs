@@ -848,11 +848,13 @@ pub const SPEAKS_CHOICE: &str = "choice";
 pub enum PageGate {
     /// Agreed, to these models, and they are the ones that would be asked
     Ready { models: String },
-    /// These models would be asked, and this desk has not agreed to them
-    Consent { models: String },
+    /// These models would be asked, and this desk has not agreed to them.
+    /// `agree` is what the desk's agreement reads once it is given
+    Consent { models: String, agree: String },
     /// Agreed to something else. Pointing the setting at a different company
-    /// is a fresh question, so it is asked again rather than assumed
-    Changed { agreed: String, models: String },
+    /// is a fresh question, so it is asked again rather than assumed. Agreeing
+    /// adds these to what was agreed before (`agree`)
+    Changed { agreed: String, models: String, agree: String },
     /// Nothing is set to ask
     NoModel,
     /// There is no desk to remember an answer on
@@ -864,12 +866,32 @@ impl PageGate {
     pub fn why(&self) -> String {
         match self {
             PageGate::Ready { .. } => String::new(),
-            PageGate::Consent { models } => crate::i18n::tp("msg.words.consent", &[("by", models)]),
-            PageGate::Changed { agreed, models } => {
+            PageGate::Consent { models, .. } => crate::i18n::tp("msg.words.consent", &[("by", models)]),
+            PageGate::Changed { agreed, models, .. } => {
                 crate::i18n::tp("msg.words.changed", &[("agreed", agreed), ("by", models)])
             }
             PageGate::NoModel => crate::i18n::t("msg.words.no_model"),
             PageGate::NoDesk => crate::i18n::t("msg.words.no_desk"),
+        }
+    }
+
+    /// The same, said beside the button that agrees: what goes where, and
+    /// what pressing it does. `None` where there is nothing to agree to
+    pub fn why_here(&self) -> Option<String> {
+        match self {
+            PageGate::Consent { models, .. } => Some(crate::i18n::tp("msg.words.consent_here", &[("by", models)])),
+            PageGate::Changed { agreed, models, .. } => {
+                Some(crate::i18n::tp("msg.words.changed_here", &[("agreed", agreed), ("by", models)]))
+            }
+            _ => None,
+        }
+    }
+
+    /// What the desk's agreement reads once it is given here
+    pub fn agree(&self) -> Option<&str> {
+        match self {
+            PageGate::Consent { agree, .. } | PageGate::Changed { agree, .. } => Some(agree),
+            _ => None,
         }
     }
 }
@@ -965,11 +987,19 @@ pub fn pages_gate_as(desk: Option<&Desk>, key: Option<&str>, assistant: Option<&
     let models = names.iter().map(|n| crate::bridge::shown_name(n)).collect::<Vec<_>>().join(" + ");
     match desk.send_pages_to.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(agreed) if names.iter().all(|n| agreed_names(agreed).contains(n)) => PageGate::Ready { models },
-        Some(agreed) => PageGate::Changed {
-            agreed: agreed_names(agreed).iter().map(|n| crate::bridge::shown_name(n)).collect::<Vec<_>>().join(" + "),
-            models,
-        },
-        None => PageGate::Consent { models },
+        Some(agreed) => {
+            // What was agreed before stays agreed: another page may use it
+            let mut agree = agreed_names(agreed);
+            agree.extend(names.iter().cloned());
+            agree.sort();
+            agree.dedup();
+            PageGate::Changed {
+                agreed: agreed_names(agreed).iter().map(|n| crate::bridge::shown_name(n)).collect::<Vec<_>>().join(" + "),
+                models,
+                agree: agree.join(" + "),
+            }
+        }
+        None => PageGate::Consent { models, agree: names.join(" + ") },
     }
 }
 
@@ -6507,6 +6537,10 @@ mod tests {
             "Jev was never agreed to"
         );
         assert!(matches!(pages_gate_as(Some(&desk), Some("p"), None), PageGate::NoModel), "no assistant AI, nothing to drive with");
+        // Agreeing to Jev here keeps the assistant AI agreed, for the other page
+        let q = pages_gate_as(Some(&desk), Some("q"), Some("@claude"));
+        assert_eq!(q.agree(), Some("@claude + jev/jev-latest"));
+        assert!(q.why_here().is_some(), "the question is put beside the button");
     }
 
     #[test]

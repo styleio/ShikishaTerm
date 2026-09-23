@@ -6,6 +6,11 @@
  *     node tools/debug/words-installed.win.mjs [--ai @claude/haiku]
  *     JEV_API_KEY=... node tools/debug/words-installed.win.mjs --choose jev
  *     node tools/debug/words-installed.win.mjs --ai assistant
+ *     node tools/debug/words-installed.win.mjs --ai assistant --unagreed
+ *
+ * `--unagreed` writes no agreement to send pages. The goal is refused, and
+ * then sent again the way "Agree and run" beside that refusal sends it: the
+ * run has to start, and the agreement has to be in the settings file.
  *
  * `--ai assistant` chooses no model at all: the desk drives its pages with
  * the assistant AI (the first installed, Claude Code here), and only the
@@ -42,6 +47,7 @@ const AT = path.join(os.tmpdir(), 'sk-words');
 const at = process.argv.indexOf('--ai');
 const AI = at > 0 ? process.argv[at + 1] : '@claude/haiku';
 const UNSET = AI === 'assistant';
+const UNAGREED = process.argv.includes('--unagreed');
 const TOKEN = 'words-token-0123456789abcdef';
 const JEV = process.argv.includes('--choose') && process.argv[process.argv.indexOf('--choose') + 1] === 'jev';
 if (JEV && !process.env.JEV_API_KEY) { console.error('--choose jev needs JEV_API_KEY'); process.exit(2); }
@@ -82,7 +88,7 @@ fs.writeFileSync(scene, JSON.stringify({
     name: 'Words', id: 'words',
     browser: UNSET ? {} : { choose_model: CHOOSE, words_model: AI },
     // Agreed to, the way the settings write it: each name once, in order
-    send_pages_to: UNSET ? '@claude' : [...new Set([CHOOSE, AI])].sort().join(' + '),
+    send_pages_to: UNAGREED ? undefined : UNSET ? '@claude' : [...new Set([CHOOSE, AI])].sort().join(' + '),
     providers: JEV ? { jev: { base_url: 'https://api.typesafe.ai/v1/systemone', speaks: 'choice',
       models: ['jev-latest'], api_key: process.env.JEV_API_KEY } } : {},
     browsers: [{ id: 'form', url: `http://127.0.0.1:${pagePort}/` }],
@@ -142,10 +148,24 @@ try {
 
   // The goal, and the watch on the clock while it is carried out
   await intent({ kind: 'words', on: true, goal: GOAL });
+  if (UNAGREED) {
+    await sleep(1500);
+    const log = fs.readFileSync(path.join(AT, 'app', 'logs', 'hooks.log'), 'utf8');
+    if (!/words: not started/.test(log)) throw new Error('an unagreed page was not refused');
+    if (sent !== null) throw new Error('an unagreed page was driven');
+    console.log('refused until agreed; agreeing');
+    await intent({ kind: 'words', on: true, goal: GOAL, agree: true });
+  }
   const started = Date.now();
   const longest = await watch(180000, () => sent !== null);
   console.log(`sent: ${JSON.stringify(sent)} after ${((Date.now() - started) / 1000).toFixed(1)}s`);
   console.log(`the longest the clock tab stood still: ${longest}ms`);
+  if (UNAGREED) {
+    const cfg = JSON.parse(fs.readFileSync(path.join(AT, 'app', 'config', 'config.json'), 'utf8').replace(/^﻿/, ''));
+    const agreed = cfg.desks[0].send_pages_to;
+    console.log(`the desk now agrees to: ${agreed}`);
+    if (agreed !== '@claude') failed = `the agreement was written as ${JSON.stringify(agreed)}`;
+  }
   if (sent !== 'Alice') failed = `the form was not sent with Alice (${JSON.stringify(sent)})`;
   else if (longest > LIMIT_MS) failed = `the clock tab stood still for ${longest}ms`;
 } catch (e) {

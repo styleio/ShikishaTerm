@@ -62,5 +62,21 @@ export default {
     ready: `${open(false)}.then(() => {
       if (window.__asked.length) throw new Error("the settings opened though the models are chosen");
     })`,
+    // Sent, and refused for want of an agreement to send the page: the
+    // reason and the button that agrees, on 🗣's own line. Pressing it sends
+    // the same goal again, agreed
+    agree: `${open(false)}.then(() => {
+      const sent = []; window.ipc = { postMessage: (m) => sent.push(JSON.parse(m)) };
+      window.__wordsNote({ text: "ページに出ている内容と、そこで行える操作の一覧を Claude Code に送ります。{by} を提供する会社のサービスに届き、その会社の規約に沿って扱われます。送って実行するには「同意して実行」を押してください。".replace("{by}", "Claude Code"), bad: false, agree: "find the cheapest one" });
+      const b = document.querySelector(".castagree");
+      if (!b) throw new Error("no button that agrees");
+      return new Promise(r => setTimeout(r, 300)).then(() => {
+        b.click();
+        const m = sent.find(x => x.kind === "words");
+        if (!m || !m.agree || m.goal !== "find the cheapest one") throw new Error("the press sent " + JSON.stringify(sent));
+        if (document.querySelector(".castagree")) throw new Error("the button stayed after it was pressed");
+        window.__wordsNote({ text: "ページに出ている内容と、そこで行える操作の一覧を Claude Code に送ります。Claude Code を提供する会社のサービスに届き、その会社の規約に沿って扱われます。送って実行するには「同意して実行」を押してください。", bad: false, agree: "find the cheapest one" });
+      });
+    })`,
   },
 };

@@ -474,8 +474,10 @@ pub enum Ev {
     /// 🗣 drive this page from a goal written in ordinary words. `on` starts
     /// or stops the run; `goal` is what was typed, and may also arrive while a
     /// run is going, as a correction. Which page is driven is the one being
-    /// shown -- the panel this comes from belongs to it
-    Words { on: bool, goal: String },
+    /// shown -- the panel this comes from belongs to it. `agree` is the press
+    /// on "Agree and run" beside the question of sending the page: the
+    /// agreement is recorded on the desk, and the goal is carried out
+    Words { on: bool, goal: String, agree: bool },
     /// "Why did it stop?" -- have the last run's ending explained, or put the
     /// notice away once it has been read. `ask` false is the putting away
     WhyStopped { ask: bool },
@@ -1262,6 +1264,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("words") => Ev::Words {
             on: v.get("on").and_then(|x| x.as_bool()).unwrap_or(true),
             goal: v.get("goal").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            agree: v.get("agree").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         // The notice about a run that ended badly: explain it, or put it away
         Some("whystopped") => Ev::WhyStopped {

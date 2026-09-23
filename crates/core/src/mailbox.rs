@@ -164,9 +164,10 @@ pub struct Mailbox {
     /// "Operate a target tab" requests from the 🎯 panel: (target tab index, goal).
     /// target 0 = detach. The loop attaches the active AI as the target's operator.
     pub operates: Vec<(usize, String)>,
-    /// 🗣 requests from the panel: (still running, the goal as typed). The
-    /// loop attaches the words-driven run to the page being shown
-    pub words: Vec<(bool, String)>,
+    /// 🗣 requests from the panel: (still running, the goal as typed, agreed
+    /// to sending the page just now). The loop attaches the words-driven run
+    /// to the page being shown
+    pub words: Vec<(bool, String, bool)>,
     /// Presses on the notice about a run that ended badly (true = explain it)
     pub why_stopped: Vec<bool>,
     /// 📼 record-mode toggles from the composer (true = arm the shown browser's
@@ -438,7 +439,7 @@ impl Mailbox {
         std::mem::take(&mut self.record_arms)
     }
     /// Takes what the 🗣 panel has asked for since the last drain
-    pub fn take_words(&mut self) -> Vec<(bool, String)> {
+    pub fn take_words(&mut self) -> Vec<(bool, String, bool)> {
         std::mem::take(&mut self.words)
     }
     /// Takes the presses on the "why did it stop" notice since the last drain
