@@ -100,9 +100,9 @@ Limits for 🎯 driving another tab
 - **Settle wait (ms)** — After each action, wait until the page stops changing (up to this long) before reading it. 0 = don't wait.
 - **Ask before acting** — A brake: pause for you to approve a step on the page before it runs. Declining holds the run.
 
-### Claude's allowance
+### AI allowance
 
-The 5-hour and 7-day windows on the status line
+The 5-hour and 7-day windows of Claude and Codex
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 
@@ -186,7 +186,7 @@ Name, automation name, automation folder
 - **Where it runs** — Places to open a branch other than this PC
 - **Server names** — Tell production from staging at a glance
 - **Operate a tab** — Limits for 🎯 driving another tab
-- **Claude's allowance** — The 5-hour and 7-day windows on the status line
+- **AI allowance** — The 5-hour and 7-day windows of Claude and Codex
 - **Phone access** — Remote control & QR
 - **External control** — Let programs drive this app
 - **Carrying conversations** — What survives a restart
@@ -262,7 +262,7 @@ Several AI tabs discussing or working together
 - **Where it runs** — Places to open a branch other than this PC
 - **Server names** — Tell production from staging at a glance
 - **Operate a tab** — Limits for 🎯 driving another tab
-- **Claude's allowance** — The 5-hour and 7-day windows on the status line
+- **AI allowance** — The 5-hour and 7-day windows of Claude and Codex
 - **Phone access** — Remote control & QR
 - **External control** — Let programs drive this app
 - **Carrying conversations** — What survives a restart

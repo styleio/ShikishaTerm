@@ -9279,12 +9279,14 @@ function limitPill() {
       onclick:() => send({kind:"limit_ack", tab:t.index})},
     (who ? who + ": " : "") + t.limit);
 }
-// What Claude's subscription has left, while a Claude tab is in view. The
-// number is the account's, not the tab's, but it is the tab that makes it
-// the question -- over a Codex tab it would be an answer to nothing
+// What the subscription of the AI in view has left: Claude's over a Claude
+// tab, Codex's over a Codex tab. The number is the account's, not the tab's,
+// but it is the tab that makes it the question -- Claude's over a Codex tab
+// would be an answer to nothing
 function usagePill() {
   const t = (S && S.tabs || []).find(t => t.index === S.active);
-  if (!t || t.ai !== "claude" || !S.usage) return null;
+  const u = t && t.ai && S.usage && Object.prototype.hasOwnProperty.call(S.usage, t.ai) ? S.usage[t.ai] : null;
+  if (!u) return null;
   // One bar per window, the number as its length and the words beside it.
   // The bar's colour says how close to the end it is; nothing here moves
   const win = w => {
@@ -9303,13 +9305,13 @@ function usagePill() {
       // so which one is showing must not be something JavaScript is told
       el("span", {class:"wpct"}, "(" + w.pct + "%)"));
   };
-  return el("span", {class:"usage ai-claude", title:S.usage.title},
+  return el("span", {class:"usage ai-" + t.ai, title:u.title},
     // The name where there is room for it, and where there is not, the mark
-    // Claude's own tabs wear — built by the one thing that builds those marks
-    el("span", {class:"who"}, "Claude"),
-    aiMark("claude"),
-    win(S.usage.five),
-    win(S.usage.week));
+    // the AI's own tabs wear — built by the one thing that builds those marks
+    el("span", {class:"who"}, u.who),
+    aiMark(t.ai),
+    win(u.five),
+    win(u.week));
 }
 // The build stamp. It is the answer to "which build are you looking at?", and
 // that question is always asked of somebody who is looking at it and has to
@@ -20614,11 +20616,16 @@ mod tests {
         );
     }
 
-    /// The subscription's reading is shown only over a Claude tab, and only
+    /// The subscription's reading is shown only over a tab of the AI it
+    /// belongs to -- Claude's over Claude, Codex's over Codex -- and only
     /// when there is one.
     #[test]
-    fn the_usage_reading_follows_a_claude_tab_in_view() {
-        assert!(PAGE.contains(r#"if (!t || t.ai !== "claude" || !S.usage) return null;"#), "it shows on tabs other than Claude");
+    fn the_usage_reading_follows_the_ai_in_view() {
+        assert!(
+            PAGE.contains("const u = t && t.ai && S.usage && Object.prototype.hasOwnProperty.call(S.usage, t.ai) ? S.usage[t.ai] : null;\n  if (!u) return null;"),
+            "it is not the reading of the AI in view"
+        );
+        assert!(PAGE.contains(r#"el("span", {class:"who"}, u.who),"#), "the name is not the AI's own");
         // A bar per window, with words beside it -- not a number in a pill
         assert!(PAGE.contains(r#"fill.style.width = Math.max(0, Math.min(100, w.pct)) + "%";"#), "there is no bar");
         assert!(PAGE.contains(r#"el("span", {class:"wsay"}, w.used + (w.resets ? " " + w.resets : ""))"#), "there are no words");
@@ -20675,7 +20682,7 @@ mod tests {
         assert!(PAGE.contains("#status .pill.auto, #status .pill.remote { font-size:0; }"), "the words are taken out rather than made small");
         // Claude's name becomes the mark its own tabs wear -- built by the one
         // builder for those marks, not a second copy of the table
-        assert!(PAGE.contains("    aiMark(\"claude\"),\n    win(S.usage.five),"), "the mark is not the one the tabs wear");
+        assert!(PAGE.contains("    aiMark(t.ai),\n    win(u.five),"), "the mark is not the one the tabs wear");
         assert!(PAGE.contains("#status .usage .who { display:none; }\n    #status .usage .aim { display:inline-block; }"), "the name does not give way to the mark");
         // "5h(5%)": the number alone, with the bar and the sentence away
         assert!(PAGE.contains(r#"el("span", {class:"wpct"}, "(" + w.pct + "%)")"#), "there is no short reading to fall back to");

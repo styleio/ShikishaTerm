@@ -589,11 +589,17 @@ pub struct Config {
     /// loopback for the window to reach. Nothing is put on the network by it:
     /// remote access is a separate setting and goes on saying what it says
     pub split: Option<bool>,
-    /// Whether to ask Claude's service how much of the subscription's 5-hour
-    /// and 7-day allowance is used, with the sign-in Claude Code keeps on
-    /// this PC, and show it while a Claude tab is in view (default: yes).
-    /// Nothing is asked on a machine with no such sign-in
-    pub claude_usage: Option<bool>,
+    /// Whether to show how much of an AI subscription's 5-hour and 7-day
+    /// allowance is used, while a tab of that AI is in view (default: yes).
+    /// Claude's is asked of Claude's service with the sign-in Claude Code
+    /// keeps on this PC; Codex's is read off the records Codex keeps on this
+    /// PC (see `limits`). Nothing is asked on a machine with no such sign-in.
+    ///
+    /// Written `claude_usage` in the file: the setting began as Claude's
+    /// alone, and a file that already turned it off must go on turning off
+    /// both. A second key would let the two disagree
+    #[serde(rename = "claude_usage")]
+    pub ai_usage: Option<bool>,
     /// Whether to look, at start and once a day, for a newer published
     /// version (default: yes). Looking is all it does: one request for the
     /// newest version number. Installing is a button on the settings screen

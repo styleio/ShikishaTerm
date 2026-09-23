@@ -271,7 +271,7 @@ settings screen, so it cannot fall behind.
 - **Where it runs** — Places to open a branch other than this PC
 - **Server names** — Tell production from staging at a glance
 - **Operate a tab** — Limits for 🎯 driving another tab
-- **Claude's allowance** — The 5-hour and 7-day windows on the status line
+- **AI allowance** — The 5-hour and 7-day windows of Claude and Codex
 - **Phone access** — Remote control & QR
 - **External control** — Let programs drive this app
 - **Carrying conversations** — What survives a restart

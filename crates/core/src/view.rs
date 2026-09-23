@@ -1634,8 +1634,8 @@ pub struct Ui {
     pub project_home: String,
     /// The Assistant AI setting, as its command
     pub assistant: String,
-    /// What Claude's subscription has left, when known
-    pub usage: Option<crate::uistate::UsageState>,
+    /// What each AI's subscription has left, by AI kind, for those known
+    pub usage: std::collections::BTreeMap<String, crate::uistate::UsageState>,
     /// The thanks card, when it is up: which page it would open
     pub thanks: Option<String>,
     /// The newer version the update card asks about, when it is up

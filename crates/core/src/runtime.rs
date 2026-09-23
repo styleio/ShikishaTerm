@@ -1070,10 +1070,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut auto_switch = cfg.as_ref().and_then(|c| c.auto_switch).unwrap_or(true);
     // Whether the ✕ puts the window away rather than quitting (see the loop)
     let mut resident = cfg.as_ref().and_then(|c| c.resident).unwrap_or(true);
-    // What Claude's subscription has left, on a thread of its own. Nothing
-    // is asked until a Claude tab exists (limits::Meter::want)
-    let limits = crate::limits::Meter::start();
-    let mut claude_usage_on = cfg.as_ref().and_then(|c| c.claude_usage).unwrap_or(true);
+    // What each AI's subscription has left, each on a thread of its own.
+    // Nothing is read until a tab of that AI exists (limits::Meter::want)
+    let limits: Vec<(crate::limits::Source, crate::limits::Meter)> = crate::limits::Source::ALL
+        .into_iter()
+        .map(|s| (s, crate::limits::Meter::start(s)))
+        .collect();
+    let mut ai_usage_on = cfg.as_ref().and_then(|c| c.ai_usage).unwrap_or(true);
     // The last time a human touched the screen. Don't auto-follow right after that.
     let mut view_touched_ms: u64 = 0;
     // Clickable spots on INDEX. Rebuilt every frame at draw time.
@@ -1882,7 +1885,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 ssh_aliases = crate::discover::ssh_aliases();
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
                 resident = newcfg.resident.unwrap_or(true);
-                claude_usage_on = newcfg.claude_usage.unwrap_or(true);
+                ai_usage_on = newcfg.ai_usage.unwrap_or(true);
                 update::set_auto(newcfg.update_check.unwrap_or(true));
                 busy_repeat_ms = newcfg.busy_repeat_sec.filter(|s| *s > 0).map(|s| s * 1000);
                 busy_again.clear();
@@ -3453,16 +3456,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             coach_seen = seen;
             let _ = crate::crypto::write_atomic(&config::state_path("coach"), &seen.to_string());
         }
-        // Asked only while a Claude tab exists and the setting is on; shown
-        // only while such a tab is in view (the page decides that)
-        limits.want(claude_usage_on && tabs.iter().any(|t| t.ai_kind().as_deref() == Some("claude")));
-        let usage = limits.current().map(|l| {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            crate::uistate::UsageState::of(&l, now)
-        });
+        // Read only while a tab of that AI exists and the setting is on;
+        // shown only while such a tab is in view (the page decides that)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let usage = limits
+            .iter()
+            .filter_map(|(source, meter)| {
+                meter.want(ai_usage_on && tabs.iter().any(|t| t.ai_kind().as_deref() == Some(source.key())));
+                let l = meter.current()?;
+                Some((source.key().to_string(), crate::uistate::UsageState::of(source.name(), &l, now)))
+            })
+            .collect();
         // Where the view has come to rest, asked once, after everything that
         // could have moved it. A tab somebody asked for brings its folder back
         // -- out of sight is not out of reach, and typing into a tab nobody can

@@ -2943,12 +2943,33 @@ fn handle(
             };
             req.respond(json_resp(serde_json::json!({ "orphans": orphans })))?;
         }
-        // Whether Claude Code is signed in on this machine, so the settings can
-        // say why the allowance pill is or is not there
-        ("GET", "/api/claude") => {
-            req.respond(json_resp(serde_json::json!({
-                "signed_in": crate::limits::signed_in(),
-            })))?;
+        // Each AI's allowance as it stands now, read fresh for the settings
+        // screen whether or not a tab of that AI is open, and whether this
+        // machine has what the reading needs -- so the screen can say why a
+        // reading is or is not there. Answered off this thread: Claude's is a
+        // request to a service, and the other settings requests should not
+        // wait behind it
+        ("GET", "/api/usage") => {
+            std::thread::spawn(move || {
+                let window = |w: &Option<crate::limits::Window>| {
+                    w.as_ref().map(|w| serde_json::json!({"pct": w.pct, "resets_at": w.resets_at}))
+                };
+                let mut out = serde_json::Map::new();
+                for s in crate::limits::Source::ALL {
+                    let reading = s.read().map(|l| {
+                        serde_json::json!({
+                            "five": window(&l.five_hour),
+                            "week": window(&l.seven_day),
+                            "as_of": l.as_of,
+                        })
+                    });
+                    out.insert(
+                        s.key().to_string(),
+                        serde_json::json!({"name": s.name(), "ready": s.ready(), "reading": reading}),
+                    );
+                }
+                let _ = req.respond(json_resp(serde_json::Value::Object(out)));
+            });
         }
         // What this machine already offers to open a tab on: the installed WSL
         // distributions and the hosts in the person's own ssh config. Both were
@@ -4114,6 +4135,16 @@ const PAGE: &str = r##"<!doctype html>
  .bar > i { display:block; height:100%; width:35%; border-radius:3px;
    background:var(--accent); animation:slide 1.3s ease-in-out infinite; }
  @keyframes slide { from { margin-left:-35%; } to { margin-left:100%; } }
+ /* How full an allowance window is: the status line's bar, at card size.
+    The same two thresholds turn it amber and red there and here */
+ .usewin { display:flex; align-items:center; gap:var(--s3); margin:var(--s1) 0; }
+ .usewin .wname { width:5.5em; flex:none; color:var(--dim); }
+ .meter { width:120px; height:6px; flex:none; border-radius:3px; background:var(--line); overflow:hidden; }
+ .meter > i { display:block; height:100%; border-radius:3px; background:var(--live); }
+ .meter > i.near { background:var(--warn); }
+ .meter > i.hot { background:var(--danger); }
+ .useai { margin-top:var(--s3); }
+ .useai .row { font-weight:600; }
 
  /* ── Narrow screens (a phone reaching the settings over the remote proxy) ──
     The desktop layout is a fixed 260px sidebar next to the content. A phone has
@@ -4375,6 +4406,9 @@ const protectOf = desk => {
 // {name} substitution (same rule as tp on the Rust side)
 const fill = (s, args) => Object.entries(args)
   .reduce((acc, [k, v]) => acc.replaceAll("{" + k + "}", v), s || "");
+// A moment as a date and a time of day, in the person's own way of writing
+// them: "9/24 03:40". Seconds since the epoch in
+const clock = secs => new Date(secs * 1000).toLocaleString([], {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"});
 const api = (m, b) => fetch("/api/config", {
    method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
 const deskApi = (m, file, b) => fetch("/api/desk?file=" + encodeURIComponent(file), {
@@ -6081,7 +6115,6 @@ function hotkeysCard() {
     refreshSave();
     draw();
   };
-  const clock = secs => new Date(secs * 1000).toLocaleString([], {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"});
   function tell(say, action, c) {
     const text = c.key ? shown(c) : "";
     const warn = msg => { say.className = "hint hkstate warnline"; say.textContent = msg; };
@@ -6950,7 +6983,7 @@ function globalSections() {
     {id:"hosts",     label:T["settings.sec.hosts"],     sub:T["settings.sec.hosts.sub"],     build:hostsCard},
     {id:"servers",   label:T["settings.sec.servers"],   sub:T["settings.sec.servers.sub"],   build:marksCard},
     {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
-    {id:"claudeusage", label:T["settings.sec.claudeusage"], sub:T["settings.sec.claudeusage.sub"], build:claudeUsageCard},
+    {id:"aiusage",   label:T["settings.sec.aiusage"],   sub:T["settings.sec.aiusage.sub"],   build:aiUsageCard},
     {id:"remote",    label:T["settings.sec.remote"],    sub:T["settings.sec.remote.sub"],    build:remoteCard},
     {id:"api",       label:T["settings.sec.api"],       sub:T["settings.sec.api.sub"],       build:apiCard},
     {id:"resume",    label:T["settings.sec.resume"],    sub:T["settings.sec.resume.sub"],    build:resumeCard},
@@ -7696,24 +7729,50 @@ function deskBrowserCard(desk) {
   return [words, deskPagesCard(desk)];
 }
 
-// Claude's allowance, read with Claude Code's own sign-in on this PC. Its own
-// card, because it is not a connection anybody registers -- it is a thing the
-// program can read when Claude Code is signed in, and nothing when it is not
-function claudeUsageCard() {
-  const state = el("div", {class:"hint"}, T["settings.claude_usage.checking"]);
-  const dot = el("span", {class:"dot"});
-  const line = el("div", {class:"row"}, dot, state);
-  fetch("/api/claude", {headers:{"X-Token":TOKEN}}).then(r => r.json()).then(j => {
-    dot.classList.add(j.signed_in ? "on" : "off");
-    state.textContent = j.signed_in
-      ? T["settings.claude_usage.signed_in"]
-      : T["settings.claude_usage.signed_out"];
-  }).catch(() => { state.textContent = T["settings.claude_usage.unknown"]; });
-  return card(T["settings.claude_usage"],
-    el("div", {class:"hint"}, T["settings.claude_usage.sub"]),
-    checkDefaultOn(current, "claude_usage", T["settings.claude_usage.label"]),
-    el("div", {class:"hint"}, T["settings.claude_usage.hint"]),
-    line);
+// Each AI's allowance: Claude's, read with Claude Code's own sign-in on this
+// PC, and Codex's, read off the records Codex keeps on this PC. Its own card,
+// because it is not a connection anybody registers -- it is a thing the
+// program can read when the AI is set up here, and nothing when it is not.
+// Opening the card reads both as they stand, so the details are here whether
+// or not a tab of either is open
+function aiUsageCard() {
+  const box = el("div", {}, el("div", {class:"hint"}, T["settings.ai_usage.checking"]));
+  const windowRow = (name, w) => {
+    const pct = Math.max(0, Math.min(100, w.pct));
+    const level = el("i", {class: pct >= 95 ? "hot" : pct >= 80 ? "near" : ""});
+    level.style.width = pct + "%";
+    const said = fill(T["settings.ai_usage.used"], {pct: String(w.pct)})
+      + (w.resets_at ? " · " + fill(T["settings.ai_usage.resets"], {when: clock(w.resets_at)}) : "");
+    return el("div", {class:"usewin"},
+      el("span", {class:"wname"}, name), el("span", {class:"meter"}, level), el("span", {}, said));
+  };
+  const one = (key, a) => {
+    const dot = el("span", {class:"dot" + (a.reading ? " on" : "")});
+    const part = el("div", {class:"useai"}, el("div", {class:"row"}, dot, el("span", {}, a.name)));
+    const r = a.reading;
+    if (!r) {
+      // Why there is nothing, and what makes something appear
+      const why = !a.ready ? "settings.ai_usage." + key + ".missing" : "settings.ai_usage." + key + ".none";
+      part.append(el("div", {class:"hint"}, T[why]));
+      return part;
+    }
+    if (r.five) part.append(windowRow(T["settings.ai_usage.five"], r.five));
+    if (r.week) part.append(windowRow(T["settings.ai_usage.week"], r.week));
+    // A reading taken off a record is as old as the record, and says so
+    if (r.as_of) part.append(el("div", {class:"hint"}, fill(T["settings.ai_usage.as_of"], {when: clock(r.as_of)})));
+    return part;
+  };
+  fetch("/api/usage", {headers:{"X-Token":TOKEN}}).then(r => r.json()).then(j => {
+    box.textContent = "";
+    for (const key of ["claude", "codex"]) if (j[key]) box.append(one(key, j[key]));
+  }).catch(() => { box.textContent = ""; box.append(el("div", {class:"hint"}, T["settings.ai_usage.unknown"])); });
+  // The key in the file is still "claude_usage": it began as Claude's alone,
+  // and a file that turned it off goes on turning off both (see config.rs)
+  return card(T["settings.ai_usage"],
+    el("div", {class:"hint"}, T["settings.ai_usage.sub"]),
+    checkDefaultOn(current, "claude_usage", T["settings.ai_usage.label"]),
+    el("div", {class:"hint"}, T["settings.ai_usage.hint"]),
+    box);
 }
 
 // Notification destinations (Slack / Telegram). The sensitive webhook/token is

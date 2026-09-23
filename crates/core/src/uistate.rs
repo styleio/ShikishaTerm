@@ -822,13 +822,15 @@ pub struct BranchInUse {
     pub instead: String,
 }
 
-/// What Claude's subscription has left, as the status line draws it.
+/// What an AI subscription has left, as the status line draws it.
 ///
 /// Numbers and words apart, so the page can draw a bar for the number and
 /// put the words beside it: "20% used · resets in 3h 45m" reads; "5h 20%"
 /// does not. Each window is absent when the service withheld it
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct UsageState {
+    /// Whose allowance: "Claude", "Codex"
+    pub who: String,
     /// The 5-hour window
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub five: Option<UsageWindow>,
@@ -865,7 +867,9 @@ impl UsageState {
     /// width of "5h 24% used 9m", pushing the button toward the edge. A
     /// person's decision to translate these keys anyway is honoured, but it
     /// is a decision to make the row wider
-    pub fn of(l: &crate::limits::Limits, now: i64) -> Self {
+    ///
+    /// `who` is the AI's name as the hover says it: "Claude", "Codex"
+    pub fn of(who: &str, l: &crate::limits::Limits, now: i64) -> Self {
         let window = |w: &Option<crate::limits::Window>, name_key: &str| {
             w.as_ref().map(|w| UsageWindow {
                 name: crate::i18n::t(name_key),
@@ -890,7 +894,11 @@ impl UsageState {
                 .unwrap_or_else(|| crate::i18n::t("tui.usage.unknown"))
         };
         UsageState {
-            title: crate::i18n::tp("tui.usage.title", &[("five", &say(&five)), ("week", &say(&week))]),
+            title: crate::i18n::tp(
+                "tui.usage.title",
+                &[("who", who), ("five", &say(&five)), ("week", &say(&week))],
+            ),
+            who: who.to_string(),
             five,
             week,
         }
@@ -1842,10 +1850,11 @@ pub struct UiState {
     /// The AIs this machine can start in a folder just made
     #[serde(default)]
     pub ais: Vec<AiChoice>,
-    /// What Claude's subscription has left, when it is known. The page shows
-    /// it only while a Claude tab is in view
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<UsageState>,
+    /// What each AI's subscription has left, by the tab's AI kind ("claude",
+    /// "codex"), for those that are known. The page shows the one belonging
+    /// to the tab in view, and nothing over a tab of any other kind
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub usage: std::collections::BTreeMap<String, UsageState>,
     /// The first-run pointer that is up: 1 = add a folder, 2 = press its +
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coach: Option<u8>,
@@ -2384,8 +2393,9 @@ mod tests {
         let l = Limits {
             five_hour: Some(Window { pct: 19, resets_at: Some(1_000 + 3 * 3600 + 45 * 60) }),
             seven_day: Some(Window { pct: 83, resets_at: Some(1_000 + 4 * 86_400 + 10 * 3600) }),
+            as_of: None,
         };
-        let u = UsageState::of(&l, 1_000);
+        let u = UsageState::of("Claude", &l, 1_000);
         let five = u.five.as_ref().unwrap();
         assert_eq!(five.pct, 19);
         assert!(five.used.contains("19"), "{}", five.used);
@@ -2398,13 +2408,13 @@ mod tests {
         assert!(u.title.contains("resets in 3h 45m"), "{}", u.title);
         // A window the service withheld is absent, and a reset already past
         // never goes negative
-        let l = Limits { five_hour: None, seven_day: Some(Window { pct: 2, resets_at: Some(0) }) };
-        let u = UsageState::of(&l, 5_000);
+        let l = Limits { five_hour: None, seven_day: Some(Window { pct: 2, resets_at: Some(0) }), as_of: None };
+        let u = UsageState::of("Claude", &l, 5_000);
         assert!(u.five.is_none());
         assert_eq!(u.week.as_ref().unwrap().resets.as_deref(), Some("0m"));
         // No time at all: the words say how much, and nothing about when
-        let l = Limits { five_hour: Some(Window { pct: 7, resets_at: None }), seven_day: None };
-        assert_eq!(UsageState::of(&l, 0).five.unwrap().resets, None);
+        let l = Limits { five_hour: Some(Window { pct: 7, resets_at: None }), seven_day: None, as_of: None };
+        assert_eq!(UsageState::of("Claude", &l, 0).five.unwrap().resets, None);
     }
 
     /// No leading zero in a span: the row is paid for by the character, and
