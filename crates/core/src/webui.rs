@@ -4475,6 +4475,10 @@ function goSection(id, block) {
 // When opened via a deep-link shortcut (?ret=1), returning to the board after a
 // successful save is the natural finish, so the caller doesn't have to close it.
 let returnOnSave = false;
+// Opened by the board because a page is to be driven in words and has no
+// models: the board's own line saying so is under the sheet that opened over
+// it, so the sheet says it where the models are chosen
+let wordsAsked = false;
 // The tab being added from the board's +, while the page is only that dialog
 // (?float=1). Null on the settings page proper
 let floating = null;
@@ -12132,6 +12136,7 @@ function kindPanel(t, cmdInput, rebuild, real) {
     here.browser = here.browser || {};
     const wordsBox = el("div", {id:"tab-words"},
       el("div", {class:"row"}, el("label", {}, T["settings.words.title"])),
+      wordsAsked ? el("div", {class:"warn"}, T["settings.words.asked"]) : null,
       ...wordsRows(here, t, here.browser, (k, v) => {
         if (!(here.browser[k] || "").trim()) here.browser[k] = v;
       }));
@@ -13158,9 +13163,12 @@ load().then(() => {
       && ((t.id || "").trim() || (t.name || "").trim() || "browser") === tabKey);
     if (ti >= 0) {
       sel = {desk:keyDesk, grp:tabs[ti].group || 0, tab:ti, global:false};
+      wordsAsked = sec === "words";
       render();
-      const words = sec === "words" && document.getElementById("tab-words");
-      if (words) words.scrollIntoView({block:"start"}); else showSelected("center");
+      // Centred and marked, rather than put at the top: the top of the page
+      // is under the bar, and that is where the line saying why it opened is
+      if (sec === "words" && document.getElementById("tab-words")) lookAtCard("tab-words", 0);
+      else showSelected("center");
       return;
     }
   }

@@ -3249,6 +3249,7 @@
   "settings.words.words_model": "会話モデル",
   "settings.words.words_model.hint": "ページに入力する文字を書きます。選べるのは会話モデルだけです。",
   "settings.words.title": "言葉で指示",
+  "settings.words.asked": "このページを言葉で操作するには、初めにこのページで使うモデルを登録してください。登録して保存すると、サブ入力欄から指示を送れます。",
   "settings.words.follow": "デスクの設定に従う（{name}）",
   "settings.words.unset": "未選択",
   "settings.words.add": "＋ モデルを追加する",

@@ -39,7 +39,8 @@ export default {
         + ' const t = desks[0].tabs[sel.tab];'
         + ' if (!t || t.id !== "shop") throw new Error("landed on " + JSON.stringify(sel));'
         + ' const w = document.getElementById("tab-words").getBoundingClientRect();'
-        + ' if (w.top < 0 || w.top > innerHeight) throw new Error("the models are not in view"); })()' },
+        + ' if (w.top < 0 || w.top > innerHeight) throw new Error("the models are not in view");'
+        + ' if (!document.querySelector("#tab-words .warn")) throw new Error("the sheet does not say why it opened"); })()' },
     // The old app-wide models, moved onto the desk that had none
     desk: '(async () => { await ' + deskPage + ';'
       + ' const b = desks[0].browser;'

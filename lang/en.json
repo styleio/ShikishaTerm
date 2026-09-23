@@ -3271,6 +3271,7 @@
   "settings.words.words_model": "Conversation model",
   "settings.words.words_model.hint": "Writes what is typed into the page. Only a conversation model can.",
   "settings.words.title": "In words",
+  "settings.words.asked": "To drive this page in words, first register the models it uses. Once they are saved, send what you want done from the input bar.",
   "settings.words.follow": "Follow the desk ({name})",
   "settings.words.unset": "none chosen",
   "settings.words.add": "+ Add a model",
