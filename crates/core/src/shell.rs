@@ -932,6 +932,26 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The panes themselves. Only the ones that aren't focused draw anything here
      — the focused pane's rectangle is filled by the full renderer above. */
   #panes { position:absolute; inset:0; top:var(--striph, 0px); }
+  /* The line above a division too wide for this screen: what it is doing, and
+     the other way of reading it. It sits under the folder's tabs and takes its
+     own height out of the panes, the way the tabs do -- drawn over them, every
+     terminal underneath would claim rows that are behind an opaque bar */
+  #narrowsplit[hidden] { display:none; }
+  #narrowsplit { position:absolute; left:0; right:0; top:var(--striptop, 0px);
+    height:30px; z-index:2; display:flex; align-items:center; gap:var(--s2);
+    padding:0 var(--s2); background:var(--panel); border-bottom:1px solid var(--line);
+    font-size:11px; color:var(--dim); overflow:hidden; }
+  #narrowsplit .nq { flex:1 1 auto; min-width:0; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  /* Which pane of how many, between the two arrows. It keeps its width where
+     the question gives its up: three characters that must not be cut */
+  #narrowsplit .ncount { flex:none; color:var(--text); }
+  #narrowsplit .nspace { flex:1 1 auto; }
+  #narrowsplit .nbtn { flex:none; height:22px; padding:0 8px; cursor:pointer;
+    font:inherit; font-size:11px; color:var(--text); background:var(--raise);
+    border:1px solid var(--line); border-radius:var(--r-ctl); }
+  #narrowsplit .nbtn:hover { background:var(--hover); }
+  #narrowsplit .nstep { padding:0 6px; }
   .pane { position:absolute; overflow:hidden; background:var(--bg); }
   .pane.focused { pointer-events:none; }
   .pane .phead { pointer-events:auto; display:none; align-items:center; gap:var(--s2);
@@ -3507,6 +3527,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <div id="tabgrip"></div>
   <div id="main">
     <div id="strip" hidden></div>
+    <!-- Only ever seen above a division this screen has no room for -->
+    <div id="narrowsplit" hidden></div>
     <div id="panes"></div>
     <div id="pushbar" hidden></div>
     <div id="nav" hidden></div>
@@ -4195,13 +4217,6 @@ function drawTabs() {
     if (t.settings) continue;
     // The Issue tab has its own row, above
     if (t.kind === "issues") continue;
-    // A split shows several rows at once, divided, and a phone has no room to
-    // divide anything: the panes are not sent to one at all. The rows it was
-    // showing are not hidden with it -- it points at them, it does not hold
-    // them -- so everything is still one tap away from this same list. Asked
-    // of the width and not of the wire, because a laptop looking at this
-    // board from elsewhere has the room and wants it
-    if (t.kind === "split" && phoneWidth()) continue;
     if (t.group != null && inside[t.group]) inside[t.group].push(t);
     else loose.push(t);
   }
@@ -9629,7 +9644,13 @@ function layout() {
   // rather than of one pane: they belong to the folder, and the folder is what
   // every pane in it is showing a piece of
   const strip = document.getElementById("strip");
-  main.style.setProperty("--striph", (!strip || strip.hidden) ? "0px" : "32px");
+  const striph = (!strip || strip.hidden) ? 0 : 32;
+  main.style.setProperty("--striptop", striph + "px");
+  // ...and, under them, the line about a division this screen has no room for.
+  // Both come out of the panes in one number, so a terminal's rows are worked
+  // out from what is left in one place rather than in two that can disagree
+  const nbar = document.getElementById("narrowsplit");
+  main.style.setProperty("--striph", (striph + ((!nbar || nbar.hidden) ? 0 : 30)) + "px");
   main.style.setProperty("--navh", n.hidden ? "0px" : "36px");
   // ...and the bar asking the person something, out of the bottom
   main.style.setProperty("--askh", a.hidden ? "0px" : "44px");
@@ -9646,10 +9667,7 @@ window.__state = function (json) {
   gitAfterWork(before);
   // First of all, and before anything below reads PANES: the rectangles and
   // the rows in them are the same moment as the rest of this state
-  if (S && S.panes) {
-    const shape = JSON.stringify(S.panes);
-    if (shape !== laidOut) { laidOut = shape; layPanes(S.panes); }
-  }
+  if (S && S.panes && paneKey(S.panes) !== laidOut) layPanes(S.panes);
   // A page older than the app it's talking to keeps rendering yesterday's
   // UI — a phone leaves the board open across app updates, and every "the
   // button is still the old one" report traces back to that. The state
@@ -9974,13 +9992,135 @@ window.__state = function (json) {
 // the dashboard, a placed browser and its bar). The rest get a read-only view
 // of their terminal, which is all a pane you are not typing into can show.
 let PANES = null;
+// The division as it arrived, before this screen's answer about it was applied.
+// The screen can change without the division changing -- a phone turned on its
+// side -- and then this is what it is laid out from again
+let panesRaw = null;
+// How narrow a pane may be and still be one: 32 columns of the board's own
+// type, and what a terminal sets in from its edges. Measured rather than named
+// in pixels, because the type is a setting -- at a larger size the same screen
+// has room for less, and a number of pixels would be right at one size only.
+// Before anything has been measured (a cold page) the width of the face at its
+// default size stands in
+const PANE_MIN_COLS = 32;
+function paneFloorW() {
+  return Math.round(PANE_MIN_COLS * (cellW || 8.5)) + 24;
+}
+// The content area in real pixels, asked of the element and not of the window:
+// the tab bar on the left takes its width out of this first
+function contentWidth() {
+  const host = document.getElementById("panes");
+  const w = host ? host.getBoundingClientRect().width : 0;
+  return w || window.innerWidth;
+}
+// Is there room across for this division?
+//
+// Asked of the width and of the shape -- never of "is this a phone". A tablet
+// held upright and the same tablet turned are two different answers, a laptop
+// is wide enough whichever way it is turned, and a phone on its side often is
+// too. Halves stacked one above the other cannot run out of room this way, so
+// a division downwards is shown as it is at every height: it is only the
+// division across the middle that has a width to run out of
+function roomAcross(P) {
+  if (!P || P.single || !P.panes) return true;
+  const w = contentWidth(), floor = paneFloorW();
+  return !P.panes.some(p => p.w < 0.995 && p.w * w < floor);
+}
+// What this screen has been told to do with a division it has no room for:
+// "" = never asked, "both" = show it anyway, "one" = one pane at a time.
+// Kept per browser, because it is an answer about this screen and not about
+// the division -- the same division on the window is not affected by it
+function narrowChoice() {
+  try { return localStorage.getItem("splitNarrow") || ""; } catch (e) { return ""; }
+}
+function chooseNarrow(v) {
+  try { localStorage.setItem("splitNarrow", v); } catch (e) {}
+  if (panesRaw) layPanes(panesRaw);
+}
+// What the content area was laid out from: the division and the answer this
+// screen gives about it. Either changing is a reason to lay it out again
+function paneKey(P) {
+  return JSON.stringify(P) + "|" + (roomAcross(P) ? "w" : "n") + narrowChoice();
+}
+// The division as this screen will draw it. Where there is no room across and
+// nobody has said to show it anyway, the pane you are in fills the area on its
+// own. Nothing is taken away by that: the division is still there, the rows it
+// points at are still in the tab bar, and the line above says which pane you
+// are on and offers the other reading
+function fitPanes(P) {
+  if (roomAcross(P) || narrowChoice() === "both") return P;
+  const one = P.panes.find(p => p.focused) || P.panes[0];
+  if (!one) return P;
+  return {single: P.single, focus: P.focus,
+          panes: [{...one, x: 0, y: 0, w: 1, h: 1}], dividers: []};
+}
+// The line above a division this screen has no room for. It is the whole of
+// the answer to "a small screen cannot show this": the question is asked once,
+// nothing is hidden either way, and whichever way it was answered the other
+// way is one press away. A division that fits is never mentioned at all
+function narrowBar(P) {
+  const bar = document.getElementById("narrowsplit");
+  if (!bar) return;
+  const show = !!(P && !P.single && P.panes && P.panes.length > 1 && !roomAcross(P));
+  const shown = !bar.hidden;
+  const choice = narrowChoice();
+  const i = Math.max(0, (P && P.panes ? P.panes.findIndex(p => p.focused) : 0));
+  const key = show ? (choice + ":" + i + ":" + (P.panes.length)) : "";
+  // Rebuilt only when what it says changes: a state push every few frames
+  // would take the button out from under a finger on its way down
+  if (bar.dataset.on === key) return;
+  bar.dataset.on = key;
+  bar.hidden = !show;
+  bar.textContent = "";
+  if (show && !choice) {
+    bar.append(el("span", {class: "nq"}, T["tui.pane.narrow.ask"] || ""));
+    for (const [v, k] of [["both", "tui.pane.narrow.both"], ["one", "tui.pane.narrow.one"]]) {
+      const b = el("button", {type: "button", class: "nbtn"}, T[k] || "");
+      b.onclick = () => chooseNarrow(v);
+      bar.append(b);
+    }
+  } else if (show && choice === "one") {
+    // Which of them is in front, and the way to the others. Without this the
+    // panes beside it could only be reached by leaving the division
+    const go = (d) => {
+      const n = P.panes[(i + d + P.panes.length) % P.panes.length];
+      if (n) send({kind: "focuspane", id: n.id});
+    };
+    for (const [glyph, d] of [["\u25C0", -1], ["\u25B6", 1]]) {
+      const b = el("button", {type: "button", class: "nbtn nstep"}, glyph);
+      b.onclick = () => go(d);
+      if (d < 0) bar.append(b, el("span", {class: "ncount"}, (i + 1) + " / " + P.panes.length));
+      else bar.append(b, el("span", {class: "nspace"}));
+    }
+    const b = el("button", {type: "button", class: "nbtn"}, T["tui.pane.narrow.both"] || "");
+    b.onclick = () => chooseNarrow("both");
+    bar.append(b);
+  } else if (show) {
+    bar.append(el("span", {class: "nq"}, T["tui.pane.narrow.wide"] || ""));
+    const b = el("button", {type: "button", class: "nbtn"}, T["tui.pane.narrow.one"] || "");
+    b.onclick = () => chooseNarrow("one");
+    bar.append(b);
+  }
+  if (show !== shown) layout();
+}
+// Turning the phone changes the answer without changing the division: no state
+// arrives to say so, because nothing about the app has moved -- the screen has
+addEventListener("resize", () => {
+  if (panesRaw && paneKey(panesRaw) !== laidOut) layPanes(panesRaw);
+});
 // Lay the content area out. Called from __state with the division that came
 // with it -- never on its own, because the division and what is in it are one
 // moment. Drawn from two messages, the page painted once in between with the
 // new answer to "which row am I on" and the old rectangles: a tab nobody had
 // asked for flashed up, and then the pane went empty
-function layPanes(P) {
-  if (!P || !P.panes) return;
+function layPanes(RAW) {
+  if (!RAW || !RAW.panes) return;
+  panesRaw = RAW;
+  laidOut = paneKey(RAW);
+  // What this screen has room to draw, and the line that says so. Both before
+  // anything below reads PANES
+  narrowBar(RAW);
+  const P = fitPanes(RAW);
   PANES = P;
   const host = document.getElementById("panes");
   const seen = new Set();
@@ -12520,7 +12660,7 @@ report();
 // line of output). If the socket can't hold — a flaky link, an older server — a
 // slow poll takes over until it reconnects.
 if (REMOTE) {
-  let wsUp = false, sws = null, downSince = 0, socketPanes = false;
+  let wsUp = false, sws = null, downSince = 0;
   // Say what happened when the feed stops. The PC can end this session
   // deliberately (its "disconnect": every request then answers 403 and this
   // page is done until someone opens the link again), or the link can simply
@@ -12613,11 +12753,12 @@ if (REMOTE) {
     if (remoteCut) return;
     try {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      // A laptop lays the board out in panes, as the window does; a phone shows
-      // one thing at a time and is not sent pictures of panes it never draws
-      socketPanes = !phoneWidth();
+      // Pictures of the panes nobody is looking at, at every size. Undivided
+      // there are none to send and this costs nothing (PaneRelay skips the
+      // pane in front); divided, they are wanted on a phone as well, which
+      // draws the division too and can be asked to show all of it at once
       sws = new WebSocket(proto + "//" + location.host + "/ws-state?t=" + encodeURIComponent(TOKEN) +
-        (socketPanes ? "&panes=1" : ""));
+        "&panes=1");
     } catch (e) { setTimeout(connectState, 1500); return; }
     sws.onopen = () => { wsUp = true; connected(); };
     sws.onmessage = (e) => { try { applyState(JSON.parse(e.data)); } catch (x) {} };
@@ -12625,21 +12766,6 @@ if (REMOTE) {
     sws.onerror = () => { try { sws.close(); } catch (x) {} };
   };
   connectState();
-  // A window dragged across the phone width, or a tablet turned: the line is
-  // opened again asking for what this shape draws. Going narrow, the panes are
-  // taken down here and now -- the pane in front goes back to being the whole
-  // screen, which is what a phone shows
-  addEventListener("resize", () => {
-    if (!wsUp || remoteCut || socketPanes === !phoneWidth()) return;
-    if (phoneWidth()) {
-      PANES = null;
-      document.getElementById("panes").textContent = "";
-      paintDividers([]);
-      measureFocused();
-      report();
-    }
-    try { sws.close(); } catch (x) {}
-  });
   // Fallback poll — only does anything while the socket is down. It's also the
   // reliable place to notice a revoked token: a WS handshake failure is opaque,
   // but a plain fetch returns the 403 outright.
@@ -20092,7 +20218,7 @@ mod tests {
             "the panes are not moved down by the strip's height"
         );
         assert!(
-            PAGE.contains(r#"main.style.setProperty("--striph", (!strip || strip.hidden) ? "0px" : "32px");"#),
+            PAGE.contains(r#"main.style.setProperty("--striph", (striph + ((!nbar || nbar.hidden) ? 0 : 30)) + "px");"#),
             "the strip's height does not take up room"
         );
         // Without panes (a phone) the content area is measured too, and it also

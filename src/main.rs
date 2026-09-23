@@ -447,6 +447,10 @@ struct WinSurface {
     /// area is undivided, one per pane once it is split. The page is the only
     /// one that can measure this, so it is reported rather than computed here
     pane_geom: Vec<shikisha_shared::PaneGeom>,
+    /// The same, as a viewer from afar has laid them out. Never written over
+    /// the window's: the window falls back to its own the moment nobody is
+    /// watching from there (see `view::panes_geom`)
+    phone_panes: Vec<shikisha_shared::PaneGeom>,
     /// The whole content area. Where a screen that covers the window goes
     full: (i32, i32, i32, i32),
     /// The pane tree as last sent to the page. Only send it again when it changes
@@ -480,6 +484,8 @@ impl WinSurface {
     fn geom_panes(&self) -> &[shikisha_shared::PaneGeom] { &self.pane_geom }
     fn phone_size(&self) -> Option<(u16, u16)> { self.phone }
     fn set_phone_size(&mut self, size: Option<(u16, u16)>) { self.phone = size; }
+    fn phone_panes(&self) -> &[shikisha_shared::PaneGeom] { &self.phone_panes }
+    fn set_phone_panes(&mut self, panes: Vec<shikisha_shared::PaneGeom>) { self.phone_panes = panes; }
     fn is_hidden(&self) -> bool { self.hidden }
     fn last_drawn(&self) -> Option<&shikisha_core::uistate::UiState> { self.last.as_ref() }
     fn queue_input(&mut self, ev: Event) { self.pending.push_back(ev); }
@@ -1065,6 +1071,7 @@ fn run_in_window() -> Result<()> {
         last_cursor: None,
         area: (0, 0, 0, 0),
         pane_geom: Vec::new(),
+        phone_panes: Vec::new(),
         full: (0, 0, 0, 0),
         last_layout: String::new(),
         last_pane_screens: std::collections::HashMap::new(),
@@ -1935,6 +1942,8 @@ impl shikisha_core::host::Shell for WinSurface {
     fn geom_panes(&self) -> &[shikisha_shared::PaneGeom] { WinSurface::geom_panes(self) }
     fn phone_size(&self) -> Option<(u16, u16)> { WinSurface::phone_size(self) }
     fn set_phone_size(&mut self, size: Option<(u16, u16)>) { WinSurface::set_phone_size(self, size) }
+    fn phone_panes(&self) -> &[shikisha_shared::PaneGeom] { WinSurface::phone_panes(self) }
+    fn set_phone_panes(&mut self, panes: Vec<shikisha_shared::PaneGeom>) { WinSurface::set_phone_panes(self, panes) }
     fn is_hidden(&self) -> bool { WinSurface::is_hidden(self) }
     fn last_drawn(&self) -> Option<&shikisha_core::uistate::UiState> { WinSurface::last_drawn(self) }
     fn queue_input(&mut self, ev: Event) { WinSurface::queue_input(self, ev) }

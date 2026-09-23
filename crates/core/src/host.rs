@@ -36,6 +36,11 @@ pub trait Shell {
     fn geom_panes(&self) -> &[shikisha_shared::PaneGeom];
     fn phone_size(&self) -> Option<(u16, u16)>;
     fn set_phone_size(&mut self, size: Option<(u16, u16)>);
+    /// How a viewer from afar has laid the panes out on its own screen. Kept
+    /// apart from the window's for the same reason its front size is
+    /// (`view::panes_geom`)
+    fn phone_panes(&self) -> &[shikisha_shared::PaneGeom];
+    fn set_phone_panes(&mut self, panes: Vec<shikisha_shared::PaneGeom>);
     fn is_hidden(&self) -> bool;
     fn last_drawn(&self) -> Option<&crate::uistate::UiState>;
     fn queue_input(&mut self, ev: Event);
@@ -239,6 +244,8 @@ impl Shell for Headless {
     fn geom_panes(&self) -> &[shikisha_shared::PaneGeom] { &[] }
     fn phone_size(&self) -> Option<(u16, u16)> { None }
     fn set_phone_size(&mut self, size: Option<(u16, u16)>) { if let Some((r, c)) = size { self.rows = r; self.cols = c; } }
+    fn phone_panes(&self) -> &[shikisha_shared::PaneGeom] { &[] }
+    fn set_phone_panes(&mut self, _panes: Vec<shikisha_shared::PaneGeom>) {}
     fn is_hidden(&self) -> bool { true }
     fn last_drawn(&self) -> Option<&crate::uistate::UiState> { self.last.as_ref() }
     /// What a person pressed, for the loop to read on its next turn.
