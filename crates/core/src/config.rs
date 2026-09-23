@@ -914,6 +914,15 @@ impl WordsModels {
         }
     }
 
+    /// These, with each one left unset answered by `assistant` -- the
+    /// assistant AI as a model name ("@claude"). What a desk that chose
+    /// nothing drives its pages with, the way a folder that chose nothing is
+    /// named by it
+    pub fn or_assistant(&self, assistant: Option<&str>) -> WordsModels {
+        let fill = |v: Option<String>| v.or_else(|| assistant.and_then(one_name));
+        WordsModels { choose_model: fill(self.choose()), words_model: fill(self.words()) }
+    }
+
     /// Whether both are chosen: a page is not driven in words before they are
     pub fn complete(&self) -> bool {
         self.choose().is_some() && self.words().is_some()
@@ -939,10 +948,15 @@ fn agreed_names(agreed: &str) -> Vec<String> {
 /// of them was agreed to: a desk that agreed for all its pages at once has
 /// agreed for each
 pub fn pages_gate(desk: Option<&Desk>, key: Option<&str>) -> PageGate {
+    pages_gate_as(desk, key, crate::bridge::assistant_model().as_deref())
+}
+
+/// [`pages_gate`], with the assistant AI given rather than looked for
+pub fn pages_gate_as(desk: Option<&Desk>, key: Option<&str>, assistant: Option<&str>) -> PageGate {
     let Some(desk) = desk else {
         return PageGate::NoDesk;
     };
-    let wanted = desk.words_models(key);
+    let wanted = desk.words_models_as(key, assistant);
     if !wanted.complete() {
         return PageGate::NoModel;
     }
@@ -2940,12 +2954,20 @@ impl Desk {
 
     /// The models that carry out a goal written in plain words on the page
     /// `key`: the tab's own, and for whatever it leaves unset, this desk's.
-    /// A page not written in the settings has only the desk's
+    /// A page not written in the settings has only the desk's. Whatever
+    /// neither says is the assistant AI's
     pub fn words_models(&self, key: Option<&str>) -> WordsModels {
+        self.words_models_as(key, crate::bridge::assistant_model().as_deref())
+    }
+
+    /// [`Self::words_models`], with the assistant AI given rather than
+    /// looked for
+    pub fn words_models_as(&self, key: Option<&str>, assistant: Option<&str>) -> WordsModels {
         key.and_then(|k| self.page_tab(k))
             .map(|t| t.cfg.words.clone())
             .unwrap_or_default()
             .over(&self.browser.words)
+            .or_assistant(assistant)
     }
 
     /// The working folder a tab belongs to. Everything about where it runs
@@ -6399,19 +6421,19 @@ mod tests {
         .expect("the settings read");
         let (desks, _) = cfg.resolve_desks();
         let a = &desks[0];
-        let shop = a.words_models(Some("shop"));
+        let shop = a.words_models_as(Some("shop"), None);
         assert_eq!(shop.choose().as_deref(), Some("jev/jev-latest"), "the tab's own choice");
         assert_eq!(shop.words().as_deref(), Some("desk/write"), "left unset on the tab, the desk's");
-        let news = a.words_models(Some("news"));
+        let news = a.words_models_as(Some("news"), None);
         assert_eq!(news.choose().as_deref(), Some("old/pick"), "unset on both, the old app-wide one");
         assert_eq!(news.words().as_deref(), Some("desk/write"));
         assert_eq!(
-            a.words_models(Some("term")).choose().as_deref(),
+            a.words_models_as(Some("term"), None).choose().as_deref(),
             Some("old/pick"),
             "a terminal is no page, whatever it says"
         );
-        assert_eq!(a.words_models(Some("opened-by-a-script")), a.words_models(None));
-        let b = desks[1].words_models(Some("anything"));
+        assert_eq!(a.words_models_as(Some("opened-by-a-script"), None), a.words_models_as(None, None));
+        let b = desks[1].words_models_as(Some("anything"), None);
         assert_eq!(b.names(), vec!["old/pick".to_string(), "old/write".to_string()]);
     }
 
@@ -6432,17 +6454,18 @@ mod tests {
             cfg.resolve_desks().0.remove(0)
         };
         let all = desk_with("ds/chat + jev/jev-latest + oa/gpt");
-        assert!(matches!(pages_gate(Some(&all), Some("shop")), PageGate::Ready { .. }));
-        assert!(matches!(pages_gate(Some(&all), Some("news")), PageGate::Ready { .. }));
+        let gate = |d: &Desk, k: &str| pages_gate_as(Some(d), Some(k), None);
+        assert!(matches!(gate(&all, "shop"), PageGate::Ready { .. }));
+        assert!(matches!(gate(&all, "news"), PageGate::Ready { .. }));
         let some = desk_with("ds/chat + jev/jev-latest");
-        assert!(matches!(pages_gate(Some(&some), Some("news")), PageGate::Ready { .. }));
+        assert!(matches!(gate(&some, "news"), PageGate::Ready { .. }));
         assert!(
-            matches!(pages_gate(Some(&some), Some("shop")), PageGate::Changed { .. }),
+            matches!(gate(&some, "shop"), PageGate::Changed { .. }),
             "the page's own writer was never agreed to"
         );
         let none = desk_with("");
-        assert!(matches!(pages_gate(Some(&none), Some("news")), PageGate::Consent { .. }));
-        assert!(matches!(pages_gate(None, Some("news")), PageGate::NoDesk));
+        assert!(matches!(gate(&none, "news"), PageGate::Consent { .. }));
+        assert!(matches!(pages_gate_as(None, Some("news"), None), PageGate::NoDesk));
     }
 
     /// Neither model chosen anywhere, or only one: the page is not driven,
@@ -6456,7 +6479,34 @@ mod tests {
         )
         .expect("the settings read");
         let desk = cfg.resolve_desks().0.remove(0);
-        assert!(matches!(pages_gate(Some(&desk), Some("p")), PageGate::NoModel));
+        assert!(matches!(pages_gate_as(Some(&desk), Some("p"), None), PageGate::NoModel));
+    }
+
+    /// What neither the page nor its desk names is the assistant AI's, the
+    /// way a folder's name is: a desk that chose nothing drives its pages
+    /// with it. It is a model like any other for the agreement -- sending a
+    /// page to it is asked about first
+    #[test]
+    fn what_nobody_chose_is_the_assistant_ais() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"desks": [{"name": "A", "send_pages_to": "@claude",
+                "folders": [{"tabs": [
+                  {"id": "p", "command": "browser https://example.com"},
+                  {"id": "q", "command": "browser https://example.org", "choose_model": "jev/jev-latest"}]}]}]}"#,
+        )
+        .expect("the settings read");
+        let desk = cfg.resolve_desks().0.remove(0);
+        let p = desk.words_models_as(Some("p"), Some("@claude"));
+        assert_eq!((p.choose().as_deref(), p.words().as_deref()), (Some("@claude"), Some("@claude")));
+        let q = desk.words_models_as(Some("q"), Some("@claude"));
+        assert_eq!(q.choose().as_deref(), Some("jev/jev-latest"), "a choice made stays made");
+        assert_eq!(q.words().as_deref(), Some("@claude"));
+        assert!(matches!(pages_gate_as(Some(&desk), Some("p"), Some("@claude")), PageGate::Ready { .. }));
+        assert!(
+            matches!(pages_gate_as(Some(&desk), Some("q"), Some("@claude")), PageGate::Changed { .. }),
+            "Jev was never agreed to"
+        );
+        assert!(matches!(pages_gate_as(Some(&desk), Some("p"), None), PageGate::NoModel), "no assistant AI, nothing to drive with");
     }
 
     #[test]

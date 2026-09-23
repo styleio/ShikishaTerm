@@ -86,6 +86,26 @@ export default {
       + ' chip.click(); await ' + wait(200) + ';'
       + ' if (desks[0].browser.choose_model !== "@claude/haiku") throw new Error("written as " + desks[0].browser.choose_model);'
       + ' document.getElementById("desk-words").scrollIntoView({block:"start"}); })()',
+    // A desk that chose nothing drives its pages with the assistant AI, and
+    // says so; without a decision model it is [Slow], and pressing that says
+    // why and lights the field that fixes it
+    slow: '(async () => { await ' + deskPage + ';'
+      + ' desks[0].browser = {}; render(); await ' + wait(200) + ';'
+      + ' const s = document.querySelector("#desk-words select");'
+      + ' if (!s.options[0].textContent.includes("Claude Code")) throw new Error("the unset choice reads " + s.options[0].textContent);'
+      + ' const tag = document.querySelector("#desk-words button.speedchip");'
+      + ' if (!tag) throw new Error("no [Slow] to press");'
+      + ' tag.click(); await ' + wait(150) + ';'
+      + ' if (document.querySelector("#desk-words .site-warn").hidden) throw new Error("pressing [Slow] said nothing");'
+      + ' if (!s.classList.contains("lookhere")) throw new Error("the field that fixes it did not light up");'
+      + ' document.getElementById("desk-words").scrollIntoView({block:"start"}); })()',
+    // A decision model deciding is [Fast], and there is nothing to press
+    fast: '(async () => { await ' + deskPage + ';'
+      + ' const s = document.querySelector("#desk-words select");'
+      + ' s.value = "jev"; s.dispatchEvent(new Event("change")); await ' + wait(200) + ';'
+      + ' if (document.querySelector("#desk-words button.speedchip")) throw new Error("still slow with Jev deciding");'
+      + ' if (!document.querySelector("#desk-words span.speedchip")) throw new Error("no [Fast]");'
+      + ' document.getElementById("desk-words").scrollIntoView({block:"start"}); })()',
   },
   langs: ['ja', 'en'],
   sizes: [['wide', 1280, 900], ['phone', 390, 820]],

@@ -854,7 +854,11 @@ impl Capabilities {
     fn model_for(&self, asked: Option<&str>, job: Deciding) -> Result<crate::bridge::Answerer> {
         // The desk's, and before any desk has been handed over, the app-wide
         // ones settings from before desks had their own still name
-        let mine = self.words.borrow().over(&crate::config::operate().words);
+        let mine = self
+            .words
+            .borrow()
+            .over(&crate::config::operate().words)
+            .or_assistant(crate::bridge::assistant_model().as_deref());
         let name = asked
             .map(str::to_string)
             .or_else(|| match job {

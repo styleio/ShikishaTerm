@@ -99,6 +99,29 @@ pub fn patience(who: &Answerer) -> Option<std::time::Duration> {
     }
 }
 
+/// The assistant AI as a model name ("@claude"): what drives a page when
+/// neither the page nor its desk chose a model. The one chosen under Basic ›
+/// Assistant AI, or the first installed -- the one every other question the
+/// app asks goes to. `None` when none is installed.
+///
+/// Held for a few seconds: the board asks on every frame it draws, and
+/// finding an installed program means reading the settings and walking PATH
+pub fn assistant_model() -> Option<String> {
+    use std::time::{Duration, Instant};
+    static HELD: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
+    const FOR: Duration = Duration::from_secs(5);
+    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, name)) = held.as_ref()
+        && at.elapsed() < FOR
+    {
+        return name.clone();
+    }
+    let want = crate::config::load().and_then(|c| c.ai_engine).filter(|w| !w.trim().is_empty());
+    let name = crate::webui::assistant_ai(want.as_deref()).map(|(ai, _)| format!("{INSTALLED_MARK}{ai}"));
+    *held = Some((Instant::now(), name.clone()));
+    name
+}
+
 /// A name as a person reads it: an installed AI by the name it is known by
 /// (`Claude Code`, `Claude Code / haiku`), a connection as it is written
 pub fn shown_name(name: &str) -> String {

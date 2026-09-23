@@ -3710,6 +3710,13 @@ const PAGE: &str = r##"<!doctype html>
  .wsbadge { flex:none; width:22px; height:22px; border-radius:var(--r-chip);
    background:var(--raise); color:var(--dim); font-size:11px; font-weight:600;
    display:flex; align-items:center; justify-content:center; }
+ /* How quickly a page is driven in words, as a grey tag. Pressable only
+    while it is slow: the press says why and lights the field that fixes it */
+ .speedchip { flex:none; font-size:11px; line-height:1.6; padding:0 var(--s2);
+   border:1px solid var(--line); border-radius:var(--r-chip); background:var(--panel2);
+   color:var(--dim); font-family:inherit; font-weight:400; min-height:0; }
+ button.speedchip { cursor:pointer; }
+ button.speedchip:hover { color:var(--text); border-color:var(--edge); }
  /* Choosing another desk. Floats, so the list under it does not move */
  .fmenu { position:fixed; z-index:60; min-width:220px; max-width:280px;
    background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
@@ -7827,6 +7834,29 @@ function wordsShown(value) {
   if (!ai) return (value || "").trim();
   return fill(T["settings.words.installed_item"], {name: ai.label}) + (model ? " / " + model : "");
 }
+// The assistant AI as a model name ("@claude"): what a desk that chose
+// nothing drives its pages with, the way it names folders that chose nothing
+// (bridge.rs, assistant_model). Picked the way the program picks it: the one
+// chosen under Basic, or the first installed
+function assistantModel() {
+  const want = (current.ai_engine || "").trim();
+  const a = aiEngines.find(e => e.id === want) || (want ? null : aiEngines[0]);
+  return a ? INSTALLED_MARK + a.id : "";
+}
+// What a choice left unset stands for, as the list says it
+function assistantShown() {
+  const ai = installedAi(assistantModel());
+  return ai ? fill(T["settings.labels.ai.assistant"], {name: ai.label}) : T["settings.labels.ai.assistant_none"];
+}
+// Whether the model that picks each move is one built for picking. Anything
+// else picks too, a good deal slower. The page's own, else its desk's, else
+// the assistant AI -- the order a run takes them in
+function decidesFast(desk, holder, under) {
+  const v = (holder.choose_model || "").trim()
+    || (under ? (under.choose_model || "").trim() : "") || assistantModel();
+  const p = (desk.providers || {})[splitModel(v).conn];
+  return !!p && p.speaks === "choice";
+}
 // What is wrong with a choice, or null. The writer has to be a conversation
 // model: a decision model answers questions and cannot write a word
 function wordsFault(desk, key, value) {
@@ -7867,7 +7897,7 @@ function wordsFaults(di) {
 // is where the answer is written ("connection/model"). `under`, on a tab, is
 // what the desk says, followed while nothing is chosen here; `adopt` is told
 // a model added from here, so the desk can take it when it has none
-function wordsPicker(desk, holder, key, under, adopt) {
+function wordsPicker(desk, holder, key, under, adopt, changed) {
   const writer = key === "words_model";
   const wrap = el("div", {style:"display:flex;flex-direction:column;gap:var(--s2);flex:1 1 100%;min-width:0"});
   const draw = () => {
@@ -7877,9 +7907,11 @@ function wordsPicker(desk, holder, key, under, adopt) {
     const {conn, model} = splitModel(now);
     const pick = el("select", {style:"width:100%;max-width:420px"});
     const followsDesk = under !== undefined;
+    // Nothing chosen is the assistant AI, and the list says so rather than
+    // asking for a choice
     pick.append(el("option", {value:""}, followsDesk
-      ? fill(T["settings.words.follow"], {name: wordsShown(under) || T["settings.words.unset"]})
-      : T["settings.providers.preset_none"]));
+      ? fill(T["settings.words.follow"], {name: wordsShown(under) || assistantShown()})
+      : assistantShown()));
     // The AIs installed on this PC come first, on the subscription the person
     // already pays for: nothing to register, no key. Both jobs take them, since
     // each one writes as well as it decides. Marked in the text itself, which
@@ -7947,6 +7979,7 @@ function wordsPicker(desk, holder, key, under, adopt) {
       if (c) holder[key] = installedAi(c) && !m ? c : c + "/" + m; else delete holder[key];
       refreshSave();
       draw();
+      if (changed) changed();
     };
     pick.addEventListener("change", () => {
       if (pick.value === "+add") {
@@ -7957,6 +7990,7 @@ function wordsPicker(desk, holder, key, under, adopt) {
           if (adopt) adopt(holder[key]);
           refreshSave();
           draw();
+          if (changed) changed();
         });
         return;
       }
@@ -7973,11 +8007,36 @@ function wordsPicker(desk, holder, key, under, adopt) {
   return wrap;
 }
 // The two pickers under their heading, the way the desk and a tab both show them
+// Above them, how quickly a page will be driven: [Fast] with a decision
+// model deciding, [Slow] without one. Slow is pressed to be told why, and the
+// field that fixes it lights up
 function wordsRows(desk, holder, under, adopt) {
+  const head = el("div", {class:"row", style:"padding:0;align-items:baseline;flex-wrap:nowrap"});
+  const why = el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, T["settings.words.slow_why"]));
+  why.hidden = true;
+  const redraw = () => {
+    head.textContent = "";
+    const fast = decidesFast(desk, holder, under);
+    if (fast) why.hidden = true;
+    head.append(fast
+      ? el("span", {class:"speedchip"}, T["settings.words.fast"])
+      : el("button", {type:"button", class:"speedchip", onclick: () => {
+          why.hidden = false;
+          const at = choose.querySelector("select");
+          if (!at) return;
+          at.scrollIntoView({block:"center"});
+          at.classList.remove("lookhere"); void at.offsetWidth; at.classList.add("lookhere");
+          at.focus({preventScroll: true});
+        }}, T["settings.words.slow"]),
+      el("span", {class:"hint"}, T["settings.words.hint"]));
+  };
+  const choose = wordsPicker(desk, holder, "choose_model", under ? (under.choose_model || "") : undefined,
+    adopt && (v => adopt("choose_model", v)), redraw);
+  redraw();
   return [
-    el("div", {class:"hint"}, T["settings.words.hint"]),
-    row(T["settings.words.choose_model"],
-      wordsPicker(desk, holder, "choose_model", under ? (under.choose_model || "") : undefined, adopt && (v => adopt("choose_model", v))),
+    head,
+    why,
+    row(T["settings.words.choose_model"], choose,
       el("span", {class:"hint"}, T["settings.words.choose_model.hint"])),
     row(T["settings.words.words_model"],
       wordsPicker(desk, holder, "words_model", under ? (under.words_model || "") : undefined, adopt && (v => adopt("words_model", v))),
@@ -9598,10 +9657,12 @@ function deskPagesCard(desk) {
   // the app checks each page against it
   const b = desk.browser || {};
   const names = [];
-  for (const k of WORDS_KEYS) names.push(b[k]);
+  // What nobody chose is the assistant AI's, and is sent to like any other
+  const deskOf = k => (b[k] || "").trim() || assistantModel();
+  for (const k of WORDS_KEYS) names.push(deskOf(k));
   (desk.tabs || []).forEach(t => {
     if (catOf(t.command) !== "browser") return;
-    for (const k of WORDS_KEYS) names.push((t[k] || "").trim() || b[k]);
+    for (const k of WORDS_KEYS) names.push((t[k] || "").trim() || deskOf(k));
   });
   const now = names.map(x => (x || "").trim()).filter(x => x)
     .filter((x, i, a) => a.indexOf(x) === i).sort().join(" + ");

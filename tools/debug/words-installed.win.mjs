@@ -5,6 +5,11 @@
  *     cargo build
  *     node tools/debug/words-installed.win.mjs [--ai @claude/haiku]
  *     JEV_API_KEY=... node tools/debug/words-installed.win.mjs --choose jev
+ *     node tools/debug/words-installed.win.mjs --ai assistant
+ *
+ * `--ai assistant` chooses no model at all: the desk drives its pages with
+ * the assistant AI (the first installed, Claude Code here), and only the
+ * agreement to send pages to it is written.
  *
  * `--choose jev` makes the decision model Jev (TypeSafe) and leaves only the
  * writing to the installed AI. The key is read from the environment, never
@@ -36,6 +41,7 @@ const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const AT = path.join(os.tmpdir(), 'sk-words');
 const at = process.argv.indexOf('--ai');
 const AI = at > 0 ? process.argv[at + 1] : '@claude/haiku';
+const UNSET = AI === 'assistant';
 const TOKEN = 'words-token-0123456789abcdef';
 const JEV = process.argv.includes('--choose') && process.argv[process.argv.indexOf('--choose') + 1] === 'jev';
 if (JEV && !process.env.JEV_API_KEY) { console.error('--choose jev needs JEV_API_KEY'); process.exit(2); }
@@ -74,9 +80,9 @@ fs.writeFileSync(scene, JSON.stringify({
   remote: { sticky_token: true, fixed_token: TOKEN },
   desks: [{
     name: 'Words', id: 'words',
-    browser: { choose_model: CHOOSE, words_model: AI },
+    browser: UNSET ? {} : { choose_model: CHOOSE, words_model: AI },
     // Agreed to, the way the settings write it: each name once, in order
-    send_pages_to: [...new Set([CHOOSE, AI])].sort().join(' + '),
+    send_pages_to: UNSET ? '@claude' : [...new Set([CHOOSE, AI])].sort().join(' + '),
     providers: JEV ? { jev: { base_url: 'https://api.typesafe.ai/v1/systemone', speaks: 'choice',
       models: ['jev-latest'], api_key: process.env.JEV_API_KEY } } : {},
     browsers: [{ id: 'form', url: `http://127.0.0.1:${pagePort}/` }],

@@ -988,7 +988,8 @@ Two commands, and between them everything a page can be driven with.
 
 `model` is `connection/model`, the same spelling a model tab's command line
 uses. Left out, the settings decide (Browser › *Decision model* and
-*Conversation model*).
+*Conversation model*), and where nothing is chosen there, the assistant AI
+from Basic answers.
 
 An AI installed on this PC answers too, on the plan it is signed in with and
 with no key: `model = "@claude"`, `"@codex"` or `"@gemini"`, and with a model
