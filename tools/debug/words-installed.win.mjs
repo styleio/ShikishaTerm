@@ -4,6 +4,12 @@
  *
  *     cargo build
  *     node tools/debug/words-installed.win.mjs [--ai @claude/haiku]
+ *     JEV_API_KEY=... node tools/debug/words-installed.win.mjs --choose jev
+ *
+ * `--choose jev` makes the decision model Jev (TypeSafe) and leaves only the
+ * writing to the installed AI. The key is read from the environment, never
+ * from the command line (every process on the machine can read that), and
+ * the copy's settings holding it are deleted when the run ends.
  *
  * Needs Windows, Node and the named AI installed and signed in. Its own copy
  * of the app (tools/debug/instance.win.ps1), its own folder and ports.
@@ -31,6 +37,9 @@ const AT = path.join(os.tmpdir(), 'sk-words');
 const at = process.argv.indexOf('--ai');
 const AI = at > 0 ? process.argv[at + 1] : '@claude/haiku';
 const TOKEN = 'words-token-0123456789abcdef';
+const JEV = process.argv.includes('--choose') && process.argv[process.argv.indexOf('--choose') + 1] === 'jev';
+if (JEV && !process.env.JEV_API_KEY) { console.error('--choose jev needs JEV_API_KEY'); process.exit(2); }
+const CHOOSE = JEV ? 'jev/jev-latest' : AI;
 const GOAL = 'Type Alice in the name box and send the form.';
 const LIMIT_MS = 1500;
 
@@ -65,8 +74,11 @@ fs.writeFileSync(scene, JSON.stringify({
   remote: { sticky_token: true, fixed_token: TOKEN },
   desks: [{
     name: 'Words', id: 'words',
-    browser: { choose_model: AI, words_model: AI },
-    send_pages_to: AI,
+    browser: { choose_model: CHOOSE, words_model: AI },
+    // Agreed to, the way the settings write it: each name once, in order
+    send_pages_to: [...new Set([CHOOSE, AI])].sort().join(' + '),
+    providers: JEV ? { jev: { base_url: 'https://api.typesafe.ai/v1/systemone', speaks: 'choice',
+      models: ['jev-latest'], api_key: process.env.JEV_API_KEY } } : {},
     browsers: [{ id: 'form', url: `http://127.0.0.1:${pagePort}/` }],
     folders: [{ cwd: '{work}', tabs: [{ id: 'clock', name: 'clock',
       // Encoded, because a command line is split on its quotes before PowerShell
@@ -78,7 +90,7 @@ fs.writeFileSync(scene, JSON.stringify({
 const up = ps('-File', instance, '-At', AT, '-Config', scene);
 const board = (up.stdout.match(/^board=(\S+)/m) || [])[1];
 if (!board) { console.error(up.stdout + up.stderr); process.exit(2); }
-console.log(`the copy is up at ${board}, the AI is ${AI}`);
+console.log(`the copy is up at ${board}, deciding: ${CHOOSE}, writing: ${AI}`);
 
 let failed = null;
 try {
@@ -135,6 +147,9 @@ try {
 } finally {
   stop();
   server.close();
+  // The scene and the copy's settings may hold a key
+  fs.rmSync(scene, { force: true });
+  fs.rmSync(path.join(AT, 'app', 'config'), { recursive: true, force: true });
 }
 if (failed) {
   console.error('FAIL: ' + failed + `\n  (the copy's log is under ${path.join(AT, 'app', 'logs')})`);
