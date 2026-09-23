@@ -9,7 +9,7 @@
  * `--choose jev` makes the decision model Jev (TypeSafe) and leaves only the
  * writing to the installed AI. The key is read from the environment, never
  * from the command line (every process on the machine can read that), and
- * the copy's settings holding it are deleted when the run ends.
+ * the copy's settings and data are deleted when the run ends.
  *
  * Needs Windows, Node and the named AI installed and signed in. Its own copy
  * of the app (tools/debug/instance.win.ps1), its own folder and ports.
@@ -147,9 +147,10 @@ try {
 } finally {
   stop();
   server.close();
-  // The scene and the copy's settings may hold a key
+  // The scene and the copy's settings may hold a key -- and so may the copy
+  // of those settings the app backs up when it starts on an older file
   fs.rmSync(scene, { force: true });
-  fs.rmSync(path.join(AT, 'app', 'config'), { recursive: true, force: true });
+  for (const d of ['config', 'data']) fs.rmSync(path.join(AT, 'app', d), { recursive: true, force: true });
 }
 if (failed) {
   console.error('FAIL: ' + failed + `\n  (the copy's log is under ${path.join(AT, 'app', 'logs')})`);
