@@ -28,6 +28,9 @@ use crate::tab::{Session, SessionSource, Tab};
 /// than half-understand it
 const VERSION: u32 = 1;
 const FILE: &str = "last-session";
+/// The file as this start found it, before anything this run does is written
+/// over it. See [`keep_as_read`]
+const AS_READ: &str = "last-session.prev";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Saved {
@@ -70,6 +73,25 @@ pub struct SavedTab {
 
 fn path() -> PathBuf {
     crate::config::state_path(FILE)
+}
+
+/// Keep a copy of what this start was handed, and say how much it was.
+///
+/// The file is rewritten within seconds of every start, so what the start read
+/// is gone by the time anybody asks why a tab came up without its
+/// conversation. That question has been asked again and again, and every time
+/// the one piece of evidence that could settle it -- did the file know about
+/// the tab at all -- had already been written over. The copy is taken once,
+/// here, and is replaced only by the next start's
+fn keep_as_read(text: &str, read: &Saved) {
+    let tabs: usize = read.desks.iter().map(|d| d.tabs.len()).sum();
+    crate::append_hook_log(&format!(
+        "last session: {tabs} tab(s) remembered across {} desk(s); a copy is kept as {AS_READ}",
+        read.desks.len()
+    ));
+    if let Err(e) = crate::crypto::write_atomic(&crate::config::state_path(AS_READ), text) {
+        crate::append_hook_log(&format!("could not keep a copy of the last session: {e}"));
+    }
 }
 
 /// Whether two written-down folders are the same folder.
@@ -143,7 +165,10 @@ impl Saved {
         match serde_json::from_str::<Saved>(text.trim_start_matches('\u{feff}')) {
             // A file from a later version is not ours to interpret. Left alone
             // rather than overwritten: the person may go back to that build
-            Ok(s) if s.version <= VERSION => s,
+            Ok(s) if s.version <= VERSION => {
+                keep_as_read(&text, &s);
+                s
+            }
             Ok(s) => {
                 crate::append_hook_log(&format!(
                     "last session was written by a newer version ({}); leaving it alone",
@@ -246,6 +271,16 @@ impl Saved {
             (Some(only), None) => Some(only),
             _ => None,
         }
+    }
+
+    /// Whether this desk was remembered at all.
+    ///
+    /// Asked by a launch that found nothing for its tab, because the two ways
+    /// of finding nothing are different faults: a desk that is here but has no
+    /// entry for this tab, and a desk the file does not know -- its id changed,
+    /// or another start wrote the file without it
+    pub fn knows_desk(&self, desk: &crate::config::Desk) -> bool {
+        self.desk(desk).is_some()
     }
 
     /// How many conversations this desk remembers for one CLI in one folder.

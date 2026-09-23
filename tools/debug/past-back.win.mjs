@@ -19,6 +19,13 @@
  * the first thing the person types, and that it stops once it has been taken
  * up.
  *
+ * Last, it starts the copy with a page in front of the tab -- the screen
+ * numbers then run ahead of the tab list -- and checks that the list is the
+ * pressed tab's and that picking from it relaunches that tab, not its
+ * neighbour. On 2026-09-23 the list opened empty in exactly that arrangement.
+ * Along the way it checks that each start keeps a copy of what it read
+ * (`last-session.prev`) and says in the log why a tab came up clean.
+ *
  *     cargo build
  *     node tools/debug/past-back.win.mjs
  *
@@ -199,6 +206,8 @@ try {
   console.log('1. the tab comes up on a conversation of nobody\'s, and says so');
   await until(() => Promise.resolve(/--session-id/.test(launched())), 'the CLI to be launched');
   check(!/--resume/.test(launched()), 'it was not resumed: ' + launched());
+  check(hookLog().includes('"claude" starts clean: this desk is not in the last session at all'),
+    'the log says the tab came up clean because nothing was remembered');
   await until(() => run('!!(S && S.tabs && S.tabs.some(t => t.past))'), 'the offer to appear');
   check(await run('!!document.querySelector("#panes .pane .past:not([hidden])")'),
     'the caption offers the way back');
@@ -257,6 +266,13 @@ try {
     'the caption says the conversation did not come back');
   check(hookLog().includes('"claude" starts clean:'),
     'the log says why this tab came up clean');
+  const kept = (() => {
+    try { return fs.readFileSync(path.join(APP, 'data', 'last-session.prev'), 'utf8'); } catch { return ''; }
+  })();
+  check(kept.includes('44444444-4444-4444-8444-444444444444'),
+    'the start kept a copy of the memory it was handed');
+  check(hookLog().includes('last session: 1 tab(s) remembered across 1 desk(s)'),
+    'the log says how much the start was handed');
 
   console.log('6. and it is still offered after the person has typed');
   await run('send({kind:"key", text:"hello"}); send({kind:"key", named:"enter"}); true');
@@ -271,6 +287,41 @@ try {
   await until(() => run('!!(S && S.tabs && !S.tabs.some(t => t.past))'), 'the offer to go');
   check(await run('!document.querySelector("#panes .pane .past:not([hidden])")'),
     'the caption is an ordinary caption again');
+
+  console.log('8. with a page in front of the tab, the list is still the tab\'s own');
+  stopApp();
+  await sleep(1500);
+  fs.writeFileSync(CONFIG, JSON.stringify({
+    language: 'en',
+    remote: { enabled: false },
+    desks: [{
+      name: 'Check', id: 'check',
+      folders: [{ cwd: WORK, tabs: [
+        { name: 'page', id: 'page', command: 'browser https://example.com/' },
+        { name: 'claude', id: 'claude', command: 'claude' },
+      ] }],
+    }],
+  }, null, 2));
+  fs.rmSync(path.join(APP, 'data', 'last-session'), { force: true });
+  fs.rmSync(ARGV, { force: true });
+  run = await connect();
+  await until(() => Promise.resolve(/--session-id/.test(launched())), 'the CLI to be launched');
+  await until(() => run('!!(S && S.tabs && S.tabs.some(t => t.past))'), 'the offer to appear');
+  const numbered = await run('S.tabs.map(t => ({ index: t.index, name: t.name, past: !!t.past }))');
+  const offered = numbered.find((t) => t.past);
+  check(offered && offered.index === 2,
+    'the tab is screen 2, behind the page: ' + JSON.stringify(numbered));
+  await run('(() => { const t = S.tabs.find(t => t.past); window.__openPast(t.index, t.name); return true; })()');
+  await until(() => run('!!(S && S.past)'), 'an answer to the list');
+  const answered = await run('({ tab: S.past.tab, hits: (S.past.hits || []).length })');
+  check(answered.tab === 2 && answered.hits === 2,
+    'the list is the pressed tab\'s two conversations: ' + JSON.stringify(answered));
+  await until(() => run('document.querySelectorAll("#past .vrow").length === 2'), 'the rows');
+  await run('document.querySelectorAll("#past .vrow")[0].click(); true');
+  await until(() => Promise.resolve(new RegExp('--resume\\s+' + NEWER).test(launched())),
+    'the tab to be relaunched resuming it');
+  check(new RegExp('--resume\\s+' + NEWER).test(launched()),
+    'the pressed tab was relaunched into the conversation picked: ' + launched());
 } catch (e) {
   console.error(e.message);
   const tail = hookLog().split('\n').slice(-12).join('\n');

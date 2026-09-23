@@ -1405,9 +1405,11 @@ impl Carried {
 ///
 /// Three things all have to hold, and one of them failing is ordinary rather
 /// than exceptional: a tab that is new since last time has nothing to come
-/// back to, and saying so on every launch would be noise. The others are not
-/// ordinary and are written down, because each leaves a tab looking exactly
-/// like every other fresh one while something has gone:
+/// back to, and holding an offer of the way back open for it would be noise.
+/// It is still written to the log, one line, because it is also what a desk
+/// whose memory went missing looks like. The others are not ordinary and hold
+/// the offer open, because each leaves a tab looking exactly like every other
+/// fresh one while something has gone:
 ///
 /// * the record of the conversation it was having is no longer on this machine
 /// * this desk remembers conversations for this CLI in this folder, and none
@@ -1448,7 +1450,19 @@ pub fn carried_conversation(
         // conversation that exists has just stopped belonging to anybody, and
         // the next start would remember the empty one this tab opens instead
         let near = saved.remembered_here(desk, program, cwd.as_deref());
-        if near == 0 || !carries {
+        if !carries {
+            return Carried::fresh();
+        }
+        if near == 0 {
+            // Ordinary for a tab that is new since last time, so no offer is
+            // held open for it. Still written down: this is the start that
+            // said nothing at all when a desk's AI tabs all came up clean, and
+            // "which of the two" is exactly what was never known afterwards
+            let why = match saved.knows_desk(desk) {
+                true => "this desk remembers nothing for it in this folder",
+                false => "this desk is not in the last session at all",
+            };
+            append_hook_log(&format!("\"{title}\" starts clean: {why}"));
             return Carried::fresh();
         }
         return Carried::lost(
