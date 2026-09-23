@@ -6942,6 +6942,7 @@ function globalSections() {
   return [
     {id:"basic",     label:T["settings.sec.basic"],     sub:T["settings.sec.basic.sub"],     build:basicCard},
     {id:"update",    label:T["settings.sec.update"],    sub:T["settings.sec.update.sub"],    build:updateCard},
+    {id:"remote",    label:T["settings.sec.remote"],    sub:T["settings.sec.remote.sub"],    build:remoteCard},
     // Two cards: the keys that work from any program, then the keys inside
     {id:"keys",      label:T["settings.sec.keys"],      sub:T["settings.sec.keys.sub"],
      build:() => el("div", {}, hotkeysCard(), keysCard())},
@@ -6951,7 +6952,6 @@ function globalSections() {
     {id:"servers",   label:T["settings.sec.servers"],   sub:T["settings.sec.servers.sub"],   build:marksCard},
     {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
     {id:"claudeusage", label:T["settings.sec.claudeusage"], sub:T["settings.sec.claudeusage.sub"], build:claudeUsageCard},
-    {id:"remote",    label:T["settings.sec.remote"],    sub:T["settings.sec.remote.sub"],    build:remoteCard},
     {id:"api",       label:T["settings.sec.api"],       sub:T["settings.sec.api.sub"],       build:apiCard},
     {id:"resume",    label:T["settings.sec.resume"],    sub:T["settings.sec.resume.sub"],    build:resumeCard},
     {id:"files",     label:T["settings.sec.files"],     sub:T["settings.sec.files.sub"],     build:filesCard},

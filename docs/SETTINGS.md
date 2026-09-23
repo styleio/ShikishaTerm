@@ -41,6 +41,22 @@ Newer versions, and going back
 
 - **Looking** — One request to api.github.com for the newest version number; nothing is sent. The Store copy asks the Store instead. Installing is always the button above.
 
+### Remote access
+
+Remote control & QR
+
+**Use from your phone**
+
+- **Turn on** — Let me check status and send instructions from my phone
+- **Port** — Usually no need to change
+- **Password** — Optional second factor: the URL token in a notification alone no longer opens the board. Empty = off (your own risk). Applies on save (existing connections are cut)
+- **Fixed token** — On, the string below is the token and the phone keeps it in its URL and storage (bookmarkable; a discarded tab needs no new QR). Disconnect still stops that phone's screen and touches at once, but the token is unchanged, so it can come back by opening the link again. To shut a phone out for good, change this string. Stored in plain text in config.json — pair it with a password
+- **Devices that have this board's key**
+- **Tailscale** — Only your own devices can reach this address, from anywhere. The safe way to use it
+- **Home network** — Anyone on the same Wi-Fi could use this link. Fine at home, not on a café or office network
+- **This PC only** — This address exists only inside this PC, so no phone can reach it
+- **Open to the internet** — This address is reachable from outside. Anyone who gets the link can operate this PC
+
 ### Shortcuts
 
 What each key does
@@ -106,22 +122,6 @@ The 5-hour and 7-day windows on the status line
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 
-### Phone access
-
-Remote control & QR
-
-**Use from your phone**
-
-- **Turn on** — Let me check status and send instructions from my phone
-- **Port** — Usually no need to change
-- **Password** — Optional second factor: the URL token in a notification alone no longer opens the board. Empty = off (your own risk). Applies on save (existing connections are cut)
-- **Fixed token** — On, the string below is the token and the phone keeps it in its URL and storage (bookmarkable; a discarded tab needs no new QR). Disconnect still stops that phone's screen and touches at once, but the token is unchanged, so it can come back by opening the link again. To shut a phone out for good, change this string. Stored in plain text in config.json — pair it with a password
-- **Devices that have this board's key**
-- **Tailscale** — Only your own devices can reach this address, from anywhere. The safe way to use it
-- **Home network** — Anyone on the same Wi-Fi could use this link. Fine at home, not on a café or office network
-- **This PC only** — This address exists only inside this PC, so no phone can reach it
-- **Open to the internet** — This address is reachable from outside. Anyone who gets the link can operate this PC
-
 ### External control
 
 Let programs drive this app
@@ -180,6 +180,7 @@ Name, automation name, automation folder
 
 - **Basic** — Tab width, chaining, language
 - **Update** — Newer versions, and going back
+- **Remote access** — Remote control & QR
 - **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt
 - **Quick actions** — One-tap buttons in the input bar
@@ -187,7 +188,6 @@ Name, automation name, automation folder
 - **Server names** — Tell production from staging at a glance
 - **Operate a tab** — Limits for 🎯 driving another tab
 - **Claude's allowance** — The 5-hour and 7-day windows on the status line
-- **Phone access** — Remote control & QR
 - **External control** — Let programs drive this app
 - **Carrying conversations** — What survives a restart
 - **Files** — Automation & secrets paths
@@ -256,6 +256,7 @@ Several AI tabs discussing or working together
 
 - **Basic** — Tab width, chaining, language
 - **Update** — Newer versions, and going back
+- **Remote access** — Remote control & QR
 - **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt
 - **Quick actions** — One-tap buttons in the input bar
@@ -263,7 +264,6 @@ Several AI tabs discussing or working together
 - **Server names** — Tell production from staging at a glance
 - **Operate a tab** — Limits for 🎯 driving another tab
 - **Claude's allowance** — The 5-hour and 7-day windows on the status line
-- **Phone access** — Remote control & QR
 - **External control** — Let programs drive this app
 - **Carrying conversations** — What survives a restart
 - **Files** — Automation & secrets paths
