@@ -9529,7 +9529,10 @@ function deskLabelsCard(desk) {
     ? fill(T["settings.labels.ai.assistant"], {name: assistant.label})
     : T["settings.labels.ai.assistant_none"]));
   for (const e of aiEngines) picker.append(el("option", {value:e.id}, e.label));
-  const providers = Object.keys(deskProviders());
+  // Writing a name is writing, which a decision model cannot do: it only picks
+  // one of the options it is given. So only the conversation models are offered
+  const provs = deskProviders();
+  const providers = Object.keys(provs).filter(n => (provs[n].speaks || "chat") === "chat");
   for (const p of providers) picker.append(el("option", {value:"model:" + p}, fill(T["wizard.discuss.model_suffix"], {name: p})));
   const written = (desk.summary_ai || "").trim();
   const asModel = written.match(/^model\s+([^/\s]+)\/(.*)$/);
