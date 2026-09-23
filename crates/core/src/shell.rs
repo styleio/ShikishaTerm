@@ -13734,10 +13734,12 @@ let quickShape = "", quickFocusId = "";
 function sayCovered() {
   if (OURS) send({kind:"covered", on: quickOpen || ideasOpen});
 }
-window.__openQuick = function () {
+// `stay`: open it, and leave it open if it already is. A key pressed in
+// another program asks to see it; closing it then would look like nothing
+window.__openQuick = function (stay) {
   const v = document.getElementById("quick");
   if (!v) return;
-  if (quickOpen) { closeQuick(); return; }
+  if (quickOpen) { if (!stay) closeQuick(); return; }
   if (ideasOpen) closeIdeas();
   quickOpen = true;
   quickWalk.path = []; quickWalk.page = 0; quickShape = ""; quickFocusId = "";
@@ -13788,10 +13790,11 @@ function ideasFrontProject() {
   const p = IDEAS.projects.find(p => (p.folders || []).some(f => sameFolder(f, g.folder)));
   return p ? p.key : "";
 }
-window.__openIdeas = function () {
+// `stay` as for the quick commands above
+window.__openIdeas = function (stay) {
   const v = document.getElementById("ideas");
   if (!v) return;
-  if (ideasOpen) { closeIdeas(); return; }
+  if (ideasOpen) { if (!stay) closeIdeas(); return; }
   if (quickOpen) closeQuick();
   ideasOpen = true;
   IDEAS.project = IDEAS.known ? ideasFrontProject() : null;

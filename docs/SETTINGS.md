@@ -343,5 +343,5 @@ As the program ships. Whatever has been changed is under Settings > Shortcuts.
 - `Ctrl+B b` — Send the prefix key itself to the program
 - `Ctrl+B ?` — This list
 - `Ctrl+B :` — Command palette
-- `Ctrl+B k / Ctrl+Shift+K` — Quick commands
-- `Ctrl+B m / Ctrl+Shift+M` — Ideas
+- `Ctrl+B k / Alt+Shift+K` — Quick commands
+- `Ctrl+B m / Alt+Shift+M` — Ideas

@@ -8,6 +8,17 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Changed
+- **The quick commands and the ideas open from any program.** Alt+Shift+K and
+  Alt+Shift+M bring SHIKISHA-TERM to the front with them open, from the
+  notification area too; pressed with the window already in front they open and
+  close them as before. They replace Ctrl+Shift+K and Ctrl+Shift+M, which worked
+  in this window only and are keys other programs use (an editor's "delete line",
+  a browser's profiles) -- a key that works everywhere would have taken those from
+  them. Ctrl+B k and Ctrl+B m still work. The keys are chosen under Settings >
+  Shortcuts, in "Keys that work from any program".
+- **Settings > Keys is called Settings > Shortcuts**, the name people look for it by.
+
 ## [0.18.0] - 2026-09-21
 
 A phone watching this screen is sent it as video now, with the sound of the page

@@ -78,14 +78,12 @@ pub const ACTIONS: &[Action] = &[
 ];
 
 /// Actions that also answer to a combination with no prefix, before anything
-/// is read from the settings. The things that are opened over everything and
-/// wanted in the middle of typing, where going through the prefix is two
-/// presses too many. Ctrl with Shift, because a terminal program cannot tell
-/// Ctrl+Shift+a letter from Ctrl+that letter, so none of them asks for it
-const DEFAULT_DIRECT: &[(&str, &str)] = &[
-    ("quick_commands", "ctrl+shift+k"),
-    ("ideas", "ctrl+shift+m"),
-];
+/// is read from the settings. None, as it ships: the things opened over
+/// everything and wanted in the middle of typing -- the quick commands and the
+/// ideas -- have keys that work from any program (`hotkeys::DEFAULTS`), which
+/// reach them in this window too. A combination a person writes here still
+/// works, in this window only
+const DEFAULT_DIRECT: &[(&str, &str)] = &[];
 
 /// The prefix, before anything is read from the settings.
 const DEFAULT_PREFIX: &str = "ctrl+b";
@@ -455,17 +453,19 @@ impl Keys {
     ///
     /// Built from the same table the window dispatches on, so it cannot drift
     /// from what the keys really do -- which is the whole reason the help text
-    /// stopped carrying "Ctrl+B" spelled out inside it
+    /// stopped carrying "Ctrl+B" spelled out inside it. A key that works from
+    /// any program is one of them while it is registered and working
     pub fn help_rows(&self) -> Vec<(String, &'static str)> {
+        self.help_rows_with(&crate::hotkeys::working())
+    }
+
+    /// The same, given the keys that work from any program, by action
+    fn help_rows_with(&self, anywhere: &std::collections::BTreeMap<String, String>) -> Vec<(String, &'static str)> {
         ACTIONS
             .iter()
             .filter_map(|a| {
-                let mut ways: Vec<String> = self
-                    .direct
-                    .iter()
-                    .filter(|(_, c, _)| *c == a.key)
-                    .map(|(t, _, _)| t.show())
-                    .collect();
+                let mut ways: Vec<String> = anywhere.get(a.name).cloned().into_iter().collect();
+                ways.extend(self.direct.iter().filter(|(_, c, _)| *c == a.key).map(|(t, _, _)| t.show()));
                 let mut after: Vec<char> =
                     self.typed.iter().filter(|(_, v)| **v == a.key).map(|(k, _)| *k).collect();
                 after.sort_unstable();
@@ -540,6 +540,10 @@ pub fn shipped_in(word: &dyn Fn(&str) -> String) -> Vec<(String, String)> {
                     .filter(|(name, _)| *name == a.name)
                     .filter_map(|(_, combo)| Trigger::parse(combo).map(|t| t.show())),
             );
+            let anywhere = crate::hotkeys::default_of(a.name);
+            if !anywhere.is_empty() {
+                ways.push(anywhere.to_string());
+            }
             (ways.join(" / "), word(a.desc))
         })
         .collect()
@@ -613,26 +617,30 @@ mod tests {
         assert!(!plain.matches(&press('m', KeyModifiers::CONTROL | KeyModifiers::SHIFT)));
     }
 
-    /// The quick commands and the ideas open with a combination and no prefix
-    /// as they ship, and the prefix still reaches them too
+    /// The quick commands and the ideas take no combination from this
+    /// window as they ship: theirs work from any program, and are listed with
+    /// them while they work. The prefix still reaches them
     #[test]
-    fn the_quick_commands_and_the_ideas_open_with_no_prefix() {
+    fn the_quick_commands_and_the_ideas_open_from_anywhere() {
         let keys = Keys::default();
         let both = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
-        assert_eq!(keys.direct(&press('k', both)), Some(KeyCode::Char('k')));
-        assert_eq!(keys.direct(&press('m', both)), Some(KeyCode::Char('m')));
-        assert_eq!(keys.direct(&press('m', KeyModifiers::CONTROL)), None, "Ctrl+M was taken from the program in the tab");
+        assert_eq!(keys.direct(&press('k', both)), None, "Ctrl+Shift+K was kept from the program in the tab");
+        assert_eq!(keys.direct(&press('m', both)), None, "Ctrl+Shift+M was kept from the program in the tab");
+        assert!(keys.direct_for_page().is_empty());
         assert_eq!(keys.after_prefix(KeyCode::Char('m')), Some(KeyCode::Char('m')));
-        let rows = keys.help_rows();
-        assert!(rows.iter().any(|(k, d)| *d == "keys.ideas" && k.starts_with("Ctrl+Shift+M")), "{rows:?}");
-        // What the page is told to hand on from its own boxes
-        let page = keys.direct_for_page();
-        assert!(page.contains(&DirectKey { key: "m".into(), ctrl: true, shift: true, alt: false }), "{page:?}");
-        assert!(page.contains(&DirectKey { key: "k".into(), ctrl: true, shift: true, alt: false }), "{page:?}");
+        let anywhere = std::collections::BTreeMap::from([("ideas".to_string(), "Alt+Shift+M".to_string())]);
+        let rows = keys.help_rows_with(&anywhere);
+        assert!(rows.iter().any(|(k, d)| *d == "keys.ideas" && k == "Alt+Shift+M / Ctrl+B m"), "{rows:?}");
+        assert!(rows.iter().any(|(k, d)| *d == "keys.quick_commands" && k == "Ctrl+B k"), "{rows:?}");
+        let shipped = shipped_in(&|k: &str| k.to_string());
+        assert!(
+            shipped.contains(&("Ctrl+B k / Alt+Shift+K".to_string(), "keys.quick_commands".to_string())),
+            "{shipped:?}"
+        );
     }
 
-    /// A person's own combination replaces what an action shipped with, and
-    /// taking another action's shipped combination is not a clash
+    /// A person's own combination is theirs to write, and two they wrote
+    /// cannot share one key
     #[test]
     fn a_chosen_combination_takes_the_place_of_a_shipped_one() {
         let binds = HashMap::from([
@@ -642,7 +650,6 @@ mod tests {
         let (keys, errs) = Keys::from(None, &binds);
         assert!(errs.is_empty(), "{errs:?}");
         let both = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
-        assert_eq!(keys.direct(&press('m', both)), None, "the ideas kept the combination they moved away from");
         assert_eq!(keys.direct(&press('i', KeyModifiers::CONTROL | KeyModifiers::ALT)), Some(KeyCode::Char('m')));
         assert_eq!(keys.direct(&press('k', both)), Some(KeyCode::Char(':')), "the chosen one did not win");
         // Two combinations a person wrote still cannot share one key

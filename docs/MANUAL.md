@@ -83,10 +83,12 @@ away.
 The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` shows the keys you actually have,
 since every one of them can be changed in the settings.
 
-A few keys need no prefix: `Ctrl+Shift+K` opens the quick commands and
-`Ctrl+Shift+M` the ideas, even while the caret is in a text box. Under
-Settings > Shortcuts, choose the box beside an action and press the combination you
-want (`Ctrl+Shift+D`, `Alt+F4`, `F5`) to give it one of its own.
+Two keys need no prefix and work from any program: `Alt+Shift+K` opens the
+quick commands and `Alt+Shift+M` the ideas, bringing SHIKISHA-TERM to the front
+if another program is there. Change them under Settings > Shortcuts, in
+"Keys that work from any program". For the other actions, choose the box beside
+an action in "Keys inside SHIKISHA-TERM" on the same screen and press the
+combination you want (`Ctrl+Shift+D`, `Alt+F4`, `F5`) to give it one of its own.
 
 The digits are the tabs themselves: `Ctrl+B 0`–`9` goes to that tab (`0` is INDEX).
 
@@ -121,8 +123,8 @@ The digits are the tabs themselves: `Ctrl+B 0`–`9` goes to that tab (`0` is IN
 | `Ctrl+B b` | Send the prefix key itself to the program |
 | `Ctrl+B ?` | This list |
 | `Ctrl+B :` | Command palette |
-| `Ctrl+B k` / `Ctrl+Shift+K` | Quick commands |
-| `Ctrl+B m` / `Ctrl+Shift+M` | Ideas |
+| `Ctrl+B k` / `Alt+Shift+K` | Quick commands |
+| `Ctrl+B m` / `Alt+Shift+M` | Ideas |
 
 <!-- /guide -->
 

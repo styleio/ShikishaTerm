@@ -479,8 +479,14 @@ struct WinSurface {
     /// The window is put away. Drawing goes on regardless (the phone reads the
     /// same state), but a notification's click has to bring it back first
     hidden: bool,
-    /// The keys that open the tools from any program, while they are registered
+    /// The keys that work from any program, while they are registered
     hotkeys: Option<crate::hotkeys::Hotkeys>,
+    /// The board's page has said it is up since the window was last put away.
+    /// Until it has, a script sent to it lands on a page that is not there yet
+    page_up: bool,
+    /// What a key from another program asked the board to open, kept until
+    /// the page is up and has its state
+    summoned: Option<String>,
 }
 
 impl WinSurface {
@@ -648,6 +654,7 @@ impl WinSurface {
     fn hide(&mut self) {
         let _ = self.win.hide();
         self.hidden = true;
+        self.page_up = false;
         append_hook_log("Window put away; the program goes on in the notification area");
     }
 
@@ -658,6 +665,31 @@ impl WinSurface {
             append_hook_log("Window brought back from the notification area");
         }
         self.hidden = false;
+    }
+
+    /// A key from another program asked for `what` on the board.
+    ///
+    /// Pressed with this window already in front, it does what the key always
+    /// did here: opens it, or closes it when it is open. Pressed from anywhere
+    /// else it only opens -- the person is asking to see it, and closing what
+    /// they cannot see would look like the key did nothing. A window put away
+    /// has no page until it is back, so the opening waits for the page
+    fn summon(&mut self, what: &str) {
+        let open = match what {
+            "quick_commands" => "__openQuick",
+            "ideas" => "__openIdeas",
+            _ => return,
+        };
+        let in_front = window_in_front();
+        let js = format!("window.{open} && window.{open}({});", !in_front);
+        if !in_front || self.hidden {
+            self.show();
+        }
+        if self.page_up && !self.hidden {
+            let _ = self.win.eval(&js);
+        } else {
+            self.summoned = Some(js);
+        }
     }
 
     /// Says, the first time the window is put away, that the program is still
@@ -707,6 +739,7 @@ impl WinSurface {
                 Ev::Closed => self.mail.closed = true,
                 Ev::CloseRequested => self.mail.close_requested = true,
                 Ev::TrayOpen => self.mail.tray_open = true,
+                Ev::Summon { what } => self.summon(&what),
                 Ev::TrayQuit => self.mail.tray_quit = true,
                 // The settings page's "close settings" button. Where the tab actually
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
@@ -880,6 +913,7 @@ impl WinSurface {
                 // it already has is torn up here, the board stays empty until
                 // something happens to move every part of it.
                 Ev::Ready { from: None, .. } => {
+                    self.page_up = true;
                     self.last = None;
                     self.last_screen_rows.clear();
                     self.last_screen_key = None;
@@ -1093,12 +1127,19 @@ fn run_in_window() -> Result<()> {
         pending: std::collections::VecDeque::new(),
         hidden: false,
         hotkeys: None,
+        page_up: false,
+        summoned: None,
     };
-    // The keys that open the tools from any program. The scissors' own key
-    // frames first and chooses after; a tool's key opens that tool
+    // The keys that work from any program. The scissors' own key frames first
+    // and chooses after; a tool's key opens that tool; the rest open something
+    // on the board, which comes to the front for it
     let opener = surface.win.snip_opener();
     surface.hotkeys = hotkeys::Hotkeys::start(move |action| {
-        opener.open(if action == "snip" { "" } else { action });
+        if shikisha_core::hotkeys::ON_THE_BOARD.contains(&action) {
+            opener.summon(action);
+        } else {
+            opener.open(if action == "snip" { "" } else { action });
+        }
     });
     // What the run before this one left behind, looked at before this one
     // claims the mark. Asking the machine *why* is slow, so it happens on a
@@ -1434,6 +1475,13 @@ impl WinSurface {
                     ));
                     w.last = Some(state);
                 }
+                // Opened only once the page has what it draws from: a page
+                // that has just come back gets its state in the lines above
+                if w.page_up
+                    && let Some(js) = w.summoned.take()
+                {
+                    let _ = w.win.eval(&js);
+                }
                 // The division of the content area went with the state
                 // above: it is part of it (`view::PanesState`). What is left
                 // here is the bookkeeping that went with sending it -- the
@@ -1533,6 +1581,18 @@ fn open_browser(url: &str) {
 /// This executable is a windowed app, so Windows doesn't attach a console for
 /// it. If the caller is a terminal, borrow that one. Otherwise, open one of
 /// our own. If already attached, do nothing (both calls simply fail harmlessly in that case).
+/// Whether the window in front of the person is one of this program's
+fn window_in_front() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return false;
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    pid == std::process::id()
+}
+
 fn open_console() {
     use windows_sys::Win32::System::Console::AllocConsole;
     if !borrow_console() {

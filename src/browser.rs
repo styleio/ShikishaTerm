@@ -284,6 +284,10 @@ pub enum Cmd {
     /// The answer to a question the tool page asked (see `Ev::SnipAsk`),
     /// as JSON, handed to the page
     SnipAnswer { json: String },
+    /// A key from any program asked for something on the board. Passed on to
+    /// the conductor, which knows whether the window is put away (see
+    /// `Ev::Summon`)
+    Summon { what: String },
     /// The tool's window out of the way of a save dialog, keeping what is on it
     SnipAside,
     /// The save dialog is done: the tool's window back, told how it ended
@@ -2454,6 +2458,9 @@ fn run_window(
                         let _ = w.view.evaluate_script(&format!("window.__snipSaved && window.__snipSaved({how:?});"));
                     }
                 }
+                Cmd::Summon { what } => {
+                    let _ = ev_tx.send(Ev::Summon { what });
+                }
                 Cmd::SnipAnswer { json } => {
                     // The page takes an answer only for a question it is still
                     // waiting on, so one arriving after the tool was closed or
@@ -2623,6 +2630,12 @@ impl SnipOpener {
     /// program to be pictured already in front
     pub fn open(&self, tool: &str) {
         let _ = self.0.send_event(Cmd::Snip { tool: tool.to_string(), delay: 0 });
+    }
+
+    /// Bring the window to the front and open `what` on the board (one of
+    /// `hotkeys::ON_THE_BOARD`)
+    pub fn summon(&self, what: &str) {
+        let _ = self.0.send_event(Cmd::Summon { what: what.to_string() });
     }
 }
 

@@ -1,5 +1,6 @@
-//! Keys that open the tools from anywhere on the PC, whatever program is in
-//! front.
+//! Keys that work from anywhere on the PC, whatever program is in front: the
+//! tools that start from a picture of the screen, and the two things opened
+//! over the board -- the quick commands and the ideas.
 //!
 //! This is the half every platform shares: how a combination is written,
 //! which the settings ask for, and what came of asking. Registering them with
@@ -13,11 +14,36 @@
 
 /// What a key can be set to open, in the order the settings list them.
 /// `snip` is the scissors themselves: take the screen, frame it, then choose
-/// the tool. The others are the tools by name (see `snip::TOOLS`)
-pub const ACTIONS: &[&str] = &["snip", "text", "noun", "color", "edit"];
+/// the tool. Then the tools by name (see `snip::TOOLS`), and last the two
+/// things the board draws over itself, named as the window's own keys name
+/// them (`keys::ACTIONS`), so one name means one thing wherever it is written
+pub const ACTIONS: &[&str] = &["snip", "text", "noun", "color", "edit", "quick_commands", "ideas"];
 
-/// The one combination set out of the box, for `snip`: two held keys and X,
-/// for cutting out, all under the left hand.
+/// The actions that open something on the board rather than a tool over a
+/// picture of the screen. Pressed from another program, they bring the window
+/// forward first
+pub const ON_THE_BOARD: &[&str] = &["quick_commands", "ideas"];
+
+/// The combinations set out of the box, by action. Every one is Alt+Shift and
+/// a letter, the one pair of held keys the common programs leave alone (see
+/// [`DEFAULT`]); the letter is the one the window's own keys use for the
+/// same thing. Anything not here starts with no key
+pub const DEFAULTS: &[(&str, &str)] =
+    &[("snip", DEFAULT), ("quick_commands", "Alt+Shift+K"), ("ideas", "Alt+Shift+M")];
+
+/// The combination an action has out of the box, or "" for none
+pub fn default_of(action: &str) -> &'static str {
+    DEFAULTS.iter().find(|(a, _)| *a == action).map(|(_, k)| *k).unwrap_or("")
+}
+
+/// The actions and their keys out of the box, for the settings page
+pub fn catalog_json() -> String {
+    let defaults: std::collections::BTreeMap<&str, &str> = DEFAULTS.iter().copied().collect();
+    serde_json::json!({ "actions": ACTIONS, "defaults": defaults }).to_string()
+}
+
+/// The combination set out of the box for `snip`: two held keys and X, for
+/// cutting out, all under the left hand.
 ///
 /// Chosen against the programs nearly everyone has open. Ctrl+Shift with a
 /// letter is spent in the browsers, the editors and the office programs almost
@@ -117,7 +143,8 @@ pub enum Wanted {
 }
 
 /// Each action's key as the settings ask for it, in the order of [`ACTIONS`].
-/// `snip` not written at all is [`DEFAULT`]; written empty, it is off
+/// Not written at all is the key out of the box ([`DEFAULTS`]); written
+/// empty, it is off
 pub fn wanted(written: &std::collections::BTreeMap<String, String>) -> Vec<(&'static str, Wanted)> {
     let mut taken: Vec<Combo> = Vec::new();
     ACTIONS
@@ -125,8 +152,7 @@ pub fn wanted(written: &std::collections::BTreeMap<String, String>) -> Vec<(&'st
         .map(|&action| {
             let text = match written.get(action) {
                 Some(t) => t.trim().to_string(),
-                None if action == "snip" => DEFAULT.to_string(),
-                None => String::new(),
+                None => default_of(action).to_string(),
             };
             let want = if text.is_empty() {
                 Wanted::Off
@@ -237,14 +263,21 @@ mod tests {
         }
     }
 
-    /// The scissors have their key out of the box; the tools start with none;
-    /// a key cleared stays cleared; one key is given to one action only
+    /// The scissors, the quick commands and the ideas have their keys out of
+    /// the box; the tools start with none; a key cleared stays cleared; one
+    /// key is given to one action only
     #[test]
     fn the_settings_ask_for_one_key_each() {
         let mut written = std::collections::BTreeMap::new();
         let w = wanted(&written);
-        assert_eq!(w[0], ("snip", Wanted::Key(Combo::parse(DEFAULT).unwrap())));
-        assert!(w[1..].iter().all(|(_, k)| *k == Wanted::Off), "a tool had a key it was never given");
+        let key = |text: &str| Wanted::Key(Combo::parse(text).unwrap());
+        assert_eq!(w[0], ("snip", key(DEFAULT)));
+        assert!(w[1..5].iter().all(|(_, k)| *k == Wanted::Off), "a tool had a key it was never given");
+        assert_eq!(w[5], ("quick_commands", key("Alt+Shift+K")));
+        assert_eq!(w[6], ("ideas", key("Alt+Shift+M")));
+
+        written.insert("ideas".to_string(), String::new());
+        assert_eq!(wanted(&written)[6].1, Wanted::Off, "the ideas' key came back after it was cleared");
 
         written.insert("snip".to_string(), String::new());
         written.insert("text".to_string(), "ctrl+alt+shift+t".to_string());
@@ -257,11 +290,30 @@ mod tests {
         assert_eq!(w[4].1, Wanted::Unreadable("Win+E".into()));
     }
 
-    /// The keys offered are the tools the page runs, and the scissors
+    /// The keys offered are the scissors, the tools the page runs, and the
+    /// things on the board -- each by the name the window's keys give it
     #[test]
     fn every_tool_can_have_a_key() {
         assert_eq!(ACTIONS[0], "snip");
-        assert_eq!(&ACTIONS[1..], crate::snip::TOOLS);
+        let tools = &ACTIONS[1..ACTIONS.len() - ON_THE_BOARD.len()];
+        assert_eq!(tools, crate::snip::TOOLS);
+        assert_eq!(&ACTIONS[ACTIONS.len() - ON_THE_BOARD.len()..], ON_THE_BOARD);
+        for a in ON_THE_BOARD {
+            assert!(crate::keys::char_for(a).is_some(), "{a} is not what the window's keys call it");
+        }
+    }
+
+    /// Out of the box no two actions share a key, and each is one the
+    /// settings would accept if it were written there
+    #[test]
+    fn the_keys_out_of_the_box_are_keys() {
+        let mut seen = Vec::new();
+        for (action, text) in DEFAULTS {
+            assert!(ACTIONS.contains(action), "{action} has a default but no row");
+            let c = Combo::parse(text).unwrap_or_else(|| panic!("{text} is not a combination"));
+            assert!(!seen.contains(&c), "{text} is given twice");
+            seen.push(c);
+        }
     }
 
     /// Registering the same key again keeps when it was last pressed; a

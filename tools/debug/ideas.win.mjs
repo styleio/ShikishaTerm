@@ -149,7 +149,9 @@ const shot = (name) => ps('-File', path.join(ROOT, 'tools', 'debug', 'shot-windo
 const same = (a, b) => (a || '').replace(/[\\/]+$/, '').toLowerCase() === (b || '').replace(/[\\/]+$/, '').toLowerCase();
 
 try {
-  console.log('0. Ctrl+Shift+M opens the ideas and Ctrl+Shift+K the quick commands, with no prefix and from a text box too');
+  // Their keys out of the box work from any program: Windows hears those,
+  // and a press sent to the page never reaches it. Here, the window's own keys
+  console.log('0. The prefix opens the ideas and the quick commands, Ctrl+Shift+M is left to the tab, and a key a person gives them works from a text box too');
   await until(() => run(`!!document.querySelector('.gearrow .ideabtn') && !!(S && S.groups && S.groups.length === 4)`), 'the side column');
   await until(() => run(`document.activeElement && document.activeElement.id === 'kbd'`), 'the keyboard on the terminal');
   // A real press, the way the window's WebView receives one: the letter's
@@ -163,35 +165,29 @@ try {
   };
   const CTRL = 2, SHIFT = 8, ALT = 1;
   const shown = (id) => run(`!document.getElementById(${JSON.stringify(id)}).hidden`);
-  check((await run(`JSON.stringify(S.direct_keys)`)).includes('"key":"m"'), 'the page is told which combinations to hand on');
+  check(!(await run(`JSON.stringify(S.direct_keys)`)).includes('"key":"m"'), 'the window keeps no combination of its own for them');
   await chord('m', CTRL | SHIFT);
-  await until(() => shown('ideas'), 'the ideas from Ctrl+Shift+M on the terminal');
-  check(true, 'Ctrl+Shift+M on the terminal brought the ideas up');
-  // Pressed again with the caret in the ideas' own writing line, it puts them away
-  await chord('m', CTRL | SHIFT);
-  await until(async () => !(await shown('ideas')), 'the ideas put away by the same keys');
-  check(true, 'the same keys from inside the ideas put them away');
-  // Ctrl+M alone is not it: that is Enter to the program in the tab
-  await until(() => run(`document.activeElement && document.activeElement.id === 'kbd'`), 'the keyboard back on the terminal');
-  await chord('m', CTRL);
   await sleep(700);
-  check(!(await shown('ideas')), 'Ctrl+M without Shift does not open them');
-  // From the input bar under the terminal
-  await run(`(() => { const i = document.getElementById('castinput'); i.focus(); return document.activeElement === i; })()`);
-  await chord('k', CTRL | SHIFT);
-  await until(() => shown('quick'), 'the quick commands from Ctrl+Shift+K in the input bar');
-  check(true, 'Ctrl+Shift+K with the caret in the input bar brought the quick commands up');
+  check(!(await shown('ideas')), 'Ctrl+Shift+M on the terminal is left to the program in the tab');
+  await chord('b', CTRL);
+  await send('Input.insertText', { text: 'm' });
+  await until(() => shown('ideas'), 'the ideas from Ctrl+B m on the terminal');
+  check(true, 'Ctrl+B m on the terminal brought the ideas up');
+  await key('Escape');
+  await until(async () => !(await shown('ideas')), 'the ideas put away');
+  await until(() => run(`document.activeElement && document.activeElement.id === 'kbd'`), 'the keyboard back on the terminal');
+  await chord('b', CTRL);
+  await send('Input.insertText', { text: 'k' });
+  await until(() => shown('quick'), 'the quick commands from Ctrl+B k on the terminal');
+  check(true, 'Ctrl+B k on the terminal brought the quick commands up');
   await key('Escape');
   await until(async () => !(await shown('quick')), 'the quick commands put away');
-  // Moved in the settings: the new combination works and the old one is free
+  // Given a combination in the settings: it works, from a text box too
   const withKeys = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
   withKeys.keys = { ideas: 'ctrl+alt+i' };
   fs.writeFileSync(CONFIG, JSON.stringify(withKeys, null, 2));
   await until(() => run(`JSON.stringify(S.direct_keys).includes('"key":"i"')`), 'the moved key to reach the page', 30000);
   await run(`(() => { const i = document.getElementById('castinput'); i.focus(); return true; })()`);
-  await chord('m', CTRL | SHIFT);
-  await sleep(700);
-  check(!(await shown('ideas')), 'moved away, Ctrl+Shift+M no longer opens the ideas');
   await chord('i', CTRL | ALT);
   await until(() => shown('ideas'), 'the ideas from the key they were moved to');
   check(true, 'the key chosen in the settings opens them');
@@ -199,7 +195,7 @@ try {
   await until(async () => !(await shown('ideas')), 'the ideas put away');
   delete withKeys.keys;
   fs.writeFileSync(CONFIG, JSON.stringify(withKeys, null, 2));
-  await until(() => run(`JSON.stringify(S.direct_keys).includes('"key":"m"')`), 'the keys back as they ship', 30000);
+  await until(() => run(`!JSON.stringify(S.direct_keys).includes('"key":"i"')`), 'the keys back as they ship', 30000);
 
   console.log('1. the bulb opens the ideas, the caret in the writing line');
   await click('.gearrow .ideabtn');

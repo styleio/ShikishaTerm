@@ -108,6 +108,10 @@ pub enum Ev {
     TrayOpen,
     /// "Quit" chosen on the notification-area icon's menu
     TrayQuit,
+    /// A key that works from any program asked for something on the board
+    /// (`hotkeys::ON_THE_BOARD`, by name): the window comes to the front
+    /// and opens it
+    Summon { what: String },
     /// The bar's button was pressed = the human finished their turn.
     /// `from` is the name of the page it was pressed on (`None` is the
     /// main view). Since multiple pages can be placed at once, without

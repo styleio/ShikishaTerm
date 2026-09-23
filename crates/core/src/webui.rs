@@ -1461,7 +1461,7 @@ fn handle(
         ("GET", "/") => {
             let html = crate::i18n::render(&themed(PAGE.to_string()))
                 .replace("__TOKEN__", token)
-                .replace("__HOTKEY_DEFAULT__", crate::hotkeys::DEFAULT)
+                .replace("__HOTKEYS__", &crate::hotkeys::catalog_json())
                 .replace("__QUICK__", &quick_json())
                 .replace("__REMOTE__", if remote_client { "true" } else { "false" })
                 .replace("__GRANTS__", &crate::grants::catalog_json())
@@ -2994,8 +2994,6 @@ fn handle(
             req.respond(json_resp(serde_json::json!({
                 "rows": crate::hotkeys::rows(),
                 "active": crate::hotkeys::active(),
-                "default": crate::hotkeys::DEFAULT,
-                "actions": crate::hotkeys::ACTIONS,
             })))?;
         }
         // The icon set the quick-command picker chooses from. Asked for once,
@@ -3053,8 +3051,11 @@ fn handle(
                         }),
                 )
                 .collect();
+            // What has a key that works from any program is set in that list,
+            // not twice: that key reaches it in this window as well
             let rows: Vec<serde_json::Value> = crate::keys::ACTIONS
                 .iter()
+                .filter(|a| !crate::hotkeys::ON_THE_BOARD.contains(&a.name))
                 .map(|a| {
                     serde_json::json!({
                         "name": a.name,
@@ -6003,7 +6004,8 @@ function themePicker() {
 // A key is typed the way people write keys to each other -- ctrl+shift+d -- and
 // a bare character means "after the prefix key", which is what the prefix is
 // for. Empty gives the key back.
-// The keys that open the tools from any program on this PC.
+// The keys that work from any program on this PC: the tools, and the quick
+// commands and the ideas.
 //
 // Held keys are chosen from Ctrl, Alt and Shift and the key from a list, rather
 // than by pressing the combination: a key already registered would open the
@@ -6011,6 +6013,9 @@ function themePicker() {
 // each row says is what the program found when it registered the key, which is
 // the part a person cannot see for themselves
 const HOTKEY_KEYS = [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"].concat(Array.from({length: 12}, (_, i) => "F" + (i + 1)));
+// Every action in the order the app lists them, and the keys they have out of
+// the box (hotkeys.rs)
+const HOTKEYS = __HOTKEYS__;
 function hotkeysCard() {
   // Read without writing: drawing the card is not an edit, and a section put
   // into the settings just by looking would mark them unsaved
@@ -6032,17 +6037,17 @@ function hotkeysCard() {
     return c;
   };
   const shown = c => [c.ctrl && "Ctrl", c.alt && "Alt", c.shift && "Shift", c.key].filter(Boolean).join("+");
-  const DEFAULT_KEY = "__HOTKEY_DEFAULT__";
-  // What the settings hold for an action, as it would be read (the scissors
-  // unwritten are the default)
-  const written = a => a in hk ? hk[a] : (a === "snip" ? DEFAULT_KEY : "");
+  const dflt = a => HOTKEYS.defaults[a] || "";
+  // What the settings hold for an action, as it would be read (one unwritten
+  // has its key out of the box)
+  const written = a => a in hk ? hk[a] : dflt(a);
   // What each row shows, kept between redraws: a held key pressed before the
   // key is chosen is half a combination, and has to still be there when the
   // other half arrives
   const drafts = {};
   const draw = () => {
     list.textContent = "";
-    for (const action of ["snip", "text", "noun", "color", "edit"]) {
+    for (const action of HOTKEYS.actions) {
       const c = drafts[action] || (drafts[action] = parse(written(action)));
       const toggles = ["ctrl", "alt", "shift"].map(m => {
         const b = el("button", {class:"tog" + (c[m] ? " on" : ""), "aria-pressed": String(c[m])},
@@ -6069,8 +6074,7 @@ function hotkeysCard() {
   // finished -- the row says what is missing
   const keep = (action, c) => {
     const text = c.key && (c.ctrl || c.alt) ? shown(c) : "";
-    if (action === "snip" && text === DEFAULT_KEY) delete hk[action];
-    else if (action !== "snip" && !text) delete hk[action];
+    if (text === dflt(action)) delete hk[action];
     else hk[action] = text;
     if (Object.keys(hk).length) current.hotkeys = Object.assign({}, hk);
     else delete current.hotkeys;
@@ -14573,7 +14577,7 @@ mod tests {
         let html = crate::i18n::render(&themed(PAGE.to_string()))
             .replace("__TOKEN__", "t")
             .replace("__REMOTE__", "false")
-            .replace("__HOTKEY_DEFAULT__", crate::hotkeys::DEFAULT)
+            .replace("__HOTKEYS__", &crate::hotkeys::catalog_json())
             .replace("__QUICK__", &quick_json())
             .replace("__DICT__", "{}")
             .replace("__GRANTS__", "[]")
@@ -14649,7 +14653,7 @@ mod tests {
             let html = crate::i18n::render(&themed(page.to_string()))
                 .replace("__TOKEN__", "t")
                 .replace("__REMOTE__", "false")
-                .replace("__HOTKEY_DEFAULT__", crate::hotkeys::DEFAULT)
+                .replace("__HOTKEYS__", &crate::hotkeys::catalog_json())
                 .replace("__QUICK__", &quick_json())
                 .replace("__DICT__", "{}")
                 .replace("__GRANTS__", "[]")

@@ -682,10 +682,10 @@ pub struct Config {
     /// person has a reason to make twice
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_small_model: Option<bool>,
-    /// Keys that open the tools from any program, by what they open (see
+    /// Keys that work from any program, by what they open (see
     /// `hotkeys::ACTIONS`): "Alt+Shift+X". Only what was changed is written;
-    /// the scissors not written at all have `hotkeys::DEFAULT`, written empty
-    /// they have none
+    /// one not written at all has its key out of the box
+    /// (`hotkeys::DEFAULTS`), written empty it has none
     #[serde(default)]
     pub hotkeys: std::collections::BTreeMap<String, String>,
     /// Remote UI viewable from a phone etc. Disabled by default.
