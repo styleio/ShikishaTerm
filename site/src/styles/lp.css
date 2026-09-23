@@ -96,6 +96,13 @@ h4 {
 p {
   margin: 0;
 }
+/* Japanese is written without spaces, so a line may break between any two
+   characters -- which cuts words down the middle ("待機|中のAI", "ターミナ|ル").
+   auto-phrase breaks at phrase boundaries instead. A browser that does not know
+   the value ignores it and breaks as before, so nothing here depends on it. */
+body:lang(ja) {
+  word-break: auto-phrase;
+}
 ul,
 ol {
   margin: 0;
@@ -395,7 +402,7 @@ ol {
 }
 .hero-grid {
   display: grid;
-  grid-template-columns: 1.05fr 0.95fr;
+  grid-template-columns: 1.2fr 0.8fr;
   gap: 48px;
   align-items: center;
 }
@@ -412,29 +419,30 @@ ol {
   transform: rotate(-2deg);
   margin-bottom: 28px;
 }
+/* The headline is as big as its column allows and no bigger. Written against
+   the column rather than the viewport, so widening the grid, narrowing the
+   container or writing a longer line all stay inside the same rule -- and a
+   headline that outgrew its column used to break the highlighter under it. */
 .hero h1 {
-  font-size: 56px;
+  font-size: min(56px, 9.4cqi);
   line-height: 1.22;
 }
 .hero h1 .line {
   display: block;
 }
 .hero h1 .mark {
-  position: relative;
-  display: inline-block;
-  z-index: 0;
-}
-.hero h1 .mark::after {
-  content: "";
-  position: absolute;
-  left: -0.1em;
-  right: -0.1em;
-  bottom: 0.08em;
-  height: 0.38em;
-  background: var(--coral);
-  z-index: -1;
-  border-radius: 4px;
-  transform: rotate(-1deg);
+  /* The highlighter stroke: a background, drawn again on every line the words
+     fall onto, rather than one bar behind the whole span. The tilt is in the
+     drawing. #ff7a59 is --coral spelled out, because a data URI cannot read a
+     custom property. */
+  padding-inline: 0.1em;
+  margin-inline: -0.1em;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 53' preserveAspectRatio='none'%3E%3Crect x='0' y='15' width='120' height='38' rx='5' transform='skewY(-7.125)' fill='%23ff7a59'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: left bottom 0.02em;
+  background-size: 100% 0.53em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 .hero-lead {
   margin-top: 24px;
@@ -530,6 +538,10 @@ ol {
 .hero-art {
   min-width: 0;
 }
+/* what the headline measures itself against */
+.hero-text {
+  container-type: inline-size;
+}
 .hero-art {
   position: relative;
 }
@@ -572,7 +584,7 @@ ol {
     margin-bottom: 20px;
   }
   .hero h1 {
-    font-size: 32px;
+    font-size: min(32px, 9.4cqi);
     line-height: 1.25;
   }
   .hero-lead {
