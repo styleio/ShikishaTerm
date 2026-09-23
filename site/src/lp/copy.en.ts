@@ -186,9 +186,9 @@ export const en: LpCopy = {
     ],
     stars: {
       label: "stars on GitHub",
-      ask: "Help us silence the warning on the zip.",
+      ask: "Help us remove the warning on the ZIP file.",
       button: "Star it",
-      why: "To get the code signing that silences it free, as open source, the app has to prove it has earned a certain reputation. Stars on GitHub are the strongest proof there is. One click of support spares the next person who downloads it the trouble.",
+      why: "To get a free open-source code signing certificate that silences it, we need to prove the app has a solid reputation. GitHub stars are the best way to show this. Your one-click support will save the next user the hassle.",
     },
   },
   steps: {
