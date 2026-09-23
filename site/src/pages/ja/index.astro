@@ -1,0 +1,8 @@
+---
+// The Japanese front page. A file route here shadows the page Starlight would
+// make for /ja/ from the docs collection; the words live in src/lp/copy.ja.ts.
+import LandingPage from "../../components/lp/LandingPage.astro";
+import { ja } from "../../lp/copy.ja";
+---
+
+<LandingPage copy={ja} />

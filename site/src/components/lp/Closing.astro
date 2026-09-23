@@ -1,0 +1,18 @@
+---
+import type { LpCopy } from "../../lp/types";
+
+interface Props {
+  copy: LpCopy;
+}
+const { closing } = Astro.props.copy;
+const STORE = "https://apps.microsoft.com/detail/9PB8XQVM87Z0";
+---
+
+<section class="closing section" id="get">
+  <img class="crowd" src={closing.image.src} alt={closing.image.alt} width="1792" height="576" loading="lazy" />
+  <div class="container closing-cta">
+    <h2>{closing.title}</h2>
+    <a class="btn btn-primary" href={STORE} target="_blank" rel="noopener">{closing.store}</a>
+    <p class="closing-fine">{closing.fineprint}</p>
+  </div>
+</section>

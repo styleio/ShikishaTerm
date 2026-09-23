@@ -1,0 +1,86 @@
+---
+import type { LpCopy } from "../../lp/types";
+
+interface Props {
+  copy: LpCopy;
+}
+const { hero } = Astro.props.copy;
+const STORE = "https://apps.microsoft.com/detail/9PB8XQVM87Z0";
+// The last line of the title carries the highlighter stroke
+const lines = hero.title;
+---
+
+<section class="hero">
+  <div class="container hero-grid">
+    <div class="hero-text">
+      <span class="hero-badge">{hero.badge}</span>
+      <h1>
+        {lines.map((line, i) => (
+          <span class="line">{i === lines.length - 1 ? <span class="mark">{line}</span> : line}</span>
+        ))}
+      </h1>
+      <p class="hero-lead">{hero.lead}</p>
+
+      <div class="install">
+        <div class="install-row">
+          <a class="btn btn-primary" href={STORE} target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 11 4.4v7.1H3zm0 13 8 1.1v-7.1H3zm9-14.2L21 3v8.5h-9zm0 8.2h9V21l-9-1.3z"/></svg>
+            {hero.store}
+          </a>
+        </div>
+        <p class="install-label" style="margin-top:20px">{hero.install.label}</p>
+        <div class="install-row">
+          <div class="cmd">
+            <span class="dollar" aria-hidden="true">&gt;</span>
+            <code id="install-cmd">{hero.install.command}</code>
+            <button class="copy" type="button" data-copy={hero.install.command} data-done={hero.install.copied}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
+              <span>{hero.install.copy}</span>
+            </button>
+          </div>
+        </div>
+        <p class="hero-fine">{hero.fineprint}</p>
+        <div class="hero-links">
+          <a href={hero.zip.href}>{hero.zip.label} →</a>
+          <a href={hero.github.href} target="_blank" rel="noopener">{hero.github.label} →</a>
+        </div>
+      </div>
+    </div>
+    <div class="hero-art">
+      <img src={hero.image.src} alt={hero.image.alt} width="1000" height="700" fetchpriority="high" />
+    </div>
+  </div>
+
+  <div class="container works">
+    <p class="works-label">{hero.works.label}</p>
+    <ul>
+      {hero.works.names.map((n) => <li>{n}</li>)}
+    </ul>
+  </div>
+</section>
+
+<script>
+  // copy the install command; the button says so for a moment, then goes back
+  document.querySelectorAll<HTMLButtonElement>(".copy[data-copy]").forEach((btn) => {
+    const label = btn.querySelector("span")!;
+    const idle = label.textContent;
+    btn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(btn.dataset.copy!);
+      } catch {
+        // an old browser or a non-secure origin: select the text so a manual copy works
+        const range = document.createRange();
+        range.selectNodeContents(document.getElementById("install-cmd")!);
+        getSelection()?.removeAllRanges();
+        getSelection()?.addRange(range);
+        return;
+      }
+      btn.classList.add("done");
+      label.textContent = btn.dataset.done!;
+      setTimeout(() => {
+        btn.classList.remove("done");
+        label.textContent = idle;
+      }, 1800);
+    });
+  });
+</script>

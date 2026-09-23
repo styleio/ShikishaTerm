@@ -1,0 +1,39 @@
+---
+import type { LpCopy } from "../../lp/types";
+
+interface Props {
+  copy: LpCopy;
+}
+const { problem, solution } = Astro.props.copy;
+---
+
+<section class="ps section">
+  <div class="container">
+    <div class="ps-row">
+      <div class="ps-art">
+        <img src={problem.image.src} alt={problem.image.alt} width="900" height="800" loading="lazy" />
+      </div>
+      <div class="ps-text">
+        <span class="eyebrow bad">{problem.eyebrow}</span>
+        <h2>{problem.title}</h2>
+        {problem.body.map((p) => <p>{p}</p>)}
+      </div>
+    </div>
+
+    <div class="ps-row flip">
+      <div class="ps-art">
+        <img src={solution.image.src} alt={solution.image.alt} width="900" height="800" loading="lazy" />
+      </div>
+      <div class="ps-text">
+        <span class="eyebrow good">{solution.eyebrow}</span>
+        <h2>{solution.title}</h2>
+        {solution.body.map((p) => <p>{p}</p>)}
+        <div class="states" aria-label="tab states">
+          <span class="state" style="--dot: var(--state-working)">{solution.states.working}</span>
+          <span class="state" style="--dot: var(--state-done)">{solution.states.done}</span>
+          <span class="state" style="--dot: var(--state-waiting)">{solution.states.waiting}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>

@@ -1,0 +1,39 @@
+---
+import type { LpCopy } from "../../lp/types";
+
+interface Props {
+  copy: LpCopy;
+}
+const { steps } = Astro.props.copy;
+// "[e] を押す" — the key in the title is drawn as a key cap
+const keycap = (title: string) => {
+  const m = title.match(/^\[(.+?)\](.*)$/);
+  return m ? { key: m[1], rest: m[2] } : null;
+};
+---
+
+<section class="steps section" id="steps">
+  <div class="container">
+    <div class="section-head">
+      <span class="eyebrow">{steps.eyebrow}</span>
+      <h2>{steps.title}</h2>
+    </div>
+
+    <ol class="steps-grid">
+      {steps.items.map((s, i) => {
+        const k = keycap(s.title);
+        return (
+          <li class="nb step">
+            <span class="step-num" aria-hidden="true">{i + 1}</span>
+            <h3>{k ? <><kbd>{k.key}</kbd>{k.rest}</> : s.title}</h3>
+            <p>{s.body}</p>
+          </li>
+        );
+      })}
+    </ol>
+
+    <div class="nb-lg shot steps-shot">
+      <img src={steps.image.src} alt={steps.image.alt} width="1210" height="988" loading="lazy" />
+    </div>
+  </div>
+</section>

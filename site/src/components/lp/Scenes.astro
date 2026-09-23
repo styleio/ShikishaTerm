@@ -1,0 +1,85 @@
+---
+import type { LpCopy } from "../../lp/types";
+
+interface Props {
+  copy: LpCopy;
+}
+const { scenes } = Astro.props.copy;
+---
+
+<section class="scenes section" id="scenes">
+  <div class="container">
+    <div class="section-head">
+      <span class="eyebrow">{scenes.eyebrow}</span>
+      <h2>{scenes.title}</h2>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label={scenes.eyebrow}>
+      {scenes.items.map((s, i) => (
+        <button
+          class="tab"
+          type="button"
+          role="tab"
+          id={`tab-${s.id}`}
+          aria-controls={`scene-${s.id}`}
+          aria-selected={i === 0 ? "true" : "false"}
+          tabindex={i === 0 ? 0 : -1}
+        >
+          {s.tab}
+        </button>
+      ))}
+    </div>
+
+    <div class="nb-lg">
+      {scenes.items.map((s, i) => {
+        const tall = s.image.height > s.image.width;
+        return (
+          <div class="scene" role="tabpanel" id={`scene-${s.id}`} aria-labelledby={`tab-${s.id}`} hidden={i !== 0}>
+            <div class="scene-text">
+              <h3>{s.title}</h3>
+              <p>{s.body}</p>
+              <ul class="check-list">
+                {s.points.map((p) => <li>{p}</li>)}
+              </ul>
+            </div>
+            <div class={`scene-shot ${tall ? "tall" : ""}`}>
+              {tall ? (
+                <img src={s.image.src} alt={s.image.alt} width={s.image.width} height={s.image.height} loading="lazy" />
+              ) : (
+                <div class="nb shot">
+                  <img src={s.image.src} alt={s.image.alt} width={s.image.width} height={s.image.height} loading="lazy" />
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+</section>
+
+<script>
+  // Tabs: click or arrow keys. Only one panel is in the page at a time.
+  const list = document.querySelector<HTMLElement>("#scenes [role=tablist]")!;
+  const tabs = Array.from(list.querySelectorAll<HTMLButtonElement>("[role=tab]"));
+  const show = (tab: HTMLButtonElement) => {
+    for (const t of tabs) {
+      const on = t === tab;
+      t.setAttribute("aria-selected", String(on));
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute("aria-controls")!)!.hidden = !on;
+    }
+    tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+  tabs.forEach((t, i) => {
+    t.addEventListener("click", () => show(t));
+    t.addEventListener("keydown", (e) => {
+      const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      if (!step) return;
+      e.preventDefault();
+      const next = tabs[(i + step + tabs.length) % tabs.length];
+      next.focus();
+      show(next);
+    });
+  });
+</script>

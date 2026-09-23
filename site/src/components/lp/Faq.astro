@@ -1,0 +1,25 @@
+---
+import type { LpCopy } from "../../lp/types";
+
+interface Props {
+  copy: LpCopy;
+}
+const { faq } = Astro.props.copy;
+---
+
+<section class="faq section" id="faq">
+  <div class="container">
+    <div class="faq-head">
+      <span class="eyebrow">{faq.eyebrow}</span>
+      <h2>{faq.title}</h2>
+    </div>
+    <div class="faq-list">
+      {faq.items.map((item, i) => (
+        <details class="nb faq-item" open={i === 0}>
+          <summary>{item.q}</summary>
+          <p>{item.a}</p>
+        </details>
+      ))}
+    </div>
+  </div>
+</section>

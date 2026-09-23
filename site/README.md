@@ -31,7 +31,8 @@ Renaming or removing it means updating the listing in Partner Center first.
 | `/privacy/` | `docs/PRIVACY.md` |
 | `/ja/automation/` | `docs/AUTOMATION.ja.md` |
 | `/ja/privacy/` | `docs/PRIVACY.ja.md` |
-| `/` and `/ja/` | `site/src/content/docs/index.mdx`, `ja/index.mdx` (hand-written) |
+| `/` | `site/src/content/docs/index.mdx` (hand-written, Starlight splash) |
+| `/ja/` | `site/src/pages/ja/index.astro` — the landing page: its own layout under `src/components/lp/`, its words in `src/lp/copy.ja.ts`, its style in `src/styles/lp.css`, its pictures in `public/lp/` |
 
 ## Local development
 

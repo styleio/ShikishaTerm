@@ -1,0 +1,23 @@
+---
+import type { LpCopy } from "../../lp/types";
+
+interface Props {
+  copy: LpCopy;
+}
+const { phone } = Astro.props.copy;
+---
+
+<section class="phone section" id="phone">
+  <div class="container">
+    <div class="phone-text">
+      <span class="eyebrow">{phone.eyebrow}</span>
+      <h2>{phone.title}</h2>
+      {phone.body.map((p) => <p>{p}</p>)}
+      <a class="phone-link" href={phone.link.href}>{phone.link.label} →</a>
+    </div>
+    <div class="phone-art">
+      <img class="doodle" src={phone.image.src} alt={phone.image.alt} width="800" height="800" loading="lazy" />
+      <img class="device" src={phone.shot.src} alt={phone.shot.alt} width="533" height="986" loading="lazy" />
+    </div>
+  </div>
+</section>

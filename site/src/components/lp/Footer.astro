@@ -1,0 +1,36 @@
+---
+import type { LpCopy } from "../../lp/types";
+import icon from "../../assets/app-icon.png";
+
+interface Props {
+  copy: LpCopy;
+}
+const { copy } = Astro.props;
+const home = copy.lang === "ja" ? "/ja/" : "/";
+---
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a href={home}><img src={icon.src} width="32" height="32" alt="" />SHIKISHA-TERM</a>
+        <p>{copy.footer.note}</p>
+      </div>
+      <div class="footer-cols">
+        {copy.footer.columns.map((c) => (
+          <div class="footer-col">
+            <h4>{c.title}</h4>
+            <ul>
+              {c.links.map((l) => (
+                <li>
+                  <a href={l.href} target={l.external ? "_blank" : undefined} rel={l.external ? "noopener" : undefined}>{l.label}</a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+    <div class="footer-bottom">© {new Date().getFullYear()} WIRED &amp; ECO, K.K.</div>
+  </div>
+</footer>

@@ -1,0 +1,80 @@
+---
+/**
+ * The landing page shell. Every section gets its words from one LpCopy object,
+ * so /ja/ and / are the same components with a different file of copy.
+ *
+ * This page does not use Starlight's layout: the docs are Starlight, the front
+ * page is its own thing (own palette, own header, own footer). Starlight's
+ * store-tab.js is still loaded so a Store click behaves the same on every page.
+ */
+import type { LpCopy } from "../../lp/types";
+import "../../styles/lp.css";
+import Nav from "./Nav.astro";
+import Hero from "./Hero.astro";
+import Scenes from "./Scenes.astro";
+import ProblemSolution from "./ProblemSolution.astro";
+import Features from "./Features.astro";
+import Phone from "./Phone.astro";
+import Trust from "./Trust.astro";
+import Steps from "./Steps.astro";
+import Faq from "./Faq.astro";
+import Closing from "./Closing.astro";
+import Footer from "./Footer.astro";
+
+interface Props {
+  copy: LpCopy;
+}
+const { copy } = Astro.props;
+const site = Astro.site ?? new URL("https://shikisha-term.com");
+const path = copy.lang === "ja" ? "/ja/" : "/";
+const canonical = new URL(path, site).href;
+---
+
+<!doctype html>
+<html lang={copy.lang}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{copy.meta.title}</title>
+    <meta name="description" content={copy.meta.description} />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#faf7f2" />
+    <link rel="canonical" href={canonical} />
+    <link rel="alternate" hreflang="en" href={new URL("/", site).href} />
+    <link rel="alternate" hreflang="ja" href={new URL("/ja/", site).href} />
+    <link rel="alternate" hreflang="x-default" href={new URL("/", site).href} />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="sitemap" href="/sitemap-index.xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={copy.meta.title} />
+    <meta property="og:description" content={copy.meta.description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={copy.meta.ogImage} />
+    <meta property="og:locale" content={copy.lang === "ja" ? "ja_JP" : "en_US"} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content={copy.meta.ogImage} />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700;900&display=swap"
+    />
+    <script src="/store-tab.js" defer is:inline></script>
+  </head>
+  <body>
+    <Nav copy={copy} />
+    <main>
+      <Hero copy={copy} />
+      <Scenes copy={copy} />
+      <ProblemSolution copy={copy} />
+      <Features copy={copy} />
+      <Phone copy={copy} />
+      <Trust copy={copy} />
+      <Steps copy={copy} />
+      <Faq copy={copy} />
+      <Closing copy={copy} />
+    </main>
+    <Footer copy={copy} />
+  </body>
+</html>

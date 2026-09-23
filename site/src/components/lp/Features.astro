@@ -1,0 +1,35 @@
+---
+import type { LpCopy } from "../../lp/types";
+
+interface Props {
+  copy: LpCopy;
+}
+const { features } = Astro.props.copy;
+---
+
+<div class="features-head">
+  <div class="container">
+    <div class="section-head" style="margin-bottom:0">
+      <span class="eyebrow">{features.eyebrow}</span>
+      <h2>{features.title}</h2>
+    </div>
+  </div>
+</div>
+
+{features.items.map((f, i) => (
+  <section class={`feature ${f.tone} ${i % 2 ? "flip" : ""}`} id={f.id}>
+    <div class="container">
+      <div class="feature-text">
+        <span class="eyebrow">{f.eyebrow}</span>
+        <h3>{f.title}</h3>
+        <p>{f.body}</p>
+        <ul class="check-list">
+          {f.points.map((p) => <li>{p}</li>)}
+        </ul>
+      </div>
+      <div class="feature-art">
+        <img src={f.image.src} alt={f.image.alt} width="800" height="800" loading="lazy" />
+      </div>
+    </div>
+  </section>
+))}

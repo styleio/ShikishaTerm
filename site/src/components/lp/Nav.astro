@@ -1,0 +1,53 @@
+---
+import type { LpCopy } from "../../lp/types";
+import icon from "../../assets/app-icon.png";
+
+interface Props {
+  copy: LpCopy;
+}
+const { copy } = Astro.props;
+const isJa = copy.lang === "ja";
+const home = isJa ? "/ja/" : "/";
+const STORE = "https://apps.microsoft.com/detail/9PB8XQVM87Z0";
+---
+
+<header class="nav" id="nav">
+  <div class="container">
+    <a class="nav-brand" href={home}>
+      <img src={icon.src} width="32" height="32" alt="" />
+      SHIKISHA-TERM
+    </a>
+    <nav class="nav-links" id="nav-links" aria-label="Site">
+      {copy.nav.links.map((l) => (
+        <a href={l.href} target={l.external ? "_blank" : undefined} rel={l.external ? "noopener" : undefined}>{l.label}</a>
+      ))}
+      <a class="btn btn-primary btn-sm" href={STORE} target="_blank" rel="noopener">{copy.nav.cta}</a>
+    </nav>
+    <div class="lang" role="group" aria-label="Language">
+      <a href="/" lang="en" hreflang="en" class={isJa ? "" : "on"} aria-current={isJa ? undefined : "true"}>EN</a>
+      <a href="/ja/" lang="ja" hreflang="ja" class={isJa ? "on" : ""} aria-current={isJa ? "true" : undefined}>日本語</a>
+    </div>
+    <a class="btn btn-primary btn-sm" href={STORE} target="_blank" rel="noopener">{copy.nav.cta}</a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-links" aria-label={copy.nav.menu}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
+        <path d="M4 7h16M4 12h16M4 17h16" />
+      </svg>
+    </button>
+  </div>
+</header>
+
+<script>
+  const nav = document.getElementById("nav")!;
+  const toggle = nav.querySelector<HTMLButtonElement>(".nav-toggle")!;
+  toggle.addEventListener("click", () => {
+    const open = nav.classList.toggle("open");
+    toggle.setAttribute("aria-expanded", String(open));
+  });
+  // a tap on a link closes the menu, so the page underneath is what you see next
+  nav.querySelectorAll<HTMLAnchorElement>(".nav-links a").forEach((a) =>
+    a.addEventListener("click", () => {
+      nav.classList.remove("open");
+      toggle.setAttribute("aria-expanded", "false");
+    }),
+  );
+</script>
