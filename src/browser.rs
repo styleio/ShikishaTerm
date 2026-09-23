@@ -271,6 +271,11 @@ pub enum Cmd {
     /// the same thing as a program retrying in a loop, and must not be
     /// counted as one. An attempt the program decided on keeps the count
     DisplayWanted { asked: bool },
+    /// The machine is about to run out of memory: let go of the screen now,
+    /// while it can still be done cleanly (see `shikisha_core::pressure`)
+    MemoryLow,
+    /// The machine has room again after a `MemoryLow`
+    MemoryEased,
     /// Close the window (when the conductor is gone)
     Close,
     /// Open a tool over a picture of the screen, after waiting `delay` seconds
@@ -1487,6 +1492,19 @@ fn run_window(
         wear_our_own_icon(window.hwnd());
         let _ = MAIN_HWND.set(window.hwnd());
     }
+    // Watched by the window that wears the icon, and only by it: that is the
+    // window whose process holds the work, and the icon is where the way
+    // back is offered. A client or a probe going down takes nothing with it
+    if tray.is_some() {
+        let wake = ev_loop.create_proxy();
+        shikisha_core::pressure::watch(move |turn, _| {
+            wake.send_event(match turn {
+                shikisha_core::pressure::Turn::Low => Cmd::MemoryLow,
+                shikisha_core::pressure::Turn::Eased => Cmd::MemoryEased,
+            })
+            .is_ok()
+        });
+    }
 
     // The board's own page. Built here, and built again whenever the window
     // comes back from being put away: while it is away the page is dropped
@@ -1669,6 +1687,9 @@ fn run_window(
     let closed_tx = ev_tx.clone();
     // The channel that answers "where are we now". Only known from inside the window, so it answers from here
     let where_tx = ev_tx.clone();
+    // The screen was let go of for want of memory, and has not been asked
+    // back yet. What decides whether easing is worth a word
+    let mut let_go_for_memory = false;
     // Whether this program asked the loop to end. A loop that ends without
     // being asked is Windows ending the session (see `Event::LoopDestroyed`)
     let mut asked_to_end = false;
@@ -2257,6 +2278,12 @@ fn run_window(
                         match shell_of() {
                             Ok(s) => {
                                 shell = Some(s);
+                                // Back however it was asked for -- the icon, a
+                                // second copy, the loop -- so nothing is down
+                                // any more, and a press on the icon after this
+                                // is a press for the window, not for a rebuild
+                                display_down.store(false, std::sync::atomic::Ordering::SeqCst);
+                                let_go_for_memory = false;
                                 // The page made last sits on top of the ones
                                 // made before it, so the new board would cover
                                 // every page placed inside the window. Put
@@ -2365,6 +2392,43 @@ fn run_window(
                     dialogs.remove(&None);
                     shell = None;
                     let _ = display_wake.send_event(Cmd::Show);
+                }
+                // Let go of the screen before the machine runs out, rather than
+                // wait for it to be the thing that fails -- which, on a machine
+                // out of commit, is as likely to be this process as anything,
+                // and then the work goes too. Letting go is exactly what
+                // putting the window away does, so that is asked for; what is
+                // added is only that the icon, and not the window, is now the
+                // way back, and that it says why the screen went
+                Cmd::MemoryLow => {
+                    if shell.is_none() {
+                        // Already away, or already down: nothing drawn to give back
+                        return;
+                    }
+                    let_go_for_memory = true;
+                    display_down.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = display_wake.send_event(Cmd::Hide);
+                    shikisha_core::append_hook_log("memory: the screen is let go of to keep the work alive");
+                    if let Some(tray) = &tray {
+                        tray.notice(
+                            &shikisha_core::i18n::t("tray.memory_low.title"),
+                            &shikisha_core::i18n::t("tray.memory_low.body"),
+                        );
+                    }
+                }
+                // Not brought back unasked: it would appear in front of
+                // whatever the person is doing now, and it takes back the
+                // memory that was just freed. Said, so they know it can be
+                Cmd::MemoryEased => {
+                    if let_go_for_memory && display_down.load(std::sync::atomic::Ordering::SeqCst) {
+                        if let Some(tray) = &tray {
+                            tray.notice(
+                                &shikisha_core::i18n::t("tray.memory_eased.title"),
+                                &shikisha_core::i18n::t("tray.memory_eased.body"),
+                            );
+                        }
+                    }
+                    let_go_for_memory = false;
                 }
                 Cmd::Close => {
                     asked_to_end = true;

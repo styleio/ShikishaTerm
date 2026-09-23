@@ -75,6 +75,12 @@ pub struct Split {
     /// No window, and none wanted until one is asked for. True after a ✕ the
     /// setting said to wait out, and after the keeper has given up trying
     resting: Cell<bool>,
+    /// The room left on the machine, followed (see `crate::pressure`)
+    gauge: RefCell<crate::pressure::Gauge>,
+    /// When the room was last looked at
+    looked: Cell<u64>,
+    /// The window was taken for want of memory and has not been asked back
+    let_go: Cell<bool>,
 }
 
 impl Split {
@@ -99,6 +105,61 @@ impl Split {
             icon,
             presses,
             resting: Cell::new(false),
+            gauge: RefCell::default(),
+            looked: Cell::new(0),
+            let_go: Cell::new(false),
+        }
+    }
+
+    /// Let go of the window before the machine runs out of memory.
+    ///
+    /// The split exists so the window can be taken and the work not; this is
+    /// taking it on purpose, while there is still room to, instead of hoping
+    /// the refusal lands on the window rather than on this process. Taken out
+    /// of `window` before it is stopped, so the keeper never sees it as a
+    /// window that died and puts it straight back
+    fn let_go_of_the_window(&self) {
+        let Some(mut child) = self.window.borrow_mut().take() else { return };
+        let _ = child.kill();
+        let _ = child.wait();
+        self.resting.set(true);
+        self.let_go.set(true);
+        crate::append_hook_log("split: the window is let go of to keep the work alive");
+        if let Some(icon) = &self.icon {
+            icon.notice(
+                &crate::i18n::t("tray.memory_low.title"),
+                &crate::i18n::t("tray.memory_low.body"),
+            );
+        }
+    }
+
+    /// Look at the room, as often as `pressure::EVERY` allows
+    fn look_at_the_room(&self, now: u64) {
+        if now.saturating_sub(self.looked.get()) < crate::pressure::EVERY.as_millis() as u64 {
+            return;
+        }
+        self.looked.set(now);
+        let Some(left) = crate::pressure::room() else { return };
+        let Some(turn) = self.gauge.borrow_mut().read(left) else { return };
+        crate::append_hook_log(&format!(
+            "memory: {turn:?} with {} MB of commit left",
+            left / (1024 * 1024)
+        ));
+        match turn {
+            crate::pressure::Turn::Low => self.let_go_of_the_window(),
+            // Said, not done: a window appearing in front of whatever the
+            // person is doing now, taking back what was just freed, is not
+            // something to do unasked
+            crate::pressure::Turn::Eased => {
+                if self.let_go.replace(false) && self.window.borrow().is_none() {
+                    if let Some(icon) = &self.icon {
+                        icon.notice(
+                            &crate::i18n::t("tray.memory_eased.title"),
+                            &crate::i18n::t("tray.memory_eased.body"),
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -214,6 +275,7 @@ impl Minder for Split {
             return told;
         }
         let now = now_ms();
+        self.look_at_the_room(now);
         if let Some(code) = self.ended() {
             crate::append_hook_log(&format!("split: the window is gone (code {code:?})"));
             return match self.keep.borrow_mut().parted(code, now) {
@@ -252,6 +314,7 @@ impl Minder for Split {
             return;
         }
         self.keep.borrow_mut().asked();
+        self.let_go.set(false);
         self.open();
     }
 
@@ -325,6 +388,37 @@ mod tests {
             icon: None,
             presses: Arc::default(),
             resting: Cell::new(false),
+            gauge: RefCell::default(),
+            looked: Cell::new(0),
+            let_go: Cell::new(false),
+        }
+    }
+
+    /// A window let go of for memory stays gone: it is not a window that
+    /// died, and the keeper must not answer it by starting another -- that
+    /// would take back at once what was just freed, on a machine with none
+    #[cfg(windows)]
+    #[test]
+    fn a_window_let_go_of_for_memory_is_not_put_back() {
+        let s = bare();
+        *s.board.borrow_mut() = "http://127.0.0.1:1/".into();
+        let stand_in = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("no process to stand in for the window");
+        *s.window.borrow_mut() = Some(stand_in);
+        s.let_go_of_the_window();
+        assert!(s.window.borrow().is_none(), "the window is gone");
+        assert!(s.resting.get() && s.let_go.get());
+        let _ = s.tick();
+        assert!(s.window.borrow().is_none(), "and nothing was started in its place");
+        // The icon is still the way back, and asking forgets why it went
+        s.show();
+        assert!(!s.let_go.get());
+        if let Some(mut w) = s.window.borrow_mut().take() {
+            let _ = w.kill();
+            let _ = w.wait();
         }
     }
 

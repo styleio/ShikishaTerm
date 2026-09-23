@@ -66,6 +66,7 @@ pub mod pagelint;
 pub mod pageops;
 pub mod placed;
 pub mod pr;
+pub mod pressure;
 pub mod profile;
 pub mod push;
 pub mod pwa;
