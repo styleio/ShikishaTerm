@@ -1581,10 +1581,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .position(|s| matches!(s, Surface::Editor { key: k, .. } if *k == key))
                 .map(|i| i + 1)
             {
-                match pane_layout.pane_of(n) {
+                // The keyboard is standing in a pane with nothing in it:
+                // that is where it goes, and no room has to be made. This is
+                // what a file dropped on an empty pane arrives as -- the drop
+                // puts the keyboard there first, and the rest of this is about
+                // finding room where there is none
+                let into_empty = (pane_layout.focused_surface() == 0).then(|| pane_layout.focus());
+                match into_empty.or_else(|| pane_layout.pane_of(n)) {
                     // Already on screen: look at it rather than opening a
                     // second window onto the same file
                     Some(id) => {
+                        pane_layout.put(id, n);
                         pane_layout.focus_pane(id);
                     }
                     None => {
