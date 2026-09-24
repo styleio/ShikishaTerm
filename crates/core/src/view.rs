@@ -1801,6 +1801,83 @@ pub fn surface_moves(before: &[String], now: &[String]) -> Vec<Option<usize>> {
         .collect()
 }
 
+/// A row that is not drawn beside the others. The Issue row has a line of its
+/// own at the top of the list, and the settings and guide pages have no row at
+/// all: the app opens and closes those itself. When the row in front goes, the
+/// view moves on to a neighbour -- one the eye saw next to it -- and these are
+/// never that, whatever number they stand at (`Layout::follow`)
+pub fn drawn_apart(s: &Surface) -> bool {
+    match s {
+        Surface::Issues { .. } => true,
+        Surface::Browser { key, .. } => {
+            key == crate::runtime::SETTINGS_TAB || key == crate::runtime::GUIDE_TAB
+        }
+        _ => false,
+    }
+}
+
+/// Where the view goes back to when the row in front went and nothing else was
+/// on the screen: the row that was in front before it, if it is still here.
+///
+/// Closing the thing in front of you leaves you where you were before it took
+/// the screen -- the shell a file was opened from, the tab a page was reached
+/// from -- which is what closing an editor's tab does in an editor. The
+/// neighbour by number is the other answer, and it is the wrong one here: the
+/// editor a file opens stands after every folder's rows, and the Issue row
+/// after that, so the neighbour of an editor opened from the first folder is a
+/// tab of the last folder, or the Issue tab. Neither was anywhere near what
+/// the person was doing.
+///
+/// `fronts` is the rows that have been in front, by key, the most recent last
+/// and the board the empty key (the runtime keeps it: a row goes to the end
+/// whenever it comes to the front, so a row come back to counts as recent
+/// again). The answer is the number now of the most recent one still here --
+/// 0 for the board -- so a row that went in the meantime, the one being
+/// closed among them, is passed over. Nothing when none is left, and then the
+/// neighbour is all there is
+pub fn back_row(fronts: &[String], keys: &[String]) -> Option<usize> {
+    fronts.iter().rev().find_map(|k| match k.as_str() {
+        "" => Some(0),
+        k => keys.iter().position(|x| x == k).map(|i| i + 1),
+    })
+}
+
+#[cfg(test)]
+mod back_row_tests {
+    use super::back_row;
+
+    fn keys(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The editor was opened from the first folder's shell; the rows after it
+    /// are another folder's tab and the Issue row. Closing it goes to the
+    /// shell -- and the editor, gone from the rows, is passed over whether or
+    /// not it is still written down as the most recent
+    #[test]
+    fn back_to_the_row_that_was_in_front_before() {
+        let now = keys(&["tab:1", "tab:2", "issues:issues"]);
+        assert_eq!(back_row(&keys(&["tab:2", "tab:1", "editor:editor.here"]), &now), Some(1));
+        assert_eq!(back_row(&keys(&["tab:2", "tab:1"]), &now), Some(1));
+    }
+
+    /// The board is a place too: a tab reached from it goes back to it, and
+    /// so does the tab that was reached from THAT, once the first is closed
+    #[test]
+    fn the_board_is_the_empty_key() {
+        assert_eq!(back_row(&keys(&["", "tab:1"]), &keys(&["tab:1"])), Some(1));
+        assert_eq!(back_row(&keys(&[""]), &keys(&["tab:2"])), Some(0));
+    }
+
+    /// Every row that was in front went as well, or nothing was in front
+    /// before this one: no answer, and the neighbour rule stands
+    #[test]
+    fn nothing_when_those_rows_are_gone_too() {
+        assert_eq!(back_row(&keys(&["tab:9", "tab:8"]), &keys(&["tab:1", "tab:2"])), None);
+        assert_eq!(back_row(&[], &keys(&["tab:1"])), None);
+    }
+}
+
 /// The last part of a path, which is what a row has room for.
 fn leaf_of(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()

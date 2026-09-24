@@ -38,6 +38,15 @@ once it reaches its first tagged release.
   take it out. "+ Add a folder" makes one where the list is standing.
 
 ### Fixed
+- **Closing the tab in front goes back to where you were.** A file opened
+  from the file list and closed with its ✕ took the view to the Issue tab --
+  the next row by number, which is drawn at the top of the list and was never
+  next to anything. Now closing the row in front, with the screen undivided,
+  goes back to the row that was in front before it: the shell the file was
+  opened from, the tab a page was reached from, the INDEX board when that is
+  where you came from. Only when that row is gone too does the view move on
+  to a neighbour, and the Issue row and the settings page are never taken
+  for one.
 - **Every row's right-click has Rename and Edit.** A page, a git or file panel
   and an editor had neither, in the list on the left and on the tab over the
   pane alike; only a terminal did. Renaming one keeps the name automation

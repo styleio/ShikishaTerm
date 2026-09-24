@@ -1419,6 +1419,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // What each row was on the last pass, and on which desk, so a pane can
     // follow its tab when the rows move
     let mut rows_were: (String, Vec<String>) = (String::new(), Vec::new());
+    // The rows that have been in front on this desk, by key, the most recent
+    // last (the board is the empty key). A row goes to the end each time it
+    // comes to the front, and off the list when it goes from the rows. Where
+    // the view goes back to when the row in front closes on an undivided
+    // screen: the thing the person was looking at before this took the
+    // screen, and not the neighbour by number (`view::back_row`)
+    let mut fronts: Vec<String> = Vec::new();
 
     loop {
         // Install the remote server the moment its background bind lands.
@@ -1510,7 +1517,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // by rows it did not choose, and the row they asked for is
                 // followed like any other
                 let asked = active != view_settled_at;
-                pane_layout.follow(&moves);
+                // The row in front went, and it had the screen to itself:
+                // there is no other pane to fall back on, so the view goes
+                // back to what was in front before it, if that is still here.
+                // Read before the panes follow, which is what moves the view
+                // on to a neighbour
+                let went_alone = pane_layout.is_single()
+                    && !asked
+                    && active.checked_sub(1).and_then(|i| moves.get(i)).is_some_and(Option::is_none);
+                let apart: Vec<usize> = surfaces
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| crate::view::drawn_apart(s))
+                    .map(|(i, _)| i + 1)
+                    .collect();
+                pane_layout.follow(&moves, &apart);
                 // `active` is the focused pane's row, and follows it. When
                 // something asked for another row on the last pass it is that
                 // row, which has moved like any other
@@ -1519,14 +1540,42 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     n if n == was_focused => pane_layout.focused_surface(),
                     n => moves.get(n - 1).copied().flatten().unwrap_or(pane_layout.focused_surface()),
                 };
-                // Looking at something else than it was, and nobody asked for
-                // it: the row it was on went, or the numbers moved out from
-                // under it. Said here and settled once, before drawing, so a
-                // folder somebody put out of sight is never brought back by
-                // the view merely landing on one of its rows
-                if !asked && was_on != active.checked_sub(1).and_then(|i| keys.get(i)).cloned() {
+                if went_alone
+                    && let Some(back) = crate::view::back_row(&fronts, &keys)
+                {
+                    active = back;
+                    board_open = back == 0;
+                    pane_layout.show(active);
+                    // Closing the row in front is an ask, and this is where
+                    // it leads: the view is not adrift, it is home
+                    view_drifted = false;
+                    view_touched_ms = start.elapsed().as_millis() as u64;
+                } else if !asked && was_on != active.checked_sub(1).and_then(|i| keys.get(i)).cloned() {
+                    // Looking at something else than it was, and nobody asked
+                    // for it: the row it was on went, or the numbers moved out
+                    // from under it. Said here and settled once, before
+                    // drawing, so a folder somebody put out of sight is never
+                    // brought back by the view merely landing on one of its
+                    // rows
                     view_drifted = true;
                 }
+            }
+            // The rows that have been in front, brought up to date: another
+            // desk is another list, whose rows say nothing about this one; a
+            // row that went is not a place to go back to; and the row in
+            // front now is the most recent, wherever it stood before
+            if rows_were.0 != desk_now {
+                fronts.clear();
+            }
+            fronts.retain(|k| k.is_empty() || keys.contains(k));
+            // The board in front is the board, whatever row it is drawn over
+            let now = match board_open {
+                true => String::new(),
+                false => active.checked_sub(1).and_then(|i| keys.get(i)).cloned().unwrap_or_default(),
+            };
+            if fronts.last() != Some(&now) {
+                fronts.retain(|k| *k != now);
+                fronts.push(now);
             }
             rows_were = (desk_now, keys);
         }
