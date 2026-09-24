@@ -1,5 +1,6 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
+import { beacon } from "./src/analytics.mjs";
 
 const REPO = "https://github.com/styleio/ShikishaTerm";
 
@@ -36,6 +37,8 @@ export default defineConfig({
         // /store/ へ移る。MDX の中には書けない (CSS/JS の { が JSX 式として
         // 読まれる) ので、全ページ共通の小さな外部ファイルにしてある
         { tag: "script", attrs: { src: "/store-tab.js", defer: true } },
+        // 訪問者数の計測 (Cookie なし)。トークンと選定理由は src/analytics.mjs
+        ...(beacon ? [{ tag: "script", attrs: beacon }] : []),
       ],
       social: [
         { icon: "github", label: "GitHub", href: REPO },

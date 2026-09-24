@@ -5,7 +5,7 @@ sign in to, no server of ours behind it, and no analytics or telemetry of any
 kind. **We — the developers — never receive your data.** There is nothing for us
 to receive: nothing in this program reports to us.
 
-Last updated: 14 September 2026.
+Last updated: 24 September 2026.
 
 ## What stays on your machine
 
@@ -45,6 +45,19 @@ and each one goes straight to the party you chose — never through us.
 
 Nothing. No usage statistics, no crash reports, no identifiers, no email address.
 The program never contacts a server operated by us, because there is none.
+The one count we keep is of visits to the website, described next -- and that
+counts pages, not people.
+
+## The website
+
+The pages at <https://shikisha-term.com> count their visitors with
+[Cloudflare Web Analytics](https://www.cloudflare.com/web-analytics/). It sets no
+cookie and stores nothing in your browser, so there is no consent banner to click
+through, and nothing follows you on to another site. What Cloudflare receives is
+the page you opened, the page that linked to it, the kind of browser, and the
+country it was opened from; what we see is the totals. Cloudflare's own privacy
+policy is at <https://www.cloudflare.com/privacypolicy/>. The program itself never
+opens that site on its own (see the table above).
 
 ## Children
 

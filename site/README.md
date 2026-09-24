@@ -58,6 +58,17 @@ every push to `main` rebuilds and publishes.
 `NODE_VERSION` matters: Cloudflare's default Node is older than Astro needs, and that is
 the usual reason a first build fails.
 
+## Counting visitors
+
+Every page carries one Cloudflare Web Analytics tag (`src/analytics.mjs`; both the
+Starlight head and the landing page's own head import it). It sets no cookie, so
+there is no consent banner, and the privacy page says so. To turn it on:
+Cloudflare dashboard > Analytics & Logs > Web Analytics > Add a site >
+`shikisha-term.com` with the **JS snippet** setup, then paste the token from that
+snippet into `CF_BEACON_TOKEN`. Leave Cloudflare's *automatic* injection off, or
+every page counts twice. An empty token emits no tag at all, which is what a
+local build and a fork get.
+
 The build runs `npm run sync` first, which reads `docs/` from the repository root — one
 level above the root directory set above. Editing the manual therefore republishes the
 site, which is the point.

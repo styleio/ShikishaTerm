@@ -5,9 +5,11 @@
  *
  * This page does not use Starlight's layout: the docs are Starlight, the front
  * page is its own thing (own palette, own header, own footer). Starlight's
- * store-tab.js is still loaded so a Store click behaves the same on every page.
+ * store-tab.js is still loaded so a Store click behaves the same on every page,
+ * and the visitor counter (src/analytics.mjs) is the same tag the docs pages carry.
  */
 import type { LpCopy } from "../../lp/types";
+import { beacon } from "../../analytics.mjs";
 import "../../styles/lp.css";
 import Nav from "./Nav.astro";
 import Hero from "./Hero.astro";
@@ -61,6 +63,7 @@ const canonical = new URL(path, site).href;
       href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700;900&display=swap"
     />
     <script src="/store-tab.js" defer is:inline></script>
+    {beacon && <script is:inline {...beacon}></script>}
   </head>
   <body>
     <Nav copy={copy} />
