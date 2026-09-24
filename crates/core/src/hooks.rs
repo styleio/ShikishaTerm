@@ -5286,7 +5286,9 @@ function on_step(tab)
   -- screen first, as one short line per element: the questions below list
   -- the elements themselves, and the page whole a second time is what made
   -- a long article too big to ask about
-  local function ask(size)
+  -- `picked`, when given, asks the operation alone, told which element each
+  -- operation would act on (see below)
+  local function ask(size, picked)
     local questions = {
       operation = {
         type = "choice",
@@ -5294,10 +5296,15 @@ function on_step(tab)
         instructions = { goal = goal, rules = ASK.rules_operation, done = past },
       },
     }
-    questions.click_target = target_question(goal, rows, "click", "CLICK", past, size)
-    questions.type_target = target_question(goal, rows, "fill", "TYPE", past, size)
-    questions.choose_target = target_question(goal, rows, "select", "CHOOSE", past, size)
-    questions.scroll_target = target_question(goal, rows, "scroll", "SCROLL_IN", past, size)
+    if picked then
+      questions.operation.instructions.picked = picked
+      questions.operation.instructions.rules = ASK.rules_operation .. " " .. ASK.rules_picked
+    else
+      questions.click_target = target_question(goal, rows, "click", "CLICK", past, size)
+      questions.type_target = target_question(goal, rows, "fill", "TYPE", past, size)
+      questions.choose_target = target_question(goal, rows, "select", "CHOOSE", past, size)
+      questions.scroll_target = target_question(goal, rows, "scroll", "SCROLL_IN", past, size)
+    end
     local seen = {}
     for _, onscreen in ipairs({ true, false }) do
       for _, e in ipairs(rows) do
@@ -5312,8 +5319,9 @@ function on_step(tab)
       questions = questions,
     })
   end
-  local okc, answers
+  local okc, answers, used
   for _, size in ipairs(SIZES) do
+    used = size
     okc, answers = ask(size)
     -- Asking takes seconds and the program went on meanwhile: a run stopped
     -- while it was asked is not carried on with the answer
@@ -5330,6 +5338,36 @@ function on_step(tab)
   local function chosen(name)
     local a = answers[name]
     return a and tonumber(a.choice) or nil
+  end
+
+  -- Scrolling, while the element the goal wants was already picked from the
+  -- whole page. The operation is chosen from a summary of what is on the
+  -- screen, so an element further down looks absent to it, and it scrolls
+  -- a screen at a time towards what the other questions had found on the
+  -- first move. Asked once more, told what was picked and where: only on a
+  -- move that would scroll, so an ordinary move costs nothing more
+  if op == "SCROLL_DOWN" or op == "SCROLL_UP" then
+    local by_ref = {}
+    for _, e in ipairs(rows) do by_ref[e.ref] = e end
+    local picked, any = {}, false
+    for operation, name in pairs({ CLICK = "click_target", TYPE = "type_target", CHOOSE = "choose_target" }) do
+      local e = by_ref[chosen(name) or -1]
+      if e and ops[operation] then
+        picked[operation] = "[" .. e.ref .. "] " .. (e.role or "") .. " " .. clip(e.name or "", used.label)
+          .. (e.off_screen and " (not on the screen)" or " (on the screen)")
+        any = true
+      end
+    end
+    if any then
+      local ok2, again = ask(used, picked)
+      if stopped() then return end
+      if ok2 and type(again) == "table" and again.operation and again.operation.choice ~= op then
+        shikisha.log("words: " .. op .. " became " .. tostring(again.operation.choice)
+          .. " once told what was picked")
+        op = again.operation.choice
+        answers.operation = again.operation
+      end
+    end
   end
 
   if op == "DONE" then
