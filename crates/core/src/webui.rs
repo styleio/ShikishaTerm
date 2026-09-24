@@ -7594,6 +7594,11 @@ function providerDialog(desk, name, redraw, saved) {
   const waitIn = el("input", {type:"number", min:"0", step:"1", class:"mono narrow",
     placeholder:"180",
     value: (p.timeout_sec === undefined || p.timeout_sec === null) ? "" : String(p.timeout_sec)});
+  // How many choices one question to a service that decides may list.
+  // Blank is the usual limit; a service that raises it is asked in fewer rounds
+  const choicesIn = el("input", {type:"number", min:"2", step:"1", class:"mono narrow",
+    placeholder:"255",
+    value: (p.max_choices === undefined || p.max_choices === null) ? "" : String(p.max_choices)});
   const speaksIn = el("select");
   for (const [v, label] of [["chat", T["settings.providers.speaks.chat"]],
                             ["choice", T["settings.providers.speaks.choice"]]]) {
@@ -7617,8 +7622,10 @@ function providerDialog(desk, name, redraw, saved) {
     api_key: keyIn.value.trim() || p.api_key || "", headers: p.headers || {}}),
     id => { modelIn.value = id; cand.chips.textContent = ""; });
   const modelHint = el("div", {class:"hint"});
+  let choicesField = null;
   const sayModel = () => {
     const choice = speaksIn.value === "choice";
+    if (choicesField) choicesField.hidden = !choice;
     cand.btn.hidden = choice;
     if (choice) cand.chips.textContent = "";
     modelHint.textContent = T[choice ? "settings.providers.model_hint_choice" : "settings.providers.model_hint"];
@@ -7706,6 +7713,12 @@ function providerDialog(desk, name, redraw, saved) {
     fieldFault(waitIn, waitWhy);
     if (waitWhy && !first) first = {at: waitIn, why: waitWhy};
 
+    const c = choicesIn.value.trim();
+    const choicesWhy = speaksIn.value === "choice" && c !== "" && !(/^\d+$/.test(c) && Number(c) >= 2)
+      ? T["settings.providers.choices_bad"] : null;
+    fieldFault(choicesIn, choicesWhy);
+    if (choicesWhy && !first) first = {at: choicesIn, why: choicesWhy};
+
     held = first;
     save.classList.toggle("held", !!held);
     if (!held) why.hidden = true;
@@ -7721,7 +7734,8 @@ function providerDialog(desk, name, redraw, saved) {
     held.at.classList.add("lookhere");
     held.at.focus();
   }
-  for (const i of [nameIn, urlIn, waitIn]) i.addEventListener("input", recheck);
+  for (const i of [nameIn, urlIn, waitIn, choicesIn]) i.addEventListener("input", recheck);
+  speaksIn.addEventListener("change", recheck);
 
   // The hint is words, or a line of its own that changes with the choices
   const field = (label, control, hint) => el("div", {class:"field"},
@@ -7743,7 +7757,8 @@ function providerDialog(desk, name, redraw, saved) {
       field(T["settings.providers.model_label"],
         el("div", {class:"row", style:"padding:0;flex-wrap:nowrap"}, modelIn, cand.btn),
         el("div", {}, modelHint, cand.chips)),
-      field(T["settings.providers.wait_label"], waitIn, T["settings.providers.wait_hint"])),
+      field(T["settings.providers.wait_label"], waitIn, T["settings.providers.wait_hint"]),
+      choicesField = field(T["settings.providers.choices_label"], choicesIn, T["settings.providers.choices_hint"])),
     el("div", {class:"mfoot"},
       editing
         ? el("button", {class:"danger", onclick: async () => {
@@ -7760,6 +7775,8 @@ function providerDialog(desk, name, redraw, saved) {
       el("button", {class:"quiet", onclick: () => shut()}, T["common.cancel"]),
       save));
   back.firstChild.classList.add("framed");
+  // Drawn now that the field is there: shown for a service that decides only
+  sayModel();
 
   back.addEventListener("keydown", e => {
     if (e.key === "Escape") { e.preventDefault(); shut(); return; }
@@ -7780,6 +7797,8 @@ function providerDialog(desk, name, redraw, saved) {
     if (w === "") delete it.timeout_sec; else it.timeout_sec = Math.max(0, Math.floor(Number(w)));
     // The ordinary kind is left unwritten: the file says what is unusual
     if (speaksIn.value === "choice") it.speaks = "choice"; else delete it.speaks;
+    const c = choicesIn.value.trim();
+    if (speaksIn.value === "choice" && c !== "") it.max_choices = Math.floor(Number(c)); else delete it.max_choices;
     // The model it is used with comes first. The service's other model names
     // come along only while the address is still that service's: an address
     // changed by hand is somebody else's machine

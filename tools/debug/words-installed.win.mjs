@@ -167,7 +167,7 @@ try {
   const longest = await watch(URL_ ? SECONDS * 1000 : 180000, () => sent !== null);
   if (URL_) {
     const said = fs.readFileSync(path.join(AT, 'app', 'logs', 'hooks.log'), 'utf8')
-      .split(/\r?\n/).filter((l) => /words|Result code/.test(l));
+      .split(/\r?\n/).filter((l) => /words|Result code|choose:/.test(l));
     console.log(said.join('\n'));
   }
   console.log(`sent: ${JSON.stringify(sent)} after ${((Date.now() - started) / 1000).toFixed(1)}s`);

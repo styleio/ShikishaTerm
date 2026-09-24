@@ -48,6 +48,9 @@ pub struct ModelConn {
     /// Which protocol the far end answers: `"chat"` or `"choice"`
     /// (see [`crate::config::ProviderSpec::speaks`])
     pub speaks: String,
+    /// The most choices one question to a service that decides may list
+    /// (see [`crate::config::ProviderSpec::max_choices`])
+    pub max_choices: usize,
 }
 
 /// Who answers a question asked from automation (`ai_choose`, `ai_text`)
@@ -418,12 +421,172 @@ pub fn choose(who: &Answerer, ask: &serde_json::Value) -> Result<serde_json::Val
     if questions.is_empty() {
         return Err(anyhow!(crate::i18n::t("err.choose.no_questions")));
     }
+    // More than any question should hold is refused before anything is sent
+    for (name, q) in questions {
+        let n = offered(q).len();
+        if n > MOST_CHOICES {
+            return Err(anyhow!(crate::i18n::tp(
+                "err.choose.too_many",
+                &[("name", name), ("n", &n.to_string()), ("most", &MOST_CHOICES.to_string())]
+            )));
+        }
+    }
     let answers = match who {
-        Answerer::Api(conn) if conn.speaks == crate::config::SPEAKS_CHOICE => choose_direct(conn, ask)?,
+        Answerer::Api(conn) if conn.speaks == crate::config::SPEAKS_CHOICE => {
+            choose_in_rounds(questions, ask, conn.max_choices, &|a| choose_direct(conn, a))?
+        }
         _ => choose_by_words(who, ask, questions)?,
     };
     validate_answers(&answers, questions)?;
     Ok(answers)
+}
+
+/// The most choices one question may have at all, whoever answers it and
+/// however it is asked. Past it the question is refused rather than asked in
+/// ever more pieces -- a page with a million links is not one to pick a link
+/// from, and asking about it would be a million links' worth of calls. Sixteen
+/// heats of the usual limit ([`crate::config::DEFAULT_MAX_CHOICES`])
+pub const MOST_CHOICES: usize = 16 * 255;
+
+/// Ask a decision service, in rounds when a question has more choices than
+/// it takes (`limit`, the connection's `max_choices`).
+///
+/// Such a question is cut into pieces the service does take, and each piece
+/// is asked on its own -- a heat -- while the questions small enough are asked
+/// together as they are, all at the same time. Each heat's pick goes on to a
+/// final, asked once for every such question together, and the final's pick
+/// is the answer. Two round trips where one would not fit, and none of the
+/// choices left out: an element at the foot of a long page is chosen on the
+/// first move, where cut down to what fits it was reached only by scrolling
+/// to it first.
+///
+/// The pieces are made of like with like: what is on the screen first, then
+/// what just appeared, then the rest, each in order. A heat of elements the
+/// person can see is judged against each other, not against a footer.
+///
+/// `ask_one` asks one question set of at most `limit` choices each
+fn choose_in_rounds(
+    questions: &serde_json::Map<String, serde_json::Value>,
+    ask: &serde_json::Value,
+    limit: usize,
+    ask_one: &(dyn Fn(&serde_json::Value) -> Result<serde_json::Value> + Sync),
+) -> Result<serde_json::Value> {
+    use serde_json::{json, Map, Value};
+    let limit = limit.max(2);
+    let big: Vec<&String> = questions
+        .iter()
+        .filter(|(_, q)| offered(q).len() > limit)
+        .map(|(n, _)| n)
+        .collect();
+    if big.is_empty() {
+        return ask_one(ask);
+    }
+    let state = ask.get("state").cloned().unwrap_or(Value::Null);
+    // The heats: what fits asked as it is, each big question in pieces
+    let small: Map<String, Value> = questions
+        .iter()
+        .filter(|(n, _)| !big.contains(n))
+        .map(|(n, q)| (n.clone(), q.clone()))
+        .collect();
+    let mut heats: Vec<(Option<&String>, Value)> = Vec::new();
+    if !small.is_empty() {
+        heats.push((None, json!({"state": state, "questions": small})));
+    }
+    for name in &big {
+        let q = &questions[name.as_str()];
+        let Some(Value::Object(criteria)) = q.get("criteria") else {
+            // Levels answered by their position cannot be split without
+            // changing what the positions mean
+            return Err(anyhow!(crate::i18n::tp(
+                "err.choose.too_many",
+                &[("name", name), ("n", &offered(q).len().to_string()), ("most", &limit.to_string())]
+            )));
+        };
+        for piece in in_heats(criteria, limit) {
+            heats.push((Some(name), json!({"state": state, "questions": {name.as_str(): with_choices(q, &piece)}})));
+        }
+    }
+    let said: Vec<Result<Value>> = std::thread::scope(|s| {
+        let running: Vec<_> = heats.iter().map(|(_, a)| s.spawn(move || ask_one(a))).collect();
+        running
+            .into_iter()
+            .map(|h| h.join().unwrap_or_else(|_| Err(anyhow!(crate::i18n::t("err.choose.no_questions")))))
+            .collect()
+    });
+    let mut answers = Map::new();
+    let mut winners: Map<String, Value> = Map::new();
+    for ((heat, _), said) in heats.iter().zip(said) {
+        let said = said?;
+        match heat {
+            None => {
+                if let Some(o) = said.as_object() {
+                    answers.extend(o.iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+            }
+            Some(name) => {
+                let picked = said.get(name.as_str()).and_then(|a| a.get("choice")).and_then(Value::as_str);
+                if let Some(p) = picked {
+                    let list = winners.entry(name.to_string()).or_insert_with(|| json!([]));
+                    if let Some(a) = list.as_array_mut() {
+                        a.push(json!(p));
+                    }
+                }
+            }
+        }
+    }
+    // The final: each big question once more, over its heats' picks
+    let mut finals = Map::new();
+    for name in &big {
+        let picked: Vec<String> = winners
+            .get(name.as_str())
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        if picked.is_empty() {
+            return Err(anyhow!(crate::i18n::tp("err.choose.missing", &[("name", name)])));
+        }
+        finals.insert(name.to_string(), with_choices(&questions[name.as_str()], &picked));
+    }
+    crate::append_hook_log(&format!(
+        "choose: {} asked in {} heats and a final (at most {limit} choices a question)",
+        big.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", "),
+        heats.iter().filter(|(h, _)| h.is_some()).count()
+    ));
+    let said = ask_one(&json!({"state": state, "questions": finals}))?;
+    if let Some(o) = said.as_object() {
+        answers.extend(o.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    Ok(Value::Object(answers))
+}
+
+/// A question's choices cut into heats of at most `limit`, like with like:
+/// on the screen, then just appeared, then the rest, each kept in its order
+/// (by number, where the choices are numbered)
+fn in_heats(criteria: &serde_json::Map<String, serde_json::Value>, limit: usize) -> Vec<Vec<String>> {
+    let says = |c: &serde_json::Value, k: &str| c.get(k).and_then(|v| v.as_str()) == Some("yes");
+    let mut keys: Vec<(u8, u64, String)> = criteria
+        .iter()
+        .map(|(k, c)| {
+            let group = if says(c, "on_screen") { 0 } else if says(c, "is_new") { 1 } else { 2 };
+            (group, k.parse::<u64>().unwrap_or(u64::MAX), k.clone())
+        })
+        .collect();
+    keys.sort();
+    let keys: Vec<String> = keys.into_iter().map(|(_, _, k)| k).collect();
+    // Even pieces rather than full ones and a scrap: a heat of three beside
+    // heats of 255 is a heat with a much easier race
+    let heats = keys.len().div_ceil(limit.max(1));
+    let each = keys.len().div_ceil(heats.max(1));
+    keys.chunks(each.max(1)).map(|c| c.to_vec()).collect()
+}
+
+/// The question with only these of its choices
+fn with_choices(q: &serde_json::Value, keep: &[String]) -> serde_json::Value {
+    let mut q = q.clone();
+    if let Some(serde_json::Value::Object(c)) = q.get_mut("criteria") {
+        c.retain(|k, _| keep.contains(k));
+    }
+    q
 }
 
 /// Ask for words: `prompt` under `system`, held to `shape` (a JSON Schema)
@@ -692,6 +855,7 @@ pub fn conn_in(
         headers: conn.headers,
         timeout: conn.timeout,
         speaks: conn.speaks,
+        max_choices: conn.max_choices,
         persona: None,
         drives: None,
     })
@@ -742,6 +906,69 @@ mod tests {
             println!("{name} wrote {said:?} in {:?}", t.elapsed());
             assert!(said.to_lowercase().contains("apple"), "{name}: {said}");
         }
+    }
+
+    /// A question with more choices than a decision service takes is asked
+    /// in heats and a final, and the answer is the one the whole question
+    /// would have given. Here the stand-in service picks the highest number
+    /// offered and refuses a question past the limit, the way Jev does
+    #[test]
+    fn a_question_too_big_for_the_service_is_asked_in_heats_and_a_final() {
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let service = |a: &serde_json::Value| -> Result<serde_json::Value> {
+            asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut out = serde_json::Map::new();
+            for (name, q) in a["questions"].as_object().unwrap() {
+                let keys = offered(q);
+                assert!(keys.len() <= 255, "{name} was asked with {} choices", keys.len());
+                let best = keys.iter().max_by_key(|k| k.parse::<u64>().unwrap_or(0)).unwrap().clone();
+                out.insert(name.clone(), serde_json::json!({"choice": best, "confidence": 0.9}));
+            }
+            Ok(serde_json::Value::Object(out))
+        };
+        let many: serde_json::Map<String, serde_json::Value> = (1..=600)
+            .map(|i| (i.to_string(), serde_json::json!({"element": format!("[{i}] link"), "on_screen": if i % 7 == 0 { "yes" } else { "no" }})))
+            .collect();
+        let ask = serde_json::json!({
+            "state": {"page": "p"},
+            "questions": {
+                "operation": {"type": "choice", "criteria": {"CLICK": "click", "DONE": "done"}},
+                "click_target": {"type": "choice", "criteria": many},
+            },
+        });
+        let questions = ask["questions"].as_object().unwrap();
+        let answers = choose_in_rounds(questions, &ask, 255, &service).expect("answered");
+        assert_eq!(answers["click_target"]["choice"], "600", "the best of all 600, not of a piece of them");
+        assert_eq!(answers["operation"]["choice"], "DONE");
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1 + 3 + 1, "the small ones, three heats, one final");
+        assert!(validate_answers(&answers, questions).is_ok());
+
+        // What is on the screen races together
+        let heats = in_heats(&many, 255);
+        assert_eq!(heats.len(), 3);
+        assert!(heats[0].iter().take(85).all(|k| k.parse::<u64>().unwrap() % 7 == 0), "{:?}", &heats[0][..5]);
+        assert!(heats.iter().all(|h| h.len() <= 255));
+
+        // A service whose limit was raised is asked in one go
+        asked.store(0, std::sync::atomic::Ordering::SeqCst);
+        let whole = |a: &serde_json::Value| -> Result<serde_json::Value> {
+            asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let q = &a["questions"]["click_target"];
+            assert_eq!(offered(q).len(), 600, "asked in one piece");
+            Ok(serde_json::json!({"click_target": {"choice": "600", "confidence": 1.0},
+                                  "operation": {"choice": "DONE", "confidence": 1.0}}))
+        };
+        choose_in_rounds(questions, &ask, 1000, &whole).expect("answered");
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Past the most any question may hold, nothing is asked at all
+        let too_many: serde_json::Map<String, serde_json::Value> =
+            (1..=MOST_CHOICES + 1).map(|i| (i.to_string(), serde_json::json!("x"))).collect();
+        let who = Answerer::Installed { ai: "nobody".into(), model: None };
+        let why = choose(&who, &serde_json::json!({"questions": {"t": {"type": "choice", "criteria": too_many}}}))
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains(&MOST_CHOICES.to_string()), "{why}");
     }
 
     /// A refusal is said in the far end's own words, wherever it put them
@@ -849,6 +1076,7 @@ mod tests {
                 "choice" => crate::config::SPEAKS_CHOICE.to_string(),
                 _ => crate::config::SPEAKS_CHAT.to_string(),
             },
+            max_choices: crate::config::DEFAULT_MAX_CHOICES,
         };
         // A page with one empty box and one button, and a goal that can only
         // be met by typing first. Small enough to read, and the right answer
@@ -928,6 +1156,7 @@ mod tests {
             headers: HashMap::new(),
             timeout: None,
             speaks: crate::config::SPEAKS_CHAT.to_string(),
+            max_choices: crate::config::DEFAULT_MAX_CHOICES,
         };
         let work: HashMap<_, _> = [("claude".to_string(), conn("https://work.example/v1"))].into();
         let mine: HashMap<_, _> = [("mine".to_string(), conn("http://localhost:11434/v1"))].into();

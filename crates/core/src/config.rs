@@ -824,6 +824,13 @@ pub struct ProviderSpec {
     /// this shape before long
     #[serde(default)]
     pub speaks: Option<String>,
+    /// For a service that decides (`speaks: "choice"`): the most choices it
+    /// takes in one question. Left out, [`DEFAULT_MAX_CHOICES`]. A question
+    /// with more is asked in heats and a final (bridge.rs, choose_in_rounds).
+    /// A setting rather than a number in the code because it is the
+    /// service's to change, and a raised limit means fewer rounds
+    #[serde(default)]
+    pub max_choices: Option<usize>,
     /// Model names this connection is known to have, offered by the pickers
     /// that ask for `connection/model`. Filled when a connection is added
     /// from the list of known services; a decision endpoint has no model
@@ -1016,7 +1023,15 @@ pub struct ProviderConn {
     pub timeout: Option<std::time::Duration>,
     /// Which protocol this endpoint answers (see [`ProviderSpec::speaks`])
     pub speaks: String,
+    /// The most choices one question to it may list (see
+    /// [`ProviderSpec::max_choices`])
+    pub max_choices: usize,
 }
+
+/// The most choices a service that decides takes in one question, when its
+/// settings do not say. Jev's, measured 2026-09-24 ("Too many choices. Must
+/// have at most 255 choices")
+pub const DEFAULT_MAX_CHOICES: usize = 255;
 
 /// The tab bar's width as the window should open it, in pixels.
 ///
@@ -2970,6 +2985,9 @@ pub fn provider_conn(p: &ProviderSpec, look: &dyn Fn(&str) -> Option<String>) ->
             0 => None,
             secs => Some(std::time::Duration::from_secs(secs)),
         },
+        // Fewer than two is no question at all; a limit that low is read as
+        // a mistake in the file and the usual one is used
+        max_choices: p.max_choices.filter(|n| *n >= 2).unwrap_or(DEFAULT_MAX_CHOICES),
     })
 }
 

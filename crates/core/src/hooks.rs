@@ -5101,14 +5101,20 @@ local function fill(text, into)
 end
 
 -- How big a question is asked, largest first: how much of the page's text
--- goes with it, how many elements one question offers, how many the page is
--- summed up by, and how long a label may be. A decision service holds a
--- question to a number of choices (Jev: 255) and a question as a whole to a
--- size, and refuses the whole of it past either -- an article on Wikipedia
--- is past both. Refused, the move is asked again one size down
+-- goes with it, how many elements the page is summed up by, and how long a
+-- label may be. A decision service holds a question as a whole to a size and
+-- refuses the whole of it past that; an article on Wikipedia is past it.
+-- Refused, the move is asked again one size down.
+--
+-- Every element that can take the move is offered, at every size. Leaving
+-- some out to fit is choosing for the model: when the one the goal wants is
+-- among those left out, the move goes to the wrong one. A question with more
+-- choices than a decision service takes is asked in heats and a final
+-- (bridge.rs, choose_in_rounds); a page with more than any question may hold
+-- (MOST_CHOICES) is refused, not cut
 local SIZES = {
-  { text = 4000, offered = 255, seen = 120, label = 80 },
-  { text = 1500, offered = 100, seen = 50, label = 50 },
+  { text = 4000, seen = 120, label = 80 },
+  { text = 1500, seen = 50, label = 50 },
 }
 
 -- What the page offers, as the answers to a question. One entry per element
@@ -5124,22 +5130,6 @@ local function offers(rows, verb, size)
     end
   end
   if #can == 0 then return nil end
-  -- Past the most: what is on the screen first, then what just appeared,
-  -- then the rest in page order -- the rest is still reached by scrolling
-  if #can > size.offered then
-    local first, next_, rest = {}, {}, {}
-    for _, e in ipairs(can) do
-      if not e.off_screen then first[#first + 1] = e
-      elseif e.new then next_[#next_ + 1] = e
-      else rest[#rest + 1] = e end
-    end
-    can = {}
-    for _, group in ipairs({ first, next_, rest }) do
-      for _, e in ipairs(group) do
-        if #can < size.offered then can[#can + 1] = e end
-      end
-    end
-  end
   local out = {}
   for _, e in ipairs(can) do
     out[tostring(e.ref)] = {
@@ -5274,6 +5264,17 @@ function on_step(tab)
       reset_budget()
     else
       finish(1, shikisha.t("words.err.too_long"), false)
+      return
+    end
+  end
+
+  -- More than any question may hold: said about the page, before anything is
+  -- asked, rather than as a refusal naming a question the person never saw
+  for _, verb in ipairs({ "click", "fill", "select", "scroll" }) do
+    local n = 0
+    for _, e in pairs(offers(rows, verb) or {}) do n = n + 1 end
+    if n > MOST_CHOICES then
+      finish(1, shikisha.tf("words.err.too_many", { n = n, most = MOST_CHOICES }), false)
       return
     end
   end
@@ -5436,6 +5437,7 @@ end
              local MAX_ROUNDS, MAX_SEC, MAX_TOK = {}, {}, {}\nlocal ON_LIMIT = {:?}\n\
              local SETTLE_MS = {}\nlocal CONFIRM = {:?}\n\
              local CHOOSE_MODEL = {:?}\nlocal WORDS_MODEL = {:?}\n\
+             local MOST_CHOICES = {}\n\
              local ASK = {{\n{ask}}}\n{}\n{SRC}",
             op.max_rounds,
             op.max_seconds,
@@ -5447,6 +5449,7 @@ end
             op.confirm,
             choose,
             words,
+            crate::bridge::MOST_CHOICES,
             Self::SHARED_LUA
         );
         self.load_source(&key, &src)
@@ -7280,6 +7283,7 @@ mod tests {
                 headers: Default::default(),
                 timeout: Some(Duration::from_secs(20)),
                 speaks: crate::config::SPEAKS_CHAT.to_string(),
+                max_choices: crate::config::DEFAULT_MAX_CHOICES,
             },
         )]));
         let mut e = HookEngine::new().unwrap();

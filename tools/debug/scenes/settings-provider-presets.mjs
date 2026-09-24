@@ -7,7 +7,8 @@
  * A desk that already has a connection called "jev", so the one picked from
  * the list has to take the next free name. The scenes: the dialog as it
  * opens, a decision model picked, a conversation model picked, a model on
- * this PC picked, and the decision model saved with its model name.
+ * this PC picked, the decision model saved with its model name, and the
+ * limit on a decision model's choices (saved, then refused at 1).
  */
 const wait = (ms) => 'new Promise(r => setTimeout(r, ' + ms + '))';
 const open = '(async () => { providerDialog(desks[0], null, () => {}); await ' + wait(300) + '; })()';
@@ -36,6 +37,20 @@ export default {
       + ' document.querySelector(".modal:last-of-type .mfoot button.primary").click(); await ' + wait(300) + ';'
       + ' const got = JSON.stringify((desks[0].providers["jev-2"] || {}).models);'
       + ' if (got !== JSON.stringify(["jev-latest"])) throw new Error("models saved as " + got); })()',
+    // A decision model has a limit on its choices, blank for the usual one;
+    // a conversation model has no such field. Written only when given
+    choices: '(async () => { await ' + pick('DeepSeek') + ';'
+      + ' const box = () => [...document.querySelectorAll(".modal:last-of-type input[type=number]")].find(i => i.placeholder === "255");'
+      + ' if (!box() || !box().closest(".field").hidden) throw new Error("a conversation model offers a limit on choices");'
+      + ' await ' + pick('Jev') + ';'
+      + ' const c = box(); if (c.closest(".field").hidden) throw new Error("no limit on choices for a decision model");'
+      + ' c.value = "1000"; c.dispatchEvent(new Event("input"));'
+      + ' c.closest(".field").scrollIntoView({block:"center"});'
+      + ' document.querySelector(".modal:last-of-type .mfoot button.primary").click(); await ' + wait(300) + ';'
+      + ' if ((desks[0].providers["jev-2"] || {}).max_choices !== 1000) throw new Error("saved as " + JSON.stringify(desks[0].providers["jev-2"]));'
+      + ' await ' + pick('Jev') + ';'
+      + ' const d = box(); d.value = "1"; d.dispatchEvent(new Event("input")); await ' + wait(100) + ';'
+      + ' d.closest(".field").scrollIntoView({block:"center"}); })()',
   },
   langs: ['ja', 'en'],
   sizes: [['wide', 1280, 900], ['phone', 390, 820]],
