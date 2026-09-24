@@ -4316,7 +4316,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .unwrap_or(shell.geom_area());
                     Some((key.clone(), rect))
                 })
-                .filter(|_| !covered)
+                // INDEX covers the panes. The board keeps their last
+                // measurements while it does (a covered pane has not changed
+                // size), so a page asked for its rectangle there would stand
+                // over INDEX where its pane was, and take the presses meant
+                // for the board
+                .filter(|_| !covered && !board_open)
                 .collect();
             caps.show_at(&[shown, panel].concat());
             }

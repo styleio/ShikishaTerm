@@ -13881,8 +13881,11 @@ async function doSave() {
   // Once saved, this screen's job is done. Leaving it open would mean the only way back
   // to the board is "click another tab", making settings feel like it's overstaying.
   // Not from the dialog over the board: that was opened from a tab, and the tab
-  // it adds is where the person is going, not the board
-  if (!floating) goIndex();
+  // it adds is where the person is going, not the board. Nor from settings
+  // stood over the board for one thing (a sheet, or a link that returns once
+  // saved): the person came from a tab, and closing puts them back on it --
+  // sent to INDEX, they lost the page they had pressed [Slow] on
+  if (!floating && !SHEET && !returnOnSave) goIndex();
   return true;
 }
 
@@ -15699,7 +15702,8 @@ mod tests {
         assert!(PAGE.contains("<div id=\"floatbox\""), "there is no dialog to show");
         assert!(PAGE.contains("if (await save()) closeSettings();"), "adding closes the dialog whether or not it was saved");
         assert!(PAGE.contains("ok = await doSave();"), "a save that said why it failed still counts as done");
-        assert!(PAGE.contains("if (!floating) goIndex();"), "adding a tab from its dialog sends the person to INDEX");
+        assert!(PAGE.contains("if (!floating && !SHEET && !returnOnSave) goIndex();"),
+            "a save sends the person to INDEX from the dialog or the sheet they opened from a tab");
         assert!(PAGE.contains(r#"postMessage(JSON.stringify({kind:"settingsfull"}))"#),
             "More settings does not ask the window for the whole of it");
         // A tab added to a group with no folder would wait instead of starting,
