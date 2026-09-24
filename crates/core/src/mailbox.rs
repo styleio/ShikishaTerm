@@ -170,6 +170,8 @@ pub struct Mailbox {
     pub words: Vec<(bool, String, bool)>,
     /// Presses on the notice about a run that ended badly (true = explain it)
     pub why_stopped: Vec<bool>,
+    /// Short messages for the page in view to draw (text, a warning)
+    pub page_toasts: Vec<(String, bool)>,
     /// 📼 record-mode toggles from the composer (true = arm the shown browser's
     /// recorder, false = silence recording everywhere).
     pub record_arms: Vec<bool>,

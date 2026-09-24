@@ -15124,7 +15124,17 @@ window.__suggested = (r) => {
 // A toast can't do this job: over a browser tab the native page is layered on
 // top of the HTML, so anything outside the dock's reserved band is invisible.
 let luaNote = null;
-function luaFlash(text, bad) { luaNote = {text: text, bad: !!bad}; if (castPanel === "lua") renderPanel(); }
+// ...so it is said above the panel instead, where it comes and goes without
+// moving the buttons under a finger: on the page, drawn by the page in the
+// window (a page there is a window of its own, over anything the board
+// draws), and as the board's own toast on a phone, which draws the page as a
+// picture. The panel's line keeps only what stays until it is acted on
+function luaFlash(text, bad) {
+  luaNote = null;
+  if (castPanel === "lua") renderPanel();
+  if (OURS && !REMOTE && onBrowserTab()) send({kind:"pagetoast", text: String(text), warn: !!bad});
+  else toast(text, !!bad);
+}
 // 🗣 on a page whose models are not chosen yet. The panel's line says so for
 // as long as it is true (luaNoteLine), and the page's own settings are stood
 // over the board at the two pickers, so the person chooses them where they
@@ -15143,8 +15153,11 @@ function wordsNeedModels(force) {
 }
 function buildLuaPanel() {
   const wrap = el("div", {id:"castlua"});
-  const mk = (mode, glyph, label) => {
-    const lab = el("label", {class:"castradio"});
+  // What each mode does rides on the mode itself, under the pointer: the
+  // panel's line is kept for what is happening, and the input's own
+  // placeholder already asks for the goal
+  const mk = (mode, glyph, label, tip) => {
+    const lab = el("label", {class:"castradio", title: tip});
     const r = el("input", {type:"radio", name:"luamode", value:mode});
     if (luaMode === mode) r.checked = true;
     r.onchange = () => {
@@ -15161,27 +15174,25 @@ function buildLuaPanel() {
     return lab;
   };
   wrap.append(
-    mk("words", "🗣", T["tui.cast.lua.words"] || "In words"),
-    mk("rec", "⏺", T["tui.cast.lua.rec"] || "Record"),
-    mk("run", "▶", T["tui.cast.lua.run"] || "Run"),
+    mk("words", "🗣", T["tui.cast.lua.words"] || "In words", T["tui.cast.lua.wordshint"]
+      || "Write what you want done on this page and Send. Each step it takes is added to the Lua, so ▶ repeats it."),
+    mk("rec", "⏺", T["tui.cast.lua.rec"] || "Record", T["tui.cast.lua.rechint"]
+      || "Type and tap as usual — every step is recorded. ▶ shows the Lua."),
+    mk("run", "▶", T["tui.cast.lua.run"] || "Run", T["tui.cast.lua.runhint"]
+      || "The recorded Lua — edit it, Run it, 📋 copies it."),
     el("button", {class:"castbtn", style:"flex:none",
       title: T["tui.cast.lua.copy"] || "Copy the recorded Lua",
       onclick: copySheet}, "📋"));
   return wrap;
 }
-// The 📼 panel's line: the last result if there is one, else what the mode does
+// The 📼 panel's line: what just happened, or what is missing, and nothing
+// when there is neither. What each mode does is said on the mode (buildLuaPanel)
 function luaNoteLine() {
   if (luaMode === "words" && wordsUnsetHere()) {
     return { tone: "bad", text: T["tui.cast.lua.words_setup"] || "Choose the models this page uses first." };
   }
   if (luaNote) return { text: luaNote.text, tone: luaNote.bad ? "bad" : "good" };
-  if (luaMode === "words") {
-    return { tone: "", text: T["tui.cast.lua.wordshint"]
-      || "Write what you want done on this page and Send. Each step it takes is added to the Lua, so ▶ repeats it." };
-  }
-  return { tone: "", text: luaMode === "rec"
-    ? (T["tui.cast.lua.rechint"] || "Type and tap as usual — every step is recorded. ▶ shows the Lua.")
-    : (T["tui.cast.lua.runhint"] || "The recorded Lua — edit it, Run it, 📋 copies it.") };
+  return null;
 }
 // 📋: the Lua sheet to the clipboard (whether or not it's currently loaded in
 // the composer). copyText() is the toast's, and it is the page's only way onto
@@ -15200,11 +15211,13 @@ function copySheet() {
 window.__wordsNote = function (note) {
   try {
     ensureBar();
-    luaFlash("🗣 " + (note && note.text || ""), !!(note && note.bad));
-    // Stopped for want of an agreement: the goal rides along, so the button
-    // beside the reason can agree and carry it out in one press
-    if (luaNote && note && typeof note.agree === "string") luaNote.agree = note.agree;
-    if (castPanel === "lua") renderPanel();
+    const text = "🗣 " + (note && note.text || "");
+    // Stopped for want of an agreement: the reason stays in the panel, with
+    // the button that agrees and carries the goal out in one press
+    if (note && typeof note.agree === "string") {
+      luaNote = {text: text, bad: !!note.bad, agree: note.agree};
+      if (castPanel === "lua") renderPanel();
+    } else luaFlash(text, !!(note && note.bad));
   } catch (e) {}
 };
 window.__recorded = function (line) {

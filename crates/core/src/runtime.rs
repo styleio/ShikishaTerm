@@ -3831,6 +3831,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let _ = caps.browser_toast(&key, text, false);
             }
         }
+        // What the 📼 panel says for a moment, drawn by the page in view the
+        // same way the flash above is
+        for (text, warn) in shell.mail().page_toasts.drain(..).collect::<Vec<_>>() {
+            if let Some(key) = focused_page(&pane_layout, &ui.surfaces) {
+                let _ = caps.browser_toast(&key, &text, warn);
+            }
+        }
         // Comfortably longer than the longest the screen shows one for, so the
         // page is what decides when a message fades and this only clears up after it
         if flash.is_some() && flash_at.elapsed() >= FLASH_LIFE {

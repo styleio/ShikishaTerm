@@ -482,6 +482,11 @@ pub enum Ev {
     /// "Why did it stop?" -- have the last run's ending explained, or put the
     /// notice away once it has been read. `ask` false is the putting away
     WhyStopped { ask: bool },
+    /// A short message to show on the page in view, drawn by the page itself:
+    /// in the window a page is a window of its own, and nothing of the board's
+    /// can be drawn over it. What the 📼 panel has to say for a moment goes
+    /// here rather than into the panel, where it pushed the buttons about
+    PageToast { text: String, warn: bool },
     /// 📼 record mode toggled in the composer. On arms the Lua recorder on the
     /// shown browser (the loop resolves which one that is); off silences it
     /// everywhere — there's only ever one recorder.
@@ -1276,6 +1281,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         // The notice about a run that ended badly: explain it, or put it away
         Some("whystopped") => Ev::WhyStopped {
             ask: v.get("ask").and_then(|x| x.as_bool()).unwrap_or(true),
+        },
+        Some("pagetoast") => Ev::PageToast {
+            text: v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            warn: v.get("warn").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         // A file pasted/attached in the desktop composer. Saved beside the active
         // tab; the result is handed back by eval-ing window.__attachDone(id, …).

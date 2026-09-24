@@ -819,6 +819,8 @@ impl WinSurface {
                 Ev::Words { on, goal, agree } => self.mail.words.push((on, goal, agree)),
                 // The notice about a run that ended badly
                 Ev::WhyStopped { ask } => self.mail.why_stopped.push(ask),
+                // A message for the page in view to draw; the loop knows which
+                Ev::PageToast { text, warn } => self.mail.page_toasts.push((text, warn)),
                 // Save the newest replay.lua to Downloads (the board can't
                 // download over HTTP; the loop owns the answer message).
                 Ev::ReplaySave => self.mail.replay_saves = true,
