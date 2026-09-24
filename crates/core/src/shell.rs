@@ -4643,7 +4643,8 @@ window.__issues = function (d) {
   }
   if (d.act === "projects") {
     I.projects = d.projects || [];
-    ghAccounts = (d.accounts || []).map(a => ({name: a.name, label: a.name}))
+    ghLabels = d.labels || {};
+    ghAccounts = (d.accounts || []).map(a => ({name: a.name, label: a.label || a.name}))
       .concat(pcAcctChoices(d.pc).map(([name, label]) => ({name, label})));
     if (ghWaiting) { ghWaiting = false; ghSearch(ghText); }
     if (I.project && !issueProject(I.project)) I.project = "";
@@ -7774,6 +7775,9 @@ let ghTimer = 0;
 let ghText = "";
 let ghWaiting = false;
 let ghAccounts = [];
+// What the settings call the sign-ins this PC holds, by the choice that names
+// them (`@pc:<login>`); empty for one nobody named
+let ghLabels = {};
 // Whether what GitHub last said is put right by choosing an account
 let ghFix = false;
 let ghFresh = false;
@@ -17724,7 +17728,10 @@ function pcAcctChoices(held) {
 // itself for anything else
 function pcAcctLabel(v) {
   if (v === "@pc") return T["git.acct.pc"] || "";
-  if (String(v || "").startsWith("@pc:")) return (T["git.acct.pc_as"] || "{login}").replace("{login}", String(v).slice(4));
+  if (String(v || "").startsWith("@pc:")) {
+    const said = (T["git.acct.pc_as"] || "{login}").replace("{login}", String(v).slice(4));
+    return ghLabels[v] ? ghLabels[v] + " \u2014 " + said : said;
+  }
   return v;
 }
 

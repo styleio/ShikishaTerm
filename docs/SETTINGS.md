@@ -52,6 +52,7 @@ Assistant AI, deciding AI, connections, agreements
 Tokens, and the sign-ins of this PC's git and gh
 
 - **Token**
+- **Display name**
 
 ### Update
 

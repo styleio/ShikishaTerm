@@ -25,6 +25,10 @@ once it reaches its first tagged release.
   leaves it, or into gh as `gh auth login --with-token` does). The window the
   account picker opens shows the same three cards, and comes back with a
   sign-in put into this PC's git chosen, as it does with an account made.
+  Every one of them can be given a **display name** -- "for the client", "the
+  company's" -- which is what the lists, the pickers and the worktree dialog
+  then call it; a sign-in's row opens it, with Delete or Sign out at the
+  left of that window.
 - **Quick actions can be put in folders.** A folder is a button in the bar with
   the folder's drawing before its name; pressed, the bar shows what is inside,
   with Back first, as deep as the folders go -- the same walk the quick commands'

@@ -5572,11 +5572,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let accounts: Vec<serde_json::Value> = desk
                     .git_accounts
                     .iter()
-                    .map(|a| serde_json::json!({"name": a.name, "gh": a.is_gh(), "host": a.host()}))
+                    .map(|a| serde_json::json!({"name": a.name, "gh": a.is_gh(), "host": a.host(), "label": a.label}))
                     .collect();
-                // And the GitHub accounts git on this PC holds, each a choice
+                // And the GitHub accounts git on this PC holds, each a choice,
+                // with what the settings call them
                 let pc = crate::pr::pc_accounts_known();
-                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects, "accounts": accounts, "pc": pc}).to_string();
+                let labels = cfg.as_ref().map(|c| c.sign_in_labels.clone()).unwrap_or_default();
+                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects, "accounts": accounts, "pc": pc, "labels": labels}).to_string();
                 shell.push_issues(&js);
                 if let Some(r) = remote_ui.as_ref() {
                     r.push_state(format!("{{\"issues\":{js}}}"));

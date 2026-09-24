@@ -147,6 +147,10 @@ pub struct GitAccountSpec {
     /// account first. Nothing is picked because of it
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub owners: Vec<String>,
+    /// What it is called on screen, when that is not its name: "for the client",
+    /// "the company's". The name stays what tabs and projects choose it by
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// What a git account is chosen as when the choice is "the way git on this
@@ -689,6 +693,12 @@ pub struct Config {
     /// tokens are in the secret store (see [`git_token_key`])
     #[serde(default)]
     pub git_accounts: Vec<GitAccountSpec>,
+    /// What the sign-ins this PC holds are called on screen, by the choice
+    /// that names them: `@pc:<login>` for one of git's, `@gh:<host>/<login>`
+    /// for one of GitHub CLI's. Neither program has a name for its accounts
+    /// beyond the login, and a person telling two apart wants "for the client"
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub sign_in_labels: std::collections::HashMap<String, String>,
     /// What the person agreed to send out, per AI: the connection's name, or
     /// an installed AI's (`@claude`), -> the kinds agreed to
     /// ([`CONSENT_PAGES`], [`CONSENT_PICTURES`]). Written by the settings

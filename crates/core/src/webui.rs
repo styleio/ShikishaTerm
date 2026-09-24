@@ -4061,14 +4061,14 @@ const PAGE: &str = r##"<!doctype html>
  .consent h3 { margin:0; font-size:13px; font-weight:600; }
  .consent .row { padding:0; }
  .secretrow:hover { background:var(--panel2); }
- .signinrow { padding:7px var(--s3); gap:var(--s3); flex-wrap:nowrap; }
+ .signinrow { padding:7px var(--s3); gap:var(--s3); flex-wrap:nowrap; cursor:pointer; }
  /* Whether GitHub still accepts it gives way before the row wraps: one line
     per sign-in, in a window as much as on the page */
  .signinrow .secretsite { flex:0 0 auto; max-width:45%; min-width:0; text-align:right; white-space:nowrap;
    overflow:hidden; text-overflow:ellipsis; }
  /* The login and server give way first: the name beside them says most of it */
  .signinrow .secretdesc { flex:1 1 0; min-width:0; }
- .signinrow > button { margin-left:auto; flex:none; }
+ .signinrow > .go { margin-left:auto; flex:none; }
  .secretrow .go { color:var(--faint); font-size:14px; line-height:1; }
  .secretrow:hover .go { color:var(--text); }
  .secretname { flex:0 0 132px; color:var(--text); overflow:hidden;
@@ -10343,8 +10343,8 @@ function gitAccountsParts() {
     for (const a of accts) {
       const state = el("span", {class:"hint secretsite"}, "");
       rows.append(el("div", {class:"listrow secretrow", onclick: () => gitAccountDialog(a.name, draw)},
-        el("span", {class:"mono secretname"}, a.name),
-        el("span", {class:"hint mono secretdesc"}, gitAccountAbout(a)),
+        el("span", {class:(a.label || "").trim() ? "secretname" : "mono secretname"}, gitAccountShown(a)),
+        el("span", {class:"hint mono secretdesc"}, ((a.label || "").trim() ? a.name + " · " : "") + gitAccountAbout(a)),
         el("span", {class:"hint"}, signInLabel(a)),
         state,
         el("span", {class:"go"}, "›")));
@@ -10377,6 +10377,7 @@ function gitAccountDialog(name, redraw) {
   const input = (value, attrs) => { const i = el("input", Object.assign({type:"text"}, attrs || {})); i.value = value || ""; return i; };
   const nameIn = input(name, {class:"mono", placeholder:T["settings.gitacct.name_ph"]});
   nameIn.disabled = editing;
+  const labelIn = input(a.label, {placeholder:T["settings.gitacct.label_ph"]});
   const hostIn = input(a.host, {class:"mono", placeholder:GIT_HOST});
   const method = el("select");
   method.append(el("option", {value:"token"}, T["settings.gitacct.by_token"]),
@@ -10468,6 +10469,7 @@ function gitAccountDialog(name, redraw) {
       el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
     el("div", {class:"mbody"},
       field(T["settings.gitacct.name"], nameIn, editing ? T["settings.gitacct.name_fixed"] : T["settings.gitacct.name_hint"]),
+      field(T["settings.gitacct.shown"], labelIn, T["settings.gitacct.shown_hint"]),
       field(T["settings.gitacct.host"], hostIn, T["settings.gitacct.host_hint"]),
       field(T["settings.gitacct.method"], method, null),
       ghNote, loginField, keyField, tokenField,
@@ -10515,6 +10517,7 @@ function gitAccountDialog(name, redraw) {
     }
     const it = editing ? a : {name: n};
     const put = (k, v) => { if ((v || "").trim()) it[k] = v.trim(); else delete it[k]; };
+    put("label", labelIn.value);
     put("host", hostIn.value.trim().toLowerCase() === GIT_HOST ? "" : hostIn.value);
     if (method.value === "ssh") { it.method = "ssh"; put("key", keyIn.value); delete it.login; }
     else if (method.value === "gh") { it.method = "gh"; delete it.key; delete it.login; }
@@ -10550,17 +10553,21 @@ function pcSignInsCard() {
     const rows = el("div", {class:"rows"});
     for (const login of PC_ACCOUNTS) {
       const state = el("span", {class:"hint secretsite"}, "");
-      rows.append(el("div", {class:"listrow signinrow"},
-        el("span", {class:"mono secretname"}, login),
+      const key = THIS_PC + ":" + login;
+      const labelled = !!(signInLabels()[key] || "").trim();
+      rows.append(el("div", {class:"listrow secretrow signinrow", onclick: () => signInDialog(key, login,
+          T["common.delete"], fill(T["settings.gitacct.pc_forget_confirm"], {login}),
+          async () => {
+            const r = await postJson("/api/pc-accounts/forget", {login});
+            if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return false; }
+            return true;
+          },
+          // The pickers offer the PC's accounts, so they are drawn again
+          async () => { await draw(); render(); })},
+        el("span", {class:labelled ? "secretname" : "mono secretname"}, signInShown(key, login)),
         el("span", {class:"hint mono secretdesc"}, login + "@" + GIT_HOST),
         state,
-        el("button", {class:"quiet", onclick: async () => {
-          if (!await confirmAction(fill(T["settings.gitacct.pc_forget_confirm"], {login}), T["common.delete"])) return;
-          const r = await postJson("/api/pc-accounts/forget", {login});
-          if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return; }
-          // The pickers offer the PC's accounts, so they are drawn again
-          await draw(); render();
-        }}, T["common.delete"])));
+        el("span", {class:"go"}, "›")));
       signInState("pc=" + encodeURIComponent(login), state, T["settings.gitacct.no_token"], true);
     }
     listBox.append(rows);
@@ -10591,17 +10598,20 @@ function ghSignInsCard() {
     const rows = el("div", {class:"rows"});
     for (const a of accounts) {
       const state = el("span", {class:"hint secretsite"}, "");
-      rows.append(el("div", {class:"listrow signinrow"},
-        el("span", {class:"mono secretname"}, a.login),
+      const key = "@gh:" + a.host + "/" + a.login;
+      const labelled = !!(signInLabels()[key] || "").trim();
+      rows.append(el("div", {class:"listrow secretrow signinrow", onclick: () => signInDialog(key, a.login,
+          T["settings.gitacct.gh_signout"], fill(T["settings.gitacct.gh_forget_confirm"], {login: a.login, host: a.host}),
+          async () => {
+            const r = await postJson("/api/gh-accounts/forget", {login: a.login, host: a.host});
+            if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return false; }
+            return true;
+          }, draw)},
+        el("span", {class:labelled ? "secretname" : "mono secretname"}, signInShown(key, a.login)),
         el("span", {class:"hint mono secretdesc"}, a.login + "@" + a.host),
         a.active ? el("span", {class:"chip"}, T["settings.gitacct.gh_active"]) : null,
         state,
-        el("button", {class:"quiet", onclick: async () => {
-          if (!await confirmAction(fill(T["settings.gitacct.gh_forget_confirm"], {login: a.login, host: a.host}), T["settings.gitacct.gh_signout"])) return;
-          const r = await postJson("/api/gh-accounts/forget", {login: a.login, host: a.host});
-          if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return; }
-          draw();
-        }}, T["settings.gitacct.gh_signout"])));
+        el("span", {class:"go"}, "›")));
       signInState("gh=" + encodeURIComponent(a.login) + "&host=" + encodeURIComponent(a.host), state, T["settings.gitacct.no_gh"], true);
     }
     listBox.append(rows);
@@ -10613,6 +10623,44 @@ function ghSignInsCard() {
     el("div", {class:"row"},
       el("button", {onclick: () => tokenDialog(T["settings.gitacct.gh_add_title"], T["settings.gitacct.gh_add_hint"], true,
         async (token, host) => postJson("/api/gh-accounts/add", {token, host}), draw)}, T["settings.gitacct.gh_add"])));
+}
+
+// A sign-in this PC holds: what to call it, and -- at the left of the foot,
+// where a thing is taken apart -- the way to delete it or sign it out.
+// `destroy` does that and answers whether it happened; `done` redraws the list
+function signInDialog(key, login, destroyWord, destroyAsk, destroy, done) {
+  const labelIn = el("input", {type:"text", placeholder:T["settings.gitacct.label_ph"]});
+  labelIn.value = signInLabels()[key] || "";
+  const save = el("button", {class:"primary"}, T["common.save"]);
+  const shut = () => back.remove();
+  const back = openModal(
+    el("div", {class:"mhead"},
+      el("h2", {}, login),
+      el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
+    el("div", {class:"mbody"},
+      el("div", {class:"field"}, el("label", {}, T["settings.gitacct.shown"]),
+        el("div", {class:"fieldctl"}, labelIn), el("div", {class:"hint"}, T["settings.gitacct.shown_hint"]))),
+    el("div", {class:"mfoot"},
+      el("button", {class:"danger", onclick: async () => {
+        if (!await confirmAction(destroyAsk, destroyWord)) return;
+        if (!await destroy()) return;
+        delete signInLabels()[key];
+        refreshSave(); shut(); done();
+      }}, destroyWord),
+      el("span", {class:"grow"}),
+      el("button", {class:"quiet", onclick: () => shut()}, T["common.cancel"]),
+      save));
+  back.firstChild.classList.add("framed");
+  back.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); shut(); return; }
+    if (e.key === "Enter" && e.target.tagName === "INPUT") { e.preventDefault(); save.click(); }
+  });
+  save.addEventListener("click", () => {
+    const v = labelIn.value.trim();
+    if (v) signInLabels()[key] = v; else delete signInLabels()[key];
+    refreshSave(); shut(); done(); render();
+  });
+  setTimeout(() => labelIn.focus(), 0);
 }
 
 // One token, pasted, and handed to `submit(token, host)`; the window stays,
@@ -10713,6 +10761,11 @@ const signInLabel = a => isSshAccount(a) ? T["settings.gitacct.by_ssh"]
 const accountHost = a => ((a.host || "").trim().replace(/\/+$/, "").toLowerCase()) || GIT_HOST;
 // Who it signs in as, in a few words: the user name and the server
 const gitAccountAbout = a => ((a.login || "").trim() ? a.login.trim() + "@" : "") + accountHost(a);
+// What an account is called on screen: its label when it was given one
+const gitAccountShown = a => (a.label || "").trim() || a.name;
+// The labels of the sign-ins this PC holds, by the choice that names them
+const signInLabels = () => (current.sign_in_labels = isObj(current.sign_in_labels) ? current.sign_in_labels : {});
+const signInShown = (key, login) => (signInLabels()[key] || "").trim() || login;
 const gitTokenKey = name => "git/" + name;
 
 // Whether the token still works, whose it is and how long it has left, said on
@@ -10772,7 +10825,7 @@ function gitAccountSelect(now, origin, pick) {
   s.append(el("option", {value:""}, T["settings.gitacct.pick"]));
   for (const {a, fits} of list) {
     s.append(el("option", {value:a.name},
-      a.name + " — " + gitAccountAbout(a) + (fits ? "  " + T["settings.gitacct.fits"] : "")));
+      gitAccountShown(a) + " — " + gitAccountAbout(a) + (fits ? "  " + T["settings.gitacct.fits"] : "")));
   }
   // Each GitHub account git on this PC holds is a choice of its own: with
   // two held, git cannot tell which to use, and with one, choosing it says
@@ -10784,7 +10837,9 @@ function gitAccountSelect(now, origin, pick) {
   const held = [...PC_ACCOUNTS];
   if (asPc && !held.includes(asPc)) held.push(asPc);
   for (const login of held) {
-    s.append(el("option", {value: THIS_PC + ":" + login}, fill(T["settings.gitacct.pc_as"], {login})));
+    const said = fill(T["settings.gitacct.pc_as"], {login});
+    const label = (signInLabels()[THIS_PC + ":" + login] || "").trim();
+    s.append(el("option", {value: THIS_PC + ":" + login}, label ? label + " — " + said : said));
   }
   if (chosen && !asPc && !list.some(x => x.a.name === chosen)) {
     s.append(el("option", {value:chosen}, fill(T["settings.gitacct.gone"], {name: chosen})));
@@ -13715,6 +13770,9 @@ function payload() {
   // A git account with no name is a half-finished add, not an account
   const gaccts = (out.git_accounts || []).filter(a => a && (a.name || "").trim());
   if (gaccts.length) out.git_accounts = gaccts; else delete out.git_accounts;
+  // A sign-in's label with nothing in it is no label
+  const slabels = Object.fromEntries(Object.entries(out.sign_in_labels || {}).filter(([, v]) => (v || "").trim()));
+  if (Object.keys(slabels).length) out.sign_in_labels = slabels; else delete out.sign_in_labels;
   const agreed = Object.fromEntries(Object.entries(out.agreed || {})
     .filter(([, kinds]) => Array.isArray(kinds) && kinds.length));
   if (Object.keys(agreed).length) out.agreed = agreed; else delete out.agreed;
@@ -15185,6 +15243,12 @@ mod tests {
         for asked in ["/api/pc-accounts/add", "/api/pc-accounts/forget", "/api/gh-accounts/add", "/api/gh-accounts/forget"] {
             assert!(PAGE.contains(asked), "nothing on the page asks {asked}");
         }
+        // Each sign-in can be called something -- "for the client" -- and the label
+        // is written with the app's settings under the choice that names it
+        assert!(PAGE.contains("function signInDialog(key, login, destroyWord, destroyAsk, destroy, done)"));
+        assert!(PAGE.contains(r#"const key = THIS_PC + ":" + login;"#), "a PC sign-in's label is not keyed by its choice");
+        assert!(PAGE.contains(r#"const key = "@gh:" + a.host + "/" + a.login;"#));
+        assert!(PAGE.contains("if (Object.keys(slabels).length) out.sign_in_labels = slabels; else delete out.sign_in_labels;"));
         // Nothing chosen is this PC's git, so it is not a line of the picker,
         // and a choice of it written by an older version reads as nothing
         assert!(!PAGE.contains(r#"el("option", {value:THIS_PC}"#), "the picker still offers the PC's git as a choice");

@@ -29,7 +29,7 @@ const openWindow = '(async () => { await ' + projectPage + ';'
   + ' s.value = "@add"; s.dispatchEvent(new Event("change")); await ' + wait(300) + '; })()';
 // ...and "+ Add git account" pressed in it
 const openDialog = '(async () => { await ' + openWindow + ';'
-  + ' [...document.querySelectorAll(".modal .mbody button")].pop().click();'
+  + ' document.querySelector(".modal .mbody button").click();'
   + ' await ' + wait(400) + ';'
   + ' document.querySelector(".modal:last-of-type input[type=password]").closest(".field").scrollIntoView({block:"center"}); })()';
 
@@ -49,6 +49,15 @@ export default {
     // PC's git and gh hold
     accounts: '(async () => { sel = {desk:0, tab:null, global:true}; goSection("gitaccounts", "center");'
       + ' await ' + wait(600) + '; window.scrollTo(0, 0); })()',
+    // A sign-in this PC holds, opened from its row: what to call it, and the
+    // way to delete it at the left of the foot
+    signin: '(async () => { sel = {desk:0, tab:null, global:true}; goSection("gitaccounts", "center");'
+      + ' await ' + wait(900) + ';'
+      + ' const row = document.querySelector(".signinrow");'
+      + ' if (!row) throw new Error("no sign-in row: this PC holds none");'
+      + ' row.click(); await ' + wait(300) + ';'
+      + ' const box = document.querySelector(".modal:last-of-type input[type=text]");'
+      + ' box.value = "取引先用"; box.dispatchEvent(new Event("input")); })()',
     // The desk's git page: what git does on this desk, with no accounts on it
     desk: '(async () => { sel = {desk:0, tab:null, global:true}; goDeskSection("git");'
       + ' await ' + wait(600) + '; window.scrollTo(0, 0); })()',
