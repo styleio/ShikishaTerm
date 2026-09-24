@@ -4079,6 +4079,18 @@ function drawCrashBar() {
   bar.hidden = false;
 }
 
+// Over a page in this window, the toast is the page's to draw. A page here
+// is a window of its own, laid over the board, and anything the board draws
+// where it stands is behind it -- so every message, from any panel and from
+// the app itself, is handed to the page in view instead (Ev::PageToast). A
+// phone draws the page as a picture inside the board, where the board's own
+// toast is seen as it is
+function toastElsewhere(text, warn) {
+  if (!(OURS && !REMOTE && onBrowserTab())) return false;
+  send({kind:"pagetoast", text: String(text), warn: !!warn});
+  return true;
+}
+
 // Where the toast sits in this window. The composer bar owns the bottom edge
 // while it's open — and rises with the phone's on-screen keyboard — so the
 // toast stands on top of it instead of over the thing being typed into.
@@ -15124,16 +15136,14 @@ window.__suggested = (r) => {
 // A toast can't do this job: over a browser tab the native page is layered on
 // top of the HTML, so anything outside the dock's reserved band is invisible.
 let luaNote = null;
-// ...so it is said above the panel instead, where it comes and goes without
-// moving the buttons under a finger: on the page, drawn by the page in the
-// window (a page there is a window of its own, over anything the board
-// draws), and as the board's own toast on a phone, which draws the page as a
-// picture. The panel's line keeps only what stays until it is acted on
+// ...so it is said above the panel instead, as a toast, where it comes and
+// goes without moving the buttons under a finger (over a page, the page draws
+// it: toastElsewhere). The panel's line keeps only what stays until it is
+// acted on
 function luaFlash(text, bad) {
   luaNote = null;
   if (castPanel === "lua") renderPanel();
-  if (OURS && !REMOTE && onBrowserTab()) send({kind:"pagetoast", text: String(text), warn: !!bad});
-  else toast(text, !!bad);
+  toast(text, !!bad);
 }
 // 🗣 on a page whose models are not chosen yet. The panel's line says so for
 // as long as it is true (luaNoteLine), and the page's own settings are stood

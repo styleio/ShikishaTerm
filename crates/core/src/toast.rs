@@ -28,6 +28,11 @@
 //!   window has a composer bar it must not cover; a web page just has a floor)
 //! - `toastText(text, warn)` — wording. The settings screen marks its results
 //!   with ✓ / ⚠; the window's messages arrive already written by the app.
+//! - `toastElsewhere(text, warn)` — somewhere else to say it, answering true
+//!   when it was said there. The window's pages are windows of their own that
+//!   nothing of the board can be drawn over, so over one the message is handed
+//!   to the page to draw; every panel's messages go the same way by going
+//!   through here.
 //!
 //! Deliberately free of `__` and `{{`: every page these strings land in is
 //! checked for leftover placeholders after rendering, and the shell page in
@@ -83,7 +88,10 @@ function toast(text, warn) {
   const s = String(text === null || text === undefined ? "" : text);
   // Nothing to say is not a message; it's the absence of one
   if (!s.trim()) { hideToast(); return; }
-  m.textContent = (typeof toastText === "function") ? toastText(s, !!warn) : s;
+  const said = (typeof toastText === "function") ? toastText(s, !!warn) : s;
+  // Where this screen cannot show it, it is said where it can be seen
+  if (typeof toastElsewhere === "function" && toastElsewhere(said, !!warn)) { hideToast(); return; }
+  m.textContent = said;
   t.classList.toggle("warn", !!warn);
   const b = document.getElementById("toastcopy");
   if (b) {
