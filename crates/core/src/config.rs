@@ -6628,22 +6628,24 @@ mod tests {
     #[test]
     fn a_projects_prompts_reach_its_folders_and_no_other() {
         crate::i18n::init(Some("en"), &[crate::repo_root()]);
-        let cfg: Config = serde_json::from_str(
-            r#"{"desks":[{"name":"W",
+        // Absolute on the machine running this: a drive letter is a relative
+        // path on Linux, and a folder written relative is joined to the app's
+        // own, which is not the folder asked about
+        let (a, b, c) = (crate::local_path("D:/a"), crate::local_path("D:/b"), crate::local_path("D:/c"));
+        let cfg: Config = serde_json::from_value(serde_json::json!({"desks":[{"name":"W",
                 "projects":[{"name":"acme","git":{"message_prompt":"In the client's way {diff}","protect":["trunk"]}},
                             {"name":"mine"}],
-                "folders":[{"cwd":"D:/a","project":"acme","tabs":[]},
-                           {"cwd":"D:/b","project":"mine","tabs":[]},
-                           {"cwd":"D:/c","tabs":[]}]}]}"#,
-        )
+                "folders":[{"cwd":a,"project":"acme","tabs":[]},
+                           {"cwd":b,"project":"mine","tabs":[]},
+                           {"cwd":c,"tabs":[]}]}]}))
         .unwrap();
         let (desks, errs) = cfg.resolve_desks();
         assert!(errs.is_empty(), "{errs:?}");
         let desk = &desks[0];
         let standard = GitSpec::default().commit_prompt();
-        assert_eq!(desk.git_of(std::path::Path::new("D:/a")).commit_prompt(), "In the client's way {diff}");
-        assert_eq!(desk.git_of(std::path::Path::new("D:/b")).commit_prompt(), standard, "another project is not told the client's rules");
-        assert_eq!(desk.git_of(std::path::Path::new("D:/c")).commit_prompt(), standard, "a folder in no project has the app's prompt");
+        assert_eq!(desk.git_of(std::path::Path::new(&a)).commit_prompt(), "In the client's way {diff}");
+        assert_eq!(desk.git_of(std::path::Path::new(&b)).commit_prompt(), standard, "another project is not told the client's rules");
+        assert_eq!(desk.git_of(std::path::Path::new(&c)).commit_prompt(), standard, "a folder in no project has the app's prompt");
         assert_eq!(desk.git_of_project("acme").protected(), vec!["trunk".to_string()]);
         assert_eq!(desk.git_of_project("nobody").commit_prompt(), standard, "a name nothing answers to is the app's answer");
     }
