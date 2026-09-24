@@ -3932,9 +3932,6 @@ const PAGE: &str = r##"<!doctype html>
     of the same inline style. */
  .listrow { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s3);
    padding:7px 0; border-bottom:1px solid var(--line); }
- /* For entries whose fields are taller than their buttons (a quick action's
-    body box), so the buttons sit at the top rather than floating mid-height. */
- .listrow.tall { align-items:flex-start; gap:var(--s2); padding:8px 0; }
  /* A list of things, boxed. The border round the whole makes it one object
     instead of a stack of loose lines */
  .rows { border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; }
@@ -3986,6 +3983,32 @@ const PAGE: &str = r##"<!doctype html>
     worth catching from across the room */
  .secretsite.plain { color:var(--danger); }
  .secretdots { min-width:44px; text-align:right; }
+ /* One quick action. Columns, so a list of them is read down: the grip, the
+    name on the button, whether it types or runs, and what it sends. The whole
+    row is the way in, and the grip at its start is what carries it */
+ .listrow.arow { display:grid; align-items:center; gap:var(--s3);
+   grid-template-columns:22px minmax(0, 160px) auto minmax(0, 1fr) auto;
+   padding:10px var(--s3) 10px var(--s1); cursor:pointer; background:var(--panel); outline:none; }
+ .arow:hover { background:var(--panel2); }
+ .arow:focus-visible { box-shadow:inset 0 0 0 1px var(--brand); }
+ .arow .go { color:var(--faint); font-size:14px; line-height:1; }
+ .arow:hover .go { color:var(--text); }
+ .agrip { width:22px; height:22px; display:inline-flex; align-items:center; justify-content:center;
+   color:var(--faint); border-radius:var(--r-chip); cursor:grab; touch-action:none; }
+ .agrip:hover, .arow.dragging .agrip { color:var(--text); background:var(--hover); }
+ .agrip svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:2;
+   stroke-linecap:round; stroke-linejoin:round; }
+ .arowname { font-size:13px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .arowkind { display:inline-flex; align-items:center; gap:var(--s1); }
+ .arowwhat { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .arowwhat.mono { font-size:12px; }
+ .arowname.unnamed, .arowwhat.unnamed { color:var(--faint); }
+ .alisthint { margin-top:var(--s2); }
+ /* Lifted off the list while it is carried: the one layer here that floats */
+ .arow.dragging { position:relative; z-index:1; background:var(--raise); box-shadow:0 8px 24px #0007;
+   cursor:grabbing; }
+ .arow.dragging .agrip { cursor:grabbing; }
+ body.acarrying, body.acarrying * { cursor:grabbing !important; user-select:none; -webkit-user-select:none; }
  .chip { font-size:11px; line-height:18px; height:18px; padding:0 7px;
    color:var(--dim); background:var(--panel2); border:1px solid var(--edge);
    border-radius:var(--r-chip); white-space:nowrap; }
@@ -4188,7 +4211,10 @@ const PAGE: &str = r##"<!doctype html>
  .framed > .mbody { padding:var(--s5); }
  .framed > .mfoot { display:flex; align-items:center; gap:var(--s2);
    padding:var(--s3) var(--s5); border-top:1px solid var(--line); }
- .framed > .mfoot .grow { flex:1; }
+ /* The spring between the left and right ends of the foot is a gap, not a
+    field: the 180px a .grow field keeps for itself pushed Cancel and Save
+    onto a line of their own on a phone */
+ .framed > .mfoot .grow { flex:1; min-width:0; }
  .modal-inner h2 { text-transform:none; font-size:15px; color:var(--text); margin:0 0 var(--s1); }
  /* A dialog that keeps something below its frame -- the red way out, which is
     outside every other pane's last card for the same reason */
@@ -4314,6 +4340,11 @@ const PAGE: &str = r##"<!doctype html>
    /* A row of facts becomes a small card: the name on its own line, the rest
       under it, and the way in still a whole-row press. */
    .secretrow { align-items:flex-start; padding:10px 0; row-gap:var(--s1); }
+   /* A quick action on a phone: the name and its kind on the first line, what
+      it sends under them, and the way in at the end of the first line */
+   .listrow.arow { grid-template-columns:22px minmax(0, 1fr) auto auto; row-gap:var(--s1); }
+   .arow .arowwhat { grid-column:2 / 4; grid-row:2; }
+   .arow .go { grid-column:4; grid-row:1; }
    /* An ignore line: its name and its choice on the first line, what it
       matches under them */
    .igrow { grid-template-columns:minmax(0,1fr) 132px 32px; row-gap:var(--s1); }
@@ -8028,58 +8059,297 @@ async function actionsLintClean() {
   return (current.actions || []).every(a => !actionErrors.has(a));
 }
 
-// Quick actions for the sub-input bar. An editable list saved into config.actions
-// (the main save() already writes `current` wholesale). Each action inserts its
-// text into the composer, or — with the Lua toggle — runs Lua on tap; that Lua is
-// syntax-checked before it can be saved. Empty-label rows are dropped on save.
+// Quick actions for the sub-input bar. A list saved into config.actions (the
+// main save() already writes `current` wholesale), read down in the bar's
+// order, as a desk's secrets are: a row is a summary and the way in, and the
+// dialog it opens is where an action is made or changed (STYLEGUIDE 5.5). The
+// order is changed by carrying a row by its grip. An action inserts its text
+// into the composer, or -- with the Lua toggle -- runs Lua on tap; that Lua is
+// checked before the dialog lets it in, and again before the page saves.
 function actionsCard() {
   current.actions = current.actions || [];
-  const listBox = el("div", {id:"actionslist"});
+  const listBox = el("div", {id:"actionslist", class:"alist"});
   const draw = () => {
     listBox.textContent = "";
-    if (!current.actions.length) listBox.append(el("div", {class:"hint"}, T["settings.actions.empty"]));
-    current.actions.forEach((a, i) => {
-      // Read, never write: filling in defaults here would count as an edit, and
-      // merely opening this card would light up "unsaved" and then write those
-      // defaults into config.json. Same rule as payload() — no side effects.
-      const label = a.label || "", body = a.body || "", isLua = !!a.lua;
-      const labelIn = el("input", {value:label, placeholder:T["settings.actions.label_ph"], style:"width:130px;flex:none"});
-      labelIn.addEventListener("input", () => { a.label = labelIn.value; refreshSave(); });
-      const bodyIn = el("textarea", {rows:isLua ? 4 : 2,
-        placeholder: isLua ? T["settings.actions.lua_ph"] : T["settings.actions.text_ph"],
-        class: isLua ? "mono" : "",
-        style:"flex:1 1 0;min-width:200px;resize:vertical"});
-      bodyIn.value = body;
-      bodyIn.addEventListener("input", () => { a.body = bodyIn.value; refreshSave(); });
-      // Advanced, per action: the body is Lua run on tap, not text to insert.
-      const luaChk = el("input", {type:"checkbox"}); luaChk.checked = isLua;
-      luaChk.addEventListener("change", () => { a.lua = luaChk.checked; refreshSave(); draw(); });
-      const luaLbl = el("label", {class:"hint", style:"display:flex;align-items:center;gap:var(--s1);flex:none"},
-        luaChk, T["settings.actions.lua"]);
-      const up = el("button", {class:"quiet", style:"flex:none", title:T["settings.actions.up"], onclick:() => {
-        if (i > 0) { const t = current.actions[i-1]; current.actions[i-1] = current.actions[i]; current.actions[i] = t; refreshSave(); draw(); } }}, "↑");
-      const del = el("button", {class:"quiet", style:"flex:none", onclick:() => {
-        current.actions.splice(i, 1); actionErrors.delete(a); refreshSave(); draw(); }}, T["common.delete"]);
-      // A full-width line under the row shows this action's Lua syntax error, if any.
-      const errEl = el("div", {class:"hint",
-        style:"flex-basis:100%;color:var(--danger);white-space:pre-wrap;font-family:ui-monospace,monospace"});
-      const showErr = () => { errEl.textContent = actionErrors.get(a) || ""; };
-      showErr();
-      if (isLua) {
-        lintAction(a).then(showErr);   // lint on render so an existing break shows at once
-        bodyIn.addEventListener("blur", () => lintAction(a).then(() => { showErr(); refreshSave(); }));
-      }
-      listBox.append(el("div", {class:"listrow tall"},
-        labelIn, bodyIn, luaLbl, up, del, errEl));
-    });
+    if (!current.actions.length) {
+      listBox.append(el("div", {class:"hint"}, T["settings.actions.empty"]));
+      return;
+    }
+    // Read, never write: filling in defaults here would count as an edit, and
+    // merely opening this card would light up "unsaved" and then write those
+    // defaults into config.json. Same rule as payload() -- no side effects.
+    const rows = el("div", {class:"rows"});
+    current.actions.forEach((a, i) => rows.append(actionRow(a, i, draw)));
+    listBox.append(rows);
   };
-  const addBtn = el("button", {class:"primary", onclick:() => {
-    current.actions.push({label:"", body:""}); refreshSave(); draw(); }}, T["settings.actions.add"]);
   const c = card(T["settings.actions.title"],
     el("div", {class:"hint"}, T["settings.actions.hint"]),
-    listBox, el("div", {class:"row", style:"margin-top:var(--s3)"}, addBtn));
+    listBox,
+    el("div", {class:"hint alisthint"}, T["settings.actions.list.hint"]),
+    el("div", {class:"row"},
+      el("button", {onclick: () => actionDialog(null, draw)}, T["settings.actions.add"])));
   draw();
   return c;
+}
+
+// One action. The whole row is the way in to its dialog, and the grip at its
+// start is what carries it. What the row says: the name on the button, whether
+// it types or runs, and what it sends, on one line. A Lua that does not parse
+// is said on the row too, since it is what holds the page's save
+let actionCarrying = false, actionCarried = false;
+function actionRow(a, i, draw) {
+  const isLua = !!a.lua;
+  const said = String(a.body || "").replace(/\s+/g, " ").trim();
+  const grip = el("span", {class:"agrip", title:T["settings.actions.drag"]});
+  grip.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + QUICK_GRIP_SVG + "</svg>";
+  const broken = el("span", {class:"chip none"}, T["settings.actions.broken"]);
+  broken.hidden = !actionErrors.has(a);
+  const row = el("div", {class:"listrow arow", tabindex:"0", role:"button", "data-at": String(i)},
+    grip,
+    el("span", {class:"arowname" + (a.label ? "" : " unnamed")}, a.label || T["settings.actions.name.none"]),
+    el("span", {class:"arowkind"},
+      el("span", {class:"chip"}, isLua ? T["settings.actions.kind.lua"] : T["settings.actions.kind.text"]),
+      broken),
+    el("span", {class:"hint arowwhat" + (isLua ? " mono" : "") + (said ? "" : " unnamed")},
+      said || T["settings.actions.body.none"]),
+    el("span", {class:"go"}, "›"));
+  // An existing break shows at once, not only after the dialog was opened
+  if (isLua && !actionErrors.has(a)) lintAction(a).then(err => { broken.hidden = !err; });
+  const open = () => actionDialog(i, draw);
+  row.addEventListener("click", () => { if (!actionCarried) open(); });
+  grip.addEventListener("click", e => e.stopPropagation());
+  grip.addEventListener("pointerdown", e => actionCarry(e, row, draw));
+  row.addEventListener("keydown", e => {
+    if (e.target !== row) return;
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      // The same move as carrying it one row, for a keyboard
+      e.preventDefault();
+      const to = i + (e.key === "ArrowUp" ? -1 : 1);
+      if (to < 0 || to >= current.actions.length) return;
+      [current.actions[i], current.actions[to]] = [current.actions[to], current.actions[i]];
+      refreshSave();
+      draw();
+      const moved = document.querySelector('.arow[data-at="' + to + '"]');
+      if (moved) moved.focus();
+    } else if (e.key === "Delete") { e.preventDefault(); actionDelete(i, draw); }
+  });
+  return row;
+}
+
+// Carry a row by its grip to where it goes. The rows move out of its way as it
+// passes their middle, and the order is written once it is put down
+function actionCarry(e, row, draw) {
+  if (e.button !== 0 || actionCarrying) return;
+  e.preventDefault();
+  const list = row.closest(".alist");
+  const order = () => [...list.querySelectorAll(".arow")].map(r => Number(r.dataset.at));
+  const before = order().join();
+  // Listened for on the window, not captured by the grip: moving the row takes
+  // it out of the page for an instant, and a capture does not survive that
+  actionCarrying = true;
+  row.classList.add("dragging");
+  document.body.classList.add("acarrying");
+  const move = ev => {
+    if (ev.pointerId !== e.pointerId) return;
+    ev.preventDefault();
+    if (ev.clientY < 48) scrollBy(0, -12);
+    else if (ev.clientY > innerHeight - 48) scrollBy(0, 12);
+    const others = [...list.querySelectorAll(".arow")].filter(r => r !== row);
+    const next = others.find(r => { const b = r.getBoundingClientRect(); return ev.clientY < b.top + b.height / 2; });
+    if (next) { if (row.nextElementSibling !== next) next.before(row); }
+    else if (others.length) {
+      const last = others[others.length - 1];
+      if (last.nextElementSibling !== row) last.after(row);
+    }
+  };
+  const stop = () => {
+    removeEventListener("pointermove", move);
+    removeEventListener("pointerup", end);
+    removeEventListener("pointercancel", cancel);
+    row.classList.remove("dragging");
+    document.body.classList.remove("acarrying");
+    actionCarrying = false;
+    // The click that follows a drop is not a press
+    actionCarried = true;
+    setTimeout(() => { actionCarried = false; }, 0);
+  };
+  const cancel = ev => {
+    if (ev.pointerId !== e.pointerId) return;
+    stop();
+    draw();
+  };
+  const end = ev => {
+    if (ev.pointerId !== e.pointerId) return;
+    stop();
+    const now = order();
+    if (now.join() !== before) {
+      current.actions = now.map(at => current.actions[at]);
+      refreshSave();
+    }
+    draw();
+  };
+  addEventListener("pointermove", move, {passive:false});
+  addEventListener("pointerup", end);
+  addEventListener("pointercancel", cancel);
+}
+
+async function actionDelete(at, draw) {
+  const a = current.actions[at];
+  if (!a) return false;
+  if (!await confirmAction(fill(T["settings.actions.delete_confirm"],
+                                {name: a.label || T["settings.actions.name.none"]}), T["common.delete"])) return false;
+  current.actions.splice(at, 1);
+  actionErrors.delete(a);
+  refreshSave();
+  draw();
+  return true;
+}
+
+// Adding one, or changing one. `at` is null for a new action.
+//
+// One field per line, in the order a person answers them: what the button
+// says, what it does on tap, and whether that is text typed in or Lua run.
+// Nothing is written into the list until the save is pressed, so a dialog
+// left by Cancel or Esc leaves the list as it was. The save is held, and says
+// why, while the name is missing or the Lua does not parse (STYLEGUIDE 5.4)
+function actionDialog(at, draw) {
+  const editing = at !== null && at !== undefined;
+  const have = editing ? (current.actions[at] || {}) : {};
+  const nameLabel = el("label", {}, T["settings.actions.name"]);
+  const nameHint = el("div", {class:"hint"}, T["settings.actions.name.hint"]);
+  const labelIn = el("input", {type:"text", placeholder:T["settings.actions.label_ph"]});
+  labelIn.value = have.label || "";
+  const luaIn = el("input", {type:"checkbox"});
+  luaIn.checked = !!have.lua;
+  const bodyIn = el("textarea", {rows:4, style:"resize:vertical"});
+  bodyIn.value = have.body || "";
+  const bodyLabel = el("label", {}, T["settings.actions.body"]);
+  const bodyHint = el("div", {class:"hint"});
+  // The body is read as what the toggle says it is: its name, hint and face
+  // follow the toggle so the person is never typing Lua into a box called text
+  const dress = () => {
+    const lua = luaIn.checked;
+    bodyIn.placeholder = lua ? T["settings.actions.lua_ph"] : T["settings.actions.text_ph"];
+    bodyIn.classList.toggle("mono", lua);
+    bodyLabel.textContent = lua ? T["settings.actions.body.lua"] : T["settings.actions.body"];
+    bodyHint.textContent = lua ? T["settings.actions.body.lua.hint"] : T["settings.actions.body.hint"];
+  };
+  const luaLabel = el("label", {class:"check"});
+  luaLabel.append(luaIn, document.createTextNode(T["settings.actions.lua"]));
+
+  const save = el("button", {class:"primary"}, T["common.save"]);
+  const why = el("span", {class:"why"});
+  why.hidden = true;
+  let held = null;
+  let asked = false;
+  // The Lua's verdict, kept from the last check so the save can be held on
+  // it without asking again; cleared when the text changes
+  let luaFault = null;
+
+  function fieldFault(input, reason) {
+    const wrap = input.parentElement;
+    const had = wrap.querySelector(".site-warn");
+    const show = reason && (asked || input.value.trim() !== "");
+    if (had) had.remove();
+    input.classList.toggle("bad", !!show);
+    if (show) wrap.append(el("div", {class:"site-warn"},
+      el("span", {}, "⚠"), el("span", {class:"mono"}, reason)));
+  }
+  function recheck() {
+    let first = null;
+    const nameWhy = labelIn.value.trim() ? null : T["settings.actions.name_required"];
+    fieldFault(labelIn, nameWhy);
+    if (nameWhy) first = {at: labelIn, why: nameWhy};
+    const bodyWhy = !bodyIn.value.trim()
+      ? (luaIn.checked ? T["settings.actions.body.lua_required"] : T["settings.actions.body_required"])
+      : (luaIn.checked && luaFault ? luaFault : null);
+    fieldFault(bodyIn, bodyWhy);
+    if (bodyWhy && !first) first = {at: bodyIn, why: bodyWhy};
+    held = first;
+    save.classList.toggle("held", !!held);
+    if (!held) why.hidden = true;
+    else if (!why.hidden) why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+  }
+  function sayWhy() {
+    asked = true;
+    recheck();
+    why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+    why.hidden = false;
+    held.at.classList.remove("lookhere");
+    void held.at.offsetWidth;
+    held.at.classList.add("lookhere");
+    held.at.focus();
+  }
+  // The Lua is checked by the app when the box is left, so a break is said
+  // where it is before the save is reached for
+  const checkLua = async () => {
+    if (!luaIn.checked || !bodyIn.value.trim()) { luaFault = null; recheck(); return; }
+    const code = bodyIn.value;
+    const err = await lintLuaCode(code);
+    if (bodyIn.value !== code) return;   // typed on since: this verdict is stale
+    luaFault = err;
+    recheck();
+  };
+  labelIn.addEventListener("input", recheck);
+  bodyIn.addEventListener("input", () => { luaFault = null; recheck(); });
+  bodyIn.addEventListener("blur", checkLua);
+  luaIn.addEventListener("change", () => { dress(); luaFault = null; recheck(); checkLua(); });
+
+  const field = (label, control, hint) => el("div", {class:"field"},
+    label, el("div", {class:"fieldctl"}, control), hint);
+
+  const shut = () => back.remove();
+  const back = openModal(
+    el("div", {class:"mhead"},
+      el("h2", {}, editing ? T["settings.actions.edit_title"] : T["settings.actions.add_title"]),
+      el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
+    el("div", {class:"mbody"},
+      field(nameLabel, labelIn, nameHint),
+      field(bodyLabel, bodyIn, bodyHint),
+      el("div", {class:"field"}, luaLabel, el("div", {class:"hint"}, T["settings.actions.lua.hint"]))),
+    el("div", {class:"mfoot"},
+      editing
+        ? el("button", {class:"danger", onclick: async () => {
+            if (await actionDelete(at, draw)) shut();
+          }}, T["common.delete"])
+        : null,
+      why,
+      el("span", {class:"grow"}),
+      el("button", {class:"quiet", onclick: () => shut()}, T["common.cancel"]),
+      save));
+  back.firstChild.classList.add("framed");
+
+  // Enter in the one-line field finishes it and Esc leaves it. The body is a
+  // box of lines, so Enter there is a new line
+  back.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); shut(); return; }
+    if (e.key !== "Enter" || e.target !== labelIn) return;
+    e.preventDefault();
+    save.click();
+  });
+
+  save.addEventListener("click", async () => {
+    // A Lua nobody has left the box of yet is checked now, so the save is
+    // never the thing that lets a break through
+    if (luaIn.checked && bodyIn.value.trim() && luaFault === null) {
+      luaFault = await lintLuaCode(bodyIn.value);
+      recheck();
+    }
+    if (held) { sayWhy(); return; }
+    const it = editing ? current.actions[at] : {};
+    it.label = labelIn.value.trim();
+    it.body = bodyIn.value;
+    if (luaIn.checked) it.lua = true; else delete it.lua;
+    actionErrors.delete(it);
+    if (!editing) current.actions.push(it);
+    refreshSave();
+    shut();
+    draw();
+  });
+  dress();
+  recheck();
+  setTimeout(() => (editing ? bodyIn : labelIn).focus(), 0);
 }
 
 // The built-in starter actions (Continue / Explain / Review / Fix), mirrored from

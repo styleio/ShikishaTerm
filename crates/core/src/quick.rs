@@ -524,15 +524,17 @@ function quickFace(t, svgOf) {
 "#;
 
 /// Drops the shared button face into a page carrying `{{QUICK_CSS}}` and
-/// `{{QUICK_JS}}`
+/// `{{QUICK_JS}}`. The grip is the one drawing the settings' reorderable
+/// lists take from here: a row is carried by it
 pub fn render(html: String) -> String {
     let svg = |name: &str| serde_json::to_string(icon(name).unwrap_or("")).unwrap_or_else(|_| "\"\"".into());
     html.replace("{{QUICK_CSS}}", CSS).replace(
         "{{QUICK_JS}}",
         &format!(
-            "const QUICK_FOLDER_SVG = {};\nconst QUICK_BACK_SVG = {};\n{JS}",
+            "const QUICK_FOLDER_SVG = {};\nconst QUICK_BACK_SVG = {};\nconst QUICK_GRIP_SVG = {};\n{JS}",
             svg("folder"),
-            svg("corner-up-left")
+            svg("corner-up-left"),
+            svg("grip-vertical")
         ),
     )
 }
@@ -844,6 +846,7 @@ mod tests {
         assert!(page.contains("function quickFace("));
         assert!(!page.contains("const QUICK_FOLDER_SVG = \"\""), "the folder has no drawing");
         assert!(!page.contains("const QUICK_BACK_SVG = \"\""), "the way out has no drawing");
+        assert!(!page.contains("const QUICK_GRIP_SVG = \"\""), "the list's grip has no drawing");
     }
 
     /// The board is handed drawings, not names it would have to look up --
