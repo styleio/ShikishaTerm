@@ -118,6 +118,17 @@ pub fn target(
                 })
             })?
         }
+        GitUse::Gh { host, login } => {
+            if host != crate::config::GITHUB_HOST {
+                bail!(AccountTrouble(crate::i18n::tp(
+                    "err.github.host",
+                    &[("name", &git.written()), ("host", host)]
+                )));
+            }
+            crate::pr::gh_token_of(host, login).ok_or_else(|| {
+                AccountTrouble(crate::i18n::tp("err.git.gh_gone", &[("login", login), ("host", host)]))
+            })?
+        }
         GitUse::Account { spec } => {
             if spec.host() != crate::config::GITHUB_HOST {
                 bail!(AccountTrouble(crate::i18n::tp(

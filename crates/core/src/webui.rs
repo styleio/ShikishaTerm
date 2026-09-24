@@ -5589,6 +5589,16 @@ let FAMILIES = {};
 // the answer comes. Settled either way, so a landing can wait for that redraw
 // rather than mark a card the redraw then replaces
 let PC_ACCOUNTS = [];
+// ...and the accounts GitHub CLI (gh) is signed in as, each a choice too
+let GH_ACCOUNTS = [];
+const GH_ACCOUNTS_READ = fetch("/api/gh-accounts", {headers:{"X-Token":TOKEN}})
+  .then(r => r.json())
+  .then(j => {
+    GH_ACCOUNTS = (j && j.accounts) || [];
+    const typing = document.activeElement && ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
+    if (GH_ACCOUNTS.length && !typing && desks.length) render();
+  })
+  .catch(() => {});
 const PC_ACCOUNTS_READ = fetch("/api/pc-accounts", {headers:{"X-Token":TOKEN}})
   .then(r => r.json())
   .then(j => {
@@ -10594,6 +10604,7 @@ function ghSignInsCard() {
     try { j = await (await fetch("/api/gh-accounts", {headers:{"X-Token":TOKEN}})).json(); } catch (e) {}
     if (!j || j.installed === false) { listBox.append(el("div", {class:"hint"}, T["settings.gitacct.gh_missing"])); return; }
     const accounts = j.accounts || [];
+    GH_ACCOUNTS = accounts;
     if (!accounts.length) { listBox.append(el("div", {class:"hint"}, T["settings.gitacct.gh_empty"])); return; }
     const rows = el("div", {class:"rows"});
     for (const a of accounts) {
@@ -10841,7 +10852,18 @@ function gitAccountSelect(now, origin, pick) {
     const label = (signInLabels()[THIS_PC + ":" + login] || "").trim();
     s.append(el("option", {value: THIS_PC + ":" + login}, label ? label + " — " + said : said));
   }
-  if (chosen && !asPc && !list.some(x => x.a.name === chosen)) {
+  // ...and each account GitHub CLI is signed in as, by host and login. One
+  // chosen before and no longer signed in is still said
+  const asGh = chosen.startsWith("@gh:") ? chosen.slice(4) : "";
+  const ghHeld = GH_ACCOUNTS.map(a => a.host + "/" + a.login);
+  if (asGh && !ghHeld.includes(asGh)) ghHeld.push(asGh);
+  for (const at of ghHeld) {
+    const login = at.slice(at.indexOf("/") + 1), host = at.slice(0, at.indexOf("/"));
+    const said = fill(T["settings.gitacct.gh_as"], {login: host === GIT_HOST ? login : login + "@" + host});
+    const label = (signInLabels()["@gh:" + at] || "").trim();
+    s.append(el("option", {value: "@gh:" + at}, label ? label + " — " + said : said));
+  }
+  if (chosen && !asPc && !asGh && !list.some(x => x.a.name === chosen)) {
     s.append(el("option", {value:chosen}, fill(T["settings.gitacct.gone"], {name: chosen})));
   }
   // Last, under every account there is: the way to add one, from the one place
@@ -10855,12 +10877,15 @@ function gitAccountSelect(now, origin, pick) {
     // there -- becomes the choice once it exists
     const had = appGitAccounts().map(a => a.name);
     const heldBefore = [...PC_ACCOUNTS];
+    const ghBefore = GH_ACCOUNTS.map(a => a.host + "/" + a.login);
     s.value = chosen;
     gitAccountsWindow(() => {
       const made = appGitAccounts().map(a => a.name).filter(n => !had.includes(n));
       const stored = PC_ACCOUNTS.filter(l => !heldBefore.includes(l));
+      const signed = GH_ACCOUNTS.map(a => a.host + "/" + a.login).filter(at => !ghBefore.includes(at));
       const v = made.length ? made[made.length - 1]
-        : stored.length ? THIS_PC + ":" + stored[stored.length - 1] : chosen;
+        : stored.length ? THIS_PC + ":" + stored[stored.length - 1]
+        : signed.length ? "@gh:" + signed[signed.length - 1] : chosen;
       // Set here as well, because a picker on a page that does not redraw
       // itself would otherwise still be showing the old answer
       s.value = v;
@@ -11622,7 +11647,7 @@ function projectPane(desk, p) {
           sel.proj = "p:" + e.name;
           refreshSave(); render();
         })),
-      appGitAccounts().length || PC_ACCOUNTS.length ? null : el("div", {class:"hint"}, T["settings.gitacct.tab_none"]));
+      appGitAccounts().length || PC_ACCOUNTS.length || GH_ACCOUNTS.length ? null : el("div", {class:"hint"}, T["settings.gitacct.tab_none"]));
     acctCard.id = "project-gitacct";
     box.append(acctCard);
   }
@@ -13280,7 +13305,7 @@ function kindPanel(t, cmdInput, rebuild, real) {
         if (v) t.git_account = v; else delete t.git_account;
         refreshSave();
       })));
-    box.append(el("div", {class:"hint"}, appGitAccounts().length || PC_ACCOUNTS.length
+    box.append(el("div", {class:"hint"}, appGitAccounts().length || PC_ACCOUNTS.length || GH_ACCOUNTS.length
       ? T["settings.gitacct.tab_hint"] : T["settings.gitacct.tab_none"]));
     return box;
   } else if (isEditorPanel(t.command)) {
@@ -15248,6 +15273,8 @@ mod tests {
         assert!(PAGE.contains("function signInDialog(key, login, destroyWord, destroyAsk, destroy, done)"));
         assert!(PAGE.contains(r#"const key = THIS_PC + ":" + login;"#), "a PC sign-in's label is not keyed by its choice");
         assert!(PAGE.contains(r#"const key = "@gh:" + a.host + "/" + a.login;"#));
+        // ...and each of gh's accounts is a choice of the pickers, by the same name
+        assert!(PAGE.contains(r#"s.append(el("option", {value: "@gh:" + at}, label ? label + " — " + said : said));"#));
         assert!(PAGE.contains("if (Object.keys(slabels).length) out.sign_in_labels = slabels; else delete out.sign_in_labels;"));
         // Nothing chosen is this PC's git, so it is not a line of the picker,
         // and a choice of it written by an older version reads as nothing

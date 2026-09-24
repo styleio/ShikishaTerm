@@ -57,7 +57,9 @@ once it reaches its first tagged release.
   cannot see. "This PC's git settings" is no longer a line of the picker, since
   it is what nothing chosen means; a choice of it written by an older version
   reads as nothing chosen. Each GitHub account the PC holds is a line of the
-  picker whenever there is one, not only with two.
+  picker whenever there is one, not only with two, and so is each account
+  GitHub CLI (gh) is signed in as (`@gh:<host>/<login>`), whose token is
+  asked of gh each time.
 - **The account menu at the top of the git column is gone.** It was a choice
   made once and seldom changed, sitting where it read as something to change;
   the project's page is where it is made, and the refusal that needs it says

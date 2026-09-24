@@ -141,15 +141,27 @@ fn serve(
         .timeout_global(Some(Duration::from_secs(10)))
         .build()
         .new_agent();
-    // By how the PC's git was chosen: as it is, or as one of its accounts
+    // By how this PC's sign-ins were chosen: git's as it is or as one of its
+    // accounts, or one of GitHub CLI's. Asked of the program that holds them,
+    // and kept a while: neither answers instantly
     let mut pc: HashMap<String, (Instant, Option<String>)> = HashMap::new();
     while let Ok((account, repo, branch)) = inbox.recv() {
         // Read for each question rather than once: the desk, and with it the
         // accounts, can have changed since the last one
-        let token = match crate::config::pc_choice(&account) {
+        let held: Option<Box<dyn Fn() -> Option<String>>> = match crate::config::pc_choice(&account) {
             Some(login) => {
+                let login = login.map(str::to_string);
+                Some(Box::new(move || pc_token(login.as_deref()).ok()))
+            }
+            None => crate::config::gh_choice(&account).map(|(host, login)| {
+                let (host, login) = (host.to_string(), login.to_string());
+                Box::new(move || gh_token_of(&host, &login)) as Box<dyn Fn() -> Option<String>>
+            }),
+        };
+        let token = match held {
+            Some(ask) => {
                 if pc.get(&account).is_none_or(|(at, _)| at.elapsed() > PC_FRESH) {
-                    pc.insert(account.clone(), (Instant::now(), pc_token(login).ok()));
+                    pc.insert(account.clone(), (Instant::now(), ask()));
                 }
                 pc.get(&account).and_then(|(_, t)| t.clone())
             }
@@ -246,6 +258,28 @@ pub fn pc_accounts_known() -> Vec<String> {
         });
     }
     kept.map(|(_, names)| names).unwrap_or_default()
+}
+
+static GH_ACCOUNTS: Mutex<Option<(Instant, Vec<GhAccount>)>> = Mutex::new(None);
+static GH_ACCOUNTS_ASKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The accounts GitHub CLI is signed in as, as last read (see
+/// [`pc_accounts_known`] for the shape): what is known now, and a fresh read
+/// on its way when that is old. Empty until the first read comes back, and
+/// when gh is not on this PC
+pub fn gh_accounts_known() -> Vec<GhAccount> {
+    let kept = GH_ACCOUNTS.lock().ok().and_then(|k| k.clone());
+    let stale = kept.as_ref().is_none_or(|(at, _)| at.elapsed() > PC_ACCOUNTS_FRESH);
+    if stale && !GH_ACCOUNTS_ASKING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        std::thread::spawn(|| {
+            let read = gh_accounts().unwrap_or_default();
+            if let Ok(mut kept) = GH_ACCOUNTS.lock() {
+                *kept = Some((Instant::now(), read));
+            }
+            GH_ACCOUNTS_ASKING.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    kept.map(|(_, a)| a).unwrap_or_default()
 }
 
 /// One account per line, as the credential manager lists them

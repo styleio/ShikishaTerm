@@ -181,6 +181,23 @@ pub fn pc_choice(written: &str) -> Option<Option<&str>> {
     fine.then_some(Some(login))
 }
 
+/// One of the accounts GitHub CLI (`gh`) is signed in as, chosen by name:
+/// `@gh:<host>/<login>`. Not a real account name either, so it can never be
+/// mistaken for one
+pub const GH_CHOICE: &str = "@gh";
+
+pub fn gh_choice_of(host: &str, login: &str) -> String {
+    format!("{GH_CHOICE}:{host}/{login}")
+}
+
+/// What a written choice says about GitHub CLI: the host and the login of
+/// [`gh_choice_of`], None for anything else
+pub fn gh_choice(written: &str) -> Option<(&str, &str)> {
+    let rest = written.trim().strip_prefix(GH_CHOICE)?.strip_prefix(':')?;
+    let (host, login) = rest.split_once('/')?;
+    (crate::pr::plain_name(host) && crate::pr::plain_name(login)).then_some((host, login))
+}
+
 /// The GitHub server, which is what an account that names none signs in to
 pub const GITHUB_HOST: &str = "github.com";
 
@@ -250,6 +267,8 @@ pub enum GitUse {
     /// The way git on this PC already signs in, as the GitHub account named
     /// when it holds more than one
     Pc(Option<String>),
+    /// One of the accounts GitHub CLI is signed in as, on `host`
+    Gh { host: String, login: String },
     /// One of the app's accounts
     Account { spec: GitAccountSpec },
     /// A name that no account answers to any more
@@ -263,6 +282,7 @@ impl GitUse {
             GitUse::Unset => String::new(),
             GitUse::Pc(None) => THIS_PC.to_string(),
             GitUse::Pc(Some(login)) => this_pc_as(login),
+            GitUse::Gh { host, login } => gh_choice_of(host, login),
             GitUse::Account { spec, .. } => spec.name.clone(),
             GitUse::Missing(n) => n.clone(),
         }
@@ -290,6 +310,17 @@ impl GitUse {
                 auth: crate::git::Auth::PcAs { host: GITHUB_HOST.to_string(), login: login.clone() },
                 ..Default::default()
             }),
+            // GitHub CLI's token for that account, asked of gh each time, so
+            // signing in or out there is signing in or out here
+            GitUse::Gh { .. } if !sign_in => Ok(crate::git::As::sealed()),
+            GitUse::Gh { host, login } => match crate::pr::gh_token_of(host, login) {
+                Some(token) => Ok(crate::git::As {
+                    auth: crate::git::Auth::Token { host: host.clone(), login: login.clone(), token },
+                    account: Some(self.written()),
+                    ..Default::default()
+                }),
+                None => Err(crate::i18n::tp("err.git.gh_gone", &[("login", login), ("host", host)])),
+            },
             GitUse::Missing(name) => {
                 Err(crate::i18n::tp("err.git.account.missing", &[("name", name)]))
             }
@@ -335,6 +366,7 @@ impl GitUse {
         match self {
             GitUse::Unset => Some(THIS_PC.to_string()),
             GitUse::Pc(_) => Some(self.written()),
+            GitUse::Gh { host, .. } if host == GITHUB_HOST => Some(self.written()),
             GitUse::Account { spec, .. } if spec.host() == GITHUB_HOST => Some(spec.name.clone()),
             _ => None,
         }
@@ -348,6 +380,10 @@ impl Desk {
             None => GitUse::Unset,
             Some(written) if pc_choice(written).is_some() => {
                 GitUse::Pc(pc_choice(written).flatten().map(str::to_string))
+            }
+            Some(written) if gh_choice(written).is_some() => {
+                let (host, login) = gh_choice(written).unwrap_or_default();
+                GitUse::Gh { host: host.to_string(), login: login.to_string() }
             }
             Some(name) => match self.git_accounts.iter().find(|a| a.name == name) {
                 Some(spec) => GitUse::Account { spec: spec.clone() },
@@ -6108,6 +6144,13 @@ mod tests {
         let as_one = desk.git_use(Some("@pc:octo-cat"));
         assert_eq!(as_one, GitUse::Pc(Some("octo-cat".into())));
         assert_eq!(as_one.written(), "@pc:octo-cat");
+        // One of GitHub CLI's accounts by host and login, written back the same way
+        let by_gh = desk.git_use(Some("@gh:github.com/octo-cat"));
+        assert_eq!(by_gh, GitUse::Gh { host: "github.com".into(), login: "octo-cat".into() });
+        assert_eq!(by_gh.written(), "@gh:github.com/octo-cat");
+        assert_eq!(by_gh.pr_account().as_deref(), Some("@gh:github.com/octo-cat"));
+        assert_eq!(super::gh_choice("@gh:octo-cat"), None);
+        assert_eq!(super::gh_choice("@gh:a b/c"), None);
         // Not a user name GitHub could have: not a choice of the PC's git at all
         assert_eq!(super::pc_choice("@pc:"), None);
         assert_eq!(super::pc_choice("@pc:a b"), None);

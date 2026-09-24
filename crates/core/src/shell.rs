@@ -4645,7 +4645,8 @@ window.__issues = function (d) {
     I.projects = d.projects || [];
     ghLabels = d.labels || {};
     ghAccounts = (d.accounts || []).map(a => ({name: a.name, label: a.label || a.name}))
-      .concat(pcAcctChoices(d.pc).map(([name, label]) => ({name, label})));
+      .concat(pcAcctChoices(d.pc).map(([name, label]) => ({name, label})))
+      .concat((d.gh || []).map(a => { const name = "@gh:" + a.host + "/" + a.login; return {name, label: pcAcctLabel(name)}; }));
     if (ghWaiting) { ghWaiting = false; ghSearch(ghText); }
     if (I.project && !issueProject(I.project)) I.project = "";
     if (!I.list) issuesList(1);
@@ -17730,6 +17731,12 @@ function pcAcctLabel(v) {
   if (v === "@pc") return T["git.acct.pc"] || "";
   if (String(v || "").startsWith("@pc:")) {
     const said = (T["git.acct.pc_as"] || "{login}").replace("{login}", String(v).slice(4));
+    return ghLabels[v] ? ghLabels[v] + " \u2014 " + said : said;
+  }
+  if (String(v || "").startsWith("@gh:")) {
+    const at = String(v).slice(4);
+    const login = at.slice(at.indexOf("/") + 1), host = at.slice(0, at.indexOf("/"));
+    const said = (T["git.acct.gh_as"] || "{login}").replace("{login}", host === "github.com" ? login : login + "@" + host);
     return ghLabels[v] ? ghLabels[v] + " \u2014 " + said : said;
   }
   return v;

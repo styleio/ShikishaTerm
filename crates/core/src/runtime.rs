@@ -4531,9 +4531,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let Some(desk) = desks.get(desk_index) else { continue };
             let account = account.trim().to_string();
             // Only a name this desk has, or the PC's own git (as one of its
-            // accounts or not), or nothing
+            // accounts or not), or one of GitHub CLI's, or nothing
             if !(account.is_empty()
                 || config::pc_choice(&account).is_some()
+                || config::gh_choice(&account).is_some()
                 || desk.git_accounts.iter().any(|a| a.name == account))
             {
                 continue;
@@ -5577,8 +5578,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // And the GitHub accounts git on this PC holds, each a choice,
                 // with what the settings call them
                 let pc = crate::pr::pc_accounts_known();
+                let gh = crate::pr::gh_accounts_known();
                 let labels = cfg.as_ref().map(|c| c.sign_in_labels.clone()).unwrap_or_default();
-                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects, "accounts": accounts, "pc": pc, "labels": labels}).to_string();
+                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects, "accounts": accounts, "pc": pc, "gh": gh, "labels": labels}).to_string();
                 shell.push_issues(&js);
                 if let Some(r) = remote_ui.as_ref() {
                     r.push_state(format!("{{\"issues\":{js}}}"));

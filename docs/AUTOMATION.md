@@ -672,7 +672,8 @@ here either: it is filed under `git/<account name>` when it is entered under
 Settings > Git accounts. A project names the one the git column beside its folders signs in with
 (`git_account`), and a git tab names its own. Absent, git on this PC signs in
 the way it already does; `"@pc:<login>"` names one of the GitHub accounts it
-holds, for a PC holding two. Pull request numbers are read with the same
+holds, for a PC holding two, and `"@gh:<host>/<login>"` one of the accounts
+GitHub CLI (gh) is signed in as. Pull request numbers are read with the same
 account. `GITHUB_TOKEN` in the environment is not read.
 
 `bring` is what a new worktree of the project gets beyond what git carries (the
