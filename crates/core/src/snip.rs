@@ -108,44 +108,45 @@ fn prompt_in(tool: &str, code: &str) -> String {
 enum Gate<'a> {
     /// Agreed, for this AI: a picture may go to it
     Ready { name: &'a str, label: &'a str },
-    /// Not agreed for this AI -- never agreed, or agreed for a different one
+    /// Not agreed for this AI
     Consent { name: &'a str, label: &'a str },
     /// An AI is chosen that is not known to read pictures
     Unsupported { label: &'a str },
     /// No assistant AI is installed, or the one chosen is not
     NoAssistant,
-    /// The desk the question came from is not in the settings
-    NoDesk,
 }
 
-/// Decide, from the assistant AI that would answer and what the desk agreed
-/// to, whether a picture may go. The desk comes first: a question from a desk
-/// that is not there has nobody to agree
+/// Decide, from the assistant AI that would answer and whether sending it
+/// pictures was agreed to (`agreed(name)`, see [`crate::config::agreed_to`]),
+/// whether a picture may go
 fn gate<'a>(
     assistant: Option<(&'a str, &'a str)>,
-    desk_agreed: Option<Option<&str>>,
+    agreed: impl Fn(&str) -> bool,
     reads: impl Fn(&str) -> bool,
 ) -> Gate<'a> {
-    let Some(agreed) = desk_agreed else {
-        return Gate::NoDesk;
-    };
     let Some((name, label)) = assistant else {
         return Gate::NoAssistant;
     };
     if !reads(name) {
         return Gate::Unsupported { label };
     }
-    match agreed == Some(name) {
+    match agreed(name) {
         true => Gate::Ready { name, label },
         false => Gate::Consent { name, label },
     }
 }
 
-/// Answer one question from the tool page, for the desk `desk_id`.
+/// The name an installed AI's agreements are filed under (see
+/// [`crate::config::Config::agreed`]): `claude` -> `@claude`
+fn agreed_as(name: &str) -> String {
+    format!("{}{name}", crate::bridge::INSTALLED_MARK)
+}
+
+/// Answer one question from the tool page.
 ///
 /// `{"do":"check"}` -- may a picture go, and to which AI.
-/// `{"do":"agree"}` -- the person ticked the box: record it on the desk, for
-/// the AI that would answer now.
+/// `{"do":"agree"}` -- the person ticked the box: record it in the settings,
+/// for the AI that would answer now.
 /// `{"do":"ask","tool":..,"png":<base64>}` -- read the picture. Checked again
 /// here, not trusted from the check before it: the settings can change in
 /// between, and this is the call that sends.
@@ -153,15 +154,15 @@ fn gate<'a>(
 /// Slow (the AI is started and waited for), so called from a thread of its
 /// own. The page's `id` comes back with the answer, so an answer meant for an
 /// earlier question is never taken for this one
-pub fn answer(msg: &serde_json::Value, desk_id: &str) -> serde_json::Value {
-    let mut out = answer_inner(msg, desk_id);
+pub fn answer(msg: &serde_json::Value) -> serde_json::Value {
+    let mut out = answer_inner(msg);
     if let (Some(o), Some(id)) = (out.as_object_mut(), msg.get("id")) {
         o.insert("id".into(), id.clone());
     }
     out
 }
 
-fn answer_inner(msg: &serde_json::Value, desk_id: &str) -> serde_json::Value {
+fn answer_inner(msg: &serde_json::Value) -> serde_json::Value {
     use serde_json::json;
     let cfg = crate::config::load();
     let chosen = cfg
@@ -169,19 +170,16 @@ fn answer_inner(msg: &serde_json::Value, desk_id: &str) -> serde_json::Value {
         .and_then(|c| c.ai_engine.clone())
         .filter(|s| !s.trim().is_empty());
     let assistant = crate::webui::assistant_ai(chosen.as_deref());
-    let desks = cfg.map(|c| c.resolve_desks().0).unwrap_or_default();
-    let desk = desks.iter().find(|d| !desk_id.is_empty() && d.id == desk_id);
+    let agreed = cfg.map(|c| c.agreed).unwrap_or_default();
     let decided = gate(
         assistant,
-        desk.map(|d| d.send_pictures_to.as_deref()),
+        |name| crate::config::agreed_to(&agreed, &agreed_as(name), crate::config::CONSENT_PICTURES),
         crate::webui::reads_pictures,
     );
-    let desk_name = desk.map(|d| d.name.clone()).unwrap_or_default();
     let refused = |g: &Gate| match g {
-        Gate::Consent { label, .. } => json!({"state": "consent", "by": label, "desk": desk_name}),
+        Gate::Consent { label, .. } => json!({"state": "consent", "by": label}),
         Gate::Unsupported { label } => json!({"state": "unsupported", "by": label}),
         Gate::NoAssistant => json!({"state": "no_assistant", "chosen": chosen.as_deref().and_then(crate::webui::assistant_label).unwrap_or_default()}),
-        Gate::NoDesk => json!({"state": "no_desk"}),
         Gate::Ready { label, .. } => json!({"state": "ready", "by": label}),
     };
     match msg.get("do").and_then(|d| d.as_str()) {
@@ -189,7 +187,7 @@ fn answer_inner(msg: &serde_json::Value, desk_id: &str) -> serde_json::Value {
         Some("agree") => match decided {
             Gate::Ready { label, .. } => json!({"state": "ready", "by": label}),
             Gate::Consent { name, label } => {
-                if crate::config::save_desk_setting(desk_id, "send_pictures_to", Some(json!(name))) {
+                if crate::config::save_agreed(&agreed_as(name), crate::config::CONSENT_PICTURES) {
                     json!({"state": "ready", "by": label})
                 } else {
                     json!({"state": "failed", "by": label, "error": crate::i18n::t("snip.ai.not_saved")})
@@ -1103,7 +1101,7 @@ function settle(r) {
   aiState("");
   const key = {
     unsupported: "snip.ai.unsupported", no_assistant: "snip.ai.no_assistant",
-    no_desk: "snip.ai.no_desk", unreachable: "snip.ai.unreachable",
+    unreachable: "snip.ai.unreachable",
   }[r.state];
   $("problem").textContent = key
     ? fill(T[key], {by: r.by || r.chosen || ""})
@@ -1113,7 +1111,7 @@ function settle(r) {
 function askConsent(r) {
   aiState("");
   $("c-where").textContent = fill(T["snip.ai.consent.where"], {by: r.by});
-  $("c-keep").textContent = fill(T["snip.ai.consent.keep"], {desk: r.desk});
+  $("c-keep").textContent = T["snip.ai.consent.keep"];
   $("c-ok").checked = false;
   $("c-send").disabled = true;
   aiShow("consent");
@@ -1289,19 +1287,23 @@ mod tests {
     /// not agreeing to another, and nothing is sent from a desk that is not
     /// there to have agreed
     #[test]
-    fn a_picture_goes_only_where_the_desk_agreed() {
+    fn a_picture_goes_only_where_it_was_agreed_to() {
         let yes = |_: &str| true;
         let claude = Some(("claude", "Claude Code"));
-        assert_eq!(gate(claude, Some(Some("claude")), yes), Gate::Ready { name: "claude", label: "Claude Code" });
-        assert_eq!(gate(claude, Some(None), yes), Gate::Consent { name: "claude", label: "Claude Code" });
-        assert_eq!(gate(claude, Some(Some("codex")), yes), Gate::Consent { name: "claude", label: "Claude Code" });
-        assert_eq!(gate(claude, None, yes), Gate::NoDesk);
-        assert_eq!(gate(None, Some(Some("claude")), yes), Gate::NoAssistant);
-        assert_eq!(gate(claude, Some(Some("claude")), |_| false), Gate::Unsupported { label: "Claude Code" });
+        assert_eq!(gate(claude, |_| true, yes), Gate::Ready { name: "claude", label: "Claude Code" });
+        assert_eq!(gate(claude, |_| false, yes), Gate::Consent { name: "claude", label: "Claude Code" });
+        assert_eq!(
+            gate(claude, |n| n == "codex", yes),
+            Gate::Consent { name: "claude", label: "Claude Code" },
+            "an agreement for another AI answered for this one"
+        );
+        assert_eq!(gate(None, |_| true, yes), Gate::NoAssistant);
+        assert_eq!(gate(claude, |_| true, |_| false), Gate::Unsupported { label: "Claude Code" });
+        assert_eq!(agreed_as("claude"), "@claude", "filed under another name than the settings screen uses");
     }
 
-    /// The page's picture is taken only when it is a PNG, and a question with
-    /// no desk behind it is refused before anything is read
+    /// The page's picture is taken only when it is a PNG, and a question
+    /// answered before anything is read carries its number back
     #[test]
     fn only_a_png_is_taken_as_the_picture() {
         use base64::Engine as _;
@@ -1310,8 +1312,7 @@ mod tests {
         assert!(picture_of(&b64(b"GIF89a")).is_none());
         assert!(picture_of("not base64 !!").is_none());
         assert!(picture_of("").is_none());
-        let refused = answer(&serde_json::json!({"do": "ask", "tool": "text", "png": b64(b"\x89PNG\r\n\x1a\n"), "id": 7}), "");
-        assert_eq!(refused["state"], "no_desk");
+        let refused = answer(&serde_json::json!({"do": "nothing-of-the-kind", "id": 7}));
         assert_eq!(refused["id"], 7, "the question's number did not come back");
     }
 

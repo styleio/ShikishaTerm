@@ -862,11 +862,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // If we're resuming where we left off, launch that same desk too.
         // Hard-coding this to the first desk would restore only the name while
         // showing a screen with different contents.
-        // This desk's model connections, before its tabs start. The full
-        // hand-over comes further down, once there is a notifier to hand
+        // The model connections, before any tab starts. The full hand-over
+        // comes further down, once there is a notifier to hand
         if let Some(c) = cfg.as_ref() {
             let tokens = c.resolve_tokens(password.as_deref());
-            bridge::use_desk(config::desk_providers(w, &|k| tokens.get(k).cloned()));
+            bridge::use_connections(config::app_providers(c, &|k| tokens.get(k).cloned()));
         }
         spawn_desk(w, rows, cols, &mut tabs, &mut startup_errors, Some(&last_session));
     }
@@ -946,6 +946,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // harmless when there is no GitHub token: it simply never knows anything,
     // and no row grows a line
     let prs = crate::pr::Watch::start();
+    // The app's deciding AI, for a script that asks for a decision without
+    // naming a model. Said again whenever the settings are read
+    if let Some(c) = cfg.as_ref() {
+        caps.set_words_models(config::app_words(c));
+    }
     if let Some(w) = desks.get(desk_index) {
         // Everything this desk answers for, handed over in one act -- the
         // same one a switch uses, so the first desk is not a special case.
@@ -1943,6 +1948,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if let Some(w) = desks.get(desk_index) {
                     crate::desk::hand_over(w, &caps, &notifier, &prs);
                 }
+                caps.set_words_models(config::app_words(&newcfg));
                 if let Some(eng) = engine.as_ref() {
                     eng.set_ai_engine(newcfg.ai_engine.clone().filter(|s| !s.is_empty()));
                 }
@@ -2028,7 +2034,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // not on screen, which are just as open as the ones that are
                 if let Some(c) = &cfg {
                     let tokens = c.resolve_tokens(password.as_deref());
-                    reload_providers(&desks, desk_index, &|k| tokens.get(k).cloned(), &mut tabs, &mut desk_tabs);
+                    reload_providers(c, &|k| tokens.get(k).cloned(), &mut tabs, &mut desk_tabs);
                 }
                 watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
                 let mut note = remote_changed.unwrap_or(msg);
@@ -3748,7 +3754,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             Surface::Browser { key, .. } => Some(key.clone()),
                             _ => None,
                         })
-                        .filter(|k| !w.words_models(Some(k)).complete())
+                        .filter(|k| !w.words_models(cfg.as_ref(), Some(k)).complete())
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -5752,16 +5758,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // Sending page contents to a company's service is the person's
             // decision to make, once, knowingly -- the same gate the picture
             // tools pass through, and refused here rather than half-started
-            let mut gate = config::pages_gate(desks.get(desk_index), Some(&key));
+            let mut gate = config::pages_gate(cfg.as_ref(), desks.get(desk_index), Some(&key));
             // "Agree and run", pressed beside that question: the agreement is
-            // written on the desk, the way ticking it in the settings writes it
-            if agree
-                && let (Some(write), Some(desk)) = (gate.agree().map(str::to_string), desks.get_mut(desk_index))
-            {
-                if config::save_desk_setting(&desk.id, "send_pages_to", Some(serde_json::json!(write))) {
-                    append_hook_log(&format!("words: agreed to send pages to {write}"));
-                    desk.send_pages_to = Some(write);
-                    gate = config::pages_gate(desks.get(desk_index), Some(&key));
+            // written in the settings, the way ticking it there writes it
+            if agree && !gate.agree().is_empty() {
+                let rows = gate.agree().to_vec();
+                let saved = rows.iter().all(|row| config::save_agreed(row, config::CONSENT_PAGES));
+                if let (true, Some(c)) = (saved, cfg.as_mut()) {
+                    append_hook_log(&format!("words: agreed to send pages to {}", rows.join(" + ")));
+                    for row in rows {
+                        let kinds = c.agreed.entry(row).or_default();
+                        if !kinds.iter().any(|k| k == config::CONSENT_PAGES) {
+                            kinds.push(config::CONSENT_PAGES.to_string());
+                        }
+                    }
+                    gate = config::pages_gate(cfg.as_ref(), desks.get(desk_index), Some(&key));
                 } else {
                     flash = Some(i18n::t("msg.words.not_saved"));
                     continue;
@@ -5800,7 +5811,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .map(|w| config::stops_to_lua(&w.stops))
                 .unwrap_or_else(|| "{}".to_string());
             // This page's own models, and the desk's where it has none
-            let models = desks.get(desk_index).map(|w| w.words_models(Some(&key))).unwrap_or_default();
+            let models = desks.get(desk_index).map(|w| w.words_models(cfg.as_ref(), Some(&key))).unwrap_or_default();
             match eng.start_words(active, &key, &stops, &goal, &models, &ctx) {
                 Ok(()) => driving = Some((active, key)),
                 Err(e) => {
@@ -5826,7 +5837,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .get(desk_index)
                     .map(|w| config::stops_to_lua(&w.stops))
                     .unwrap_or_else(|| "{}".to_string());
-                let models = desks.get(desk_index).map(|w| w.words_models(Some(&key))).unwrap_or_default();
+                let models = desks.get(desk_index).map(|w| w.words_models(cfg.as_ref(), Some(&key))).unwrap_or_default();
                 if let Err(e) = eng.resume_words(pane, &key, &stops, &models, &carried) {
                     append_hook_log(&format!("words could not carry on: {e:#}"));
                 }
@@ -8482,35 +8493,20 @@ pub fn urlish(text: &str) -> String {
 /// was set to "as long as it takes" and the tab still gave up at 180 seconds,
 /// because 180 was what it had been holding since it opened.
 ///
-/// Each desk's tabs are handed their own desk's connections: a tab parked in a
-/// desk that is not on screen keeps that desk's `claude`, not the one of the
-/// same name on the desk in front. `parked` is indexed by desk, the slot of
-/// the desk on screen being the empty one its tabs were taken out of.
+/// The model connections, read again from the settings and handed to every
+/// model tab -- the ones on screen and the ones parked in the other desks,
+/// which are just as open
 pub fn reload_providers(
-    desks: &[config::Desk],
-    desk_index: usize,
+    cfg: &config::Config,
     look: &dyn Fn(&str) -> Option<String>,
     tabs: &mut [Tab],
     parked: &mut [Vec<Tab>],
 ) {
-    if let Some(d) = desks.get(desk_index) {
-        let conns = config::desk_providers(d, look);
-        for t in tabs.iter_mut() {
-            t.refresh_model_conn(&conns);
-        }
-        bridge::use_desk(conns);
+    let conns = config::app_providers(cfg, look);
+    for t in tabs.iter_mut().chain(parked.iter_mut().flatten()) {
+        t.refresh_model_conn(&conns);
     }
-    for (i, ts) in parked.iter_mut().enumerate() {
-        if i == desk_index {
-            continue;
-        }
-        if let Some(d) = desks.get(i) {
-            let conns = config::desk_providers(d, look);
-            for t in ts.iter_mut() {
-                t.refresh_model_conn(&conns);
-            }
-        }
-    }
+    bridge::use_connections(conns);
 }
 /// Give this tab the rest of whatever is being pasted into it, now.
 ///
@@ -13548,14 +13544,14 @@ mod tests {
     fn a_provider_edited_now_reaches_the_tab_that_is_using_it() {
         let settings = |secs: u64| {
             let cfg: config::Config = serde_json::from_str(&format!(
-                r#"{{"desks":[{{"name":"d","providers":{{"t":{{"base_url":"http://127.0.0.1:1/v1","timeout_sec":{secs}}}}}}}]}}"#
+                r#"{{"providers":{{"t":{{"base_url":"http://127.0.0.1:1/v1","timeout_sec":{secs}}}}},"desks":[{{"name":"d"}}]}}"#
             ))
             .unwrap();
-            cfg.resolve_desks().0
+            cfg
         };
         let argv = vec!["model".to_string(), "t/m".to_string()];
 
-        let conns = config::desk_providers(&settings(180)[0], &|_| None);
+        let conns = config::app_providers(&settings(180), &|_| None);
         let conn = bridge::conn_in(&conns, &argv).expect("the connection is found");
         assert_eq!(conn.timeout, Some(Duration::from_secs(180)));
         let mut tabs = [Tab::spawn(
@@ -13569,7 +13565,7 @@ mod tests {
         .expect("started")];
 
         // The wait is changed to "as long as it takes" and saved
-        reload_providers(&settings(0), 0, &|_| None, &mut tabs, &mut []);
+        reload_providers(&settings(0), &|_| None, &mut tabs, &mut []);
         assert_eq!(
             tabs[0].model.as_ref().and_then(|c| c.timeout),
             None,

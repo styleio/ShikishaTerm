@@ -1699,8 +1699,10 @@ mod tests {
                 let Some(len) = board[from..].find('"') else { break };
                 let id = &board[from..from + len];
                 at = from + len;
-                // The project's own page is not one of the sections
-                if id == "project" || id == "project-gitacct" || id.is_empty() {
+                // The project's own page is not one of the sections, and
+                // neither is a browser tab's models ("words"), reached by
+                // the tab's key
+                if id == "project" || id == "project-gitacct" || id == "words" || id.is_empty() {
                     continue;
                 }
                 asked += 1;

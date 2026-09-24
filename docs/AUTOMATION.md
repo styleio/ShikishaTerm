@@ -626,13 +626,14 @@ Hosts are matched **exactly** and only `https` is allowed
 (tricks like `api.example.com.evil.com` are rejected).
 Every file and network operation is recorded in `logs/hooks.log`.
 
-### All of it belongs to a desk
+### Most of it belongs to a desk
 
-Gateways, automation permissions, notification destinations, AI providers and
-git settings are **each desk's own**. There is no app-wide version of any of them:
-what a desk does not have, it does not have (no gateways, the standard permissions,
-no destinations, no connections, the built-in git settings). Work's repositories
-beside your own on one machine never share an API key or a chat.
+Gateways, automation permissions, notification destinations and git settings are
+**each desk's own**. There is no app-wide version of any of them: what a desk does
+not have, it does not have (no gateways, the standard permissions, no destinations,
+the built-in git settings). Work's repositories beside your own on one machine never
+share a chat. The AI providers are the exception: one list for the whole app
+(Settings › AI agents), which every desk's tabs and scripts reach by name.
 
 ```jsonc
 "desks": [
@@ -646,9 +647,6 @@ beside your own on one machine never share an API key or a chat.
       "This PC": { "type": "windows" }
     },
     "primary_notify": "work-slack",    // where notify(text) with no name lands
-    "providers": {
-      "work-azure": { "base_url": "https://….openai.azure.com/…", "api_key": "@provider/work/work-azure" }
-    },
     "git": { "protect": ["main", "release/*"] },
     "git_accounts": [
       { "name": "work", "login": "me-at-work", "user_name": "Me", "user_email": "me@example.com", "owners": ["my-company"] },
@@ -987,9 +985,9 @@ Two commands, and between them everything a page can be driven with.
 | `shikisha.ai_text({ prompt = "...", system = "...", shape = {...}, model = "conn/name" })` | Ask for words: what to type in a field, what a page amounts to. `shape` is a JSON Schema, and with it the answer comes back in that shape instead of as a paragraph |
 
 `model` is `connection/model`, the same spelling a model tab's command line
-uses. Left out, the settings decide (Browser › *Decision model* and
-*Conversation model*), and where nothing is chosen there, the assistant AI
-from Basic answers.
+uses. Left out, the settings decide (the browser tab's *Decision model* and
+*Conversation model*, and for whatever it leaves unset, the *Deciding AI* under
+AI agents), and where nothing is chosen there, the assistant AI answers.
 
 An AI installed on this PC answers too, on the plan it is signed in with and
 with no key: `model = "@claude"`, `"@codex"` or `"@gemini"`, and with a model
@@ -1103,7 +1101,7 @@ How the rally works: files in and out, plus a judge. You can build your own the 
 | `shikisha.exchange_write(path, "text")` | Write a file (overwrites) |
 | `shikisha.exchange_append(path, "text")` | Append to one |
 | `shikisha.exchange_take(path)` | Read it, delete it, return it. `nil` if absent — this is the hand-over |
-| `shikisha.ai_ask("what you want")` | Ask the **assistant AI** from Settings > Basic and get the answer as text; `nil` and a reason when there is none. **The app keeps running while it thinks** (the same machinery as `sleep`: other tabs and the screen carry on). Three minutes by default, `{timeout_ms=…}` to change it. `{light=true}` asks for a short answer as cheaply as the AI can give one (its smallest model where it has a choice, no tools, no long instructions); for anything more than a line or two, leave it off. `{ai="codex"}` asks a different assistant AI, and `{ai="model deepseek/deepseek-chat"}` one of this desk's AI providers |
+| `shikisha.ai_ask("what you want")` | Ask the **assistant AI** from Settings > AI agents and get the answer as text; `nil` and a reason when there is none. **The app keeps running while it thinks** (the same machinery as `sleep`: other tabs and the screen carry on). Three minutes by default, `{timeout_ms=…}` to change it. `{light=true}` asks for a short answer as cheaply as the AI can give one (its smallest model where it has a choice, no tools, no long instructions); for anything more than a line or two, leave it off. `{ai="codex"}` asks a different assistant AI, and `{ai="model deepseek/deepseek-chat"}` one of the registered AI providers |
 | `shikisha.lint(code)` | Compile-check Lua without running it. An error string, or `nil` if sound |
 | `shikisha.run_scoped(id, code)` | Run AI-written Lua against one page, in a jail: no files, no network, no other tabs. Returns `err, out` |
 | `shikisha.lua(code)` | Run a whole chunk with everything in reach — loops, branches, several commands at once. Returns `err` (`nil` when it ran) followed by whatever the chunk returned. The unwalled twin of `run_scoped`, so never hand it code you didn't write |

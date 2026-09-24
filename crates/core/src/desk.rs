@@ -662,10 +662,8 @@ pub fn hand_over(
     // program's own door, which already holds whatever the password unlocked
     let look = |k: &str| caps.secret_value(k).ok();
     notifier.use_desk(config::desk_notify(desk, &look), desk.primary_notify.clone());
-    crate::bridge::use_desk(config::desk_providers(desk, &look));
     caps.set_capabilities(desk.capabilities.clone());
     caps.set_grants(desk.automation_permissions.clone());
-    caps.set_words_models(desk.browser.words.clone());
     // A script's `token` means this desk's, and no other's
     caps.set_desk_id(&desk.id);
     // The tokens pull request numbers are read with, one per git account of
@@ -1298,16 +1296,16 @@ mod a_folder_to_work_in_tests {
     /// waiting on a folder here either
     #[test]
     fn a_model_tab_needs_no_folder() {
-        let desk = desk_of(
-            r#"{"desks":[{"name":"w","id":"w",
-                "providers":{"acme":{"base_url":"https://api.example.test/v1/chat"}},
-                "folders":[{"tabs":[{"id":"talk","command":"model acme/big"}]}]}]}"#,
-        );
-        crate::bridge::use_desk(config::desk_providers(&desk, &|_| None));
+        let json = r#"{"providers":{"acme":{"base_url":"https://api.example.test/v1/chat"}},
+            "desks":[{"name":"w","id":"w",
+                "folders":[{"tabs":[{"id":"talk","command":"model acme/big"}]}]}]}"#;
+        let cfg: config::Config = serde_json::from_str(json).expect("the settings cannot be read");
+        let desk = desk_of(json);
+        crate::bridge::use_connections(config::app_providers(&cfg, &|_| None));
         let opts = launched(&desk, "talk");
         assert!(opts.model.is_some(), "the connection never reached the tab");
         assert_eq!(opts.held, None, "a conversation with a model was held for want of a folder");
-        crate::bridge::use_desk(Default::default());
+        crate::bridge::use_connections(Default::default());
     }
 }
 

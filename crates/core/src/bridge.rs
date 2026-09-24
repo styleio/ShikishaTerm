@@ -56,7 +56,7 @@ pub struct ModelConn {
 /// Who answers a question asked from automation (`ai_choose`, `ai_text`)
 #[derive(Debug, Clone)]
 pub enum Answerer {
-    /// A model reached over the network, on a connection the desk registered
+    /// A model reached over the network, on a connection the app registered
     Api(ModelConn),
     /// An AI program installed on this PC (`claude`, `codex`, `gemini`),
     /// answering on the person's own subscription. `model` left out is the
@@ -83,7 +83,7 @@ pub fn installed_named(name: &str) -> Option<(String, Option<String>)> {
 }
 
 /// Who a name held in a setting reaches: an installed AI (`@claude/haiku`),
-/// or a connection of the desk on screen (`deepseek/deepseek-chat`)
+/// or one of the app's connections (`deepseek/deepseek-chat`)
 pub fn answerer_named(name: &str) -> Option<Answerer> {
     if name.trim().starts_with(INSTALLED_MARK) {
         let (ai, model) = installed_named(name)?;
@@ -103,9 +103,9 @@ pub fn patience(who: &Answerer) -> Option<std::time::Duration> {
 }
 
 /// The assistant AI as a model name ("@claude"): what drives a page when
-/// neither the page nor its desk chose a model. The one chosen under Basic ›
-/// Assistant AI, or the first installed -- the one every other question the
-/// app asks goes to. `None` when none is installed.
+/// neither the page nor the app chose a model. The one chosen under AI
+/// agents › Assistant AI, or the first installed -- the one every other
+/// question the app asks goes to. `None` when none is installed.
 ///
 /// Held for a few seconds: the board asks on every frame it draws, and
 /// finding an installed program means reading the settings and walking PATH
@@ -768,24 +768,21 @@ pub fn extract_say(s: &str) -> Option<String> {
     })
 }
 
-/// The model connections of the desk on screen, resolved (name -> address,
-/// headers, wait).
+/// The app's model connections, resolved (name -> address, headers, wait).
 ///
-/// Swapped whole on a desk switch and when the settings are read again. Each
-/// desk registers its own, so a name here means this desk's connection by
-/// that name and nothing else: the same `claude` in another desk may be
-/// another account entirely
+/// Swapped whole when the settings are read again. One list for every desk,
+/// so a name here means the connection by that name wherever it is asked for
 static PROVIDERS: Mutex<Option<HashMap<String, crate::config::ProviderConn>>> =
     Mutex::new(None);
 
-/// Point it at a desk's connections (see [`crate::config::desk_providers`]).
-pub fn use_desk(conns: HashMap<String, crate::config::ProviderConn>) {
+/// Point it at the app's connections (see [`crate::config::app_providers`]).
+pub fn use_connections(conns: HashMap<String, crate::config::ProviderConn>) {
     if let Ok(mut g) = PROVIDERS.lock() {
         *g = Some(conns);
     }
 }
 
-/// The connections of the desk on screen, in name order
+/// The connections registered, in name order
 pub fn reaching() -> Vec<String> {
     let Ok(g) = PROVIDERS.lock() else {
         return Vec::new();
@@ -821,24 +818,23 @@ pub fn why_not(argv: &[String]) -> Option<String> {
     (!known).then(|| crate::i18n::tp("err.model.unknown_provider", &[("name", provider)]))
 }
 
-/// The connection a `<connection>/<model>` name reaches on the desk on
-/// screen, for the places that hold such a name in a setting rather than on
-/// a tab's command line
+/// The connection a `<connection>/<model>` name reaches, for the places that
+/// hold such a name in a setting rather than on a tab's command line
 pub fn conn_named(name: &str) -> Option<ModelConn> {
     let argv = vec!["model".to_string(), name.trim().to_string()];
     launch_for(&argv)
 }
 
-/// If this is `model <provider>/<model>`, the connection it names on the desk
-/// on screen (None if that desk has none by that name). The model name may
-/// itself contain "/" (Ollama tags), so split on the first "/" only.
+/// If this is `model <provider>/<model>`, the connection it names (None when
+/// none is registered by that name). The model name may itself contain "/"
+/// (Ollama tags), so split on the first "/" only.
 pub fn launch_for(argv: &[String]) -> Option<ModelConn> {
     let g = PROVIDERS.lock().ok()?;
     conn_in(g.as_ref()?, argv)
 }
 
-/// The same, asked of a given desk's connections -- for tabs parked in a desk
-/// that is not on screen, which keep that desk's and nobody else's
+/// The same, asked of a given list of connections -- what a tab is handed
+/// again when the settings are read afresh
 pub fn conn_in(
     conns: &HashMap<String, crate::config::ProviderConn>,
     argv: &[String],
@@ -1145,11 +1141,11 @@ mod tests {
         assert!(offered(&q["is_signed_in"]).is_empty());
     }
 
-    /// A model line reaches only the connection its own desk registered by that
-    /// name. The account behind a connection is billed for the work and handed
-    /// the code, so another desk's is never within reach
+    /// A model line reaches the connection registered by that name and no
+    /// other: the account behind a connection is billed for the work and
+    /// handed the code, so a name nobody registered reaches nothing
     #[test]
-    fn a_desk_uses_only_the_connections_it_registered() {
+    fn a_model_line_reaches_only_the_connection_of_its_name() {
         let line = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         let conn = |url: &str| crate::config::ProviderConn {
             url: url.to_string(),
@@ -1162,8 +1158,8 @@ mod tests {
         let mine: HashMap<_, _> = [("mine".to_string(), conn("http://localhost:11434/v1"))].into();
         let argv = line(&["model", "claude/sonnet"]);
         assert_eq!(conn_in(&work, &argv).map(|c| c.url), Some("https://work.example/v1".to_string()));
-        assert!(conn_in(&mine, &argv).is_none(), "another desk's destination can be used");
-        assert!(conn_in(&HashMap::new(), &argv).is_none(), "a desk with nothing registered can connect");
+        assert!(conn_in(&mine, &argv).is_none(), "a destination of another name can be used");
+        assert!(conn_in(&HashMap::new(), &argv).is_none(), "nothing registered, and it connects");
     }
 
     /// A model line with no connection is refused in its own words, never by

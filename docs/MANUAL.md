@@ -161,7 +161,7 @@ and the terminal run over there.
   names the worktree and ties the work to it (a pull request's branch is fetched).
   **Branch** picks what it grows from. **Name** is typed; a name typed there is kept,
   and leaving it empty keeps Auto on;
-- **AI** — what runs in the new folder. The default is Settings > Basic > Assistant AI,
+- **AI** — what runs in the new folder. The default is Settings > AI agents > Assistant AI,
 - **More** — one folder per AI, where it goes, things git does not carry (`.env`,
   `node_modules`) to bring along, and the exact `git worktree add` line.
 
@@ -180,8 +180,9 @@ written the list shows the branch name; a name written this way is drawn a shade
 quieter. Rest the pointer on a folder to read its name and summary; on a phone the
 card carries a line of the summary, and holding a card down opens its menu with the
 whole summary at the top. Changing the name or the summary by hand turns Auto off.
-Which AI writes them is chosen under Settings > Desk > Automatic names: the
-assistant AI, asked the lightest way it can be, or one of the desk's AI providers.
+Which AI writes them is chosen under Settings > AI agents > Automatic names, and a
+desk can choose another under Desk > Automatic names: the assistant AI, asked the
+lightest way it can be, or one of the AI providers.
 
 Worktrees made from a terminal or another tool show up under the heading as "Hiding N
 found worktrees". Open it and **Show in the worktree list**, or press ✕ to keep them hidden.
@@ -264,6 +265,7 @@ settings screen, so it cannot fall behind.
 **The program's settings**
 
 - **Basic** — Tab width, chaining, language
+- **AI agents** — Assistant AI, deciding AI, connections, agreements
 - **Update** — Newer versions, and going back
 - **Remote access** — Remote control & QR
 - **Shortcuts** — What each key does
@@ -285,14 +287,11 @@ settings screen, so it cannot fall behind.
 
 - **Basics** — Name, automation name, automation folder
 - **Notifications** — Chats, this PC, phones
-- **AI providers** — The model APIs this desk's tabs use, local models included
-- **Browser** — What this desk's browser tabs follow
 - **Automation permissions** — What a person and an AI may run
 - **git** — Accounts, protected branches, commit messages
 - **Secrets** — Passwords and tokens
 - **AI × AI discussion** — Several AI tabs discussing or working together
 - **Stop conditions** — When the joint work ends
-- **Tools** — What may be sent out: pictures of the screen
 - **Automatic names** — The AI that names and describes working folders
 - **Automation doors** — Files and URLs a script can reach
 - **Export** — This desk as one file

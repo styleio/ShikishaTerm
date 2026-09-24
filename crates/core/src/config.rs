@@ -650,18 +650,41 @@ pub struct Config {
     /// actually in.
     #[serde(default)]
     pub side_bar_width: Option<u16>,
-    // Where notifications go, the model connections, the automation doors, who
-    // may run what, and what git does are not here: each belongs to a desk
-    // (see `DeskConfig`), whole, with nothing of the app's underneath. An app
-    // answer a desk inherits until somebody unticks it is the one that sends
-    // work's code to a personal account on the day nobody thought to look
+    // Where notifications go, the automation doors, who may run what, and
+    // what git does are not here: each belongs to a desk (see `DeskConfig`),
+    // whole, with nothing of the app's underneath. An app answer a desk
+    // inherits until somebody unticks it is the one that sends work's code to
+    // a personal account on the day nobody thought to look. The AIs are the
+    // exception, on purpose: one list of connections, one assistant AI, one
+    // deciding AI and one set of agreements for the whole app, so that there
+    // is one place to look and one road for every question that asks an AI
     /// Load secrets from a separate file (e.g. "secrets.json")
     #[serde(default)]
     pub secrets: Option<String>,
-    /// The AI that writes automation code ("claude" / "codex" / "gemini").
+    /// The assistant AI ("claude" / "codex" / "gemini"): the one every
+    /// question this program asks goes to, and what a new AI tab runs.
     /// Uses whichever is found if empty
     #[serde(default)]
     pub ai_engine: Option<String>,
+    /// The deciding AI: what picks the next move on a page driven in plain
+    /// words, and what answers `ai_choose` when the script names nothing. A
+    /// `<connection>/<model>` name of one of the connections below, or an
+    /// installed AI (`@claude/haiku`). Unset is the assistant AI above
+    #[serde(default)]
+    pub decide_ai: Option<String>,
+    /// Model connections (OpenAI-compatible APIs, and decision services):
+    /// name -> {base_url, api_key, ...}. A `model <name>/<model>` tab and
+    /// every setting that names a model look the name up here, and nowhere
+    /// else -- the account behind a connection is billed for the work and
+    /// handed the words
+    #[serde(default)]
+    pub providers: std::collections::HashMap<String, ProviderSpec>,
+    /// What the person agreed to send out, per AI: the connection's name, or
+    /// an installed AI's (`@claude`), -> the kinds agreed to
+    /// ([`CONSENT_PAGES`], [`CONSENT_PICTURES`]). Written by the settings
+    /// screen and by the question asked in place, which are one setting
+    #[serde(default)]
+    pub agreed: std::collections::BTreeMap<String, Vec<String>>,
     /// What a folder runs when nothing else is said: `powershell` (also what
     /// absent means), `cmd` or `gitbash`
     #[serde(default)]
@@ -674,9 +697,9 @@ pub struct Config {
     #[serde(default)]
     pub yolo: bool,
     /// What writes the automatic names, and the branch names that follow them
-    /// ("claude", "codex", "gemini"). Unset is the assistant AI above. A desk
-    /// may name another ([`DeskSpec::summary_ai`]), which is also where a
-    /// model connection is chosen, since the connections belong to a desk
+    /// ("claude", "codex", "gemini", or `model <connection>/<model>`). Unset
+    /// is the assistant AI above. A desk may name another
+    /// ([`DeskSpec::summary_ai`])
     #[serde(default)]
     pub summary_ai: Option<String>,
     /// Whether that AI is asked on the smallest model it has, which is what
@@ -847,25 +870,40 @@ pub const PROVIDER_TIMEOUT_DEFAULT_SEC: u64 = 180;
 pub const SPEAKS_CHAT: &str = "chat";
 pub const SPEAKS_CHOICE: &str = "choice";
 
-/// Whether a page may be handed to a model, and to which one.
+/// What a person can agree to send an AI: what a page shows, and a picture
+/// of the screen. Each is agreed to per AI (see [`Config::agreed`]), and a
+/// kind added here is offered on every AI's row by the settings screen
+pub const CONSENT_PAGES: &str = "pages";
+pub const CONSENT_PICTURES: &str = "pictures";
+pub const CONSENT_KINDS: [&str; 2] = [CONSENT_PAGES, CONSENT_PICTURES];
+
+/// The AI a model name is agreed under: the connection of `jev/jev-latest`
+/// is `jev`, and of `@claude/haiku` the installed AI `@claude`. An agreement
+/// is with the company at the far end, which is the same whatever model of
+/// theirs is named
+pub fn consent_row(name: &str) -> String {
+    let t = name.trim();
+    t.split_once('/').map(|(row, _)| row).unwrap_or(t).trim().to_string()
+}
+
+/// Whether sending `kind` to the AI `row` was agreed to
+pub fn agreed_to(agreed: &std::collections::BTreeMap<String, Vec<String>>, row: &str, kind: &str) -> bool {
+    agreed.get(row.trim()).is_some_and(|kinds| kinds.iter().any(|k| k == kind))
+}
+
+/// Whether a page may be handed to the models that would drive it.
 ///
 /// The answer to one question, asked in one place, so that the screen that
 /// offers the agreement and the run that relies on it can never differ about
 /// what was agreed to
 pub enum PageGate {
-    /// Agreed, to these models, and they are the ones that would be asked
+    /// Agreed, to every model that would be asked
     Ready { models: String },
-    /// These models would be asked, and this desk has not agreed to them.
-    /// `agree` is what the desk's agreement reads once it is given
-    Consent { models: String, agree: String },
-    /// Agreed to something else. Pointing the setting at a different company
-    /// is a fresh question, so it is asked again rather than assumed. Agreeing
-    /// adds these to what was agreed before (`agree`)
-    Changed { agreed: String, models: String, agree: String },
+    /// These models would be asked, and sending pages to `agree` (the AIs
+    /// among them not yet agreed to, as [`Config::agreed`] names them) was not
+    Consent { models: String, agree: Vec<String> },
     /// Nothing is set to ask
     NoModel,
-    /// There is no desk to remember an answer on
-    NoDesk,
 }
 
 impl PageGate {
@@ -874,11 +912,7 @@ impl PageGate {
         match self {
             PageGate::Ready { .. } => String::new(),
             PageGate::Consent { models, .. } => crate::i18n::tp("msg.words.consent", &[("by", models)]),
-            PageGate::Changed { agreed, models, .. } => {
-                crate::i18n::tp("msg.words.changed", &[("agreed", agreed), ("by", models)])
-            }
             PageGate::NoModel => crate::i18n::t("msg.words.no_model"),
-            PageGate::NoDesk => crate::i18n::t("msg.words.no_desk"),
         }
     }
 
@@ -887,18 +921,16 @@ impl PageGate {
     pub fn why_here(&self) -> Option<String> {
         match self {
             PageGate::Consent { models, .. } => Some(crate::i18n::tp("msg.words.consent_here", &[("by", models)])),
-            PageGate::Changed { agreed, models, .. } => {
-                Some(crate::i18n::tp("msg.words.changed_here", &[("agreed", agreed), ("by", models)]))
-            }
             _ => None,
         }
     }
 
-    /// What the desk's agreement reads once it is given here
-    pub fn agree(&self) -> Option<&str> {
+    /// The AIs that agreeing here agrees to, by the names the agreement is
+    /// filed under
+    pub fn agree(&self) -> &[String] {
         match self {
-            PageGate::Consent { agree, .. } | PageGate::Changed { agree, .. } => Some(agree),
-            _ => None,
+            PageGate::Consent { agree, .. } => agree,
+            _ => &[],
         }
     }
 }
@@ -907,9 +939,9 @@ impl PageGate {
 /// `<connection>/<model>`: the one that picks every move, and the one that
 /// writes what is typed. Both see the page.
 ///
-/// Written in three places, each standing in for the next when it says
-/// nothing: a browser tab's own, its desk's (`browser` in the desk), and,
-/// from settings written before desks had one, the app-wide `operate`
+/// Written in two places, the first standing over the second: a browser
+/// tab's own, and the app's (the deciding AI under Settings › AI agents,
+/// see [`app_words`]). Whatever neither says is the assistant AI's
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct WordsModels {
     /// The one that picks the next move. A decision model is far quicker at
@@ -966,47 +998,49 @@ impl WordsModels {
     }
 }
 
-/// What a desk agreed to send pages to, one name per model. Written joined
-/// with " + ", the way the settings screen shows it
-fn agreed_names(agreed: &str) -> Vec<String> {
-    agreed.split(" + ").filter_map(one_name).collect()
+/// The app's own models for driving a page in plain words: the deciding AI
+/// chosen under Settings › AI agents picks the moves, and nothing is named
+/// for the writing, which falls to the assistant AI (see
+/// [`WordsModels::or_assistant`])
+pub fn app_words(cfg: &Config) -> WordsModels {
+    WordsModels { choose_model: cfg.decide_ai.as_deref().and_then(one_name), words_model: None }
 }
 
-/// Whether this desk has agreed to hand the page `key` to the models that
-/// would be asked (see [`DeskSpec::send_pages_to`]). Agreed means every one
-/// of them was agreed to: a desk that agreed for all its pages at once has
-/// agreed for each
-pub fn pages_gate(desk: Option<&Desk>, key: Option<&str>) -> PageGate {
-    pages_gate_as(desk, key, crate::bridge::assistant_model().as_deref())
-}
-
-/// [`pages_gate`], with the assistant AI given rather than looked for
-pub fn pages_gate_as(desk: Option<&Desk>, key: Option<&str>, assistant: Option<&str>) -> PageGate {
-    let Some(desk) = desk else {
-        return PageGate::NoDesk;
+/// Whether the page `key` of `desk` may be handed to the models that would
+/// drive it (see [`Config::agreed`]). Agreed means every AI among them was
+/// agreed to
+pub fn pages_gate(cfg: Option<&Config>, desk: Option<&Desk>, key: Option<&str>) -> PageGate {
+    let Some(cfg) = cfg else {
+        return PageGate::NoModel;
     };
-    let wanted = desk.words_models_as(key, assistant);
+    let wanted = desk
+        .map(|d| d.words_models(Some(cfg), key))
+        .unwrap_or_else(|| app_words(cfg).or_assistant(crate::bridge::assistant_model().as_deref()));
+    pages_gate_as(&wanted, &cfg.agreed)
+}
+
+/// [`pages_gate`], asked about models already worked out
+pub fn pages_gate_as(
+    wanted: &WordsModels,
+    agreed: &std::collections::BTreeMap<String, Vec<String>>,
+) -> PageGate {
     if !wanted.complete() {
         return PageGate::NoModel;
     }
     let names = wanted.names();
-    // Said the way the person reads them; agreed to under the names written
+    // Said the way the person reads them; agreed to under the AI each is of
     let models = names.iter().map(|n| crate::bridge::shown_name(n)).collect::<Vec<_>>().join(" + ");
-    match desk.send_pages_to.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(agreed) if names.iter().all(|n| agreed_names(agreed).contains(n)) => PageGate::Ready { models },
-        Some(agreed) => {
-            // What was agreed before stays agreed: another page may use it
-            let mut agree = agreed_names(agreed);
-            agree.extend(names.iter().cloned());
-            agree.sort();
-            agree.dedup();
-            PageGate::Changed {
-                agreed: agreed_names(agreed).iter().map(|n| crate::bridge::shown_name(n)).collect::<Vec<_>>().join(" + "),
-                models,
-                agree: agree.join(" + "),
-            }
-        }
-        None => PageGate::Consent { models, agree: names.join(" + ") },
+    let mut agree: Vec<String> = names
+        .iter()
+        .map(|n| consent_row(n))
+        .filter(|row| !agreed_to(agreed, row, CONSENT_PAGES))
+        .collect();
+    agree.sort();
+    agree.dedup();
+    if agree.is_empty() {
+        PageGate::Ready { models }
+    } else {
+        PageGate::Consent { models, agree }
     }
 }
 
@@ -1282,12 +1316,6 @@ pub struct OperateSpec {
     /// Approval is a button shown on the target page; declining holds the run.
     #[serde(default = "default_operate_confirm")]
     pub confirm: String,
-    /// The models that drive a page from plain words, from settings written
-    /// before each desk had its own (see [`WordsModels`]). Read, never
-    /// written: the settings screen moves them to every desk that has none,
-    /// and until it does, a desk without its own falls back to these
-    #[serde(default, flatten)]
-    pub words: WordsModels,
 }
 
 impl Default for OperateSpec {
@@ -1299,7 +1327,6 @@ impl Default for OperateSpec {
             on_limit: default_operate_on_limit(),
             settle_ms: default_operate_settle_ms(),
             confirm: default_operate_confirm(),
-            words: WordsModels::default(),
         }
     }
 }
@@ -1524,12 +1551,10 @@ pub fn orphan_secrets(cfg: &Config, keys: &[String]) -> Vec<String> {
     keys.iter()
         .filter(|k| {
             let k = k.as_str();
-            // provider/<desk>/<name>
+            // provider/<name>. One with a desk's name in it as well, from
+            // before the connections were the app's, is nobody's now
             if let Some(rest) = k.strip_prefix("provider/") {
-                let Some((desk, name)) = rest.split_once('/') else {
-                    return false;
-                };
-                return !spaces.iter().any(|s| s.id == desk && s.providers.contains_key(name));
+                return rest.contains('/') || !cfg.providers.contains_key(rest);
             }
             if k.starts_with("notify/") {
                 return !refs.contains(k);
@@ -2083,15 +2108,6 @@ pub fn delete_secret(
     write_secrets_value(path, password, &root)
 }
 
-/// A desk's browser settings: what its browser tabs follow when they do not
-/// say otherwise
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct DeskBrowserSpec {
-    /// The models that carry out a goal written in plain words
-    #[serde(default, flatten)]
-    pub words: WordsModels,
-}
-
 /// A desk entry inside config.json. Either inline tabs or a reference to a definition file
 #[derive(Debug, Deserialize)]
 pub struct DeskSpec {
@@ -2140,10 +2156,11 @@ pub struct DeskSpec {
     pub discuss: Option<DiscussSpec>,
 
     // Everything below is this desk's alone. There is no app answer behind any
-    // of it: a desk that registered no notification destination reaches none,
-    // and one that registered no model connection launches no model tab. The
-    // desks exist to keep two accounts apart, and an answer inherited from the
-    // app until somebody thinks to untick it is the one that walks across
+    // of it: a desk that registered no notification destination reaches none.
+    // The desks exist to keep two accounts apart, and an answer inherited from
+    // the app until somebody thinks to untick it is the one that walks across.
+    // The AIs are the app's (`Config::providers` and its neighbours), on
+    // purpose: one list, one set of agreements, one road for every question
 
     /// Notification destinations (Lua can only send to destinations registered
     /// here). A value written `@name` is read from the secret store, so a
@@ -2154,12 +2171,6 @@ pub struct DeskSpec {
     /// exactly one destination registered, that one serves
     #[serde(default)]
     pub primary_notify: Option<String>,
-    /// Model connections (OpenAI-compatible APIs): name -> {base_url, api_key,
-    /// headers}. A `model <name>/<model>` tab here looks its name up in this
-    /// list and nowhere else -- the account behind a connection is billed for
-    /// the work and handed the code
-    #[serde(default)]
-    pub providers: std::collections::HashMap<String, ProviderSpec>,
     /// What automation running here may reach outside the terminal: the named
     /// file and HTTP gateways, and the folders and hosts raw paths are allowed
     /// in. Empty means nothing
@@ -2188,34 +2199,10 @@ pub struct DeskSpec {
     /// a repository by asking git while it is
     #[serde(default)]
     pub projects: Vec<ProjectSpec>,
-    /// The assistant AI this desk agreed to hand pictures to, by name
-    /// ("claude", "codex", "gemini"): the part of the screen framed for the
-    /// AI tools. Unset is no.
-    ///
-    /// A name and not a yes, because what was agreed to is sending pictures to
-    /// that one. Switching the assistant AI to another company's is a new
-    /// question, and a stored yes would answer it for the person
-    #[serde(default)]
-    pub send_pictures_to: Option<String>,
-    /// The model this desk agreed to hand the contents of a page to, by the
-    /// `<connection>/<model>` name it is reached by: what a page says and
-    /// what can be done on it, sent out so that a goal written in ordinary
-    /// words can be carried out on that page. Unset is no.
-    ///
-    /// A name and not a yes, for the same reason as [`Self::send_pictures_to`]:
-    /// the agreement was to send it to *that* one. Pointing the setting at a
-    /// different company is a fresh question, and a stored yes would answer
-    /// it on the person's behalf
-    #[serde(default)]
-    pub send_pages_to: Option<String>,
-    /// This desk's browser settings: what its browser tabs follow when they
-    /// say nothing of their own
-    #[serde(default)]
-    pub browser: DeskBrowserSpec,
     /// What writes the names and summaries of the folders that ask for them
     /// (`auto_label`): an assistant AI by name ("claude", "codex", "gemini"),
-    /// or `model <connection>/<model>` for one of this desk's model
-    /// connections. Unset is the assistant AI chosen under Basic
+    /// or `model <connection>/<model>` for one of the app's model
+    /// connections. Unset is what the app says ([`Config::summary_ai`])
     #[serde(default)]
     pub summary_ai: Option<String>,
     /// Whether a folder that names itself also renames its branch, the once,
@@ -2550,8 +2537,8 @@ pub struct TabConfig {
     #[serde(default)]
     pub user_agent: Option<String>,
     /// On a browser tab: the models a goal written in plain words is carried
-    /// out by on this page. Either one left unset is the desk's
-    /// ([`DeskSpec::browser`])
+    /// out by on this page. Either one left unset is the app's
+    /// ([`app_words`]), and failing that the assistant AI
     #[serde(default, flatten)]
     pub words: WordsModels,
     /// Banner shown below a browser tab (text and button label)
@@ -2884,8 +2871,6 @@ pub struct Desk {
     pub notify: std::collections::HashMap<String, crate::notify::Destination>,
     /// Where an unnamed notify goes from here
     pub primary_notify: Option<String>,
-    /// This desk's model connections, as written (see [`desk_providers`])
-    pub providers: std::collections::HashMap<String, ProviderSpec>,
     /// What automation running here may reach outside the terminal
     pub capabilities: crate::caps::CapabilitySpec,
     /// Who may call which automation command here. Rows it does not mention
@@ -2898,16 +2883,6 @@ pub struct Desk {
     pub git_accounts: Vec<GitAccountSpec>,
     /// This desk's projects (see [`Desk::project_of`])
     pub projects: Vec<ProjectSpec>,
-    /// The assistant AI this desk agreed to hand pictures to (see
-    /// [`DeskSpec::send_pictures_to`])
-    pub send_pictures_to: Option<String>,
-    /// The model this desk agreed to hand page contents to (see
-    /// [`DeskSpec::send_pages_to`])
-    pub send_pages_to: Option<String>,
-    /// What this desk's browser tabs follow (see [`DeskSpec::browser`]),
-    /// with anything it leaves unset already taken from older app-wide
-    /// settings
-    pub browser: DeskBrowserSpec,
     /// What writes the folders' automatic names (see [`DeskSpec::summary_ai`])
     pub summary_ai: Option<String>,
     /// Whether those names reach the branch as well (see
@@ -2947,13 +2922,13 @@ pub fn desk_notify(
     map
 }
 
-/// This desk's model connections, resolved into what one request needs.
+/// The app's model connections, resolved into what one request needs.
 /// A connection with no address is left out: there is nothing to ask
-pub fn desk_providers(
-    desk: &Desk,
+pub fn app_providers(
+    cfg: &Config,
     look: &dyn Fn(&str) -> Option<String>,
 ) -> std::collections::HashMap<String, ProviderConn> {
-    desk.providers
+    cfg.providers
         .iter()
         .filter_map(|(name, p)| provider_conn(p, look).map(|c| (name.clone(), c)))
         .collect()
@@ -3001,20 +2976,24 @@ impl Desk {
     }
 
     /// The models that carry out a goal written in plain words on the page
-    /// `key`: the tab's own, and for whatever it leaves unset, this desk's.
-    /// A page not written in the settings has only the desk's. Whatever
-    /// neither says is the assistant AI's
-    pub fn words_models(&self, key: Option<&str>) -> WordsModels {
-        self.words_models_as(key, crate::bridge::assistant_model().as_deref())
+    /// `key`: the tab's own, and for whatever it leaves unset, the app's
+    /// (the deciding AI). A page not written in the settings has only the
+    /// app's. Whatever neither says is the assistant AI's
+    pub fn words_models(&self, cfg: Option<&Config>, key: Option<&str>) -> WordsModels {
+        self.words_models_as(
+            key,
+            &cfg.map(app_words).unwrap_or_default(),
+            crate::bridge::assistant_model().as_deref(),
+        )
     }
 
-    /// [`Self::words_models`], with the assistant AI given rather than
-    /// looked for
-    pub fn words_models_as(&self, key: Option<&str>, assistant: Option<&str>) -> WordsModels {
+    /// [`Self::words_models`], with the app's models and the assistant AI
+    /// given rather than looked for
+    pub fn words_models_as(&self, key: Option<&str>, app: &WordsModels, assistant: Option<&str>) -> WordsModels {
         key.and_then(|k| self.page_tab(k))
             .map(|t| t.cfg.words.clone())
             .unwrap_or_default()
-            .over(&self.browser.words)
+            .over(app)
             .or_assistant(assistant)
     }
 
@@ -4948,17 +4927,11 @@ impl Config {
                     // its own registered, and there is no app answer to lend it
                     notify: Default::default(),
                     primary_notify: None,
-                    providers: Default::default(),
                     capabilities: Default::default(),
                     automation_permissions: Default::default(),
                     projects: Vec::new(),
                     git,
                     git_accounts: Vec::new(),
-                    send_pictures_to: None,
-                    send_pages_to: None,
-                    browser: DeskBrowserSpec {
-                        words: WordsModels::default().over(&self.operate.words),
-                    },
                     summary_ai: None,
                     rename_branch: None,
                 });
@@ -5031,19 +5004,11 @@ impl Config {
                 discuss: desk.discuss.clone().or(file_discuss),
                 notify: desk.notify.clone(),
                 primary_notify: desk.primary_notify.as_deref().and_then(one_name),
-                providers: desk.providers.clone(),
                 capabilities: desk.capabilities.clone(),
                 automation_permissions: desk.automation_permissions.clone(),
                 git,
                 git_accounts: desk.git_accounts.clone(),
                 projects: desk.projects.clone(),
-                send_pictures_to: desk.send_pictures_to.as_deref().and_then(one_name),
-                send_pages_to: desk.send_pages_to.as_deref().and_then(one_name),
-                // Settings from before a desk had its own models name them for
-                // the whole app; a desk that says nothing still has those
-                browser: DeskBrowserSpec {
-                    words: desk.browser.words.over(&self.operate.words),
-                },
                 summary_ai: desk.summary_ai.as_deref().and_then(one_name),
                 rename_branch: desk.rename_branch,
             });
@@ -5804,6 +5769,41 @@ pub fn save_setting(at: &[&str], value: serde_json::Value) {
     }
 }
 
+/// Record that sending `kind` to the AI `row` was agreed to (see
+/// [`Config::agreed`]): the answer given in place, written where the
+/// settings screen writes its tick. What was agreed before stays agreed.
+/// Answers whether it was written
+pub fn save_agreed(row: &str, kind: &str) -> bool {
+    save_agreed_at(&config_file_path(), row, kind)
+}
+
+fn save_agreed_at(path: &Path, row: &str, kind: &str) -> bool {
+    let row = row.trim();
+    if row.is_empty() || !CONSENT_KINDS.contains(&kind) {
+        return false;
+    }
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(without_bom(&text)) else {
+        crate::append_hook_log("could not record an agreement: settings are not readable");
+        return false;
+    };
+    if !doc.is_object() {
+        doc = serde_json::json!({});
+    }
+    let kinds = &mut doc["agreed"][row];
+    if !kinds.is_array() {
+        *kinds = serde_json::json!([]);
+    }
+    let list = kinds.as_array_mut().expect("just made an array");
+    if !list.iter().any(|k| k.as_str() == Some(kind)) {
+        list.push(serde_json::json!(kind));
+    }
+    match serde_json::to_string_pretty(&doc) {
+        Ok(out) => crate::crypto::write_atomic(path, &out).is_ok(),
+        Err(_) => false,
+    }
+}
+
 /// The desk the first-start setup makes, so work has a desk to go into from
 /// the first folder on -- rather than a list of loose folders that only reads
 /// as a desk called DEFAULT. Given `accounts` as its git accounts.
@@ -6188,33 +6188,20 @@ mod tests {
                 {"name": "Home Stuff"},
             ]
         });
-        assert!(super::write_desk_value(&mut doc, "work", "send_pictures_to", Some("claude".into())));
-        assert_eq!(doc["desks"][0]["send_pictures_to"], "claude");
-        assert!(doc["desks"][1].get("send_pictures_to").is_none(), "it was written to the next desk");
+        assert!(super::write_desk_value(&mut doc, "work", "summary_ai", Some("claude".into())));
+        assert_eq!(doc["desks"][0]["summary_ai"], "claude");
+        assert!(doc["desks"][1].get("summary_ai").is_none(), "it was written to the next desk");
 
         let settled = super::slug_id("Home Stuff");
-        assert!(super::write_desk_value(&mut doc, &settled, "send_pictures_to", Some("codex".into())));
-        assert_eq!(doc["desks"][1]["send_pictures_to"], "codex");
+        assert!(super::write_desk_value(&mut doc, &settled, "summary_ai", Some("codex".into())));
+        assert_eq!(doc["desks"][1]["summary_ai"], "codex");
         assert_eq!(doc["desks"][1]["id"], settled.as_str(), "the call-name settled from the name was not written down");
 
-        assert!(super::write_desk_value(&mut doc, "work", "send_pictures_to", None));
-        assert!(doc["desks"][0].get("send_pictures_to").is_none(), "the removal did not go away");
-        assert!(!super::write_desk_value(&mut doc, "nobody", "send_pictures_to", Some("x".into())));
-        assert!(!super::write_desk_value(&mut doc, "", "send_pictures_to", Some("x".into())));
+        assert!(super::write_desk_value(&mut doc, "work", "summary_ai", None));
+        assert!(doc["desks"][0].get("summary_ai").is_none(), "the removal did not go away");
+        assert!(!super::write_desk_value(&mut doc, "nobody", "summary_ai", Some("x".into())));
+        assert!(!super::write_desk_value(&mut doc, "", "summary_ai", Some("x".into())));
         assert_eq!(doc["language"], "ja", "other settings changed");
-    }
-
-    /// What a desk agreed to is read back as the name it was agreed for, and
-    /// a blank is no answer
-    #[test]
-    fn a_desk_reads_the_ai_it_agreed_to() {
-        let cfg: super::Config = serde_json::from_str(
-            r#"{"desks":[{"name":"A","id":"a","send_pictures_to":" gemini "},{"name":"B","id":"b","send_pictures_to":""}]}"#,
-        )
-        .unwrap();
-        let (desks, _) = cfg.resolve_desks();
-        assert_eq!(desks[0].send_pictures_to.as_deref(), Some("gemini"));
-        assert_eq!(desks[1].send_pictures_to, None);
     }
 
     /// The screen offers an automation name while you type; the app settles on
@@ -6450,70 +6437,76 @@ mod tests {
     /// machine next door, which took 320 seconds to answer "just say OK" — at
     /// the old fixed 180 it could never once finish, and said so in words
     /// ("timeout: global") that named neither the wait nor its length.
-    /// The models a page is driven with in plain words: the tab's own, the
-    /// desk's for whatever the tab leaves unset, and for a desk that says
-    /// nothing, the app-wide ones older settings wrote. A page nobody wrote
-    /// down (opened by a script) has the desk's
+    /// The models a page is driven with in plain words: the tab's own, and
+    /// for whatever the tab leaves unset, the app's deciding AI. A page nobody
+    /// wrote down (opened by a script) has the app's
     #[test]
-    fn a_page_is_driven_by_its_own_models_then_its_desks_then_the_old_ones() {
+    fn a_page_is_driven_by_its_own_models_then_the_apps() {
         let cfg: Config = serde_json::from_str(
-            r#"{"operate": {"choose_model": "old/pick", "words_model": "old/write"},
+            r#"{"decide_ai": "jev/jev-latest",
                 "desks": [
-                  {"name": "A", "browser": {"words_model": "desk/write"},
+                  {"name": "A",
                    "folders": [{"tabs": [
-                     {"id": "shop", "command": "browser https://example.com", "choose_model": "jev/jev-latest"},
+                     {"id": "shop", "command": "browser https://example.com",
+                      "choose_model": "laya/laya", "words_model": "ds/chat"},
                      {"id": "news", "command": "browser https://example.org"},
-                     {"id": "term", "command": "cmd", "choose_model": "not/a-page"}]}]},
-                  {"name": "B", "folders": [{"tabs": []}]}]}"#,
+                     {"id": "term", "command": "cmd", "choose_model": "not/a-page"}]}]}]}"#,
         )
         .expect("the settings read");
         let (desks, _) = cfg.resolve_desks();
         let a = &desks[0];
-        let shop = a.words_models_as(Some("shop"), None);
-        assert_eq!(shop.choose().as_deref(), Some("jev/jev-latest"), "the tab's own choice");
-        assert_eq!(shop.words().as_deref(), Some("desk/write"), "left unset on the tab, the desk's");
-        let news = a.words_models_as(Some("news"), None);
-        assert_eq!(news.choose().as_deref(), Some("old/pick"), "unset on both, the old app-wide one");
-        assert_eq!(news.words().as_deref(), Some("desk/write"));
+        let app = app_words(&cfg);
+        let shop = a.words_models_as(Some("shop"), &app, None);
+        assert_eq!(shop.choose().as_deref(), Some("laya/laya"), "the tab's own choice");
+        assert_eq!(shop.words().as_deref(), Some("ds/chat"));
+        let news = a.words_models_as(Some("news"), &app, None);
+        assert_eq!(news.choose().as_deref(), Some("jev/jev-latest"), "unset on the tab, the app's deciding AI");
+        assert_eq!(news.words(), None, "nothing writes until an assistant AI does");
         assert_eq!(
-            a.words_models_as(Some("term"), None).choose().as_deref(),
-            Some("old/pick"),
+            a.words_models_as(Some("term"), &app, None).choose().as_deref(),
+            Some("jev/jev-latest"),
             "a terminal is no page, whatever it says"
         );
-        assert_eq!(a.words_models_as(Some("opened-by-a-script"), None), a.words_models_as(None, None));
-        let b = desks[1].words_models_as(Some("anything"), None);
-        assert_eq!(b.names(), vec!["old/pick".to_string(), "old/write".to_string()]);
+        assert_eq!(a.words_models_as(Some("opened-by-a-script"), &app, None), a.words_models_as(None, &app, None));
+        let with = a.words_models_as(Some("news"), &app, Some("@claude"));
+        assert_eq!((with.choose().as_deref(), with.words().as_deref()), (Some("jev/jev-latest"), Some("@claude")));
     }
 
-    /// Agreeing for the desk's pages at once covers each of them: a page is
-    /// ready when every model it would be handed to is among those agreed
-    /// to, and asks again when one of them is not
+    /// A page is ready when every AI it would be handed to was agreed to
+    /// under its own name, whatever model of theirs is named, and asks again
+    /// -- for the ones missing -- when one was not
     #[test]
-    fn a_page_is_ready_when_each_of_its_models_was_agreed_to() {
-        let desk_with = |agreed: &str| {
-            let json = format!(
-                r#"{{"desks": [{{"name": "A", "send_pages_to": {agreed:?},
-                    "browser": {{"choose_model": "jev/jev-latest", "words_model": "ds/chat"}},
-                    "folders": [{{"tabs": [
-                      {{"id": "shop", "command": "browser https://example.com", "words_model": "oa/gpt"}},
-                      {{"id": "news", "command": "browser https://example.org"}}]}}]}}]}}"#
-            );
-            let cfg: Config = serde_json::from_str(&json).expect("the settings read");
-            cfg.resolve_desks().0.remove(0)
+    fn a_page_is_ready_when_each_of_its_ais_was_agreed_to() {
+        let agreed = |rows: &[&str]| {
+            rows.iter()
+                .map(|r| (r.to_string(), vec![CONSENT_PAGES.to_string()]))
+                .collect::<std::collections::BTreeMap<_, _>>()
         };
-        let all = desk_with("ds/chat + jev/jev-latest + oa/gpt");
-        let gate = |d: &Desk, k: &str| pages_gate_as(Some(d), Some(k), None);
-        assert!(matches!(gate(&all, "shop"), PageGate::Ready { .. }));
-        assert!(matches!(gate(&all, "news"), PageGate::Ready { .. }));
-        let some = desk_with("ds/chat + jev/jev-latest");
-        assert!(matches!(gate(&some, "news"), PageGate::Ready { .. }));
-        assert!(
-            matches!(gate(&some, "shop"), PageGate::Changed { .. }),
-            "the page's own writer was never agreed to"
-        );
-        let none = desk_with("");
-        assert!(matches!(gate(&none, "news"), PageGate::Consent { .. }));
-        assert!(matches!(pages_gate_as(None, Some("news"), None), PageGate::NoDesk));
+        let models = WordsModels { choose_model: Some("jev/jev-latest".into()), words_model: Some("oa/gpt".into()) };
+        assert!(matches!(pages_gate_as(&models, &agreed(&["jev", "oa"])), PageGate::Ready { .. }));
+        match pages_gate_as(&models, &agreed(&["jev"])) {
+            PageGate::Consent { agree, .. } => assert_eq!(agree, vec!["oa".to_string()], "only what is missing is asked for"),
+            _ => panic!("the page's writer was never agreed to"),
+        }
+        match pages_gate_as(&models, &agreed(&[])) {
+            PageGate::Consent { agree, models } => {
+                assert_eq!(agree, vec!["jev".to_string(), "oa".to_string()]);
+                assert_eq!(models, "jev/jev-latest + oa/gpt");
+            }
+            _ => panic!("nothing agreed, nothing asked"),
+        }
+        // Agreed to pictures only: pages are a different question
+        let pictures: std::collections::BTreeMap<String, Vec<String>> =
+            [("jev".to_string(), vec![CONSENT_PICTURES.to_string()]), ("oa".to_string(), vec![CONSENT_PICTURES.to_string()])]
+                .into();
+        assert!(matches!(pages_gate_as(&models, &pictures), PageGate::Consent { .. }));
+        // The same connection under two models is one agreement
+        let same = WordsModels { choose_model: Some("oa/fast".into()), words_model: Some("oa/gpt".into()) };
+        assert!(matches!(pages_gate_as(&same, &agreed(&["oa"])), PageGate::Ready { .. }));
+        // An installed AI is agreed to by its own name, whatever model of it
+        let installed = WordsModels { choose_model: Some("@claude/haiku".into()), words_model: Some("@claude".into()) };
+        assert!(matches!(pages_gate_as(&installed, &agreed(&["@claude"])), PageGate::Ready { .. }));
+        assert_eq!(pages_gate_as(&installed, &agreed(&[])).agree(), &["@claude".to_string()]);
     }
 
     /// Neither model chosen anywhere, or only one: the page is not driven,
@@ -6521,44 +6514,70 @@ mod tests {
     #[test]
     fn a_page_missing_a_model_is_refused_as_missing_a_model() {
         let cfg: Config = serde_json::from_str(
-            r#"{"desks": [{"name": "A", "send_pages_to": "x/y",
-                "browser": {"choose_model": "x/y"},
-                "folders": [{"tabs": [{"id": "p", "command": "browser https://example.com"}]}]}]}"#,
+            r#"{"decide_ai": "x/y", "agreed": {"x": ["pages"]},
+                "desks": [{"name": "A", "folders": [{"tabs": [{"id": "p", "command": "browser https://example.com"}]}]}]}"#,
         )
         .expect("the settings read");
         let desk = cfg.resolve_desks().0.remove(0);
-        assert!(matches!(pages_gate_as(Some(&desk), Some("p"), None), PageGate::NoModel));
+        let p = desk.words_models_as(Some("p"), &app_words(&cfg), None);
+        assert!(matches!(pages_gate_as(&p, &cfg.agreed), PageGate::NoModel));
+        assert!(matches!(pages_gate_as(&WordsModels::default(), &cfg.agreed), PageGate::NoModel));
     }
 
-    /// What neither the page nor its desk names is the assistant AI's, the
-    /// way a folder's name is: a desk that chose nothing drives its pages
-    /// with it. It is a model like any other for the agreement -- sending a
-    /// page to it is asked about first
+    /// What neither the page nor the app names is the assistant AI's, the
+    /// way a folder's name is. It is an AI like any other for the agreement
     #[test]
     fn what_nobody_chose_is_the_assistant_ais() {
         let cfg: Config = serde_json::from_str(
-            r#"{"desks": [{"name": "A", "send_pages_to": "@claude",
-                "folders": [{"tabs": [
+            r#"{"agreed": {"@claude": ["pages", "pictures"]},
+                "desks": [{"name": "A", "folders": [{"tabs": [
                   {"id": "p", "command": "browser https://example.com"},
                   {"id": "q", "command": "browser https://example.org", "choose_model": "jev/jev-latest"}]}]}]}"#,
         )
         .expect("the settings read");
         let desk = cfg.resolve_desks().0.remove(0);
-        let p = desk.words_models_as(Some("p"), Some("@claude"));
+        let app = app_words(&cfg);
+        assert_eq!(app, WordsModels::default(), "nothing chosen for the app");
+        let p = desk.words_models_as(Some("p"), &app, Some("@claude"));
         assert_eq!((p.choose().as_deref(), p.words().as_deref()), (Some("@claude"), Some("@claude")));
-        let q = desk.words_models_as(Some("q"), Some("@claude"));
+        let q = desk.words_models_as(Some("q"), &app, Some("@claude"));
         assert_eq!(q.choose().as_deref(), Some("jev/jev-latest"), "a choice made stays made");
         assert_eq!(q.words().as_deref(), Some("@claude"));
-        assert!(matches!(pages_gate_as(Some(&desk), Some("p"), Some("@claude")), PageGate::Ready { .. }));
+        assert!(matches!(pages_gate_as(&p, &cfg.agreed), PageGate::Ready { .. }));
+        let asked = pages_gate_as(&q, &cfg.agreed);
+        assert_eq!(asked.agree(), &["jev".to_string()], "Jev was never agreed to, and Claude Code stays agreed");
+        assert!(asked.why_here().is_some(), "the question is put beside the button");
         assert!(
-            matches!(pages_gate_as(Some(&desk), Some("q"), Some("@claude")), PageGate::Changed { .. }),
-            "Jev was never agreed to"
+            matches!(pages_gate_as(&desk.words_models_as(Some("p"), &app, None), &cfg.agreed), PageGate::NoModel),
+            "no assistant AI, nothing to drive with"
         );
-        assert!(matches!(pages_gate_as(Some(&desk), Some("p"), None), PageGate::NoModel), "no assistant AI, nothing to drive with");
-        // Agreeing to Jev here keeps the assistant AI agreed, for the other page
-        let q = pages_gate_as(Some(&desk), Some("q"), Some("@claude"));
-        assert_eq!(q.agree(), Some("@claude + jev/jev-latest"));
-        assert!(q.why_here().is_some(), "the question is put beside the button");
+    }
+
+    /// An agreement given in place lands in the settings file beside the
+    /// ticks the settings screen writes, adds to what was agreed, and never
+    /// takes anything away
+    #[test]
+    fn an_agreement_given_in_place_is_written_with_the_others() {
+        let dir = std::env::temp_dir().join("shikisha-agreed-in-place");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"language": "ja", "agreed": {"jev": ["pages"]}}"#).unwrap();
+        assert!(save_agreed_at(&path, "@claude", CONSENT_PICTURES));
+        assert!(save_agreed_at(&path, "jev", CONSENT_PAGES), "agreeing twice is still an agreement");
+        assert!(!save_agreed_at(&path, "", CONSENT_PAGES), "nobody was agreed to");
+        assert!(!save_agreed_at(&path, "jev", "everything"), "a kind this program does not ask about");
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["agreed"]["jev"], serde_json::json!(["pages"]));
+        assert_eq!(doc["agreed"]["@claude"], serde_json::json!(["pictures"]));
+        assert_eq!(doc["language"], "ja", "other settings changed");
+        let cfg: Config = serde_json::from_value(doc).unwrap();
+        assert!(agreed_to(&cfg.agreed, "@claude", CONSENT_PICTURES));
+        assert!(!agreed_to(&cfg.agreed, "@claude", CONSENT_PAGES));
+        assert_eq!(consent_row("@claude/haiku"), "@claude");
+        assert_eq!(consent_row(" jev/jev-latest "), "jev");
+        assert_eq!(consent_row("ollama/user/model:tag"), "ollama");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -7599,9 +7618,9 @@ mod tests {
         assert!(crate::i18n::t("ai.pr.default_prompt").contains("{commits}"));
     }
 
-    /// Each desk has its own notification destinations, model connections,
-    /// automation doors, permission table and git settings -- and nothing of
-    /// anybody else's underneath.
+    /// Each desk has its own notification destinations, automation doors,
+    /// permission table and git settings -- and nothing of anybody else's
+    /// underneath.
     ///
     /// The same keys written at the top of the file, where the app's own
     /// answer used to live, reach no desk at all: an answer a desk inherits
@@ -7613,7 +7632,6 @@ mod tests {
             r#"{
                 "primary_notify": "mine",
                 "notify": {"mine": {"type":"slack","webhook":"https://example.com/a"}},
-                "providers": {"mine": {"base_url":"http://localhost:11434/v1"}},
                 "capabilities": {"allow_hosts": ["example.com"]},
                 "automation_permissions": {"lua": {"ai": true}},
                 "git": {"protect": ["main"], "message_hint": "アプリの言い分"},
@@ -7622,7 +7640,6 @@ mod tests {
                   {"name":"会社",
                    "notify": {"work": {"type":"slack","webhook":"@notify/kaisha/work"}},
                    "primary_notify": " work ",
-                   "providers": {"claude": {"base_url":"https://work.example/v1", "api_key":"@provider/kaisha/claude"}},
                    "capabilities": {"files": {"books": {"dir": "C:/books", "write": true}}},
                    "automation_permissions": {"write_path": {"ai": false}},
                    "git": {"protect": ["main", "release/*"]},
@@ -7637,7 +7654,6 @@ mod tests {
         // Said nothing: has nothing
         let bare = &spaces[0];
         assert!(bare.notify.is_empty() && bare.primary_notify.is_none(), "it inherited the app's notification destinations");
-        assert!(bare.providers.is_empty(), "it inherited the app's connections");
         assert!(bare.capabilities.allow_hosts.is_empty(), "it inherited the app's allowed hosts");
         assert!(
             !crate::grants::Grants::new(bare.automation_permissions.clone()).allows("lua", crate::grants::Subject::Ai),
@@ -7660,16 +7676,35 @@ mod tests {
         // Its secrets are read through the store's door, by the names it wrote
         let store = |k: &str| match k {
             "notify/kaisha/work" => Some("https://hooks.example/work".to_string()),
-            "provider/kaisha/claude" => Some("sk-work".to_string()),
             _ => None,
         };
         let dests = desk_notify(work, &store);
         assert!(
             matches!(&dests["work"], crate::notify::Destination::Slack { webhook } if webhook == "https://hooks.example/work")
         );
-        let conns = desk_providers(work, &store);
+    }
+
+    /// The model connections are the app's: one list for every desk, each
+    /// key read through the store's door by the name written, and a
+    /// connection with no address left out, since there is nothing to ask
+    #[test]
+    fn the_connections_are_the_apps_and_their_keys_are_read_by_name() {
+        let cfg: Config = serde_json::from_str(
+            r#"{
+                "providers": {"claude": {"base_url":"https://work.example/v1", "api_key":"@provider/claude"},
+                              "empty": {"api_key":"@provider/empty"}},
+                "desks": [{"name":"個人", "providers": {"mine": {"base_url":"http://localhost:11434/v1"}}}, {"name":"会社"}]
+              }"#,
+        )
+        .unwrap();
+        let store = |k: &str| match k {
+            "provider/claude" => Some("sk-work".to_string()),
+            _ => None,
+        };
+        let conns = app_providers(&cfg, &store);
         assert_eq!(conns["claude"].headers.get("Authorization").map(String::as_str), Some("Bearer sk-work"));
-        assert!(desk_providers(bare, &store).is_empty());
+        assert!(!conns.contains_key("empty"), "a connection with no address was kept");
+        assert!(!conns.contains_key("mine"), "a connection written on a desk, from before, is read");
     }
 
     /// A desk written with none of these keys reads as a desk with none of
@@ -7679,7 +7714,7 @@ mod tests {
         let cfg: Config =
             serde_json::from_str(r#"{"desks":[{"name":"素","tabs":[]}]}"#).unwrap();
         let d = &cfg.desks[0];
-        assert!(d.notify.is_empty() && d.primary_notify.is_none() && d.providers.is_empty());
+        assert!(d.notify.is_empty() && d.primary_notify.is_none());
         assert!(d.capabilities.files.is_empty() && d.automation_permissions.is_empty());
         assert_eq!(d.git.protected(), GitSpec::default().protected(), "git's default is not the built-in answer");
     }
@@ -7814,10 +7849,10 @@ mod tests {
     fn only_what_nothing_claims_is_offered_for_tidying() {
         let cfg: Config = serde_json::from_str(
             r#"{
+              "providers": {"deepseek": {"base_url": "https://api.deepseek.com/v1"}},
               "desks": [
                 {"name":"Blog","id":"blog","tabs":[
                    {"name":"prod","id":"prod","command":"ssh://me@example.com"}],
-                 "providers": {"deepseek": {"base_url": "https://api.deepseek.com/v1"}},
                  "notify": {"team": {"type":"slack","webhook":"@notify/blog/team"}}}
               ]
             }"#,
@@ -7828,14 +7863,14 @@ mod tests {
             "blog.diary",
             "ssh/blog/prod/password",
             "ssh/blog/prod/passphrase",
-            "provider/blog/deepseek",
+            "provider/deepseek",
             "notify/blog/team",
             // nobody's
             "gone.diary",
             "ssh/gone/prod/password",
             "ssh/blog/gone/password",
-            "provider/blog/openai",
-            "provider/gone/deepseek",
+            "provider/openai",
+            "provider/blog/deepseek",
             "notify/old",
             // not this program's shape: never judged, never offered
             "something_a_person_made",
@@ -7852,8 +7887,8 @@ mod tests {
             vec![
                 "gone.diary",
                 "notify/old",
-                "provider/blog/openai",
-                "provider/gone/deepseek",
+                "provider/blog/deepseek",
+                "provider/openai",
                 "ssh/blog/gone/password",
                 "ssh/gone/prod/password",
             ]
