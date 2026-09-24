@@ -580,8 +580,11 @@ impl Layout {
     /// was there for that tab. The last pane cannot close, so it moves on to
     /// the neighbour instead -- the next one along, or the one before when it
     /// was the last -- which is the tab a browser shows when the one in front
-    /// of you is closed.
-    pub fn follow(&mut self, moves: &[Option<usize>]) {
+    /// of you is closed. `apart` is the rows (by their new number) that are
+    /// not drawn beside the others and so are nobody's neighbour, whatever
+    /// number they stand at (`view::drawn_apart`): the Issue row, the settings
+    /// page. They are stepped over, not landed on.
+    pub fn follow(&mut self, moves: &[Option<usize>], apart: &[usize]) {
         let mut gone = Vec::new();
         for (id, s) in self.leaves() {
             let Some(to) = s.checked_sub(1).and_then(|i| moves.get(i)) else {
@@ -594,8 +597,9 @@ impl Layout {
         }
         for (id, s) in gone {
             if !self.close(id) {
-                let after = moves[s..].iter().flatten().next();
-                let before = moves[..s - 1].iter().rev().flatten().next();
+                let beside = |n: &&usize| !apart.contains(n);
+                let after = moves[s..].iter().flatten().find(beside);
+                let before = moves[..s - 1].iter().rev().flatten().find(beside);
                 self.set_surface(id, after.or(before).copied().unwrap_or(0));
             }
         }
@@ -987,7 +991,7 @@ mod tests {
     fn a_pane_stays_on_its_tab_when_one_before_it_closes() {
         let mut l = Layout::single(1);
         l.split(Dir::Row, 3);
-        l.follow(&[Some(1), None, Some(2)]);
+        l.follow(&[Some(1), None, Some(2)], &[]);
         assert_eq!(surfaces(&l), vec![1, 2], "the pane was handed the tab next door");
     }
 
@@ -997,7 +1001,7 @@ mod tests {
     fn a_pane_whose_tab_closed_closes_too() {
         let mut l = Layout::single(1);
         l.split(Dir::Row, 2);
-        l.follow(&[Some(1), None, Some(2)]);
+        l.follow(&[Some(1), None, Some(2)], &[]);
         assert!(l.is_single(), "the pane of a closed tab is still there");
         assert_eq!(surfaces(&l), vec![1]);
     }
@@ -1007,16 +1011,31 @@ mod tests {
     #[test]
     fn the_only_pane_moves_to_the_neighbour() {
         let mut l = Layout::single(2);
-        l.follow(&[Some(1), None, Some(2)]);
+        l.follow(&[Some(1), None, Some(2)], &[]);
         assert_eq!(surfaces(&l), vec![2], "it did not move on to the next tab");
 
         let mut l = Layout::single(3);
-        l.follow(&[Some(1), Some(2), None]);
+        l.follow(&[Some(1), Some(2), None], &[]);
         assert_eq!(surfaces(&l), vec![2], "closing the last tab should show the one before");
 
         let mut l = Layout::single(1);
-        l.follow(&[None]);
+        l.follow(&[None], &[]);
         assert_eq!(surfaces(&l), vec![0], "with nothing left it should show nothing");
+    }
+
+    /// The row after the closed one is the Issue row, drawn at the top of the
+    /// list and not beside anything: the screen steps over it to the one
+    /// before. With nothing but such rows left, it shows nothing
+    #[test]
+    fn the_only_pane_steps_over_rows_drawn_apart() {
+        // Rows: a shell, the editor being closed, the Issue row
+        let mut l = Layout::single(2);
+        l.follow(&[Some(1), None, Some(2)], &[2]);
+        assert_eq!(surfaces(&l), vec![1], "it landed on a row that is not drawn beside the closed one");
+
+        let mut l = Layout::single(1);
+        l.follow(&[None, Some(1)], &[1]);
+        assert_eq!(surfaces(&l), vec![0], "with only the Issue row left it should show nothing");
     }
 
     #[test]
