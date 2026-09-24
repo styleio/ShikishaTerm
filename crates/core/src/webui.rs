@@ -8096,7 +8096,7 @@ function actionsCard() {
 // start is what carries it. What the row says: the name on the button, whether
 // it types or runs, and what it sends, on one line. A Lua that does not parse
 // is said on the row too, since it is what holds the page's save
-let actionCarrying = false, actionCarried = false;
+let actionCarrying = false;
 function actionRow(a, i, draw) {
   const isLua = !!a.lua;
   const said = String(a.body || "").replace(/\s+/g, " ").trim();
@@ -8116,7 +8116,7 @@ function actionRow(a, i, draw) {
   // An existing break shows at once, not only after the dialog was opened
   if (isLua && !actionErrors.has(a)) lintAction(a).then(err => { broken.hidden = !err; });
   const open = () => actionDialog(i, draw);
-  row.addEventListener("click", () => { if (!actionCarried) open(); });
+  row.addEventListener("click", open);
   grip.addEventListener("click", e => e.stopPropagation());
   grip.addEventListener("pointerdown", e => actionCarry(e, row, draw));
   row.addEventListener("keydown", e => {
@@ -8170,9 +8170,17 @@ function actionCarry(e, row, draw) {
     row.classList.remove("dragging");
     document.body.classList.remove("acarrying");
     actionCarrying = false;
-    // The click that follows a drop is not a press
-    actionCarried = true;
-    setTimeout(() => { actionCarried = false; }, 0);
+    // The click the browser sends after the button comes up is not a press on
+    // the row it lands on: it is swallowed once, before anything hears it. A
+    // flag cleared on a timer is not enough -- real input delivers that click
+    // in a later task than the pointerup, after such a timer has fired, and
+    // the drop opened the dialog of whichever row was under the pointer
+    const swallow = e => { e.stopPropagation(); e.preventDefault(); };
+    addEventListener("click", swallow, {capture:true, once:true});
+    // A carry that ends without a click (cancelled, or let go outside the
+    // window) must not eat the next real press instead
+    addEventListener("pointerdown", () => removeEventListener("click", swallow, {capture:true}),
+      {capture:true, once:true});
   };
   const cancel = ev => {
     if (ev.pointerId !== e.pointerId) return;
