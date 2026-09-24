@@ -24,7 +24,7 @@ jobs:
         env:
           R2: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
-          aws s3 rm "s3://$BUCKET" --recursive --endpoint-url "$R2" --no-progress || true
+          aws s3 rm "s3://$BUCKET" --recursive --endpoint-url "$R2"
           left=$(aws s3 ls "s3://$BUCKET" --recursive --endpoint-url "$R2" | wc -l)
           echo "objects left: $left"
           [ "$left" -eq 0 ]
