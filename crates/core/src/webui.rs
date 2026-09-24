@@ -13507,9 +13507,14 @@ function floatMore() {
   showSelected("center");
 }
 // Esc is the dialog's way out (style guide 5.2), and only the dialog's: a
-// confirmation opened over it takes its own Esc first
+// confirmation opened over it takes its own Esc first, and a framed dialog
+// (a secret's, a machine's, a quick action's -- a .modal, not a <dialog>)
+// says it took the key by preventing its default, and is gone by the time
+// the key reaches here. Left out, an Esc inside one closed the dialog and
+// then asked, for the whole sheet, whether to throw the unsaved work away --
+// a question that took every press after it until it was answered
 document.addEventListener("keydown", e => {
-  if (e.key !== "Escape" || document.querySelector("dialog[open]")) return;
+  if (e.key !== "Escape" || e.defaultPrevented || document.querySelector("dialog[open]")) return;
   // The one question the board's + asks: not adding after all
   if (floating) { e.preventDefault(); floatCancel(); return; }
   // A sheet standing over the board: the same way out, and the same guard
@@ -14876,6 +14881,25 @@ mod tests {
             card.matches("j.origin").count(),
             1,
             "origin only decides whether there is anything to show. It must not be drawn on screen"
+        );
+    }
+
+    /// An Esc a dialog took is not an Esc for the sheet under it.
+    ///
+    /// A framed dialog closes on Esc and prevents the key's default; the page
+    /// hears the same key afterwards, when the dialog is already gone, and
+    /// used to close the whole sheet on it -- which, with unsaved work, put
+    /// up a question that took every press until it was answered. Found by
+    /// tools/debug/quick-actions.win.mjs driving the running app.
+    #[test]
+    fn an_escape_a_dialog_took_does_not_close_the_sheet() {
+        let from = PAGE
+            .find("if (SHEET) { e.preventDefault(); closeSettings(); }")
+            .expect("the sheet no longer closes on Esc");
+        let guard = &PAGE[from.saturating_sub(400)..from];
+        assert!(
+            guard.contains("e.defaultPrevented"),
+            "the sheet's Esc does not step aside for a dialog that already took the key"
         );
     }
 
