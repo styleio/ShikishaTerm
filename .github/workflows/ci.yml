@@ -104,7 +104,7 @@ jobs:
       - name: The archive key is the one we published
         run: |
           gpg --show-keys --with-colons packaging/linux/shikisha-archive-key.asc > /tmp/key
-          grep -q "^fpr:::::::::A73AFDB4C9ADA2AB390C470AD960246DC636013B:" /tmp/key
+          grep -q "^fpr:::::::::B5B1D1F5C6B984B64632EBD0881F363FBF07A203:" /tmp/key
           gpg --show-keys packaging/linux/shikisha-archive-key.asc
 
       # Do the contents make a correct .deb and .rpm? Checked where it is known before a tag is pushed
