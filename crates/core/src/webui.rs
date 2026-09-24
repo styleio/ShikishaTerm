@@ -10555,12 +10555,12 @@ function pcSignInsCard() {
         el("span", {class:"hint mono secretdesc"}, login + "@" + GIT_HOST),
         state,
         el("button", {class:"quiet", onclick: async () => {
-          if (!await confirmAction(fill(T["settings.gitacct.pc_forget_confirm"], {login}), T["settings.gitacct.forget"])) return;
+          if (!await confirmAction(fill(T["settings.gitacct.pc_forget_confirm"], {login}), T["common.delete"])) return;
           const r = await postJson("/api/pc-accounts/forget", {login});
           if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return; }
           // The pickers offer the PC's accounts, so they are drawn again
           await draw(); render();
-        }}, T["settings.gitacct.forget"])));
+        }}, T["common.delete"])));
       signInState("pc=" + encodeURIComponent(login), state, T["settings.gitacct.no_token"], true);
     }
     listBox.append(rows);
@@ -10597,11 +10597,11 @@ function ghSignInsCard() {
         a.active ? el("span", {class:"chip"}, T["settings.gitacct.gh_active"]) : null,
         state,
         el("button", {class:"quiet", onclick: async () => {
-          if (!await confirmAction(fill(T["settings.gitacct.gh_forget_confirm"], {login: a.login, host: a.host}), T["settings.gitacct.forget"])) return;
+          if (!await confirmAction(fill(T["settings.gitacct.gh_forget_confirm"], {login: a.login, host: a.host}), T["settings.gitacct.gh_signout"])) return;
           const r = await postJson("/api/gh-accounts/forget", {login: a.login, host: a.host});
           if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return; }
           draw();
-        }}, T["settings.gitacct.forget"])));
+        }}, T["settings.gitacct.gh_signout"])));
       signInState("gh=" + encodeURIComponent(a.login) + "&host=" + encodeURIComponent(a.host), state, T["settings.gitacct.no_gh"], true);
     }
     listBox.append(rows);

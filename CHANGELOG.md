@@ -20,7 +20,7 @@ once it reaches its first tagged release.
 - **Settings > Git accounts, under AI agents.** The git accounts, and with
   them the GitHub accounts the credential store of git on this PC holds and
   the accounts GitHub CLI (gh) is signed in as,
-  each with whether GitHub still accepts it, taken out with a press, and a
+  each with whether GitHub still accepts it, deleted with a press, and a
   token put in with another (into git's store the way a push that signed in
   leaves it, or into gh as `gh auth login --with-token` does). The window the
   account picker opens shows the same three cards, and comes back with a
