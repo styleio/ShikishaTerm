@@ -17,9 +17,9 @@ once it reaches its first tagged release.
   project's page at its git account card. Any other failure is reported as it
   came, with no button: a network that is down is not put right by choosing
   an account.
-- **The sign-ins this PC holds are listed with the desk's git accounts.** Desk
-  settings > git has two more cards: the GitHub accounts the credential store
-  of git on this PC holds, and the accounts GitHub CLI (gh) is signed in as,
+- **Settings > Git accounts, under AI agents.** The git accounts, and with
+  them the GitHub accounts the credential store of git on this PC holds and
+  the accounts GitHub CLI (gh) is signed in as,
   each with whether GitHub still accepts it, taken out with a press, and a
   token put in with another (into git's store the way a push that signed in
   leaves it, or into gh as `gh auth login --with-token` does). The window the
@@ -41,6 +41,10 @@ once it reaches its first tagged release.
   settings.
 
 ### Changed
+- **The git accounts are the app's, not a desk's.** One list, under Settings >
+  Git accounts, that every desk's projects and git tabs choose from; a desk's
+  own `git_accounts` is gone and is not read, and a token is filed as
+  `git/<name>`. The same move the AI providers made.
 - **Nothing chosen is this PC's git.** A project that has chosen no git account
   fetches, pulls, pushes and reads its pull requests the way git on this PC
   already signs in, instead of refusing until somebody chooses -- most people

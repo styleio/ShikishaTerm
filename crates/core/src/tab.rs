@@ -5658,13 +5658,13 @@ mod git_account_tests {
             login: Some("octocat".into()),
             ..Default::default()
         };
-        let chosen = GitUse::Account { desk: "w".into(), spec };
+        let chosen = GitUse::Account { spec };
         // Nothing filed under that name yet: the terminal is left as it was
         // rather than refusing to open
         crate::git::use_secrets(Default::default());
         assert!(super::git_env(&chosen, "Shell").is_empty(), "a terminal was changed with no token to change it for");
 
-        crate::git::use_secrets([("git/w/work".to_string(), "github_pat_x".to_string())].into());
+        crate::git::use_secrets([("git/work".to_string(), "github_pat_x".to_string())].into());
         let env: std::collections::HashMap<String, String> = super::git_env(&chosen, "Shell").into_iter().collect();
         assert_eq!(env.get("SHIKISHA_GIT_TOKEN").map(String::as_str), Some("github_pat_x"));
         assert_eq!(env.get("SHIKISHA_GIT_LOGIN").map(String::as_str), Some("octocat"));

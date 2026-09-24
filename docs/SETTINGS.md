@@ -47,6 +47,12 @@ Assistant AI, deciding AI, connections, agreements
 - **Model for those names** — A name costs a fraction of an answer this way. Turn it off if the names it writes are not recognisable.
 - **Model**
 
+### Git accounts
+
+Tokens, and the sign-ins of this PC's git and gh
+
+- **Token**
+
 ### Update
 
 Newer versions, and going back
@@ -216,11 +222,9 @@ This screen has nothing to fill in. What it shows depends on what is set elsewhe
 
 ### git
 
-Accounts, protected branches, commit messages
+Protected branches, commit messages
 
-**Git accounts**
-
-- **Token**
+This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 
 ### Secrets
 

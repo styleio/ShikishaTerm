@@ -3064,9 +3064,6 @@ fn handle(
         // a row that stops showing pull request numbers looks exactly like a
         // branch that has none
         ("GET", "/api/github") => {
-            let desk = query_param(req.url(), "desk")
-                .map(|c| percent_decode(&c))
-                .unwrap_or_default();
             let account = query_param(req.url(), "account")
                 .map(|c| percent_decode(&c))
                 .unwrap_or_default();
@@ -3074,10 +3071,8 @@ fn handle(
             // account's token comes from GitHub CLI, the others' from the store.
             // One not saved yet is not in the settings file, and has only the
             // store to ask
-            let spec = crate::config::load().and_then(|cfg| {
-                cfg.resolve_desks().0.into_iter().find(|d| d.id == desk.trim())?
-                    .git_accounts.into_iter().find(|a| a.name == account.trim())
-            });
+            let spec = crate::config::load()
+                .and_then(|cfg| cfg.git_accounts.into_iter().find(|a| a.name == account.trim()));
             // Or one of the sign-ins this PC holds: git's credential store's,
             // by login (`pc`), or GitHub CLI's, by login on a host (`gh`). Both
             // are asked of the program that holds them, the same as when git
@@ -3090,14 +3085,14 @@ fn handle(
                 crate::pr::pc_token(Some(pc.trim())).ok()
             } else if crate::pr::plain_name(gh.trim()) && crate::pr::plain_name(&host) {
                 crate::pr::gh_token_of(&host, gh.trim())
-            } else if desk.trim().is_empty() || account.trim().is_empty() {
+            } else if account.trim().is_empty() {
                 None
             } else {
                 let pw = password.lock().unwrap().clone();
                 let look = |k: &str| crate::config::secret_value(&secrets_file(config_path), pw.as_deref(), k);
                 match spec {
-                    Some(spec) => spec.token(desk.trim(), &look),
-                    None => look(&crate::config::git_token_key(desk.trim(), account.trim())),
+                    Some(spec) => spec.token(&look),
+                    None => look(&crate::config::git_token_key(account.trim())),
                 }
             };
             let said = crate::pr::probe(own);
@@ -7193,6 +7188,9 @@ function globalSections() {
     // The AIs this app asks, the connections they are reached on, and what
     // each was agreed to receive: one place for the whole app
     {id:"ai",        label:T["settings.sec.ai"],        sub:T["settings.sec.ai.sub"],        build:aiAgentsCard},
+    // The git accounts, and beside them the sign-ins this PC's git and GitHub
+    // CLI hold: everything a project can sign in as, in one place for the app
+    {id:"gitaccounts", label:T["settings.sec.gitaccounts"], sub:T["settings.sec.gitaccounts.sub"], build:() => [gitAccountsCard(), pcSignInsCard(), ghSignInsCard()]},
     {id:"update",    label:T["settings.sec.update"],    sub:T["settings.sec.update.sub"],    build:updateCard},
     {id:"remote",    label:T["settings.sec.remote"],    sub:T["settings.sec.remote.sub"],    build:remoteCard},
     // Two cards: the keys that work from any program, then the keys inside
@@ -7220,7 +7218,7 @@ function globalSections() {
 // Links that name one of a desk's settings (the git panel's gear asks for
 // "git"): the desk in view, at that entry, since there is no copy of the
 // program's to land on. Older names for the same places are kept here
-const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", "git-pr":"git", "git-merge":"git", "git-ci":"git", protect:"git", gitaccounts:"git",
+const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", "git-pr":"git", "git-merge":"git", "git-ci":"git", protect:"git",
                     permissions:"permissions", caps:"caps"};
 
 // ── Update ─────────────────────────────────────────────────────
@@ -7474,6 +7472,8 @@ function urlFault(text) {
 // the moves on a page, the AI that writes automatic names, the connections a
 // `model` tab or a setting names, and what each AI was agreed to receive
 const appProviders = () => (current.providers = isObj(current.providers) ? current.providers : {});
+// The git accounts are the app's too, the same on every desk
+const appGitAccounts = () => (current.git_accounts = Array.isArray(current.git_accounts) ? current.git_accounts : []);
 const appAgreed = () => (current.agreed = isObj(current.agreed) ? current.agreed : {});
 // What a browser tab follows when it names nothing of its own: the deciding
 // AI picks, and nothing is named for the writing (the assistant AI writes)
@@ -10222,7 +10222,7 @@ function deskSections(desk) {
     s("permissions", permissionsCard),
     // Who the desk signs in as first, then what it does with that: one
     // page, since a person setting up git on a desk wants both
-    s("git", desk => [gitAccountsCard(desk), pcSignInsCard(), ghSignInsCard(), gitCard(desk)]),
+    s("git", desk => [gitCard(desk)]),
     s("secrets", deskSecretsCard),
     s("discuss", deskDiscussCard),
     s("stops", deskStopsCard),
@@ -10324,25 +10324,25 @@ function deskBasic(desk) {
 // and inside the window the account picker opens (gitAccountsWindow). One
 // list, so a way of adding an account cannot appear in one place and not the
 // other
-function gitAccountsParts(desk) {
-  desk.git_accounts = desk.git_accounts || [];
+function gitAccountsParts() {
   const listBox = el("div");
   const draw = () => {
+    const accts = appGitAccounts();
     listBox.textContent = "";
-    if (!desk.git_accounts.length) {
+    if (!accts.length) {
       listBox.append(el("div", {class:"hint"}, T["settings.gitacct.empty"]));
       return;
     }
     const rows = el("div", {class:"rows"});
-    for (const a of desk.git_accounts) {
+    for (const a of accts) {
       const state = el("span", {class:"hint secretsite"}, "");
-      rows.append(el("div", {class:"listrow secretrow", onclick: () => gitAccountDialog(desk, a.name, draw)},
+      rows.append(el("div", {class:"listrow secretrow", onclick: () => gitAccountDialog(a.name, draw)},
         el("span", {class:"mono secretname"}, a.name),
         el("span", {class:"hint mono secretdesc"}, gitAccountAbout(a)),
         el("span", {class:"hint"}, signInLabel(a)),
         state,
         el("span", {class:"go"}, "›")));
-      gitAccountState(desk, a, state);
+      gitAccountState(a, state);
     }
     listBox.append(rows);
   };
@@ -10351,22 +10351,23 @@ function gitAccountsParts(desk) {
     el("div", {class:"hint"}, T["settings.gitacct.hint"]),
     listBox,
     el("div", {class:"row"},
-      el("button", {onclick: () => gitAccountDialog(desk, null, draw)}, T["settings.gitacct.add"])),
+      el("button", {onclick: () => gitAccountDialog(null, draw)}, T["settings.gitacct.add"])),
     el("div", {class:"hint"}, T["settings.gitacct.where"]),
     el("div", {class:"hint"}, T["settings.gitacct.terminal"]),
   ];
 }
 
-function gitAccountsCard(desk) {
-  const c = card(T["settings.gitacct.title"], ...gitAccountsParts(desk));
-  c.id = "desk-gitaccounts";
+function gitAccountsCard() {
+  const c = card(T["settings.gitacct.title"], ...gitAccountsParts());
+  c.id = "app-gitaccounts";
   return c;
 }
 
-// Adding a git account to a desk, or changing one. `name` is null for a new one.
-function gitAccountDialog(desk, name, redraw) {
+// Adding a git account, or changing one. `name` is null for a new one.
+function gitAccountDialog(name, redraw) {
   const editing = !!name;
-  const a = editing ? (desk.git_accounts.find(x => x.name === name) || {}) : {};
+  const accts = appGitAccounts();
+  const a = editing ? (accts.find(x => x.name === name) || {}) : {};
   const input = (value, attrs) => { const i = el("input", Object.assign({type:"text"}, attrs || {})); i.value = value || ""; return i; };
   const nameIn = input(name, {class:"mono", placeholder:T["settings.gitacct.name_ph"]});
   nameIn.disabled = editing;
@@ -10388,8 +10389,7 @@ function gitAccountDialog(desk, name, redraw) {
   let hasToken = false, storeMode = "";
   fetchSecrets().then(j => {
     storeMode = (j && j.mode) || "";
-    hasToken = editing && !!(desk.id || "").trim()
-      && ((j && j.secrets) || []).some(s => s.key === gitTokenKey(desk, name));
+    hasToken = editing && ((j && j.secrets) || []).some(s => s.key === gitTokenKey(name));
     tokenIn.placeholder = hasToken ? T["settings.gitacct.token_set_ph"] : T["settings.gitacct.token_ph"];
     recheck();
   });
@@ -10438,7 +10438,7 @@ function gitAccountDialog(desk, name, redraw) {
     const n = nameIn.value.trim();
     const nameWhy = !n ? T["settings.gitacct.name_required"]
       : (!/^[A-Za-z0-9_-]+$/.test(n) ? T["settings.gitacct.name_bad"]
-      : (!editing && desk.git_accounts.some(x => x.name === n) ? T["settings.gitacct.name_dup"] : null));
+      : (!editing && accts.some(x => x.name === n) ? T["settings.gitacct.name_dup"] : null));
     fieldFault(nameIn, nameWhy);
     if (nameWhy) faults.push({at: nameIn, why: nameWhy});
     const tokenWhy = !ssh && !gh && !hasToken && !tokenIn.value.trim() ? T["settings.gitacct.token_required"] : null;
@@ -10474,8 +10474,8 @@ function gitAccountDialog(desk, name, redraw) {
             if (!await confirmAction(fill(T["settings.gitacct.delete_confirm"], {name}), T["settings.gitacct.delete"])) return;
             // Its token goes with it. Tabs and projects that chose it keep the
             // name, and say on the git column that it is gone
-            if ((desk.id || "").trim()) await deleteSecret(gitTokenKey(desk, name));
-            desk.git_accounts = desk.git_accounts.filter(x => x.name !== name);
+            await deleteSecret(gitTokenKey(name));
+            current.git_accounts = accts.filter(x => x.name !== name);
             refreshSave(); shut(); redraw();
           }}, T["settings.gitacct.delete"])
         : null,
@@ -10501,12 +10501,9 @@ function gitAccountDialog(desk, name, redraw) {
       held.at.focus();
       return;
     }
-    // The token is filed under this desk, so it needs the name the store files
-    // this desk under
-    if (!(desk.id || "").trim()) { toast(T["settings.secrets.desk_needs_id"], true); return; }
     const n = editing ? name : nameIn.value.trim();
     if (method.value !== "gh" && tokenIn.value.trim()) {
-      const r = await saveSecret({key: gitTokenKey(desk, n), description: "git account " + n,
+      const r = await saveSecret({key: gitTokenKey(n), description: "git account " + n,
         value: tokenIn.value.trim(), human: true, ai: false, urls: []});
       if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return; }
     }
@@ -10520,7 +10517,7 @@ function gitAccountDialog(desk, name, redraw) {
     put("user_email", mailIn.value);
     const owners = ownersIn.value.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
     if (owners.length) it.owners = owners; else delete it.owners;
-    if (!editing) desk.git_accounts.push(it);
+    if (!editing) accts.push(it);
     refreshSave(); shut(); redraw();
     toast(fill(T["settings.gitacct.saved"], {name: n}));
   });
@@ -10671,21 +10668,21 @@ function tokenDialog(title, hint, withHost, submit, done) {
   setTimeout(() => tokenIn.focus(), 0);
 }
 
-// The desk's git accounts, in a window over the page that asked for them.
+// The app's git accounts, in a window over the page that asked for them.
 //
 // Opened from the account picker, where somebody holding a token is standing
 // when they find out there is nowhere on that page to put it. The page
 // underneath keeps everything typed into it, and `done` is called however this
 // window is closed -- the picker has to read the list again either way
-function gitAccountsWindow(desk, done) {
+function gitAccountsWindow(done) {
   const shut = () => { back.remove(); done(); };
   const back = openModal(
     el("div", {class:"mhead"},
-      el("h2", {}, (desk.name || T["settings.nav.desk"]) + " › " + T["settings.gitacct.title"]),
+      el("h2", {}, T["settings.sec.gitaccounts"]),
       el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
-    // The desk's accounts, and under them the sign-ins this PC holds: the
-    // same three cards as the desk's page, so what can be chosen is all here
-    el("div", {class:"mbody"}, ...gitAccountsParts(desk), pcSignInsCard(), ghSignInsCard()),
+    // The app's accounts, and under them the sign-ins this PC holds: the
+    // same three cards as the settings' page, so what can be chosen is all here
+    el("div", {class:"mbody"}, ...gitAccountsParts(), pcSignInsCard(), ghSignInsCard()),
     el("div", {class:"mfoot"},
       el("span", {class:"grow"}),
       el("button", {class:"primary", onclick: () => shut()}, T["common.close"])));
@@ -10710,21 +10707,20 @@ const signInLabel = a => isSshAccount(a) ? T["settings.gitacct.by_ssh"]
 const accountHost = a => ((a.host || "").trim().replace(/\/+$/, "").toLowerCase()) || GIT_HOST;
 // Who it signs in as, in a few words: the user name and the server
 const gitAccountAbout = a => ((a.login || "").trim() ? a.login.trim() + "@" : "") + accountHost(a);
-const gitTokenKey = (desk, name) => "git/" + (desk.id || "").trim() + "/" + name;
+const gitTokenKey = name => "git/" + name;
 
 // Whether the token still works, whose it is and how long it has left, said on
 // the account's row. Only a GitHub account can be asked; the state and the
 // date come back, never the value
-async function gitAccountState(desk, a, out) {
-  if (accountHost(a) !== GIT_HOST || !(desk.id || "").trim()) return;
+async function gitAccountState(a, out) {
+  if (accountHost(a) !== GIT_HOST) return;
   const none = isSshAccount(a) ? T["settings.gitacct.no_pr"]
     : isGhAccount(a) ? T["settings.gitacct.no_gh"] : T["settings.gitacct.no_token"];
-  signInState("desk=" + encodeURIComponent(desk.id.trim()) + "&account=" + encodeURIComponent(a.name),
-    out, none, !isSshAccount(a));
+  signInState("account=" + encodeURIComponent(a.name), out, none, !isSshAccount(a));
 }
 
 // The same, for whatever `query` names to /api/github: an account of the
-// desk, a sign-in of this PC's git (`pc=`), or one of gh's (`gh=` and `host=`).
+// app, a sign-in of this PC's git (`pc=`), or one of gh's (`gh=` and `host=`).
 // `none` is what to say when there is no token at all, `noneWarn` whether that
 // is a fault
 async function signInState(query, out, none, noneWarn) {
@@ -10752,12 +10748,12 @@ async function signInState(query, out, none, noneWarn) {
 
 // The menu a git tab or a project chooses its account from.
 //
-// Every account of the desk is offered; the ones that say they are for this
+// Every account of the app is offered; the ones that say they are for this
 // repository's owner come first, marked. Nothing is picked because of that --
 // "not chosen" stays until somebody chooses, and the PC's own git is one of
 // the choices rather than what happens when nobody does. `origin` is
 // `owner/name` on GitHub, when known
-function gitAccountSelect(desk, now, origin, pick) {
+function gitAccountSelect(now, origin, pick) {
   const s = el("select");
   const owner = ((origin || "").split("/")[0] || "").toLowerCase();
   const rank = a => {
@@ -10765,7 +10761,7 @@ function gitAccountSelect(desk, now, origin, pick) {
     const fits = sameHost && !!owner && (a.owners || []).some(o => o.trim().toLowerCase() === owner);
     return {fits, rank: fits ? 0 : sameHost ? 1 : 2};
   };
-  const list = (desk.git_accounts || []).map((a, i) => Object.assign({a, i}, rank(a)))
+  const list = appGitAccounts().map((a, i) => Object.assign({a, i}, rank(a)))
     .sort((x, y) => x.rank - y.rank || x.i - y.i);
   s.append(el("option", {value:""}, T["settings.gitacct.pick"]));
   for (const {a, fits} of list) {
@@ -10796,11 +10792,11 @@ function gitAccountSelect(desk, now, origin, pick) {
     // Adding is not a choice: the menu goes back to what was chosen, and the
     // account made in the window -- or the sign-in put into this PC's git
     // there -- becomes the choice once it exists
-    const had = (desk.git_accounts || []).map(a => a.name);
+    const had = appGitAccounts().map(a => a.name);
     const heldBefore = [...PC_ACCOUNTS];
     s.value = chosen;
-    gitAccountsWindow(desk, () => {
-      const made = (desk.git_accounts || []).map(a => a.name).filter(n => !had.includes(n));
+    gitAccountsWindow(() => {
+      const made = appGitAccounts().map(a => a.name).filter(n => !had.includes(n));
       const stored = PC_ACCOUNTS.filter(l => !heldBefore.includes(l));
       const v = made.length ? made[made.length - 1]
         : stored.length ? THIS_PC + ":" + stored[stored.length - 1] : chosen;
@@ -11559,13 +11555,13 @@ function projectPane(desk, p) {
     const acctCard = card(T["settings.project.gitacct"],
       el("div", {class:"hint"}, T["settings.project.gitacct.hint"]),
       row(T["settings.gitacct.use"],
-        gitAccountSelect(desk, (p.entry || {}).git_account, origin, v => {
+        gitAccountSelect((p.entry || {}).git_account, origin, v => {
           const e = ensureProject(desk, p);
           if (v) e.git_account = v; else delete e.git_account;
           sel.proj = "p:" + e.name;
           refreshSave(); render();
         })),
-      (desk.git_accounts || []).length || PC_ACCOUNTS.length ? null : el("div", {class:"hint"}, T["settings.gitacct.tab_none"]));
+      appGitAccounts().length || PC_ACCOUNTS.length ? null : el("div", {class:"hint"}, T["settings.gitacct.tab_none"]));
     acctCard.id = "project-gitacct";
     box.append(acctCard);
   }
@@ -13213,11 +13209,11 @@ function kindPanel(t, cmdInput, rebuild, real) {
     askFamilies([home]);
     box.append(el("div", {class:"hint"}, T["settings.tab.kind.git.hint"]));
     box.append(row(T["settings.gitacct.label"],
-      gitAccountSelect(desk, t.git_account, (FAMILIES[home.trim()] || {}).origin, v => {
+      gitAccountSelect(t.git_account, (FAMILIES[home.trim()] || {}).origin, v => {
         if (v) t.git_account = v; else delete t.git_account;
         refreshSave();
       })));
-    box.append(el("div", {class:"hint"}, (desk.git_accounts || []).length || PC_ACCOUNTS.length > 1
+    box.append(el("div", {class:"hint"}, appGitAccounts().length || PC_ACCOUNTS.length
       ? T["settings.gitacct.tab_hint"] : T["settings.gitacct.tab_none"]));
     return box;
   } else if (isEditorPanel(t.command)) {
@@ -13583,9 +13579,6 @@ async function load() {
                  // This desk's own projects (the same repository in another
                  // desk is another project there)
                  projects: Array.isArray(w.projects) ? w.projects : [],
-                 // Its git accounts. Read in as well as written out: left out
-                 // here, the page showed none and the next save erased them
-                 git_accounts: Array.isArray(w.git_accounts) ? w.git_accounts : [],
                  // What writes its automatic names, and whether they reach the
                  // branch. Read in as well as written out: a setting the page
                  // never saw is a setting the next save erases
@@ -13707,6 +13700,9 @@ function payload() {
   const provs = Object.fromEntries(Object.entries(out.providers || {})
     .filter(([, p]) => p && (p.base_url || "").trim()));
   if (Object.keys(provs).length) out.providers = provs; else delete out.providers;
+  // A git account with no name is a half-finished add, not an account
+  const gaccts = (out.git_accounts || []).filter(a => a && (a.name || "").trim());
+  if (gaccts.length) out.git_accounts = gaccts; else delete out.git_accounts;
   const agreed = Object.fromEntries(Object.entries(out.agreed || {})
     .filter(([, kinds]) => Array.isArray(kinds) && kinds.length));
   if (Object.keys(agreed).length) out.agreed = agreed; else delete out.agreed;
@@ -13839,9 +13835,6 @@ function payload() {
         return c;
       });
     if (projs.length) o.projects = projs;
-    // Its git accounts, each with a name. The tokens are in the secrets file
-    const accts = (w.git_accounts || []).filter(a => a && (a.name || "").trim());
-    if (accts.length) o.git_accounts = accts;
     // What writes this desk's automatic names, and whether they reach the
     // branch. Both are the desk's own answer, so a desk that has not given one
     // stays a short entry and follows the app
@@ -14181,7 +14174,6 @@ load().then(() => {
     sel = {desk:(desks[at] ? at : sel.desk), grp:null, tab:null, global:false};
     goDeskSection(DESK_LINKS[sec], "center");
     // Asked for one field, not the card: that field, marked
-    if (sec === "gitaccounts") lookAtCard("desk-gitaccounts", 50);
     if (sec === "git-message") lookAtCard("desk-git-message", 50);
     if (sec === "git-issue") lookAtCard("desk-git-issue", 50);
     if (sec === "git-pr") lookAtCard("desk-git-pr", 50);
@@ -15117,12 +15109,16 @@ mod tests {
     /// where a person edits their settings must not be the thing that loses
     /// them, so both halves are checked here by name
     #[test]
-    fn a_desks_git_accounts_survive_a_reload_and_a_save() {
+    fn the_git_accounts_are_the_apps_and_survive_a_save() {
+        // Read where the app's settings are read, written where they are
+        // written, and never on a desk
+        assert!(PAGE.contains("const appGitAccounts = () => (current.git_accounts = "), "the page has no app-level list");
         assert!(
-            PAGE.contains("git_accounts: Array.isArray(w.git_accounts) ? w.git_accounts : [],"),
-            "reading drops the git accounts, so the page shows none and a save erases them"
+            PAGE.contains("if (gaccts.length) out.git_accounts = gaccts; else delete out.git_accounts;"),
+            "writing drops the git accounts"
         );
-        assert!(PAGE.contains("if (accts.length) o.git_accounts = accts;"), "writing drops the git accounts");
+        assert!(!PAGE.contains("w.git_accounts"), "a desk still carries git accounts");
+        assert!(!PAGE.contains("desk.git_accounts"), "a desk still carries git accounts");
     }
 
     /// An account is added from the picker that wanted one.
@@ -15138,11 +15134,11 @@ mod tests {
             PAGE.contains(r#"s.append(el("option", {value:ADD_ACCOUNT}, T["settings.gitacct.add_here"]));"#),
             "the picker has no way to add an account"
         );
-        assert!(PAGE.contains("function gitAccountsWindow(desk, done)"), "there is no window to add one in");
+        assert!(PAGE.contains("function gitAccountsWindow(done)"), "there is no window to add one in");
         // The same list in both places, so a way of adding an account cannot
         // appear on the desk's page and not in the window
         assert_eq!(
-            PAGE.matches("...gitAccountsParts(desk)").count(),
+            PAGE.matches("...gitAccountsParts()").count(),
             2,
             "the window and the desk's page draw the accounts from different code"
         );
@@ -15164,11 +15160,11 @@ mod tests {
     #[test]
     fn the_pcs_sign_ins_are_listed_with_the_desks_accounts() {
         assert!(
-            PAGE.contains(r#"s("git", desk => [gitAccountsCard(desk), pcSignInsCard(), ghSignInsCard(), gitCard(desk)]),"#),
-            "the desk's git page does not list the PC's sign-ins"
+            PAGE.contains(r#"build:() => [gitAccountsCard(), pcSignInsCard(), ghSignInsCard()]},"#),
+            "the settings' Git accounts screen does not list the PC's sign-ins"
         );
         assert!(
-            PAGE.contains(r#"el("div", {class:"mbody"}, ...gitAccountsParts(desk), pcSignInsCard(), ghSignInsCard()),"#),
+            PAGE.contains(r#"el("div", {class:"mbody"}, ...gitAccountsParts(), pcSignInsCard(), ghSignInsCard()),"#),
             "the window the picker opens does not list them"
         );
         for asked in ["/api/pc-accounts/add", "/api/pc-accounts/forget", "/api/gh-accounts/add", "/api/gh-accounts/forget"] {

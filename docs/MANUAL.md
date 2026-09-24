@@ -266,6 +266,7 @@ settings screen, so it cannot fall behind.
 
 - **Basic** — Tab width, chaining, language
 - **AI agents** — Assistant AI, deciding AI, connections, agreements
+- **Git accounts** — Tokens, and the sign-ins of this PC's git and gh
 - **Update** — Newer versions, and going back
 - **Remote access** — Remote control & QR
 - **Shortcuts** — What each key does
@@ -288,7 +289,7 @@ settings screen, so it cannot fall behind.
 - **Basics** — Name, automation name, automation folder
 - **Notifications** — Chats, this PC, phones
 - **Automation permissions** — What a person and an AI may run
-- **git** — Accounts, protected branches, commit messages
+- **git** — Protected branches, commit messages
 - **Secrets** — Passwords and tokens
 - **AI × AI discussion** — Several AI tabs discussing or working together
 - **Stop conditions** — When the joint work ends

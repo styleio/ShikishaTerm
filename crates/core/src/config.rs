@@ -44,7 +44,7 @@ pub struct ProjectSpec {
     pub setup: Option<String>,
     /// The git account the column beside a folder of this project fetches,
     /// pulls and pushes with, and reads pull request numbers with: one of the
-    /// desk's `git_accounts` by name, or [`THIS_PC`]. Absent until somebody
+    /// app's `git_accounts` by name, or [`THIS_PC`]. Absent until somebody
     /// chooses, and absent it is the PC's own git, signing in as it already
     /// does -- which is what most people have, and never need to think about.
     /// The choice is for the day that fails: a PC holding two GitHub accounts,
@@ -204,12 +204,12 @@ impl GitAccountSpec {
     }
 
     /// The token this account signs in over HTTPS with: GitHub CLI's for a gh
-    /// account, else the one filed under this desk in the secret store. The one
+    /// account, else the one filed under its name in the secret store. The one
     /// place every reader asks, so a new way of signing in is added once
-    pub fn token(&self, desk: &str, look: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    pub fn token(&self, look: &dyn Fn(&str) -> Option<String>) -> Option<String> {
         let found = match self.is_gh() {
             true => crate::pr::gh_token(&self.host()),
-            false => look(&git_token_key(desk, &self.name)),
+            false => look(&git_token_key(&self.name)),
         };
         found.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
     }
@@ -229,11 +229,11 @@ impl GitAccountSpec {
     }
 }
 
-/// Where a git account's token is filed: under the desk, like every other
-/// credential a desk has, and worked out rather than written down so there is
-/// one spelling for the screen that stores it and the program that reads it
-pub fn git_token_key(desk_id: &str, account: &str) -> String {
-    format!("git/{desk_id}/{account}")
+/// Where a git account's token is filed: under the account's name, like a
+/// provider's key under its, and worked out rather than written down so there
+/// is one spelling for the screen that stores it and the program that reads it
+pub fn git_token_key(account: &str) -> String {
+    format!("git/{account}")
 }
 
 /// Which git account something signs in with, as the settings say -- before
@@ -246,9 +246,9 @@ pub enum GitUse {
     /// The way git on this PC already signs in, as the GitHub account named
     /// when it holds more than one
     Pc(Option<String>),
-    /// One of the desk's accounts
-    Account { desk: String, spec: GitAccountSpec },
-    /// A name that no account in the desk answers to any more
+    /// One of the app's accounts
+    Account { spec: GitAccountSpec },
+    /// A name that no account answers to any more
     Missing(String),
 }
 
@@ -289,7 +289,7 @@ impl GitUse {
             GitUse::Missing(name) => {
                 Err(crate::i18n::tp("err.git.account.missing", &[("name", name)]))
             }
-            GitUse::Account { desk, spec } => {
+            GitUse::Account { spec } => {
                 let some = |v: &Option<String>| {
                     v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
                 };
@@ -306,7 +306,7 @@ impl GitUse {
                         crate::git::Auth::Ssh { key: key.into() }
                     }
                     (true, false) => {
-                        let token = spec.token(desk, look).ok_or_else(|| spec.no_token_said())?;
+                        let token = spec.token(look).ok_or_else(|| spec.no_token_said())?;
                         crate::git::Auth::Token {
                             host: spec.host(),
                             login: some(&spec.login).unwrap_or_else(|| "x-access-token".into()),
@@ -346,7 +346,7 @@ impl Desk {
                 GitUse::Pc(pc_choice(written).flatten().map(str::to_string))
             }
             Some(name) => match self.git_accounts.iter().find(|a| a.name == name) {
-                Some(spec) => GitUse::Account { desk: self.id.clone(), spec: spec.clone() },
+                Some(spec) => GitUse::Account { spec: spec.clone() },
                 None => GitUse::Missing(name.to_string()),
             },
         }
@@ -684,6 +684,11 @@ pub struct Config {
     /// handed the words
     #[serde(default)]
     pub providers: std::collections::HashMap<String, ProviderSpec>,
+    /// The git accounts this app signs in with, the same on every desk. Which
+    /// one a git tab or a project uses is chosen on that tab or project; their
+    /// tokens are in the secret store (see [`git_token_key`])
+    #[serde(default)]
+    pub git_accounts: Vec<GitAccountSpec>,
     /// What the person agreed to send out, per AI: the connection's name, or
     /// an installed AI's (`@claude`), -> the kinds agreed to
     /// ([`CONSENT_PAGES`], [`CONSENT_PICTURES`]). Written by the settings
@@ -1598,14 +1603,9 @@ pub fn orphan_secrets(cfg: &Config, keys: &[String]) -> Vec<String> {
             if k.starts_with("notify/") {
                 return !refs.contains(k);
             }
-            if let Some(rest) = k.strip_prefix("git/") {
-                // git/<desk>/<account>
-                let Some((desk, name)) = rest.split_once('/') else {
-                    return false;
-                };
-                return !spaces
-                    .iter()
-                    .any(|s| s.id == desk && s.git_accounts.iter().any(|a| a.name == name));
+            if let Some(name) = k.strip_prefix("git/") {
+                // git/<account>: the app's, the same on every desk
+                return !cfg.git_accounts.iter().any(|a| a.name == name);
             }
             if let Some(rest) = k.strip_prefix("ssh/") {
                 // ssh/<desk>/<tab>/<what>
@@ -2226,11 +2226,6 @@ pub struct DeskSpec {
     /// written
     #[serde(default)]
     pub git: GitSpec,
-    /// The git accounts this desk signs in with. Which one a git tab or a
-    /// project uses is chosen on that tab or project; their tokens are in the
-    /// secret store (see [`git_token_key`])
-    #[serde(default)]
-    pub git_accounts: Vec<GitAccountSpec>,
     /// The repositories worked on in this desk. This desk's own: the same
     /// repository in another desk is another project there, with its own
     /// setup, so a change made from one desk never reaches the other.
@@ -2601,7 +2596,7 @@ pub struct TabConfig {
     #[serde(default)]
     pub server: Option<ServerSpec>,
     /// For a git tab: the git account it fetches, pulls and pushes with -- one
-    /// of the desk's `git_accounts` by name, or [`THIS_PC`]. Chosen on the
+    /// of the app's `git_accounts` by name, or [`THIS_PC`]. Chosen on the
     /// tab and never worked out for it
     #[serde(default)]
     pub git_account: Option<String>,
@@ -2918,7 +2913,8 @@ pub struct Desk {
     /// What git does here. Its `protect` has already been handed to the
     /// folders, which is where anything asks about it
     pub git: GitSpec,
-    /// The git accounts this desk signs in with (see [`Desk::git_use`])
+    /// The app's git accounts (see [`Desk::git_use`]): the same list on every
+    /// desk, carried here so a desk answers about its folders by itself
     pub git_accounts: Vec<GitAccountSpec>,
     /// This desk's projects (see [`Desk::project_of`])
     pub projects: Vec<ProjectSpec>,
@@ -5021,7 +5017,7 @@ impl Config {
                     automation_permissions: Default::default(),
                     projects: Vec::new(),
                     git,
-                    git_accounts: Vec::new(),
+                    git_accounts: self.git_accounts.clone(),
                     summary_ai: None,
                     rename_branch: None,
                 });
@@ -5097,7 +5093,7 @@ impl Config {
                 capabilities: desk.capabilities.clone(),
                 automation_permissions: desk.automation_permissions.clone(),
                 git,
-                git_accounts: desk.git_accounts.clone(),
+                git_accounts: self.git_accounts.clone(),
                 projects: desk.projects.clone(),
                 summary_ai: desk.summary_ai.as_deref().and_then(one_name),
                 rename_branch: desk.rename_branch,
@@ -5919,9 +5915,9 @@ fn make_first_desk_at(path: &Path, name: &str, accounts: &[GitAccountSpec]) -> b
     if has("desks") || has("folders") || has("tabs") {
         return false;
     }
-    let mut desk = serde_json::json!({ "name": name, "id": slug_id(name), "folders": [] });
+    let desk = serde_json::json!({ "name": name, "id": slug_id(name), "folders": [] });
     if !accounts.is_empty() {
-        desk["git_accounts"] = serde_json::to_value(accounts).unwrap_or_default();
+        doc["git_accounts"] = serde_json::to_value(accounts).unwrap_or_default();
     }
     doc["desks"] = serde_json::json!([desk]);
     serde_json::to_string_pretty(&doc)
@@ -6108,7 +6104,7 @@ mod tests {
         assert_eq!(super::pc_choice("@pcx"), None);
         assert_eq!(desk.git_use(Some("gone")), GitUse::Missing("gone".into()));
         let home = desk.git_use(Some("home"));
-        assert!(matches!(&home, GitUse::Account { desk, spec } if desk == "work" && spec.name == "home"));
+        assert!(matches!(&home, GitUse::Account { spec } if spec.name == "home"));
 
         let nothing = |_: &str| None;
         // Nothing chosen: a server is reached the way git on this PC already
@@ -6122,7 +6118,7 @@ mod tests {
         let err = home.to_git(true, &nothing).err().unwrap_or_default();
         assert!(err.contains("home"), "{err}");
         // With one, the token goes to its own server only
-        let stored = |k: &str| (k == "git/work/home").then(|| " tok ".to_string());
+        let stored = |k: &str| (k == "git/home").then(|| " tok ".to_string());
         match home.to_git(true, &stored).map(|a| a.auth) {
             Ok(crate::git::Auth::Token { host, login, token }) => {
                 assert_eq!((host.as_str(), login.as_str(), token.as_str()), ("github.com", "x-access-token", "tok"));
@@ -6261,11 +6257,12 @@ mod tests {
     #[test]
     fn a_git_token_without_its_account_is_left_over() {
         let cfg: super::Config = serde_json::from_value(serde_json::json!({
-            "desks": [{"name": "Work", "id": "work", "git_accounts": [{"name": "home"}]}]
+            "git_accounts": [{"name": "home"}],
+            "desks": [{"name": "Work", "id": "work"}]
         }))
         .unwrap();
-        let keys = ["git/work/home".to_string(), "git/work/gone".to_string(), "git/nobody/home".to_string()];
-        assert_eq!(super::orphan_secrets(&cfg, &keys), ["git/work/gone".to_string(), "git/nobody/home".to_string()]);
+        let keys = ["git/home".to_string(), "git/gone".to_string(), "git/work/home".to_string()];
+        assert_eq!(super::orphan_secrets(&cfg, &keys), ["git/gone".to_string(), "git/work/home".to_string()]);
     }
 
     /// An answer given from a tool lands on the desk it was given for, found
@@ -7159,6 +7156,8 @@ mod tests {
         assert_eq!(cfg.ai_engine.as_deref(), Some("codex"), "what the setup saved was lost");
         let desk = read_desk(&file);
         assert_eq!((desk.name.as_str(), desk.id.as_str()), ("DESK", "desk"));
+        // The account is the app's, and every desk -- this one included -- has it
+        assert_eq!(cfg.git_accounts, vec![gh.clone()]);
         assert_eq!(desk.git_accounts, vec![gh.clone()]);
         assert!(desk.git_accounts[0].is_gh() && !desk.git_accounts[0].is_ssh());
         // A second time finds a desk there, and leaves it
@@ -7177,11 +7176,11 @@ mod tests {
     #[test]
     fn an_account_says_where_its_token_comes_from() {
         let token = GitAccountSpec { name: "work".into(), ..Default::default() };
-        let look = |k: &str| (k == git_token_key("d", "work")).then(|| " ghp_x ".to_string());
-        assert_eq!(token.token("d", &look).as_deref(), Some("ghp_x"));
+        let look = |k: &str| (k == git_token_key("work")).then(|| " ghp_x ".to_string());
+        assert_eq!(token.token(&look).as_deref(), Some("ghp_x"));
         let gh = GitAccountSpec { name: "gh".into(), method: Some("gh".into()), ..Default::default() };
         let never = |_: &str| -> Option<String> { panic!("a gh account read the secret store") };
-        let _ = gh.token("d", &never);
+        let _ = gh.token(&never);
         assert!(gh.no_token_said().contains("gh auth login"), "a signed-out gh account does not say how to sign in");
     }
 

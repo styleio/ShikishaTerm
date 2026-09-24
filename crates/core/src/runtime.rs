@@ -5601,8 +5601,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let tokens: std::collections::HashMap<String, String> = sources
                 .iter()
                 .filter_map(|s| match &s.git {
-                    config::GitUse::Account { desk, spec } => {
-                        let key = config::git_token_key(desk, &spec.name);
+                    config::GitUse::Account { spec } => {
+                        let key = config::git_token_key(&spec.name);
                         caps.secret_value(&key).ok().map(|t| (key, t))
                     }
                     _ => None,

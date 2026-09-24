@@ -648,10 +648,6 @@ share a chat. The AI providers are the exception: one list for the whole app
     },
     "primary_notify": "work-slack",    // where notify(text) with no name lands
     "git": { "protect": ["main", "release/*"] },
-    "git_accounts": [
-      { "name": "work", "login": "me-at-work", "user_name": "Me", "user_email": "me@example.com", "owners": ["my-company"] },
-      { "name": "home", "method": "ssh", "key": "C:/Users/me/.ssh/id_home" }
-    ],
     "projects": [ {
       "name": "api", "at": "D:/src/api", "git_account": "work",
       "bring": [
@@ -668,9 +664,12 @@ A value starting with `@` is the name of a secret. Registered from the settings
 screen, keys and webhooks are stored encrypted and only their names are written
 here. A new desk can start as a copy of the one you are on, keys included.
 
-A git account's token is not written here either: it is filed under
-`git/<desk id>/<account name>` when it is entered on the desk's Git accounts page.
-A project names the one the git column beside its folders signs in with
+The git accounts are the app's, written at the top of the file beside the
+providers -- `"git_accounts": [ { "name": "work", "login": "me-at-work", "owners":
+["my-company"] }, { "name": "home", "method": "ssh", "key": "C:/Users/me/.ssh/id_home" } ]`
+-- and every desk's projects choose among the same list. A token is not written
+here either: it is filed under `git/<account name>` when it is entered under
+Settings > Git accounts. A project names the one the git column beside its folders signs in with
 (`git_account`), and a git tab names its own. Absent, git on this PC signs in
 the way it already does; `"@pc:<login>"` names one of the GitHub accounts it
 holds, for a PC holding two. Pull request numbers are read with the same
@@ -1145,7 +1144,7 @@ that path never launches git, which is why it still answers during a rebase.
 | `shikisha.git_commit(tab, "message", opts)` | Commit what was added and answer with the short hash. **It stops on a protected branch** -- make a branch, or pass `{allow_protected=true}` to say you meant it. Which branches those are comes from Settings > Protected branches (`main` and `master` until somebody says otherwise), and each working folder may name its own |
 | `shikisha.git_run(tab, "args…")` | Run any git and answer with its output. **No shell is involved**: `;` and `&&` arrive as arguments and git refuses them. It signs in as the chosen git account, and where none is chosen, the way git on this PC already does |
 
-**Which account signs in.** Nothing chosen is git on this PC as it already is -- its credential helper and keys -- which is what most people have and never think about. A git tab uses the account chosen on its own page; any other tab uses the one its folder's project chose, on the project's page. The accounts themselves are the desk's own (desk settings > Git accounts): a token over HTTPS or an SSH key file, and the name and email its commits carry, which `git_commit` and `git_merge` use too. Beside them the same page lists the GitHub sign-ins git on this PC and GitHub CLI (gh) hold, each of which a project can choose by name (`@pc:<login>`) -- what a PC holding two GitHub accounts needs, since git cannot tell which to use. When a fetch, pull or push is refused as the account, the git column says so with a button to that page. A git typed in a terminal tab signs in as the same account: the tab is started with the settings for it (`GIT_CONFIG_*`, and the credential helper under that account's own server), so anything running in that tab, an AI included, signs in as it too. Nothing is taken away -- a repository on another server goes on signing in the way this machine already does -- and a tab picks a change up the next time it opens.
+**Which account signs in.** Nothing chosen is git on this PC as it already is -- its credential helper and keys -- which is what most people have and never think about. A git tab uses the account chosen on its own page; any other tab uses the one its folder's project chose, on the project's page. The accounts themselves are the app's (Settings > Git accounts): a token over HTTPS or an SSH key file, and the name and email its commits carry, which `git_commit` and `git_merge` use too. Beside them the same page lists the GitHub sign-ins git on this PC and GitHub CLI (gh) hold, each of which a project can choose by name (`@pc:<login>`) -- what a PC holding two GitHub accounts needs, since git cannot tell which to use. When a fetch, pull or push is refused as the account, the git column says so with a button to that page. A git typed in a terminal tab signs in as the same account: the tab is started with the settings for it (`GIT_CONFIG_*`, and the credential helper under that account's own server), so anything running in that tab, an AI included, signs in as it too. Nothing is taken away -- a repository on another server goes on signing in the way this machine already does -- and a tab picks a change up the next time it opens.
 
 **All of these are open to a person only, to begin with** (automation permissions). If an AI
 is to be let in, `git_status` / `git_diff` / `git_log` are the place to start. Opening

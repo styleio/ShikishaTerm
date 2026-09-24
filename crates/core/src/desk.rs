@@ -666,14 +666,14 @@ pub fn hand_over(
     caps.set_grants(desk.automation_permissions.clone());
     // A script's `token` means this desk's, and no other's
     caps.set_desk_id(&desk.id);
-    // The tokens pull request numbers are read with, one per git account of
-    // this desk that has one. Which of them a row asks with is its project's
-    // choice. The program reaches for the values itself here -- a script never
-    // sees them
+    // The tokens pull request numbers are read with, one per git account
+    // that has one. Which of them a row asks with is its project's choice.
+    // The program reaches for the values itself here -- a script never sees
+    // them
     prs.use_tokens(
         desk.git_accounts
             .iter()
-            .filter_map(|a| Some((a.name.clone(), a.token(&desk.id, &look)?)))
+            .filter_map(|a| Some((a.name.clone(), a.token(&look)?)))
             .collect(),
     );
 }

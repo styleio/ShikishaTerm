@@ -118,14 +118,14 @@ pub fn target(
                 })
             })?
         }
-        GitUse::Account { desk, spec } => {
+        GitUse::Account { spec } => {
             if spec.host() != crate::config::GITHUB_HOST {
                 bail!(AccountTrouble(crate::i18n::tp(
                     "err.github.host",
                     &[("name", &spec.name), ("host", &spec.host())]
                 )));
             }
-            spec.token(desk, look).ok_or_else(|| AccountTrouble(spec.no_token_said()))?
+            spec.token(look).ok_or_else(|| AccountTrouble(spec.no_token_said()))?
         }
     };
     Ok((repo, token))

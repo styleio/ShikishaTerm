@@ -3,7 +3,7 @@
  *
  *     node tools/debug/settings-shoot.mjs tools/debug/scenes/settings-gitaccount.mjs
  *
- * A desk with no git account at all and one project -- the state somebody is
+ * An app with no git account at all and one project -- the state somebody is
  * in when they arrive holding a token. The scenes walk the way through it: the
  * picker on the project's page, the desk's accounts opened over that page, the
  * token being typed, and the account chosen once the window is closed.
@@ -45,7 +45,11 @@ export default {
     }],
   },
   scenes: {
-    // The desk's git page: who it signs in as on top, what it does below
+    // Settings > Git accounts: the app's accounts, then the sign-ins this
+    // PC's git and gh hold
+    accounts: '(async () => { sel = {desk:0, tab:null, global:true}; goSection("gitaccounts", "center");'
+      + ' await ' + wait(600) + '; window.scrollTo(0, 0); })()',
+    // The desk's git page: what git does on this desk, with no accounts on it
     desk: '(async () => { sel = {desk:0, tab:null, global:true}; goDeskSection("git");'
       + ' await ' + wait(600) + '; window.scrollTo(0, 0); })()',
     // Nothing chosen and nothing to choose: the picker's own way out

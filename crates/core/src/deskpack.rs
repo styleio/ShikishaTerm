@@ -278,16 +278,16 @@ fn inline(base: &Path, entry: &Value) -> Result<Value> {
 }
 
 /// What a desk has that points at this machine's accounts: where it sends
-/// notifications, the doors its automation has, and the git accounts it signs
-/// in with. Each carries a key filed in this machine's secret store, which the
-/// file does not carry -- so a copy of them elsewhere would be a list of names
-/// that reach nothing, or, read back in here, somebody else's doors. Taken out
-/// on the way out and again on the way in. How git behaves and who may run
-/// what are not accounts, and travel with the desk. (The model connections
-/// are the app's, so a desk never carries any)
+/// notifications and the doors its automation has. Each carries a key filed
+/// in this machine's secret store, which the file does not carry -- so a copy
+/// of them elsewhere would be a list of names that reach nothing, or, read
+/// back in here, somebody else's doors. Taken out on the way out and again on
+/// the way in. How git behaves and who may run what are not accounts, and
+/// travel with the desk. (The model connections and the git accounts are the
+/// app's, so a desk never carries any)
 fn strip_machine_own(desk: &mut Value) {
     if let Some(o) = desk.as_object_mut() {
-        for k in ["notify", "primary_notify", "capabilities", "git_accounts"] {
+        for k in ["notify", "primary_notify", "capabilities"] {
             o.shift_remove(k);
         }
     }
