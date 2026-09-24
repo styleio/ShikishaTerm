@@ -3758,6 +3758,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default(),
+            // The same settings again, asked who picks each page's moves
+            words_fast: desks
+                .get(desk_index)
+                .map(|w| {
+                    surfaces
+                        .iter()
+                        .filter_map(|s| match s {
+                            Surface::Browser { key, .. } => Some(key.clone()),
+                            _ => None,
+                        })
+                        .filter(|k| {
+                            w.words_models(cfg.as_ref(), Some(k))
+                                .choose()
+                                .is_some_and(|n| crate::bridge::decides_fast(&n))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             scrolled: session_at(&surfaces, active)
                 .and_then(|i| tabs.get(i))
                 .map(|t| {

@@ -1296,6 +1296,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .castgear { flex:none; margin:var(--s2) 0; padding:6px 8px; font-size:14px; cursor:pointer;
     background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:var(--r-ctl); }
   .castgear:active { background:var(--brand); color:#04121c; }
+  /* How quickly 🗣 drives this page, as a grey tag left of the gear. Speed
+     is said in words, not colour; only [Slow] can be pressed */
+  .castspeed { flex:none; margin:var(--s2) 0 var(--s2) auto; padding:2px 8px; font-size:12px;
+    line-height:1.6; color:var(--dim); background:var(--panel2, var(--bg)); border:1px solid var(--line);
+    border-radius:var(--r-chip, 4px); font-family:inherit; }
+  button.castspeed { cursor:pointer; }
+  button.castspeed:hover { color:var(--text); }
   /* "Agree and run" under 🗣's reason: the one way on, so it reads as the
      thing to press -- the brand's edge and letters, on the line after */
   .castagree { margin-top:0; margin-bottom:var(--s2); font-size:13px; color:var(--brand); border-color:var(--brand); }
@@ -17799,6 +17806,15 @@ function renderPanel() {
   if (castPanel === "lua" && luaMode === "words") {
     const page = activeTab();
     if (page && page.kind === "browser") {
+      // How quickly this page is driven, left of the gear to its models:
+      // [Fast] with a service built for deciding, [Slow] otherwise. Slow is
+      // pressed to be shown why, at the field that makes it fast
+      if (!page.words_unset) {
+        castPanelEl.append(page.words_fast
+          ? el("span", {class:"castspeed", title: T["tui.cast.lua.fast_tip"] || ""}, T["tui.cast.lua.fast"] || "Fast")
+          : el("button", {class:"castspeed", title: T["tui.cast.lua.slow_tip"] || "",
+              onclick: () => openSettings("words-slow", true, null, page)}, T["tui.cast.lua.slow"] || "Slow"));
+      }
       castPanelEl.append(el("button", {class:"castgear", title: T["tui.cast.lua.words_settings"] || "Models for this page",
         onclick: () => openSettings("words", true, null, page)}, "⚙️"));
       wordsNeedModels(false);

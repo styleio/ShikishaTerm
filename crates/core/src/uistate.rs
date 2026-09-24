@@ -50,6 +50,11 @@ pub struct TabState {
     /// them before 🗣 is used rather than after
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub words_unset: bool,
+    /// A page whose next move is picked by a service built for deciding --
+    /// quick. Otherwise a model that writes picks it, a good deal slower,
+    /// and the 🗣 panel says so beside its ⚙ ([低速] / [高速])
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub words_fast: bool,
     /// This pty tab is a model bridge (OpenAI-compatible API). The shell offers
     /// a chat input box for it instead of leaving it as a silent idle screen.
     #[serde(default)]
@@ -2018,6 +2023,7 @@ impl TabState {
             group: None,
             kind: "pty".into(),
             words_unset: false,
+            words_fast: false,
             restartable: true,
             past: t.past_here && (!t.spoke() || t.lost),
             lost: t.lost,
@@ -2158,6 +2164,7 @@ impl TabState {
             group,
             kind: "browser".into(),
             words_unset: false,
+            words_fast: false,
             // A page has no conversation to have been having
             past: false,
             lost: false,
@@ -2592,6 +2599,7 @@ mod tests {
             group: None,
             kind: "pty".into(),
             words_unset: false,
+            words_fast: false,
             restartable: true,
             model: false,
             busy: false,

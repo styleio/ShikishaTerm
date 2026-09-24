@@ -18,12 +18,12 @@ const page = (index, name, extra) => Object.assign({
   readable: false, key: 'page:' + name,
 }, extra);
 
-const state = (unset) => JSON.stringify(JSON.stringify({
+const state = (unset, fast) => JSON.stringify(JSON.stringify({
   desk: 'work', desk_id: 'work', desks: ['work'], desk_index: 0, active: 1,
   hotkeys: {}, quick: { cols: 0, rows: 0, pages: 0, items: [], dests: [] }, quick_to: {},
   groups: [{ name: 'site', folder: 'D:/work/site', color: '#4285f4', linked: false,
     health: { as: 'fine' }, drift: { behind: 0, ahead: 0 } }],
-  tabs: [page(1, 'shop', { words_unset: unset })],
+  tabs: [page(1, 'shop', { words_unset: unset, words_fast: !!fast })],
   ball: { holder: 0, from: 0, depth: 0, max: 0, phase: '', progress: 0, awaiting_human: false },
   auto_enabled: true, remote_on: false, restartable: true, build: '',
   help_rows: [], ais: [],
@@ -31,9 +31,9 @@ const state = (unset) => JSON.stringify(JSON.stringify({
 
 // The panel opened on 📼, with what the settings were asked for written down
 // rather than opened (there is no app behind this page to open them)
-const open = (unset) => `window.__asked = [];
+const open = (unset, fast) => `window.__asked = [];
   openSettings = (...a) => { window.__asked.push(a); };
-  window.__state(${state(unset)});
+  window.__state(${state(unset, fast)});
   new Promise(r => setTimeout(() => {
     if (!castPanelEl) { r(Promise.reject(new Error("the bar never opened"))); return; }
     castPanel = "lua"; userPanel = "lua"; renderPanel(); renderPanel();
@@ -61,6 +61,23 @@ export default {
     // Models chosen: the ordinary line, and nothing opened
     ready: `${open(false)}.then(() => {
       if (window.__asked.length) throw new Error("the settings opened though the models are chosen");
+    })`,
+    // No decision model picks the moves: [Slow] left of the gear, and
+    // pressing it opens this page's settings at why
+    slow: `${open(false)}.then(() => {
+      const tag = document.querySelector("button.castspeed");
+      if (!tag) throw new Error("no [Slow] beside the gear");
+      const gear = document.querySelector(".castgear");
+      if (tag.nextElementSibling !== gear) throw new Error("[Slow] is not just left of the gear");
+      tag.click();
+      const [section, , , tab] = window.__asked[window.__asked.length - 1] || [];
+      if (section !== "words-slow" || !tab || tab.id !== "shop") throw new Error("pressed, it asked for " + JSON.stringify(window.__asked));
+    })`,
+    // A decision model picks them: [Fast], which is only a tag
+    fast: `${open(false, true)}.then(() => {
+      if (document.querySelector("button.castspeed")) throw new Error("[Fast] can be pressed");
+      const tag = document.querySelector("span.castspeed");
+      if (!tag || tag.nextElementSibling !== document.querySelector(".castgear")) throw new Error("no [Fast] just left of the gear");
     })`,
     // Sent, and refused for want of an agreement to send the page: the
     // reason and the button that agrees, on 🗣's own line. Pressing it sends

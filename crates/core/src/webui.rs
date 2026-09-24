@@ -3710,13 +3710,6 @@ const PAGE: &str = r##"<!doctype html>
  .wsbadge { flex:none; width:22px; height:22px; border-radius:var(--r-chip);
    background:var(--raise); color:var(--dim); font-size:11px; font-weight:600;
    display:flex; align-items:center; justify-content:center; }
- /* How quickly a page is driven in words, as a grey tag. Pressable only
-    while it is slow: the press says why and lights the field that fixes it */
- .speedchip { flex:none; font-size:11px; line-height:1.6; padding:0 var(--s2);
-   border:1px solid var(--line); border-radius:var(--r-chip); background:var(--panel2);
-   color:var(--dim); font-family:inherit; font-weight:400; min-height:0; }
- button.speedchip { cursor:pointer; }
- button.speedchip:hover { color:var(--text); border-color:var(--edge); }
  /* Choosing another desk. Floats, so the list under it does not move */
  .fmenu { position:fixed; z-index:60; min-width:220px; max-width:280px;
    background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
@@ -4605,6 +4598,8 @@ let returnOnSave = false;
 // models: the board's own line saying so is under the sheet that opened over
 // it, so the sheet says it where the models are chosen
 let wordsAsked = false;
+// Opened from the board's [Slow]: the reason is shown, at the field
+let wordsSlowAsked = false;
 // The tab being added from the board's +, while the page is only that dialog
 // (?float=1). Null on the settings page proper
 let floating = null;
@@ -8078,35 +8073,17 @@ function wordsPicker(holder, key, under, adopt, changed) {
   draw();
   return wrap;
 }
-// A browser tab's two pickers under their heading. Above them, how quickly
-// the page will be driven: [Fast] with a decision model deciding, [Slow]
-// without one. Slow is pressed to be told why, and the field that fixes it
-// lights up
+// A browser tab's two pickers under their heading. How quickly the page is
+// driven is said on the board, beside the 🗣 panel's gear; pressed there
+// while slow, this opens with why, until a deciding model is chosen
 function wordsRows(holder, under, adopt) {
-  const head = el("div", {class:"row", style:"padding:0;align-items:baseline;flex-wrap:nowrap"});
   const why = el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, T["settings.words.slow_why"]));
-  why.hidden = true;
-  const redraw = () => {
-    head.textContent = "";
-    const fast = decidesFast(holder, under);
-    if (fast) why.hidden = true;
-    head.append(fast
-      ? el("span", {class:"speedchip"}, T["settings.words.fast"])
-      : el("button", {type:"button", class:"speedchip", onclick: () => {
-          why.hidden = false;
-          const at = choose.querySelector("select");
-          if (!at) return;
-          at.scrollIntoView({block:"center"});
-          at.classList.remove("lookhere"); void at.offsetWidth; at.classList.add("lookhere");
-          at.focus({preventScroll: true});
-        }}, T["settings.words.slow"]),
-      el("span", {class:"hint"}, T["settings.words.hint"]));
-  };
+  const redraw = () => { why.hidden = !wordsSlowAsked || decidesFast(holder, under); };
   const choose = wordsPicker(holder, "choose_model", under ? (under.choose_model || "") : undefined,
     adopt && (v => adopt("choose_model", v)), redraw);
   redraw();
   return [
-    head,
+    el("div", {class:"hint"}, T["settings.words.hint"]),
     why,
     row(T["settings.words.choose_model"], choose,
       el("span", {class:"hint"}, T["settings.words.choose_model.hint"])),
@@ -13666,10 +13643,16 @@ load().then(() => {
     if (ti >= 0) {
       sel = {desk:keyDesk, grp:tabs[ti].group || 0, tab:ti, global:false};
       wordsAsked = sec === "words";
+      wordsSlowAsked = sec === "words-slow";
       render();
       // Centred and marked, rather than put at the top: the top of the page
-      // is under the bar, and that is where the line saying why it opened is
-      if (sec === "words" && document.getElementById("tab-words")) lookAtCard("tab-words", 0);
+      // is under the bar, and that is where the line saying why it opened is.
+      // Asked why it is slow: the field that makes it fast, marked instead
+      const slowAt = wordsSlowAsked && document.querySelector("#tab-words select");
+      if (slowAt) {
+        slowAt.scrollIntoView({block:"center"});
+        slowAt.classList.remove("lookhere"); void slowAt.offsetWidth; slowAt.classList.add("lookhere");
+      } else if ((sec === "words" || sec === "words-slow") && document.getElementById("tab-words")) lookAtCard("tab-words", 0);
       else showSelected("center");
       return;
     }
@@ -14761,12 +14744,14 @@ mod tests {
         assert!(project, "the project's own page is no longer reachable by name");
 
         for ask in &asks {
-            // "words" is a browser tab's own models, reached by the tab's key
+            // "words" is a browser tab's own models, reached by the tab's key,
+            // and "words-slow" the same, opened to say why the page is slow
             let known = global.contains(ask)
                 || desk_links.iter().any(|(k, _)| k == ask)
                 || ask == "project"
                 || ask == "project-gitacct"
-                || ask == "words";
+                || ask == "words"
+                || ask == "words-slow";
             assert!(known, "the board sends people to \"{ask}\", which is no screen these settings have");
         }
         // ...and the desk's own cards, which those names point at

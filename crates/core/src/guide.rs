@@ -1700,9 +1700,10 @@ mod tests {
                 let id = &board[from..from + len];
                 at = from + len;
                 // The project's own page is not one of the sections, and
-                // neither is a browser tab's models ("words"), reached by
-                // the tab's key
-                if id == "project" || id == "project-gitacct" || id == "words" || id.is_empty() {
+                // neither is a browser tab's models ("words", and
+                // "words-slow" opened to say why it is slow), reached by the
+                // tab's key
+                if id == "project" || id == "project-gitacct" || id == "words" || id == "words-slow" || id.is_empty() {
                     continue;
                 }
                 asked += 1;

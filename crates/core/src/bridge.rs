@@ -125,6 +125,13 @@ pub fn assistant_model() -> Option<String> {
     name
 }
 
+/// Whether the model a name reaches is a service built for deciding: what
+/// makes driving a page quick. An installed AI and a model that writes pick
+/// a move too, a good deal slower
+pub fn decides_fast(name: &str) -> bool {
+    matches!(answerer_named(name), Some(Answerer::Api(conn)) if conn.speaks == crate::config::SPEAKS_CHOICE)
+}
+
 /// A name as a person reads it: an installed AI by the name it is known by
 /// (`Claude Code`, `Claude Code / haiku`), a connection as it is written
 pub fn shown_name(name: &str) -> String {
