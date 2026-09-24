@@ -3800,61 +3800,63 @@ const PAGE: &str = r##"<!doctype html>
    border-radius:var(--r-ctl); background:var(--panel2); color:var(--dim); cursor:pointer; }
  /* Held: marked by its rim, not filled -- the page's one filled button is Save */
  .hkpick .tog.on, .qseg .tog.on { border-color:var(--brand); color:var(--text); box-shadow:inset 0 0 0 1px var(--brand); font-weight:600; }
- /* ── Quick commands: the list, and the dialog for one ──
+ /* ── Quick commands: the grid being edited ──
     The button's face is shared with the launcher (quick.rs, poured in just
-    below); here it is the preview in the dialog */
+    below); this is the frame it sits in here. Places are drawn even when empty, because an
+    empty place is somewhere to put something */
 {{QUICK_CSS}}
  .qseg { display:flex; gap:var(--s1); flex-wrap:wrap; }
  .qsize { max-width:420px; }
- .qsize > .field { flex:1 1 140px; margin-top:0; }
+ .qsize > .field { flex:1 1 140px; margin-top:var(--s4); }
  .qsizehint { margin-top:var(--s2); }
- /* Inside a folder: the way back up, and the folder's own dialog */
- .qhere { display:flex; align-items:center; gap:var(--s3); flex-wrap:wrap; margin-bottom:var(--s3); }
- .qhere .crumbs { flex:1 1 auto; margin:0; }
- /* The page of the launcher the boxes under it are on */
- .qpagehead { font-size:11.5px; color:var(--dim); margin:var(--s4) 0 var(--s2);
-   font-variant-numeric:tabular-nums; }
- .qpagehead:first-child { margin-top:0; }
- .qlisthint { margin-top:var(--s2); }
- .qadd { padding-bottom:0; }
- /* One button. Columns, so a list of them is read down: the grip, the
-    picture, the name, what it goes to, and what it sends */
- .listrow.qrow { display:grid; align-items:center; gap:var(--s3);
-   grid-template-columns:22px 28px minmax(0, 160px) auto minmax(0, 1fr) auto;
-   padding:10px var(--s3) 10px var(--s1); cursor:pointer; background:var(--panel); outline:none; }
- .qrow:hover { background:var(--panel2); }
- .qrow:focus-visible { box-shadow:inset 0 0 0 1px var(--brand); }
- .qrow .go { color:var(--faint); font-size:14px; line-height:1; }
- .qrow:hover .go { color:var(--text); }
- .qgrip { width:22px; height:22px; display:inline-flex; align-items:center; justify-content:center;
-   color:var(--faint); border-radius:var(--r-chip); cursor:grab; touch-action:none; }
- .qgrip:hover, .qrow.dragging .qgrip { color:var(--text); background:var(--hover); }
- .qrowicon { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center;
-   border-radius:var(--r-ctl); border:1px solid var(--line); color:var(--text); }
- .qgrip svg, .qrowicon svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:2;
-   stroke-linecap:round; stroke-linejoin:round; }
- .qrowname { font-size:13px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
- .qrowwhat { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
- .qrowwhat.mono { font-size:12px; }
- .qrowname.unnamed, .qrowwhat.unnamed { color:var(--faint); }
- /* Lifted off the list while it is carried: the one layer here that floats */
- .qrow.dragging { position:relative; z-index:1; background:var(--raise); box-shadow:0 8px 24px #0007;
-   cursor:grabbing; }
- .qrow.dragging .qgrip { cursor:grabbing; }
- /* Where a carried row would go in: a folder's row, or a folder above */
- .qrow.over, .qhere .crumb.over { color:var(--text); box-shadow:inset 0 0 0 1px var(--brand);
+ .qcrumbs { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s1); margin-top:var(--s5); }
+ .qcrumbs button:last-child { color:var(--text); font-weight:600; }
+ .qcrumbs .qsep { color:var(--faint); }
+ .qegrid { display:grid; gap:var(--s2); margin-top:var(--s2); user-select:none; -webkit-user-select:none; }
+ .qslot { width:var(--qs, 88px); height:var(--qs, 88px); overflow:hidden; position:relative; border-radius:var(--r-card);
+   border:1px solid var(--edge); background:var(--panel2); cursor:pointer; outline:none;
+   -webkit-touch-callout:none; }
+ .qslot:hover { border-color:var(--edge-hi); }
+ /* "vacant", not "empty": .empty is this page's empty-list message */
+ .qslot.vacant { background:transparent; border:1px dashed var(--line); }
+ .qslot.vacant:hover { border-color:var(--edge); }
+ .qslot.back { background:transparent; border-color:var(--line); }
+ /* Picked, or where the keyboard is: the brand rim and its ring (5.1) */
+ .qslot.sel, .qslot:focus-visible { border-color:var(--brand);
+   box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+ /* Where a carried button would land */
+ .qslot.over, .qpager button.over { border-color:var(--brand); border-style:solid;
    background:color-mix(in srgb, var(--brand) 12%, transparent); }
- body.qcarrying, body.qcarrying * { cursor:grabbing !important; user-select:none; -webkit-user-select:none; }
- /* The dialog: how the button will look, beside the ways to change its picture */
- .qlook { display:flex; align-items:center; gap:var(--s3); flex-wrap:wrap; }
- .qpreview { flex:none; width:72px; height:72px; border-radius:var(--r-card); border:1px solid var(--edge);
+ .qslot.carried { opacity:.35; }
+ .qegrid.tiny .qface .ql, .qegrid.tiny .qface .qk { display:none; }
+ .qegrid.tiny .qface { padding:var(--s1); }
+ .qegrid.tiny .qface svg { width:60%; height:60%; }
+ /* A button with no picture has only its name to be told apart by, so it keeps it, smaller */
+ .qegrid.tiny .qface.bare .ql { display:-webkit-box; font-size:10px; -webkit-line-clamp:2; }
+ .qghost { position:fixed; z-index:70; width:72px; height:72px; margin:-36px 0 0 -36px;
+   pointer-events:none; border-radius:var(--r-card); border:1px solid var(--brand);
+   background:var(--panel); box-shadow:0 8px 24px #0007; }
+ .qpager { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:var(--s1);
+   margin-top:var(--s3); }
+ .qpager .qpage { min-width:32px; padding:0 var(--s2); font-variant-numeric:tabular-nums; color:var(--dim); }
+ .qpager .qpage.on { color:var(--text); border-color:var(--brand); box-shadow:inset 0 0 0 1px var(--brand); }
+ .qpanelhint { margin-top:var(--s4); text-align:center; }
+ .qpanel { margin-top:var(--s5); padding-top:var(--s4); border-top:1px solid var(--line); }
+ .qpanelhead { font-size:12px; font-weight:500; color:var(--text); }
+ .qmake { margin:var(--s2) 0; }
+ .qpanelrow { display:flex; align-items:flex-start; gap:var(--s5); flex-wrap:wrap; }
+ .qpreview { flex:none; width:88px; height:88px; border-radius:var(--r-card); border:1px solid var(--edge);
    background:var(--panel2); }
- textarea.qbody { min-height:96px; }
+ .qfields { flex:1 1 280px; min-width:0; }
+ .qfields > .field:first-child { margin-top:0; }
+ .qfields textarea.qbody { min-height:96px; }
  /* A few sentences rather than a document: the height of the quick
- command's body in its dialog */
+    command's body above */
  textarea.short { min-height:96px; }
  /* A reason under a row stands on a line of its own */
  .row > .site-warn { flex-basis:100%; }
+ .qcount { align-self:center; color:var(--dim); font-size:13px; font-variant-numeric:tabular-nums; }
+ .qdelrow { margin-top:var(--s5); }
  .fmenuitem.bad { color:var(--stop); }
  /* The picture picker: a search, then the pictures */
  .qpicker { width:min(640px, 100%); }
@@ -3869,13 +3871,7 @@ const PAGE: &str = r##"<!doctype html>
  .qicons .qiconhead { grid-column:1 / -1; font-size:11.5px; color:var(--dim); margin-top:var(--s2); }
  .qicons .qiconhead:first-child { margin-top:0; }
  .qicons .qmore { grid-column:1 / -1; }
- /* A button on a phone: its name and where it goes on the first line, what
-    it sends under them, and the way in still a whole-row press */
- @media (max-width:760px) {
-   .listrow.qrow { grid-template-columns:22px 28px minmax(0, 1fr) auto auto; row-gap:var(--s1); }
-   .qrow .qrowwhat { grid-column:3 / 5; grid-row:2; }
-   .qrow .go { grid-column:5; grid-row:1; }
- }
+ @media (max-width:760px) { .qpanelrow { gap:var(--s3); } .qpreview { width:64px; height:64px; } }
  .hkpick select.hkkey { height:32px; min-width:92px; margin-left:var(--s1); }
  .hkstate.warnline { color:var(--warn); }
  @media (max-width:700px) { .row.pair.hkrow { flex-wrap:wrap; } .row.pair.hkrow > label { flex-basis:100% !important; } }
@@ -4190,8 +4186,6 @@ const PAGE: &str = r##"<!doctype html>
    padding:var(--s4) var(--s5); border-bottom:1px solid var(--line); }
  .framed > .mhead h2 { flex:1; margin:0; font-size:13.5px; font-weight:600; }
  .framed > .mbody { padding:var(--s5); }
- /* The body's own padding is the space above its first field (5.2) */
- .framed > .mbody > .field:first-child { margin-top:0; }
  .framed > .mfoot { display:flex; align-items:center; gap:var(--s2);
    padding:var(--s3) var(--s5); border-top:1px solid var(--line); }
  .framed > .mfoot .grow { flex:1; }
@@ -6319,14 +6313,14 @@ function keysCard() {
 }
 // ── Quick commands ────────────────────────────────────────────
 // Buttons on pages of a grid, each handing a tab a command or a prompt; a
-// button can be a folder with a grid of its own. Edited here as a list, in the
-// order the launcher reads its places in. Where a button may sit is
+// button can be a folder with a grid of its own. Edited here as the grid it
+// is: the places are the places the launcher shows. Where a button may sit is
 // never decided in this script -- after anything that could move one, the app
 // is asked (/api/quick/arrange, the same function the launcher is drawn from)
 const QUICK = __QUICK__;
 // Where the editor is standing, kept across redraws of the card: the folders
-// walked into, by id
-const quickAt = {path: []};
+// walked into by id, the page, and the place picked on it
+const quickAt = {path: [], page: 0, pick: null};
 // The drawings of the icons in use, by name, as the app hands them back. The
 // whole set is fetched only when the picker is opened
 const quickSvgs = {};
@@ -6366,7 +6360,9 @@ function quickHolder(q) {
     kept.push(id);
     at = f;
   }
-  if (kept.length !== quickAt.path.length) quickAt.path = kept;
+  if (kept.length !== quickAt.path.length) {
+    quickAt.path = kept; quickAt.page = 0; quickAt.pick = null;
+  }
   return at;
 }
 async function quickArrange(q) {
@@ -6423,6 +6419,7 @@ function quickNewId() {
   return "q" + [...b].map(x => x.toString(16).padStart(2, "0")).join("");
 }
 const quickSvg = name => quickSvgs[name] || "";
+const quickWayOut = (row, col) => quickAt.path.length > 0 && row === 0 && col === 0;
 // Every button inside a folder, folders inside it included
 function quickCount(f) {
   return (f.items || []).reduce((n, i) => n + 1 + (i.kind === "folder" ? quickCount(i) : 0), 0);
@@ -6438,14 +6435,11 @@ function quickSecretNames(body) {
 // because a pair of braces in this page's source is where its words go
 const quickSecretRef = name => "{" + "{secrets." + name + "}" + "}";
 
-// Quick commands, as a desk's secrets are: a boxed list read down in the
-// order the launcher shows them, and one dialog to make or change one. The
-// order is changed by carrying a row by its grip. Where a button then sits on
-// the launcher's pages is still the app's to say (quickSettle)
 function quickCard() {
   const body = el("div", {class:"qedit"}, el("div", {class:"hint"}, "…"));
-  const size = el("div");
-  const draw = () => { drawQuick(body, draw); drawQuickSize(size, draw); };
+  const box = card(T["settings.quick.title"],
+    el("div", {class:"hint"}, T["settings.quick.intro"]), body);
+  const draw = () => drawQuick(body, draw);
   (async () => {
     // A file written by hand is shown as the app would place it, ids and all.
     // Saving writes that; merely opening changes nothing
@@ -6455,312 +6449,284 @@ function quickCard() {
     }
     draw();
   })();
-  return el("div", {},
-    card(T["settings.quick.title"], el("div", {class:"hint"}, T["settings.quick.intro"]), body),
-    card(T["settings.quick.size.title"], size));
-}
-
-// How many buttons one page of the launcher holds. Changing it asks the app
-// where the buttons go now
-function drawQuickSize(box, draw) {
-  const {cols, rows} = quickDims();
-  const pick = (label, value, max, key) => {
-    const s = el("select");
-    for (let n = 1; n <= max; n++) s.append(el("option", {value:String(n)}, String(n)));
-    s.value = String(value);
-    s.addEventListener("change", async () => {
-      quickOwn()[key] = Number(s.value);
-      await quickSettle();
-      draw();
-    });
-    return el("div", {class:"field"}, el("label", {}, label), el("div", {class:"fieldctl"}, s));
-  };
-  box.textContent = "";
-  box.append(el("div", {class:"row2 qsize"},
-      pick(T["settings.quick.cols"], cols, QUICK.colsMax, "cols"),
-      pick(T["settings.quick.rows"], rows, QUICK.rowsMax, "rows")),
-    el("div", {class:"hint qsizehint"}, T["settings.quick.size.hint"]));
-}
-
-// Reading order: the order the launcher shows them in, and so the list's
-const quickOrder = (a, b) => (a.page - b.page) || (a.row - b.row) || (a.col - b.col);
-
-// The grid at a depth of the walk: 0 is the top
-function quickLevel(q, depth) {
-  let at = q;
-  for (const id of quickAt.path.slice(0, depth)) at = (at.items || []).find(i => i.id === id) || at;
-  return at;
-}
-
-// The place after the last button of a grid, so a button made or moved there
-// comes last in the list. The first place of a folder's page is its way out.
-// Past the last page the app finds it the first free place instead
-function quickNextPlace(holder, inFolder) {
-  const {cols, rows} = quickDims();
-  const last = [...(holder.items || [])].sort(quickOrder).pop();
-  let n = last ? (last.page * rows + last.row) * cols + last.col + 1 : 0;
-  for (;; n++) {
-    const page = Math.floor(n / (cols * rows)), rest = n % (cols * rows);
-    const row = Math.floor(rest / cols), col = rest % cols;
-    if (inFolder && row === 0 && col === 0) continue;
-    return {page, row, col};
-  }
-}
-
-// Takes a button out of whichever grid holds it, folders included
-function quickDetach(q, id) {
-  const list = q.items || [];
-  const n = list.findIndex(i => i.id === id);
-  if (n >= 0) return list.splice(n, 1)[0];
-  for (const i of list) {
-    if (i.kind !== "folder") continue;
-    const got = quickDetach(i, id);
-    if (got) return got;
-  }
-  return null;
-}
-
-// The buttons of the grid on screen, given the order of `ids`. They take the
-// places the grid already has, in reading order, so an empty place left on
-// purpose, and the page a button is on, stay where they were
-function quickReorder(ids) {
-  const list = quickHolder(quickOwn()).items || [];
-  const places = [...list].sort(quickOrder).map(i => ({page: i.page, row: i.row, col: i.col}));
-  ids.forEach((id, n) => {
-    const it = list.find(i => i.id === id);
-    if (it && places[n]) Object.assign(it, places[n]);
-  });
-}
-
-// A button carried onto a folder's row goes in at the end of it; onto a name
-// in the path above the list, out to the end of that grid
-function quickMoveTo(id, holder, inFolder) {
-  const q = quickOwn();
-  const moved = quickDetach(q, id);
-  if (!moved) return;
-  if (!Array.isArray(holder.items)) holder.items = [];
-  Object.assign(moved, quickNextPlace(holder, inFolder));
-  holder.items.push(moved);
-}
-
-const quickAiLabel = cmd => (AI_CLIS.find(a => a.cmd === cmd) || {}).label || cmd;
-
-// A drawing from the icon set, at the size of a row
-function quickIcon(item) {
-  const box = el("span", {class:"qrowicon"});
-  const svg = quickSvg(item.icon) || (item.kind === "folder" ? QUICK_FOLDER_SVG : "");
-  if (svg) {
-    const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    s.setAttribute("viewBox", "0 0 24 24");
-    s.setAttribute("aria-hidden", "true");
-    // From the icon set carried in the program, never from anything typed
-    s.innerHTML = svg;
-    box.append(s);
-  }
   return box;
 }
 
 function drawQuick(body, draw) {
   const q = quickSpec();
+  const {cols, rows} = quickDims();
   const here = quickHolder(q);
-  const inFolder = quickAt.path.length > 0;
-  const items = [...(here.items || [])].sort(quickOrder);
-  const hadFocus = document.activeElement && document.activeElement.closest(".qrow");
-  const focusId = hadFocus ? hadFocus.dataset.id : null;
+  const pages = Math.max(1, here.pages || 1);
+  if (quickAt.page >= pages) quickAt.page = pages - 1;
+  const items = here.items || [];
+  const at = (row, col) => items.find(i => i.page === quickAt.page && i.row === row && i.col === col);
   body.textContent = "";
 
-  // Where in the folders this is, and the folder's own name and picture. The
-  // names above this one take a carried button out to them
-  if (inFolder) {
-    const parts = [{label: T["settings.quick.top"], go: () => quickGo(0, draw)}];
-    let walk = q;
-    quickAt.path.forEach((id, n) => {
-      walk = (walk.items || []).find(i => i.id === id) || {};
-      parts.push({label: walk.label || T["settings.quick.folder.unnamed"], go: () => quickGo(n + 1, draw)});
+  // The grid's size. Changing it asks the app where the buttons go now
+  const size = (label, value, max, key) => {
+    const s = el("select");
+    for (let n = 1; n <= max; n++) s.append(el("option", {value:String(n)}, String(n)));
+    s.value = String(value);
+    s.addEventListener("change", async () => {
+      quickOwn()[key] = Number(s.value);
+      quickAt.pick = null;
+      await quickSettle();
+      draw();
     });
-    const crumbs = pageCrumbs(...parts);
-    crumbs.querySelectorAll(".crumb").forEach((b, n) => { b.dataset.depth = String(n); });
-    body.append(el("div", {class:"qhere"}, crumbs,
-      el("button", {onclick: () => quickDialog(here, "folder", draw)}, T["settings.quick.folder.edit"])));
-  }
+    return el("div", {class:"field"}, el("label", {}, label), el("div", {class:"fieldctl"}, s));
+  };
+  body.append(el("div", {class:"row2 qsize"},
+      size(T["settings.quick.cols"], cols, QUICK.colsMax, "cols"),
+      size(T["settings.quick.rows"], rows, QUICK.rowsMax, "rows")),
+    el("div", {class:"hint qsizehint"}, T["settings.quick.size.hint"]));
 
-  if (!items.length) {
-    body.append(el("div", {class:"hint qnone"},
-      T[inFolder ? "settings.quick.folder.none" : "settings.quick.none"]));
+  // Where in the folders this is. At the top the card's own title says it
+  const crumbs = el("div", {class:"qcrumbs", hidden: quickAt.path.length ? null : ""});
+  const goUp = n => { quickAt.path = quickAt.path.slice(0, n); quickAt.page = 0; quickAt.pick = null; draw(); };
+  crumbs.append(el("button", {class:"quiet", onclick:() => goUp(0)}, T["settings.quick.top"]));
+  let walk = q;
+  quickAt.path.forEach((id, n) => {
+    walk = (walk.items || []).find(i => i.id === id) || {};
+    crumbs.append(el("span", {class:"qsep"}, "›"),
+      el("button", {class:"quiet", onclick:() => goUp(n + 1)}, walk.label || T["settings.quick.folder.unnamed"]));
+  });
+  body.append(crumbs);
+
+  // The grid
+  // Each place is a square as wide as the card allows, up to 88px. Worked out
+  // from the width rather than left to the stylesheet's aspect ratio, which a
+  // grid stretches out of shape once the places get narrow
+  const grid = el("div", {class:"qegrid",
+    style:"grid-template-columns:repeat(" + cols + ", var(--qs, 88px))"});
+  const pickSlot = (row, col) => { quickAt.pick = {row, col}; draw(); };
+  const enter = f => { quickAt.path.push(f.id); quickAt.page = 0; quickAt.pick = null; draw(); };
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const item = at(row, col);
+      const way = quickWayOut(row, col);
+      const picked = !!quickAt.pick && quickAt.pick.row === row && quickAt.pick.col === col;
+      const slot = el("div", {class:"qslot" + (way ? " back" : item ? " item" : " vacant") + (picked ? " sel" : ""),
+        tabindex:"0", role:"button", "data-row":String(row), "data-col":String(col),
+        title: way ? T["settings.quick.back"] : item ? (item.label || "") : T["settings.quick.empty.title"]});
+      if (way) slot.append(quickFace({kind:"back"}));
+      else if (item) slot.append(quickFace(item, quickSvg));
+      slot.addEventListener("click", () => {
+        if (quickDragged) return;
+        if (way) { goUp(quickAt.path.length - 1); return; }
+        pickSlot(row, col);
+      });
+      // A folder is walked into with a double press, as a folder is anywhere
+      // else; a single press picks it, to rename it or change its picture
+      slot.addEventListener("dblclick", () => { if (item && item.kind === "folder") enter(item); });
+      slot.addEventListener("keydown", e => {
+        if (e.key === "Enter" && item && item.kind === "folder") { e.preventDefault(); enter(item); }
+        else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); slot.click(); }
+        else if ((e.key === "Delete" || e.key === "Backspace") && item) { e.preventDefault(); quickDelete(item, draw); }
+      });
+      slot.addEventListener("contextmenu", e => {
+        e.preventDefault();
+        if (way) return;
+        const choices = item
+          ? [item.kind === "folder" ? [T["settings.quick.menu.open"], () => enter(item)] : null,
+             [T["common.delete"], () => quickDelete(item, draw), true]]
+          : [[T["settings.quick.menu.command"], () => quickCreate("command", row, col, draw)],
+             [T["settings.quick.menu.folder"], () => quickCreate("folder", row, col, draw)]];
+        quickMenu(e.clientX, e.clientY, choices.filter(Boolean));
+      });
+      if (item) quickDraggable(slot, item, draw);
+      grid.append(slot);
+    }
+  }
+  // On a phone's width the names do not fit under the pictures; the picture
+  // stays, and the name is in the panel below
+  const fit = () => {
+    const room = body.clientWidth;
+    if (!room) return;
+    const size = Math.max(28, Math.min(88, Math.floor((room - 8 * (cols - 1)) / cols)));
+    grid.style.setProperty("--qs", size + "px");
+    grid.classList.toggle("tiny", size < 60);
+  };
+  if (window.ResizeObserver) new ResizeObserver(fit).observe(body);
+  requestAnimationFrame(fit);
+  // Holding a button down on a touch screen is how it is picked up; while one
+  // is being carried, the page does not scroll under the finger
+  grid.addEventListener("touchmove", e => { if (quickCarrying) e.preventDefault(); }, {passive:false});
+  body.append(grid);
+
+  // The pages
+  const pager = el("div", {class:"qpager"});
+  for (let p = 0; p < pages; p++) {
+    pager.append(el("button", {class:"qpage" + (p === quickAt.page ? " on" : ""), "data-page":String(p),
+      title: fill(T["settings.quick.page"], {n: p + 1}),
+      onclick:() => { quickAt.page = p; quickAt.pick = null; draw(); }}, String(p + 1)));
+  }
+  if (pages < QUICK.pagesMax) {
+    pager.append(el("button", {class:"quiet", title:T["settings.quick.page.add"],
+      onclick:() => {
+        const h = quickHolder(quickOwn());
+        h.pages = pages + 1;
+        quickAt.page = pages; quickAt.pick = null;
+        refreshSave(); draw();
+      }}, "+"));
+  }
+  const lastEmpty = pages > 1 && !items.some(i => i.page === pages - 1);
+  if (lastEmpty) {
+    pager.append(el("button", {class:"quiet", title:T["settings.quick.page.remove"],
+      onclick:() => {
+        const h = quickHolder(quickOwn());
+        h.pages = pages - 1;
+        if (quickAt.page >= pages - 1) { quickAt.page = pages - 2; quickAt.pick = null; }
+        refreshSave(); draw();
+      }}, "−"));
+  }
+  body.append(pager);
+
+  // What is picked
+  if (quickAt.pick && !quickWayOut(quickAt.pick.row, quickAt.pick.col)) {
+    body.append(quickPanel(at(quickAt.pick.row, quickAt.pick.col), quickAt.pick, draw, enter));
   } else {
-    // One box per page of the launcher, named, once there is more than one
-    const list = el("div", {class:"qlist"});
-    const paged = items.some(i => i.page > 0);
-    let box = null, page = -1;
-    for (const item of items) {
-      if (item.page !== page) {
-        page = item.page;
-        if (paged) list.append(el("div", {class:"qpagehead"}, fill(T["settings.quick.page"], {n: page + 1})));
-        box = el("div", {class:"rows"});
-        list.append(box);
+    body.append(el("div", {class:"hint qpanelhint"}, T["settings.quick.pick.hint"]));
+  }
+}
+
+// A button being carried to another place. A mouse picks it up on the first
+// few pixels of movement; a finger has to hold still for a moment first, so a
+// swipe past the grid still scrolls the page
+let quickCarrying = false, quickDragged = false;
+function quickDraggable(slot, item, draw) {
+  slot.addEventListener("pointerdown", e => {
+    if (e.button !== 0) return;
+    const x0 = e.clientX, y0 = e.clientY;
+    const touch = e.pointerType !== "mouse";
+    let ghost = null, over = null, timer = null, last = e;
+    const begin = () => {
+      quickCarrying = true;
+      ghost = el("div", {class:"qghost"});
+      ghost.append(quickFace(item, quickSvg));
+      document.body.append(ghost);
+      slot.classList.add("carried");
+      place(last);
+    };
+    const place = ev => {
+      ghost.style.left = ev.clientX + "px";
+      ghost.style.top = ev.clientY + "px";
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const target = under && under.closest(".qslot, .qpage");
+      if (target !== over) {
+        if (over) over.classList.remove("over");
+        over = target === slot ? null : target;
+        if (over) over.classList.add("over");
       }
-      box.append(quickRow(item, draw));
-    }
-    body.append(list,
-      el("div", {class:"hint qlisthint"},
-        T["settings.quick.list.hint"] + (inFolder ? T["settings.quick.list.hint.folder"] : "")));
-  }
-
-  body.append(el("div", {class:"row qadd"},
-    el("button", {onclick: () => quickDialog(null, "command", draw)}, T["settings.quick.add"]),
-    el("button", {onclick: () => quickDialog(null, "folder", draw)}, T["settings.quick.add.folder"])));
-
-  if (focusId) {
-    const again = body.querySelector('.qrow[data-id="' + CSS.escape(focusId) + '"]');
-    if (again) again.focus();
-  }
+    };
+    const move = ev => {
+      last = ev;
+      if (!ghost) {
+        const far = Math.hypot(ev.clientX - x0, ev.clientY - y0);
+        if (touch) { if (far > 8) finish(); return; }
+        if (far < 5) return;
+        begin();
+      }
+      ev.preventDefault();
+      place(ev);
+    };
+    const finish = () => {
+      clearTimeout(timer);
+      removeEventListener("pointermove", move);
+      removeEventListener("pointerup", up);
+      removeEventListener("pointercancel", finish);
+      quickCarrying = false;
+      if (!ghost) return;
+      ghost.remove();
+      slot.classList.remove("carried");
+      if (over) over.classList.remove("over");
+      // The click that follows a drop is not a press
+      quickDragged = true;
+      setTimeout(() => { quickDragged = false; }, 0);
+    };
+    const up = () => {
+      const target = over;
+      const carried = !!ghost;
+      finish();
+      if (carried && target) quickDrop(item, target, draw);
+    };
+    if (touch) timer = setTimeout(() => { if (!ghost) begin(); }, 350);
+    addEventListener("pointermove", move, {passive:false});
+    addEventListener("pointerup", up);
+    addEventListener("pointercancel", finish);
+  });
 }
 
-const quickGo = (depth, draw) => { quickAt.path = quickAt.path.slice(0, depth); draw(); };
-const quickEnter = (folder, draw) => { quickAt.path.push(folder.id); draw(); };
-
-// One button. The whole row is the way in -- into a folder, or to the dialog
-// for a button -- and the grip at its start is what carries it
-let quickCarrying = false, quickCarried = false;
-function quickRow(item, draw) {
-  const folder = item.kind === "folder";
-  const ai = item.kind === "ai";
-  const kind = folder ? T["settings.quick.kind.folder"]
-    : ai ? (item.ai ? T["settings.quick.kind.ai"] + " · " + quickAiLabel(item.ai) : T["settings.quick.kind.ai"])
-    : T["settings.quick.kind.terminal"];
-  const said = folder ? fill(T["settings.quick.folder.count"], {n: quickCount(item)})
-    : String(item.body || "").replace(/\s+/g, " ").trim();
-  const grip = el("span", {class:"qgrip", title:T["settings.quick.drag"]});
-  grip.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + QUICK_GRIP_SVG + "</svg>";
-  const row = el("div", {class:"listrow qrow" + (folder ? " folder" : ""), tabindex:"0", role:"button",
-      "data-id": item.id},
-    grip,
-    quickIcon(item),
-    el("span", {class:"qrowname" + (item.label ? "" : " unnamed")},
-      item.label || T["settings.quick.label.none"]),
-    el("span", {class:"chip"}, kind),
-    el("span", {class:"hint qrowwhat" + (folder || ai ? "" : " mono") + (said ? "" : " unnamed")},
-      said || T["settings.quick.body.none"]),
-    el("span", {class:"go"}, "›"));
-  const open = () => folder ? quickEnter(item, draw) : quickDialog(item, item.kind, draw);
-  row.addEventListener("click", () => { if (!quickCarried) open(); });
-  grip.addEventListener("click", e => e.stopPropagation());
-  grip.addEventListener("pointerdown", e => quickCarry(e, row, item, draw));
-  row.addEventListener("keydown", e => {
-    if (e.target !== row) return;
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
-    else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-      // The same move as carrying it one row, for a keyboard
-      e.preventDefault();
-      const ids = [...(quickHolder(quickSpec()).items || [])].sort(quickOrder).map(i => i.id);
-      const n = ids.indexOf(item.id), to = n + (e.key === "ArrowUp" ? -1 : 1);
-      if (n < 0 || to < 0 || to >= ids.length) return;
-      [ids[n], ids[to]] = [ids[to], ids[n]];
-      quickReorder(ids);
-      quickSettle().then(draw);
-    } else if (e.key === "Delete") { e.preventDefault(); quickDelete(item, draw); }
-  });
-  row.addEventListener("contextmenu", e => {
-    e.preventDefault();
-    quickMenu(e.clientX, e.clientY, [
-      folder ? [T["settings.quick.menu.open"], () => quickEnter(item, draw)] : null,
-      [T["common.edit"], () => quickDialog(item, item.kind, draw)],
-      [T["common.delete"], () => quickDelete(item, draw), true],
-    ].filter(Boolean));
-  });
-  return row;
+// Where a carried button ends up: a free place, a place another button holds
+// (the two change places), a folder (into it), the way out (into the grid
+// the folder is in), or a page number (onto that page)
+async function quickDrop(item, target, draw) {
+  const q = quickOwn();
+  const here = quickHolder(q);
+  const list = here.items || (here.items = []);
+  const idx = list.findIndex(i => i.id === item.id);
+  if (idx < 0) return;
+  const moved = list[idx];
+  if (target.classList.contains("qpage")) {
+    const p = Number(target.dataset.page);
+    if (p === quickAt.page) return;
+    // The app moves it off a place that is taken
+    Object.assign(moved, {page: p, row: 0, col: 0});
+    quickAt.page = p;
+    quickAt.pick = null;
+  } else if (target.classList.contains("back")) {
+    const folderId = quickAt.path[quickAt.path.length - 1];
+    let parent = q;
+    for (const id of quickAt.path.slice(0, -1)) parent = parent.items.find(i => i.id === id);
+    const folder = parent.items.find(i => i.id === folderId);
+    list.splice(idx, 1);
+    Object.assign(moved, {page: folder ? folder.page : 0, row: 0, col: 0});
+    parent.items.push(moved);
+    quickAt.pick = null;
+  } else {
+    const row = Number(target.dataset.row), col = Number(target.dataset.col);
+    const other = list.find(i => i.page === quickAt.page && i.row === row && i.col === col);
+    if (other && other.id === moved.id) return;
+    if (other && other.kind === "folder") {
+      list.splice(idx, 1);
+      if (!Array.isArray(other.items)) other.items = [];
+      // The first place of a folder is its way out, so the app finds this one
+      // the first free place instead
+      Object.assign(moved, {page: 0, row: 0, col: 0});
+      other.items.push(moved);
+      quickAt.pick = null;
+    } else {
+      if (other) Object.assign(other, {page: moved.page, row: moved.row, col: moved.col});
+      Object.assign(moved, {page: quickAt.page, row, col});
+      quickAt.pick = {row, col};
+    }
+  }
+  await quickSettle();
+  draw();
 }
 
-// Carry a row by its grip to where it goes. The rows move out of its way as it
-// passes their middle; held over the middle of a folder's row it goes into
-// that folder, and over a name in the path above, out to that grid. The order
-// is written once it is put down
-function quickCarry(e, row, item, draw) {
-  if (e.button !== 0 || quickCarrying) return;
-  e.preventDefault();
-  const list = row.closest(".qlist");
-  const ids = () => [...list.querySelectorAll(".qrow")].map(r => r.dataset.id);
-  const before = ids().join();
-  // Listened for on the window, not captured by the grip: moving the row takes
-  // it out of the page for an instant, and a capture does not survive that
-  quickCarrying = true;
-  row.classList.add("dragging");
-  document.body.classList.add("qcarrying");
-  let into = null;
-  const aim = t => {
-    if (into === t) return;
-    if (into) into.classList.remove("over");
-    into = t;
-    if (into) into.classList.add("over");
-  };
-  const move = ev => {
-    if (ev.pointerId !== e.pointerId) return;
-    ev.preventDefault();
-    if (ev.clientY < 48) scrollBy(0, -12);
-    else if (ev.clientY > innerHeight - 48) scrollBy(0, 12);
-    const under = document.elementFromPoint(ev.clientX, ev.clientY);
-    const crumb = under && under.closest(".qhere .crumb");
-    if (crumb) { aim(crumb); return; }
-    const others = [...list.querySelectorAll(".qrow")].filter(r => r !== row);
-    const hit = others.find(r => {
-      const b = r.getBoundingClientRect();
-      return ev.clientY >= b.top + b.height / 4 && ev.clientY < b.bottom - b.height / 4;
-    });
-    if (hit && hit.classList.contains("folder")) { aim(hit); return; }
-    aim(null);
-    const next = others.find(r => { const b = r.getBoundingClientRect(); return ev.clientY < b.top + b.height / 2; });
-    if (next) { if (row.nextElementSibling !== next) next.before(row); }
-    else if (others.length) {
-      const last = others[others.length - 1];
-      if (last.nextElementSibling !== row) last.after(row);
-    }
-  };
-  const stop = () => {
-    removeEventListener("pointermove", move);
-    removeEventListener("pointerup", end);
-    removeEventListener("pointercancel", cancel);
-    row.classList.remove("dragging");
-    document.body.classList.remove("qcarrying");
-    quickCarrying = false;
-    // The click that follows a drop is not a press
-    quickCarried = true;
-    setTimeout(() => { quickCarried = false; }, 0);
-  };
-  const cancel = ev => {
-    if (ev.pointerId !== e.pointerId) return;
-    stop();
-    aim(null);
-    draw();
-  };
-  const end = ev => {
-    if (ev.pointerId !== e.pointerId) return;
-    stop();
-    const target = into;
-    aim(null);
-    if (target && target.classList.contains("crumb")) {
-      const depth = Number(target.dataset.depth);
-      quickMoveTo(item.id, quickLevel(quickOwn(), depth), depth > 0);
-    } else if (target) {
-      const holder = (quickHolder(quickOwn()).items || []).find(i => i.id === target.dataset.id);
-      if (holder) quickMoveTo(item.id, holder, true);
-    } else if (ids().join() !== before) {
-      quickReorder(ids());
-    } else { draw(); return; }
-    quickSettle().then(draw);
-  };
-  addEventListener("pointermove", move, {passive:false});
-  addEventListener("pointerup", end);
-  addEventListener("pointercancel", cancel);
+function quickCreate(kind, row, col, draw) {
+  const here = quickHolder(quickOwn());
+  if (!Array.isArray(here.items)) here.items = [];
+  const folder = kind === "folder";
+  here.items.push(Object.assign({id: quickNewId(), page: quickAt.page, row, col, icon: "",
+    label: folder ? T["settings.quick.folder.new"] : "", kind: folder ? "folder" : "terminal",
+    body: "", enter: true}, folder ? {pages: 1, items: []} : {}));
+  quickAt.pick = {row, col};
+  refreshSave();
+  draw();
+  const name = document.querySelector(".qpanel input.qlabel");
+  if (name) { name.focus(); name.select(); }
 }
 
 async function quickDelete(item, draw) {
   const n = item.kind === "folder" ? quickCount(item) : 0;
   if (n && !await confirmAction(fill(T["settings.quick.delete.folder"], {name: item.label || "", n}),
-                                T["common.delete"])) return false;
-  quickDetach(quickOwn(), item.id);
+                                T["common.delete"])) return;
+  const here = quickHolder(quickOwn());
+  here.items = (here.items || []).filter(i => i.id !== item.id);
+  quickAt.pick = null;
   refreshSave();
   draw();
-  return true;
 }
 
 // A small menu at the pointer. The one kind of floating list this page has
@@ -6783,74 +6749,79 @@ function quickMenu(x, y, rows) {
   if (first) first.focus();
 }
 
-// Making a button or a folder, or changing one. `item` is null for a new one,
-// which is put at the end of the list on screen. What is typed goes into a
-// copy, and into the settings only when it is saved
-function quickDialog(item, kind, draw) {
-  const editing = !!item;
-  const folder = kind === "folder";
-  const d = {kind: folder ? "folder" : (editing ? item.kind || "terminal" : "terminal"),
-    icon: editing ? item.icon || "" : "", label: editing ? item.label || "" : "",
-    body: editing ? item.body || "" : "", enter: editing ? item.enter !== false : true,
-    ai: editing ? item.ai || "" : ""};
-
-  // How it will look on the launcher, drawn again as it is changed
+// The picked place: what to make there, or the button that is there
+function quickPanel(item, spot, draw, enter) {
+  const panel = el("div", {class:"qpanel"});
+  if (!item) {
+    panel.append(el("div", {class:"qpanelhead"}, T["settings.quick.empty.head"]),
+      el("div", {class:"row2 qmake"},
+        el("button", {onclick:() => quickCreate("command", spot.row, spot.col, draw)}, T["settings.quick.make.command"]),
+        el("button", {onclick:() => quickCreate("folder", spot.row, spot.col, draw)}, T["settings.quick.make.folder"])),
+      el("div", {class:"hint"}, T["settings.quick.empty.hint"]));
+    return panel;
+  }
+  const folder = item.kind === "folder";
   const preview = el("div", {class:"qpreview"});
-  const repaint = () => { preview.textContent = ""; preview.append(quickFace(d, quickSvg)); };
-  const clearIcon = el("button", {class:"quiet", onclick: () => {
-    d.icon = ""; clearIcon.hidden = true; repaint();
-  }}, T["settings.quick.icon.none"]);
-  clearIcon.hidden = !d.icon;
-  const iconBtn = el("button", {onclick: () => quickIconPicker(d.icon, name => {
-    d.icon = name; clearIcon.hidden = false; repaint();
+  const repaint = () => {
+    preview.textContent = "";
+    preview.append(quickFace(item, quickSvg));
+    const slot = document.querySelector(".qegrid .qslot.sel");
+    if (slot) { slot.textContent = ""; slot.append(quickFace(item, quickSvg)); slot.title = item.label || ""; }
+  };
+  repaint();
+
+  // The picture
+  const iconBtn = el("button", {onclick:() => quickIconPicker(item.icon, name => {
+    item.icon = name; refreshSave(); repaint();
+    clearIcon.hidden = !item.icon;
   })}, T["settings.quick.icon.pick"]);
+  const clearIcon = el("button", {class:"quiet", onclick:() => {
+    item.icon = ""; refreshSave(); repaint(); clearIcon.hidden = true;
+  }}, T["settings.quick.icon.none"]);
+  clearIcon.hidden = !item.icon;
+  const fields = el("div", {class:"qfields"},
+    el("div", {class:"field"}, el("label", {}, T["settings.quick.icon"]),
+      el("div", {class:"fieldctl"}, el("div", {class:"row2"}, iconBtn, clearIcon))));
 
-  const nameIn = el("input", {type:"text", maxlength:String(QUICK.labelMax),
+  // The name
+  const label = el("input", {type:"text", class:"qlabel", maxlength:String(QUICK.labelMax),
     placeholder: folder ? T["settings.quick.folder.new"] : T["settings.quick.label.ph"]});
-  nameIn.value = d.label;
-  nameIn.addEventListener("input", () => { d.label = nameIn.value; repaint(); recheck(); });
+  label.value = item.label || "";
+  label.addEventListener("input", () => { item.label = label.value; refreshSave(); repaint(); });
+  fields.append(el("div", {class:"field"}, el("label", {}, T["settings.quick.label"]),
+    el("div", {class:"fieldctl"}, label)));
 
-  const field = (label, control, hint) => el("div", {class:"field"},
-    label instanceof Node ? label : el("label", {}, label), el("div", {class:"fieldctl"}, control),
-    hint instanceof Node ? hint : hint ? el("div", {class:"hint"}, hint) : null);
-  const fields = [
-    field(T["settings.quick.icon"],
-      el("div", {class:"qlook"}, preview, el("div", {class:"row2"}, iconBtn, clearIcon)),
-      T["settings.quick.icon.hint"]),
-    field(T["settings.quick.label"], nameIn, null),
-  ];
-
-  // What it sends, and to what: a command to a shell, or a prompt to an AI
-  const bodyIn = el("textarea", {rows:"4", class:"qbody", maxlength:String(QUICK.bodyMax), spellcheck:"false"});
-  if (!folder) {
+  if (folder) {
+    const n = quickCount(item);
+    fields.append(el("div", {class:"field"}, el("label", {}, T["settings.quick.folder.inside"]),
+      el("div", {class:"fieldctl"}, el("div", {class:"row2"},
+        el("span", {class:"qcount"}, fill(T["settings.quick.folder.count"], {n})),
+        el("button", {onclick:() => enter(item)}, T["settings.quick.menu.open"]))),
+      el("div", {class:"hint"}, T["settings.quick.folder.hint"])));
+  } else {
+    // Who it is for
     const kinds = el("div", {class:"qseg", role:"radiogroup"});
     // Which AI a prompt is for. The same list the tab form offers
     const aiPick = el("select", {});
     aiPick.append(el("option", {value:""}, T["settings.quick.ai.any"]));
     for (const a of AI_CLIS) aiPick.append(el("option", {value:a.cmd}, a.label));
-    aiPick.value = d.ai;
-    aiPick.addEventListener("change", () => { d.ai = aiPick.value; });
-    const aiField = field(T["settings.quick.ai"], aiPick, T["settings.quick.ai.hint"]);
+    aiPick.value = item.ai || "";
+    aiPick.addEventListener("change", () => { item.ai = aiPick.value; if (!item.ai) delete item.ai; refreshSave(); });
+    const aiField = el("div", {class:"field"}, el("label", {}, T["settings.quick.ai"]),
+      el("div", {class:"fieldctl"}, aiPick), el("div", {class:"hint"}, T["settings.quick.ai.hint"]));
     const bodyLabel = el("label", {});
+    const bodyIn = el("textarea", {rows:"4", class:"qbody", maxlength:String(QUICK.bodyMax), spellcheck:"false"});
     const bodyHint = el("div", {class:"hint"});
     const secretNote = el("div", {class:"site-warn"});
-    // What a secret named in the body means, said while it is being written
-    const drawSecrets = () => {
-      const names = quickSecretNames(d.body);
-      secretNote.hidden = !names.length;
-      if (!names.length) return;
-      secretNote.textContent = fill(T[d.kind === "ai" ? "settings.quick.secret.ai" : "settings.quick.secret.terminal"],
-        {names: names.map(name => fill(T["settings.quick.secret.name"], {name})).join("")});
-    };
     const drawKind = () => {
       kinds.textContent = "";
       for (const k of ["terminal", "ai"]) {
-        const on = d.kind === k;
+        const on = (item.kind || "terminal") === k;
         kinds.append(el("button", {class:"tog" + (on ? " on" : ""), role:"radio", "aria-checked":String(on),
-          onclick: () => { d.kind = k; drawKind(); repaint(); recheck(); }},
+          onclick:() => { item.kind = k; if (k !== "ai") delete item.ai; refreshSave(); drawKind(); repaint(); }},
           T["settings.quick.kind." + k]));
       }
-      const ai = d.kind === "ai";
+      const ai = item.kind === "ai";
       aiField.hidden = !ai;
       bodyLabel.textContent = T[ai ? "settings.quick.body.prompt" : "settings.quick.body.command"];
       bodyIn.placeholder = T[ai ? "settings.quick.body.prompt.ph" : "settings.quick.body.command.ph"];
@@ -6858,16 +6829,24 @@ function quickDialog(item, kind, draw) {
       bodyHint.textContent = T[ai ? "settings.quick.body.prompt.hint" : "settings.quick.body.command.hint"];
       drawSecrets();
     };
-    bodyIn.value = d.body;
-    bodyIn.addEventListener("input", () => { d.body = bodyIn.value; drawSecrets(); recheck(); });
+    // What a secret named in the body means, said while it is being written
+    const drawSecrets = () => {
+      const names = quickSecretNames(item.body);
+      secretNote.hidden = !names.length;
+      if (!names.length) return;
+      secretNote.textContent = fill(T[item.kind === "ai" ? "settings.quick.secret.ai" : "settings.quick.secret.terminal"],
+        {names: names.map(name => fill(T["settings.quick.secret.name"], {name})).join("")});
+    };
+    bodyIn.value = item.body || "";
+    bodyIn.addEventListener("input", () => { item.body = bodyIn.value; refreshSave(); drawSecrets(); });
     const secretBtn = el("button", {class:"quiet", onclick: e => quickSecretMenu(e, bodyIn, () => {
-      d.body = bodyIn.value; drawSecrets(); recheck();
+      item.body = bodyIn.value; refreshSave(); drawSecrets();
     })}, T["settings.quick.secret.insert"]);
     const enterBox = el("input", {type:"checkbox"});
-    enterBox.checked = d.enter;
-    enterBox.addEventListener("change", () => { d.enter = enterBox.checked; });
-    fields.push(
-      field(T["settings.quick.kind"], kinds, null),
+    enterBox.checked = item.enter !== false;
+    enterBox.addEventListener("change", () => { item.enter = enterBox.checked; refreshSave(); });
+    fields.append(
+      el("div", {class:"field"}, el("label", {}, T["settings.quick.kind"]), el("div", {class:"fieldctl"}, kinds)),
       aiField,
       el("div", {class:"field"}, bodyLabel,
         el("div", {class:"fieldctl"}, bodyIn, secretNote, el("div", {class:"row2"}, secretBtn)),
@@ -6876,107 +6855,10 @@ function quickDialog(item, kind, draw) {
         el("div", {class:"hint"}, T["settings.quick.enter.hint"])));
     drawKind();
   }
-  repaint();
-
-  // What is missing, said on the field it is missing from. The save is held
-  // rather than dead: it still takes the press, and answers it
-  const save = el("button", {class:"primary"}, T["common.save"]);
-  const why = el("span", {class:"why"});
-  why.hidden = true;
-  let held = null, asked = false;
-  function fieldFault(input, reason) {
-    // Right under the box itself, above anything else the field holds (5.1)
-    const had = input.nextElementSibling;
-    const show = reason && asked;
-    if (had && had.classList.contains("fault")) had.remove();
-    input.classList.toggle("bad", !!show);
-    if (show) input.after(el("div", {class:"site-warn fault"}, el("span", {}, "⚠"), el("span", {}, reason)));
-  }
-  function recheck() {
-    let first = null;
-    const nameWhy = !d.label.trim() ? T["settings.quick.label.required"] : null;
-    fieldFault(nameIn, nameWhy);
-    if (nameWhy) first = {at: nameIn, why: nameWhy};
-    if (!folder) {
-      const bodyWhy = !d.body.trim()
-        ? T[d.kind === "ai" ? "settings.quick.body.prompt.required" : "settings.quick.body.command.required"] : null;
-      fieldFault(bodyIn, bodyWhy);
-      if (bodyWhy && !first) first = {at: bodyIn, why: bodyWhy};
-    }
-    held = first;
-    save.classList.toggle("held", !!held);
-    if (!held) why.hidden = true;
-    else if (!why.hidden) why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
-  }
-  function sayWhy() {
-    asked = true;
-    recheck();
-    why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
-    why.hidden = false;
-    held.at.classList.remove("lookhere");
-    void held.at.offsetWidth;
-    held.at.classList.add("lookhere");
-    held.at.focus();
-  }
-
-  const title = folder ? (editing ? "settings.quick.folder.edit_title" : "settings.quick.folder.add_title")
-    : (editing ? "settings.quick.edit_title" : "settings.quick.add_title");
-  const shut = () => back.remove();
-  const back = openModal(
-    el("div", {class:"mhead"},
-      el("h2", {}, T[title]),
-      el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
-    el("div", {class:"mbody"}, ...fields),
-    el("div", {class:"mfoot"},
-      editing
-        ? el("button", {class:"danger", onclick: async () => {
-            if (await quickDelete(item, draw)) shut();
-          }}, T["common.delete"])
-        : null,
-      why,
-      el("span", {class:"grow"}),
-      el("button", {class:"quiet", onclick: () => shut()}, T["common.cancel"]),
-      save));
-  back.firstChild.classList.add("framed");
-  back.addEventListener("keydown", e => {
-    if (e.key === "Escape") { e.preventDefault(); shut(); return; }
-    if (e.key !== "Enter" || e.target.tagName !== "INPUT" || e.target.type === "checkbox") return;
-    e.preventDefault();
-    save.click();
-  });
-
-  save.addEventListener("click", async () => {
-    if (held) { sayWhy(); return; }
-    const out = {icon: d.icon, label: d.label.trim()};
-    if (!folder) {
-      Object.assign(out, {kind: d.kind, body: d.body, enter: d.enter});
-      if (d.kind === "ai" && d.ai) out.ai = d.ai;
-    }
-    let id;
-    if (editing) {
-      const now = quickOwn();
-      // The same button in the settings being written, found by its id: the
-      // one this dialog was opened with may be a copy drawn before a redraw
-      const find = (h) => (h.items || []).reduce((got, i) => got || (i.id === item.id ? i : find(i)), null);
-      const target = find(now) || item;
-      if (!folder) delete target.ai;
-      Object.assign(target, out);
-      id = target.id;
-    } else {
-      const here = quickHolder(quickOwn());
-      if (!Array.isArray(here.items)) here.items = [];
-      id = quickNewId();
-      here.items.push(Object.assign({id}, quickNextPlace(here, quickAt.path.length > 0), out,
-        folder ? {kind: "folder", pages: 1, items: []} : {}));
-    }
-    shut();
-    await quickSettle();
-    draw();
-    const row = document.querySelector('.qrow[data-id="' + CSS.escape(id) + '"]');
-    if (row) { row.scrollIntoView({block:"nearest"}); row.focus(); }
-  });
-  recheck();
-  setTimeout(() => nameIn.focus(), 0);
+  panel.append(el("div", {class:"qpanelrow"}, preview, fields),
+    el("div", {class:"qdelrow"}, el("button", {class:"danger", onclick:() => quickDelete(item, draw)},
+      T[folder ? "settings.quick.delete.folder.button" : "settings.quick.delete.button"])));
+  return panel;
 }
 
 // The secrets a body can name. They belong to desks, and a quick command

@@ -69,10 +69,10 @@ What each key does
 
 Buttons that send a command or a prompt
 
-**One page of the quick command screen**
-
-- **Icon** — The button looks like this on the quick command screen.
+- **Icon**
+- **Inside**
 - **Which AI** — This AI is started in a new tab in the folder in front, and given the prompt.
+- **Sends to**
 - **Press Enter at the end** — Untick to leave the text typed in, not sent.
 
 ### Quick actions

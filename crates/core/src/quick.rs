@@ -530,10 +530,9 @@ pub fn render(html: String) -> String {
     html.replace("{{QUICK_CSS}}", CSS).replace(
         "{{QUICK_JS}}",
         &format!(
-            "const QUICK_FOLDER_SVG = {};\nconst QUICK_BACK_SVG = {};\nconst QUICK_GRIP_SVG = {};\n{JS}",
+            "const QUICK_FOLDER_SVG = {};\nconst QUICK_BACK_SVG = {};\n{JS}",
             svg("folder"),
-            svg("corner-up-left"),
-            svg("grip-vertical")
+            svg("corner-up-left")
         ),
     )
 }
@@ -845,7 +844,6 @@ mod tests {
         assert!(page.contains("function quickFace("));
         assert!(!page.contains("const QUICK_FOLDER_SVG = \"\""), "the folder has no drawing");
         assert!(!page.contains("const QUICK_BACK_SVG = \"\""), "the way out has no drawing");
-        assert!(!page.contains("const QUICK_GRIP_SVG = \"\""), "the list's grip has no drawing");
     }
 
     /// The board is handed drawings, not names it would have to look up --
