@@ -45,6 +45,23 @@ once it reaches its first tagged release.
   settings.
 
 ### Changed
+- **What git does is the project's, not the desk's.** The protected branches,
+  and everything the AI is told when it writes a commit message, a pull
+  request's title and description or an issue, or is handed a stopped merge or
+  a failed CI run, are on each project's page in the settings (Projects > the
+  project, or Project settings in a folder's right-click menu on the board).
+  A desk held one answer for every repository on it, and a team's rules are
+  its repository's: a client's project and your own sit on one desk and spell
+  their commits differently. A desk's `git` is carried to its projects on the
+  first start of this version -- a project a folder only named, or only stood
+  in, is written down to take it -- and the desk's key comes off; a desk whose
+  folders are not on this machine keeps it for the machine that has them. The
+  folder page's "Set this folder's own" falls back to the project's. Edit on
+  the ✨ buttons and on the git column's next step opens that project's card.
+  `{language}` -- the language the screen is in -- can be written into the
+  commit, pull request and issue prompts, as into the merge and CI ones. The
+  ? panel and `docs/SETTINGS.md` list the project's page as a screen of its
+  own.
 - **The git accounts are the app's, not a desk's.** One list, under Settings >
   Git accounts, that every desk's projects and git tabs choose from; a desk's
   own `git_accounts` is gone and is not read, and a token is filed as

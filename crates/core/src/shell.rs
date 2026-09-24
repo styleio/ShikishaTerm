@@ -4480,7 +4480,9 @@ window.addEventListener("message", e => {
   const f = document.getElementById("guideframe");
   if (!f || e.source !== f.contentWindow || e.origin !== location.origin || !e.data) return;
   if (e.data.guide === "shut") { closeGuide(); drawNav(); }
-  if (e.data.guide === "open" && e.data.screen) openSettings(e.data.screen);
+  // A project's page is reached by a folder: the one in view, so the ? lands
+  // on the project the person is looking at
+  if (e.data.guide === "open" && e.data.screen) openSettings(e.data.screen, false, e.data.screen === "project" ? folderOf(folderTab()) : null);
 });
 
 // ── The Issue tab ─────────────────────────────────────────
@@ -4542,6 +4544,9 @@ function issuesList(page) {
   issuesAsk("list", Object.assign({project: I.project, text: I.text, page: I.page}, preset));
 }
 function issueProject(name) { return (I.projects || []).find(p => p.name === name) || null; }
+// A folder of that project, for a link to its page in the settings: its own
+// checkout as the settings wrote it, else the folder it was found through
+function issueFolder(name) { const p = issueProject(name); return p ? (p.at || p.dir || null) : null; }
 // The project standing at a folder. Two spellings answer for one project: the
 // checkout as the disk gives it, and the folder of the desk it was found
 // through. They are the same string for a folder on this PC and different ones
@@ -4596,10 +4601,11 @@ function prConflictBox(d, proj, made) {
     onclick:() => { if (!I.busy) issuesAsk("pr_resolve", {project: d.project, number: d.number, head: d.head || "", base}); }},
     pickIcon("sparkles"), el("span", {}, T["git.catch_up.resolve"] || ""));
   go.disabled = !!I.busy;
-  // What the AI tab is told is written in the desk's settings, as in the git column
+  // What the AI tab is told is written on the project's page in the
+  // settings, as in the git column; the folder says which project
   go.addEventListener("contextmenu", e => {
     e.preventDefault();
-    openList(go, [el("div", {onclick:() => { closeFolderMenu(); openSettings("git-merge", true); }},
+    openList(go, [el("div", {onclick:() => { closeFolderMenu(); openSettings("project-git-merge", true, p.folder); }},
       T["git.message.ai.edit"] || "")], false, e);
   });
   box.append(el("div", {class:"row"}, go));
@@ -5093,7 +5099,8 @@ function drawIssueCreate(box) {
   // The description first: it is what the AI works from. Its ✨ writes the
   // title, the description, the labels and the person from it
   const body = draftFields(form, c, {
-    act: "draft", settings: "git-issue", title: T["issues.draft.ai"], placeholder: T["issues.new.body.ph"],
+    act: "draft", settings: "project-git-issue", folder: issueFolder(c.project),
+    title: T["issues.draft.ai"], placeholder: T["issues.new.body.ph"],
     ask: () => {
       if (!c.body.trim()) { I.said = T["issues.draft.need"] || ""; I.bad = true; redraw(); return false; }
       issuesAsk("draft", {project: c.project, text: c.body, labels: opts.labels || [], assignees: opts.assignees || []});
@@ -5177,7 +5184,7 @@ function draftFields(form, c, how) {
   ai.disabled = !!I.busy;
   ai.addEventListener("contextmenu", e => {
     e.preventDefault();
-    openList(ai, [el("div", {onclick:() => { closeFolderMenu(); openSettings(how.settings, true); }},
+    openList(ai, [el("div", {onclick:() => { closeFolderMenu(); openSettings(how.settings, true, how.folder); }},
       T["git.message.ai.edit"] || "")], false, e);
   });
   // In the corner above the box rather than inside it: a long description has
@@ -5229,7 +5236,8 @@ function drawPrCreate(box) {
     el("span", {class:"name"}, label), control, hint ? el("span", {class:"hint"}, hint) : null));
 
   draftFields(form, p, {
-    act: "pr_draft", settings: "git-pr", title: T["issues.pr.draft.ai"], placeholder: T["issues.pr.body.ph"],
+    act: "pr_draft", settings: "project-git-pr", folder: p.folder,
+    title: T["issues.pr.draft.ai"], placeholder: T["issues.pr.body.ph"],
     own: text => prFixes(text, Object.assign({}, p, {close: false})),
     ask: () => {
       if (!p.base) { I.said = T["issues.pr.need.base"] || ""; I.bad = true; redraw(); return false; }
@@ -15308,6 +15316,14 @@ function gitAfterWork(before) {
 function gitTab() {
   return gitSurfaceTab() || repoTab();
 }
+// The folder a tab works in, as the board names it: what a link to the
+// folder's project page carries (the settings find the project from it)
+function folderOf(t) {
+  const g = t && t.group != null ? ((S && S.groups) || [])[t.group] : null;
+  return (g && g.folder) || null;
+}
+// The folder the column reports on
+function gitFolder() { return folderOf(gitTab()); }
 function gitAsk(act, args) {
   const t = gitTab();
   if (!t) return;
@@ -15536,11 +15552,12 @@ function gitBuild(box) {
       drawGit();
       gitAsk("message");
     }}, pickIcon("sparkles"));
-  // What the AI is told is written in the desk's settings. Asked for where the
-  // AI is asked: a right-click (a long press on a phone) on the same button
+  // What the AI is told is written on the project's page in the settings.
+  // Asked for where the AI is asked: a right-click (a long press on a phone)
+  // on the same button, carrying the folder so the settings know the project
   ai.addEventListener("contextmenu", e => {
     e.preventDefault();
-    openList(ai, [el("div", {onclick:() => { closeFolderMenu(); openSettings("git-message", true); }},
+    openList(ai, [el("div", {onclick:() => { closeFolderMenu(); openSettings("project-git-message", true, gitFolder()); }},
       T["git.message.ai.edit"] || "")], false, e);
   });
   const main = el("button", {class:"gmain", type:"button", onclick:() => {
@@ -15553,7 +15570,7 @@ function gitBuild(box) {
     const next = gitNext();
     if (!next || !next.edit) return;
     e.preventDefault();
-    openList(main, [el("div", {onclick:() => { closeFolderMenu(); openSettings(next.edit, true); }},
+    openList(main, [el("div", {onclick:() => { closeFolderMenu(); openSettings(next.edit, true, gitFolder()); }},
       T["git.message.ai.edit"] || "")], false, e);
   });
   const more = el("button", {class:"gmore", type:"button", title: T["git.more"] || "",
@@ -15612,7 +15629,7 @@ function gitBuild(box) {
     pickIcon("sparkles"));
   prAi.addEventListener("contextmenu", e => {
     e.preventDefault();
-    openList(prAi, [el("div", {onclick:() => { closeFolderMenu(); openSettings("git-pr", true); }},
+    openList(prAi, [el("div", {onclick:() => { closeFolderMenu(); openSettings("project-git-pr", true, gitFolder()); }},
       T["git.message.ai.edit"] || "")], false, e);
   });
   const prTitle = el("input", {type:"text", placeholder: T["issues.new.title.ph"] || ""});
@@ -16144,7 +16161,7 @@ function gitNext() {
   // A merge of the base that stopped goes to an AI tab, told what the settings
   // say, which reads both sides and runs the checks before it finishes the merge
   if (G.conflict && rows.some(r => r.conflict)) {
-    return {icon:"sparkles", label: T["git.catch_up.resolve"] || "", edit:"git-merge", run:() => gitAsk("resolve_tab")};
+    return {icon:"sparkles", label: T["git.catch_up.resolve"] || "", edit:"project-git-merge", run:() => gitAsk("resolve_tab")};
   }
   if (rows.some(r => r.conflict && r.tangled)) {
     return {icon:"sparkles", label: T["git.resolve"] || "", run:() => gitAsk("resolve")};
@@ -16170,7 +16187,7 @@ function gitNext() {
   // merge, and once every one is merged, the worktree that is done with
   const open = gitPrsOpen();
   const stuck = open.find(p => gitPrAction(p) && p.merge_state === "dirty");
-  if (stuck) return Object.assign({icon:"sparkles", edit:"git-merge", pr: stuck.number}, gitPrAction(stuck),
+  if (stuck) return Object.assign({icon:"sparkles", edit:"project-git-merge", pr: stuck.number}, gitPrAction(stuck),
     {label: (T["git.prs.resolve"] || "").replace("{base}", stuck.base || "")});
   const form = gitPrFormShown()
     ? (() => { const p = I.pr || {};
@@ -16183,7 +16200,7 @@ function gitNext() {
   // before anybody is asked to look at it: the form stands for a branch with
   // no pull request yet, and a red CI is worth fixing before opening one
   if (G.checks && G.checks.failed) {
-    return {icon:"sparkles", label: T["git.ci.fix"] || "", edit:"git-ci", run: gitCiFix};
+    return {icon:"sparkles", label: T["git.ci.fix"] || "", edit:"project-git-ci", run: gitCiFix};
   }
   if (form) return form;
   const ready = open.find(p => gitPrAction(p));
@@ -18974,7 +18991,7 @@ mod tests {
     fn the_board_walks_the_phone_to_the_screen_the_panel_names() {
         let p = super::page();
         assert!(
-            p.contains(r#"if (e.data.guide === "open" && e.data.screen) openSettings(e.data.screen);"#),
+            p.contains(r#"if (e.data.guide === "open" && e.data.screen) openSettings(e.data.screen, false, e.data.screen === "project" ? folderOf(folderTab()) : null);"#),
             "the board does not open the screen the framed panel names"
         );
         assert!(

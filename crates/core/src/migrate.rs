@@ -53,8 +53,123 @@ pub struct Step {
 /// the shape of a settings file adds one line here, and a fixture of a real
 /// file from the version before it under `tests/fixtures/`, so the test that
 /// walks every fixture to the present keeps walking.
-const STEPS: &[Step] =
-    &[Step { to: "0.10.0", apply: to_0_10_0 }, Step { to: "0.16.0", apply: to_0_16_0 }];
+const STEPS: &[Step] = &[
+    Step { to: "0.10.0", apply: to_0_10_0 },
+    Step { to: "0.16.0", apply: to_0_16_0 },
+    Step { to: "0.18.0", apply: to_0_18_0 },
+];
+
+/// What git does -- the protected branches, and the prompts the AI writes a
+/// commit message, a pull request or an issue from, or is handed a stopped
+/// merge or a failed CI run with -- is each project's, not the desk's.
+///
+/// One desk holds a client's repository beside the person's own, and a team's
+/// rules are its repository's: kept on the desk, one prompt served both and
+/// one of them was always wrong. So the desk's answer goes to every project on
+/// it that has none of its own, and the desk's key comes off. A project nobody
+/// had written down yet -- one a folder names, or the repository a folder is
+/// in -- is written down first, the way the settings screen writes one the
+/// moment anything about it is changed, so the answer has somewhere to go.
+///
+/// Only when nothing on the desk could take it -- its folders are not on this
+/// machine -- is the desk's answer left where it is, for a start on the
+/// machine that has them. Nothing is dropped that has not been carried.
+fn to_0_18_0(doc: &mut serde_json::Value) -> Result<()> {
+    // A desk file never held git settings, and neither did the shape from
+    // before desks existed: only the settings file's own desks are read
+    if let Some(desks) = doc.get_mut("desks").and_then(|d| d.as_array_mut()) {
+        desks.iter_mut().for_each(git_to_projects);
+    }
+    Ok(())
+}
+
+/// One desk's git settings, carried to its projects (see [`to_0_18_0`]).
+fn git_to_projects(desk: &mut serde_json::Value) {
+    let Some(git) = desk.get("git").cloned() else { return };
+    let Some(obj) = desk.as_object_mut() else { return };
+    // Nothing written under it is nothing to carry
+    if !git.as_object().is_some_and(|g| !g.is_empty()) {
+        obj.remove("git");
+        return;
+    }
+    let mut projects: Vec<serde_json::Value> =
+        obj.get("projects").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+    // Every folder placed in a project: the one it names, else the one whose
+    // checkout is in the same repository -- written down when missing, and
+    // named on the folder so the tie survives the folder being moved. A
+    // folder this machine does not have cannot be placed; a folder it has
+    // that is in no repository needs no placing
+    let mut missing = 0usize;
+    if let Some(folders) = obj.get_mut("folders").and_then(|f| f.as_array_mut()) {
+        for folder in folders.iter_mut() {
+            let text = |k: &str| {
+                folder.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+            };
+            if let Some(name) = text("project") {
+                if !projects.iter().any(|p| project_name(p) == name) {
+                    projects.push(serde_json::json!({ "name": name }));
+                }
+                continue;
+            }
+            let (Some(cwd), None) = (text("cwd"), text("host")) else { continue };
+            let path = std::path::PathBuf::from(&cwd);
+            let path = if path.is_absolute() { path } else { crate::config::root_dir().join(path) };
+            if !path.is_dir() {
+                missing += 1;
+                continue;
+            }
+            let Some(main) = crate::repo::main_checkout(&path) else { continue };
+            let family = crate::repo::family_of(&main);
+            let home = projects.iter().position(|p| {
+                p.get("at")
+                    .and_then(|a| a.as_str())
+                    .map(std::path::Path::new)
+                    .and_then(crate::repo::family_of)
+                    .is_some_and(|f| Some(f) == family)
+            });
+            let name = match home {
+                Some(i) => project_name(&projects[i]),
+                None => {
+                    let leaf = main
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| "project".to_string());
+                    let name = unique_project_name(&projects, &leaf);
+                    projects.push(serde_json::json!({ "name": name, "at": main.to_string_lossy() }));
+                    name
+                }
+            };
+            folder["project"] = serde_json::Value::String(name);
+        }
+    }
+    if projects.is_empty() && missing > 0 {
+        return;
+    }
+    for p in projects.iter_mut() {
+        if p.get("git").is_none() {
+            p["git"] = git.clone();
+        }
+    }
+    if !projects.is_empty() {
+        obj.insert("projects".into(), serde_json::Value::Array(projects));
+    }
+    obj.remove("git");
+}
+
+fn project_name(p: &serde_json::Value) -> String {
+    p.get("name").and_then(|n| n.as_str()).unwrap_or_default().trim().to_string()
+}
+
+/// `base`, or `base 2`, `base 3`… when a project is already called that: the
+/// same rule the settings screen names one by
+fn unique_project_name(projects: &[serde_json::Value], base: &str) -> String {
+    let taken = |n: &str| projects.iter().any(|p| project_name(p) == n);
+    if !taken(base) {
+        return base.to_string();
+    }
+    (2..).map(|n| format!("{base} {n}")).find(|n| !taken(n)).expect("the numbers do not run out")
+}
 
 /// A group that runs programs says which folder it runs them in.
 ///
@@ -659,5 +774,92 @@ mod tests {
         assert_eq!(left.len(), KEEP);
         assert_eq!(left[0], "0.8.0-20260909-000003", "the older one was kept");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A desk's git settings reach every project on it that has none of its
+    /// own -- the ones written down, and the one a folder only named -- and
+    /// the desk's key comes off. A project with its own keeps it, a folder on
+    /// another machine places nothing, and a second run changes nothing.
+    #[test]
+    fn a_desks_git_settings_are_carried_to_its_projects() {
+        let mut doc = serde_json::json!({
+            "desks": [{
+                "name": "work",
+                "git": {"protect": ["main", "release/*"], "message_prompt": "In our way\n\n{diff}"},
+                "projects": [{"name": "acme", "at": "D:/acme"}, {"name": "own", "git": {"protect": []}}],
+                "folders": [
+                    {"cwd": "D:/acme-feature", "project": "acme", "tabs": []},
+                    {"cwd": "D:/beta", "project": "beta", "tabs": []},
+                    {"cwd": "/srv/api", "host": "box", "tabs": []},
+                    {"tabs": [{"command": "browser https://example.com"}]}
+                ]
+            }, {
+                "name": "plain",
+                "folders": [{"cwd": ".", "tabs": []}]
+            }]
+        });
+        to_0_18_0(&mut doc).unwrap();
+        let desk = &doc["desks"][0];
+        assert!(desk.get("git").is_none(), "the desk still holds it: {desk}");
+        let projects = desk["projects"].as_array().unwrap();
+        let names: Vec<&str> = projects.iter().map(|p| p["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["acme", "own", "beta"], "the named project was not written down");
+        assert_eq!(projects[0]["git"]["message_prompt"], "In our way\n\n{diff}");
+        assert_eq!(projects[0]["git"]["protect"], serde_json::json!(["main", "release/*"]));
+        assert_eq!(projects[1]["git"], serde_json::json!({"protect": []}), "a project's own answer was written over");
+        assert_eq!(projects[2]["git"]["protect"], serde_json::json!(["main", "release/*"]));
+        assert_eq!(projects[2]["at"], serde_json::Value::Null, "a project only named has no checkout to invent");
+        assert!(doc["desks"][1].get("projects").is_none(), "a desk with nothing to carry was given projects");
+
+        let once = doc.clone();
+        to_0_18_0(&mut doc).unwrap();
+        assert_eq!(doc, once, "it changed the second time");
+        let _: crate::config::Config = serde_json::from_value(doc).expect("it reads after migrating");
+    }
+
+    /// A folder in a repository this machine has is placed by that
+    /// repository, and the project is written down the way the settings
+    /// screen would write it: named after the checkout, with the checkout.
+    /// A folder this machine does not have is the one case the desk's answer
+    /// is left where it is -- nothing is dropped that was not carried.
+    #[test]
+    fn a_folder_in_a_repository_is_placed_by_it_and_a_missing_one_waits() {
+        let base = std::env::temp_dir().join(format!("shikisha-migrate-git-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("widgets");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let checkout = crate::repo::main_checkout(&repo).expect("a folder with a .git in it is a checkout");
+
+        let mut doc = serde_json::json!({"desks": [{
+            "name": "work",
+            "git": {"message_hint": "Always in English."},
+            "folders": [{"cwd": repo.to_string_lossy(), "tabs": []}]
+        }]});
+        to_0_18_0(&mut doc).unwrap();
+        let desk = &doc["desks"][0];
+        assert!(desk.get("git").is_none(), "{desk}");
+        assert_eq!(desk["projects"][0]["name"], "widgets");
+        assert_eq!(desk["projects"][0]["at"], checkout.to_string_lossy().as_ref());
+        assert_eq!(desk["projects"][0]["git"]["message_hint"], "Always in English.");
+        assert_eq!(desk["folders"][0]["project"], "widgets", "the folder was not tied to the project by name");
+        let once = doc.clone();
+        to_0_18_0(&mut doc).unwrap();
+        assert_eq!(doc, once, "it changed the second time");
+
+        let gone = base.join("not-here");
+        let mut doc = serde_json::json!({"desks": [{
+            "name": "laptop",
+            "git": {"message_hint": "Always in English."},
+            "folders": [{"cwd": gone.to_string_lossy(), "tabs": []}]
+        }]});
+        let before = doc.clone();
+        to_0_18_0(&mut doc).unwrap();
+        assert_eq!(doc, before, "a desk whose folders are elsewhere lost its answer");
+
+        // Nothing under the key is nothing to carry, and the key comes off
+        let mut doc = serde_json::json!({"desks": [{"name": "w", "git": {}, "folders": [{"cwd": gone.to_string_lossy(), "tabs": []}]}]});
+        to_0_18_0(&mut doc).unwrap();
+        assert!(doc["desks"][0].get("git").is_none());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

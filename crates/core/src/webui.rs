@@ -3676,9 +3676,11 @@ pub fn page() -> &'static str {
 
 /// The screen an older name for one of a desk's settings leads to.
 ///
-/// The board holds names this page has carried before (`git-message` for the
-/// git screen), so that a button written once goes on working. One answer, in
-/// the page's own table, read by whoever has to follow the same link.
+/// The board holds names this page has carried before (`caps` for the
+/// automation doors), so that a button written once goes on working. One
+/// answer, in the page's own table, read by whoever has to follow the same
+/// link. What git does is a project's, asked for as `project-<card>` with the
+/// folder, and is not in this table.
 pub fn desk_link(name: &str) -> Option<&'static str> {
     let table = PAGE.split_once("const DESK_LINKS = {")?.1.split_once("};")?.0;
     table
@@ -4635,11 +4637,13 @@ const PET_NOUNS = __PETNOUNS__;
 const protectList = text => (text || "").split(/[\s,]+/).filter(Boolean);
 const protectText = list => (list || []).join(" ");
 // The list a folder inherits when it has said nothing of its own: its
-// desk's, or the built-in names for a desk that has said nothing either. The
-// same order the program settles at launch, so the greyed-out box on a folder's
-// page shows the names that will actually guard it
-const protectOf = desk => {
-  const g = (desk && desk.git) || {};
+// project's, or the built-in names for a project that has said nothing
+// either, or for a folder in no project. The same order the program settles
+// at launch, so the greyed-out box on a folder's page shows the names that
+// will actually guard it
+const protectOf = (desk, gi) => {
+  const home = deskProjects(desk).projects.find(p => p.folders.includes(gi));
+  const g = (home && home.entry && home.entry.git) || {};
   return Array.isArray(g.protect) ? g.protect : PROTECT_DEFAULT;
 };
 // {name} substitution (same rule as tp on the Rust side)
@@ -7227,11 +7231,11 @@ function globalSections() {
   ];
 }
 
-// Links that name one of a desk's settings (the git panel's gear asks for
-// "git"): the desk in view, at that entry, since there is no copy of the
-// program's to land on. Older names for the same places are kept here
-const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", "git-pr":"git", "git-merge":"git", "git-ci":"git", protect:"git",
-                    permissions:"permissions", caps:"caps"};
+// Links that name one of a desk's settings (the bar's gear asks for
+// "permissions"): the desk in view, at that entry, since there is no copy of
+// the program's to land on. Older names for the same places are kept here.
+// What git does is a project's, reached as "project-..." with the folder
+const DESK_LINKS = {permissions:"permissions", caps:"caps"};
 
 // ── Update ─────────────────────────────────────────────────────
 // The one place a newer version is fetched, checked and put in place. The
@@ -9236,9 +9240,11 @@ function hostDialog(at, redraw, kind) {
   setTimeout(recheck, 0);
 }
 
-// The branch names a desk guards. A folder page holds the same field for the
-// one project that wants something else
-function protectField(owner) {
+// The branch names a project guards. A folder page holds the same field for
+// the one folder that wants something else. `touched` is told when the answer
+// changes, before the save button is lit: the page it is on may have to
+// write the project down first (see projectPane)
+function protectField(owner, touched) {
   const box = el("input", {class:"mono grow", placeholder:T["settings.protect.ph"]});
   const g = owner.git || {};
   box.value = protectText(Array.isArray(g.protect) ? g.protect : PROTECT_DEFAULT);
@@ -9247,6 +9253,7 @@ function protectField(owner) {
   // button for a change nobody made
   box.addEventListener("input", () => {
     (owner.git = owner.git || {}).protect = protectList(box.value);
+    if (touched) touched();
     refreshSave();
   });
   return box;
@@ -9260,8 +9267,9 @@ function protectField(owner) {
 // Written back to exactly the default is absent again, so a later, better
 // default still reaches it. `legacy` is an instruction an earlier version kept
 // apart from a prompt nobody could see; it is shown on the end of the default,
-// which is how it was used, until the box is changed
-function promptField(g, key, standardKey, id, vars, legacy) {
+// which is how it was used, until the box is changed. `touched` is told of a
+// change before the save button is lit (see protectField)
+function promptField(g, key, standardKey, id, vars, legacy, touched) {
   const standard = T[standardKey] || "";
   const old = () => legacy && typeof g[legacy] === "string" && g[legacy].trim() !== "" ? g[legacy].trim() : "";
   const shown = () => typeof g[key] === "string" ? g[key] : old() ? standard + "\n\n" + old() : standard;
@@ -9280,12 +9288,14 @@ function promptField(g, key, standardKey, id, vars, legacy) {
     if (legacy) delete g[legacy];
     box.value = standard;
     tell();
+    if (touched) touched();
     refreshSave();
   };
   box.addEventListener("input", () => {
     if (legacy) delete g[legacy];
     if (box.value === standard) delete g[key]; else g[key] = box.value;
     tell();
+    if (touched) touched();
     refreshSave();
   });
   tell();
@@ -9307,20 +9317,23 @@ function promptField(g, key, standardKey, id, vars, legacy) {
     box, chips);
 }
 
-// How the git panel's AI writes: the commit message, and a pull request's title
-// and description. Each prompt is written out whole in its box; for more than
-// words, the commit message can be built by Lua instead
-function gitFields(owner) {
+// How the AI writes for a repository: the commit message, a pull request's
+// title and description, an issue, and what it is told when handed a stopped
+// merge or a failed CI run. Each prompt is written out whole in its box; for
+// more than words, the commit message can be built by Lua instead. `touched`
+// is told of every change (see protectField)
+function gitFields(owner, touched) {
   const g = owner.git = owner.git || {};
-  const hint = promptField(g, "message_prompt", "ai.commit.default_prompt", "desk-git-message",
-    ["diff", "ai"], "message_hint");
+  const changed = () => { if (touched) touched(); refreshSave(); };
+  const hint = promptField(g, "message_prompt", "ai.commit.default_prompt", "project-git-message",
+    ["diff", "ai", "language"], "message_hint", touched);
 
   const useLua = el("input", {type:"checkbox"});
   useLua.checked = typeof g.message_lua === "string";
   const lua = el("textarea", {rows:"12", class:"mono", style:"width:100%",
     placeholder:T["settings.git.lua.ph"]});
   lua.value = g.message_lua || "";
-  lua.addEventListener("input", () => { g.message_lua = lua.value; refreshSave(); });
+  lua.addEventListener("input", () => { g.message_lua = lua.value; changed(); });
   const luaBox = el("div", {});
   const drawLua = () => {
     luaBox.textContent = "";
@@ -9332,7 +9345,7 @@ function gitFields(owner) {
         // The built-in one, as a starting point rather than a blank sheet
         lua.value = GIT_MESSAGE_LUA;
         g.message_lua = lua.value;
-        refreshSave();
+        changed();
       }}, T["settings.git.lua.default"]),
       el("a", {href:manualHref("ai_ask"), target:"_blank", style:"margin-left:var(--s3)"},
         T["settings.git.lua.manual"])));
@@ -9341,7 +9354,7 @@ function gitFields(owner) {
     if (useLua.checked) { g.message_lua = lua.value || GIT_MESSAGE_LUA; lua.value = g.message_lua; }
     else delete g.message_lua;
     drawLua();
-    refreshSave();
+    changed();
   });
   drawLua();
 
@@ -9353,21 +9366,20 @@ function gitFields(owner) {
     luaBox,
     el("h3", {}, T["settings.git.pr.title"]),
     el("div", {class:"hint"}, T["settings.git.pr.about"]),
-    promptField(g, "pr_prompt", "ai.pr.default_prompt", "desk-git-pr", ["branch", "base", "commits", "diff", "ai"]),
+    promptField(g, "pr_prompt", "ai.pr.default_prompt", "project-git-pr", ["branch", "base", "commits", "diff", "ai", "language"], null, touched),
     el("details", {class:"promptmore"},
       el("summary", {}, T["settings.git.prompt.more"]),
       el("div", {class:"hint"}, T["settings.git.pr.shape"]),
       el("pre", {class:"mono promptshape"}, T["ai.pr.shape"] || "")),
     el("h3", {}, T["settings.git.merge.title"]),
     el("div", {class:"hint"}, T["settings.git.merge.about"]),
-    promptField(g, "merge_prompt", "ai.merge.default_prompt", "desk-git-merge", ["folder", "branch", "base", "files", "language"]),
+    promptField(g, "merge_prompt", "ai.merge.default_prompt", "project-git-merge", ["folder", "branch", "base", "files", "language"], null, touched),
     el("h3", {}, T["settings.git.ci.title"]),
     el("div", {class:"hint"}, T["settings.git.ci.about"]),
-    promptField(g, "ci_prompt", "ai.ci.default_prompt", "desk-git-ci", ["pr", "title", "url", "branch", "folder", "checks", "language"]),
+    promptField(g, "ci_prompt", "ai.ci.default_prompt", "project-git-ci", ["pr", "title", "url", "branch", "folder", "checks", "language"], null, touched),
     el("h3", {}, T["settings.git.issue.title"]),
     el("div", {class:"hint"}, T["settings.git.issue.about"]),
-    promptField(g, "issue_prompt", "ai.issue.default_prompt", "desk-git-issue", ["text", "ai"]),
-    // What is always added after it, shown rather than kept out of sight
+    promptField(g, "issue_prompt", "ai.issue.default_prompt", "project-git-issue", ["text", "ai", "language"], null, touched),
     // What is always added after it: shown, but folded -- it is there to be
     // looked up, not read every time the page is opened
     el("details", {class:"promptmore"},
@@ -9377,17 +9389,24 @@ function gitFields(owner) {
   ];
 }
 
-// What git does in this desk: the branches a commit will not land on, and how
-// the commit message is written
-function gitCard(desk) {
-  const c = card(T["settings.desk.git.title"],
-    el("div", {class:"hint", id:"desk-protect"}, T["settings.protect.hint"]),
-    el("div", {class:"row"}, protectField(desk)),
-    el("div", {class:"hint"}, T["settings.protect.wild"]),
-    el("h3", {}, T["settings.sec.git"]),
-    ...gitFields(desk));
-  c.id = "desk-git";
-  return c;
+// What git does in one project: the branches a commit will not land on, and
+// what the AI is told when it writes for the repository. A project's rather
+// than the desk's, because these are a team's rules and a team is a
+// repository: a client's project and the person's own sit on one desk and
+// spell their commits differently.
+//
+// `holder` is the project's written entry, or a stand-in for a project only
+// worked out from git: the first change writes the project down (`touched`),
+// and the stand-in's answers go with it
+function projectGitCards(holder, touched) {
+  const guard = card(T["settings.project.protect.title"],
+    el("div", {class:"hint"}, T["settings.protect.hint"]),
+    el("div", {class:"row"}, protectField(holder, touched)),
+    el("div", {class:"hint"}, T["settings.protect.wild"]));
+  guard.id = "project-protect";
+  const prompts = card(T["settings.sec.git"], ...gitFields(holder, touched));
+  prompts.id = "project-git";
+  return [guard, prompts];
 }
 
 // Where the program says something when a tab has finished, or when a script
@@ -10236,9 +10255,9 @@ function deskSections(desk) {
     s("basic", deskBasic),
     s("notify", notifyCard),
     s("permissions", permissionsCard),
-    // Who the desk signs in as first, then what it does with that: one
-    // page, since a person setting up git on a desk wants both
-    s("git", desk => [gitCard(desk)]),
+    // What git does is not here: the protected branches and the prompts are
+    // a team's rules, and a team is a repository, so they are on each
+    // project's own page (projectGitCards)
     s("secrets", deskSecretsCard),
     s("discuss", deskDiscussCard),
     s("stops", deskStopsCard),
@@ -10964,11 +10983,11 @@ function folderPane(desk, g, gi) {
     protectBox.disabled = !ownProtect.checked;
     protectBox.placeholder = ownProtect.checked
       ? T["settings.protect.ph"]
-      : protectText(protectOf(desk));
+      : protectText(protectOf(desk, gi));
     protectBox.value = Array.isArray(g.protect) ? protectText(g.protect) : "";
   };
   ownProtect.addEventListener("change", () => {
-    if (ownProtect.checked) g.protect = protectOf(desk).slice();
+    if (ownProtect.checked) g.protect = protectOf(desk, gi).slice();
     else delete g.protect;
     drawProtect();
     refreshSave();
@@ -11651,6 +11670,18 @@ function projectPane(desk, p) {
     acctCard.id = "project-gitacct";
     box.append(acctCard);
   }
+
+  // What git does here: the branches guarded, and what the AI is told when
+  // it writes for this repository. A project only worked out from git is
+  // written down by the first change, and what was typed goes with it
+  const holder = p.entry || {};
+  const wrote = () => {
+    if (p.entry) return;
+    const e = ensureProject(desk, p);
+    e.git = holder.git;
+    sel.proj = "p:" + e.name;
+  };
+  box.append(...projectGitCards(holder, wrote));
 
   // What a new worktree of it is given beyond what git carries, then the
   // environment and setup of the repository, read from its own checkout --
@@ -13906,9 +13937,9 @@ function payload() {
     // secret was whose -- so it is kept rather than dropped on the first save
     if (w.secrets_allow && w.secrets_allow.length) o.secrets_allow = w.secrets_allow;
     if (w.secrets_allow_all) o.secrets_allow_all = true;
-    // This desk's own notification destinations, model connections, doors,
-    // permission table and git settings. Each written only when it holds
-    // something, so a desk with none of them stays a short entry
+    // This desk's own notification destinations, model connections, doors
+    // and permission table. Each written only when it holds something, so a
+    // desk with none of them stays a short entry
     const some = v => isObj(v) && Object.keys(v).length > 0;
     if (some(w.notify)) o.notify = w.notify;
     if ((w.primary_notify || "").trim() && some(w.notify) && w.notify[w.primary_notify.trim()]) {
@@ -13916,12 +13947,15 @@ function payload() {
     }
     if (some(w.capabilities)) o.capabilities = w.capabilities;
     if (some(w.automation_permissions)) o.automation_permissions = w.automation_permissions;
-    if (some(w.git)) o.git = w.git;
     // Its projects, each with a name; an entry left without one is not one
     const projs = (w.projects || []).filter(p => p && (p.name || "").trim())
       .map(p => {
         const c = Object.assign({}, p);
         for (const k of ["at", "setup", "branch_prefix"]) if (!(c[k] || "").trim()) delete c[k];
+        // What git does here, only when something is written under it: the
+        // page opens the object to draw the boxes, and an empty one is the
+        // app's own answer, which is absent
+        if (!some(c.git)) delete c.git;
         // A file from elsewhere with nowhere to come from or go is not one yet
         if (Array.isArray(c.bring)) {
           c.bring = c.bring.filter(r => r && (r.pattern || ((r.from || "").trim() && (r.to || "").trim())));
@@ -14271,12 +14305,6 @@ load().then(() => {
     const at = idx("desk");
     sel = {desk:(desks[at] ? at : sel.desk), grp:null, tab:null, global:false};
     goDeskSection(DESK_LINKS[sec], "center");
-    // Asked for one field, not the card: that field, marked
-    if (sec === "git-message") lookAtCard("desk-git-message", 50);
-    if (sec === "git-issue") lookAtCard("desk-git-issue", 50);
-    if (sec === "git-pr") lookAtCard("desk-git-pr", 50);
-    if (sec === "git-merge") lookAtCard("desk-git-merge", 50);
-    if (sec === "git-ci") lookAtCard("desk-git-ci", 50);
     return;
   }
   const wi = idx("addtab");
@@ -14347,13 +14375,23 @@ load().then(() => {
   // entry knows the folder, not which line of the settings file it is on
   const want = (q.get("folder") || "").trim();
   // ?section=project&folder=<path> lands on the page of the project that folder
-  // is in: where its git account is chosen. Which project a folder is in may
-  // only be known once git has said which repository it is, so that answer is
-  // waited for -- and only a folder git says is in no repository, or an answer
-  // that never comes, settles for the folder's own page
-  // ...and ?section=project-gitacct lands on that page's git account card,
-  // for a refusal that is put right there
-  if ((sec === "project" || sec === "project-gitacct") && want && desks[cur]) {
+  // is in: where its git account, its protected branches and what the AI is
+  // told are chosen. Which project a folder is in may only be known once git
+  // has said which repository it is, so that answer is waited for -- and only
+  // a folder git says is in no repository, or an answer that never comes,
+  // settles for the folder's own page.
+  // ...and ?section=project-<card> lands on one card of that page, by the
+  // card's own id: "project-gitacct" for a refusal about the account, put
+  // right there; "project-git-message" and its neighbours for the prompt the
+  // board's ✨ was pressed on
+  const projectAsk = sec === "project" || (sec || "").startsWith("project-");
+  const markCard = () => {
+    if (sec === "project") return;
+    // The account card is drawn once this PC's accounts are in
+    if (sec === "project-gitacct") PC_ACCOUNTS_READ.then(() => lookAtCard(sec, 50));
+    else lookAtCard(sec, 50);
+  };
+  if (projectAsk && want && desks[cur]) {
     // Either slash: the settings write D:/work, a path said by Windows is D:\work
     const same = c => (c || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const gi = (desks[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
@@ -14369,9 +14407,21 @@ load().then(() => {
                    : {desk:cur, grp:gi, tab:null, global:false};
         render();
         showSelected("center");
-        if (home && sec === "project-gitacct") PC_ACCOUNTS_READ.then(() => lookAtCard("project-gitacct", 50));
+        if (home) markCard();
       };
       land(100);
+      return;
+    }
+  }
+  // Asked for a project's page with no folder to say which (the ? panel
+  // names the screen, not a project): the desk's first project
+  if (projectAsk && !want && desks[cur]) {
+    const first = deskProjects(desks[cur]).projects[0];
+    if (first) {
+      sel = {desk:cur, proj:first.key, grp:null, tab:null, global:false};
+      render();
+      showSelected("center");
+      markCard();
       return;
     }
   }
@@ -15311,14 +15361,14 @@ mod tests {
     #[test]
     fn the_issue_tabs_settings_button_opens_the_project() {
         assert!(
-            PAGE.contains(r#"if ((sec === "project" || sec === "project-gitacct") && want && desks[cur]) {"#),
+            PAGE.contains(r#"const projectAsk = sec === "project" || (sec || "").startsWith("project-");"#),
             "there is no link to a project's page"
         );
         // A refusal about the account lands on the card that chooses it, not
         // at the top of a long page with the card to be found somewhere below
         assert!(PAGE.contains(r#"acctCard.id = "project-gitacct";"#), "the account card has no address");
         assert!(
-            PAGE.contains(r#"PC_ACCOUNTS_READ.then(() => lookAtCard("project-gitacct", 50))"#),
+            PAGE.contains(r#"if (sec === "project-gitacct") PC_ACCOUNTS_READ.then(() => lookAtCard(sec, 50));"#),
             "the link does not bring the card into view"
         );
         // The folder as the settings spell it, not as the disk answers about
@@ -15387,18 +15437,21 @@ mod tests {
             .collect();
         assert!(!global.is_empty() && !desk_ids.is_empty() && !desk_links.is_empty(),
             "the settings' own lists are no longer being found");
-        // The two names that are neither: a project's page, and the card on it
+        // The names that are neither: a project's page, and the cards on it
         let project = PAGE
-            .contains(r#"if ((sec === "project" || sec === "project-gitacct") && want && desks[cur]) {"#);
+            .contains(r#"const projectAsk = sec === "project" || (sec || "").startsWith("project-");"#);
         assert!(project, "the project's own page is no longer reachable by name");
 
         for ask in &asks {
             // "words" is a browser tab's own models, reached by the tab's key,
             // and "words-slow" the same, opened to say why the page is slow
+            // A project's page, or one card on it by the card's own id, which
+            // has to be given out on the page as well as asked for
+            let project_card = ask.starts_with("project-") && PAGE.contains(&format!("\"{ask}\""));
             let known = global.contains(ask)
                 || desk_links.iter().any(|(k, _)| k == ask)
                 || ask == "project"
-                || ask == "project-gitacct"
+                || project_card
                 || ask == "words"
                 || ask == "words-slow";
             assert!(known, "the board sends people to \"{ask}\", which is no screen these settings have");

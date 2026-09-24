@@ -64,6 +64,13 @@ pub struct ProjectSpec {
     /// gives, which the settings screen shows beside it
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bring: Vec<BringRule>,
+    /// What git does in this project: the branches a commit refuses to land
+    /// on, for the folders that have not said otherwise, and what the AI is
+    /// told when it writes a commit message, a pull request, an issue, or is
+    /// handed a stopped merge or a failed CI run. Absent is the app's own
+    /// answer to every one of them
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<GitSpec>,
 }
 
 /// How one thing reaches a new worktree.
@@ -453,21 +460,50 @@ impl Desk {
             .folders
             .iter()
             .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, cwd)))
-            .and_then(|f| f.project.as_deref())
-            .map(str::trim)
-            .filter(|p| !p.is_empty());
-        if let Some(name) = named {
-            return self.projects.iter().find(|p| p.name == name);
-        }
-        let family = crate::repo::family_of(cwd)?;
-        self.projects.iter().find(|p| {
-            p.at
-                .as_deref()
-                .map(std::path::Path::new)
-                .and_then(crate::repo::family_of)
-                .is_some_and(|f| f == family)
-        })
+            .and_then(|f| f.project.as_deref());
+        project_among(&self.projects, named, Some(cwd))
     }
+
+    /// What git does in the project one of this desk's folders belongs to:
+    /// the project's own answer, or the app's for a folder in no project, or
+    /// in one that has said nothing. Asked wherever an AI is about to write
+    /// for a repository -- the commit message, a pull request, a stopped
+    /// merge, a failed CI run -- so every one of them reads the same page
+    pub fn git_of(&self, cwd: &std::path::Path) -> GitSpec {
+        self.project_of(cwd).and_then(|p| p.git.clone()).unwrap_or_default()
+    }
+
+    /// The same, for a project named rather than stood in: what the issue
+    /// list knows, which is the project's name and no folder
+    pub fn git_of_project(&self, name: &str) -> GitSpec {
+        project_among(&self.projects, Some(name), None).and_then(|p| p.git.clone()).unwrap_or_default()
+    }
+}
+
+/// The project a folder is in, among `projects`: the one it names, and
+/// failing a name, the one whose own checkout is in the same repository as
+/// `cwd`. Asked while the desk is still being put together as well as of the
+/// finished desk, so it is a function of the list rather than of the desk.
+///
+/// A name is answered without touching the disk. The repository is two file
+/// reads (see [`crate::repo::family_of`]), which is why folders made by this
+/// app write the name down and the reads are for the ones written by hand
+pub fn project_among<'a>(
+    projects: &'a [ProjectSpec],
+    named: Option<&str>,
+    cwd: Option<&std::path::Path>,
+) -> Option<&'a ProjectSpec> {
+    if let Some(name) = named.map(str::trim).filter(|p| !p.is_empty()) {
+        return projects.iter().find(|p| p.name == name);
+    }
+    let family = crate::repo::family_of(cwd?)?;
+    projects.iter().find(|p| {
+        p.at
+            .as_deref()
+            .map(std::path::Path::new)
+            .and_then(crate::repo::family_of)
+            .is_some_and(|f| f == family)
+    })
 }
 
 impl Config {
@@ -2267,16 +2303,16 @@ pub struct DeskSpec {
     /// author chose
     #[serde(default)]
     pub automation_permissions: crate::grants::GrantSpec,
-    /// What git does here: the branches a commit refuses to land on for the
-    /// folders that have not said otherwise, and how the commit message is
-    /// written
-    #[serde(default)]
-    pub git: GitSpec,
     /// The repositories worked on in this desk. This desk's own: the same
     /// repository in another desk is another project there, with its own
     /// setup, so a change made from one desk never reaches the other.
     /// Empty until something is written down, and folders are still matched to
-    /// a repository by asking git while it is
+    /// a repository by asking git while it is.
+    ///
+    /// What git does -- the protected branches, the prompts -- is each
+    /// project's ([`ProjectSpec::git`]), not the desk's: a desk that held one
+    /// answer for every repository on it was carried over to its projects by
+    /// `migrate::to_0_18_0`
     #[serde(default)]
     pub projects: Vec<ProjectSpec>,
     /// What writes the names and summaries of the folders that ask for them
@@ -2763,8 +2799,9 @@ pub struct FolderConfig {
     #[serde(default)]
     pub host: Option<String>,
     /// The branches this folder will not commit straight onto, when it wants
-    /// something other than the app-wide answer. Absent means it follows that
-    /// one; an empty list means this folder guards nothing
+    /// something other than its project's answer ([`ProjectSpec::git`]).
+    /// Absent means it follows that one; an empty list means this folder
+    /// guards nothing
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protect: Option<Vec<String>>,
     #[serde(default)]
@@ -2905,9 +2942,10 @@ pub struct Folder {
     /// it. [`Source::Unknown`] is the case that has to ask
     pub source: Source,
     /// The branches a commit made from here refuses to land on. Already the
-    /// whole answer -- what this folder said, or what the app said for the
-    /// folders that said nothing -- so that nothing downstream has to know
-    /// there were two places to ask
+    /// whole answer -- what this folder said, or what its project said for
+    /// the folders that said nothing, or the app's own for a folder in no
+    /// project -- so that nothing downstream has to know there were three
+    /// places to ask
     pub protect: Vec<String>,
     /// The project it says it is a piece of, by name, when it says
     pub project: Option<String>,
@@ -2956,9 +2994,6 @@ pub struct Desk {
     /// Who may call which automation command here. Rows it does not mention
     /// answer from the defaults in `grants.rs`
     pub automation_permissions: crate::grants::GrantSpec,
-    /// What git does here. Its `protect` has already been handed to the
-    /// folders, which is where anything asks about it
-    pub git: GitSpec,
     /// The app's git accounts (see [`Desk::git_use`]): the same list on every
     /// desk, carried here so a desk answers about its folders by itself
     pub git_accounts: Vec<GitAccountSpec>,
@@ -3256,14 +3291,21 @@ pub fn browser_url_of(argv: &[String]) -> Option<String> {
     (!url.is_empty()).then_some(url)
 }
 
-/// What the git panel's commit-message button does.
+/// What git does for one project: the branches a commit refuses to land on,
+/// and what the AI is told when it writes for the repository.
+///
+/// A project's, because these are a team's rules, and a team is a repository:
+/// one desk holds a client's repository beside the person's own, and the two
+/// spell their commits differently. Kept on the desk, one prompt served both
+/// and one of them was always wrong.
 ///
 /// Two levels. `message_prompt` is the whole of what the AI is told -- there
 /// is no instruction kept out of sight behind it. `{diff}` in it is where the
-/// change goes (after it, when it is not written) and `{ai}` becomes the name
-/// of the AI answering. For more than words, `message_lua` replaces the
-/// template that asks, and can reach anything automation can reach.
-#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+/// change goes (after it, when it is not written), `{ai}` becomes the name
+/// of the AI answering and `{language}` the language the screen is in. For
+/// more than words, `message_lua` replaces the template that asks, and can
+/// reach anything automation can reach.
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
 pub struct GitSpec {
     /// The whole prompt. Absent is the default prompt; empty is no instruction
     /// at all, the change alone
@@ -3736,12 +3778,40 @@ fn foldered_with(folders: &[FolderConfig], legacy: &[TabConfig]) -> Vec<FolderCo
 /// two tabs claimed the same one (see [`settle_tab_ids`])
 fn resolve_folders(
     defs: &[FolderConfig],
-    protect: &[String],
+    projects: &[ProjectSpec],
     hosts: &[HostSpec],
 ) -> (Vec<Folder>, Vec<FlatTab>, Vec<String>) {
     let mut folders = Vec::with_capacity(defs.len());
     let mut tabs = Vec::new();
     for (at, def) in defs.iter().enumerate() {
+        let elsewhere = def.host.as_deref().is_some_and(|h| !h.trim().is_empty());
+        // Relative stays relative to the settings, so that a whole folder
+        // of them can be carried to another machine.
+        //
+        // Unless the folder is on another machine, where a path is that
+        // machine's and not this one's to interpret. `/srv/api` is not an
+        // absolute path on Windows, so it would be joined to a folder
+        // here and the folder would then be missing -- which it is, and
+        // which is beside the point
+        let cwd = def.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()).map(|c| {
+            let p = std::path::PathBuf::from(c);
+            match p.is_absolute() || elsewhere {
+                true => p,
+                false => root_dir().join(p),
+            }
+        });
+        let project = def.project.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
+        // Settled here, once: a folder that has said what it guards, its
+        // project's answer for one that has not, and the app's own for a
+        // folder in no project. A folder on another machine is placed by the
+        // name it wrote, never by reading a path that is not this machine's
+        let protect = match &def.protect {
+            Some(list) => list.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            None => project_among(projects, project.as_deref(), cwd.as_deref().filter(|_| !elsewhere))
+                .and_then(|p| p.git.as_ref())
+                .map(GitSpec::protected)
+                .unwrap_or_else(|| GitSpec::default().protected()),
+        };
         folders.push(Folder {
             name: def.name.clone().filter(|n| !n.trim().is_empty()),
             id: def.id.clone().filter(|i| !i.trim().is_empty()),
@@ -3755,33 +3825,10 @@ fn resolve_folders(
                 .filter(|h| !h.is_empty())
                 .and_then(|h| hosts.iter().find(|x| x.name == h))
                 .cloned(),
-            // Relative stays relative to the settings, so that a whole folder
-            // of them can be carried to another machine.
-            //
-            // Unless the folder is on another machine, where a path is that
-            // machine's and not this one's to interpret. `/srv/api` is not an
-            // absolute path on Windows, so it would be joined to a folder
-            // here and the folder would then be missing -- which it is, and
-            // which is beside the point
-            cwd: def.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()).map(|c| {
-                let p = std::path::PathBuf::from(c);
-                match p.is_absolute() || def.host.as_deref().is_some_and(|h| !h.trim().is_empty()) {
-                    true => p,
-                    false => root_dir().join(p),
-                }
-            }),
+            cwd,
             source: def.source.as_ref().map(SourceSpec::read).unwrap_or_default(),
-            // Settled here, once: a folder that has said what it guards, and
-            // the app's own answer for every folder that has not
-            protect: match &def.protect {
-                Some(list) => list
-                    .iter()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect(),
-                None => protect.to_vec(),
-            },
-            project: def.project.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_string),
+            protect,
+            project,
             work_item: def.work_item.as_deref().map(str::trim).filter(|w| !w.is_empty()).map(str::to_string),
             summary: def.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
             auto_label: def.auto_label,
@@ -5040,9 +5087,8 @@ impl Config {
             // Tabs written the old way, with no folder around them, are still
             // a screenful of work somebody arranged
             if !self.folders.is_empty() || !self.tabs.is_empty() {
-                let git = GitSpec::default();
                 let (folders, tabs, moved) =
-                    resolve_folders(&foldered_with(&self.folders, &self.tabs), &git.protected(), &self.hosts);
+                    resolve_folders(&foldered_with(&self.folders, &self.tabs), &[], &self.hosts);
                 errors.extend(moved_note("DEFAULT", &moved));
                 out.push(Desk {
                     name: "DEFAULT".into(),
@@ -5062,7 +5108,6 @@ impl Config {
                     capabilities: Default::default(),
                     automation_permissions: Default::default(),
                     projects: Vec::new(),
-                    git,
                     git_accounts: self.git_accounts.clone(),
                     summary_ai: None,
                     rename_branch: None,
@@ -5104,11 +5149,10 @@ impl Config {
                     None,
                 ),
             };
-            // This desk's git settings. Its protected branches go to the
-            // folders here, so a folder still has the one answer it has always
-            // had -- its own, or the one handed down to it by its desk
-            let git = desk.git.clone();
-            let (folders, tabs, moved) = resolve_folders(&folder_defs, &git.protected(), &self.hosts);
+            // Each project's protected branches go to its folders here, so a
+            // folder still has the one answer it has always had -- its own,
+            // or the one handed down to it by the project it is in
+            let (folders, tabs, moved) = resolve_folders(&folder_defs, &desk.projects, &self.hosts);
             // Prefer the display name from config; fall back to the definition file's name if empty
             let name = if desk.name.is_empty() {
                 file_name.unwrap_or_else(|| "UNNAMED".into())
@@ -5138,7 +5182,6 @@ impl Config {
                 primary_notify: desk.primary_notify.as_deref().and_then(one_name),
                 capabilities: desk.capabilities.clone(),
                 automation_permissions: desk.automation_permissions.clone(),
-                git,
                 git_accounts: self.git_accounts.clone(),
                 projects: desk.projects.clone(),
                 summary_ai: desk.summary_ai.as_deref().and_then(one_name),
@@ -6551,23 +6594,58 @@ mod tests {
         let plain = read(r#"{"desks":[{"name":"W","folders":[{"cwd":"D:/a","tabs":[]}]}]}"#);
         assert_eq!(plain[0], vec!["main".to_string(), "master".to_string()]);
 
-        // The desk's answer reaches the folders that have not given one, and
-        // the folder that has keeps its own
+        // The project's answer reaches its folders that have not given one,
+        // the folder that has keeps its own, and a folder of another project
+        // -- or of none -- is not reached by it: a client's rules are the
+        // client's repository's, not the desk's
         let mixed = read(
-            r#"{"desks":[{"name":"W","git":{"protect":["develop"]},"folders":[
-                {"cwd":"D:/a","tabs":[]},
-                {"cwd":"D:/b","protect":["release/*"," "],"tabs":[]},
-                {"cwd":"D:/c","protect":[],"tabs":[]}]}]}"#,
+            r#"{"desks":[{"name":"W",
+                "projects":[{"name":"acme","git":{"protect":["develop"]}}, {"name":"mine"}],
+                "folders":[
+                {"cwd":"D:/a","project":"acme","tabs":[]},
+                {"cwd":"D:/b","project":"acme","protect":["release/*"," "],"tabs":[]},
+                {"cwd":"D:/c","project":"acme","protect":[],"tabs":[]},
+                {"cwd":"D:/d","project":"mine","tabs":[]},
+                {"cwd":"D:/e","tabs":[]}]}]}"#,
         );
-        assert_eq!(mixed[0], vec!["develop".to_string()], "say nothing and the desk's answer applies");
+        assert_eq!(mixed[0], vec!["develop".to_string()], "say nothing and the project's answer applies");
         assert_eq!(mixed[1], vec!["release/*".to_string()], "say something and it is taken as said (spaces are not a name)");
         assert!(mixed[2].is_empty(), "an empty list is the answer 'guard nothing'");
+        assert_eq!(mixed[3], vec!["main".to_string(), "master".to_string()], "a project that said nothing has the app's answer");
+        assert_eq!(mixed[4], vec!["main".to_string(), "master".to_string()], "a folder in no project has the app's answer");
 
-        // Alone on your own repository: nothing is guarded anywhere in the desk
+        // Alone on your own repository: nothing is guarded anywhere in the project
         let alone = read(
-            r#"{"desks":[{"name":"W","git":{"protect":[]},"folders":[{"cwd":"D:/a","tabs":[]}]}]}"#,
+            r#"{"desks":[{"name":"W","projects":[{"name":"p","git":{"protect":[]}}],
+                "folders":[{"cwd":"D:/a","project":"p","tabs":[]}]}]}"#,
         );
         assert!(alone[0].is_empty());
+    }
+
+    /// What the AI is told when it writes for a repository is that
+    /// repository's: asked by the folder, it is the project's own prompt,
+    /// and a folder of another project, or of none, gets the app's
+    #[test]
+    fn a_projects_prompts_reach_its_folders_and_no_other() {
+        crate::i18n::init(Some("en"), &[crate::repo_root()]);
+        let cfg: Config = serde_json::from_str(
+            r#"{"desks":[{"name":"W",
+                "projects":[{"name":"acme","git":{"message_prompt":"In the client's way {diff}","protect":["trunk"]}},
+                            {"name":"mine"}],
+                "folders":[{"cwd":"D:/a","project":"acme","tabs":[]},
+                           {"cwd":"D:/b","project":"mine","tabs":[]},
+                           {"cwd":"D:/c","tabs":[]}]}]}"#,
+        )
+        .unwrap();
+        let (desks, errs) = cfg.resolve_desks();
+        assert!(errs.is_empty(), "{errs:?}");
+        let desk = &desks[0];
+        let standard = GitSpec::default().commit_prompt();
+        assert_eq!(desk.git_of(std::path::Path::new("D:/a")).commit_prompt(), "In the client's way {diff}");
+        assert_eq!(desk.git_of(std::path::Path::new("D:/b")).commit_prompt(), standard, "another project is not told the client's rules");
+        assert_eq!(desk.git_of(std::path::Path::new("D:/c")).commit_prompt(), standard, "a folder in no project has the app's prompt");
+        assert_eq!(desk.git_of_project("acme").protected(), vec!["trunk".to_string()]);
+        assert_eq!(desk.git_of_project("nobody").commit_prompt(), standard, "a name nothing answers to is the app's answer");
     }
 
     /// How long to wait for a reply is the person's to set, and 0 means "as
@@ -7778,7 +7856,6 @@ mod tests {
                 "notify": {"mine": {"type":"slack","webhook":"https://example.com/a"}},
                 "capabilities": {"allow_hosts": ["example.com"]},
                 "automation_permissions": {"lua": {"ai": true}},
-                "git": {"protect": ["main"], "message_hint": "アプリの言い分"},
                 "desks": [
                   {"name":"個人", "folders":[{"cwd":"."}]},
                   {"name":"会社",
@@ -7786,8 +7863,8 @@ mod tests {
                    "primary_notify": " work ",
                    "capabilities": {"files": {"books": {"dir": "C:/books", "write": true}}},
                    "automation_permissions": {"write_path": {"ai": false}},
-                   "git": {"protect": ["main", "release/*"]},
-                   "folders":[{"cwd":"."}, {"cwd":".", "protect":["nothing-else"]}]}
+                   "projects": [{"name": "acme", "git": {"protect": ["main", "release/*"]}}],
+                   "folders":[{"cwd":".", "project":"acme"}, {"cwd":".", "project":"acme", "protect":["nothing-else"]}]}
                 ]
               }"#,
         )
@@ -7803,7 +7880,6 @@ mod tests {
             !crate::grants::Grants::new(bare.automation_permissions.clone()).allows("lua", crate::grants::Subject::Ai),
             "it inherited the app's permissions"
         );
-        assert!(bare.git.message_hint.is_none(), "it inherited the app's git settings");
 
         // Said its own: exactly that
         let work = &spaces[1];
@@ -7812,8 +7888,8 @@ mod tests {
         assert!(
             !crate::grants::Grants::new(work.automation_permissions.clone()).allows("write_path", crate::grants::Subject::Ai)
         );
-        // Its protected branches reach its folders, and a folder with its own
-        // answer still has the last word
+        // Its project's protected branches reach its folders, and a folder
+        // with its own answer still has the last word
         assert_eq!(work.folders[0].protect, vec!["main".to_string(), "release/*".to_string()]);
         assert_eq!(work.folders[1].protect, vec!["nothing-else".to_string()]);
 
@@ -7860,7 +7936,7 @@ mod tests {
         let d = &cfg.desks[0];
         assert!(d.notify.is_empty() && d.primary_notify.is_none());
         assert!(d.capabilities.files.is_empty() && d.automation_permissions.is_empty());
-        assert_eq!(d.git.protected(), GitSpec::default().protected(), "git's default is not the built-in answer");
+        assert!(d.projects.is_empty(), "a project was written that nobody wrote");
     }
 
     /// A secrets file written before names meant anything is brought forward

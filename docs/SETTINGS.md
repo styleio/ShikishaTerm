@@ -221,12 +221,6 @@ What a person and an AI may run
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 
-### git
-
-Protected branches, commit messages
-
-This screen has nothing to fill in. What it shows depends on what is set elsewhere.
-
 ### Secrets
 
 Passwords and tokens
@@ -271,6 +265,26 @@ This screen has nothing to fill in. What it shows depends on what is set elsewhe
 This desk as one file
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
+
+## A project's settings
+
+Each project answers these for itself: a team's rules are its repository's, and a client's project and your own can sit on one desk. Open them from Projects in the settings, or from Project settings in a folder's right-click menu on the board.
+
+### The project's page
+
+Name and checkout, git account, protected branches, what the AI is told, what a worktree is given
+
+**Project**
+
+- **Name**
+- **Checkout** — Worktrees of this repository are cut from here
+- **Branch prefix** — Put in front of every branch made for this project, whether the name is typed, drawn or written by an AI. Leave it empty for no prefix.
+- **Repository**
+
+**Git account**
+
+- **Account to use**
+- **Delete this project** — The working folders and tabs stay. Only their tie to this project goes
 
 ## Shortcuts
 

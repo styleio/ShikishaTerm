@@ -289,13 +289,16 @@ settings screen, so it cannot fall behind.
 - **Basics** — Name, automation name, automation folder
 - **Notifications** — Chats, this PC, phones
 - **Automation permissions** — What a person and an AI may run
-- **git** — Protected branches, commit messages
 - **Secrets** — Passwords and tokens
 - **AI × AI discussion** — Several AI tabs discussing or working together
 - **Stop conditions** — When the joint work ends
 - **Automatic names** — The AI that names and describes working folders
 - **Automation doors** — Files and URLs a script can reach
 - **Export** — This desk as one file
+
+**A project's settings**
+
+- **The project's page** — Name and checkout, git account, protected branches, what the AI is told, what a worktree is given
 
 <!-- /guide -->
 

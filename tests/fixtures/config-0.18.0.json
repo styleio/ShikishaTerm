@@ -1,0 +1,66 @@
+{
+  "language": "ja",
+  "desks": [
+    {
+      "name": "Work",
+      "id": "default",
+      "git": {
+        "protect": ["main", "release/*"],
+        "message_prompt": "Write a git commit message for the change below, in Japanese.\n\n{diff}"
+      },
+      "projects": [
+        {
+          "name": "shop",
+          "at": "D:/work/shop"
+        }
+      ],
+      "folders": [
+        {
+          "cwd": "D:/work/shop",
+          "project": "shop",
+          "tabs": [
+            {
+              "name": "aaa",
+              "command": "claude",
+              "id": "squid"
+            }
+          ]
+        },
+        {
+          "cwd": "D:/work/shop-fix-login",
+          "project": "shop",
+          "tabs": [
+            {
+              "name": "PowerShell",
+              "command": "powershell.exe"
+            }
+          ]
+        },
+        {
+          "cwd": "/srv/api",
+          "host": "box",
+          "tabs": [
+            {
+              "name": "api",
+              "command": "ssh://me@box:22"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Reading",
+      "id": "read",
+      "folders": [
+        {
+          "tabs": [
+            {
+              "name": "docs",
+              "command": "browser https://example.com/"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

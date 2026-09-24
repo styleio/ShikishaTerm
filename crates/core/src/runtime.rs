@@ -461,6 +461,16 @@ pub fn plain_error(said: &str) -> String {
 pub fn tab_places(tabs: &[Tab]) -> Vec<hooks::TabPlace> {
     tabs.iter().map(tab_place).collect()
 }
+/// The folder the git panel called `panel` reports on: a panel launched as a
+/// tab of its own, or the column standing beside a tab. `None` for one that
+/// works in no folder, so that nothing quietly answers about the app's own
+fn panel_place_dir(surfaces: &[Surface], tabs: &[Tab], panel: &str) -> Option<std::path::PathBuf> {
+    panel_places(surfaces)
+        .into_iter()
+        .chain(tab_places(tabs).into_iter().filter(|p| !p.dir.as_os_str().is_empty()))
+        .find(|p| p.key.matches(panel))
+        .map(|p| p.dir)
+}
 /// Where every screen is working, in the order the screens are in.
 ///
 /// This is the list `origin` -- "which screen is asking" -- is a number into.
@@ -4581,9 +4591,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let Some(eng) = engine.as_mut() else { continue };
                 eng.set_states(tab_states(&tabs));
                 eng.set_places(places_by_surface(&surfaces, &tabs));
-                // This desk's, which is already either its own or the
-                // app's handed down (see Config::resolve_desks)
-                let spec = desks.get(desk_index).map(|w| w.git.clone()).unwrap_or_default();
+                // The project's, for the folder this panel reports on: a
+                // team's rules are its repository's (see Desk::git_of). A
+                // panel standing in no folder is told the app's own
+                let spec = match (desks.get(desk_index), panel_place_dir(&surfaces, &tabs, &panel)) {
+                    (Some(desk), Some(dir)) => desk.git_of(&dir),
+                    _ => config::GitSpec::default(),
+                };
                 let code = spec
                     .message_lua
                     .clone()
@@ -4601,7 +4615,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).filter(|s| !s.is_empty());
                 let prompt = spec
                     .commit_prompt()
-                    .replace("{ai}", crate::webui::local_ai_label(ai.as_deref()).unwrap_or("an AI"));
+                    .replace("{ai}", crate::webui::local_ai_label(ai.as_deref()).unwrap_or("an AI"))
+                    // The language the screen is in, named in itself, for a
+                    // team whose rule is "the message in our language"
+                    .replace("{language}", &i18n::t("lang.self"));
                 let _ = eng.call_primitive_as(
                     None,
                     grants::Subject::Human,
@@ -5220,7 +5237,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let opened = hand_to_ai_tab(desk, &dir, &label, choice, &tabs, &mut pending_quicks, &mut reveal, || {
                         // What came from GitHub -- the title, the logs -- goes in last,
                         // so nothing in it is taken for a word to fill in
-                        desk.git
+                        desk.git_of(&dir)
                             .ci_prompt()
                             .replace("{ci}", &ci)
                             // Empty rather than "0" for a branch with no pull
@@ -5426,7 +5443,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         ("labels", &list("labels").to_string()),
                         ("assignees", &list("assignees").to_string()),
                     ]);
-                    (fill_or_append(&desk.git.issue_prompt(), &[("ai", label)], "text", &notes), shape, DRAFT_ISSUE_TAG)
+                    // The project's prompt, by the name the issue list knows it by
+                    let prompt = fill_or_append(
+                        &desk.git_of_project(&text("project")).issue_prompt(),
+                        &[("ai", label), ("language", &i18n::t("lang.self"))],
+                        "text",
+                        &notes,
+                    );
+                    (prompt, shape, DRAFT_ISSUE_TAG)
                 } else {
                     // The branch, what it goes into, its commits and its change,
                     // read from the folder the pull request is for
@@ -5449,8 +5473,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         change.push_str("\n...\n");
                     }
                     let prompt = fill_or_append(
-                        &desk.git.pr_prompt(),
-                        &[("ai", label), ("branch", &head), ("base", &into), ("commits", commits.trim())],
+                        &desk.git_of(&dir).pr_prompt(),
+                        &[
+                            ("ai", label),
+                            ("branch", &head),
+                            ("base", &into),
+                            ("commits", commits.trim()),
+                            ("language", &i18n::t("lang.self")),
+                        ],
                         "diff",
                         &change,
                     );
@@ -10432,7 +10462,7 @@ struct PrCatchUp {
 }
 
 /// Hand the merge stopped in `dir` to a new tab of `choice`, told what the
-/// desk's merge prompt says with this folder's branch, `base` and conflicted
+/// project's merge prompt says with this folder's branch, `base` and conflicted
 /// files filled in. A tab already at it is brought forward instead: one AI on a
 /// merge at a time. The git column and a pull request's page both come here
 fn resolve_in_tab(
@@ -10447,7 +10477,7 @@ fn resolve_in_tab(
     hand_to_ai_tab(desk, dir, &i18n::t("git.catch_up.tab"), choice, tabs, pending, reveal, || {
         let branch = crate::git::branch(dir).ok().flatten().unwrap_or_default();
         let files = crate::git::conflicts(dir).unwrap_or_default();
-        desk.git
+        desk.git_of(dir)
             .merge_prompt()
             .replace("{folder}", &dir.display().to_string())
             .replace("{branch}", &branch)

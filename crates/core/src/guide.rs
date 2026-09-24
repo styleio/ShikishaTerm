@@ -33,6 +33,9 @@ pub enum Scope {
     Program,
     /// One desk's, which each desk answers for itself
     Desk,
+    /// One project's, which each project answers for itself: one page,
+    /// drawn for whichever project is asked about, reached by a folder in it
+    Project,
 }
 
 /// One settings screen, as the board can ask for it by name.
@@ -106,7 +109,7 @@ impl Screen {
     /// name for the program's settings, `desk:<name>` for a desk's.
     pub fn handle(&self) -> String {
         match self.scope {
-            Scope::Program => self.id.clone(),
+            Scope::Program | Scope::Project => self.id.clone(),
             Scope::Desk => format!("{DESK}{}", self.id),
         }
     }
@@ -117,13 +120,26 @@ pub const DESK: &str = "desk:";
 
 /// Where a screen is, spelled out for a person: "Settings > Phone connection".
 pub fn where_it_is(s: &Screen) -> String {
-    crate::i18n::tp(
-        match s.scope {
-            Scope::Program => "guide.at.program",
-            Scope::Desk => "guide.at.desk",
-        },
-        &[("name", &crate::i18n::t(&s.label_key))],
-    )
+    crate::i18n::tp(at_key(s.scope), &[("name", &crate::i18n::t(&s.label_key))])
+}
+
+/// The dictionary key that spells out where a screen of this scope is.
+fn at_key(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Program => "guide.at.program",
+        Scope::Desk => "guide.at.desk",
+        Scope::Project => "guide.at.project",
+    }
+}
+
+/// The dictionary keys the reference heads a scope's screens with: the
+/// heading, and the line under it saying whose these settings are
+fn doc_keys(scope: Scope) -> (&'static str, &'static str) {
+    match scope {
+        Scope::Program => ("guide.doc.program", "guide.doc.program.about"),
+        Scope::Desk => ("guide.doc.desk", "guide.doc.desk.about"),
+        Scope::Project => ("guide.doc.project", "guide.doc.project.about"),
+    }
 }
 
 /// The screen a handle names, if this program has one.
@@ -563,6 +579,20 @@ fn section_entries(code: &[char], orig: &[char]) -> Vec<Entry> {
             i = end;
         }
     }
+    // A project's: one page, `projectPane`, drawn for whichever project is
+    // asked about. It is not in a list the page holds, so it is named here;
+    // the span is the function's own name, so that what draws it is that
+    // function and nothing it happens to mention
+    const PROJECT_PAGE: &str = "function projectPane(desk, p)";
+    if let Some(at) = find(code, PROJECT_PAGE, 0, code.len()) {
+        out.push(Entry {
+            id: "project".into(),
+            scope: Scope::Project,
+            label_key: "settings.project.screen".into(),
+            sub_key: "settings.project.screen.sub".into(),
+            draws: (at, at + PROJECT_PAGE.chars().count()),
+        });
+    }
     out
 }
 
@@ -599,13 +629,7 @@ pub fn index(word: &dyn Fn(&str) -> String) -> Index {
     let mut pages = Vec::new();
     for s in screens() {
         let title = word(&s.label_key);
-        let at = crate::i18n::tp(
-            match s.scope {
-                Scope::Program => "guide.at.program",
-                Scope::Desk => "guide.at.desk",
-            },
-            &[("name", &title)],
-        );
+        let at = crate::i18n::tp(at_key(s.scope), &[("name", &title)]);
         let mut cards: Vec<Card> = vec![Card { title: String::new(), items: Vec::new() }];
         let mut says = Vec::new();
         for key in &s.words {
@@ -716,25 +740,11 @@ pub fn reference(word: &dyn Fn(&str) -> String) -> String {
     for (page, s) in idx.pages.iter().zip(screens()) {
         if scope != Some(s.scope) {
             scope = Some(s.scope);
+            let (head, about) = doc_keys(s.scope);
             out.push('\n');
-            line(
-                &mut out,
-                &format!(
-                    "## {}",
-                    word(match s.scope {
-                        Scope::Program => "guide.doc.program",
-                        Scope::Desk => "guide.doc.desk",
-                    })
-                ),
-            );
+            line(&mut out, &format!("## {}", word(head)));
             out.push('\n');
-            line(
-                &mut out,
-                &word(match s.scope {
-                    Scope::Program => "guide.doc.program.about",
-                    Scope::Desk => "guide.doc.desk.about",
-                }),
-            );
+            line(&mut out, &word(about));
         }
         out.push('\n');
         line(&mut out, &format!("### {}", page.title));
@@ -837,13 +847,7 @@ fn filling(name: &str, word: &dyn Fn(&str) -> String) -> String {
                     if !out.is_empty() {
                         out.push('\n');
                     }
-                    out.push_str(&format!(
-                        "**{}**\n\n",
-                        word(match s.scope {
-                            Scope::Program => "guide.doc.program",
-                            Scope::Desk => "guide.doc.desk",
-                        })
-                    ));
+                    out.push_str(&format!("**{}**\n\n", word(doc_keys(s.scope).0)));
                 }
                 match page.about.is_empty() {
                     true => out.push_str(&format!("- **{}**\n", page.title)),
@@ -1674,7 +1678,13 @@ mod tests {
         let all = screens();
         assert!(all.len() > 25, "only {} screens were found", all.len());
         assert!(all.iter().any(|s| s.id == "remote" && s.scope == Scope::Program));
-        assert!(all.iter().any(|s| s.id == "git" && s.scope == Scope::Desk));
+        assert!(all.iter().any(|s| s.id == "permissions" && s.scope == Scope::Desk));
+        // The project's page, with what git does on it: the words a person
+        // asking "where do I change the commit message" has to be sent to
+        let project = all.iter().find(|s| s.id == "project" && s.scope == Scope::Project).expect("the project's page is a screen");
+        assert!(project.words.iter().any(|w| w == "settings.git.hint.about"), "the project's page does not show the commit prompt: {:?}", project.words);
+        assert!(project.words.iter().any(|w| w == "settings.protect.hint"), "the project's page does not show the protected branches: {:?}", project.words);
+        assert!(project.cards.contains("settings.project.protect.title"), "the protected branches are not a card of their own");
         for s in all {
             assert!(
                 !s.words.is_empty(),
@@ -1699,14 +1709,18 @@ mod tests {
                 let Some(len) = board[from..].find('"') else { break };
                 let id = &board[from..from + len];
                 at = from + len;
-                // The project's own page is not one of the sections, and
-                // neither is a browser tab's models ("words", and
-                // "words-slow" opened to say why it is slow), reached by the
-                // tab's key
-                if id == "project" || id == "project-gitacct" || id == "words" || id == "words-slow" || id.is_empty() {
+                if id.is_empty() {
                     continue;
                 }
                 asked += 1;
+                // One card of the project's page ("project-gitacct", the
+                // prompts) is the project screen, which the settings' own
+                // test checks the card is on; a browser tab's models
+                // ("words", and "words-slow" opened to say why it is slow)
+                // are reached by the tab's key and are no screen
+                if id.starts_with("project-") || id == "words" || id == "words-slow" {
+                    continue;
+                }
                 assert!(
                     known.contains(id) || crate::webui::desk_link(id).is_some(),
                     "the board sends people to \"{id}\", which is no screen the guide knows"
