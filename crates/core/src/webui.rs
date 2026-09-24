@@ -5393,8 +5393,10 @@ const defaultAiCommand = () => {
 };
 // What picking a kind puts in the command field. The AI entry is a function
 // because its answer depends on which CLI this machine has.
+// Where a new browser tab opens, until somebody writes another address
+const BROWSER_START = "https://www.google.com";
 const CAT_START = {ai:defaultAiCommand, cmd:"", remote:"ssh://user@example.com:22", ssh:"ssh ",
-  docker:"docker exec -it ", wsl:"wsl ", browser:"browser https://", git:"git",
+  docker:"docker exec -it ", wsl:"wsl ", browser:"browser " + BROWSER_START, git:"git",
   editor:"editor", sftp:"sftp://user@example.com:22"};
 const catStart = v => { const s = CAT_START[v]; return (typeof s === "function" ? s() : s) || ""; };
 const CAT_LIST = [
@@ -8198,23 +8200,27 @@ function wordsPicker(holder, key, under, adopt, changed) {
   draw();
   return wrap;
 }
-// A browser tab's two pickers under their heading. How quickly the page is
-// driven is said on the board, beside the 🗣 panel's gear; pressed there
-// while slow, this opens with why, until a deciding model is chosen
+// A browser tab's two pickers under their heading, the conversation model
+// above the decision model: the order the AI agents page has them in (the
+// assistant AI, then the deciding AI), so the two never swap places between
+// screens. How quickly the page is driven is said on the board, beside the
+// 🗣 panel's gear; pressed there while slow, this opens with why, over the
+// decision model, until one is chosen
 function wordsRows(holder, under, adopt) {
   const why = el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, T["settings.words.slow_why"]));
   const redraw = () => { why.hidden = !wordsSlowAsked || decidesFast(holder, under); };
   const choose = wordsPicker(holder, "choose_model", under ? (under.choose_model || "") : undefined,
     adopt && (v => adopt("choose_model", v)), redraw);
+  choose.dataset.words = "choose";
   redraw();
   return [
     el("div", {class:"hint"}, T["settings.words.hint"]),
-    why,
-    row(T["settings.words.choose_model"], choose,
-      el("span", {class:"hint"}, T["settings.words.choose_model.hint"])),
     row(T["settings.words.words_model"],
       wordsPicker(holder, "words_model", under ? (under.words_model || "") : undefined, adopt && (v => adopt("words_model", v))),
       el("span", {class:"hint"}, T["settings.words.words_model.hint"])),
+    why,
+    row(T["settings.words.choose_model"], choose,
+      el("span", {class:"hint"}, T["settings.words.choose_model.hint"])),
   ];
 }
 // Each AI's allowance: Claude's, read with Claude Code's own sign-in on this
@@ -12156,7 +12162,13 @@ function launchCard(t, renamed) {
   const rebuild = () => { detailBox.textContent = ""; detailBox.append(kindPanel(t, cmdInput, rebuild, real)); };
   cmdRow.append(el("label", {}, T["settings.tab.kind"]),
     choose({k:catOf(t.command)}, "k", CAT_LIST, v => {
-      setCommand(t, cmdInput, catStart(v)); rebuild();
+      setCommand(t, cmdInput, catStart(v));
+      // A tab made a browser starts with every control over its page on;
+      // taking some away is the choice, not putting them there
+      if (v === "browser" && !(t.nav && Object.values(t.nav).some(Boolean))) {
+        t.nav = Object.fromEntries(NAV_PARTS.map(k => [k, true]));
+      }
+      rebuild();
     }));
   rebuild();
   // A tab that connects is not a tab that starts something, and the heading
@@ -13091,7 +13103,7 @@ function kindPanel(t, cmdInput, rebuild, real) {
   } else if (web) {
     const upd = sync(buildBrowser, web);
     const u = el("input", {type:"text", class:"mono grow",
-      placeholder:"https://example.com/"});
+      placeholder:BROWSER_START});
     u.value = web.url || "";
     // Better to flag an unopenable URL while it's being typed than to discover it after opening
     const note = el("span", {class:"hint"});
@@ -14169,7 +14181,7 @@ load().then(() => {
       // Centred and marked, rather than put at the top: the top of the page
       // is under the bar, and that is where the line saying why it opened is.
       // Asked why it is slow: the field that makes it fast, marked instead
-      const slowAt = wordsSlowAsked && document.querySelector("#tab-words select");
+      const slowAt = wordsSlowAsked && document.querySelector('#tab-words [data-words="choose"] select');
       if (slowAt) {
         slowAt.scrollIntoView({block:"center"});
         slowAt.classList.remove("lookhere"); void slowAt.offsetWidth; slowAt.classList.add("lookhere");

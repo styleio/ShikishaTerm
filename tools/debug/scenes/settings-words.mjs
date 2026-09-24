@@ -21,6 +21,8 @@ const tabPage = '(async () => { const i = desks[0].tabs.findIndex(t => t.id === 
   + ' sel = {desk:0, grp:0, tab:i, global:false}; render(); await ' + wait(300) + ';'
   + ' document.getElementById("tab-words").scrollIntoView({block:"start"}); })()';
 const pickers = 'document.querySelectorAll("#tab-words select")';
+// The decision model's picker, by what it is rather than where it stands
+const chooser = 'document.querySelector("#tab-words [data-words=choose] select")';
 // The deciding AI's picker on the AI agents page: the one select of that card
 // that is not the assistant AI's
 const decider = 'document.querySelector("#ai-assistant select:not(#aiengine)")';
@@ -58,11 +60,14 @@ export default {
       + ' if (!rows.length || !rows[0].textContent.includes("★")) throw new Error("the installed AIs are not first");'
       + ' const jev = rows.find(r => r.textContent.includes("jev"));'
       + ' if (!jev || !/1 \\/ 1/.test(jev.textContent)) throw new Error("jev\'s agreement is not on its row: " + (jev && jev.textContent)); })()',
-    // A browser tab that says nothing of its own follows the app
-    tab: tabPage,
+    // A browser tab that says nothing of its own follows the app. The
+    // conversation model stands above the decision model, as on the AI
+    // agents page
+    tab: '(async () => { await ' + tabPage + ';'
+      + ' if (' + pickers + '[1] !== ' + chooser + ') throw new Error("the decision model is not the second picker"); })()',
     // A decision model where the writer goes: warned where it is, and refused
     wrong: '(async () => { await ' + tabPage + ';'
-      + ' const s = ' + pickers + '[1];'
+      + ' const s = ' + pickers + '[0];'
       + ' if ([...s.options].some(o => o.value === "jev")) throw new Error("a decision model is offered as the writer");'
       + ' const t = desks[0].tabs.find(t => t.id === "shop"); t.words_model = "jev/jev-latest"; render(); await ' + wait(200) + ';'
       + ' await save(); await ' + wait(300) + ';'
@@ -73,7 +78,7 @@ export default {
     added: '(async () => { await ' + tabPage + ';'
       + ' delete current.decide_ai;'
       + ' render(); await ' + wait(200) + '; document.getElementById("tab-words").scrollIntoView({block:"start"});'
-      + ' const s = ' + pickers + '[0];'
+      + ' const s = ' + chooser + ';'
       + ' s.value = "+add"; s.dispatchEvent(new Event("change")); await ' + wait(300) + ';'
       + ' const box = document.querySelector(".modal:last-of-type");'
       + ' const pre = box.querySelector(".mbody select");'
@@ -96,10 +101,20 @@ export default {
       + ' chip.click(); await ' + wait(200) + ';'
       + ' if (current.decide_ai !== "@claude/haiku") throw new Error("written as " + current.decide_ai);'
       + ' document.getElementById("ai-assistant").scrollIntoView({block:"start"}); })()',
+    // A tab made a browser starts on Google with every control over the page on
+    made: '(async () => { await ' + tabPage + ';'
+      + ' const t = desks[0].tabs.find(t => t.id === "shop"); t.command = "cmd"; delete t.nav; render(); await ' + wait(200) + ';'
+      + ' const k = [...document.querySelectorAll("select")].find(s => [...s.options].some(o => o.value === "browser"));'
+      + ' k.value = "browser"; k.dispatchEvent(new Event("change")); await ' + wait(200) + ';'
+      + ' const now = desks[0].tabs.find(t => t.id === "shop");'
+      + ' if (!cmdToText(now.command).startsWith("browser https://www.google.com")) throw new Error("starts on " + cmdToText(now.command));'
+      + ' const off = ["back","forward","reload","reload_hard","url","point"].filter(k => !(now.nav || {})[k]);'
+      + ' if (off.length) throw new Error("these controls start off: " + off.join(", "));'
+      + ' document.getElementById("tab-words").scrollIntoView({block:"center"}); })()',
     // A page that chose nothing is driven with the assistant AI, and the
     // list says so
     unset: '(async () => { delete current.decide_ai; await ' + tabPage + ';'
-      + ' const s = ' + pickers + '[0];'
+      + ' const s = ' + chooser + ';'
       + ' if (!s.options[0].textContent.includes("Claude Code")) throw new Error("the unset choice reads " + s.options[0].textContent);'
       + ' document.getElementById("tab-words").scrollIntoView({block:"start"}); })()',
     // Opened from the board's [Slow], for a page a conversation model decides
@@ -108,7 +123,7 @@ export default {
       run: '(async () => { await ' + wait(300) + ';'
         + ' const why = document.querySelector("#tab-words .site-warn");'
         + ' if (!why || why.hidden) throw new Error("opened from [Slow] without saying why");'
-        + ' const s = ' + pickers + '[0];'
+        + ' const s = ' + chooser + ';'
         + ' if (!s.classList.contains("lookhere")) throw new Error("the field that makes it fast is not lit");'
         + ' s.value = "jev"; s.dispatchEvent(new Event("change")); await ' + wait(200) + ';'
         + ' if (!document.querySelector("#tab-words .site-warn").hidden) throw new Error("still says why once Jev decides");'
