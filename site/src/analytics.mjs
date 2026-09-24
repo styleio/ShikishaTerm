@@ -12,7 +12,7 @@
 // To get a token: Cloudflare dashboard > Analytics & Logs > Web Analytics >
 // Add a site > shikisha-term.com, with the manual (JS snippet) setup. Do not
 // also turn on Cloudflare's automatic injection, or every page counts twice.
-export const CF_BEACON_TOKEN = "";
+export const CF_BEACON_TOKEN = "78a647ceeadf40bc9fdda917c6dc5742";
 
 /** Attributes of the one <script> tag, or null when there is nothing to load. */
 export const beacon = CF_BEACON_TOKEN
