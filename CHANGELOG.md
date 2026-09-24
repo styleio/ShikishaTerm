@@ -9,6 +9,21 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Changed
+- **The AIs are one screen: Settings > AI agents.** The assistant AI, Yolo mode,
+  the AI for automatic names and its model move there from Basic, joined by the
+  **deciding AI** -- what picks the next move on a page driven in words, and
+  answers a script's `ai_choose` -- and by the AI providers.
+- **The AI providers are the app's, not a desk's.** One list, under Settings >
+  AI agents, that every desk's tabs and scripts reach by name; a desk's own list
+  is gone, and a `providers` entry written on a desk is not read. A key is filed
+  as `provider/<name>`. The AIs installed on this PC head the list, marked as a
+  subscription.
+- **What an AI may be sent is agreed to on its row.** Open an AI under AI
+  providers and tick "Send pages" and "Send pictures"; the row says how many are
+  agreed. "Agree and run" beside a refused goal, and the picture tools' own
+  question, write the same ticks. The desk's "Send pages to a model" and "Send
+  pictures to the AI" are gone with it, and so is Desk > Browser: a browser tab
+  still names its own two models, and follows the deciding AI otherwise.
 - **The quick commands and the ideas open from any program.** Alt+Shift+K and
   Alt+Shift+M bring SHIKISHA-TERM to the front with them open, from the
   notification area too; pressed with the window already in front they open and

@@ -7314,7 +7314,7 @@ mod tests {
                 );
             }
         });
-        crate::bridge::use_desk(std::collections::HashMap::from([(
+        crate::bridge::use_connections(std::collections::HashMap::from([(
             "slowpoke".to_string(),
             crate::config::ProviderConn {
                 url: format!("http://127.0.0.1:{port}/v1"),

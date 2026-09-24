@@ -252,9 +252,9 @@ pub struct Capabilities {
     /// door*, this says *who is knocking*. Swapped out on reload with the
     /// rest of what comes from config
     grants: std::cell::RefCell<crate::grants::Grants>,
-    /// The models the desk on screen drives pages with in plain words, for a
-    /// script that asks for a decision without naming a model. Swapped with
-    /// the desk (`desk::hand_over`)
+    /// The app's models for driving a page in plain words (the deciding AI),
+    /// for a script that asks for a decision without naming a model. Set from
+    /// the settings when they are read
     words: std::cell::RefCell<crate::config::WordsModels>,
 }
 
@@ -380,7 +380,8 @@ impl Capabilities {
         *self.grants.borrow_mut() = crate::grants::Grants::new(spec);
     }
 
-    /// The desk's models for driving a page in plain words
+    /// The app's models for driving a page in plain words (see
+    /// [`crate::config::app_words`])
     pub fn set_words_models(&self, models: crate::config::WordsModels) {
         *self.words.borrow_mut() = models;
     }
@@ -852,12 +853,10 @@ impl Capabilities {
     /// plainly rather than quietly becoming a different model. `@claude` and
     /// its kind name an AI installed on this PC (see [`crate::bridge::Answerer`])
     fn model_for(&self, asked: Option<&str>, job: Deciding) -> Result<crate::bridge::Answerer> {
-        // The desk's, and before any desk has been handed over, the app-wide
-        // ones settings from before desks had their own still name
+        // The app's, and for whatever it leaves unset, the assistant AI
         let mine = self
             .words
             .borrow()
-            .over(&crate::config::operate().words)
             .or_assistant(crate::bridge::assistant_model().as_deref());
         let name = asked
             .map(str::to_string)

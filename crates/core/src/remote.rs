@@ -2414,16 +2414,9 @@ fn handle(
                 req.respond(Response::from_string("payload too large").with_status_code(413))?;
                 return Ok(());
             };
-            let desk = snapshot
-                .lock()
-                .unwrap()
-                .ui
-                .as_ref()
-                .map(|u| u.desk_id.clone())
-                .unwrap_or_default();
             std::thread::spawn(move || {
                 let v = serde_json::from_str::<serde_json::Value>(&body).unwrap_or_default();
-                let _ = req.respond(json_response(crate::snip::answer(&v, &desk)));
+                let _ = req.respond(json_response(crate::snip::answer(&v)));
             });
         }
         ("POST", "/api/attach") => {

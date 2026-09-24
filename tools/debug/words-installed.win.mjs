@@ -16,8 +16,8 @@
  * then sent again the way "Agree and run" beside that refusal sends it: the
  * run has to start, and the agreement has to be in the settings file.
  *
- * `--ai assistant` chooses no model at all: the desk drives its pages with
- * the assistant AI (the first installed, Claude Code here), and only the
+ * `--ai assistant` chooses no model at all: the page is driven with the
+ * assistant AI (the first installed, Claude Code here), and only the
  * agreement to send pages to it is written.
  *
  * `--choose jev` makes the decision model Jev (TypeSafe) and leaves only the
@@ -29,8 +29,8 @@
  * of the app (tools/debug/instance.win.ps1), its own folder and ports.
  *
  * What it does. A page with a name field and a Send button is served here, and
- * the copy is given one desk whose browser tab shows it, with the installed AI
- * as both of the desk's models and the page agreed to be sent to it. The goal
+ * the copy is given one desk with a browser tab that shows it, the installed AI
+ * as both of that tab's models, and the page agreed to be sent to it. The goal
  * "type Alice in the name box and send it" is handed over the way the input
  * bar hands it over. Passing means the page's server is sent `name=Alice`.
  *
@@ -89,17 +89,23 @@ const pagePort = server.address().port;
 
 // ── The copy ──────────────────────────────────
 const scene = path.join(os.tmpdir(), 'sk-words-scene.json');
+// The AI a model name is agreed under: the connection, or the installed AI
+const rowOf = (name) => name.split('/')[0];
+const AGREED_ROWS = UNSET ? ['@claude'] : [...new Set([CHOOSE, AI].map(rowOf))].sort();
 fs.writeFileSync(scene, JSON.stringify({
   remote: { sticky_token: true, fixed_token: TOKEN },
+  // Agreed to, the way the settings write it: per AI, the kinds agreed to
+  agreed: UNAGREED ? undefined : Object.fromEntries(AGREED_ROWS.map((r) => [r, ['pages']])),
+  providers: JEV ? { jev: { base_url: 'https://api.typesafe.ai/v1/systemone', speaks: 'choice',
+    models: ['jev-latest'], api_key: process.env.JEV_API_KEY } } : {},
   desks: [{
     name: 'Words', id: 'words',
-    browser: UNSET ? {} : { choose_model: CHOOSE, words_model: AI },
-    // Agreed to, the way the settings write it: each name once, in order
-    send_pages_to: UNAGREED ? undefined : UNSET ? '@claude' : [...new Set([CHOOSE, AI])].sort().join(' + '),
-    providers: JEV ? { jev: { base_url: 'https://api.typesafe.ai/v1/systemone', speaks: 'choice',
-      models: ['jev-latest'], api_key: process.env.JEV_API_KEY } } : {},
-    browsers: [{ id: 'form', url: URL_ || `http://127.0.0.1:${pagePort}/` }],
-    folders: [{ cwd: '{work}', tabs: [{ id: 'clock', name: 'clock',
+    folders: [{ cwd: '{work}', tabs: [
+      // The page, as a browser tab with models of its own (or none: the
+      // assistant AI's)
+      { id: 'form', name: 'form', command: 'browser ' + (URL_ || `http://127.0.0.1:${pagePort}/`),
+        ...(UNSET ? {} : { choose_model: CHOOSE, words_model: AI }) },
+      { id: 'clock', name: 'clock',
       // Encoded, because a command line is split on its quotes before PowerShell
       // ever reads it
       command: 'powershell.exe -NoProfile -EncodedCommand ' + Buffer.from(
@@ -174,9 +180,9 @@ try {
   console.log(`the longest the clock tab stood still: ${longest}ms`);
   if (UNAGREED) {
     const cfg = JSON.parse(fs.readFileSync(path.join(AT, 'app', 'config', 'config.json'), 'utf8').replace(/^﻿/, ''));
-    const agreed = cfg.desks[0].send_pages_to;
-    console.log(`the desk now agrees to: ${agreed}`);
-    if (agreed !== '@claude') failed = `the agreement was written as ${JSON.stringify(agreed)}`;
+    const agreed = cfg.agreed || {};
+    console.log(`the settings now agree to: ${JSON.stringify(agreed)}`);
+    if (!AGREED_ROWS.every((r) => (agreed[r] || []).includes('pages'))) failed = `the agreement was written as ${JSON.stringify(agreed)}`;
   }
   if (URL_) { /* a real page: what it said is the result */ }
   else if (sent !== 'Alice') failed = `the form was not sent with Alice (${JSON.stringify(sent)})`;

@@ -3400,7 +3400,7 @@ fn handle(
             let list: Vec<serde_json::Value> = AI_ENGINES
                 .iter()
                 .filter(|(name, _, _)| crate::tab::resolve_command(name).is_some())
-                .map(|(name, _, label)| serde_json::json!({ "id": name, "label": label }))
+                .map(|(name, _, label)| serde_json::json!({ "id": name, "label": label, "pictures": reads_pictures(name) }))
                 .collect();
             let resp = Response::from_string(serde_json::json!({ "engines": list }).to_string())
                 .with_header(
@@ -3966,6 +3966,11 @@ const PAGE: &str = r##"<!doctype html>
  .igpaths { white-space:pre-wrap; margin-top:var(--s1); }
  /* One secret. Reads across on a window, and stacks into a card on a phone. */
  .secretrow { cursor:pointer; padding:10px var(--s3); gap:var(--s3); }
+ /* What one AI has been agreed to receive, under its own fields */
+ .consent { border-top:1px solid var(--line); margin-top:var(--s4); padding-top:var(--s3);
+   display:flex; flex-direction:column; gap:var(--s2); }
+ .consent h3 { margin:0; font-size:13px; font-weight:600; }
+ .consent .row { padding:0; }
  .secretrow:hover { background:var(--panel2); }
  .secretrow .go { color:var(--faint); font-size:14px; line-height:1; }
  .secretrow:hover .go { color:var(--text); }
@@ -5689,34 +5694,25 @@ function cliFlagOf(head) {
 // (or null to start with none of it). Read once, by landOnWs
 let startFrom = null;
 
-// What a desk has that is its own alone -- where it notifies, which AI accounts
-// it uses, what its automation may do and reach, what git does -- copied for a
-// new desk. The keys behind a connection or a destination are filed again under
-// the new desk, so each keeps its own and deleting one cannot take the other's
-// `only`, when given, is the names of the connections to bring and nothing else
-async function copyDeskOwn(from, to, only) {
+// What a desk has that is its own alone -- where it notifies, what its
+// automation may do and reach, what git does -- copied for a new desk. The
+// keys behind a destination are filed again under the new desk, so each keeps
+// its own and deleting one cannot take the other's
+async function copyDeskOwn(from, to) {
   const clone = v => JSON.parse(JSON.stringify(v || {}));
-  if (only) {
-    for (const n of only) if ((from.providers || {})[n]) to.providers[n] = clone(from.providers[n]);
-  } else {
-    for (const k of ["notify", "providers", "capabilities", "automation_permissions", "git"]) to[k] = clone(from[k]);
-    if ((from.primary_notify || "").trim()) to.primary_notify = from.primary_notify;
-  }
+  for (const k of ["notify", "capabilities", "automation_permissions", "git"]) to[k] = clone(from[k]);
+  if ((from.primary_notify || "").trim()) to.primary_notify = from.primary_notify;
   const id = (to.id || "").trim(), was = (from.id || "").trim();
   if (!id || !was) return;
   const refile = async (ref, set) => {
     if (!(ref || "").startsWith("@")) return;
     const old = ref.slice(1);
-    const kind = ["provider/", "notify/"].find(p => old.startsWith(p + was + "/"));
-    if (!kind) return;
+    const kind = "notify/";
+    if (!old.startsWith(kind + was + "/")) return;
     const fresh = kind + id + old.slice((kind + was).length);
     const r = await settingsApi("/api/secrets/copy", {from: old, to: fresh}).catch(() => null);
     if (r && r.ok) set("@" + fresh);
   };
-  for (const [n, p] of Object.entries(to.providers)) {
-    if (!only || only.includes(n)) await refile(p.api_key, v => p.api_key = v);
-  }
-  if (only) return;
   for (const d of Object.values(to.notify)) {
     await refile(d.webhook, v => d.webhook = v);
     await refile(d.token, v => d.token = v);
@@ -5729,32 +5725,22 @@ async function landOnWs(desk) {
   if (!(desk.folders || []).length) desk.folders = [{name:"", id:"", cwd:""}];
   (desk.tabs || []).forEach(t => { if (t.group === undefined) t.group = 0; });
   if (!(desk.id || "").trim()) desk.id = uniqueWsId(slugId(desk.name) || "desk", desk);
-  for (const k of ["notify", "providers", "capabilities", "automation_permissions", "git"]) {
+  for (const k of ["notify", "capabilities", "automation_permissions", "git"]) {
     if (!isObj(desk[k])) desk[k] = {};
   }
   const from = startFrom;
   startFrom = null;
   if (from) await copyDeskOwn(from, desk);
-  else {
-    // A wizard offers the desk in view's connections to choose AIs from. One
-    // somebody chose there comes along -- chosen by name, on purpose, for this
-    // desk -- and nothing else of that desk does
-    const here = desks[sel.desk];
-    const used = (desk.tabs || []).map(t => parseModel(t.command)).filter(Boolean).map(m => m.provider)
-      .filter(p => here && (here.providers || {})[p] && !desk.providers[p]);
-    if (used.length) await copyDeskOwn(here, desk, [...new Set(used)]);
-  }
   desks.push(desk); sel = {desk:desks.length - 1, tab:null, global:false}; render(); refreshSave();
 }
 
 // "+ Add desk" → first, have the user pick a purpose
 function addWs() {
   const m = openModal();
-  // Whether the new desk starts with this one's destinations, connections,
-  // permissions and git settings. Asked first, because the wizards below offer
-  // this desk's connections to choose AIs from
+  // Whether the new desk starts with this one's destinations, permissions
+  // and git settings
   const here = desks[sel.desk];
-  const hasOwn = here && ["notify", "providers", "capabilities", "automation_permissions", "git"]
+  const hasOwn = here && ["notify", "capabilities", "automation_permissions", "git"]
     .some(k => isObj(here[k]) && Object.keys(here[k]).length);
   const copyBox = el("input", {type:"checkbox"});
   copyBox.checked = !!hasOwn;
@@ -6029,21 +6015,6 @@ function basicCard() {
           ["gitbash", T["settings.default_shell.gitbash"]],
         ]),
         el("span", {class:"hint"}, T["settings.default_shell.hint"])),
-    row(T["settings.ai_engine"], aiSelect(),
-        el("span", {class:"hint", id:"aihint"}, "")),
-    row(T["settings.yolo"], check(current, "yolo", T["settings.yolo.label"]),
-        el("span", {class:"hint warn"}, T["settings.tab.ai.autoapprove_risk"])),
-    // Naming a folder and its branch is not the work the assistant AI above
-    // was chosen for, so it is chosen again here -- and asked in the cheapest
-    // way its CLI allows, which is the row under it
-    row(T["settings.summary_ai"],
-        choose(current, "summary_ai",
-          [["", fill(T["settings.summary_ai.assistant"], {name: aiLabelOf(current.ai_engine)})]]
-            .concat(aiEngines.map(e => [e.id, e.label]))),
-        el("span", {class:"hint"}, T["settings.summary_ai.hint"])),
-    row(T["settings.summary_small"],
-        checkDefaultOn(current, "summary_small_model", T["settings.summary_small.label"]),
-        el("span", {class:"hint"}, T["settings.summary_small.hint"])),
     row(T["settings.browser_data"],
         choose(current, "browser_data", [
           ["", T["settings.browser_data.local"] || "This PC only (recommended)"],
@@ -7099,6 +7070,9 @@ function filesCard() {
 function globalSections() {
   return [
     {id:"basic",     label:T["settings.sec.basic"],     sub:T["settings.sec.basic.sub"],     build:basicCard},
+    // The AIs this app asks, the connections they are reached on, and what
+    // each was agreed to receive: one place for the whole app
+    {id:"ai",        label:T["settings.sec.ai"],        sub:T["settings.sec.ai.sub"],        build:aiAgentsCard},
     {id:"update",    label:T["settings.sec.update"],    sub:T["settings.sec.update.sub"],    build:updateCard},
     {id:"remote",    label:T["settings.sec.remote"],    sub:T["settings.sec.remote.sub"],    build:remoteCard},
     // Two cards: the keys that work from any program, then the keys inside
@@ -7126,8 +7100,8 @@ function globalSections() {
 // Links that name one of a desk's settings (the git panel's gear asks for
 // "git"): the desk in view, at that entry, since there is no copy of the
 // program's to land on. Older names for the same places are kept here
-const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", "git-pr":"git", "git-merge":"git", "git-ci":"git", protect:"git", gitaccounts:"git", providers:"providers", browser:"browser", words:"browser",
-                    permissions:"permissions", caps:"caps", tools:"tools"};
+const DESK_LINKS = {git:"git", "git-message":"git", "git-issue":"git", "git-pr":"git", "git-merge":"git", "git-ci":"git", protect:"git", gitaccounts:"git",
+                    permissions:"permissions", caps:"caps"};
 
 // ── Update ─────────────────────────────────────────────────────
 // The one place a newer version is fetched, checked and put in place. The
@@ -7374,42 +7348,204 @@ function urlFault(text) {
 // A desk's model connections. Each desk registers its own: the account behind
 // a connection is billed for the work and handed the code, so a connection
 // registered in the work desk is simply not on the list in the personal one
-function providersCard(desk) {
-  desk.providers = desk.providers || {};
+// ── AI agents ─────────────────────────────────────────────────
+// The AIs this app asks, and what they may be sent. One place for the whole
+// app: the assistant AI every question goes to, the deciding AI that picks
+// the moves on a page, the AI that writes automatic names, the connections a
+// `model` tab or a setting names, and what each AI was agreed to receive
+const appProviders = () => (current.providers = isObj(current.providers) ? current.providers : {});
+const appAgreed = () => (current.agreed = isObj(current.agreed) ? current.agreed : {});
+// What a browser tab follows when it names nothing of its own: the deciding
+// AI picks, and nothing is named for the writing (the assistant AI writes)
+const appWordsUnder = () => ({choose_model: (current.decide_ai || "").trim(), words_model: ""});
+function aiAgentsCard() {
+  const box = el("div");
+  const ais = card(T["settings.ai.assistant.title"],
+    row(T["settings.ai_engine"], aiSelect(),
+        el("span", {class:"hint", id:"aihint"}, "")),
+    // Directly under the assistant AI, because it is that AI's tabs it
+    // changes: a new AI tab starts with the CLI's "act without asking" flag
+    row(T["settings.yolo"], check(current, "yolo", T["settings.yolo.label"]),
+        el("span", {class:"hint warn"}, T["settings.tab.ai.autoapprove_risk"])),
+    row(T["settings.decide_ai"], wordsPicker(current, "decide_ai"),
+        el("span", {class:"hint"}, T["settings.decide_ai.hint"])));
+  ais.id = "ai-assistant";
+  // Naming a folder and its branch is not the work the assistant AI above
+  // was chosen for, so it is chosen again here -- and asked in the cheapest
+  // way its CLI allows, which is the row under it
+  const names = card(T["settings.ai.names.title"],
+    el("div", {class:"hint"}, T["settings.labels.hint"]),
+    ...namesAiRows(current, {
+      first: fill(T["settings.summary_ai.assistant"], {name: aiLabelOf(current.ai_engine)}),
+      label: T["settings.summary_ai"], hint: T["settings.summary_ai.hint"]}),
+    row(T["settings.summary_small"],
+        checkDefaultOn(current, "summary_small_model", T["settings.summary_small.label"]),
+        el("span", {class:"hint"}, T["settings.summary_small.hint"])));
+  names.id = "ai-names";
+  box.append(ais, names, providersCard());
+  return box;
+}
+// What the app's "AI for automatic names" reads as, for a desk's row that
+// follows it: the connection written, or the assistant AI's name
+function appNamesShown() {
+  const w = (current.summary_ai || "").trim();
+  if (!w) return aiLabelOf(current.ai_engine);
+  const m = w.match(/^model\s+(.+)$/);
+  if (m) return m[1].trim();
+  return (aiEngines.find(e => e.id === w) || {}).label || w;
+}
+
+// The AI that writes a folder's name, and the model it is asked on when it
+// is a connection: the rows the app's card and a desk's share. `holder` is
+// where the answer is written (`summary_ai`); `first` is what choosing
+// nothing means here, said as the list says it
+function namesAiRows(holder, {first, label, hint}) {
+  const picker = el("select");
+  picker.append(el("option", {value:""}, first));
+  for (const e of aiEngines) picker.append(el("option", {value:e.id}, e.label));
+  // Writing a name is writing, which a decision model cannot do: it only picks
+  // one of the options it is given. So only the conversation models are offered
+  const provs = appProviders();
+  const providers = Object.keys(provs).filter(n => (provs[n].speaks || "chat") === "chat").sort();
+  for (const p of providers) picker.append(el("option", {value:"model:" + p}, fill(T["wizard.discuss.model_suffix"], {name: p})));
+  const written = (holder.summary_ai || "").trim();
+  const asModel = written.match(/^model\s+([^/\s]+)\/(.*)$/);
+  picker.value = asModel ? "model:" + asModel[1] : written;
+  // A choice no longer on offer -- an AI since uninstalled, a connection since
+  // removed -- is still what the settings say, and shown as that
+  if (picker.value !== (asModel ? "model:" + asModel[1] : written)) {
+    picker.append(el("option", {value: asModel ? "model:" + asModel[1] : written}, written));
+    picker.value = asModel ? "model:" + asModel[1] : written;
+  }
+  const modelIn = el("input", {type:"text", class:"mono", style:"width:220px"});
+  modelIn.value = asModel ? asModel[2].trim() : "";
+  const provider = () => picker.value.startsWith("model:") ? picker.value.slice(6) : "";
+  const cand = modelCandidates(() => appProviders()[provider()] || {}, id => { modelIn.value = id; store(); });
+  const modelRow = row(T["settings.labels.model"], modelIn, cand.btn, cand.chips);
+  const store = () => {
+    const p = provider();
+    // A connection with no model named asks for the one it is known for, as
+    // the placeholder says, rather than for a model called nothing
+    const v = p ? "model " + p + "/" + (modelIn.value.trim() || DEFAULT_MODEL[p] || "") : picker.value;
+    if (v) holder.summary_ai = v; else delete holder.summary_ai;
+    refreshSave();
+  };
+  const sync = () => {
+    const p = provider();
+    modelRow.hidden = !p;
+    if (p) modelIn.placeholder = DEFAULT_MODEL[p] || T["wizard.discuss.model_ph"];
+    else cand.chips.textContent = "";
+  };
+  picker.addEventListener("change", () => { sync(); store(); });
+  modelIn.addEventListener("input", store);
+  sync();
+  return [row(label, picker, el("span", {class:"hint"}, hint)), modelRow];
+}
+// ── What each AI was agreed to receive ─────────────────────────
+// Pages go to any AI; pictures only to an installed AI that reads them (the
+// tools send pictures to the assistant AI and nowhere else). A kind added
+// here is offered on every AI's row
+const CONSENT_KINDS = ["pages", "pictures"];
+function consentKindsOf(row, engine) {
+  const kinds = ["pages"];
+  if (row.startsWith(INSTALLED_MARK)) {
+    const e = engine || aiEngines.find(x => INSTALLED_MARK + x.id === row);
+    if (e && e.pictures) kinds.push("pictures");
+  }
+  return kinds;
+}
+const agreedTo = (row, kind) => (appAgreed()[row] || []).includes(kind);
+function setAgreed(row, kind, on) {
+  const a = appAgreed();
+  const list = Array.isArray(a[row]) ? a[row] : [];
+  const next = on ? [...new Set([...list, kind])] : list.filter(k => k !== kind);
+  if (next.length) a[row] = next; else delete a[row];
+  refreshSave();
+}
+// One AI's agreements in a few words, for its row in the list: how many of
+// the kinds it can be sent are agreed to
+function consentSummary(row, kinds) {
+  const n = kinds.filter(k => agreedTo(row, k)).length;
+  return n ? fill(T["settings.consent.summary"], {n, m: kinds.length}) : T["settings.consent.none"];
+}
+// The agreements segment of one AI's dialog: a tick per kind, each saying
+// what goes where. A kind this AI cannot take is said so and left unticked;
+// one that never goes to this kind of AI is not shown
+function consentRows(row, label, kinds) {
+  const box = el("div", {class:"consent"}, el("h3", {}, T["settings.consent.title"]));
+  for (const kind of CONSENT_KINDS) {
+    const can = kinds.includes(kind);
+    if (!can && !row.startsWith(INSTALLED_MARK)) continue;
+    const cb = el("input", {type:"checkbox"});
+    cb.checked = can && agreedTo(row, kind);
+    cb.disabled = !can;
+    cb.addEventListener("change", () => setAgreed(row, kind, cb.checked));
+    const tick = el("label", {class:"check"});
+    tick.append(cb, document.createTextNode(T["settings.consent." + kind]));
+    const hint = can ? fill(T["settings.consent." + kind + ".hint"], {by: label})
+      : fill(T["settings.consent." + kind + ".cannot"], {by: label});
+    box.append(el("div", {class:"row"}, tick), el("div", {class:"hint"}, hint));
+  }
+  return box;
+}
+// An installed AI's row opened: nothing to register, only what it may be sent
+function installedDialog(e, redraw) {
+  const row = INSTALLED_MARK + e.id;
+  const shut = () => { back.remove(); redraw(); };
+  const back = openModal(
+    el("div", {class:"mhead"},
+      el("h2", {}, fill(T["settings.words.installed_item"], {name: e.label})),
+      el("button", {class:"quiet icon", title:T["common.close"], onclick: shut}, "✕")),
+    el("div", {class:"mbody"},
+      el("div", {class:"hint"}, fill(T["settings.words.installed_hint"], {name: e.label})),
+      consentRows(row, e.label, consentKindsOf(row, e))),
+    el("div", {class:"mfoot"}, el("span", {class:"grow"}),
+      el("button", {class:"primary", onclick: shut}, T["common.done"])));
+  back.firstChild.classList.add("framed");
+  back.addEventListener("mousedown", ev => { if (ev.target === back) redraw(); });
+  back.addEventListener("keydown", ev => { if (ev.key === "Escape") { ev.preventDefault(); shut(); } });
+}
+
+// The connections, with the AIs installed on this PC ahead of them: each a
+// row, and each row's dialog holds what that AI was agreed to receive
+function providersCard() {
+  const provs = appProviders();
   const listBox = el("div", {id:"providerslist"});
   const draw = () => {
     listBox.textContent = "";
-    const names = Object.keys(desk.providers);
-    if (!names.length) {
-      listBox.append(el("div", {class:"hint"}, T["settings.providers.empty"]));
-      return;
-    }
     const rows = el("div", {class:"rows"});
-    for (const name of names) {
-      const p = desk.providers[name] || {};
+    for (const e of aiEngines) {
+      const row = INSTALLED_MARK + e.id;
+      rows.append(el("div", {class:"listrow secretrow", onclick: () => installedDialog(e, draw)},
+        el("span", {class:"secretname"}, fill(T["settings.words.installed_item"], {name: e.label})),
+        el("span", {class:"hint secretdesc"}, T["settings.providers.installed_desc"]),
+        el("span", {class:"hint"}, consentSummary(row, consentKindsOf(row, e))),
+        el("span", {class:"go"}, "›")));
+    }
+    for (const name of Object.keys(provs).sort()) {
+      const p = provs[name] || {};
       const held = (p.api_key || "").startsWith("@");
-      rows.append(el("div", {class:"listrow secretrow", onclick: () => providerDialog(desk, name, draw)},
+      rows.append(el("div", {class:"listrow secretrow", onclick: () => providerDialog(name, draw)},
         el("span", {class:"mono secretname"}, name),
         el("span", {class:"hint mono secretdesc"}, p.base_url || T["settings.providers.no_url"]),
         el("span", {class:"hint"}, held ? "••••" : T["settings.providers.key_none"]),
-        el("span", {class:"hint secretsite"}, waitText(p.timeout_sec)),
-        el("span", {class:"hint"}, p.speaks === "choice" ? T["settings.providers.speaks.choice"] : ""),
+        el("span", {class:"hint"}, T["settings.providers.speaks." + (p.speaks === "choice" ? "choice" : "chat")]),
+        el("span", {class:"hint"}, consentSummary(name, consentKindsOf(name))),
         el("span", {class:"go"}, "›")));
     }
-    listBox.append(rows);
+    if (rows.childNodes.length) listBox.append(rows);
+    else listBox.append(el("div", {class:"hint"}, T["settings.providers.empty"]));
   };
   const c = card(T["settings.providers.title"],
     el("div", {class:"hint"}, T["settings.providers.hint"]),
     listBox,
     el("div", {class:"row"},
-      el("button", {onclick: () => providerDialog(desk, null, draw)}, T["settings.providers.add"])),
+      el("button", {onclick: () => providerDialog(null, draw)}, T["settings.providers.add"])),
     el("div", {class:"hint"}, T["settings.providers.use_hint"]));
-  c.id = "desk-providers";
+  c.id = "ai-providers";
   setTimeout(draw, 0);
   return c;
 }
-// The connections of the desk being edited, for the pickers that offer them
-const deskProviders = () => ((desks[sel.desk] || {}).providers) || {};
 // The models a connection really has, asked of the connection itself, so a
 // name is picked from what exists instead of typed from memory. getProv()
 // hands over that connection {base_url, api_key, headers?}; onPick(id) fills
@@ -7490,12 +7626,13 @@ const PROVIDER_PRESETS = [
    models:["convaiinnovations/laya", "convaiinnovations/laya-multilingual"]},
 ];
 
-// Adding a connection to a desk, or changing one. `name` is null for a new one.
+// Adding a connection, or changing one. `name` is null for a new one.
 // `saved(name)`, when given, is told the name once it is saved: a picker that
 // sent the person here selects what they came back with
-function providerDialog(desk, name, redraw, saved) {
+function providerDialog(name, redraw, saved) {
+  const provs = appProviders();
   const editing = !!name;
-  const p = editing ? (desk.providers[name] || {}) : {};
+  const p = editing ? (provs[name] || {}) : {};
   const nameIn = el("input", {type:"text", class:"mono", placeholder:T["settings.providers.name_ph"]});
   nameIn.value = name || "";
   nameIn.disabled = editing;
@@ -7572,7 +7709,7 @@ function providerDialog(desk, name, redraw, saved) {
     // already, it gets the first free number after it
     if (!nameIn.value.trim() || nameIn.value.trim() === autoName) {
       let n = preset.name, i = 2;
-      while (desk.providers[n]) n = preset.name + "-" + (i++);
+      while (provs[n]) n = preset.name + "-" + (i++);
       nameIn.value = autoName = n;
     }
     urlIn.value = preset.url;
@@ -7611,7 +7748,7 @@ function providerDialog(desk, name, redraw, saved) {
     let first = null;
     const nameWhy = !n ? T["settings.providers.name_required"]
       : (!/^[a-z0-9_.-]+$/i.test(n) ? T["settings.providers.name_bad"]
-      : (!editing && desk.providers[n] ? T["settings.providers.name_dup"] : null));
+      : (!editing && provs[n] ? T["settings.providers.name_dup"] : null));
     fieldFault(nameIn, nameWhy);
     if (nameWhy) first = {at: nameIn, why: nameWhy};
 
@@ -7671,7 +7808,10 @@ function providerDialog(desk, name, redraw, saved) {
         el("div", {class:"row", style:"padding:0;flex-wrap:nowrap"}, modelIn, cand.btn),
         el("div", {}, modelHint, cand.chips)),
       field(T["settings.providers.wait_label"], waitIn, T["settings.providers.wait_hint"]),
-      choicesField = field(T["settings.providers.choices_label"], choicesIn, T["settings.providers.choices_hint"])),
+      choicesField = field(T["settings.providers.choices_label"], choicesIn, T["settings.providers.choices_hint"]),
+      // What this connection was agreed to receive: on the same screen as the
+      // connection, since the agreement is with the company at its far end
+      editing ? consentRows(name, name, consentKindsOf(name)) : null),
     el("div", {class:"mfoot"},
       editing
         ? el("button", {class:"danger", onclick: async () => {
@@ -7679,7 +7819,8 @@ function providerDialog(desk, name, redraw, saved) {
             // Its key goes with it. Nothing else names that secret, and there
             // is no screen of leftovers to tidy it away from later
             if ((p.api_key || "").startsWith("@")) await deleteSecret(p.api_key.slice(1));
-            delete desk.providers[name];
+            delete provs[name];
+            delete appAgreed()[name];
             refreshSave(); shut(); redraw();
           }}, T["settings.providers.delete"])
         : null,
@@ -7688,6 +7829,8 @@ function providerDialog(desk, name, redraw, saved) {
       el("button", {class:"quiet", onclick: () => shut()}, T["common.cancel"]),
       save));
   back.firstChild.classList.add("framed");
+  // Closed from the backdrop: the list draws what the ticks may have changed
+  back.addEventListener("mousedown", e => { if (e.target === back) redraw(); });
   // Drawn now that the field is there: shown for a service that decides only
   sayModel();
 
@@ -7701,10 +7844,7 @@ function providerDialog(desk, name, redraw, saved) {
   save.addEventListener("click", async () => {
     if (held) { sayWhy(); return; }
     const n = editing ? name : nameIn.value.trim();
-    // The key is filed under this desk, so it needs the name the store files
-    // this desk under
-    if (keyIn.value.trim() && !(desk.id || "").trim()) { toast(T["settings.secrets.desk_needs_id"], true); return; }
-    const it = (desk.providers[n] = desk.providers[n] || {});
+    const it = (provs[n] = provs[n] || {});
     it.base_url = urlIn.value.trim();
     const w = waitIn.value.trim();
     if (w === "") delete it.timeout_sec; else it.timeout_sec = Math.max(0, Math.floor(Number(w)));
@@ -7719,10 +7859,10 @@ function providerDialog(desk, name, redraw, saved) {
     const known = (preset && preset.models && it.base_url === preset.url) ? preset.models : (it.models || []);
     const models = (m ? [m] : []).concat(known.filter(x => x !== m));
     if (models.length) it.models = models; else delete it.models;
-    // The key never sits in config.json: it goes to the secrets file, under
-    // this desk, and only the name of it is kept here
+    // The key never sits in config.json: it goes to the secrets file, and
+    // only the name of it is kept here
     if (keyIn.value.trim()) {
-      const sk = "provider/" + desk.id.trim() + "/" + n;
+      const sk = "provider/" + n;
       const r = await saveSecret({key: sk, description: "model provider " + n,
         value: keyIn.value.trim(), human: true, ai: false, urls: []});
       if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return; }
@@ -7737,9 +7877,10 @@ function providerDialog(desk, name, redraw, saved) {
 }
 
 // ── Driving a page from plain words ─────────────────────────────
-// Two models do it: one picks each move, one writes what is typed. Chosen
-// for the desk (Desk › Browser) and, where a browser tab wants otherwise, on
-// the tab; a tab that leaves one unset has the desk's.
+// Two models do it: one picks each move, one writes what is typed. The
+// deciding AI (AI agents) picks for every page, and a browser tab may name
+// its own two; a tab that leaves one unset has the app's, and what nobody
+// names is the assistant AI's.
 const WORDS_KEYS = ["choose_model", "words_model"];
 // "connection/model" split at the first slash: a model's own name may hold one
 const splitModel = v => {
@@ -7778,20 +7919,20 @@ function assistantModel() {
 // What a choice left unset stands for, as the list says it
 function assistantShown() {
   const ai = installedAi(assistantModel());
-  return ai ? fill(T["settings.labels.ai.assistant"], {name: ai.label}) : T["settings.labels.ai.assistant_none"];
+  return ai ? fill(T["settings.words.assistant"], {name: ai.label}) : T["settings.words.assistant_none"];
 }
 // Whether the model that picks each move is one built for picking. Anything
-// else picks too, a good deal slower. The page's own, else its desk's, else
+// else picks too, a good deal slower. The page's own, else the app's, else
 // the assistant AI -- the order a run takes them in
-function decidesFast(desk, holder, under) {
+function decidesFast(holder, under) {
   const v = (holder.choose_model || "").trim()
     || (under ? (under.choose_model || "").trim() : "") || assistantModel();
-  const p = (desk.providers || {})[splitModel(v).conn];
+  const p = appProviders()[splitModel(v).conn];
   return !!p && p.speaks === "choice";
 }
 // What is wrong with a choice, or null. The writer has to be a conversation
 // model: a decision model answers questions and cannot write a word
-function wordsFault(desk, key, value) {
+function wordsFault(key, value) {
   const v = (value || "").trim();
   if (!v) return null;
   const {conn, model} = splitModel(v);
@@ -7800,41 +7941,40 @@ function wordsFault(desk, key, value) {
     if (!installedModelOk(model)) return fill(T["settings.words.installed_bad_model"], {model});
     return null;
   }
-  const prov = (desk.providers || {})[conn];
+  const prov = appProviders()[conn];
   if (!prov) return fill(T["settings.words.gone"], {name: conn});
   if (!model) return fill(T["settings.words.no_model"], {name: conn});
   if (key === "words_model" && prov.speaks === "choice") return T["settings.words.not_writer"];
   return null;
 }
-// Every choice on this desk and its browser tabs that cannot be saved, with
-// where it is, for save() to refuse and go to
-function wordsFaults(di) {
-  const desk = desks[di], out = [];
-  if (!desk) return out;
-  const b = desk.browser || {};
-  for (const k of WORDS_KEYS) {
-    const why = wordsFault(desk, k, b[k]);
-    if (why) out.push({tab: null, why});
-  }
-  (desk.tabs || []).forEach((t, i) => {
+// Every choice -- the app's deciding AI, and each browser tab's own -- that
+// cannot be saved, with where it is, for save() to refuse and go to. The
+// app's comes with no desk
+function wordsFaults() {
+  const out = [];
+  const why = wordsFault("decide_ai", current.decide_ai);
+  if (why) out.push({desk: null, tab: null, why});
+  desks.forEach((desk, di) => (desk.tabs || []).forEach((t, i) => {
     if (catOf(cmdToText(t.command).trim()) !== "browser") return;
     for (const k of WORDS_KEYS) {
-      const why = wordsFault(desk, k, t[k]);
-      if (why) out.push({tab: i, why});
+      const w = wordsFault(k, t[k]);
+      if (w) out.push({desk: di, tab: i, why: w});
     }
-  });
+  }));
   return out;
 }
-// One of the two models, picked from this desk's connections. `holder[key]`
-// is where the answer is written ("connection/model"). `under`, on a tab, is
-// what the desk says, followed while nothing is chosen here; `adopt` is told
-// a model added from here, so the desk can take it when it has none
-function wordsPicker(desk, holder, key, under, adopt, changed) {
+// One model, picked from the connections and the AIs installed here.
+// `holder[key]` is where the answer is written ("connection/model"). `under`,
+// on a tab, is what the app says, followed while nothing is chosen here;
+// `adopt` is told a model added from here, so the app can take it when it
+// has none. `key` is "words_model" for the one that writes, and anything
+// else for one that decides
+function wordsPicker(holder, key, under, adopt, changed) {
   const writer = key === "words_model";
   const wrap = el("div", {style:"display:flex;flex-direction:column;gap:var(--s2);flex:1 1 100%;min-width:0"});
   const draw = () => {
     wrap.textContent = "";
-    const provs = desk.providers || {};
+    const provs = appProviders();
     const now = (holder[key] || "").trim();
     const {conn, model} = splitModel(now);
     const pick = el("select", {style:"width:100%;max-width:420px"});
@@ -7904,7 +8044,7 @@ function wordsPicker(desk, holder, key, under, adopt, changed) {
     // has it, so it is said here and kept rather than refused on save
     const missing = ai && !aiEngines.some(e => e.id === ai.cmd)
       ? fill(T["settings.words.installed_missing"], {name: ai.label}) : null;
-    const warn = wordsFault(desk, key, now) || missing;
+    const warn = wordsFault(key, now) || missing;
     const store = () => {
       const c = pick.value, m = modelIn.value.trim();
       // An installed AI with no model named is written bare: "@claude"
@@ -7916,8 +8056,8 @@ function wordsPicker(desk, holder, key, under, adopt, changed) {
     pick.addEventListener("change", () => {
       if (pick.value === "+add") {
         pick.value = conn;
-        providerDialog(desk, null, () => {}, n => {
-          const m = ((desk.providers[n] || {}).models || [])[0] || DEFAULT_MODEL[n] || "";
+        providerDialog(null, () => {}, n => {
+          const m = ((provs[n] || {}).models || [])[0] || DEFAULT_MODEL[n] || "";
           holder[key] = n + "/" + m;
           if (adopt) adopt(holder[key]);
           refreshSave();
@@ -7938,17 +8078,17 @@ function wordsPicker(desk, holder, key, under, adopt, changed) {
   draw();
   return wrap;
 }
-// The two pickers under their heading, the way the desk and a tab both show them
-// Above them, how quickly a page will be driven: [Fast] with a decision
-// model deciding, [Slow] without one. Slow is pressed to be told why, and the
-// field that fixes it lights up
-function wordsRows(desk, holder, under, adopt) {
+// A browser tab's two pickers under their heading. Above them, how quickly
+// the page will be driven: [Fast] with a decision model deciding, [Slow]
+// without one. Slow is pressed to be told why, and the field that fixes it
+// lights up
+function wordsRows(holder, under, adopt) {
   const head = el("div", {class:"row", style:"padding:0;align-items:baseline;flex-wrap:nowrap"});
   const why = el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, T["settings.words.slow_why"]));
   why.hidden = true;
   const redraw = () => {
     head.textContent = "";
-    const fast = decidesFast(desk, holder, under);
+    const fast = decidesFast(holder, under);
     if (fast) why.hidden = true;
     head.append(fast
       ? el("span", {class:"speedchip"}, T["settings.words.fast"])
@@ -7962,7 +8102,7 @@ function wordsRows(desk, holder, under, adopt) {
         }}, T["settings.words.slow"]),
       el("span", {class:"hint"}, T["settings.words.hint"]));
   };
-  const choose = wordsPicker(desk, holder, "choose_model", under ? (under.choose_model || "") : undefined,
+  const choose = wordsPicker(holder, "choose_model", under ? (under.choose_model || "") : undefined,
     adopt && (v => adopt("choose_model", v)), redraw);
   redraw();
   return [
@@ -7971,19 +8111,10 @@ function wordsRows(desk, holder, under, adopt) {
     row(T["settings.words.choose_model"], choose,
       el("span", {class:"hint"}, T["settings.words.choose_model.hint"])),
     row(T["settings.words.words_model"],
-      wordsPicker(desk, holder, "words_model", under ? (under.words_model || "") : undefined, adopt && (v => adopt("words_model", v))),
+      wordsPicker(holder, "words_model", under ? (under.words_model || "") : undefined, adopt && (v => adopt("words_model", v))),
       el("span", {class:"hint"}, T["settings.words.words_model.hint"])),
   ];
 }
-// Desk › Browser: what this desk's browser tabs follow, and whether pages may
-// be sent to those models at all
-function deskBrowserCard(desk) {
-  desk.browser = desk.browser || {};
-  const words = card(T["settings.words.title"], ...wordsRows(desk, desk.browser));
-  words.id = "desk-words";
-  return [words, deskPagesCard(desk)];
-}
-
 // Each AI's allowance: Claude's, read with Claude Code's own sign-in on this
 // PC, and Codex's, read off the records Codex keeps on this PC. Its own card,
 // because it is not a connection anybody registers -- it is a thing the
@@ -9760,7 +9891,7 @@ function aiSelect() {
   s.value = current.ai_engine || "";
   s.addEventListener("change", () => { current.ai_engine = s.value; });
   setTimeout(() => { const h = hint(); if (h) h.textContent = aiEngines.length
-    ? "" : T["settings.ai_engine.missing"]; }, 0);
+    ? T["settings.ai_engine.hint"] : T["settings.ai_engine.missing"]; }, 0);
   return s;
 }
 
@@ -9771,8 +9902,6 @@ function deskSections(desk) {
   const list = [
     s("basic", deskBasic),
     s("notify", notifyCard),
-    s("providers", providersCard),
-    s("browser", deskBrowserCard),
     s("permissions", permissionsCard),
     // Who the desk signs in as first, then what it does with that: one
     // page, since a person setting up git on a desk wants both
@@ -9780,100 +9909,13 @@ function deskSections(desk) {
     s("secrets", deskSecretsCard),
     s("discuss", deskDiscussCard),
     s("stops", deskStopsCard),
-    s("tools", deskToolsCard),
     s("labels", deskLabelsCard),
   ];
   // Written by hand in the file, so listed only where there is something written
-  if (deskCapsCard(desk)) list.splice(4, 0, s("caps", deskCapsCard));
+  if (deskCapsCard(desk)) list.splice(2, 0, s("caps", deskCapsCard));
   // It ends in a file dialog, which a phone has no way to open
   if (!REMOTE) list.push(s("share", deskShareCard));
   return list;
-}
-
-// Whether the tools may send the framed part of the screen to the assistant
-// AI. The same answer the tool asks for in place the first time, kept on the
-// desk: ticked here or there, it is one setting. What is stored is the AI it
-// was agreed for, so a change of assistant AI is asked about again
-function deskToolsCard(desk) {
-  // The AI that would be sent to: the one chosen, or the first installed --
-  // the same order the program picks in (webui.rs, assistant_ai)
-  const now = aiEngines.find(e => e.id === (current.ai_engine || "")) || (current.ai_engine ? null : aiEngines[0]);
-  const labelOf = id => (aiEngines.find(e => e.id === id) || {}).label || id;
-  const box = el("input", {type:"checkbox"});
-  box.checked = !!desk.send_pictures_to;
-  box.disabled = !now && !desk.send_pictures_to;
-  const tick = el("label", {class:"check"});
-  tick.append(box, document.createTextNode(T["settings.desk.pictures.label"]));
-  const said = el("div", {class:"hint"});
-  const draw = () => {
-    const agreed = desk.send_pictures_to;
-    if (!now) said.textContent = agreed
-      ? fill(T["settings.desk.pictures.agreed"], {by: labelOf(agreed)}) + " " + T["settings.desk.pictures.none"]
-      : T["settings.desk.pictures.none"];
-    else if (!agreed) said.textContent = fill(T["settings.desk.pictures.service"], {by: now.label})
-      + " " + T["settings.desk.pictures.unticked"];
-    else if (agreed !== now.id) said.textContent = fill(T["settings.desk.pictures.changed"], {by: labelOf(agreed), now: now.label});
-    else said.textContent = fill(T["settings.desk.pictures.agreed"], {by: now.label})
-      + " " + fill(T["settings.desk.pictures.service"], {by: now.label})
-      + " " + T["settings.desk.pictures.withdraw"];
-  };
-  box.addEventListener("change", () => {
-    desk.send_pictures_to = box.checked && now ? now.id : "";
-    box.checked = !!desk.send_pictures_to;
-    refreshSave();
-    draw();
-  });
-  draw();
-  return card(T["settings.desk.pictures.title"], el("div", {class:"row"}, tick), said);
-}
-
-// Whether a page may be handed to a model so that a goal written in ordinary
-// words can be carried out on it. Stored as the models it was agreed for, so
-// pointing the setting at a different company asks again rather than assuming
-function deskPagesCard(desk) {
-  // Every model a page on this desk would be handed to: the desk's, and each
-  // browser tab's own where it has one. One agreement covers them all, and
-  // the app checks each page against it
-  const b = desk.browser || {};
-  const names = [];
-  // What nobody chose is the assistant AI's, and is sent to like any other
-  const deskOf = k => (b[k] || "").trim() || assistantModel();
-  for (const k of WORDS_KEYS) names.push(deskOf(k));
-  (desk.tabs || []).forEach(t => {
-    if (catOf(t.command) !== "browser") return;
-    for (const k of WORDS_KEYS) names.push((t[k] || "").trim() || deskOf(k));
-  });
-  const now = names.map(x => (x || "").trim()).filter(x => x)
-    .filter((x, i, a) => a.indexOf(x) === i).sort().join(" + ");
-  const box = el("input", {type:"checkbox"});
-  box.checked = !!desk.send_pages_to;
-  box.disabled = !now && !desk.send_pages_to;
-  const tick = el("label", {class:"check"});
-  tick.append(box, document.createTextNode(T["settings.desk.pages.label"]));
-  const said = el("div", {class:"hint"});
-  const draw = () => {
-    const agreed = (desk.send_pages_to || "").trim();
-    // Agreed to under the names written; said the way a person reads them
-    const shown = list => list.split(" + ").map(wordsShown).join(" + ");
-    if (!now) said.textContent = agreed
-      ? fill(T["settings.desk.pages.agreed"], {by: shown(agreed)}) + " " + T["settings.desk.pages.none"]
-      : T["settings.desk.pages.none"];
-    else if (!agreed) said.textContent = fill(T["settings.desk.pages.service"], {by: shown(now)})
-      + " " + T["settings.desk.pages.unticked"];
-    else if (!now.split(" + ").every(n => agreed.split(" + ").includes(n)))
-      said.textContent = fill(T["settings.desk.pages.changed"], {by: shown(agreed), now: shown(now)});
-    else said.textContent = fill(T["settings.desk.pages.agreed"], {by: shown(now)})
-      + " " + fill(T["settings.desk.pages.service"], {by: shown(now)})
-      + " " + T["settings.desk.pages.withdraw"];
-  };
-  box.addEventListener("change", () => {
-    desk.send_pages_to = box.checked && now ? now : "";
-    box.checked = !!desk.send_pages_to;
-    refreshSave();
-    draw();
-  });
-  draw();
-  return card(T["settings.desk.pages.title"], el("div", {class:"row"}, tick), said);
 }
 
 // Which AI writes the names and summaries of this desk's folders that have
@@ -9881,52 +9923,11 @@ function deskPagesCard(desk) {
 // light way, so it costs little. A model connection runs on that connection's
 // own account, which is the reason to choose one
 function deskLabelsCard(desk) {
-  const assistant = aiEngines.find(e => e.id === (current.ai_engine || "")) || (current.ai_engine ? null : aiEngines[0]);
-  const picker = el("select");
-  picker.append(el("option", {value:""}, assistant
-    ? fill(T["settings.labels.ai.assistant"], {name: assistant.label})
-    : T["settings.labels.ai.assistant_none"]));
-  for (const e of aiEngines) picker.append(el("option", {value:e.id}, e.label));
-  // Writing a name is writing, which a decision model cannot do: it only picks
-  // one of the options it is given. So only the conversation models are offered
-  const provs = deskProviders();
-  const providers = Object.keys(provs).filter(n => (provs[n].speaks || "chat") === "chat");
-  for (const p of providers) picker.append(el("option", {value:"model:" + p}, fill(T["wizard.discuss.model_suffix"], {name: p})));
-  const written = (desk.summary_ai || "").trim();
-  const asModel = written.match(/^model\s+([^/\s]+)\/(.*)$/);
-  picker.value = asModel ? "model:" + asModel[1] : written;
-  // A choice no longer on offer -- an AI since uninstalled, a connection since
-  // removed -- is still what the settings say, and shown as that
-  if (picker.value !== (asModel ? "model:" + asModel[1] : written)) {
-    picker.append(el("option", {value: asModel ? "model:" + asModel[1] : written}, written));
-    picker.value = asModel ? "model:" + asModel[1] : written;
-  }
-  const modelIn = el("input", {type:"text", class:"mono", style:"width:220px"});
-  modelIn.value = asModel ? asModel[2].trim() : "";
-  const provider = () => picker.value.startsWith("model:") ? picker.value.slice(6) : "";
-  const cand = modelCandidates(() => deskProviders()[provider()] || {}, id => { modelIn.value = id; store(); });
-  const modelRow = row(T["settings.labels.model"], modelIn, cand.btn, cand.chips);
-  const store = () => {
-    const p = provider();
-    // A connection with no model named asks for the one it is known for, as
-    // the placeholder says, rather than for a model called nothing
-    const v = p ? "model " + p + "/" + (modelIn.value.trim() || DEFAULT_MODEL[p] || "") : picker.value;
-    if (v) desk.summary_ai = v; else delete desk.summary_ai;
-    refreshSave();
-  };
-  const sync = () => {
-    const p = provider();
-    modelRow.hidden = !p;
-    if (p) modelIn.placeholder = DEFAULT_MODEL[p] || T["wizard.discuss.model_ph"];
-    else cand.chips.textContent = "";
-  };
-  picker.addEventListener("change", () => { sync(); store(); });
-  modelIn.addEventListener("input", store);
-  sync();
   return card(T["settings.labels.title"],
     el("div", {class:"hint"}, T["settings.labels.hint"]),
-    row(T["settings.labels.ai"], picker, el("span", {class:"hint"}, T["settings.labels.ai.hint"])),
-    modelRow,
+    ...namesAiRows(desk, {
+      first: fill(T["settings.labels.ai.assistant"], {name: appNamesShown()}),
+      label: T["settings.labels.ai"], hint: T["settings.labels.ai.hint"]}),
     row(T["settings.labels.branch"],
         checkDefaultOn(desk, "rename_branch", T["settings.labels.branch.label"]),
         el("span", {class:"hint"}, T["settings.labels.branch.hint"])));
@@ -9985,7 +9986,7 @@ function deskBasic(desk) {
         const j = await fetchSecrets();
         const mine = ((j && j.secrets) || [])
           .map(s => s.key)
-          .filter(k => k.startsWith(id + ".") || ["ssh/", "provider/", "notify/", "git/"].some(p => k.startsWith(p + id + "/")));
+          .filter(k => k.startsWith(id + ".") || ["ssh/", "notify/", "git/"].some(p => k.startsWith(p + id + "/")));
         if (mine.length &&
             !await confirmAction(fill(T["settings.desk.delete_secrets"], {n: mine.length}), T["settings.desk.delete"])) return;
         await dropSecrets(mine);
@@ -11956,7 +11957,7 @@ function aiPanel(t, cmdInput, rebuild, real) {
     const ok = c.check ? aiEngines.some(e => e.id === c.check) : true;
     picker.append(el("option", {value:"cli:" + c.cmd}, c.label + (!ok ? T["settings.tab.common.missing"] : "")));
   }
-  const provs = Object.keys(deskProviders());
+  const provs = Object.keys(appProviders()).sort();
   for (const n of provs) picker.append(el("option", {value:"prov:" + n}, n));
   picker.append(el("option", {value:"add-ai"}, T["settings.tab.ai.add"]));
 
@@ -12007,7 +12008,7 @@ function aiPanel(t, cmdInput, rebuild, real) {
       setCommand(t, cmdInput, "model " + m.provider + (name ? "/" + name : ""));
     };
     modelIn.addEventListener("input", () => setModel(modelIn.value.trim()));
-    const cand = modelCandidates(() => deskProviders()[m.provider] || {},
+    const cand = modelCandidates(() => appProviders()[m.provider] || {},
       id => { modelIn.value = id; setModel(id); });
     detail.append(
       el("div", {class:"row"}, el("label", {}, T["settings.model.name_label"]), modelIn, cand.btn),
@@ -12021,9 +12022,9 @@ function aiPanel(t, cmdInput, rebuild, real) {
   picker.addEventListener("change", async () => {
     const v = picker.value;
     if (v === "add-ai") {
-      const before = new Set(Object.keys(deskProviders()));
+      const before = new Set(Object.keys(appProviders()));
       await openProvidersPopup();
-      const added = Object.keys(deskProviders()).find(n => !before.has(n));
+      const added = Object.keys(appProviders()).find(n => !before.has(n));
       if (added) setCommand(t, cmdInput, "model " + added + "/");
       rebuild();                          // redraw: the new provider now appears (and its model field)
       return;
@@ -12094,7 +12095,7 @@ function openProvidersPopup() {
     const m = openModal(
       el("h2", {}, T["settings.tab.ai.add_title"]),
       el("div", {class:"hint"}, T["settings.tab.ai.api_hint"]),
-      providersCard(desks[sel.desk]),
+      providersCard(),
       el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:var(--s3);padding-top:var(--s3);justify-content:flex-end"},
         el("button", {class:"primary", onclick: () => { m.remove(); resolve(); }}, T["common.done"])));
     m.addEventListener("click", e => { if (e.target === m) resolve(); });
@@ -12635,16 +12636,14 @@ function kindPanel(t, cmdInput, rebuild, real) {
       l.append(c, document.createTextNode(label));
       return l;
     };
-    // Plain words: this page's own models, else the desk's. A model added
-    // from here is also the desk's when the desk has none, so the next
+    // Plain words: this page's own models, else the app's. A deciding model
+    // added from here is also the app's when the app has none, so the next
     // browser tab starts with it
-    const here = desks[sel.desk];
-    here.browser = here.browser || {};
     const wordsBox = el("div", {id:"tab-words"},
       el("div", {class:"row"}, el("label", {}, T["settings.words.title"])),
       wordsAsked ? el("div", {class:"warn"}, T["settings.words.asked"]) : null,
-      ...wordsRows(here, t, here.browser, (k, v) => {
-        if (!(here.browser[k] || "").trim()) here.browser[k] = v;
+      ...wordsRows(t, appWordsUnder(), (k, v) => {
+        if (k === "choose_model" && !(current.decide_ai || "").trim()) current.decide_ai = v;
       }));
     box.append(wordsBox);
     box.append(el("div", {class:"row"}, el("label", {}, T["settings.browser.nav"]),
@@ -13097,7 +13096,6 @@ async function load() {
                  // of them, so an unwritten one is simply empty
                  notify: isObj(w.notify) ? w.notify : {},
                  primary_notify: w.primary_notify || "",
-                 providers: isObj(w.providers) ? w.providers : {},
                  // Written by hand in the file, shown but not edited here, and
                  // carried through a save rather than dropped by one
                  capabilities: isObj(w.capabilities) ? w.capabilities : {},
@@ -13109,12 +13107,6 @@ async function load() {
                  // Its git accounts. Read in as well as written out: left out
                  // here, the page showed none and the next save erased them
                  git_accounts: Array.isArray(w.git_accounts) ? w.git_accounts : [],
-                 // The assistant AI this desk agreed to send pictures to, by name
-                 send_pictures_to: (w.send_pictures_to || "").trim(),
-                 send_pages_to: (w.send_pages_to || "").trim(),
-                 // What its browser tabs follow. Whole, so a browser setting
-                 // this page does not show yet survives being saved from it
-                 browser: isObj(w.browser) ? Object.assign({}, w.browser) : {},
                  // What writes its automatic names, and whether they reach the
                  // branch. Read in as well as written out: a setting the page
                  // never saw is a setting the next save erases
@@ -13178,20 +13170,22 @@ async function save() {
   // A model that cannot do the job it is chosen for -- a decision model set
   // to write, a connection since removed, one with no model named -- is not
   // saved: the page it would drive would stop at the first move. Go to it
-  for (let di = 0; di < desks.length; di++) {
-    const bad = wordsFaults(di)[0];
-    if (!bad) continue;
-    if (bad.tab == null) {
-      sel = {desk:di, grp:null, tab:null, global:false};
-      goDeskSection("browser", "center");
-    } else {
-      sel = {desk:di, grp:desks[di].tabs[bad.tab].group || 0, tab:bad.tab, global:false};
-      render();
-      const at = document.getElementById("tab-words");
-      if (at) at.scrollIntoView({block:"center"});
+  {
+    const bad = wordsFaults()[0];
+    if (bad) {
+      if (bad.desk == null) {
+        sel = {desk:sel.desk, tab:null, global:true, section:"ai"};
+        render();
+        lookAtCard("ai-assistant", 50);
+      } else {
+        sel = {desk:bad.desk, grp:desks[bad.desk].tabs[bad.tab].group || 0, tab:bad.tab, global:false};
+        render();
+        const at = document.getElementById("tab-words");
+        if (at) at.scrollIntoView({block:"center"});
+      }
+      result(fill(T["settings.words.cannot_save"], {why: bad.why}), true);
+      return;
     }
-    result(fill(T["settings.words.cannot_save"], {why: bad.why}), true);
-    return;
   }
   const clash = collidingIds();
   if (clash.length) { result(fill(T["settings.id.duplicate"], {names: clash.join(", ")}), true); return; }
@@ -13228,7 +13222,15 @@ function payload() {
   ["tab_bar_width","max_chain"].forEach(k => {
     const v = out[k]; if (v === "" || v === null || v === undefined) delete out[k]; else out[k] = Number(v);
   });
-  ["automation","secrets","ai_engine","browser_data","browser_draw","language","user_agent"].forEach(k => { if (!out[k]) delete out[k]; });
+  ["automation","secrets","ai_engine","decide_ai","summary_ai","browser_data","browser_draw","language","user_agent"].forEach(k => { if (!out[k]) delete out[k]; });
+  // A connection with no address is a half-finished add, not a setting; an
+  // AI with nothing agreed to has no row to keep
+  const provs = Object.fromEntries(Object.entries(out.providers || {})
+    .filter(([, p]) => p && (p.base_url || "").trim()));
+  if (Object.keys(provs).length) out.providers = provs; else delete out.providers;
+  const agreed = Object.fromEntries(Object.entries(out.agreed || {})
+    .filter(([, kinds]) => Array.isArray(kinds) && kinds.length));
+  if (Object.keys(agreed).length) out.agreed = agreed; else delete out.agreed;
   // Quick actions: drop rows left without a label, and omit the key entirely if none remain.
   if (out.actions) {
     out.actions = out.actions
@@ -13270,7 +13272,7 @@ function payload() {
   if (out.remote && !out.remote.enabled && !out.remote.allow_public) delete out.remote;
   // Where these used to be written for the whole app. They are each desk's
   // now, and a copy left up here would read as an answer that still applies
-  for (const k of ["notify", "primary_notify", "providers", "capabilities", "automation_permissions", "git", "projects"]) delete out[k];
+  for (const k of ["notify", "primary_notify", "capabilities", "automation_permissions", "git", "projects"]) delete out[k];
   delete out.lua; delete out.tabs;
 
   // A group is written with its own tabs nested back under it. Its name and id
@@ -13333,11 +13335,6 @@ function payload() {
     if ((w.primary_notify || "").trim() && some(w.notify) && w.notify[w.primary_notify.trim()]) {
       o.primary_notify = w.primary_notify.trim();
     }
-    // Don't save a connection with an empty base_url (leftover junk from a
-    // still-in-progress add)
-    const provs = Object.fromEntries(Object.entries(w.providers || {})
-      .filter(([, p]) => p && (p.base_url || "").trim()));
-    if (some(provs)) o.providers = provs;
     if (some(w.capabilities)) o.capabilities = w.capabilities;
     if (some(w.automation_permissions)) o.automation_permissions = w.automation_permissions;
     if (some(w.git)) o.git = w.git;
@@ -13357,12 +13354,6 @@ function payload() {
     // Its git accounts, each with a name. The tokens are in the secrets file
     const accts = (w.git_accounts || []).filter(a => a && (a.name || "").trim());
     if (accts.length) o.git_accounts = accts;
-    if ((w.send_pictures_to || "").trim()) o.send_pictures_to = w.send_pictures_to.trim();
-    if ((w.send_pages_to || "").trim()) o.send_pages_to = w.send_pages_to.trim();
-    // What its browser tabs follow; an unchosen model is not written
-    const br = Object.assign({}, w.browser || {});
-    for (const k of WORDS_KEYS) if ((br[k] || "").trim()) br[k] = br[k].trim(); else delete br[k];
-    if (some(br)) o.browser = br;
     // What writes this desk's automatic names, and whether they reach the
     // branch. Both are the desk's own answer, so a desk that has not given one
     // stays a short entry and follows the app
@@ -14370,7 +14361,7 @@ mod tests {
     fn the_naming_settings_are_shown_and_kept() {
         for held in [
             // Asked app-wide, under the assistant AI it defaults to
-            r#"choose(current, "summary_ai","#,
+            r#"...namesAiRows(current, {"#,
             r#"checkDefaultOn(current, "summary_small_model", T["settings.summary_small.label"])"#,
             // Asked of a desk, in the card about its automatic names
             r#"checkDefaultOn(desk, "rename_branch", T["settings.labels.branch.label"])"#,
@@ -14770,10 +14761,12 @@ mod tests {
         assert!(project, "the project's own page is no longer reachable by name");
 
         for ask in &asks {
+            // "words" is a browser tab's own models, reached by the tab's key
             let known = global.contains(ask)
                 || desk_links.iter().any(|(k, _)| k == ask)
                 || ask == "project"
-                || ask == "project-gitacct";
+                || ask == "project-gitacct"
+                || ask == "words";
             assert!(known, "the board sends people to \"{ask}\", which is no screen these settings have");
         }
         // ...and the desk's own cards, which those names point at

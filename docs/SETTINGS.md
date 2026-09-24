@@ -24,16 +24,28 @@ Tab width, chaining, language
 - **Copying from full-screen tools** — tmux, Neovim, fzf and most full-screen tools copy this way, including over ssh -- with this off, copying inside them does nothing. Reading the clipboard is never allowed, so nothing running in a tab can see what you copied elsewhere
 - **Terminal engine** — Windows has one of these and this program carries its own. Which one is in use decides how a program's output reaches the screen. The one shipped here is a fixed version we have checked, so the answer does not depend on how up to date this machine happens to be — on an older Windows, the one in the box can be some way behind.
 - **Default command** — What a project opens with when it is added, and what an empty folder opens when pressed. A PC without Git Bash opens PowerShell.
-- **Assistant AI**
-- **Yolo mode** — New AI tabs skip the AI's permission checks
-- **AI for automatic names** — Writes the name and summary of a working folder with Auto on, and the branch name that follows them. A desk can choose another one, and that is also where an AI provider is chosen.
-- **Model for those names** — A name costs a fraction of an answer this way. Turn it off if the names it writes are not recognisable.
 - **Browser data** — Where the browser cache and login state live. Sharing carries logins across PCs but adds Drive sync load
 - **Where pages are drawn** — Only matters when a device is connected to this one. Drawn here, a page can be watched from a phone, keeps working with nobody connected, and is one signed-in session for every device. Drawn on the connected device it is faster and sharper, but it needs that device to be there and only it can see the page. Either way the page reaches the network through this machine, so a port opened here means the same thing on both sides. New pages only — a page already open stays where it is.
 - **UA (browser name)** — The name sites see this browser by. Leave it empty and it looks like Edge. Fill it in when a site says something like "this browser may not be secure" and will not let you sign in — putting a name like Chrome here often gets you through. Pages opened after you change it use the new name. A tab can be given its own name, which wins over this one.
 - **Terminal font** — The font and size the terminal is drawn in. Ctrl+wheel over the terminal changes the size at any time, and it is remembered here. Leave the name empty for the built-in stack, chosen so box-drawing characters and Japanese each take one cell.
 - **Colours** — The colour scheme, for the terminal and for the window around it. The list is every scheme this PC already has — the ones Windows Terminal is carrying, plus any scheme file dropped into the config/themes folder — so a theme you already use can be picked by the name you already know it by. Choosing a light scheme turns the whole window light.
 - **Language** — Screen language. Automatic follows the OS. Choosing here overrides the OS and takes effect after a restart (add lang/<code>.json to contribute a translation)
+
+### AI agents
+
+Assistant AI, deciding AI, connections, agreements
+
+**Assistant AI and deciding AI**
+
+- **Assistant AI** — Answers every question this app asks, and is what a new AI tab runs.
+- **Yolo mode** — New AI tabs skip the AI's permission checks
+- **Deciding AI** — Picks the next move on a page driven in words, and answers a script's ai_choose. A decision model is far quicker; a conversation model or a subscription AI works too.
+
+**Automatic names**
+
+- **AI for automatic names** — Writes the name and summary of a working folder with Auto on, and the branch name that follows them. A desk can choose another one.
+- **Model for those names** — A name costs a fraction of an answer this way. Turn it off if the names it writes are not recognisable.
+- **Model**
 
 ### Update
 
@@ -182,6 +194,7 @@ Name, automation name, automation folder
 **This settings file can't be read**
 
 - **Basic** — Tab width, chaining, language
+- **AI agents** — Assistant AI, deciding AI, connections, agreements
 - **Update** — Newer versions, and going back
 - **Remote access** — Remote control & QR
 - **Shortcuts** — What each key does
@@ -214,19 +227,6 @@ Chats, this PC, phones
 - **Chat id**
 - **The main destination**
 
-### AI providers
-
-The model APIs this desk's tabs use, local models included
-
-This screen has nothing to fill in. What it shows depends on what is set elsewhere.
-
-### Browser
-
-What this desk's browser tabs follow
-
-- **Decision model** — Picks the next move on the page. A decision model is far quicker; a conversation model or a subscription AI works too.
-- **Conversation model** — Writes what is typed into the page. Choose a conversation model or a subscription AI.
-
 ### Automation permissions
 
 What a person and an AI may run
@@ -254,6 +254,7 @@ Several AI tabs discussing or working together
 **This settings file can't be read**
 
 - **Basic** — Tab width, chaining, language
+- **AI agents** — Assistant AI, deciding AI, connections, agreements
 - **Update** — Newer versions, and going back
 - **Remote access** — Remote control & QR
 - **Shortcuts** — What each key does
@@ -282,12 +283,6 @@ When the joint work ends
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 
-### Tools
-
-What may be sent out: pictures of the screen
-
-This screen has nothing to fill in. What it shows depends on what is set elsewhere.
-
 ### Automatic names
 
 The AI that names and describes working folders
@@ -296,7 +291,7 @@ The AI that names and describes working folders
 
 **Automatic names and summaries**
 
-- **AI** — An assistant AI is asked the lightest way it can be: no tools, and the smallest model it has when Basic says to use one. An AI provider runs on that provider's account.
+- **AI** — An assistant AI is asked the lightest way it can be: no tools, and the smallest model it has when AI agents says to use one. An AI provider runs on that provider's account.
 - **Branch name** — The first name written replaces the one this app drew (mighty-gannet), once. A branch you named yourself, and one that has already been pushed, keep their names.
 
 ### Automation doors
