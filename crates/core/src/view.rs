@@ -620,6 +620,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     // the tab, so no second pass can disagree about it
                     t.away = ui.away.iter().find(|(k, _)| k == key).map(|(_, who)| who.clone());
                     t.words_unset = ui.words_unset.iter().any(|k| k == key);
+                    t.words_fast = ui.words_fast.iter().any(|k| k == key);
                     Some(t)
                 }
                 Surface::Sftp { key, name, dir, at, .. } => {
@@ -1605,6 +1606,9 @@ pub struct Ui {
     /// Which of this desk's pages cannot be driven in plain words yet,
     /// because a model it needs is not chosen, by the same name
     pub words_unset: Vec<String>,
+    /// Which of this desk's pages have their next move picked by a service
+    /// built for deciding, by the same name
+    pub words_fast: Vec<String>,
     /// How many lines back from the current screen we're scrolled (0 = live)
     pub scrolled: usize,
     /// The AIs this machine can start, for the dialog that makes a folder

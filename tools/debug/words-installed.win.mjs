@@ -136,6 +136,7 @@ try {
     if (!tab) await sleep(250);
   }
   if (!tab) throw new Error('the copy has no tab called form');
+  console.log(`the board calls this page ${tab.words_fast ? 'fast' : 'slow'}`);
   await intent({ kind: 'select', tab: tab.index });
   await sleep(3000);
 

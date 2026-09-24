@@ -35,7 +35,8 @@ export default {
     agreed: { jev: ['pages'] },
     desks: [{
       name: 'Work', id: 'work',
-      folders: [{ tabs: [{ id: 'shop', name: 'Shop', command: 'browser https://example.com' }] }],
+      folders: [{ tabs: [{ id: 'shop', name: 'Shop', command: 'browser https://example.com' },
+        { id: 'news', name: 'News', command: 'browser https://example.org', choose_model: 'deepseek/deepseek-flash' }] }],
     }],
   },
   scenes: {
@@ -95,23 +96,28 @@ export default {
       + ' chip.click(); await ' + wait(200) + ';'
       + ' if (current.decide_ai !== "@claude/haiku") throw new Error("written as " + current.decide_ai);'
       + ' document.getElementById("ai-assistant").scrollIntoView({block:"start"}); })()',
-    // A page that chose nothing, with no deciding AI chosen for the app, is
-    // driven with the assistant AI, and says so; without a decision model it
-    // is [Slow], and pressing that says why and lights the field that fixes it
-    slow: '(async () => { delete current.decide_ai; await ' + tabPage + ';'
+    // A page that chose nothing is driven with the assistant AI, and the
+    // list says so
+    unset: '(async () => { delete current.decide_ai; await ' + tabPage + ';'
       + ' const s = ' + pickers + '[0];'
       + ' if (!s.options[0].textContent.includes("Claude Code")) throw new Error("the unset choice reads " + s.options[0].textContent);'
-      + ' const tag = document.querySelector("#tab-words button.speedchip");'
-      + ' if (!tag) throw new Error("no [Slow] to press");'
-      + ' tag.click(); await ' + wait(150) + ';'
-      + ' if (document.querySelector("#tab-words .site-warn").hidden) throw new Error("pressing [Slow] said nothing");'
-      + ' if (!s.classList.contains("lookhere")) throw new Error("the field that fixes it did not light up");'
       + ' document.getElementById("tab-words").scrollIntoView({block:"start"}); })()',
-    // A decision model deciding is [Fast], and there is nothing to press
-    fast: '(async () => { await ' + tabPage + ';'
-      + ' if (document.querySelector("#tab-words button.speedchip")) throw new Error("still slow with Jev deciding");'
-      + ' if (!document.querySelector("#tab-words span.speedchip")) throw new Error("no [Fast]");'
-      + ' document.getElementById("tab-words").scrollIntoView({block:"start"}); })()',
+    // Opened from the board's [Slow], for a page a conversation model decides
+    // on: why it is slow, at the field that makes it fast, lit
+    slow: { query: 'desk=0&tabkey=news&section=words-slow',
+      run: '(async () => { await ' + wait(300) + ';'
+        + ' const why = document.querySelector("#tab-words .site-warn");'
+        + ' if (!why || why.hidden) throw new Error("opened from [Slow] without saying why");'
+        + ' const s = ' + pickers + '[0];'
+        + ' if (!s.classList.contains("lookhere")) throw new Error("the field that makes it fast is not lit");'
+        + ' s.value = "jev"; s.dispatchEvent(new Event("change")); await ' + wait(200) + ';'
+        + ' if (!document.querySelector("#tab-words .site-warn").hidden) throw new Error("still says why once Jev decides");'
+        + ' s.value = "deepseek"; s.dispatchEvent(new Event("change")); await ' + wait(200) + '; })()' },
+    // Opened from [Slow] for a page that is fast by now: nothing to explain
+    fast: { query: 'desk=0&tabkey=shop&section=words-slow',
+      run: '(async () => { await ' + wait(300) + ';'
+        + ' const why = document.querySelector("#tab-words .site-warn");'
+        + ' if (why && !why.hidden) throw new Error("says it is slow with Jev deciding"); })()' },
     // A connection's row opened: its fields, and under them what it may be
     // sent. Ticking "Send pages" is the same tick a refused goal offers
     agreements: '(async () => { await ' + aiPage + ';'
