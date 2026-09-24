@@ -7825,6 +7825,11 @@ mod tests {
         let standard = crate::i18n::t("ai.commit.default_prompt");
         assert!(standard.contains("{diff}") && standard.contains("Assisted-by: {ai}"),
                 "the default prompt does not show where the change and the AI's name go: {standard}");
+        // The message comes back in the language the screen is in, unless a
+        // project says otherwise: the instruction is in the default, in the
+        // open, where a team that commits in English can take it out
+        assert!(standard.contains("in {language}"), "the default prompt does not say which language: {standard}");
+        assert!(crate::i18n::t("ai.pr.default_prompt").contains("in {language}"), "the pull request's default does not say which language");
         assert_eq!(spec("{}").commit_prompt(), standard);
         assert_eq!(spec(r#"{"message_prompt": ""}"#).commit_prompt(), "");
         assert_eq!(spec(r#"{"message_prompt": "mine {diff}"}"#).commit_prompt(), "mine {diff}");

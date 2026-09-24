@@ -68,9 +68,11 @@ once it reaches its first tagged release.
   folder page's "Set this folder's own" falls back to the project's. Edit on
   the ✨ buttons and on the git column's next step opens that project's card.
   `{language}` -- the language the screen is in -- can be written into the
-  commit, pull request and issue prompts, as into the merge and CI ones. The
-  ? panel and `docs/SETTINGS.md` list the project's page as a screen of its
-  own.
+  commit, pull request and issue prompts, as into the merge and CI ones, and
+  the default commit and pull request prompts now ask for the message in it:
+  a Japanese screen gets a Japanese commit message unless the project's
+  prompt says otherwise. The ? panel and `docs/SETTINGS.md` list the
+  project's page as a screen of its own.
 - **The git accounts are the app's, not a desk's.** One list, under Settings >
   Git accounts, that every desk's projects and git tabs choose from; a desk's
   own `git_accounts` is gone and is not read, and a token is filed as
