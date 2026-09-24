@@ -1847,6 +1847,96 @@ fn handle(
         ("GET", "/api/pc-accounts") => {
             req.respond(json_resp(serde_json::json!({ "accounts": crate::pr::pc_accounts() })))?;
         }
+        // A token put into the credential store git on this PC uses, the way a
+        // push that signed in would leave it. Whose it is, GitHub is asked
+        // first: the store files it under the login, and a token nobody can
+        // name is one nobody can choose
+        ("POST", "/api/pc-accounts/add") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let token = v.get("token").and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
+            let said = match crate::pr::plain_token(&token) {
+                false => Err(crate::i18n::t("settings.gitacct.token_rejected")),
+                true => {
+                    let probe = crate::pr::probe(Some(token.clone()));
+                    match probe.login.filter(|_| probe.ok) {
+                        Some(login) => crate::pr::pc_store(&login, &token).map(|()| login),
+                        None => Err(crate::i18n::t("settings.gitacct.token_rejected")),
+                    }
+                }
+            };
+            req.respond(json_resp(match said {
+                Ok(login) => serde_json::json!({ "ok": true, "login": login }),
+                Err(error) => serde_json::json!({ "ok": false, "error": error }),
+            }))?;
+        }
+        ("POST", "/api/pc-accounts/forget") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let login = v.get("login").and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
+            let said = match crate::pr::plain_name(&login) {
+                true => crate::pr::pc_forget(&login),
+                false => Err(crate::i18n::t("settings.gitacct.name_bad")),
+            };
+            req.respond(json_resp(match said {
+                Ok(()) => serde_json::json!({ "ok": true }),
+                Err(error) => serde_json::json!({ "ok": false, "error": error }),
+            }))?;
+        }
+        // The accounts GitHub CLI (gh) is signed in as, every host. `gh` absent
+        // is said apart from `gh` signed in nowhere
+        ("GET", "/api/gh-accounts") => {
+            req.respond(json_resp(match crate::pr::gh_accounts() {
+                Some(accounts) => serde_json::json!({ "installed": true, "accounts": accounts }),
+                None => serde_json::json!({ "installed": false, "accounts": [] }),
+            }))?;
+        }
+        ("POST", "/api/gh-accounts/add") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let token = v.get("token").and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
+            let host = v.get("host").and_then(|t| t.as_str()).unwrap_or("").trim().to_ascii_lowercase();
+            let host = if host.is_empty() { crate::config::GITHUB_HOST.to_string() } else { host };
+            let said = match (crate::pr::plain_token(&token), crate::pr::plain_name(&host)) {
+                (false, _) => Err(crate::i18n::t("settings.gitacct.token_rejected")),
+                (_, false) => Err(crate::i18n::t("settings.gitacct.host_bad")),
+                (true, true) => crate::pr::gh_sign_in(&host, &token),
+            };
+            req.respond(json_resp(match said {
+                Ok(()) => serde_json::json!({ "ok": true }),
+                Err(error) => serde_json::json!({ "ok": false, "error": error }),
+            }))?;
+        }
+        ("POST", "/api/gh-accounts/forget") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let login = v.get("login").and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
+            let host = v.get("host").and_then(|t| t.as_str()).unwrap_or("").trim().to_ascii_lowercase();
+            let said = match (crate::pr::plain_name(&login), crate::pr::plain_name(&host)) {
+                (true, true) => crate::pr::gh_sign_out(&host, &login),
+                _ => Err(crate::i18n::t("settings.gitacct.name_bad")),
+            };
+            req.respond(json_resp(match said {
+                Ok(()) => serde_json::json!({ "ok": true }),
+                Err(error) => serde_json::json!({ "ok": false, "error": error }),
+            }))?;
+        }
         // A project's ignore file and what it makes git ignore, for the page
         // that decides how each line's files reach a new worktree. With `add`,
         // `remove` or `untrack` it changes something first; the answer is always
@@ -2988,15 +3078,26 @@ fn handle(
                 cfg.resolve_desks().0.into_iter().find(|d| d.id == desk.trim())?
                     .git_accounts.into_iter().find(|a| a.name == account.trim())
             });
-            let own = match desk.trim().is_empty() || account.trim().is_empty() {
-                true => None,
-                false => {
-                    let pw = password.lock().unwrap().clone();
-                    let look = |k: &str| crate::config::secret_value(&secrets_file(config_path), pw.as_deref(), k);
-                    match spec {
-                        Some(spec) => spec.token(desk.trim(), &look),
-                        None => look(&crate::config::git_token_key(desk.trim(), account.trim())),
-                    }
+            // Or one of the sign-ins this PC holds: git's credential store's,
+            // by login (`pc`), or GitHub CLI's, by login on a host (`gh`). Both
+            // are asked of the program that holds them, the same as when git
+            // signs in as them; the token is read here and sent to GitHub only
+            let pc = query_param(req.url(), "pc").map(|c| percent_decode(&c)).unwrap_or_default();
+            let gh = query_param(req.url(), "gh").map(|c| percent_decode(&c)).unwrap_or_default();
+            let host = query_param(req.url(), "host").map(|c| percent_decode(&c)).unwrap_or_default();
+            let host = if host.trim().is_empty() { crate::config::GITHUB_HOST.to_string() } else { host.trim().to_ascii_lowercase() };
+            let own = if crate::pr::plain_name(pc.trim()) {
+                crate::pr::pc_token(Some(pc.trim())).ok()
+            } else if crate::pr::plain_name(gh.trim()) && crate::pr::plain_name(&host) {
+                crate::pr::gh_token_of(&host, gh.trim())
+            } else if desk.trim().is_empty() || account.trim().is_empty() {
+                None
+            } else {
+                let pw = password.lock().unwrap().clone();
+                let look = |k: &str| crate::config::secret_value(&secrets_file(config_path), pw.as_deref(), k);
+                match spec {
+                    Some(spec) => spec.token(desk.trim(), &look),
+                    None => look(&crate::config::git_token_key(desk.trim(), account.trim())),
                 }
             };
             let said = crate::pr::probe(own);
@@ -3965,6 +4066,14 @@ const PAGE: &str = r##"<!doctype html>
  .consent h3 { margin:0; font-size:13px; font-weight:600; }
  .consent .row { padding:0; }
  .secretrow:hover { background:var(--panel2); }
+ .signinrow { padding:7px var(--s3); gap:var(--s3); flex-wrap:nowrap; }
+ /* Whether GitHub still accepts it gives way before the row wraps: one line
+    per sign-in, in a window as much as on the page */
+ .signinrow .secretsite { flex:0 0 auto; max-width:45%; min-width:0; text-align:right; white-space:nowrap;
+   overflow:hidden; text-overflow:ellipsis; }
+ /* The login and server give way first: the name beside them says most of it */
+ .signinrow .secretdesc { flex:1 1 0; min-width:0; }
+ .signinrow > button { margin-left:auto; flex:none; }
  .secretrow .go { color:var(--faint); font-size:14px; line-height:1; }
  .secretrow:hover .go { color:var(--text); }
  .secretname { flex:0 0 132px; color:var(--text); overflow:hidden;
@@ -4357,6 +4466,11 @@ const PAGE: &str = r##"<!doctype html>
    .secretsite { flex:1 1 auto; text-align:left; min-width:0; }
    .secretdots { display:none; }
    .secretedit { margin-left:auto; }
+   /* A sign-in on a phone: the name on its own line, the rest under it with
+      the way to take it out at the end, the same as a secret's row */
+   .signinrow { flex-wrap:wrap; align-items:flex-start; row-gap:var(--s1); }
+   .signinrow .secretdesc { flex:1 1 auto; }
+   .signinrow .secretsite { flex:1 1 auto; max-width:none; text-align:left; }
    /* A device on a phone: the name has the line to itself, and when it was
       last here sits under it beside the way to take its key away */
    .devrow { row-gap:var(--s1); }
@@ -5474,7 +5588,7 @@ const PC_ACCOUNTS_READ = fetch("/api/pc-accounts", {headers:{"X-Token":TOKEN}})
     // Not under somebody typing: a page redrawn then takes the field away
     const typing = document.activeElement && ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
     // and not before the settings themselves have arrived to be drawn
-    if (PC_ACCOUNTS.length > 1 && !typing && desks.length) render();
+    if (PC_ACCOUNTS.length && !typing && desks.length) render();
   })
   .catch(() => {});
 const familiesAsked = new Set();
@@ -9882,7 +9996,7 @@ function deskSections(desk) {
     s("permissions", permissionsCard),
     // Who the desk signs in as first, then what it does with that: one
     // page, since a person setting up git on a desk wants both
-    s("git", desk => [gitAccountsCard(desk), gitCard(desk)]),
+    s("git", desk => [gitAccountsCard(desk), pcSignInsCard(), ghSignInsCard(), gitCard(desk)]),
     s("secrets", deskSecretsCard),
     s("discuss", deskDiscussCard),
     s("stops", deskStopsCard),
@@ -10021,74 +10135,6 @@ function gitAccountsCard(desk) {
   const c = card(T["settings.gitacct.title"], ...gitAccountsParts(desk));
   c.id = "desk-gitaccounts";
   return c;
-}
-
-// The desk's git accounts, in a window over the page that asked for them.
-//
-// Opened from the account picker, where somebody holding a token is standing
-// when they find out there is nowhere on that page to put it. The page
-// underneath keeps everything typed into it, and `done` is called however this
-// window is closed -- the picker has to read the list again either way
-function gitAccountsWindow(desk, done) {
-  const shut = () => { back.remove(); done(); };
-  const back = openModal(
-    el("div", {class:"mhead"},
-      el("h2", {}, (desk.name || T["settings.nav.desk"]) + " › " + T["settings.gitacct.title"]),
-      el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
-    el("div", {class:"mbody"}, ...gitAccountsParts(desk)),
-    el("div", {class:"mfoot"},
-      el("span", {class:"grow"}),
-      el("button", {class:"primary", onclick: () => shut()}, T["common.close"])));
-  back.firstChild.classList.add("framed");
-  // A press on the backdrop takes the window away on its own (openModal), so
-  // the picker is told here rather than in shut()
-  back.addEventListener("mousedown", e => { if (e.target === back) done(); });
-  back.addEventListener("keydown", e => {
-    if (e.key === "Escape") { e.preventDefault(); shut(); }
-  });
-}
-const GIT_HOST = "github.com";
-// The last line of the account picker, which adds an account instead of
-// choosing one. An account is named in letters, digits, _ and -, so this can
-// never be one -- the same way THIS_PC cannot
-const ADD_ACCOUNT = "@add";
-const isSshAccount = a => (a.method || "").trim().toLowerCase() === "ssh";
-// An account that signs in as whoever GitHub CLI (gh) is signed in as on this PC
-const isGhAccount = a => (a.method || "").trim().toLowerCase() === "gh";
-const signInLabel = a => isSshAccount(a) ? T["settings.gitacct.by_ssh"]
-  : isGhAccount(a) ? T["settings.gitacct.by_gh"] : T["settings.gitacct.by_token"];
-const accountHost = a => ((a.host || "").trim().replace(/\/+$/, "").toLowerCase()) || GIT_HOST;
-// Who it signs in as, in a few words: the user name and the server
-const gitAccountAbout = a => ((a.login || "").trim() ? a.login.trim() + "@" : "") + accountHost(a);
-const gitTokenKey = (desk, name) => "git/" + (desk.id || "").trim() + "/" + name;
-
-// Whether the token still works, whose it is and how long it has left, said on
-// the account's row. Only a GitHub account can be asked; the state and the
-// date come back, never the value
-async function gitAccountState(desk, a, out) {
-  if (accountHost(a) !== GIT_HOST || !(desk.id || "").trim()) return;
-  let j;
-  try {
-    j = await (await fetch("/api/github?desk=" + encodeURIComponent(desk.id.trim())
-      + "&account=" + encodeURIComponent(a.name), {headers:{"X-Token":TOKEN}})).json();
-  } catch (e) { return; }
-  if (!j.source) {
-    out.textContent = isSshAccount(a) ? T["settings.gitacct.no_pr"]
-      : isGhAccount(a) ? T["settings.gitacct.no_gh"] : T["settings.gitacct.no_token"];
-    out.classList.toggle("warn", !isSshAccount(a));
-  } else if (j.signed_in) {
-    const who = j.login ? fill(T["settings.gitacct.as"], {login: j.login}) : T["settings.gitacct.ok"];
-    const left = (j.expires_days === null || j.expires_days === undefined) ? ""
-      : " · " + fill(T["settings.gitacct.days"], {n: j.expires_days});
-    out.textContent = who + left;
-    out.classList.toggle("warn", j.expires_days !== null && j.expires_days !== undefined && j.expires_days <= 7);
-  } else {
-    // Short on the row, which has one line; the whole sentence under the pointer
-    out.textContent = j.status === 401 ? T["settings.gitacct.expired_short"] : T["settings.gitacct.unreachable_short"];
-    out.title = j.status === 401 ? T["settings.gitacct.expired"]
-      : fill(T["settings.gitacct.unreachable"], {status: j.status || 0});
-    out.classList.add("warn");
-  }
 }
 
 // Adding a git account to a desk, or changing one. `name` is null for a new one.
@@ -10254,6 +10300,230 @@ function gitAccountDialog(desk, name, redraw) {
   });
 }
 
+async function postJson(url, body) {
+  return await fetch(url, {method:"POST",
+    headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+    body: JSON.stringify(body)}).then(r=>r.json()).catch(() => ({ok:false}));
+}
+
+// The GitHub sign-ins git on this PC holds, listed beside the desk's accounts
+// so everything a project can sign in as is in one place, each with whether
+// GitHub still accepts it. They are not the desk's own: read from the program
+// that holds them, put in and taken out through it, and never copied anywhere
+function pcSignInsCard() {
+  const listBox = el("div");
+  const draw = async () => {
+    listBox.textContent = "";
+    let j = null;
+    try { j = await (await fetch("/api/pc-accounts", {headers:{"X-Token":TOKEN}})).json(); } catch (e) {}
+    PC_ACCOUNTS = (j && j.accounts) || [];
+    if (!PC_ACCOUNTS.length) { listBox.append(el("div", {class:"hint"}, T["settings.gitacct.pc_empty"])); return; }
+    const rows = el("div", {class:"rows"});
+    for (const login of PC_ACCOUNTS) {
+      const state = el("span", {class:"hint secretsite"}, "");
+      rows.append(el("div", {class:"listrow signinrow"},
+        el("span", {class:"mono secretname"}, login),
+        el("span", {class:"hint mono secretdesc"}, login + "@" + GIT_HOST),
+        state,
+        el("button", {class:"quiet", onclick: async () => {
+          if (!await confirmAction(fill(T["settings.gitacct.pc_forget_confirm"], {login}), T["settings.gitacct.forget"])) return;
+          const r = await postJson("/api/pc-accounts/forget", {login});
+          if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return; }
+          // The pickers offer the PC's accounts, so they are drawn again
+          await draw(); render();
+        }}, T["settings.gitacct.forget"])));
+      signInState("pc=" + encodeURIComponent(login), state, T["settings.gitacct.no_token"], true);
+    }
+    listBox.append(rows);
+  };
+  setTimeout(draw, 0);
+  return card(T["settings.gitacct.pc_title"],
+    el("div", {class:"hint"}, T["settings.gitacct.pc_hint"]),
+    listBox,
+    el("div", {class:"row"},
+      el("button", {onclick: () => tokenDialog(T["settings.gitacct.pc_add_title"], T["settings.gitacct.pc_add_hint"], false,
+        async (token) => {
+          const r = await postJson("/api/pc-accounts/add", {token});
+          if (r.ok) toast(fill(T["settings.gitacct.stored"], {login: r.login || ""}));
+          return r;
+        }, async () => { await draw(); render(); })}, T["settings.gitacct.pc_add"])));
+}
+
+// The accounts GitHub CLI (gh) is signed in as, the same way
+function ghSignInsCard() {
+  const listBox = el("div");
+  const draw = async () => {
+    listBox.textContent = "";
+    let j = null;
+    try { j = await (await fetch("/api/gh-accounts", {headers:{"X-Token":TOKEN}})).json(); } catch (e) {}
+    if (!j || j.installed === false) { listBox.append(el("div", {class:"hint"}, T["settings.gitacct.gh_missing"])); return; }
+    const accounts = j.accounts || [];
+    if (!accounts.length) { listBox.append(el("div", {class:"hint"}, T["settings.gitacct.gh_empty"])); return; }
+    const rows = el("div", {class:"rows"});
+    for (const a of accounts) {
+      const state = el("span", {class:"hint secretsite"}, "");
+      rows.append(el("div", {class:"listrow signinrow"},
+        el("span", {class:"mono secretname"}, a.login),
+        el("span", {class:"hint mono secretdesc"}, a.login + "@" + a.host),
+        a.active ? el("span", {class:"chip"}, T["settings.gitacct.gh_active"]) : null,
+        state,
+        el("button", {class:"quiet", onclick: async () => {
+          if (!await confirmAction(fill(T["settings.gitacct.gh_forget_confirm"], {login: a.login, host: a.host}), T["settings.gitacct.forget"])) return;
+          const r = await postJson("/api/gh-accounts/forget", {login: a.login, host: a.host});
+          if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return; }
+          draw();
+        }}, T["settings.gitacct.forget"])));
+      signInState("gh=" + encodeURIComponent(a.login) + "&host=" + encodeURIComponent(a.host), state, T["settings.gitacct.no_gh"], true);
+    }
+    listBox.append(rows);
+  };
+  setTimeout(draw, 0);
+  return card(T["settings.gitacct.gh_title"],
+    el("div", {class:"hint"}, T["settings.gitacct.gh_list_hint"]),
+    listBox,
+    el("div", {class:"row"},
+      el("button", {onclick: () => tokenDialog(T["settings.gitacct.gh_add_title"], T["settings.gitacct.gh_add_hint"], true,
+        async (token, host) => postJson("/api/gh-accounts/add", {token, host}), draw)}, T["settings.gitacct.gh_add"])));
+}
+
+// One token, pasted, and handed to `submit(token, host)`; the window stays,
+// saying why, until GitHub or the program took it. `withHost` adds the server
+// for a sign-in that can be to another GitHub than github.com
+function tokenDialog(title, hint, withHost, submit, done) {
+  const tokenIn = el("input", {type:"password", placeholder:T["settings.gitacct.token_ph"]});
+  const hostIn = el("input", {type:"text", class:"mono", placeholder:GIT_HOST});
+  const save = el("button", {class:"primary"}, T["common.save"]);
+  const why = el("span", {class:"why"});
+  why.hidden = true;
+  const field = (label, control, text) => el("div", {class:"field"},
+    el("label", {}, label), el("div", {class:"fieldctl"}, control),
+    text ? el("div", {class:"hint"}, text) : null);
+  const shut = () => back.remove();
+  const back = openModal(
+    el("div", {class:"mhead"},
+      el("h2", {}, title),
+      el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
+    el("div", {class:"mbody"},
+      withHost ? field(T["settings.gitacct.host"], hostIn, T["settings.gitacct.host_hint"]) : null,
+      field(T["settings.gitacct.token"], tokenIn, hint)),
+    el("div", {class:"mfoot"},
+      why,
+      el("span", {class:"grow"}),
+      el("button", {class:"quiet", onclick: () => shut()}, T["common.cancel"]),
+      save));
+  back.firstChild.classList.add("framed");
+  back.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); shut(); return; }
+    if (e.key === "Enter" && e.target.tagName === "INPUT") { e.preventDefault(); save.click(); }
+  });
+  // Nothing to hand over yet: the button is grey and says so when pressed
+  const recheck = () => {
+    save.classList.toggle("held", !tokenIn.value.trim());
+    if (tokenIn.value.trim()) why.hidden = true;
+  };
+  tokenIn.addEventListener("input", recheck);
+  recheck();
+  save.addEventListener("click", async () => {
+    if (!tokenIn.value.trim()) {
+      why.textContent = fill(T["settings.secrets.cannot_save"], {why: T["settings.gitacct.token_required"]});
+      why.hidden = false;
+      tokenIn.classList.remove("lookhere"); void tokenIn.offsetWidth; tokenIn.classList.add("lookhere");
+      tokenIn.focus();
+      return;
+    }
+    save.disabled = true;
+    const r = await submit(tokenIn.value.trim(), (hostIn.value.trim() || GIT_HOST).toLowerCase());
+    save.disabled = false;
+    if (!r || !r.ok) {
+      why.textContent = fill(T["settings.secrets.cannot_save"], {why: (r && r.error) || T["settings.secrets.save_failed"]});
+      why.hidden = false;
+      return;
+    }
+    shut();
+    done();
+  });
+  setTimeout(() => tokenIn.focus(), 0);
+}
+
+// The desk's git accounts, in a window over the page that asked for them.
+//
+// Opened from the account picker, where somebody holding a token is standing
+// when they find out there is nowhere on that page to put it. The page
+// underneath keeps everything typed into it, and `done` is called however this
+// window is closed -- the picker has to read the list again either way
+function gitAccountsWindow(desk, done) {
+  const shut = () => { back.remove(); done(); };
+  const back = openModal(
+    el("div", {class:"mhead"},
+      el("h2", {}, (desk.name || T["settings.nav.desk"]) + " › " + T["settings.gitacct.title"]),
+      el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
+    // The desk's accounts, and under them the sign-ins this PC holds: the
+    // same three cards as the desk's page, so what can be chosen is all here
+    el("div", {class:"mbody"}, ...gitAccountsParts(desk), pcSignInsCard(), ghSignInsCard()),
+    el("div", {class:"mfoot"},
+      el("span", {class:"grow"}),
+      el("button", {class:"primary", onclick: () => shut()}, T["common.close"])));
+  back.firstChild.classList.add("framed");
+  // A press on the backdrop takes the window away on its own (openModal), so
+  // the picker is told here rather than in shut()
+  back.addEventListener("mousedown", e => { if (e.target === back) done(); });
+  back.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); shut(); }
+  });
+}
+const GIT_HOST = "github.com";
+// The last line of the account picker, which adds an account instead of
+// choosing one. An account is named in letters, digits, _ and -, so this can
+// never be one -- the same way THIS_PC cannot
+const ADD_ACCOUNT = "@add";
+const isSshAccount = a => (a.method || "").trim().toLowerCase() === "ssh";
+// An account that signs in as whoever GitHub CLI (gh) is signed in as on this PC
+const isGhAccount = a => (a.method || "").trim().toLowerCase() === "gh";
+const signInLabel = a => isSshAccount(a) ? T["settings.gitacct.by_ssh"]
+  : isGhAccount(a) ? T["settings.gitacct.by_gh"] : T["settings.gitacct.by_token"];
+const accountHost = a => ((a.host || "").trim().replace(/\/+$/, "").toLowerCase()) || GIT_HOST;
+// Who it signs in as, in a few words: the user name and the server
+const gitAccountAbout = a => ((a.login || "").trim() ? a.login.trim() + "@" : "") + accountHost(a);
+const gitTokenKey = (desk, name) => "git/" + (desk.id || "").trim() + "/" + name;
+
+// Whether the token still works, whose it is and how long it has left, said on
+// the account's row. Only a GitHub account can be asked; the state and the
+// date come back, never the value
+async function gitAccountState(desk, a, out) {
+  if (accountHost(a) !== GIT_HOST || !(desk.id || "").trim()) return;
+  const none = isSshAccount(a) ? T["settings.gitacct.no_pr"]
+    : isGhAccount(a) ? T["settings.gitacct.no_gh"] : T["settings.gitacct.no_token"];
+  signInState("desk=" + encodeURIComponent(desk.id.trim()) + "&account=" + encodeURIComponent(a.name),
+    out, none, !isSshAccount(a));
+}
+
+// The same, for whatever `query` names to /api/github: an account of the
+// desk, a sign-in of this PC's git (`pc=`), or one of gh's (`gh=` and `host=`).
+// `none` is what to say when there is no token at all, `noneWarn` whether that
+// is a fault
+async function signInState(query, out, none, noneWarn) {
+  let j;
+  try {
+    j = await (await fetch("/api/github?" + query, {headers:{"X-Token":TOKEN}})).json();
+  } catch (e) { return; }
+  if (!j.source) {
+    out.textContent = none;
+    out.classList.toggle("warn", !!noneWarn);
+  } else if (j.signed_in) {
+    const who = j.login ? fill(T["settings.gitacct.as"], {login: j.login}) : T["settings.gitacct.ok"];
+    const left = (j.expires_days === null || j.expires_days === undefined) ? ""
+      : " · " + fill(T["settings.gitacct.days"], {n: j.expires_days});
+    out.textContent = who + left;
+    out.classList.toggle("warn", j.expires_days !== null && j.expires_days !== undefined && j.expires_days <= 7);
+  } else {
+    // Short on the row, which has one line; the whole sentence under the pointer
+    out.textContent = j.status === 401 ? T["settings.gitacct.expired_short"] : T["settings.gitacct.unreachable_short"];
+    out.title = j.status === 401 ? T["settings.gitacct.expired"]
+      : fill(T["settings.gitacct.unreachable"], {status: j.status || 0});
+    out.classList.add("warn");
+  }
+}
+
 // The menu a git tab or a project chooses its account from.
 //
 // Every account of the desk is offered; the ones that say they are for this
@@ -10276,17 +10546,19 @@ function gitAccountSelect(desk, now, origin, pick) {
     s.append(el("option", {value:a.name},
       a.name + " — " + gitAccountAbout(a) + (fits ? "  " + T["settings.gitacct.fits"] : "")));
   }
-  s.append(el("option", {value:THIS_PC}, T["settings.gitacct.pc"]));
-  // With two GitHub accounts held, git cannot tell which to use: each is a
-  // choice. One chosen before and no longer held is still said
-  const chosen = (now || "").trim();
+  // Each GitHub account git on this PC holds is a choice of its own: with
+  // two held, git cannot tell which to use, and with one, choosing it says
+  // so. One chosen before and no longer held is still said. "This PC's git"
+  // as it is, written by an older version, is what nothing chosen means now
+  const chosen0 = (now || "").trim();
+  const chosen = chosen0 === THIS_PC ? "" : chosen0;
   const asPc = chosen.startsWith(THIS_PC + ":") ? chosen.slice(THIS_PC.length + 1) : "";
-  const held = PC_ACCOUNTS.length > 1 ? [...PC_ACCOUNTS] : [];
+  const held = [...PC_ACCOUNTS];
   if (asPc && !held.includes(asPc)) held.push(asPc);
   for (const login of held) {
     s.append(el("option", {value: THIS_PC + ":" + login}, fill(T["settings.gitacct.pc_as"], {login})));
   }
-  if (chosen && chosen !== THIS_PC && !asPc && !list.some(x => x.a.name === chosen)) {
+  if (chosen && !asPc && !list.some(x => x.a.name === chosen)) {
     s.append(el("option", {value:chosen}, fill(T["settings.gitacct.gone"], {name: chosen})));
   }
   // Last, under every account there is: the way to add one, from the one place
@@ -10296,12 +10568,16 @@ function gitAccountSelect(desk, now, origin, pick) {
   s.addEventListener("change", () => {
     if (s.value !== ADD_ACCOUNT) { pick(s.value); return; }
     // Adding is not a choice: the menu goes back to what was chosen, and the
-    // account made in the window becomes the choice once it exists
+    // account made in the window -- or the sign-in put into this PC's git
+    // there -- becomes the choice once it exists
     const had = (desk.git_accounts || []).map(a => a.name);
+    const heldBefore = [...PC_ACCOUNTS];
     s.value = chosen;
     gitAccountsWindow(desk, () => {
       const made = (desk.git_accounts || []).map(a => a.name).filter(n => !had.includes(n));
-      const v = made.length ? made[made.length - 1] : chosen;
+      const stored = PC_ACCOUNTS.filter(l => !heldBefore.includes(l));
+      const v = made.length ? made[made.length - 1]
+        : stored.length ? THIS_PC + ":" + stored[stored.length - 1] : chosen;
       // Set here as well, because a picker on a page that does not redraw
       // itself would otherwise still be showing the old answer
       s.value = v;
@@ -11063,7 +11339,7 @@ function projectPane(desk, p) {
           sel.proj = "p:" + e.name;
           refreshSave(); render();
         })),
-      (desk.git_accounts || []).length || PC_ACCOUNTS.length > 1 ? null : el("div", {class:"hint"}, T["settings.gitacct.tab_none"]));
+      (desk.git_accounts || []).length || PC_ACCOUNTS.length ? null : el("div", {class:"hint"}, T["settings.gitacct.tab_none"]));
     acctCard.id = "project-gitacct";
     box.append(acctCard);
   }
@@ -14644,6 +14920,35 @@ mod tests {
         // that adds one can never be mistaken for an account
         assert!(PAGE.contains(r#"const ADD_ACCOUNT = "@add";"#));
         assert!(!crate::config::valid_secret_name("@add"));
+    }
+
+    /// The sign-ins this PC holds are listed with the desk's accounts: on the
+    /// desk's page and in the window the picker opens, the same two cards,
+    /// each read from the program that holds them and never copied. A refusal
+    /// to sign in on the git column opens the project's account card
+    #[test]
+    fn the_pcs_sign_ins_are_listed_with_the_desks_accounts() {
+        assert!(
+            PAGE.contains(r#"s("git", desk => [gitAccountsCard(desk), pcSignInsCard(), ghSignInsCard(), gitCard(desk)]),"#),
+            "the desk's git page does not list the PC's sign-ins"
+        );
+        assert!(
+            PAGE.contains(r#"el("div", {class:"mbody"}, ...gitAccountsParts(desk), pcSignInsCard(), ghSignInsCard()),"#),
+            "the window the picker opens does not list them"
+        );
+        for asked in ["/api/pc-accounts/add", "/api/pc-accounts/forget", "/api/gh-accounts/add", "/api/gh-accounts/forget"] {
+            assert!(PAGE.contains(asked), "nothing on the page asks {asked}");
+        }
+        // Nothing chosen is this PC's git, so it is not a line of the picker,
+        // and a choice of it written by an older version reads as nothing
+        assert!(!PAGE.contains(r#"el("option", {value:THIS_PC}"#), "the picker still offers the PC's git as a choice");
+        assert!(PAGE.contains(r#"const chosen = chosen0 === THIS_PC ? "" : chosen0;"#));
+        // The git column: no menu of its own any more, and a way to the card
+        // under a refusal that is about the account
+        let board = crate::shell::page();
+        assert!(!board.contains("acctPick"), "the git column still has an account menu");
+        assert!(board.contains(r#"openSettings("project-gitacct", true, G.fix)"#), "a refusal has no way to the settings");
+        assert!(board.contains(r#"G.fix = !d.ok && d.why === "account" ? (d.folder || "") : "";"#));
     }
 
     /// The token field says what will become of the token.

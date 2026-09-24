@@ -267,35 +267,182 @@ fn account_names(listed: &str) -> Vec<String> {
 /// Found through the same search a new terminal's PATH gets, so a `gh`
 /// installed after this app started is found without starting it again
 pub fn gh_token(host: &str) -> Option<String> {
+    run_gh(&["auth", "token", "--hostname", host], "")
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// The token GitHub CLI holds for one of its accounts on `host`, by login.
+/// With two accounts signed in, `gh auth token` alone answers with the
+/// active one; this asks for the one named
+pub fn gh_token_of(host: &str, login: &str) -> Option<String> {
+    run_gh(&["auth", "token", "--hostname", host, "--user", login], "")
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// One account GitHub CLI is signed in as
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct GhAccount {
+    pub host: String,
+    pub login: String,
+    /// The one `gh` uses for that host when nothing names another
+    pub active: bool,
+}
+
+/// The accounts GitHub CLI is signed in as on this PC, every host. None when
+/// it is not installed; empty when it is signed in nowhere.
+///
+/// `gh auth status` answers in JSON when asked to, and answers with a failure
+/// code as soon as one account's token no longer works -- the list is still
+/// in what it printed, so it is read either way
+pub fn gh_accounts() -> Option<Vec<GhAccount>> {
+    let said = match run_gh_raw(&["auth", "status", "--json", "hosts"], "") {
+        Ok(out) | Err(GhFailed::Said { out, .. }) => out,
+        Err(GhFailed::Missing) => return None,
+        Err(GhFailed::Silent) => String::new(),
+    };
+    Some(gh_accounts_in(&said))
+}
+
+/// The accounts in what `gh auth status --json hosts` printed
+fn gh_accounts_in(said: &str) -> Vec<GhAccount> {
+    let v: serde_json::Value = serde_json::from_str(said.trim()).unwrap_or_default();
+    let Some(hosts) = v.get("hosts").and_then(|h| h.as_object()) else { return Vec::new() };
+    let mut out = Vec::new();
+    for (host, list) in hosts {
+        for a in list.as_array().into_iter().flatten() {
+            let Some(login) = a.get("login").and_then(|l| l.as_str()).map(str::trim).filter(|l| !l.is_empty()) else {
+                continue;
+            };
+            out.push(GhAccount {
+                host: host.clone(),
+                login: login.to_string(),
+                active: a.get("active").and_then(|b| b.as_bool()).unwrap_or(false),
+            });
+        }
+    }
+    out
+}
+
+/// Sign GitHub CLI in to `host` with a token, as `gh auth login --with-token`
+/// does when the token is typed to it. What `gh` said when it would not
+pub fn gh_sign_in(host: &str, token: &str) -> Result<(), String> {
+    run_gh(&["auth", "login", "--hostname", host, "--with-token"], &format!("{}\n", token.trim())).map(|_| ())
+}
+
+/// Sign GitHub CLI out of one account on `host`. Its token stays valid on
+/// GitHub, the same as `gh auth logout` leaves it
+pub fn gh_sign_out(host: &str, login: &str) -> Result<(), String> {
+    run_gh(&["auth", "logout", "--hostname", host, "--user", login], "").map(|_| ())
+}
+
+/// Why GitHub CLI did not answer
+enum GhFailed {
+    /// Not on this PC
+    Missing,
+    /// Started and took too long, or could not be read
+    Silent,
+    /// Finished with a failure, and this is what it printed and said
+    Said { out: String, err: String },
+}
+
+/// Runs GitHub CLI with `args`, `input` on its standard input, and answers
+/// with what it printed when it succeeded. Nobody can see a prompt from here,
+/// so none is allowed to appear, and a `gh` that takes too long is killed.
+///
+/// Found through the same search a new terminal's PATH gets, so a `gh`
+/// installed after this app started is found without starting it again
+fn run_gh(args: &[&str], input: &str) -> Result<String, String> {
+    match run_gh_raw(args, input) {
+        Ok(out) => Ok(out),
+        Err(GhFailed::Missing) => Err(crate::i18n::t("settings.gitacct.gh_missing")),
+        Err(GhFailed::Silent) => Err(crate::i18n::t("settings.gitacct.gh_silent")),
+        Err(GhFailed::Said { err, out }) => {
+            let said = if err.trim().is_empty() { out } else { err };
+            Err(said.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or_default().to_string())
+        }
+    }
+}
+
+fn run_gh_raw(args: &[&str], input: &str) -> Result<String, GhFailed> {
     use std::process::{Command, Stdio};
-    let exe = crate::tab::resolve_command("gh")?;
+    let exe = crate::tab::resolve_command("gh").ok_or(GhFailed::Missing)?;
     let mut cmd = Command::new(exe);
-    cmd.args(["auth", "token", "--hostname", host])
+    cmd.args(args)
         .env("GH_PROMPT_DISABLED", "1")
-        .stdin(Stdio::null())
+        .env("NO_COLOR", "1")
+        .stdin(if input.is_empty() { Stdio::null() } else { Stdio::piped() })
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = crate::detach_console(&mut cmd).spawn().ok()?;
-    let mut out = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = std::io::Read::read_to_string(&mut out, &mut s);
-        s
-    });
+        .stderr(Stdio::piped());
+    let mut child = crate::detach_console(&mut cmd).spawn().map_err(|_| GhFailed::Missing)?;
+    if !input.is_empty()
+        && let Some(mut w) = child.stdin.take()
+    {
+        let _ = std::io::Write::write_all(&mut w, input.as_bytes());
+    }
+    // Both read on threads of their own, so a gh that fills one before the
+    // other is read cannot stall on it
+    fn drain<R: std::io::Read + Send + 'static>(from: Option<R>) -> std::thread::JoinHandle<String> {
+        std::thread::spawn(move || {
+            let mut s = String::new();
+            if let Some(mut f) = from {
+                let _ = f.read_to_string(&mut s);
+            }
+            s
+        })
+    }
+    let out = drain(child.stdout.take());
+    let err = drain(child.stderr.take());
     let started = Instant::now();
     let status = loop {
-        match child.try_wait().ok()? {
+        match child.try_wait().map_err(|_| GhFailed::Silent)? {
             Some(s) => break s,
             None if started.elapsed() > GH_LIMIT => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                return Err(GhFailed::Silent);
             }
             None => std::thread::sleep(Duration::from_millis(20)),
         }
     };
-    let said = reader.join().ok()?;
-    status.success().then(|| said.trim().to_string()).filter(|t| !t.is_empty())
+    let out = out.join().map_err(|_| GhFailed::Silent)?;
+    let err = err.join().map_err(|_| GhFailed::Silent)?;
+    if status.success() { Ok(out) } else { Err(GhFailed::Said { out, err }) }
+}
+
+/// Whether a name can be a GitHub login, or a git server's host: letters,
+/// digits and `-` `_` `.`, and nothing a command line or a credential line
+/// could read as more than one word
+pub fn plain_name(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 253 && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// Whether a token can be handed to git or gh on a line of its own
+pub fn plain_token(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 512 && !s.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Store a GitHub token in the credential store git on this PC uses, the way
+/// git itself does after a push that signed in: `git credential approve`, on
+/// its standard input, so the token is on no command line. What git said
+/// when it would not
+pub fn pc_store(login: &str, token: &str) -> Result<(), String> {
+    let line = format!("protocol=https\nhost={}\nusername={login}\npassword={}\n\n", crate::config::GITHUB_HOST, token.trim());
+    crate::git::run_as(&std::env::temp_dir(), &["credential", "approve"], &line, Duration::from_secs(15), &crate::git::As::default())
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Take one GitHub account out of the credential store git on this PC uses.
+/// Its token stays valid on GitHub
+pub fn pc_forget(login: &str) -> Result<(), String> {
+    let line = format!("protocol=https\nhost={}\nusername={login}\n\n", crate::config::GITHUB_HOST);
+    crate::git::run_as(&std::env::temp_dir(), &["credential", "reject"], &line, Duration::from_secs(15), &crate::git::As::default())
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// How long `gh auth token` is given. It reads a file or the system's
@@ -487,6 +634,33 @@ mod tests {
         assert_eq!(Pr { number: 12, state: State::Draft }.short(), "#12 draft");
         assert_eq!(Pr { number: 12, state: State::Merged }.short(), "#12 merged");
         assert_eq!(Pr { number: 12, state: State::Closed }.short(), "#12 closed");
+    }
+
+    /// What `gh auth status --json hosts` prints is read as accounts, every
+    /// host, with the one gh uses marked; a broken answer is no accounts
+    #[test]
+    fn gh_accounts_are_read_from_its_json() {
+        let said = r#"{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"octo-cat","tokenSource":"keyring"},{"state":"error","active":false,"host":"github.com","login":"octo-dog"}],"ghe.example":[{"active":true,"login":"me"}]}}"#;
+        let got = gh_accounts_in(said);
+        assert_eq!(got.len(), 3);
+        assert!(got.iter().any(|a| a.host == "github.com" && a.login == "octo-cat" && a.active));
+        assert!(got.iter().any(|a| a.host == "github.com" && a.login == "octo-dog" && !a.active));
+        assert!(got.iter().any(|a| a.host == "ghe.example" && a.login == "me"));
+        assert!(gh_accounts_in("not json").is_empty());
+        assert!(gh_accounts_in(r#"{"hosts":{}}"#).is_empty());
+    }
+
+    /// What is handed to git and gh on a line of its own has to be one word
+    #[test]
+    fn names_and_tokens_are_one_word() {
+        assert!(plain_name("octo-cat"));
+        assert!(plain_name("ghe.example.com"));
+        assert!(!plain_name("octo cat"));
+        assert!(!plain_name("a\nb"));
+        assert!(!plain_name(""));
+        assert!(plain_token("ghp_abc123"));
+        assert!(!plain_token("ghp_abc 123"));
+        assert!(!plain_token("ghp_abc\n"));
     }
 
     #[test]

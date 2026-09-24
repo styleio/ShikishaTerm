@@ -3660,8 +3660,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            git_accounts: desks.get(desk_index).map(|w| w.git_accounts.clone()).unwrap_or_default(),
-            pc_accounts: crate::pr::pc_accounts_known(),
             folder_items: desks
                 .get(desk_index)
                 .map(|w| w.folders.iter().filter_map(|f| f.cwd.clone().zip(f.work_item.clone())).collect())
@@ -4511,10 +4509,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // exception and say so out loud -- they ask the same permission table
         // and then run on a thread, because the engine lives on the main loop
         // and a window cannot wait three minutes on somebody's network.
-        // A git account chosen at the top of the git column. Written into the
-        // settings -- on the git tab, or on the project of the folder the column
-        // stands beside -- and read back from there like any other change, so
-        // the menu, the settings screen and the next push all agree
+        // A git account chosen for a project from the worktree dialog, when
+        // GitHub could not be read with the one it had: `folder:<path>` names
+        // the folder whose project it is. Written into the settings and read
+        // back from there like any other change, so the settings screen and
+        // the next push agree
         for (panel, account) in shell.mail().take_git_accounts() {
             let Some(desk) = desks.get(desk_index) else { continue };
             let account = account.trim().to_string();
@@ -4526,25 +4525,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             {
                 continue;
             }
-            let git_tab = surfaces.iter().find_map(|s| match s {
-                Surface::Git { key, .. } if *key == panel => Some(key.clone()),
-                _ => None,
-            });
-            // Named by its folder rather than by a panel: the worktree dialog
-            // choosing the account its GitHub search reads with
-            let by_folder = panel.strip_prefix("folder:").map(std::path::PathBuf::from);
-            let saved = match (git_tab, by_folder) {
-                (_, Some(dir)) => config::save_git_account(&desk.id, config::GitChoiceAt::Folder(&dir), &account),
-                (Some(key), None) => config::save_git_account(&desk.id, config::GitChoiceAt::Tab(&key), &account),
-                (None, None) => match tab_places(&tabs)
-                    .into_iter()
-                    .find(|p| p.key.matches(&panel) && !p.dir.as_os_str().is_empty())
-                {
-                    Some(p) => {
-                        config::save_git_account(&desk.id, config::GitChoiceAt::Folder(&p.dir), &account)
-                    }
-                    None => false,
-                },
+            let saved = match panel.strip_prefix("folder:").map(std::path::PathBuf::from) {
+                Some(dir) => config::save_git_account(&desk.id, config::GitChoiceAt::Folder(&dir), &account),
+                None => false,
             };
             append_hook_log(&format!(
                 "git account for {panel}: {} ({})",
@@ -4552,8 +4535,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if saved { "saved" } else { "not saved" }
             ));
             if saved {
-                // Looked at again now rather than at the next beat, so the menu
-                // does not spend two seconds showing the choice it just replaced
+                // Looked at again now rather than at the next beat
                 place_at = std::time::Instant::now();
                 settings_gen += 1;
             } else {
@@ -4720,13 +4702,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let who = place.as_ref().map(|p| {
                     p.git.to_git(act != "resolve", &|k| caps.secret_value(k).ok())
                 });
+                // A refusal, and whether it is one the project's git account
+                // settings put right -- then the folder those settings are
+                // found by, so the panel can put a way there under the words
+                let mut fix_at: Option<std::path::PathBuf> = None;
                 let answer = match (caps.allows(&name, grants::Subject::Human), place, who) {
                     (false, ..) => Some(i18n::tp(
                         "err.hooks.not_permitted",
                         &[("name", &name), ("who", &i18n::t("grant.who.human"))],
                     )),
                     (true, None, _) | (true, _, None) => Some(i18n::t("err.git.no_tab")),
-                    (true, Some(_), Some(Err(why))) => Some(why),
+                    // An account that cannot sign in -- gone from the desk,
+                    // its token never entered, its key file missing -- before
+                    // git is started
+                    (true, Some(place), Some(Err(why))) => {
+                        fix_at = Some(place.dir);
+                        Some(why)
+                    }
                     (true, Some(place), Some(Ok(who))) => {
                         let dir = place.dir;
                         // Bringing the latest in needs a base: the one written down
@@ -4764,6 +4756,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .as_ref()
                             .and_then(|c| c.ai_engine.clone())
                             .filter(|s| !s.is_empty());
+                        let folder = dir.display().to_string();
                         std::thread::spawn(move || {
                             let done = match act2.as_str() {
                                 "fetch" => crate::git::fetch(&dir, &who),
@@ -4825,6 +4818,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     (_, Some(crate::git::CatchUpStop::Dirty)) => serde_json::json!({
                                         "act": act2, "ok": false, "error": e.to_string(), "why": "dirty",
                                     }),
+                                    // A sign-in the server refused, or one that
+                                    // could not be made: put right on the
+                                    // project's page, which the panel offers
+                                    _ if crate::git::is_sign_in_trouble(&e) => serde_json::json!({
+                                        "act": act2, "ok": false, "error": e.to_string(),
+                                        "why": "account", "folder": folder,
+                                    }),
                                     _ => serde_json::json!({
                                         "act": act2, "ok": false, "error": plain_error(&e.to_string()),
                                     }),
@@ -4838,7 +4838,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // A refusal is an answer the phone needs as much as the window:
                 // a button pressed there that says nothing looks broken
                 if let Some(said) = answer {
-                    let js = serde_json::json!({"act": act, "ok": false, "error": said}).to_string();
+                    let js = match fix_at {
+                        Some(dir) => serde_json::json!({
+                            "act": act, "ok": false, "error": said,
+                            "why": "account", "folder": dir.display().to_string(),
+                        }),
+                        None => serde_json::json!({"act": act, "ok": false, "error": said}),
+                    }
+                    .to_string();
                     shell.push_git(&js);
                     if let Some(r) = remote_ui.as_ref() {
                         r.push_state(format!("{{\"git\":{js}}}"));
@@ -5544,7 +5551,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             "at": s.at.display().to_string(),
                             "repo": s.repo,
                             "account": s.git.written(),
-                            "unset": matches!(s.git, config::GitUse::Unset),
                         })
                     })
                     .collect();

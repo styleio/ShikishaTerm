@@ -528,10 +528,10 @@ pub enum Ev {
     },
     /// The Issue row in the list was pressed: open the Issue tab and look at it
     OpenIssues,
-    /// A git account was chosen in the menu at the top of the git column.
-    /// `panel` is what the column stands on, the same name `Git` carries: a
-    /// git tab chooses for itself, a tab in a folder chooses for that folder's
-    /// project. `account` is an account's name, `@pc`, or empty for none
+    /// A git account was chosen for a project from the worktree dialog, when
+    /// GitHub could not be read with the one it had. `panel` is
+    /// `folder:<path>`, the folder whose project it is. `account` is an
+    /// account's name, `@pc:<login>`, or empty for none
     GitAccount { panel: String, account: String },
     /// The git panel asking for something. `panel` is the surface's own name,
     /// which is how the folder it reports on is found; `act` is one of a short

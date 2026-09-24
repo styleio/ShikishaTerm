@@ -45,8 +45,10 @@ pub struct ProjectSpec {
     /// The git account the column beside a folder of this project fetches,
     /// pulls and pushes with, and reads pull request numbers with: one of the
     /// desk's `git_accounts` by name, or [`THIS_PC`]. Absent until somebody
-    /// chooses -- nothing is chosen for them, so "which account did that push
-    /// go out as" always has an answer somebody gave
+    /// chooses, and absent it is the PC's own git, signing in as it already
+    /// does -- which is what most people have, and never need to think about.
+    /// The choice is for the day that fails: a PC holding two GitHub accounts,
+    /// or a repository this PC's sign-in cannot see
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_account: Option<String>,
     /// What every branch of this project is called before its own name: teams
@@ -238,7 +240,7 @@ pub fn git_token_key(desk_id: &str, account: &str) -> String {
 /// any secret is read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum GitUse {
-    /// Nobody has chosen. Nothing that needs to sign in runs
+    /// Nobody has chosen: git on this PC signs in as it already does
     #[default]
     Unset,
     /// The way git on this PC already signs in, as the GitHub account named
@@ -264,19 +266,20 @@ impl GitUse {
 
     /// Commit identity and credentials, ready for git.
     ///
-    /// `sign_in` is whether what is about to run talks to a server: then a
-    /// choice nobody made, or one that no longer exists, is refused in words
-    /// that say where to make it. A commit needs only the name on it, so it
-    /// goes ahead with git's own when nothing was chosen -- but not with an
-    /// account that has gone, whose name it was meant to carry. `look` reads
-    /// the secret store
+    /// `sign_in` is whether what is about to run talks to a server. Nothing
+    /// chosen then signs in the way git on this PC already does -- most
+    /// people never choose, and their git already works -- while a choice
+    /// that no longer exists is refused in words that say where to make a
+    /// new one. A commit needs only the name on it, so with nothing chosen it
+    /// carries git's own and is handed no credential at all. `look` reads the
+    /// secret store
     pub fn to_git(
         &self,
         sign_in: bool,
         look: &dyn Fn(&str) -> Option<String>,
     ) -> Result<crate::git::As, String> {
         match self {
-            GitUse::Unset if sign_in => Err(crate::i18n::t("err.git.account.unset")),
+            GitUse::Unset if sign_in => Ok(crate::git::As::default()),
             GitUse::Unset => Ok(crate::git::As::sealed()),
             GitUse::Pc(None) => Ok(crate::git::As::default()),
             GitUse::Pc(Some(login)) => Ok(crate::git::As {
@@ -322,9 +325,11 @@ impl GitUse {
     }
 
     /// The name the pull request watch files a token under: an account, or
-    /// [`THIS_PC`]. None where there is nothing to ask with
+    /// [`THIS_PC`] -- which is what nothing chosen signs in as, too. None
+    /// where there is nothing to ask with
     pub fn pr_account(&self) -> Option<String> {
         match self {
+            GitUse::Unset => Some(THIS_PC.to_string()),
             GitUse::Pc(_) => Some(self.written()),
             GitUse::Account { spec, .. } if spec.host() == GITHUB_HOST => Some(spec.name.clone()),
             _ => None,
@@ -6072,8 +6077,9 @@ mod tests {
         assert!(matches!(&home, GitUse::Account { desk, spec } if desk == "work" && spec.name == "home"));
 
         let nothing = |_: &str| None;
-        // Nothing chosen: talking to a server is refused, a commit is not
-        assert!(GitUse::Unset.to_git(true, &nothing).is_err());
+        // Nothing chosen: a server is reached the way git on this PC already
+        // signs in, and a commit is handed no credential at all
+        assert!(matches!(GitUse::Unset.to_git(true, &nothing).map(|a| a.auth), Ok(crate::git::Auth::Own)));
         assert!(matches!(GitUse::Unset.to_git(false, &nothing).map(|a| a.auth), Ok(crate::git::Auth::Sealed)));
         // A name that has gone is refused either way: its commits were meant
         // to carry that account's name
@@ -6103,7 +6109,8 @@ mod tests {
         assert_eq!(as_one.pr_account().as_deref(), Some("@pc:octo-cat"));
         assert_eq!(home.pr_account().as_deref(), Some("home"));
         assert_eq!(desk.git_use(Some("lab")).pr_account(), None);
-        assert_eq!(GitUse::Unset.pr_account(), None);
+        // ...and nothing chosen reads them as this PC's git, the same as it signs in
+        assert_eq!(GitUse::Unset.pr_account().as_deref(), Some(super::THIS_PC));
     }
 
     /// The accounts that say they are for a repository's owner are offered

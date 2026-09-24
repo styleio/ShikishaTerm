@@ -8,6 +8,39 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **The git column says when it is the account, and where to put it right.**
+  A fetch, pull or push that a server refused as the account -- 403, "not
+  found" for a repository the account cannot see, a key the server does not
+  know, or a credential git could not get at all -- is said as which account
+  was refused and what the server said, under a button that opens the
+  project's page at its git account card. Any other failure is reported as it
+  came, with no button: a network that is down is not put right by choosing
+  an account.
+- **The sign-ins this PC holds are listed with the desk's git accounts.** Desk
+  settings > git has two more cards: the GitHub accounts the credential store
+  of git on this PC holds, and the accounts GitHub CLI (gh) is signed in as,
+  each with whether GitHub still accepts it, taken out with a press, and a
+  token put in with another (into git's store the way a push that signed in
+  leaves it, or into gh as `gh auth login --with-token` does). The window the
+  account picker opens shows the same three cards, and comes back with a
+  sign-in put into this PC's git chosen, as it does with an account made.
+
+### Changed
+- **Nothing chosen is this PC's git.** A project that has chosen no git account
+  fetches, pulls, pushes and reads its pull requests the way git on this PC
+  already signs in, instead of refusing until somebody chooses -- most people
+  never need to, and their git already works. Choosing is for the day that
+  fails: a PC holding two GitHub accounts, or a repository this PC's sign-in
+  cannot see. "This PC's git settings" is no longer a line of the picker, since
+  it is what nothing chosen means; a choice of it written by an older version
+  reads as nothing chosen. Each GitHub account the PC holds is a line of the
+  picker whenever there is one, not only with two.
+- **The account menu at the top of the git column is gone.** It was a choice
+  made once and seldom changed, sitting where it read as something to change;
+  the project's page is where it is made, and the refusal that needs it says
+  so.
+
 ### Fixed
 - **Every row's right-click has Rename and Edit.** A page, a git or file panel
   and an editor had neither, in the list on the left and on the tab over the

@@ -416,8 +416,8 @@ fn run_bytes_as(dir: &Path, args: &[&str], input: &[u8], limit: Duration, who: &
     let stderr = err.and_then(|h| h.join().ok()).unwrap_or_default();
     if !status.success() {
         let said = without_line_ending_notes(&String::from_utf8_lossy(&stderr));
-        if let Some(why) = pc_sign_in_said(&who.auth, &said) {
-            bail!(why);
+        if let Some(why) = sign_in_trouble(who, &said, &crate::pr::pc_accounts) {
+            return Err(anyhow::Error::new(SignInTrouble(why)));
         }
         bail!(crate::i18n::tp(
             "err.git.failed",
@@ -515,27 +515,108 @@ fn in_the_way(dir: &Path, theirs: &str) -> Vec<String> {
     both
 }
 
-/// What to say when git on this PC wanted to ask somebody how to sign in.
+/// A server that would not let the account in, or an account that could not
+/// sign in at all: what the project's git account settings put right.
 ///
-/// Git's own words are about a prompt that could not be shown, which says
-/// nothing about what to do. The usual reason is a credential manager holding
-/// two GitHub accounts and wanting to ask which, or one told to use an account
-/// it does not hold -- and both are put right in the menu that chose it. None
-/// when it was something else
-fn pc_sign_in_said(auth: &Auth, said: &str) -> Option<String> {
-    if !said.contains("user interactivity has been disabled") {
-        return None;
+/// Its own kind of error so the panel can put the way to those settings under
+/// the words, and only under these -- a network that is down is not fixed by
+/// choosing an account, and a button there would send somebody to the wrong
+/// place
+#[derive(Debug)]
+pub struct SignInTrouble(pub String);
+
+impl std::fmt::Display for SignInTrouble {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
-    match auth {
-        Auth::PcAs { login, .. } if !crate::pr::pc_accounts().iter().any(|a| a == login) => {
-            Some(crate::i18n::tp("err.git.pc_gone", &[("login", login)]))
+}
+
+impl std::error::Error for SignInTrouble {}
+
+/// Whether an error is one the git account settings put right
+pub fn is_sign_in_trouble(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<SignInTrouble>().is_some()
+}
+
+/// Git's line that says a sign-in was refused, when one is: a server that
+/// answered 401 or 403, "not found" for a repository the account cannot see,
+/// a key the server does not know, or a credential git could not get at all.
+/// Matched on git's own words, which it says in English whatever language the
+/// PC speaks about everything else. None for any other failure
+fn refused_sign_in(said: &str) -> Option<&str> {
+    const SIGNS: &[&str] = &[
+        "user interactivity has been disabled",
+        "could not read username",
+        "could not read password",
+        "terminal prompts disabled",
+        "authentication failed",
+        "invalid username or password",
+        "invalid credentials",
+        "bad credentials",
+        "write access to repository not granted",
+        "repository not found",
+        "permission denied (publickey)",
+        "permission to ",
+        "returned error: 401",
+        "returned error: 403",
+    ];
+    said.lines().map(str::trim).find(|line| {
+        let lower = line.to_ascii_lowercase();
+        // "Repository not found." from GitHub, or git's own "repository
+        // 'https://…' not found": the repository is named between the words
+        SIGNS.iter().any(|s| lower.contains(s)) || (lower.contains("repository") && lower.contains("not found"))
+    })
+}
+
+/// Git's words about a refusal, without the labels it puts in front: what the
+/// server said, and nothing about which program said it
+fn refusal_words(line: &str) -> String {
+    let mut words = line.trim();
+    for label in ["remote:", "fatal:", "error:"] {
+        words = words.trim_start_matches(label).trim();
+    }
+    words.trim_end_matches('.').to_string()
+}
+
+/// What to say when a fetch, pull or push could not sign in, and where to
+/// put it right. None when the failure was about something else.
+///
+/// Git's own words are about a prompt that could not be shown or a URL that
+/// returned 403, which say nothing about what to do. The account is named --
+/// this PC's git as it is, one of the PC's GitHub accounts, or an account
+/// from the settings -- because that is what is chosen again or replaced on
+/// the project's page, and the refusal itself is kept so what the server
+/// said is not lost
+///
+/// `held` lists the GitHub accounts git on this PC holds, asked only once a
+/// refusal is about the PC's git: it starts a program
+fn sign_in_trouble(who: &As, said: &str, held: &dyn Fn() -> Vec<String>) -> Option<String> {
+    let line = refused_sign_in(said)?;
+    let refusal = refusal_words(line);
+    Some(match &who.auth {
+        Auth::PcAs { login, .. } if !held().iter().any(|a| a == login) => {
+            crate::i18n::tp("err.github.pc_gone", &[("login", login)])
+        }
+        Auth::PcAs { login, .. } => {
+            crate::i18n::tp("err.git.pc_as_refused", &[("login", login), ("said", &refusal)])
         }
         Auth::Own => {
-            let held = crate::pr::pc_accounts();
-            (held.len() > 1).then(|| crate::i18n::tp("err.git.pc_many", &[("names", &held.join(", "))]))
+            let held = held();
+            match held.len() {
+                0 if line.contains("user interactivity has been disabled") || line.to_ascii_lowercase().contains("could not read") => {
+                    crate::i18n::t("err.github.pc_none")
+                }
+                n if n > 1 => crate::i18n::tp("err.github.pc_many", &[("names", &held.join(", "))]),
+                _ => crate::i18n::tp("err.git.pc_refused", &[("said", &refusal)]),
+            }
         }
-        _ => None,
-    }
+        Auth::Token { .. } | Auth::Ssh { .. } => crate::i18n::tp(
+            "err.git.account.refused",
+            &[("name", &who.account.clone().unwrap_or_default()), ("said", &refusal)],
+        ),
+        // Nothing was meant to sign in, so nothing about the account is wrong
+        Auth::Sealed => return None,
+    })
 }
 
 /// The top of the working tree the folder belongs to, or an error saying it
@@ -1190,10 +1271,11 @@ fn fits(dir: &Path, who: &As) -> Result<()> {
         return Ok(());
     }
     let name = who.account.clone().unwrap_or_default();
-    bail!(crate::i18n::tp(
+    // Put right where the account is chosen, like any other refusal to sign in
+    Err(anyhow::Error::new(SignInTrouble(crate::i18n::tp(
         if wants_ssh { "err.git.account.wants_token" } else { "err.git.account.wants_ssh" },
-        &[("name", &name)]
-    ))
+        &[("name", &name)],
+    ))))
 }
 
 /// Whether git would reach this remote over SSH: `ssh://…`, or the short
@@ -2444,15 +2526,45 @@ mod tests {
         assert_ne!(named("https://gitlab.example/owner/repo.git"), "octo-cat");
     }
 
-    /// Git's words for a prompt it could not show are said as what to do only
-    /// when that is what they are about
+    /// Git's words for a refused sign-in are said as what to do, and only
+    /// those: a network that is down is not put right by choosing an account
     #[test]
-    fn only_a_prompt_that_could_not_be_shown_is_said_again() {
+    fn only_a_refused_sign_in_is_said_as_the_account() {
         let prompt = "fatal: Cannot prompt because user interactivity has been disabled.";
-        assert_eq!(pc_sign_in_said(&Auth::Own, "fatal: repository not found"), None);
-        assert_eq!(pc_sign_in_said(&Auth::Sealed, prompt), None);
-        let gone = Auth::PcAs { host: "github.com".into(), login: "nobody-has-this-name-here".into() };
-        assert!(pc_sign_in_said(&gone, prompt).is_some_and(|s| s.contains("nobody-has-this-name-here")));
+        let refused = "remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 403";
+        let down = "fatal: unable to access 'https://github.com/o/r.git/': Could not resolve host: github.com";
+        let own = As::default();
+        let one = || vec!["octo-cat".to_string()];
+        let none = Vec::new;
+        let two = || vec!["octo-cat".to_string(), "octo-dog".to_string()];
+        assert_eq!(sign_in_trouble(&own, down, &one), None);
+        assert_eq!(sign_in_trouble(&As::sealed(), prompt, &one), None);
+        assert_eq!(sign_in_trouble(&As::sealed(), refused, &one), None);
+        // The server's own words are kept, without git's labels in front
+        let said = sign_in_trouble(&own, refused, &one).unwrap_or_default();
+        assert!(said.contains("Write access to repository not granted"), "{said}");
+        assert!(!said.contains("remote:"), "{said}");
+        // A PC holding two accounts is told which to choose; one holding none,
+        // to sign in
+        let said = sign_in_trouble(&own, prompt, &two).unwrap_or_default();
+        assert!(said.contains("octo-cat") && said.contains("octo-dog"), "{said}");
+        assert_eq!(sign_in_trouble(&own, prompt, &none), Some(crate::i18n::t("err.github.pc_none")));
+        let gone = As {
+            auth: Auth::PcAs { host: "github.com".into(), login: "nobody-has-this-name-here".into() },
+            ..Default::default()
+        };
+        assert!(sign_in_trouble(&gone, prompt, &one).is_some_and(|s| s.contains("nobody-has-this-name-here")));
+        // An account from the settings is refused under its own name
+        let token = As {
+            auth: Auth::Token { host: "github.com".into(), login: "x-access-token".into(), token: "t".into() },
+            account: Some("work".into()),
+            ..Default::default()
+        };
+        let said = sign_in_trouble(&token, "fatal: repository 'https://github.com/o/r.git/' not found", &none).unwrap_or_default();
+        assert!(said.contains("work") && said.contains("not found"), "{said}");
+        // And it is its own kind of error, so the panel can tell it apart
+        assert!(is_sign_in_trouble(&anyhow::Error::new(SignInTrouble("x".into()))));
+        assert!(!is_sign_in_trouble(&anyhow::anyhow!("x")));
     }
 
     #[test]

@@ -3990,12 +3990,9 @@ impl HookEngine {
                     "git_run",
                     lua.create_function(move |_, (tab, line): (Value, String)| {
                         let (dir, _, git) = git_place(&c, &o, &tab)?;
-                        let who = match git {
-                            crate::config::GitUse::Unset => crate::git::As::sealed(),
-                            chosen => chosen
-                                .to_git(true, &|key| k.secret_value(key).ok())
-                                .map_err(mlua::Error::runtime)?,
-                        };
+                        let who = git
+                            .to_git(true, &|key| k.secret_value(key).ok())
+                            .map_err(mlua::Error::runtime)?;
                         let args = crate::git::split_args(&line);
                         if args.is_empty() {
                             return Err(mlua::Error::runtime(crate::i18n::t("err.git.empty_run")));

@@ -590,18 +590,6 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                         .iter()
                         .find(|(n, _)| *n == i + 1)
                         .map(|(_, s)| s.clone());
-                    // Beside a folder in a repository, the git column signs in
-                    // as the project's account
-                    ts.git_acct = t.place.family.is_some().then(|| {
-                        crate::uistate::GitAcctState::of(
-                            &ui.git_accounts,
-                            &ui.pc_accounts,
-                            &t.git_use,
-                            t.place.repo.as_deref(),
-                            "project",
-                            t.git_project.clone(),
-                        )
-                    });
                     ts
                 }),
                 Surface::Browser { key, name, dir } => {
@@ -675,7 +663,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     t.mark = machine.as_deref().and_then(|m| crate::uistate::MarkState::of(m, &ui.server_marks));
                     Some(t)
                 }
-                Surface::Git { key, name, dir, git, .. } => {
+                Surface::Git { key, name, dir, .. } => {
                     // The panel reports on a folder, so it stands under that
                     // folder's heading and is put away with it. Worked out from
                     // where it actually points, exactly as a tab's is -- carried
@@ -685,18 +673,15 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                         groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
                     });
                     let mut t = crate::uistate::TabState::git(i + 1, key, name, group);
-                    // A git tab signs in as its own account
+                    // Which repository it reports on, the same as a session's:
+                    // the column asks it before asking GitHub whether this
+                    // branch has pull requests or CI
                     let repo = dir.as_deref().and_then(|d| {
                         ui.git_repos
                             .iter()
                             .find(|(k, _)| crate::uistate::same_folder(k, d))
                             .map(|(_, r)| r.as_str())
                     });
-                    t.git_acct =
-                        Some(crate::uistate::GitAcctState::of(&ui.git_accounts, &ui.pc_accounts, git, repo, "tab", None));
-                    // And which repository it reports on, the same as a
-                    // session's: the column asks it before asking GitHub
-                    // whether this branch has pull requests or CI
                     t.place = repo.map(|r| crate::uistate::PlaceState {
                         repo: Some(r.to_string()),
                         ..Default::default()
@@ -1644,11 +1629,6 @@ pub struct Ui {
     pub thanks: Option<String>,
     /// The newer version the update card asks about, when it is up
     pub update: Option<crate::update::Offer>,
-    /// The current desk's git accounts, for the account menu on the git column
-    pub git_accounts: Vec<config::GitAccountSpec>,
-    /// The GitHub accounts git on this PC holds, for the same menu: with two,
-    /// "this PC's git" has to be told which
-    pub pc_accounts: Vec<String>,
     /// Where each git tab's folder pushes to on GitHub (`owner/name`), looked
     /// up every couple of seconds with the tabs' places rather than per frame
     pub git_repos: Vec<(std::path::PathBuf, String)>,

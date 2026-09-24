@@ -95,23 +95,29 @@ pub fn target(
     let repo = Repo::parse(&slug)
         .ok_or_else(|| anyhow!(crate::i18n::tp("err.github.not_github", &[("p", &slug)])))?;
     let token = match git {
-        GitUse::Unset => bail!(AccountTrouble(crate::i18n::t("err.github.account.unset"))),
         GitUse::Missing(name) => bail!(AccountTrouble(crate::i18n::tp(
             "err.git.account.missing",
             &[("name", name)]
         ))),
-        GitUse::Pc(login) => crate::pr::pc_token(login.as_deref()).map_err(|why| {
-            AccountTrouble(match why {
-                crate::pr::PcSignIn::None => crate::i18n::t("err.github.pc_none"),
-                crate::pr::PcSignIn::Many(names) => crate::i18n::tp(
-                    "err.github.pc_many",
-                    &[("names", &names.join(", "))],
-                ),
-                crate::pr::PcSignIn::Gone(login) => {
-                    crate::i18n::tp("err.github.pc_gone", &[("login", &login)])
-                }
-            })
-        })?,
+        // Nothing chosen reads GitHub as this PC's git, the same as it signs in
+        GitUse::Unset | GitUse::Pc(_) => {
+            let login = match git {
+                GitUse::Pc(login) => login.as_deref(),
+                _ => None,
+            };
+            crate::pr::pc_token(login).map_err(|why| {
+                AccountTrouble(match why {
+                    crate::pr::PcSignIn::None => crate::i18n::t("err.github.pc_none"),
+                    crate::pr::PcSignIn::Many(names) => crate::i18n::tp(
+                        "err.github.pc_many",
+                        &[("names", &names.join(", "))],
+                    ),
+                    crate::pr::PcSignIn::Gone(login) => {
+                        crate::i18n::tp("err.github.pc_gone", &[("login", &login)])
+                    }
+                })
+            })?
+        }
         GitUse::Account { desk, spec } => {
             if spec.host() != crate::config::GITHUB_HOST {
                 bail!(AccountTrouble(crate::i18n::tp(

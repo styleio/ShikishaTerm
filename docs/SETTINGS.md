@@ -191,27 +191,6 @@ Each desk answers these for itself, so two desks can work in different ways. Ope
 
 Name, automation name, automation folder
 
-**This settings file can't be read**
-
-- **Basic** — Tab width, chaining, language
-- **AI agents** — Assistant AI, deciding AI, connections, agreements
-- **Update** — Newer versions, and going back
-- **Remote access** — Remote control & QR
-- **Shortcuts** — What each key does
-- **Quick commands** — Buttons that send a command or a prompt
-- **Quick actions** — One-tap buttons in the input bar
-- **Where it runs** — Places to open a branch other than this PC
-- **Server names** — Tell production from staging at a glance
-- **Operate a tab** — Limits for 🎯 driving another tab
-- **AI allowance** — The 5-hour and 7-day windows of Claude and Codex
-- **External control** — Let programs drive this app
-- **Carrying conversations** — What survives a restart
-- **Files** — Automation & secrets paths
-- **Run results** — Download past rally logs
-- **Notifications** — The phones that receive notifications
-- **Saved logins** — Browser logins kept for reuse
-- **Snapshots** — Snapshot pictures taken by automation
-
 **Desk**
 
 - **Name**
@@ -251,26 +230,6 @@ Passwords and tokens
 
 Several AI tabs discussing or working together
 
-**This settings file can't be read**
-
-- **Basic** — Tab width, chaining, language
-- **AI agents** — Assistant AI, deciding AI, connections, agreements
-- **Update** — Newer versions, and going back
-- **Remote access** — Remote control & QR
-- **Shortcuts** — What each key does
-- **Quick commands** — Buttons that send a command or a prompt
-- **Quick actions** — One-tap buttons in the input bar
-- **Where it runs** — Places to open a branch other than this PC
-- **Server names** — Tell production from staging at a glance
-- **Operate a tab** — Limits for 🎯 driving another tab
-- **AI allowance** — The 5-hour and 7-day windows of Claude and Codex
-- **External control** — Let programs drive this app
-- **Carrying conversations** — What survives a restart
-- **Files** — Automation & secrets paths
-- **Run results** — Download past rally logs
-- **Notifications** — The phones that receive notifications
-- **Saved logins** — Browser logins kept for reuse
-- **Snapshots** — Snapshot pictures taken by automation
 - **Participants**
 - **Turn order**
 - **Round limit**

@@ -1807,17 +1807,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .bar button:hover { background:var(--panel2); }
   #gitpanel .bar button.go { border-color:var(--brand); color:var(--brand); }
   #gitpanel .bar button[disabled] { opacity:.45; cursor:default; }
-  /* Which account the column signs in with. A question nobody has answered
-     wears --warn: fetch, pull and push wait on it */
-  #gitpanel .bar .acct { display:flex; align-items:center; gap:var(--s2); min-width:0; flex:1 1 auto; }
-  /* In a narrow column the label stays one word and the menu gives way */
-  #gitpanel .bar .acct > span { color:var(--dim); font-size:12px; flex:none; white-space:nowrap; }
-  #gitpanel .bar .acct > select { min-width:0; flex:0 1 auto; }
-  #gitpanel .bar select { padding:4px 8px; font-size:12.5px; border-radius:var(--r-ctl);
-    border:1px solid var(--edge); background:var(--panel); color:var(--text); max-width:240px;
-    font-family:inherit; }
-  #gitpanel .bar select:hover { border-color:var(--edge-hi); }
-  #gitpanel .bar select.unset { border-color:var(--warn); }
   #gitpanel .said { color:var(--muted); font-size:12px; min-width:0; overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
   #gitpanel .said.bad { color:var(--danger); }
@@ -1940,6 +1929,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .gcommit .said { white-space:normal; font-size:11.5px; }
   #gitpanel .gcommit .said:empty { display:none; }
   #gitpanel .gcommit .said.need { color:var(--warn); }
+  /* The way to the settings under a refusal to sign in: a plain button, only
+     while the words above it are about the account */
+  #gitpanel .gcommit .gfix { margin-top:var(--s2); }
+  #gitpanel .gcommit .gfix[hidden] { display:none; }
   #gitpanel h4 .n { font-variant-numeric:tabular-nums; }
   /* The commit's menu: rules between the kinds of thing, and what cannot be
      done yet left in the list, grey, with what it waits for under it */
@@ -4617,7 +4610,7 @@ window.__issues = function (d) {
   if (d.act === "projects") {
     I.projects = d.projects || [];
     ghAccounts = (d.accounts || []).map(a => ({name: a.name, label: a.name}))
-      .concat(pcAcctChoices(d.pc, "").map(([name, label]) => ({name, label})));
+      .concat(pcAcctChoices(d.pc).map(([name, label]) => ({name, label})));
     if (ghWaiting) { ghWaiting = false; ghSearch(ghText); }
     if (I.project && !issueProject(I.project)) I.project = "";
     if (!I.list) issuesList(1);
@@ -7747,6 +7740,8 @@ let ghTimer = 0;
 let ghText = "";
 let ghWaiting = false;
 let ghAccounts = [];
+// Whether what GitHub last said is put right by choosing an account
+let ghFix = false;
 let ghFresh = false;
 let branchHi = -1;
 
@@ -7830,9 +7825,10 @@ function drawBranchResults(b) {
       return;
     }
     box.append(el("div", {class:"bempty"}, ghSaid || T["tui.branch.gh.empty"] || ""));
-    // No account to read GitHub with: the accounts this desk has, one press
-    // each, for this project
-    if (ghAccounts.length && ghSaid === (T["tui.branch.gh.unset"] || "")) {
+    // GitHub refused the account, or this PC's git could not say which of its
+    // accounts to use: the accounts this desk has and the PC's, one press each,
+    // for this project
+    if (ghAccounts.length && ghFix) {
       const pick = el("div", {class:"baccts"});
       for (const a of ghAccounts) {
         pick.append(el("button", {type:"button", onclick:() => {
@@ -7920,13 +7916,6 @@ function ghSearch(text) {
     drawBranchTabs(document.getElementById("branch"));
     return;
   }
-  if (proj.unset) {
-    ghBusy = false;
-    ghRows = {issue: [], pr: []};
-    ghSaid = T["tui.branch.gh.unset"] || "";
-    drawBranchTabs(document.getElementById("branch"));
-    return;
-  }
   ghSaid = "";
   ghBusy = true;
   const n = ++ghSeq;
@@ -7953,8 +7942,9 @@ function ghAnswer(d) {
   if (d.seq !== ghWant[kind]) return;
   ghWant[kind] = "";
   ghRows[kind] = d.ok ? (d.items || []) : [];
-  if (!d.ok) ghSaid = d.error || "";
-  else if ((d.problems || []).length) ghSaid = (d.problems[0] || {}).error || "";
+  if (!d.ok) { ghSaid = d.error || ""; ghFix = !!d.settings; }
+  else if ((d.problems || []).length) { ghSaid = (d.problems[0] || {}).error || ""; ghFix = !!(d.problems[0] || {}).settings; }
+  else ghFix = false;
   ghBusy = !!(ghWant.issue || ghWant.pr);
   if (!b.hidden && branchTab === "github") drawBranchTabs(b);
 }
@@ -15181,6 +15171,9 @@ window.__recorded = function (line) {
 function gitFresh(name) {
   return { panel:name, branch:null, branches:[], rows:null, sel:null, staged:false,
            diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null,
+           // The folder whose project chooses the account, when what was said
+           // is a refusal to sign in (empty otherwise)
+           fix:"",
            view:"changes", log:[], commit:null, about:null, remotes:false, then:"", need:false,
            // Bringing the base's latest in: choosing a base, and a merge that stopped
            pickBase:false, bases:null, baseSel:"", conflict:null,
@@ -15251,10 +15244,13 @@ window.__git = function (d) {
   // A fetch the column makes by itself, after a merge, says nothing over what the
   // merge said
   const quiet = d.act === "fetch" && G.quietFetch;
-  if (d.busy) { G.busy = d.act; if (!quiet) G.said = ""; G.need = false; drawGit(); return; }
+  if (d.busy) { G.busy = d.act; if (!quiet) { G.said = ""; G.fix = ""; } G.need = false; drawGit(); return; }
   if (quiet) G.quietFetch = false;
   G.busy = "";
   G.need = false;
+  // A refusal to sign in names the folder whose project chooses the account;
+  // any other answer, good or bad, is not about the account
+  G.fix = !d.ok && d.why === "account" ? (d.folder || "") : "";
   if (!d.ok) {
     // What was to follow a commit does not follow a commit that did not happen
     if (d.act === "commit") G.then = "";
@@ -15438,19 +15434,6 @@ function gitRefresh(keep) {
 
 function gitBuild(box) {
   box.textContent = "";
-  // The account: it is what pull, push and fetch sign in as, and a choice made
-  // for a whole project is worth seeing before pressing either. The row is
-  // there only while there is a choice to show
-  const bar = el("div", {class:"bar"});
-  const acctPick = el("select", {title: T["git.acct.title"] || ""});
-  acctPick.addEventListener("change", () => {
-    const t = gitTab();
-    if (t) send({kind:"gitaccount", panel: t.id || t.name || "", account: acctPick.value});
-  });
-  const acctWhose = el("span");
-  const acct = el("span", {class:"acct"}, acctWhose, acctPick);
-  bar.append(acct);
-  box.append(bar);
 
   // The commit, where the changes are: the branch and how far it is from the
   // one it follows, the message, and one button that is always the next thing
@@ -15509,6 +15492,12 @@ function gitBuild(box) {
   const naming = el("div", {class:"gname"}, name,
     el("button", {type:"button", onclick: makeBranch}, T["git.branch.make"] || ""));
   const said = el("div", {class:"said"});
+  // Under a refusal to sign in, the way to where the account is chosen: the
+  // project's page, at its git account card. Nothing is chosen for anybody
+  // here -- the page offers what there is, and adds one
+  const fix = el("div", {class:"gfix"},
+    el("button", {type:"button", onclick:() => { if (G.fix) openSettings("project-gitacct", true, G.fix); }},
+      T["git.fix"] || ""));
   const split = el("div", {class:"gsplit"}, main, more);
   // Choosing the base to bring the latest in from, with what will run for it
   const basePick = el("select");
@@ -15580,7 +15569,7 @@ function gitBuild(box) {
   // The pull requests this branch has, one for each base it was sent to
   const prs = el("div", {class:"gprs"});
   const msgBox = el("div", {class:"gmsg"}, msg, ai);
-  const commitBox = el("div", {class:"gcommit"}, steps, head, msgBox, prForm, split, naming, baseBox, conflictBox, said, prs);
+  const commitBox = el("div", {class:"gcommit"}, steps, head, msgBox, prForm, split, naming, baseBox, conflictBox, said, fix, prs);
 
   const branches = el("div", {class:"branches"});
   const staged = el("div", {class:"list"});
@@ -15642,8 +15631,8 @@ function gitBuild(box) {
     mid,
     grip(true, "mid", "%", () => mid),
     diff, hist));
-  gitUi = { bar, said, naming, name, branches, branchCol, staged, work, diff,
-            hist, mid, log, about, commitDiff, remotes, chips, which, acct, acctPick, acctWhose, acctSig: "",
+  gitUi = { said, fix, naming, name, branches, branchCol, staged, work, diff,
+            hist, mid, log, about, commitDiff, remotes, chips, which,
             branchName, sync, msg, ai, main, more, split, commitBox, steps, msgBox, prForm, prBase, prBody, prAi, prTitle,
             prClose, prCloseBox, prCloseWords, prKept, prCancel, prs, baseBox, basePick, baseRuns, conflictBox, conflictSay, conflictFiles, stagedSec, workSec, stagedN, workN,
             pick: {unstageAll, unstagePick, stageAll, stagePick} };
@@ -16546,6 +16535,8 @@ function drawGitCommit() {
   // A refusal with a way out under it is a person being needed, like a missing
   // message; only a failure is said as one
   u.said.className = "said" + (G.offer || G.need ? " need" : G.bad ? " bad" : "");
+  // The way to the settings stays only under the refusal it came with
+  u.fix.hidden = !(G.bad && G.fix && !G.busy && G.said);
   drawGitSteps(u);
   drawGitPrForm(u);
   drawGitPrs(u, next);
@@ -17549,8 +17540,6 @@ function drawGit() {
   if (!box || box.hidden) return;
   if (!gitUi || !box.firstChild) gitBuild(box);
   const u = gitUi;
-  drawGitAccount(u);
-  u.bar.style.display = u.acct.style.display === "none" ? "none" : "flex";
   drawGitCommit();
 
   u.branches.textContent = "";
@@ -17652,16 +17641,11 @@ function drawGit() {
   gitChangeInto(u.diff, how, true);
 }
 
-// The PC's own git as menu entries: as it is, and -- once it holds two GitHub
-// accounts, when git cannot tell which to use -- as each of them. A choice
-// already made of one it no longer lists is kept, so the menu still says it
-function pcAcctChoices(held, now) {
-  const out = [["@pc", T["git.acct.pc"] || ""]];
-  const names = (held || []).length > 1 ? [...held] : [];
-  const chosen = String(now || "").startsWith("@pc:") ? String(now).slice(4) : "";
-  if (chosen && !names.includes(chosen)) names.push(chosen);
-  for (const n of names) out.push(["@pc:" + n, pcAcctLabel("@pc:" + n)]);
-  return out;
+// The GitHub accounts git on this PC holds, each as a choice of its own
+// (`@pc:<login>`), for the worktree dialog when GitHub could not be read as
+// the PC's git is: with two held, git cannot tell which to use
+function pcAcctChoices(held) {
+  return (held || []).map(n => ["@pc:" + n, pcAcctLabel("@pc:" + n)]);
 }
 // What a written choice of the PC's git is called on screen; the choice
 // itself for anything else
@@ -17669,33 +17653,6 @@ function pcAcctLabel(v) {
   if (v === "@pc") return T["git.acct.pc"] || "";
   if (String(v || "").startsWith("@pc:")) return (T["git.acct.pc_as"] || "{login}").replace("{login}", String(v).slice(4));
   return v;
-}
-
-// The account menu. Rebuilt only when what it offers has changed, and never
-// while it is open -- a list redrawn under the pointer loses the choice being made
-function drawGitAccount(u) {
-  const t = gitTab();
-  const ga = t && t.git_acct;
-  u.acct.style.display = ga ? "flex" : "none";
-  if (!ga) return;
-  const sig = JSON.stringify(ga);
-  if (sig === u.acctSig || document.activeElement === u.acctPick) return;
-  u.acctSig = sig;
-  const s = u.acctPick;
-  s.textContent = "";
-  s.append(el("option", {value:""}, T["git.acct.pick"] || ""));
-  for (const c of ga.choices || []) {
-    s.append(el("option", {value:c.name},
-      c.name + " \u2014 " + c.about + (c.fits ? "  " + (T["git.acct.fits"] || "") : "")));
-  }
-  for (const [value, label] of pcAcctChoices(ga.pc, ga.now)) s.append(el("option", {value}, label));
-  if (ga.missing) s.append(el("option", {value:ga.now}, (T["git.acct.gone"] || "").replace("{name}", ga.now)));
-  s.value = ga.now || "";
-  s.classList.toggle("unset", !ga.now || !!ga.missing);
-  // Whose choice it is: this git tab's, or the project's every folder of it shares
-  u.acctWhose.textContent = ga.scope === "tab"
-    ? (T["git.acct.tab"] || "")
-    : (ga.project ? (T["git.acct.project"] || "").replace("{name}", ga.project) : (T["git.acct.repo"] || ""));
 }
 
 window.__luaDone = function (err) {

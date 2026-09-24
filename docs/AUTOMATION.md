@@ -670,10 +670,11 @@ here. A new desk can start as a copy of the one you are on, keys included.
 
 A git account's token is not written here either: it is filed under
 `git/<desk id>/<account name>` when it is entered on the desk's Git accounts page.
-**Nothing picks an account on its own.** A project names the one the git column
-beside its folders signs in with (`git_account`), a git tab names its own, and
-`"@pc"` means the way git on this PC already signs in. Pull request numbers are
-read with the same account. `GITHUB_TOKEN` in the environment is not read.
+A project names the one the git column beside its folders signs in with
+(`git_account`), and a git tab names its own. Absent, git on this PC signs in
+the way it already does; `"@pc:<login>"` names one of the GitHub accounts it
+holds, for a PC holding two. Pull request numbers are read with the same
+account. `GITHUB_TOKEN` in the environment is not read.
 
 `bring` is what a new worktree of the project gets beyond what git carries (the
 project's page in the settings edits it). A `pattern` is a line of the project's
@@ -1142,9 +1143,9 @@ that path never launches git, which is why it still answers during a rebase.
 | `shikisha.git_discard(tab, paths, {staged=…, plan=…})` | Throw the change to those files away. Without `staged`, what goes is the half that is not in the next commit, and a file git has never seen is taken off the disk; with it, the files go back to the way the last commit has them, and one the last commit does not have comes out of the next commit and off the disk. Files in conflict are left alone. **Nothing here can be undone** -- what it throws away was never committed. `plan=true` answers without running anything, so a screen can show what would run before it asks. Either way the answer is `{plan, said}`, where `said` is those commands as a person would type them |
 | `shikisha.git_branch_create(tab, "name")` | Make a branch and move onto it. Staged work moves with you, which is what makes this **the way out of a refusal on a shared branch** |
 | `shikisha.git_commit(tab, "message", opts)` | Commit what was added and answer with the short hash. **It stops on a protected branch** -- make a branch, or pass `{allow_protected=true}` to say you meant it. Which branches those are comes from Settings > Protected branches (`main` and `master` until somebody says otherwise), and each working folder may name its own |
-| `shikisha.git_run(tab, "args…")` | Run any git and answer with its output. **No shell is involved**: `;` and `&&` arrive as arguments and git refuses them. It signs in as the chosen git account, and where none is chosen it has no credentials at all |
+| `shikisha.git_run(tab, "args…")` | Run any git and answer with its output. **No shell is involved**: `;` and `&&` arrive as arguments and git refuses them. It signs in as the chosen git account, and where none is chosen, the way git on this PC already does |
 
-**Which account signs in.** A git tab uses the account chosen on its own page. Any other tab uses the one its folder's project chose (the project's page, or the menu at the top of the git column). The accounts themselves are the desk's own (desk settings > Git accounts): a token over HTTPS or an SSH key file, and the name and email its commits carry, which `git_commit` and `git_merge` use too. "This PC's git settings" is a choice like any other -- git's own credential helper and keys. A git typed in a terminal tab signs in as the same account: the tab is started with the settings for it (`GIT_CONFIG_*`, and the credential helper under that account's own server), so anything running in that tab, an AI included, signs in as it too. Nothing is taken away -- a repository on another server goes on signing in the way this machine already does -- and a tab picks a change up the next time it opens.
+**Which account signs in.** Nothing chosen is git on this PC as it already is -- its credential helper and keys -- which is what most people have and never think about. A git tab uses the account chosen on its own page; any other tab uses the one its folder's project chose, on the project's page. The accounts themselves are the desk's own (desk settings > Git accounts): a token over HTTPS or an SSH key file, and the name and email its commits carry, which `git_commit` and `git_merge` use too. Beside them the same page lists the GitHub sign-ins git on this PC and GitHub CLI (gh) hold, each of which a project can choose by name (`@pc:<login>`) -- what a PC holding two GitHub accounts needs, since git cannot tell which to use. When a fetch, pull or push is refused as the account, the git column says so with a button to that page. A git typed in a terminal tab signs in as the same account: the tab is started with the settings for it (`GIT_CONFIG_*`, and the credential helper under that account's own server), so anything running in that tab, an AI included, signs in as it too. Nothing is taken away -- a repository on another server goes on signing in the way this machine already does -- and a tab picks a change up the next time it opens.
 
 **All of these are open to a person only, to begin with** (automation permissions). If an AI
 is to be let in, `git_status` / `git_diff` / `git_log` are the place to start. Opening
