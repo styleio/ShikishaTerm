@@ -8,6 +8,8 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-25
+
 ### Added
 - **The git column says when it is the account, and where to put it right.**
   A fetch, pull or push that a server refused as the account -- 403, "not
@@ -3168,7 +3170,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/styleio/ShikishaTerm/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/styleio/ShikishaTerm/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/styleio/ShikishaTerm/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/styleio/ShikishaTerm/compare/v0.15.0...v0.16.0
