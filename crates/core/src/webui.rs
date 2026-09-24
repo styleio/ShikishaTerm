@@ -4111,6 +4111,17 @@ const PAGE: &str = r##"<!doctype html>
  .arowwhat.mono { font-size:12px; }
  .arowname.unnamed, .arowwhat.unnamed { color:var(--faint); }
  .alisthint { margin-top:var(--s2); }
+ /* A folder's row wears the folder's line drawing before its name, and the
+    way back (first, inside a folder) the same drawing the quick commands'
+    tiles use. A row carried over a folder's middle goes inside it rather than
+    beside it, and the folder says so with the brand's edge */
+ .arowname .amark { display:inline-block; width:14px; height:14px; vertical-align:-2px; margin-right:5px; color:var(--dim); }
+ .arowname .amark svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2;
+   stroke-linecap:round; stroke-linejoin:round; }
+ .listrow.arow.aback { grid-template-columns:22px minmax(0, 1fr); color:var(--dim); }
+ .arow.aback .agrip { cursor:pointer; }
+ .arow.into { box-shadow:inset 0 0 0 1px var(--brand); background:var(--panel2); }
+ .acrumbs { margin-top:0; margin-bottom:var(--s3); }
  /* Lifted off the list while it is carried: the one layer here that floats */
  .arow.dragging { position:relative; z-index:1; background:var(--raise); box-shadow:0 8px 24px #0007;
    cursor:grabbing; }
@@ -8275,10 +8286,12 @@ async function lintAction(a) {
   if (err) actionErrors.set(a, err); else actionErrors.delete(a);
   return err;
 }
-// Lint every Lua action; resolves true only when all of them parse. Gates saving.
+// Lint every Lua action, the folders walked into; resolves true only when all
+// of them parse. Gates saving.
 async function actionsLintClean() {
-  await Promise.all((current.actions || []).map(lintAction));
-  return (current.actions || []).every(a => !actionErrors.has(a));
+  const all = actionsAll(current.actions);
+  await Promise.all(all.map(lintAction));
+  return all.every(a => !actionErrors.has(a));
 }
 
 // Quick actions for the sub-input bar. A list saved into config.actions (the
@@ -8288,12 +8301,71 @@ async function actionsLintClean() {
 // order is changed by carrying a row by its grip. An action inserts its text
 // into the composer, or -- with the Lua toggle -- runs Lua on tap; that Lua is
 // checked before the dialog lets it in, and again before the page saves.
+//
+// A folder holds more of them, as deep as anyone likes, the way the quick
+// commands' folders do: its row is walked into with a second press or Enter,
+// the way back is the first row inside, and a row carried onto a folder goes
+// in, onto the way back goes out.
+const isActionFolder = a => !!a && a.kind === "folder";
+// Every button inside a folder, folders inside it included
+const actionCount = f => (f.items || []).reduce((n, i) => n + 1 + (isActionFolder(i) ? actionCount(i) : 0), 0);
+// Every action in a list, the folders walked into, folders themselves included
+function actionsAll(list) {
+  const out = [];
+  (list || []).forEach(a => { if (!a) return; out.push(a); if (isActionFolder(a)) out.push(...actionsAll(a.items)); });
+  return out;
+}
+// Where the list is standing: the folders walked into, as their places in
+// the list above, outermost first. Kept across redraws of the card
+const actionsAt = {path: []};
+// The list at `path`: the top, or a folder's items. Read, never written --
+// a folder written without `items` is read as empty
+function actionsListAt(path) {
+  let list = current.actions || [];
+  for (const i of path) {
+    const f = list[i];
+    if (!isActionFolder(f)) return null;
+    list = f.items || [];
+  }
+  return list;
+}
+// The list the editor is standing in, the path trimmed to what still exists
+function actionsHolder() {
+  while (actionsAt.path.length && !actionsListAt(actionsAt.path)) actionsAt.path.pop();
+  return actionsListAt(actionsAt.path) || (current.actions = current.actions || []);
+}
+// The folder the editor is standing in, or nothing at the top
+const actionsFolder = () => actionsAt.path.length
+  ? actionsListAt(actionsAt.path.slice(0, -1))[actionsAt.path[actionsAt.path.length - 1]] : null;
+// Put `item` into `list`, which is made for a folder that never had one
+function actionsPutIn(folder, item) {
+  if (!Array.isArray(folder.items)) folder.items = [];
+  folder.items.push(item);
+}
+const actionMark = svg => {
+  const m = el("span", {class:"amark"});
+  m.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + svg + "</svg>";
+  return m;
+};
+
 function actionsCard() {
   current.actions = current.actions || [];
+  const crumbs = el("div", {class:"qcrumbs acrumbs"});
   const listBox = el("div", {id:"actionslist", class:"alist"});
   const draw = () => {
+    const list = actionsHolder();
+    // Where in the folders this is. At the top the card's own title says it
+    crumbs.textContent = "";
+    crumbs.hidden = !actionsAt.path.length;
+    const goUp = n => { actionsAt.path = actionsAt.path.slice(0, n); draw(); };
+    crumbs.append(el("button", {class:"quiet", onclick:() => goUp(0)}, T["settings.actions.title"]));
+    actionsAt.path.forEach((_, n) => {
+      const f = actionsListAt(actionsAt.path.slice(0, n))[actionsAt.path[n]];
+      crumbs.append(el("span", {class:"qsep"}, "›"),
+        el("button", {class:"quiet", onclick:() => goUp(n + 1)}, (f && f.label) || T["settings.actions.name.none"]));
+    });
     listBox.textContent = "";
-    if (!current.actions.length) {
+    if (!list.length && !actionsAt.path.length) {
       listBox.append(el("div", {class:"hint"}, T["settings.actions.empty"]));
       return;
     }
@@ -8301,55 +8373,81 @@ function actionsCard() {
     // merely opening this card would light up "unsaved" and then write those
     // defaults into config.json. Same rule as payload() -- no side effects.
     const rows = el("div", {class:"rows"});
-    current.actions.forEach((a, i) => rows.append(actionRow(a, i, draw)));
+    if (actionsAt.path.length) rows.append(actionBackRow(draw));
+    list.forEach((a, i) => rows.append(actionRow(a, i, draw)));
     listBox.append(rows);
+    if (!list.length) listBox.append(el("div", {class:"hint"}, T["settings.actions.folder.empty"]));
   };
   const c = card(T["settings.actions.title"],
     el("div", {class:"hint"}, T["settings.actions.hint"]),
+    crumbs,
     listBox,
     el("div", {class:"hint alisthint"}, T["settings.actions.list.hint"]),
     el("div", {class:"row"},
-      el("button", {onclick: () => actionDialog(null, draw)}, T["settings.actions.add"])));
+      el("button", {onclick: () => actionDialog(null, draw)}, T["settings.actions.add"]),
+      el("button", {onclick: () => actionDialog(null, draw, "folder")}, T["settings.actions.add_folder"])));
   draw();
   return c;
+}
+
+// The way back, first inside a folder as it is in the bar: one press goes up
+function actionBackRow(draw) {
+  const row = el("div", {class:"listrow arow aback", tabindex:"0", role:"button", title:T["settings.quick.back"]},
+    (() => { const g = el("span", {class:"agrip"}); g.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + QUICK_BACK_SVG + "</svg>"; return g; })(),
+    el("span", {class:"arowname"}, T["settings.actions.up"]));
+  const up = () => { actionsAt.path.pop(); draw(); };
+  row.addEventListener("click", up);
+  row.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); up(); }
+  });
+  return row;
 }
 
 // One action. The whole row is the way in to its dialog, and the grip at its
 // start is what carries it. What the row says: the name on the button, whether
 // it types or runs, and what it sends, on one line. A Lua that does not parse
-// is said on the row too, since it is what holds the page's save
+// is said on the row too, since it is what holds the page's save. A folder's
+// row says how many it holds, and is walked into with a second press or Enter
 let actionCarrying = false;
 function actionRow(a, i, draw) {
-  const isLua = !!a.lua;
+  const folder = isActionFolder(a);
+  const isLua = !folder && !!a.lua;
   const said = String(a.body || "").replace(/\s+/g, " ").trim();
   const grip = el("span", {class:"agrip", title:T["settings.actions.drag"]});
   grip.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + QUICK_GRIP_SVG + "</svg>";
   const broken = el("span", {class:"chip none"}, T["settings.actions.broken"]);
   broken.hidden = !actionErrors.has(a);
-  const row = el("div", {class:"listrow arow", tabindex:"0", role:"button", "data-at": String(i)},
+  const row = el("div", {class:"listrow arow" + (folder ? " afolder" : ""), tabindex:"0", role:"button", "data-at": String(i)},
     grip,
-    el("span", {class:"arowname" + (a.label ? "" : " unnamed")}, a.label || T["settings.actions.name.none"]),
+    el("span", {class:"arowname" + (a.label ? "" : " unnamed")},
+      folder ? actionMark(QUICK_FOLDER_SVG) : null, a.label || T["settings.actions.name.none"]),
     el("span", {class:"arowkind"},
-      el("span", {class:"chip"}, isLua ? T["settings.actions.kind.lua"] : T["settings.actions.kind.text"]),
+      el("span", {class:"chip"}, folder ? T["settings.actions.kind.folder"] : isLua ? T["settings.actions.kind.lua"] : T["settings.actions.kind.text"]),
       broken),
-    el("span", {class:"hint arowwhat" + (isLua ? " mono" : "") + (said ? "" : " unnamed")},
-      said || T["settings.actions.body.none"]),
+    el("span", {class:"hint arowwhat" + (isLua ? " mono" : "") + (said || folder ? "" : " unnamed")},
+      folder ? fill(T["settings.quick.folder.count"], {n: actionCount(a)}) : said || T["settings.actions.body.none"]),
     el("span", {class:"go"}, "›"));
   // An existing break shows at once, not only after the dialog was opened
   if (isLua && !actionErrors.has(a)) lintAction(a).then(err => { broken.hidden = !err; });
   const open = () => actionDialog(i, draw);
+  const enter = () => { actionsAt.path.push(i); draw(); };
   row.addEventListener("click", open);
+  // A folder is walked into with a double press, as a folder is anywhere
+  // else; a single press opens it, to rename it
+  if (folder) row.addEventListener("dblclick", enter);
   grip.addEventListener("click", e => e.stopPropagation());
   grip.addEventListener("pointerdown", e => actionCarry(e, row, draw));
   row.addEventListener("keydown", e => {
     if (e.target !== row) return;
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    if (e.key === "Enter" && folder) { e.preventDefault(); enter(); }
+    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
     else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
       // The same move as carrying it one row, for a keyboard
       e.preventDefault();
+      const list = actionsHolder();
       const to = i + (e.key === "ArrowUp" ? -1 : 1);
-      if (to < 0 || to >= current.actions.length) return;
-      [current.actions[i], current.actions[to]] = [current.actions[to], current.actions[i]];
+      if (to < 0 || to >= list.length) return;
+      [list[i], list[to]] = [list[to], list[i]];
       refreshSave();
       draw();
       const moved = document.querySelector('.arow[data-at="' + to + '"]');
@@ -8360,13 +8458,25 @@ function actionRow(a, i, draw) {
 }
 
 // Carry a row by its grip to where it goes. The rows move out of its way as it
-// passes their middle, and the order is written once it is put down
+// passes their middle, and the order is written once it is put down. Held over
+// the middle of a folder it goes inside that folder, and over the way back it
+// goes up to the folder above -- said on the row it would go into, and done
+// when it is let go there
 function actionCarry(e, row, draw) {
   if (e.button !== 0 || actionCarrying) return;
   e.preventDefault();
   const list = row.closest(".alist");
-  const order = () => [...list.querySelectorAll(".arow")].map(r => Number(r.dataset.at));
+  const rows = () => [...list.querySelectorAll(".arow:not(.aback)")];
+  const order = () => rows().map(r => Number(r.dataset.at));
   const before = order().join();
+  // Where it would go inside, while it is held there
+  let into = null;
+  const sayInto = r => {
+    if (into === r) return;
+    if (into) into.classList.remove("into");
+    into = r;
+    if (into) into.classList.add("into");
+  };
   // Listened for on the window, not captured by the grip: moving the row takes
   // it out of the page for an instant, and a capture does not survive that
   actionCarrying = true;
@@ -8377,7 +8487,15 @@ function actionCarry(e, row, draw) {
     ev.preventDefault();
     if (ev.clientY < 48) scrollBy(0, -12);
     else if (ev.clientY > innerHeight - 48) scrollBy(0, 12);
-    const others = [...list.querySelectorAll(".arow")].filter(r => r !== row);
+    // Over the middle half of a folder, or of the way back: into it, and the
+    // rows stay where they are
+    const door = [...list.querySelectorAll(".arow.afolder, .arow.aback")].filter(r => r !== row).find(r => {
+      const b = r.getBoundingClientRect();
+      return Math.abs(ev.clientY - (b.top + b.height / 2)) < b.height / 4;
+    });
+    sayInto(door || null);
+    if (door) return;
+    const others = rows().filter(r => r !== row);
     const next = others.find(r => { const b = r.getBoundingClientRect(); return ev.clientY < b.top + b.height / 2; });
     if (next) { if (row.nextElementSibling !== next) next.before(row); }
     else if (others.length) {
@@ -8407,15 +8525,36 @@ function actionCarry(e, row, draw) {
   const cancel = ev => {
     if (ev.pointerId !== e.pointerId) return;
     stop();
+    sayInto(null);
     draw();
   };
   const end = ev => {
     if (ev.pointerId !== e.pointerId) return;
     stop();
-    const now = order();
-    if (now.join() !== before) {
-      current.actions = now.map(at => current.actions[at]);
+    const here = actionsHolder();
+    const at = Number(row.dataset.at);
+    if (into) {
+      const item = here[at];
+      if (into.classList.contains("aback")) {
+        // Up: after the folder it was in, in the list above
+        const above = actionsListAt(actionsAt.path.slice(0, -1));
+        const folderAt = actionsAt.path[actionsAt.path.length - 1];
+        here.splice(at, 1);
+        above.splice(folderAt + 1, 0, item);
+      } else {
+        const folder = here[Number(into.dataset.at)];
+        here.splice(at, 1);
+        actionsPutIn(folder, item);
+      }
+      sayInto(null);
       refreshSave();
+    } else {
+      const now = order();
+      if (now.join() !== before) {
+        const items = now.map(n => here[n]);
+        here.splice(0, here.length, ...items);
+        refreshSave();
+      }
     }
     draw();
   };
@@ -8425,12 +8564,16 @@ function actionCarry(e, row, draw) {
 }
 
 async function actionDelete(at, draw) {
-  const a = current.actions[at];
+  const list = actionsHolder();
+  const a = list[at];
   if (!a) return false;
-  if (!await confirmAction(fill(T["settings.actions.delete_confirm"],
-                                {name: a.label || T["settings.actions.name.none"]}), T["common.delete"])) return false;
-  current.actions.splice(at, 1);
-  actionErrors.delete(a);
+  const name = a.label || T["settings.actions.name.none"];
+  const ask = isActionFolder(a)
+    ? fill(T["settings.actions.folder.delete_confirm"], {name, n: actionCount(a)})
+    : fill(T["settings.actions.delete_confirm"], {name});
+  if (!await confirmAction(ask, T["common.delete"])) return false;
+  list.splice(at, 1);
+  for (const gone of actionsAll([a])) actionErrors.delete(gone);
   refreshSave();
   draw();
   return true;
@@ -8443,9 +8586,12 @@ async function actionDelete(at, draw) {
 // Nothing is written into the list until the save is pressed, so a dialog
 // left by Cancel or Esc leaves the list as it was. The save is held, and says
 // why, while the name is missing or the Lua does not parse (STYLEGUIDE 5.4)
-function actionDialog(at, draw) {
+function actionDialog(at, draw, kind) {
   const editing = at !== null && at !== undefined;
-  const have = editing ? (current.actions[at] || {}) : {};
+  const list = actionsHolder();
+  const have = editing ? (list[at] || {}) : {};
+  // A folder: its name, and the way into it. `kind` says so for a new one
+  if (isActionFolder(have) || kind === "folder") return actionFolderDialog(at, draw, have, list);
   const nameLabel = el("label", {}, T["settings.actions.name"]);
   const nameHint = el("div", {class:"hint"}, T["settings.actions.name.hint"]);
   const labelIn = el("input", {type:"text", placeholder:T["settings.actions.label_ph"]});
@@ -8567,12 +8713,12 @@ function actionDialog(at, draw) {
       recheck();
     }
     if (held) { sayWhy(); return; }
-    const it = editing ? current.actions[at] : {};
+    const it = editing ? list[at] : {};
     it.label = labelIn.value.trim();
     it.body = bodyIn.value;
     if (luaIn.checked) it.lua = true; else delete it.lua;
     actionErrors.delete(it);
-    if (!editing) current.actions.push(it);
+    if (!editing) list.push(it);
     refreshSave();
     shut();
     draw();
@@ -8580,6 +8726,86 @@ function actionDialog(at, draw) {
   dress();
   recheck();
   setTimeout(() => (editing ? bodyIn : labelIn).focus(), 0);
+}
+
+// A folder's dialog: what its button says, how many it holds, and the way in
+// to what it holds. `at` is null for a new folder, made in the list in view
+function actionFolderDialog(at, draw, have, list) {
+  const editing = at !== null && at !== undefined;
+  const labelIn = el("input", {type:"text", placeholder:T["settings.actions.label_ph"]});
+  labelIn.value = have.label || "";
+  const save = el("button", {class:"primary"}, T["common.save"]);
+  const why = el("span", {class:"why"});
+  why.hidden = true;
+  let held = null;
+  let asked = false;
+  function recheck() {
+    const wrap = labelIn.parentElement;
+    const had = wrap && wrap.querySelector(".site-warn");
+    if (had) had.remove();
+    const nameWhy = labelIn.value.trim() ? null : T["settings.actions.name_required"];
+    const show = nameWhy && (asked || labelIn.value.trim() !== "");
+    labelIn.classList.toggle("bad", !!show);
+    if (show && wrap) wrap.append(el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, nameWhy)));
+    held = nameWhy ? {at: labelIn, why: nameWhy} : null;
+    save.classList.toggle("held", !!held);
+    if (!held) why.hidden = true;
+    else if (!why.hidden) why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+  }
+  labelIn.addEventListener("input", recheck);
+  const field = (label, control, hint) => el("div", {class:"field"},
+    label, el("div", {class:"fieldctl"}, control), hint);
+  const shut = () => back.remove();
+  const inside = editing
+    ? el("div", {class:"field"},
+        el("label", {}, T["settings.quick.folder.inside"]),
+        el("div", {class:"row", style:"padding:0"},
+          el("span", {class:"hint"}, fill(T["settings.quick.folder.count"], {n: actionCount(have)})),
+          el("button", {class:"quiet", onclick:() => { shut(); actionsAt.path.push(at); draw(); }}, T["settings.actions.folder.open"])),
+        el("div", {class:"hint"}, T["settings.actions.folder.hint"]))
+    : el("div", {class:"hint"}, T["settings.actions.folder.hint"]);
+  const back = openModal(
+    el("div", {class:"mhead"},
+      el("h2", {}, editing ? T["settings.actions.folder.edit_title"] : T["settings.actions.folder.add_title"]),
+      el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
+    el("div", {class:"mbody"},
+      field(el("label", {}, T["settings.actions.folder_name"]), labelIn, el("div", {class:"hint"}, T["settings.actions.folder_name.hint"])),
+      inside),
+    el("div", {class:"mfoot"},
+      editing
+        ? el("button", {class:"danger", onclick: async () => {
+            if (await actionDelete(at, draw)) shut();
+          }}, T["common.delete"])
+        : null,
+      why,
+      el("span", {class:"grow"}),
+      el("button", {class:"quiet", onclick: () => shut()}, T["common.cancel"]),
+      save));
+  back.firstChild.classList.add("framed");
+  back.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); shut(); return; }
+    if (e.key !== "Enter" || e.target !== labelIn) return;
+    e.preventDefault();
+    save.click();
+  });
+  save.addEventListener("click", () => {
+    if (held) {
+      asked = true;
+      recheck();
+      why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+      why.hidden = false;
+      labelIn.focus();
+      return;
+    }
+    const it = editing ? list[at] : {kind: "folder", items: []};
+    it.label = labelIn.value.trim();
+    if (!editing) list.push(it);
+    refreshSave();
+    shut();
+    draw();
+  });
+  recheck();
+  setTimeout(() => labelIn.focus(), 0);
 }
 
 // The built-in starter actions (Continue / Explain / Review / Fix), mirrored from
@@ -13486,15 +13712,24 @@ function payload() {
   if (Object.keys(agreed).length) out.agreed = agreed; else delete out.agreed;
   // Quick actions: drop rows left without a label, and omit the key entirely if none remain.
   if (out.actions) {
-    out.actions = out.actions
+    // `lua` is off unless it's on, so only the exception is worth writing
+    // down. A folder is written with what it holds, cleaned the same way, and
+    // nothing of an action's; an action nothing of a folder's
+    const clean = list => (list || [])
       .filter(a => a && (a.label || "").trim())
-      // `lua` is off unless it's on, so only the exception is worth writing down.
-      .map(a => { const o = Object.assign({}, a); if (!o.lua) delete o.lua; return o; });
+      .map(a => {
+        const o = Object.assign({}, a);
+        if (!o.lua) delete o.lua;
+        if (isActionFolder(o)) { o.items = clean(o.items); delete o.body; delete o.lua; }
+        else { delete o.kind; delete o.items; }
+        return o;
+      });
+    out.actions = clean(out.actions);
     // Drop the block when empty, or when it's still exactly the seeded starter set
     // (so an untouched default config isn't written out with the shown rows).
     const def = defaultActions();
     const sameAsDefault = out.actions.length === def.length && out.actions.every((a, i) =>
-      a.label === def[i].label && (a.body || "") === (def[i].body || "") && !a.lua === !def[i].lua);
+      !a.kind && a.label === def[i].label && (a.body || "") === (def[i].body || "") && !a.lua === !def[i].lua);
     if (!out.actions.length || sameAsDefault) delete out.actions;
   }
   // Operate limits/policy: coerce to numbers, then drop the block entirely when

@@ -61,6 +61,10 @@ export default {
     // Models chosen: the ordinary line, and nothing opened
     ready: `${open(false)}.then(() => {
       if (window.__asked.length) throw new Error("the settings opened though the models are chosen");
+      // Nothing to say, so the panel says nothing: what each mode does is on
+      // the mode, under the pointer
+      if (document.querySelector("#castpanel .castnote")) throw new Error("the panel still carries a line of explanation");
+      if (!document.querySelector("#castlua label.castradio[title]").title) throw new Error("the mode does not say what it does");
     })`,
     // No decision model picks the moves: [Slow] left of the gear, and
     // pressing it opens this page's settings at why

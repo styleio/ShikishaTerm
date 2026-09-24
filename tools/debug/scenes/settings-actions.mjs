@@ -51,6 +51,10 @@ export default {
       { label: 'To reviewer', body: 'shikisha.send_to_tab("reviewer", tab.output)', lua: true },
       { label: 'Broken', body: 'shikisha.send_to_tab("reviewer", tab.output', lua: true },
       { label: 'Fix', body: 'Fix that and show me the change.' },
+      { label: 'Tests', kind: 'folder', items: [
+        { label: 'Run', body: 'Run the tests and report what failed.' },
+        { label: 'Unit', kind: 'folder', items: [{ label: 'One', body: 'Run only the failing unit test.' }] },
+      ] },
     ],
   },
   scenes: {
@@ -70,5 +74,31 @@ export default {
     carrying: carry(5, 1, true),
     // The same row put down where it was carried: the order really written
     carried: carry(5, 1, false),
+    // A folder's row: the folder's drawing before its name, and how many it
+    // holds; its dialog is the name and the way in
+    'dialog-folder': dialog(6),
+    // Inside the folder: the crumbs above, the way back first, and the rows
+    // it holds -- a folder inside it included
+    inside: '(async () => {' + open
+      + 'document.querySelector(\'.arow[data-at="6"]\').dispatchEvent(new MouseEvent("dblclick", {bubbles:true}));'
+      + 'await ' + wait(300) + ';'
+      + 'const rows = [...document.querySelectorAll("#actionslist .arow")].map(r => r.textContent.trim());'
+      + 'if (!document.querySelector("#actionslist .arow.aback")) throw new Error("no way back first: " + rows.join(" | "));'
+      + 'if (document.querySelector(".acrumbs").hidden) throw new Error("the crumbs are hidden inside a folder");'
+      + '})()',
+    // A row carried onto a folder goes inside it: the order really written
+    'carried-in': '(async () => {' + open
+      + 'const grip = document.querySelector(\'.arow[data-at="0"] .agrip\');'
+      + 'const g = grip.getBoundingClientRect();'
+      + 'const at = (x, y) => ({pointerId: 1, pointerType: "mouse", button: 0, clientX: x, clientY: y, bubbles: true});'
+      + 'grip.dispatchEvent(new PointerEvent("pointerdown", at(g.left + 8, g.top + 8)));'
+      + 'const t = document.querySelector(\'.arow[data-at="6"]\').getBoundingClientRect();'
+      + 'const y = t.top + t.height * 0.5, x = t.left + 40;'
+      + 'for (let k = 1; k <= 8; k++) { dispatchEvent(new PointerEvent("pointermove", at(g.left + 8 + (x - g.left - 8) * k / 8, g.top + 8 + (y - g.top - 8) * k / 8))); await ' + wait(30) + '; }'
+      + 'dispatchEvent(new PointerEvent("pointerup", at(x, y))); await ' + wait(600) + ';'
+      + 'const f = current.actions.find(a => a.kind === "folder");'
+      + 'if (!f.items.some(i => i.label === "Continue")) throw new Error("the row did not go inside: " + JSON.stringify(current.actions.map(a => a.label)));'
+      + 'if (current.actions.some(a => a.label === "Continue")) throw new Error("the row stayed outside as well");'
+      + '})()',
   },
 };

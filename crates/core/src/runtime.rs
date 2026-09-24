@@ -3023,8 +3023,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // A Lua quick-action fired from the phone. It's not a keystroke,
                     // so route it straight to the same queue the window's ipc path
                     // fills (drained and run against the active tab below).
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::RunAction { index }) => {
-                        shell.mail().run_actions.push(index);
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::RunAction { path }) => {
+                        shell.mail().run_actions.push(path);
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Words { on, goal, agree }) => {
                         shell.mail().words.push((on, goal, agree));
@@ -3829,6 +3829,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let _ = caps.browser_toast(&key, text, false);
             }
         }
+        // What the 📼 panel says for a moment, drawn by the page in view the
+        // same way the flash above is
+        for (text, warn) in shell.mail().page_toasts.drain(..).collect::<Vec<_>>() {
+            if let Some(key) = focused_page(&pane_layout, &ui.surfaces) {
+                let _ = caps.browser_toast(&key, &text, warn);
+            }
+        }
         // Comfortably longer than the longest the screen shows one for, so the
         // page is what decides when a message fades and this only clears up after it
         if flash.is_some() && flash_at.elapsed() >= FLASH_LIFE {
@@ -4464,11 +4471,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
 
         // Lua quick-actions tapped in the bar: look up the code (kept server-side)
-        // and run it against the active tab. Its commands drain with the hooks'.
-        for index in shell.mail().take_run_actions() {
+        // by where the action stands, folders included, and run it against the
+        // active tab. Its commands drain with the hooks'.
+        for path in shell.mail().take_run_actions() {
             let Some(code) = cfg
                 .as_ref()
-                .and_then(|c| c.actions.get(index))
+                .and_then(|c| config::action_at(&c.actions, &path))
                 .filter(|a| a.lua)
                 .map(|a| a.body.clone())
             else {
@@ -4484,6 +4492,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     _ => continue,
                 },
             };
+            // A desk with no automation of its own has no engine until one
+            // is needed; a quick action is such a need, as a words run is
+            if engine.is_none() {
+                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+            }
             if let Some(eng) = engine.as_mut() {
                 eng.fire_action(&code, &ctx);
             }

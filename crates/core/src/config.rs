@@ -1271,6 +1271,10 @@ fn default_attach_mb() -> u32 {
 /// A one-click action in the sub-input bar. `body` is text to insert into the
 /// composer (the beginner default) or, when `lua` is true, Lua run in the scoped
 /// sandbox (advanced). Advanced is per-action, so a list can mix both freely.
+///
+/// Or a folder of them (`kind: "folder"`): a button that, pressed, shows what
+/// is inside it in the bar, with the way back first -- the same shape the quick
+/// commands' folders have, as deep as anyone cares to nest them.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ActionSpec {
     /// Button label shown in the bar.
@@ -1281,6 +1285,36 @@ pub struct ActionSpec {
     /// Advanced: `body` is Lua run in the sandbox, not text to insert.
     #[serde(default)]
     pub lua: bool,
+    /// `"folder"` for a folder; nothing for an action
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// What a folder holds, in the bar's order
+    #[serde(default)]
+    pub items: Vec<ActionSpec>,
+}
+
+impl ActionSpec {
+    pub fn is_folder(&self) -> bool {
+        self.kind.as_deref() == Some(ACTION_FOLDER)
+    }
+}
+
+/// The `kind` an action is written with when it is a folder
+pub const ACTION_FOLDER: &str = "folder";
+
+/// The action standing at `path`: the places walked down from the top, the
+/// folders' places first. Nothing when the path leaves the list or walks into
+/// an action that is not a folder
+pub fn action_at<'a>(list: &'a [ActionSpec], path: &[usize]) -> Option<&'a ActionSpec> {
+    let (first, rest) = path.split_first()?;
+    let a = list.get(*first)?;
+    if rest.is_empty() {
+        return Some(a);
+    }
+    if !a.is_folder() {
+        return None;
+    }
+    action_at(&a.items, rest)
 }
 
 /// The quick actions for the sub-input bar (empty if none configured).
@@ -8144,6 +8178,30 @@ mod browser_kind_tests {
         assert_eq!(command_value(r#""C:\Program Files\Git\bin\bash.exe" --login -i"#),
             serde_json::json!([r"C:\Program Files\Git\bin\bash.exe", "--login", "-i"]));
         assert_eq!(command_value("powershell.exe"), serde_json::json!("powershell.exe"));
+    }
+
+    /// A quick action is found by where it stands, the folders' places first,
+    /// and a path that walks into an action that is no folder, or off the end,
+    /// finds nothing
+    #[test]
+    fn a_quick_action_is_found_by_where_it_stands() {
+        let list: Vec<crate::config::ActionSpec> = serde_json::from_str(
+            r#"[{"label":"a","body":"A"},
+                {"label":"f","kind":"folder","items":[
+                  {"label":"b","body":"B","lua":true},
+                  {"label":"g","kind":"folder","items":[{"label":"c","body":"C"}]}]}]"#,
+        )
+        .unwrap();
+        let at = |p: &[usize]| crate::config::action_at(&list, p).map(|a| a.label.as_str());
+        assert_eq!(at(&[0]), Some("a"));
+        assert_eq!(at(&[1]), Some("f"));
+        assert!(crate::config::action_at(&list, &[1]).is_some_and(|f| f.is_folder()));
+        assert_eq!(at(&[1, 0]), Some("b"));
+        assert!(crate::config::action_at(&list, &[1, 0]).is_some_and(|a| a.lua && !a.is_folder()));
+        assert_eq!(at(&[1, 1, 0]), Some("c"));
+        assert_eq!(at(&[0, 0]), None, "an action was walked into as a folder");
+        assert_eq!(at(&[2]), None);
+        assert_eq!(at(&[]), None);
     }
 
     /// A tab is found by the title it goes by, named or not, and an empty name

@@ -160,7 +160,7 @@ pub struct Mailbox {
     pub covered: Option<bool>,
     /// Quick-action chips (Lua) fired from the bar, by index into config.actions.
     /// The loop looks up the code and runs it against the active tab.
-    pub run_actions: Vec<usize>,
+    pub run_actions: Vec<Vec<usize>>,
     /// "Operate a target tab" requests from the 🎯 panel: (target tab index, goal).
     /// target 0 = detach. The loop attaches the active AI as the target's operator.
     pub operates: Vec<(usize, String)>,
@@ -170,6 +170,8 @@ pub struct Mailbox {
     pub words: Vec<(bool, String, bool)>,
     /// Presses on the notice about a run that ended badly (true = explain it)
     pub why_stopped: Vec<bool>,
+    /// Short messages for the page in view to draw (text, a warning)
+    pub page_toasts: Vec<(String, bool)>,
     /// 📼 record-mode toggles from the composer (true = arm the shown browser's
     /// recorder, false = silence recording everywhere).
     pub record_arms: Vec<bool>,
@@ -431,7 +433,7 @@ impl Mailbox {
         std::mem::take(&mut self.ideas)
     }
     /// Takes the indices of Lua quick-actions fired since the last drain.
-    pub fn take_run_actions(&mut self) -> Vec<usize> {
+    pub fn take_run_actions(&mut self) -> Vec<Vec<usize>> {
         std::mem::take(&mut self.run_actions)
     }
     /// Takes the 📼 record-mode toggles since the last drain.

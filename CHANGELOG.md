@@ -25,6 +25,20 @@ once it reaches its first tagged release.
   leaves it, or into gh as `gh auth login --with-token` does). The window the
   account picker opens shows the same three cards, and comes back with a
   sign-in put into this PC's git chosen, as it does with an account made.
+- **Quick actions can be put in folders.** A folder is a button in the bar with
+  the folder's drawing before its name; pressed, the bar shows what is inside,
+  with Back first, as deep as the folders go -- the same walk the quick commands'
+  folders take. Under Settings > Quick actions a folder is a row that says how
+  many it holds: press it twice, or Enter, to go inside (Back is the first row
+  there); let a carried row go over a folder to put it inside, and over Back to
+  take it out. "+ Add a folder" makes one where the list is standing.
+
+### Fixed
+- **Every row's right-click has Rename and Edit.** A page, a git or file panel
+  and an editor had neither, in the list on the left and on the tab over the
+  pane alike; only a terminal did. Renaming one keeps the name automation
+  calls it by, so the row stays the same row, and Edit opens that row's own
+  settings.
 
 ### Changed
 - **Nothing chosen is this PC's git.** A project that has chosen no git account
@@ -40,15 +54,6 @@ once it reaches its first tagged release.
   made once and seldom changed, sitting where it read as something to change;
   the project's page is where it is made, and the refusal that needs it says
   so.
-
-### Fixed
-- **Every row's right-click has Rename and Edit.** A page, a git or file panel
-  and an editor had neither, in the list on the left and on the tab over the
-  pane alike; only a terminal did. Renaming one keeps the name automation
-  calls it by, so the row stays the same row, and Edit opens that row's own
-  settings.
-
-### Changed
 - **The AIs are one screen: Settings > AI agents.** The assistant AI, Yolo mode,
   the AI for automatic names and its model move there from Basic, joined by the
   **deciding AI** -- what picks the next move on a page driven in words, and

@@ -812,13 +812,15 @@ impl WinSurface {
                 Ev::FolderView { folder } => self.mail.folder_views.push(folder),
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
-                Ev::RunAction { index } => self.mail.run_actions.push(index),
+                Ev::RunAction { path } => self.mail.run_actions.push(path),
                 // Operate-a-target request; the loop has the engine to attach it.
                 Ev::Operate { target, goal } => self.mail.operates.push((target, goal)),
                 // 🗣 drive the shown page from words
                 Ev::Words { on, goal, agree } => self.mail.words.push((on, goal, agree)),
                 // The notice about a run that ended badly
                 Ev::WhyStopped { ask } => self.mail.why_stopped.push(ask),
+                // A message for the page in view to draw; the loop knows which
+                Ev::PageToast { text, warn } => self.mail.page_toasts.push((text, warn)),
                 // Save the newest replay.lua to Downloads (the board can't
                 // download over HTTP; the loop owns the answer message).
                 Ev::ReplaySave => self.mail.replay_saves = true,

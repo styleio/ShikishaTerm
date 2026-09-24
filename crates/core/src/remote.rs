@@ -170,6 +170,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // reach as typing that instruction into the AI from the phone.
         Ev::Operate { .. } => true,
         Ev::Words { .. } => true,
+        // A phone draws the page as a picture of its own, and shows its
+        // messages over it itself: only the window asks the page to
+        Ev::PageToast { .. } => false,
         Ev::WhyStopped { .. } => true,
         // 📼 arming the page recorder and ▶ running composer Lua. Both stay
         // inside the run_scoped jail on the shown browser — no more reach than

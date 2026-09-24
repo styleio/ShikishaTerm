@@ -463,10 +463,11 @@ pub enum Ev {
     /// Made by the window from the tool page's message, never read from a
     /// page's intent. A phone asks the same questions over its own route
     SnipAsk { msg: String },
-    /// A Lua quick-action fired from the bar. `index` is its position in
-    /// config.actions; the code is looked up and run server-side (the page never
-    /// holds Lua source). Allowed from afar — it runs the user's own action.
-    RunAction { index: usize },
+    /// A Lua quick-action fired from the bar. `path` is where it stands in
+    /// config.actions: the folders' places down to it, then its own; the code
+    /// is looked up and run server-side (the page never holds Lua source).
+    /// Allowed from afar -- it runs the user's own action.
+    RunAction { path: Vec<usize> },
     /// Operate a target tab (🎯): attach the active AI as the operator of tab
     /// `target` (0 = detach) and, if `goal` is non-empty, hand it that goal. The
     /// AI then writes Lua to drive the target (reuses the browser-agent loop).
@@ -481,6 +482,11 @@ pub enum Ev {
     /// "Why did it stop?" -- have the last run's ending explained, or put the
     /// notice away once it has been read. `ask` false is the putting away
     WhyStopped { ask: bool },
+    /// A short message to show on the page in view, drawn by the page itself:
+    /// in the window a page is a window of its own, and nothing of the board's
+    /// can be drawn over it. What the 📼 panel has to say for a moment goes
+    /// here rather than into the panel, where it pushed the buttons about
+    PageToast { text: String, warn: bool },
     /// 📼 record mode toggled in the composer. On arms the Lua recorder on the
     /// shown browser (the loop resolves which one that is); off silences it
     /// everywhere — there's only ever one recorder.
@@ -1168,10 +1174,16 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("limit_ack") => Ev::LimitAck {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
         },
-        // A quick-action chip whose payload is Lua (the code stays server-side —
-        // the page only knows the index). Runs it against the active tab.
+        // A quick-action chip whose payload is Lua (the code stays server-side --
+        // the page only knows where the action stands: the folders down to it,
+        // then its place). Runs it against the active tab
         Some("runaction") => Ev::RunAction {
-            index: v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+            path: v
+                .get("path")
+                .and_then(|p| p.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as usize).collect())
+                .or_else(|| v.get("index").and_then(|x| x.as_u64()).map(|i| vec![i as usize]))
+                .unwrap_or_default(),
         },
         // 📼 record mode toggled in the composer (see `Ev::Record`).
         Some("record") => Ev::Record {
@@ -1269,6 +1281,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         // The notice about a run that ended badly: explain it, or put it away
         Some("whystopped") => Ev::WhyStopped {
             ask: v.get("ask").and_then(|x| x.as_bool()).unwrap_or(true),
+        },
+        Some("pagetoast") => Ev::PageToast {
+            text: v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            warn: v.get("warn").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         // A file pasted/attached in the desktop composer. Saved beside the active
         // tab; the result is handed back by eval-ing window.__attachDone(id, …).
