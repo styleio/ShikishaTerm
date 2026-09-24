@@ -7020,13 +7020,17 @@ function nameSlot(where, key, now, save, cls) {
 
 // A tab's own menu, from its row in the list or its tab over the pane: its
 // name, changed where it stands, and its settings page -- which the list of
-// settings no longer carries. A browser or a git panel has neither
+// settings no longer carries. Every row the settings write has both: a
+// terminal, a page, a git or file panel, an editor, a split. The pages the
+// app opens by itself (the settings, a result, the guide) and the Issue tab
+// are nobody's to rename, and have no page of settings to go to
 function tabMenu(anchor, t, where, e) {
-  if (t.kind !== "pty" || t.settings) return;
+  if (t.settings || t.kind === "issues" || (t.kind === "browser" && !t.restartable)) return;
   const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
   openList(anchor, [
     item(T["tui.menu.rename"] || "", () => startRename(where || "tabs", "t:" + t.index)),
-    item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),
+    // A split has no page of its own in the settings yet
+    t.kind === "split" ? null : item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),
   ], false, e);
 }
 function folderMenu(e, g) {
@@ -14604,6 +14608,14 @@ function openSettings(section, ret, folder, tab) {
     // pages among the terminals, so a place would land on the wrong one
     if (at && at.kind === "browser" && !at.settings && at.id) {
       tabkey = at.id;
+      const g = at.group != null ? (S.groups || [])[at.group] : null;
+      if (g && g.folder) folder = g.folder;
+    }
+    // A git or file panel, an editor, a split: written in the same list as a
+    // page and, like a page, not counted among the terminals -- so it too is
+    // named by the key its row goes by ("git:<key>", without the kind)
+    if (at && !at.settings && !["pty", "browser", "issues", "split"].includes(at.kind) && at.key) {
+      tabkey = at.key.replace(/^[a-z]+:/, "");
       const g = at.group != null ? (S.groups || [])[at.group] : null;
       if (g && g.folder) folder = g.folder;
     }

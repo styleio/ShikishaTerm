@@ -6030,9 +6030,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // the reload that follows the write then finds it under that title,
         // rather than ending it and starting another under the new one
         for (index, name) in shell.mail().take_tab_names() {
-            let Some(i) = session_at(&surfaces, index) else { continue };
-            let Some(old) = tabs.get(i).map(|t| t.title.clone()) else { continue };
             let wanted = name.trim();
+            let Some(i) = session_at(&surfaces, index) else {
+                // No session: a page, a git or file panel, an editor. Found by
+                // where it is written, the way a tab moved to a folder is
+                let Some(desk) = desks.get(desk_index) else { continue };
+                let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
+                let rows = surfaces_written(Some(desk), &titles, &caps.hosted_names(), &editors, issues_open);
+                let written = index.checked_sub(1).and_then(|i| rows.get(i)).and_then(|(_, w)| *w);
+                let Some((written, ft)) = written.and_then(|w| desk.tabs.get(w).map(|ft| (w, ft))) else {
+                    flash = Some(i18n::t("err.tab.not_in_settings"));
+                    continue;
+                };
+                let mark = config::TabMark::of(desk, ft);
+                if let Err(e) = config::rename_tab_written(&desk.name, written, &mark, wanted) {
+                    flash = Some(format!("{e:#}"));
+                }
+                continue;
+            };
+            let Some(old) = tabs.get(i).map(|t| t.title.clone()) else { continue };
             if !wanted.is_empty() && wanted != old && tabs.iter().any(|t| t.title == wanted) {
                 flash = Some(i18n::tp("err.tab.name_taken", &[("name", wanted)]));
                 continue;

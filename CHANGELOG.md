@@ -8,6 +8,13 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **Every row's right-click has Rename and Edit.** A page, a git or file panel
+  and an editor had neither, in the list on the left and on the tab over the
+  pane alike; only a terminal did. Renaming one keeps the name automation
+  calls it by, so the row stays the same row, and Edit opens that row's own
+  settings.
+
 ### Changed
 - **The AIs are one screen: Settings > AI agents.** The assistant AI, Yolo mode,
   the AI for automatic names and its model move there from Basic, joined by the

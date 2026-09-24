@@ -13654,15 +13654,22 @@ load().then(() => {
       return;
     }
   }
-  // ?tabkey=<name> lands on a browser tab, by the name its page goes by (its
-  // id, else its name). &section=words then shows its models: what the board
-  // opens when a page is to be driven in words and has none chosen
+  // ?tabkey=<name> lands on a browser tab, a git or file panel, an editor or
+  // a split, by the name its row goes by: its id, else its name -- as written,
+  // or as the app settles it into a name automation can use -- else the
+  // kind's own word. &section=words then shows a page's models: what the
+  // board opens when a page is to be driven in words and has none chosen
   const tabKey = (q.get("tabkey") || "").trim();
   const keyDesk = idx("desk");
   if (tabKey && desks[keyDesk]) {
     const tabs = desks[keyDesk].tabs || [];
-    const ti = tabs.findIndex(t => catOf(t.command) === "browser"
-      && ((t.id || "").trim() || (t.name || "").trim() || "browser") === tabKey);
+    const ROW_KINDS = {browser:"browser", git:"git", sftp:"sftp", editor:"editor"};
+    const ti = tabs.findIndex(t => {
+      const cat = catOf(t.command);
+      if (!(cat in ROW_KINDS)) return false;
+      const id = (t.id || "").trim(), name = (t.name || "").trim();
+      return [id, name, slugId(name), ROW_KINDS[cat]].filter(Boolean).includes(tabKey);
+    });
     if (ti >= 0) {
       sel = {desk:keyDesk, grp:tabs[ti].group || 0, tab:ti, global:false};
       wordsAsked = sec === "words";

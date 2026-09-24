@@ -4417,56 +4417,107 @@ pub fn take_tab(desk_name: &str, written: usize, mark: &TabMark) -> Result<Taken
     take_tab_at(&config_file_path(), desk_name, written, mark)
 }
 
+/// Where the tab `written` stands in `folders`: its folder, and the list
+/// positions down to its line, outermost first. Where it should be, and
+/// failing that, wherever it is now -- the file may have gained or lost a tab
+/// above it since it was read (two tabs closed in a row are exactly that)
+fn tab_spot(folders: &[serde_json::Value], written: usize, mark: &TabMark) -> Result<(usize, Vec<usize>)> {
+    // Every line, in the order the desk reads them: folder by folder, each
+    // tab followed by its children
+    fn walk(list: &[serde_json::Value], at: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        for (i, line) in list.iter().enumerate() {
+            at.push(i);
+            out.push(at.clone());
+            if let Some(kids) = line.get("children").and_then(|c| c.as_array()) {
+                walk(kids, at, out);
+            }
+            at.pop();
+        }
+    }
+    let mut spots: Vec<(usize, Vec<usize>)> = Vec::new();
+    for (fi, g) in folders.iter().enumerate() {
+        let mut paths = Vec::new();
+        if let Some(list) = g.get("tabs").and_then(|t| t.as_array()) {
+            walk(list, &mut Vec::new(), &mut paths);
+        }
+        spots.extend(paths.into_iter().map(|p| (fi, p)));
+    }
+    let line_at = |fi: usize, p: &[usize]| -> Option<&serde_json::Value> {
+        let mut list = folders.get(fi)?.get("tabs")?.as_array()?;
+        let (last, up) = p.split_last()?;
+        for i in up {
+            list = list.get(*i)?.get("children")?.as_array()?;
+        }
+        list.get(*last)
+    };
+    let is_it = |(fi, p): &&(usize, Vec<usize>)| {
+        mark.works_in(&folders[*fi]) && line_at(*fi, p).is_some_and(|l| mark.fits(l))
+    };
+    spots
+        .get(written)
+        .filter(is_it)
+        .or_else(|| spots.iter().find(is_it))
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.tab.not_in_settings")))
+}
+
+/// The list the line at `p` in folder `fi` stands in, and its index there
+/// (see [`tab_spot`])
+fn tab_list_mut<'a>(
+    folders: &'a mut [serde_json::Value],
+    fi: usize,
+    p: &[usize],
+) -> Option<(&'a mut Vec<serde_json::Value>, usize)> {
+    let mut list = folders.get_mut(fi)?.get_mut("tabs")?.as_array_mut()?;
+    let (last, up) = p.split_last()?;
+    for i in up {
+        list = list.get_mut(*i)?.get_mut("children")?.as_array_mut()?;
+    }
+    Some((list, *last))
+}
+
+/// A person naming a tab that has no session to be found by its title -- a
+/// page, a git or file panel, an editor -- found by where it is written, the
+/// way one is moved to a folder. The name automation calls it, settled when
+/// the settings were read, is written down beside the name when the line had
+/// none: the board knows the row by it, and a row whose name it came from
+/// would otherwise come back from the reload as another row
+pub fn rename_tab_written(desk_name: &str, written: usize, mark: &TabMark, name: &str) -> Result<()> {
+    rename_tab_written_at(&config_file_path(), desk_name, written, mark, name)
+}
+
+/// The same, told which settings file to edit.
+pub fn rename_tab_written_at(path: &Path, desk_name: &str, written: usize, mark: &TabMark, name: &str) -> Result<()> {
+    with_folders(path, desk_name, |folders| {
+        let (fi, p) = tab_spot(folders, written, mark)?;
+        let (list, last) = tab_list_mut(folders, fi, &p).expect("walked just above");
+        let Some(o) = list[last].as_object_mut() else {
+            anyhow::bail!(crate::i18n::t("err.tab.not_in_settings"));
+        };
+        let unnamed = o.get("id").and_then(|v| v.as_str()).map(str::trim).is_none_or(str::is_empty);
+        if unnamed && let Some(id) = mark.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            o.insert("id".into(), serde_json::json!(id));
+        }
+        match name.trim() {
+            "" => {
+                o.shift_remove("name");
+            }
+            n => {
+                o.insert("name".into(), serde_json::json!(n));
+            }
+        }
+        Ok(())
+    })
+}
+
 /// The same, told which settings file to edit.
 pub fn take_tab_at(path: &Path, desk_name: &str, written: usize, mark: &TabMark) -> Result<TakenTab> {
     let mut taken = None;
     with_folders(path, desk_name, |folders| {
-        // Every line, in the order the desk reads them: folder by folder, each
-        // tab followed by its children
-        fn walk(list: &[serde_json::Value], at: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
-            for (i, line) in list.iter().enumerate() {
-                at.push(i);
-                out.push(at.clone());
-                if let Some(kids) = line.get("children").and_then(|c| c.as_array()) {
-                    walk(kids, at, out);
-                }
-                at.pop();
-            }
-        }
-        let mut spots: Vec<(usize, Vec<usize>)> = Vec::new();
-        for (fi, g) in folders.iter().enumerate() {
-            let mut paths = Vec::new();
-            if let Some(list) = g.get("tabs").and_then(|t| t.as_array()) {
-                walk(list, &mut Vec::new(), &mut paths);
-            }
-            spots.extend(paths.into_iter().map(|p| (fi, p)));
-        }
-        let line_at = |fi: usize, p: &[usize]| -> Option<&serde_json::Value> {
-            let mut list = folders.get(fi)?.get("tabs")?.as_array()?;
-            let (last, up) = p.split_last()?;
-            for i in up {
-                list = list.get(*i)?.get("children")?.as_array()?;
-            }
-            list.get(*last)
-        };
-        // Where it should be, and failing that, wherever it is now -- the file
-        // may have gained or lost a tab above it since it was read (two tabs
-        // closed in a row are exactly that)
-        let is_it = |(fi, p): &&(usize, Vec<usize>)| {
-            mark.works_in(&folders[*fi]) && line_at(*fi, p).is_some_and(|l| mark.fits(l))
-        };
-        let (fi, p) = spots
-            .get(written)
-            .filter(is_it)
-            .or_else(|| spots.iter().find(is_it))
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.tab.not_in_settings")))?;
+        let (fi, p) = tab_spot(folders, written, mark)?;
         let folder = folders[fi].get("cwd").and_then(|c| c.as_str()).map(str::to_string);
-        let mut list = folders[fi]["tabs"].as_array_mut().expect("walked just above");
-        let (last, up) = p.split_last().expect("a spot always has a place");
-        for i in up {
-            list = list[*i]["children"].as_array_mut().expect("walked just above");
-        }
+        let (list, last) = tab_list_mut(folders, fi, &p).expect("walked just above");
+        let last = &last;
         let mut line = list.remove(*last);
         let kids = line
             .as_object_mut()
@@ -8103,6 +8154,41 @@ mod browser_kind_tests {
         let cfg: crate::config::Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let tabs = &cfg.desks[0].folders[0].tabs;
         assert_eq!((tabs[0].name.as_deref(), tabs[1].name.as_deref()), (None, Some("second")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tab with no session -- a page, a panel -- is renamed by where it is
+    /// written, and keeps the name automation settled on for it: written down
+    /// beside the new name, so the row the board knows is the row that comes
+    /// back. An empty name hands it back to its command
+    #[test]
+    fn a_page_is_renamed_where_it_is_written_and_keeps_its_id() {
+        let dir = std::env::temp_dir().join(format!("shikisha-pagename-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"desks":[{"name":"W","folders":[{"cwd":"D:/a","tabs":[
+            {"name":"lead","command":"claude"},{"name":"Shop","command":"browser https://example.com"}]}]}]}"#).unwrap();
+        let read = || {
+            let cfg: Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            cfg.resolve_desks().0.remove(0)
+        };
+        let desk = read();
+        let page = desk.tabs.iter().position(|t| t.cfg.name.as_deref() == Some("Shop")).unwrap();
+        let mark = crate::config::TabMark::of(&desk, &desk.tabs[page]);
+        assert_eq!(mark.id.as_deref(), Some("shop"), "the settled name is not what the board knows the page by");
+        crate::config::rename_tab_written_at(&path, "W", page, &mark, " Store ").unwrap();
+        let desk = read();
+        let t = &desk.tabs[page];
+        assert_eq!((t.cfg.name.as_deref(), t.cfg.id.as_deref()), (Some("Store"), Some("shop")), "the page came back as another row");
+        assert_eq!(desk.tabs[0].cfg.name.as_deref(), Some("lead"), "the other tab was touched");
+        // Under its new name it is still found, and an empty name unnames it
+        let mark = crate::config::TabMark::of(&desk, t);
+        crate::config::rename_tab_written_at(&path, "W", page, &mark, "").unwrap();
+        let desk = read();
+        assert_eq!((desk.tabs[page].cfg.name.as_deref(), desk.tabs[page].cfg.id.as_deref()), (None, Some("shop")));
+        // A place that holds somebody else is refused rather than renamed
+        let stranger = crate::config::TabMark { id: Some("nobody".into()), name: None, argv: vec!["git".into()], folder: mark.folder.clone() };
+        assert!(crate::config::rename_tab_written_at(&path, "W", page, &stranger, "x").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
