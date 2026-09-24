@@ -812,7 +812,7 @@ impl WinSurface {
                 Ev::FolderView { folder } => self.mail.folder_views.push(folder),
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
-                Ev::RunAction { index } => self.mail.run_actions.push(index),
+                Ev::RunAction { path } => self.mail.run_actions.push(path),
                 // Operate-a-target request; the loop has the engine to attach it.
                 Ev::Operate { target, goal } => self.mail.operates.push((target, goal)),
                 // 🗣 drive the shown page from words

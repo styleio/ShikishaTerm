@@ -95,6 +95,8 @@ One-tap buttons in the input bar
 - **Text to insert** — Dropped into the composer when the button is pressed, ready to send.
 - **Lua to run** — Run when the button is pressed. It is checked here before it can be saved.
 - **Run as Lua instead of inserting text** — Advanced. On tap the body runs as Lua instead of being typed into the composer, with the same commands automation has.
+- **Inside**
+- **Name** — What the folder's button in the bar says.
 
 ### Where it runs
 

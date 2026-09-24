@@ -1328,6 +1328,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Lua actions run on tap (rather than filling the composer) — mark them. */
   .castaction.lua { border-style:dashed; }
   .castaction.lua::before { content:"▶"; margin-right:4px; opacity:.85; }
+  /* A folder opens in place of the row; inside one, the way back is first.
+     Both wear a line drawing in front of their name, as the quick commands'
+     tiles do, so a folder is told from an action without reading it */
+  .castaction .castmark { display:inline-block; width:14px; height:14px; vertical-align:-2px; margin-right:5px; }
+  .castaction .castmark svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2;
+    stroke-linecap:round; stroke-linejoin:round; }
+  .castaction.up { border-color:var(--line); background:var(--bg); color:var(--dim); }
+  .castaction.up:active { color:#04121c; }
   .castkey { flex:0 0 auto; min-width:40px; padding:8px 10px; font-size:14px;
     border:1px solid var(--line); border-radius:var(--r-ctl); background:var(--bg);
     color:var(--text); cursor:pointer; user-select:none; }
@@ -3859,6 +3867,20 @@ const ACTIONS = {{ACTIONS}};
 // the label is the translated description a person reads
 const KEY_ACTIONS = {{KEY_ACTIONS}};
 let curActions = (typeof ACTIONS !== "undefined" && ACTIONS) ? ACTIONS : [];
+// Where the bar stands in the actions' folders: the places walked into,
+// outermost first. Kept across tab switches; the top again when the actions
+// change under it
+let actionsPath = [];
+// The list at `path` in `list`: the top, or a folder's items. Nothing when the
+// path leaves the list or walks into an action that is no folder
+function actionsListAt(list, path) {
+  for (const i of path) {
+    const f = (list || [])[i];
+    if (!f || f.kind !== "folder") return null;
+    list = f.items || [];
+  }
+  return list || [];
+}
 // The access token is never baked into the page. On first pair it rides in the
 // URL (?t=…, straight from the QR); we lift it into sessionStorage and then
 // immediately strip it from the address bar and this history entry with
@@ -13468,24 +13490,48 @@ function buildCastKeys() {
 }
 // The quick-actions row for the sub-input bar. A text action inserts its string
 // into the composer on click (a reviewable "auto-fill", not an immediate send);
-// Lua actions are carried but not fired yet, so only text ones are shown for now
-// (no dead buttons). Returns null when there are none, so the row is omitted.
+// a Lua action is fired server-side by where it stands; a folder replaces the
+// row with what it holds, the way back first -- the same walk the quick
+// commands' folders take. Returns null when there is nothing to show, so the
+// row is omitted.
 function buildActions() {
-  // Keep each action's original index (Lua actions are fired server-side by it).
-  const items = (curActions || []).map((a, i) => ({a, i})).filter(x => x.a && (x.a.text != null || x.a.lua));
-  if (!items.length) return null;
+  let list = actionsListAt(curActions, actionsPath);
+  if (!list) { actionsPath = []; list = curActions || []; }
+  // Keep each action's place in its list (a Lua action is fired by it).
+  const items = list.map((a, i) => ({a, i})).filter(x => x.a && (x.a.kind === "folder" || x.a.text != null || x.a.lua));
+  if (!items.length && !actionsPath.length) return null;
   const row = el("div", {id:"castactions"});
+  // Keep the composer's focus (= the keyboard) when tapping an action.
+  const keep = b => b.addEventListener("pointerdown", (e) => e.preventDefault());
+  const mark = svg => {
+    const s = el("span", {class:"castmark"});
+    s.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + svg + "</svg>";
+    return s;
+  };
+  if (actionsPath.length) {
+    const up = el("button", {class:"castaction up", title:T["settings.quick.back"] || ""},
+      mark(QUICK_BACK_SVG), T["tui.cast.actions.up"] || "Back");
+    keep(up);
+    up.onclick = (e) => { e.stopPropagation(); actionsPath.pop(); renderPanel(); };
+    row.append(up);
+  }
   items.forEach(({a, i}) => {
+    if (a.kind === "folder") {
+      const b = el("button", {class:"castaction folder", title:a.label || ""}, mark(QUICK_FOLDER_SVG), a.label || "•");
+      keep(b);
+      b.onclick = (e) => { e.stopPropagation(); actionsPath.push(i); renderPanel(); };
+      row.append(b);
+      return;
+    }
     const isLua = !!a.lua;
     const b = el("button", {class:"castaction" + (isLua ? " lua" : ""),
       title: isLua ? (a.label || "") : (a.text || "")}, a.label || a.text || "•");
-    // Keep the composer's focus (= the keyboard) when tapping an action.
-    b.addEventListener("pointerdown", (e) => e.preventDefault());
+    keep(b);
     b.onclick = (e) => {
       e.stopPropagation();
       if (isLua) {
-        // The code lives server-side; fire it by index and note that it ran.
-        send({kind:"runaction", index: i});
+        // The code lives server-side; fire it by where it stands and note that it ran.
+        send({kind:"runaction", path: actionsPath.concat(i)});
         toast("▶ " + (a.label || ""));
       } else {
         if (!castInput) return;
@@ -13688,11 +13734,14 @@ function paletteAll() {
     out.push({grp:"quick", label:trail.concat(t.label || t.body || "").join(" › "), run:() => quickPress(t)});
   });
   quickEach(S && S.quick && S.quick.items, []);
-  (typeof curActions !== "undefined" && curActions || []).forEach((a, i) => {
+  const actionEach = (list, path, trail) => (list || []).forEach((a, i) => {
     if (!a) return;
-    if (a.lua) out.push({grp:"run", label:a.label || "action", run:() => send({kind:"runaction", index:i})});
-    else if (a.text != null) out.push({grp:"run", label:a.label || a.text, run:() => insertComposer(a.text)});
+    if (a.kind === "folder") { actionEach(a.items, path.concat(i), trail.concat(a.label || "…")); return; }
+    const label = trail.concat(a.label || a.text || "action").join(" › ");
+    if (a.lua) out.push({grp:"run", label, run:() => send({kind:"runaction", path: path.concat(i)})});
+    else if (a.text != null) out.push({grp:"run", label, run:() => insertComposer(a.text)});
   });
+  actionEach(typeof curActions !== "undefined" && curActions || [], [], []);
   return out;
 }
 function buildPalette(query) {
@@ -14473,6 +14522,7 @@ window.__setTheme = function (vars, light) {
 window.__setActions = function (arr) {
   try {
     curActions = arr || [];
+    actionsPath = [];
     if (castPanel === "actions" && castDock && castDock.style.display === "flex") renderPanel();
   } catch (e) {}
 };
@@ -18658,6 +18708,23 @@ fn key_actions_json() -> String {
 }
 
 pub fn actions_json() -> String {
+    // A folder is handed over with what it holds; an action as its label and
+    // what it does. The bar walks the folders itself and names an action to run
+    // by the places down to it
+    fn one(a: &crate::config::ActionSpec) -> serde_json::Value {
+        if a.is_folder() {
+            return serde_json::json!({
+                "label": a.label,
+                "kind": crate::config::ACTION_FOLDER,
+                "items": a.items.iter().map(one).collect::<Vec<_>>(),
+            });
+        }
+        serde_json::json!({
+            "label": a.label,
+            "text": if a.lua { serde_json::Value::Null } else { serde_json::Value::String(a.body.clone()) },
+            "lua": a.lua,
+        })
+    }
     let configured = crate::config::actions();
     let list: Vec<serde_json::Value> = if configured.is_empty() {
         // A localized starter set, so the bar isn't empty out of the box (this was
@@ -18674,16 +18741,7 @@ pub fn actions_json() -> String {
             })
             .collect()
     } else {
-        configured
-            .into_iter()
-            .map(|a| {
-                serde_json::json!({
-                    "label": a.label,
-                    "text": if a.lua { serde_json::Value::Null } else { serde_json::Value::String(a.body) },
-                    "lua": a.lua,
-                })
-            })
-            .collect()
+        configured.iter().map(one).collect()
     };
     serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())
 }

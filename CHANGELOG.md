@@ -8,6 +8,15 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **Quick actions can be put in folders.** A folder is a button in the bar with
+  the folder's drawing before its name; pressed, the bar shows what is inside,
+  with Back first, as deep as the folders go -- the same walk the quick commands'
+  folders take. Under Settings > Quick actions a folder is a row that says how
+  many it holds: press it twice, or Enter, to go inside (Back is the first row
+  there); let a carried row go over a folder to put it inside, and over Back to
+  take it out. "+ Add a folder" makes one where the list is standing.
+
 ### Fixed
 - **Every row's right-click has Rename and Edit.** A page, a git or file panel
   and an editor had neither, in the list on the left and on the tab over the

@@ -463,10 +463,11 @@ pub enum Ev {
     /// Made by the window from the tool page's message, never read from a
     /// page's intent. A phone asks the same questions over its own route
     SnipAsk { msg: String },
-    /// A Lua quick-action fired from the bar. `index` is its position in
-    /// config.actions; the code is looked up and run server-side (the page never
-    /// holds Lua source). Allowed from afar — it runs the user's own action.
-    RunAction { index: usize },
+    /// A Lua quick-action fired from the bar. `path` is where it stands in
+    /// config.actions: the folders' places down to it, then its own; the code
+    /// is looked up and run server-side (the page never holds Lua source).
+    /// Allowed from afar -- it runs the user's own action.
+    RunAction { path: Vec<usize> },
     /// Operate a target tab (🎯): attach the active AI as the operator of tab
     /// `target` (0 = detach) and, if `goal` is non-empty, hand it that goal. The
     /// AI then writes Lua to drive the target (reuses the browser-agent loop).
@@ -1168,10 +1169,16 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("limit_ack") => Ev::LimitAck {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
         },
-        // A quick-action chip whose payload is Lua (the code stays server-side —
-        // the page only knows the index). Runs it against the active tab.
+        // A quick-action chip whose payload is Lua (the code stays server-side --
+        // the page only knows where the action stands: the folders down to it,
+        // then its place). Runs it against the active tab
         Some("runaction") => Ev::RunAction {
-            index: v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+            path: v
+                .get("path")
+                .and_then(|p| p.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as usize).collect())
+                .or_else(|| v.get("index").and_then(|x| x.as_u64()).map(|i| vec![i as usize]))
+                .unwrap_or_default(),
         },
         // 📼 record mode toggled in the composer (see `Ev::Record`).
         Some("record") => Ev::Record {
