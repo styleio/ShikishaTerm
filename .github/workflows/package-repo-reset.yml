@@ -1,0 +1,30 @@
+# Start the Linux package repository over.
+#
+# pkg.shikisha-term.com is rebuilt by every release from what the storage
+# already holds plus the new packages, so a package or a key that has to go
+# stays until something removes it. This empties the storage; the next
+# release then publishes itself alone, signed with the key of the day.
+# Run it by hand, from the Actions tab, and only when the repository is meant
+# to forget everything it has served.
+name: package repository reset
+
+on:
+  workflow_dispatch:
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    env:
+      BUCKET: ${{ vars.R2_BUCKET || 'shikisha-term-pkg' }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+    steps:
+      - name: Empty the storage behind pkg.shikisha-term.com
+        env:
+          R2: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          aws s3 rm "s3://$BUCKET" --recursive --endpoint-url "$R2" --no-progress || true
+          left=$(aws s3 ls "s3://$BUCKET" --recursive --endpoint-url "$R2" | wc -l)
+          echo "objects left: $left"
+          [ "$left" -eq 0 ]
