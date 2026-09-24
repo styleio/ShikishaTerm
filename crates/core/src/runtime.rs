@@ -3818,19 +3818,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if flash != flash_shown {
             flash_shown = flash.clone();
             flash_at = Instant::now();
-            // A page placed in the focused pane is a window of its own: nothing
-            // of ours can be drawn over it, so the message would sit behind the
-            // page (or, in a split, be cut off at the pane's edge). Hand it to
-            // that page to draw, the way the pen is handed over
-            if let (Some(text), Some(key)) = (flash.as_deref(), focused_page(&pane_layout, &ui.surfaces))
-            {
-                // Plain, like the window's own: a flash is what the screen
-                // shows with `toast(S.flash)`, and it does not mark warnings
-                let _ = caps.browser_toast(&key, text, false);
-            }
+            // Shown by the screen with `toast(S.flash)`, like every other
+            // message; over a page, the screen hands it to the page to draw
+            // (Ev::PageToast below). Said once, there, for every message
         }
-        // What the 📼 panel says for a moment, drawn by the page in view the
-        // same way the flash above is
+        // Messages the screen could not draw over the page in view: drawn by
+        // that page. A page placed in the focused pane is a window of its own,
+        // and anything of ours stands behind it (or, in a split, is cut off at
+        // the pane's edge)
         for (text, warn) in shell.mail().page_toasts.drain(..).collect::<Vec<_>>() {
             if let Some(key) = focused_page(&pane_layout, &ui.surfaces) {
                 let _ = caps.browser_toast(&key, &text, warn);
