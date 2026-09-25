@@ -2,6 +2,7 @@
   "name": "Gemini CLI",
   "install_url": "https://github.com/google-gemini/gemini-cli",
   "install_on_linux": "npm install -g @google/gemini-cli",
+  "signed_in_on_linux": "test -s \"$HOME/.gemini/oauth_creds.json\" || test -n \"$GEMINI_API_KEY\" || test -n \"$GOOGLE_API_KEY\"",
   "command_match": [
     "gemini"
   ],

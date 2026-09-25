@@ -2,6 +2,7 @@
   "name": "Claude Code",
   "install_url": "https://github.com/anthropics/claude-code",
   "install_on_linux": "curl -fsSL https://claude.ai/install.sh | bash",
+  "signed_in_on_linux": "test -s \"$HOME/.claude/.credentials.json\" || test -n \"$ANTHROPIC_API_KEY\"",
   "command_match": [
     "claude"
   ],

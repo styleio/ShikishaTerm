@@ -131,6 +131,13 @@ pub struct ProfileFile {
     /// nobody works in. Absent is an AI that is not offered there
     #[serde(default)]
     pub install_on_linux: Option<String>,
+    /// A shell line that succeeds when this CLI is signed in on a Linux
+    /// machine: its credentials file where it keeps one, or the key in the
+    /// environment it reads. Run in a login shell on a MicroVM checkout
+    /// before a worktree is copied from it, because a copy made before the
+    /// sign-in has none. Absent is a CLI whose sign-in cannot be looked for
+    #[serde(default)]
+    pub signed_in_on_linux: Option<String>,
 }
 
 /// An AI that can be installed on a MicroVM: its command, what it is called,
@@ -140,6 +147,9 @@ pub struct MachineAi {
     pub key: String,
     pub name: String,
     pub install: String,
+    /// The line that says whether it is signed in there, when the profile
+    /// knows one (`ProfileFile::signed_in_on_linux`)
+    pub signed_in: Option<String>,
 }
 
 /// The AIs a MicroVM can be given, as the profiles say, in their order
@@ -149,9 +159,15 @@ pub fn machine_ais() -> Vec<MachineAi> {
         .filter_map(|pf| {
             let key = pf.command_match.first()?.trim().to_string();
             let install = pf.install_on_linux?.trim().to_string();
-            (!key.is_empty() && !install.is_empty()).then_some(MachineAi { key, name: pf.name, install })
+            let signed_in = pf.signed_in_on_linux.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+            (!key.is_empty() && !install.is_empty()).then_some(MachineAi { key, name: pf.name, install, signed_in })
         })
         .collect()
+}
+
+/// The AI a command names, among those a MicroVM can be given
+pub fn machine_ai(key: &str) -> Option<MachineAi> {
+    machine_ais().into_iter().find(|a| a.key.eq_ignore_ascii_case(key.trim()))
 }
 
 /// The line that installs the AI a command names, on a MicroVM

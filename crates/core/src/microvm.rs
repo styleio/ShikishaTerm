@@ -632,9 +632,110 @@ pub fn sign_in_note(account: &str, far: &Result<crate::config::FarSignIn, String
     known.map(|(_, note)| note)
 }
 
+/// What has been found out about the AI's sign-in on each checkout's machine
+#[derive(Default)]
+struct AiNotes {
+    found: std::collections::HashMap<String, (Instant, crate::uistate::AiSignInNote)>,
+    asking: std::collections::HashSet<String>,
+}
+
+static AI_NOTES: std::sync::OnceLock<Mutex<AiNotes>> = std::sync::OnceLock::new();
+
+/// Whether the AI on a project's checkout machine is signed in, before a
+/// worktree is copied from that machine.
+///
+/// A worktree on a MicroVM is a copy of the checkout's machine, sign-in and
+/// all -- so one copied before the sign-in has none, and every one made after
+/// it has it. That is the one thing worth saying in the dialog, so it is
+/// asked of the machine itself: the line the AI's profile gives, run in a
+/// login shell there (a key put in the profile is only there). Nothing for a
+/// project with no AI, no checkout on that machine yet, or an AI whose
+/// profile has no line. From what was last found, with a fresh look on its
+/// way when that is old; "asking" until the first look comes back
+pub fn ai_sign_in_note(
+    host: &crate::config::HostSpec,
+    home: Option<&crate::config::ProjectHome>,
+    ai: Option<&str>,
+) -> Option<crate::uistate::AiSignInNote> {
+    let ai = ai.map(str::trim).filter(|a| !a.is_empty() && *a != NO_AI)?;
+    let known_ai = crate::profile::machine_ai(ai)?;
+    let line = known_ai.signed_in.clone()?;
+    let home = home?;
+    let sandbox = home.sandbox.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    let blank = crate::uistate::AiSignInNote {
+        ai: known_ai.key.clone(),
+        name: known_ai.name.clone(),
+        checkout: home.at.clone(),
+        state: String::new(),
+        error: String::new(),
+    };
+    let note = |state: &str, error: String| crate::uistate::AiSignInNote { state: state.into(), error, ..blank.clone() };
+    let key = format!("{sandbox}\u{1f}{}", known_ai.key);
+    let Ok(mut notes) = AI_NOTES.get_or_init(Default::default).lock() else { return None };
+    let known = notes.found.get(&key).cloned();
+    if known.as_ref().is_none_or(|(at, _)| at.elapsed() > FRESH) && notes.asking.insert(key.clone()) {
+        let machine = host.with_instance(Some(sandbox));
+        let (yes, no, failed) = (note("yes", String::new()), note("no", String::new()), blank.clone());
+        let failed = move |error: String| crate::uistate::AiSignInNote { state: "error".into(), error, ..failed };
+        std::thread::spawn(move || {
+            // A login shell, because a key set in the machine's profile is
+            // what the AI would read, and a plain sh reads none of it
+            let argv = ["bash".to_string(), "-lc".to_string(), line];
+            let ran = crate::e2b::machine(&machine)
+                .and_then(|m| crate::e2b::exec(&m, &crate::worktree::for_a_shell(&argv), None));
+            let found = match ran {
+                Ok(r) if r.ok() => yes,
+                Ok(_) => no,
+                Err(e) => failed(format!("{e:#}")),
+            };
+            if let Ok(mut n) = AI_NOTES.get_or_init(Default::default).lock() {
+                n.asking.remove(&key);
+                n.found.insert(key, (Instant::now(), found));
+            }
+        });
+    }
+    Some(known.map(|(_, n)| n).unwrap_or_else(|| note("asking", String::new())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every AI a MicroVM can be given says how to see whether it is signed
+    /// in there, so the dialog is never silent about one of them. A line is
+    /// one `sh` test or several joined by `||`, and never quotes the way a
+    /// wrapping shell would trip on
+    #[test]
+    fn every_machine_ai_says_how_to_see_its_sign_in() {
+        let ais = crate::profile::machine_ais();
+        assert!(ais.len() >= 4, "the shipped AIs: {ais:?}");
+        for a in &ais {
+            let line = a.signed_in.as_deref().unwrap_or_else(|| panic!("{} has no sign-in line", a.name));
+            assert!(line.starts_with("test "), "{}: {line}", a.name);
+            assert!(!line.contains('\''), "{}: a single quote would end the wrapping shell's quoting: {line}", a.name);
+        }
+        assert_eq!(crate::profile::machine_ai("claude").map(|a| a.name), Some("Claude Code".into()));
+        assert_eq!(crate::profile::machine_ai("nobody-ships-this"), None);
+    }
+
+    /// Nothing to say is nothing: no AI, an unknown one, no checkout there
+    /// yet, or a checkout with no machine
+    #[test]
+    fn the_sign_in_is_asked_only_where_there_is_an_ai_and_a_machine() {
+        let host = crate::config::HostSpec { name: "vm".into(), kind: Some("e2b".into()), ..Default::default() };
+        let home = crate::config::ProjectHome {
+            host: "vm".into(),
+            at: "/home/user/proj".into(),
+            placement: None,
+            sandbox: None,
+            prepared: None,
+        };
+        assert_eq!(ai_sign_in_note(&host, Some(&home), None), None);
+        assert_eq!(ai_sign_in_note(&host, Some(&home), Some(NO_AI)), None);
+        assert_eq!(ai_sign_in_note(&host, Some(&home), Some("nobody-ships-this")), None);
+        assert_eq!(ai_sign_in_note(&host, None, Some("claude")), None);
+        assert_eq!(ai_sign_in_note(&host, Some(&home), Some("claude")), None, "a checkout with no machine");
+    }
 
     /// A folder on a MicroVM opens on the AI its machine was given, and on
     /// its shell when it was given none. A checkout prepared with Claude used

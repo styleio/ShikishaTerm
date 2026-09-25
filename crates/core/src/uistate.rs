@@ -733,6 +733,12 @@ pub struct BranchPlan {
     /// what kind of token that is. Absent while it is being asked for
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sign_in: Option<SignInNote>,
+    /// On a MicroVM with a checkout there: whether the AI on the checkout's
+    /// machine is signed in, since the worktree is a copy of that machine
+    /// and a copy made before the sign-in has none. Absent where there is
+    /// nothing to say (no AI, no checkout there yet)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_sign_in: Option<AiSignInNote>,
     /// The AI the project's MicroVM checkouts are given, as it says
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub machine_ai: String,
@@ -768,6 +774,26 @@ pub struct HostOffer {
     /// there yet: a MicroVM makes one, a server has to be told where it is
     #[serde(default)]
     pub at: String,
+}
+
+/// Whether the AI on a project's checkout machine is signed in.
+///
+/// Said in the worktree dialog, because a worktree on a MicroVM is a copy of
+/// the checkout's machine: one copied before the sign-in has none, and every
+/// one made after it has it
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct AiSignInNote {
+    /// The AI, by the command that starts it (`claude`)
+    pub ai: String,
+    /// What it is called
+    pub name: String,
+    /// The checkout on that machine, whose tab is where the sign-in is done
+    pub checkout: String,
+    /// `asking` until the machine has answered; then `yes`, `no`, or `error`
+    pub state: String,
+    /// Why the machine could not be asked, when that is what happened
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
 }
 
 /// What a MicroVM will sign in to the project's git server as.

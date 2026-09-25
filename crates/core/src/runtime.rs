@@ -1597,6 +1597,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // on screen: the account's name and how it is handed over. Asked again
     // each turn until it is known, since it is found on a thread
     let mut signin_waiting: Option<(String, Result<config::FarSignIn, String>)> = None;
+    // Whose AI sign-in the open worktree dialog is about: the checkout's
+    // machine, looked at again while the dialog is open, so a sign-in done
+    // in the checkout's tab meanwhile is seen without closing it
+    let mut ai_signin_watch: Option<(config::HostSpec, Option<config::ProjectHome>, Option<String>)> = None;
     // What it would take to have a missing working folder here. Answered when
     // one is opened, and cleared once the folder exists so the dialog closes
     let mut repair_view: Option<crate::uistate::RepairPlan> = None;
@@ -7823,6 +7827,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         if h.is_made() {
                             view.sign_in = crate::microvm::sign_in_note(&far.1, &far.2);
                             signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
+                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), far.0.preparing.ai.as_deref());
+                            ai_signin_watch = Some((h.clone(), far.0.home.clone(), far.0.preparing.ai.clone()));
                         }
                         crate::worktree::plan_on(&far.0.of(), &wanted, &prefix, Some(&ask.base), Some(ask.at.trim()))
                     }
@@ -7951,6 +7957,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         if h.is_made() {
                             view.sign_in = crate::microvm::sign_in_note(&far.1, &far.2);
                             signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
+                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), far.0.preparing.ai.as_deref());
+                            ai_signin_watch = Some((h.clone(), far.0.home.clone(), far.0.preparing.ai.clone()));
                         }
                         crate::worktree::fan_on(&far.0.of(), &wanted, &prefix, Some(&ask.base), &ask.ais)
                     }
@@ -8028,6 +8036,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 v.sign_in = Some(note);
             }
             signin_waiting = None;
+        }
+        // Whether the checkout's AI is signed in, kept current while the
+        // dialog is open: the answer arrives from a thread, and a sign-in
+        // done in the checkout's tab meanwhile changes it
+        if let Some((h, home, ai)) = ai_signin_watch.as_ref() {
+            match branch_view.as_mut() {
+                None => ai_signin_watch = None,
+                Some(v) => {
+                    let note = crate::microvm::ai_sign_in_note(h, home.as_ref(), ai.as_deref());
+                    if note != v.ai_sign_in {
+                        v.ai_sign_in = note;
+                    }
+                }
+            }
         }
         for ev in shell.mail().take_vault_opens() {
             if let shikisha_shared::Ev::VaultOpen { program, id, cwd, title } = ev {

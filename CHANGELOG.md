@@ -106,6 +106,15 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **The worktree dialog says whether the checkout's AI is signed in.** A
+  worktree on a MicroVM is a copy of the checkout's machine, sign-in and all,
+  so one copied before the sign-in has none. On a MicroVM the dialog asks the
+  checkout's machine -- the line each AI's profile gives, in a login shell
+  there: Claude Code's credentials file or its key, Codex CLI's, Gemini CLI's,
+  and for Aider the keys it reads -- and says "not signed in yet, sign in
+  first in the checkout's tab", with that tab one press away; a sign-in done
+  meanwhile is seen without closing the dialog. Nothing is stopped: a key
+  given another way is a sign-in this cannot see.
 - **"Clone onto a MicroVM" asks which git account the machine signs in as**,
   on screen: the app's accounts, the ones for the address's owner first and
   the first of them chosen, and this PC's git last -- two accounts can be for

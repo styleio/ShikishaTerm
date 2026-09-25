@@ -2,6 +2,7 @@
   "name": "Aider",
   "install_url": "https://aider.chat/docs/install.html",
   "install_on_linux": "curl -LsSf https://aider.chat/install.sh | sh",
+  "signed_in_on_linux": "test -n \"$OPENAI_API_KEY\" || test -n \"$ANTHROPIC_API_KEY\" || test -n \"$GEMINI_API_KEY\" || test -n \"$OPENROUTER_API_KEY\" || test -n \"$DEEPSEEK_API_KEY\" || test -s \"$HOME/.aider.conf.yml\"",
   "command_match": ["aider"],
   "busy_patterns": [],
   "question_patterns": [

@@ -3709,6 +3709,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <div id="bdest" class="bpick" tabindex="0"><span class="nm"></span><span class="caret">&#9662;</span></div>
         <div class="bdestsay"></div>
         <div class="bsignin" hidden></div>
+        <div class="bsignin baisignin" hidden></div>
       </div>
       <div class="bfield">
         <label class="blabel" for="bq"></label>
@@ -8539,6 +8540,39 @@ function drawDest(b, p) {
   }
   drawSignIn(b.querySelector(".bsignin"), offer && offer.kind === "microvm" ? p.sign_in : null, !!(offer && offer.kind === "microvm"),
     () => { closeBranch(); openSettings("project-gitacct", true, branchFrom); });
+  drawAiSignIn(b.querySelector(".baisignin"), offer && offer.kind === "microvm" ? p.ai_sign_in : null);
+}
+
+// Whether the AI on the checkout's machine is signed in, since the worktree
+// is a copy of that machine and a copy made before the sign-in has none.
+// Not signed in: said, with the checkout's tab one press away, where the
+// sign-in is done -- and nothing is stopped, since an API key set another
+// way is a sign-in this cannot see
+function drawAiSignIn(box, note) {
+  if (!box) return;
+  box.hidden = !note;
+  if (!note) return;
+  const sig = JSON.stringify(note);
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.textContent = "";
+  const say = k => (T[k] || "").replace("{ai}", note.name);
+  if (note.state === "asking") { box.append(el("div", {class:"say"}, say("tui.aisignin.asking"))); return; }
+  if (note.state === "yes") { box.append(el("div", {class:"say"}, say("tui.aisignin.yes"))); return; }
+  if (note.state === "no") {
+    box.append(el("div", {class:"warn"}, say("tui.aisignin.no")));
+    const tab = checkoutAiTab(note.checkout, note.ai);
+    if (tab) box.append(el("div", {class:"row"},
+      el("button", {type:"button", class:"quiet", onclick:() => { closeBranch(); send({kind:"select", tab: tab.index}); }}, say("tui.aisignin.open"))));
+    return;
+  }
+  box.append(el("div", {class:"warn"}, say("tui.aisignin.error") + (note.error ? " " + note.error : "")));
+}
+// The checkout's tab running this AI, on the board: in the folder that is
+// the checkout, the tab whose AI this is
+function checkoutAiTab(checkout, ai) {
+  const gi = ((S && S.groups) || []).findIndex(g => g.folder === checkout);
+  return gi < 0 ? null : (((S && S.tabs) || []).find(t => t.group === gi && t.ai === ai) || null);
 }
 
 // The AI a MicroVM checkout about to be made is given, chosen in the

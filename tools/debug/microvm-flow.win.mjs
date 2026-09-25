@@ -286,7 +286,18 @@ try {
   check(await board.run('S.branch.here') === false, 'this PC is not offered: the project is not here');
   await until(() => board.run('!!S.branch.sign_in'), 'what it signs in as', 30000);
   check(await board.run('S.branch.sign_in.kind') === 'fine', 'the dialog says what it signs in as');
+  // Whether the checkout's AI is signed in, asked of the checkout's machine:
+  // not yet, said with the checkout's tab one press away; then, once a
+  // sign-in is there, seen without closing the dialog
+  const aiNote = () => board.run('JSON.stringify((S.branch && S.branch.ai_sign_in) || null)').then((t) => JSON.parse(t || 'null'));
+  await until(async () => ((await aiNote()) || {}).state === 'no', 'the dialog to say Claude is not signed in on the checkout', 90000);
+  check((await aiNote()).name === 'Claude Code' && (await aiNote()).checkout === CHECKOUT, 'not signed in yet, said for the checkout: ' + JSON.stringify(await aiNote()));
+  check(await board.run('!!document.querySelector("#branch .baisignin button")'), 'the checkout\'s tab is one press away');
   await board.shot('3-branch');
+  await on(home.sandbox, 'mkdir -p ~/.claude && echo "{}" > ~/.claude/.credentials.json');
+  await until(async () => ((await aiNote()) || {}).state === 'yes', 'the sign-in to be seen while the dialog stays open', 120000);
+  check(true, 'signed in on the checkout, the dialog says so without being closed');
+  await on(home.sandbox, 'rm -f ~/.claude/.credentials.json');
   await board.run('document.querySelector("#branch .bgo .go").click(); true');
   const wt = await (async () => {
     let f = null;
