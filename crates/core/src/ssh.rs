@@ -257,6 +257,9 @@ enum Job {
         /// this module already holds. Done anywhere else it would need the
         /// writer, and the writer belongs to whoever is at the keyboard
         cwd: Option<String>,
+        /// What to run once it stands there, typed the same way: the tab's
+        /// command when it is a program (`claude`), nothing for a terminal
+        then: Option<String>,
         out: Sender<Vec<u8>>,
         reply: Sender<Result<u64>>,
     },
@@ -394,13 +397,15 @@ async fn close_idle(live: &mut Live) {
 
 async fn handle(live: &mut Live, job: Job) {
     match job {
-        Job::Shell { spec, rows, cols, cwd, out, reply } => {
+        Job::Shell { spec, rows, cols, cwd, then, out, reply } => {
             let r = open_shell(live, &spec, rows, cols, out).await;
             // Typed, so it is on screen like anything else typed, and so that
-            // nothing else has to know it happened
-            if let (Ok(id), Some(at)) = (&r, cwd.as_deref().map(str::trim).filter(|a| !a.is_empty()))
+            // nothing else has to know it happened. The folder first, and the
+            // program in it only if the folder is there: a program started
+            // somewhere else would work on the wrong files
+            let line = typed_first(cwd.as_deref(), then.as_deref());
+            if let (Ok(id), Some(line)) = (&r, line)
                 && let Some(ch) = live.shells.get(id) {
-                    let line = format!("cd '{}'\n", at.replace('\'', "'\\''"));
                     let _ = ch.data(line.as_bytes()).await;
                 }
             let _ = reply.send(r);
@@ -977,6 +982,7 @@ pub fn shell(
     rows: u16,
     cols: u16,
     cwd: Option<&str>,
+    then: Option<&str>,
 ) -> Result<(Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>)>
 {
     let (out_tx, out_rx) = channel::<Vec<u8>>();
@@ -987,6 +993,7 @@ pub fn shell(
             rows,
             cols,
             cwd: cwd.map(str::to_string),
+            then: then.map(str::to_string),
             out: out_tx,
             reply: reply_tx,
         })
@@ -1001,6 +1008,23 @@ pub fn shell(
         writer_taken: AtomicBool::new(false),
     };
     Ok((Box::new(pty), Box::new(SshKiller { id })))
+}
+
+/// The first line typed into a shell that just opened over there: the folder
+/// to stand in, the program to run in it, both, or nothing.
+///
+/// One line, joined with `&&`, so the program runs only if the folder was
+/// there. The folder is quoted the way a server's shell wants; the program
+/// already is (see [`crate::worktree::for_a_shell`])
+pub fn typed_first(cwd: Option<&str>, then: Option<&str>) -> Option<String> {
+    let at = cwd.map(str::trim).filter(|a| !a.is_empty()).map(|a| format!("cd '{}'", a.replace('\'', "'\\''")));
+    let run = then.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+    match (at, run) {
+        (Some(at), Some(run)) => Some(format!("{at} && {run}\n")),
+        (Some(at), None) => Some(format!("{at}\n")),
+        (None, Some(run)) => Some(format!("{run}\n")),
+        (None, None) => None,
+    }
 }
 
 /// Do something with files on another machine.
@@ -1035,6 +1059,22 @@ pub fn exec(spec: &Spec, command: &str, wait_ms: u64) -> Result<Ran> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first thing typed into a shell that opened over there: the folder,
+    /// then the program in it, and the program only if the folder was there
+    #[test]
+    fn the_folder_is_typed_first_and_the_program_only_in_it() {
+        assert_eq!(typed_first(Some("/srv/proj"), Some("claude")).as_deref(), Some("cd '/srv/proj' && claude\n"));
+        assert_eq!(typed_first(Some("/srv/proj"), None).as_deref(), Some("cd '/srv/proj'\n"));
+        assert_eq!(typed_first(None, Some("claude")).as_deref(), Some("claude\n"));
+        assert_eq!(typed_first(Some(" "), Some("")), None);
+        assert_eq!(typed_first(None, None), None);
+        assert_eq!(
+            typed_first(Some("/srv/it's"), Some("claude")).as_deref(),
+            Some("cd '/srv/it'\\''s' && claude\n"),
+            "a quote in the folder is closed and reopened the way sh wants"
+        );
+    }
 
     /// The isolation a test run gets must not be the answer a person gets. The
     /// servers somebody has met are kept beside everything else this program
@@ -1207,7 +1247,7 @@ mod tests {
         };
         // A first meeting: nothing is remembered about this server, and the
         // test must not write into the real settings folder either
-        let (pty, mut killer) = shell(&spec, 24, 80, None).expect("the terminal did not open");
+        let (pty, mut killer) = shell(&spec, 24, 80, None, None).expect("the terminal did not open");
         let mut reader = pty.try_clone_reader().expect("reader");
         let mut writer = pty.take_writer().expect("writer");
 

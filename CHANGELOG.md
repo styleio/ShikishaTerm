@@ -95,6 +95,13 @@ once it reaches its first tagged release.
   what comes next by itself: the project's rules after a clone, the worktree
   dialog after "Save and continue". An install is not run again on a machine
   that has it.
+- **A folder on a MicroVM opens on the AI its machine was given.** A checkout
+  prepared with Claude Code, and every worktree cut from it, opens on Claude
+  Code -- typed into the terminal there once it stands in the folder, the way
+  a worktree here opens on what its original runs. A machine given no AI opens
+  on its shell, as before. (The AI's proposal for the machine setup ends in
+  "Put in the field", not a second "Save": it fills the field, and "Save and
+  run on the MicroVM" is the next press.)
 - **"Clone onto a MicroVM" asks which git account the machine signs in as**,
   on screen: the app's accounts, the ones for the address's owner first and
   the first of them chosen, and this PC's git last -- two accounts can be for

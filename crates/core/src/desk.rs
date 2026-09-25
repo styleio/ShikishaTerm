@@ -926,6 +926,23 @@ pub fn resolve_launch(
     argv
 }
 
+/// What a tab's command is on a machine that is not this one: the line to
+/// type into the shell that opened there, or nothing.
+///
+/// A far folder's tab used to be one terminal, whatever its command said, and
+/// a checkout prepared with an AI opened on a bare prompt -- while a worktree
+/// here opens on what its original runs. The command is typed, in the far
+/// shell's own words, once the shell stands in the folder. A shell named as
+/// the command is nothing to type: the one that opened is the shell
+pub fn far_run(argv: &[String]) -> Option<String> {
+    let head = argv.first().map(|h| h.trim()).filter(|h| !h.is_empty())?;
+    let leaf = std::path::Path::new(head).file_name().map(|n| n.to_string_lossy().to_lowercase())?;
+    match leaf.as_str() {
+        "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" => None,
+        _ => Some(crate::worktree::for_a_shell(argv)),
+    }
+}
+
 /// Where it runs comes from the tab's group, the only thing that has a folder.
 ///
 /// Whether the tab can be started there at all is settled a step later, at the
@@ -971,6 +988,10 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
         // over there starts where the far end puts it and there is nowhere to
         // pass a folder in the asking
         remote_cwd: elsewhere.and(cwd_string(folder)),
+        // And what runs there, typed after the folder: the tab's command when
+        // it is a program, nothing when it is a shell -- the shell is already
+        // the one that opened
+        remote_run: elsewhere.and_then(|_| far_run(&cfg.command.argv())),
         // Filled in by `resolve_launch`, which is where the desk holding the
         // accounts is known
         git: crate::config::GitUse::Unset,
@@ -984,6 +1005,43 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
 #[cfg(test)]
 mod calling_home_tests {
     use super::*;
+
+    /// A tab in a folder on another machine runs its command there: typed
+    /// into the shell that opened, once it stands in the folder. A shell
+    /// named as the command is nothing to type, since the one that opened is
+    /// the shell -- which is what every far folder written before had
+    #[test]
+    fn a_far_tabs_command_is_what_is_typed_into_its_shell() {
+        let argv = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(far_run(&argv("claude")).as_deref(), Some("claude"));
+        assert_eq!(far_run(&argv("claude --resume")).as_deref(), Some("claude --resume"));
+        assert_eq!(far_run(&argv("sh")), None);
+        assert_eq!(far_run(&argv("/bin/bash")), None);
+        assert_eq!(far_run(&argv("bash -l")), None);
+        assert_eq!(far_run(&[]), None);
+        let json = r#"{
+          "hosts": [ {"name":"vm", "at":"", "kind":"e2b"} ],
+          "desks": [ { "name":"w", "id":"w",
+            "folders": [ {"cwd":"/home/user/proj", "host":"vm",
+              "tabs": [ {"id":"ai","name":"claude","command":"claude"}, {"id":"t","name":"vm","command":"sh"} ]} ] } ]
+        }"#;
+        let cfg: config::Config = serde_json::from_str(json).expect("the settings cannot be read");
+        let (desks, _) = cfg.resolve_desks();
+        let desk = desks.first().expect("there is no desk");
+        let by_id = |id: &str| desk.tabs.iter().find(|t| t.cfg.id.as_deref() == Some(id)).expect("no such tab");
+        let ai = tab_options(&by_id("ai").cfg, desk.folder_of(by_id("ai")));
+        assert_eq!(ai.remote_run.as_deref(), Some("claude"), "the AI is not typed into its far shell");
+        assert_eq!(ai.remote_cwd.as_deref(), Some("/home/user/proj"));
+        let sh = tab_options(&by_id("t").cfg, desk.folder_of(by_id("t")));
+        assert_eq!(sh.remote_run, None, "a plain terminal has nothing to type");
+        let json = r#"{ "desks": [ { "name":"w", "id":"w",
+            "folders": [ {"cwd":".", "tabs": [ {"id":"ai","name":"claude","command":"claude"} ]} ] } ] }"#;
+        let cfg: config::Config = serde_json::from_str(json).expect("the settings cannot be read");
+        let (desks, _) = cfg.resolve_desks();
+        let desk = desks.first().expect("there is no desk");
+        let here = tab_options(&desk.tabs[0].cfg, desk.folder_of(&desk.tabs[0]));
+        assert_eq!(here.remote_run, None, "a tab on this PC runs its command as a process, not as typing");
+    }
 
     /// A tab answers to one name, and both halves have to use it.
     ///

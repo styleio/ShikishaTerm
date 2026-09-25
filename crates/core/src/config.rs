@@ -4433,10 +4433,15 @@ pub fn append_folder_at(
         let tabs = match (host, start) {
             (_, Start::Nothing) => serde_json::json!([]),
             // Every tab in a folder on another machine is a terminal on that
-            // machine, whatever its command says. Copying the faces from here
-            // would put an AI's name on a plain shell, so it gets one terminal
-            // named for the machine it is on
-            (Some(h), _) => serde_json::json!([{ "name": h, "command": "sh" }]),
+            // machine. Copying the faces from here would put an AI's name on
+            // a plain shell, so it gets one tab: the one the ask named, which
+            // is the AI the project's machines are given (typed into the
+            // terminal there once it is open, see `TabOptions::remote_run`)
+            (Some(_), Start::One { name, command }) => {
+                serde_json::json!([{ "name": name, "command": command_value(command) }])
+            }
+            // Or, when nothing was named, a terminal named for the machine
+            (Some(h), Start::Same) => serde_json::json!([{ "name": h, "command": "sh" }]),
             (None, Start::Same) => like
                 .and_then(|want| {
                     folders.iter().find(|g| {
@@ -7906,10 +7911,20 @@ mod tests {
             Some("bench"),
         )
         .unwrap();
+        append_folder_at(
+            &file,
+            "Demo",
+            Some(Path::new("D:/work/proj")),
+            Path::new("/srv/proj.branches/ai"),
+            Some("ai"),
+            &Start::One { name: "claude".into(), command: "claude".into() },
+            Some("bench"),
+        )
+        .unwrap();
         let text = std::fs::read_to_string(&file).unwrap();
         let cfg: Config = serde_json::from_str(&text).unwrap();
         let desk = &cfg.resolve_desks().0[0];
-        assert_eq!(desk.folders.len(), 3, "{text}");
+        assert_eq!(desk.folders.len(), 4, "{text}");
         let there = &desk.folders[1];
         assert_eq!(there.host.as_ref().map(|h| h.name.as_str()), Some("bench"), "the machine is not written: {text}");
         assert!(matches!(there.source, Source::Unknown), "the far folder was given a source to rebuild it from here: {text}");
@@ -7920,6 +7935,15 @@ mod tests {
         assert!(in_folder(2).is_empty(), "it should start nothing, but there are tabs");
         let opts = crate::desk::tab_options(&one[0].cfg, Some(there));
         assert!(opts.remote.is_some(), "a tab in the far folder starts on this machine");
+        assert_eq!(opts.remote_run, None, "a plain terminal has nothing to type");
+        // A machine given an AI opens on it: one tab, the AI's, typed into
+        // the terminal there
+        let ai = in_folder(3);
+        assert_eq!(ai.len(), 1, "there should be one tab, the AI's: {text}");
+        assert_eq!(ai[0].cfg.name.as_deref(), Some("claude"), "{text}");
+        assert_eq!(ai[0].cfg.command.argv(), vec!["claude".to_string()], "{text}");
+        let opts = crate::desk::tab_options(&ai[0].cfg, Some(&desk.folders[3]));
+        assert_eq!(opts.remote_run.as_deref(), Some("claude"), "the AI is not typed into the far terminal");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

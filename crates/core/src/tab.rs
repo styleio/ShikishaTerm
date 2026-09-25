@@ -52,6 +52,11 @@ pub struct TabOptions {
     /// so it is sent as the first thing typed -- which is what a person would
     /// do, and is on screen like anything else typed
     pub remote_cwd: Option<String>,
+    /// What to run in that shell once it stands there, in the far end's own
+    /// words (`claude`). The tab's command, when it is more than a shell: a
+    /// program cannot be started over there, only typed, so it is typed after
+    /// the folder -- on screen, as a person would. None for a plain terminal
+    pub remote_run: Option<String>,
     /// The machine this tab's terminal is on, when that machine has to be made
     /// before it can be talked to. Separate from `remote` because there is no
     /// address to connect to until one exists: what is held here is the
@@ -235,6 +240,7 @@ impl Default for TabOptions {
             group: None,
             remote: None,
             remote_cwd: None,
+            remote_run: None,
             cloud: None,
             id: None,
             // The guarded ones, for anything built without an answer: a tab
@@ -3269,7 +3275,8 @@ impl Tab {
             // own, started by the far end, and there is no local process id to
             // put in a job object
             (None, Some(spec), _) => {
-                let (m, k) = crate::ssh::shell(spec, rows, cols, opts.remote_cwd.as_deref())?;
+                let (m, k) =
+                    crate::ssh::shell(spec, rows, cols, opts.remote_cwd.as_deref(), opts.remote_run.as_deref())?;
                 (m, k, None, None)
             }
             // The same, except the far end does not exist yet. Asking for it
@@ -3277,7 +3284,8 @@ impl Tab {
             // rented by a desk that is only being read
             (None, None, Some(host)) => {
                 let box_ = crate::e2b::machine(host)?;
-                let (m, k) = crate::e2b::shell(&box_, rows, cols, opts.remote_cwd.as_deref())?;
+                let (m, k) =
+                    crate::e2b::shell(&box_, rows, cols, opts.remote_cwd.as_deref(), opts.remote_run.as_deref())?;
                 (m, k, None, None)
             }
             (None, None, None) => anyhow::bail!("a tab with no terminal of any kind"),

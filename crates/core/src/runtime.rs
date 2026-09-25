@@ -261,7 +261,14 @@ impl Pending {
             "machine_ai",
             Some(plan.preparing.ai.as_deref().unwrap_or(crate::microvm::NO_AI)),
         )?;
-        config::append_folder_starting(&self.desk, None, &plan.main, None, &config::Start::Same, Some(&host.name))?;
+        config::append_folder_starting(
+            &self.desk,
+            None,
+            &plan.main,
+            None,
+            &crate::microvm::start_with(plan.preparing.ai.as_deref()),
+            Some(&host.name),
+        )?;
         config::set_folder_far(&self.desk, &plan.main, &host.name, Some(&plan.project), Some(&id))?;
         Ok(())
     }
@@ -270,12 +277,19 @@ impl Pending {
     /// asked from, running what the dialog chose
     fn write_down(&self) -> anyhow::Result<()> {
         let plan = &self.making.plan;
+        // On a MicroVM the dialog's choice is what the machine was given: the
+        // AI it was prepared with, or its shell. What this PC runs is not on
+        // that machine
+        let start = match plan.host.as_ref().filter(|h| h.is_made()) {
+            Some(_) => crate::microvm::start_with(plan.preparing.ai.as_deref()),
+            None => self.start.clone(),
+        };
         config::append_folder_starting(
             &self.desk,
             Some(plan.like(&self.from)),
             &plan.folder,
             Some(&self.label),
-            &self.start,
+            &start,
             plan.host.as_ref().map(|h| h.name.as_str()),
         )?;
         // A folder on another machine says which project it is a piece of --
@@ -7325,7 +7339,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     let ai = add.ai.as_deref().unwrap_or(crate::microvm::NO_AI);
                                     config::set_project_value(&j.desk_id, &add.project, "machine_ai", Some(ai))
                                 })
-                                .and_then(|()| config::append_folder_starting(&j.desk, None, std::path::Path::new(&at), None, &config::Start::Same, Some(&add.host)))
+                                .and_then(|()| {
+                                    config::append_folder_starting(
+                                        &j.desk,
+                                        None,
+                                        std::path::Path::new(&at),
+                                        None,
+                                        &crate::microvm::start_with(add.ai.as_deref()),
+                                        Some(&add.host),
+                                    )
+                                })
                                 .and_then(|()| config::set_folder_far(&j.desk, std::path::Path::new(&at), &add.host, Some(&add.project), Some(&sandbox)))
                                 .map(|()| {
                                     crate::webui::ask_branch_next(&at, true);

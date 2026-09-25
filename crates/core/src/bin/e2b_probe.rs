@@ -150,7 +150,7 @@ fn files_on(sandbox: &shikisha_core::e2b::Sandbox) -> anyhow::Result<()> {
 
 fn run_on(sandbox: &shikisha_core::e2b::Sandbox) -> anyhow::Result<()> {
     println!("opening a terminal...");
-    let (pty, mut killer) = shikisha_core::e2b::shell(sandbox, 24, 80, Some("/home/user"))?;
+    let (pty, mut killer) = shikisha_core::e2b::shell(sandbox, 24, 80, Some("/home/user"), None)?;
     let mut reader = pty.try_clone_reader()?;
     let mut writer = pty.take_writer()?;
 

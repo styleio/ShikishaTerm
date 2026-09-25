@@ -630,6 +630,7 @@ pub fn shell(
     rows: u16,
     cols: u16,
     cwd: Option<&str>,
+    then: Option<&str>,
 ) -> Result<(Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>)>
 {
     let tag = a_tag();
@@ -670,6 +671,11 @@ pub fn shell(
     up_rx
         .recv_timeout(Duration::from_millis(START_MS))
         .map_err(|_| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", "the terminal did not open")])))??;
+    // The shell was started in the folder, so only the program is typed --
+    // through the typing thread, ahead of anything a person types after
+    if let Some(line) = crate::ssh::typed_first(None, then) {
+        let _ = note_tx.send(Note::Typed(line.into_bytes()));
+    }
 
     let pty = SandboxPty {
         size: std::sync::Mutex::new(portable_pty::PtySize {

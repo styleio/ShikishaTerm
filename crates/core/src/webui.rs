@@ -11979,7 +11979,9 @@ function machineSetupAiDialog(desk, p, into) {
   const hint = el("textarea", {rows:"4", class:"mono", style:"width:100%", placeholder:T["settings.microvm.ai_hint.ph"]});
   const said = el("div", {class:"aisaid"});
   const go = el("button", {class:"primary"}, T["settings.inherit.ai.ask"]);
-  const keep = el("button", {class:"primary", hidden:""}, T["common.save"]);
+  // Not "save": the page has a save of its own, and this press does not save.
+  // It puts the lines in the field, where "save and run" is the next press
+  const keep = el("button", {class:"primary", hidden:""}, T["settings.microvm.ai.use"]);
   let proposed = [];
   const shut = () => back.remove();
   go.addEventListener("click", async () => {

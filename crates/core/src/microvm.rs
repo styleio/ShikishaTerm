@@ -215,6 +215,22 @@ impl Preparing {
 /// What "no AI" is written as
 pub const NO_AI: &str = "none";
 
+/// What a folder on a MicroVM opens with.
+///
+/// The AI the project's machines are given, when there is one: a checkout
+/// prepared with Claude opens on Claude, and so does every worktree cut from
+/// it, the way a worktree here opens on what its original runs. A machine
+/// given no AI opens on its shell. An AI no profile knows is treated as none:
+/// a command that fails on screen is worse than a prompt
+pub fn start_with(ai: Option<&str>) -> crate::config::Start {
+    match ai.map(str::trim).filter(|a| !a.is_empty() && *a != NO_AI) {
+        Some(key) if crate::profile::machine_ais().iter().any(|a| a.key.eq_ignore_ascii_case(key)) => {
+            crate::config::Start::One { name: key.to_string(), command: key.to_string() }
+        }
+        _ => crate::config::Start::Same,
+    }
+}
+
 /// The ground every MicroVM checkout stands on, laid once before anything is
 /// installed. Two things:
 ///
@@ -619,6 +635,21 @@ pub fn sign_in_note(account: &str, far: &Result<crate::config::FarSignIn, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder on a MicroVM opens on the AI its machine was given, and on
+    /// its shell when it was given none. A checkout prepared with Claude used
+    /// to open on a bare prompt, with Claude installed and nothing running it
+    #[test]
+    fn a_folder_on_a_microvm_opens_on_the_ai_its_machine_was_given() {
+        assert_eq!(
+            start_with(Some("claude")),
+            crate::config::Start::One { name: "claude".into(), command: "claude".into() }
+        );
+        assert_eq!(start_with(Some(NO_AI)), crate::config::Start::Same);
+        assert_eq!(start_with(None), crate::config::Start::Same);
+        assert_eq!(start_with(Some("  ")), crate::config::Start::Same);
+        assert_eq!(start_with(Some("nobody-ships-this")), crate::config::Start::Same, "an AI no profile knows");
+    }
 
     /// A project added from its address is named for it, the way a clone's
     /// folder is

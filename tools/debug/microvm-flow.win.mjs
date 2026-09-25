@@ -290,6 +290,14 @@ try {
     return f;
   })();
   check(wt.sandbox !== home.sandbox && wt.project === PROJECT, 'on a machine of its own, in the project: ' + JSON.stringify(wt));
+  // The worktree opens on the AI its machine was given, the way a worktree
+  // here opens on what its original runs: one tab, Claude's, and Claude
+  // running in it (its first screen asks, so the tab reads as a question)
+  check((wt.tabs || []).length === 1 && wt.tabs[0].command === 'claude', 'the worktree opens on the AI: ' + JSON.stringify(wt.tabs));
+  const aiTab = () => board.run(`JSON.stringify((S.tabs || []).filter(t => t.name === "claude").slice(-1)[0] || null)`).then((t) => JSON.parse(t || 'null'));
+  await until(async () => !!(await aiTab()), 'the worktree\'s AI tab on the board', 30000);
+  await until(async () => ['QUESTION', 'BUSY'].includes(((await aiTab()) || {}).state), 'Claude to be running in it', 120000);
+  check((await aiTab()).profile === 'Claude Code', 'the tab is read as Claude\'s: ' + JSON.stringify(await aiTab()));
 
   console.log('4. the worktree is a copy of the checkout, signed in from outside');
   const listed = await ours();
