@@ -8,6 +8,12 @@ Every setting this program has, screen by screen, in the order the settings them
 
 The same on every desk. Open them from the gear at the foot of the list on the left.
 
+### Update
+
+Newer versions, and going back
+
+- **Looking** — One request to api.github.com for the newest version number; nothing is sent. The Store copy asks the Store instead. Installing is always the button above.
+
 ### Basic
 
 Tab width, chaining, language
@@ -30,15 +36,6 @@ Tab width, chaining, language
 - **Terminal font** — The font and size the terminal is drawn in. Ctrl+wheel over the terminal changes the size at any time, and it is remembered here. Leave the name empty for the built-in stack, chosen so box-drawing characters and Japanese each take one cell.
 - **Colours** — The colour scheme, for the terminal and for the window around it. The list is every scheme this PC already has — the ones Windows Terminal is carrying, plus any scheme file dropped into the config/themes folder — so a theme you already use can be picked by the name you already know it by. Choosing a light scheme turns the whole window light.
 - **Language** — Screen language. Automatic follows the OS. Choosing here overrides the OS and takes effect after a restart (add lang/<code>.json to contribute a translation)
-
-### Worktrees
-
-Host-dependent project markers
-
-**Host-dependent project markers**
-
-- **File names** — When a file of one of these names is in the original folder or in a folder directly inside it, the project is treated as host-dependent. Separate names with commas.
-- **Folder names** — When the original folder's path contains a folder of one of these names, the project is treated as host-dependent. Separate names with commas.
 
 ### AI agents
 
@@ -63,11 +60,14 @@ Tokens, and the sign-ins of this PC's git and gh
 - **Token**
 - **Display name**
 
-### Update
+### Worktrees
 
-Newer versions, and going back
+Host-dependent project markers
 
-- **Looking** — One request to api.github.com for the newest version number; nothing is sent. The Store copy asks the Store instead. Installing is always the button above.
+**Host-dependent project markers**
+
+- **File names** — When a file of one of these names is in the original folder or in a folder directly inside it, the project is treated as host-dependent. Separate names with commas.
+- **Folder names** — When the original folder's path contains a folder of one of these names, the project is treated as host-dependent. Separate names with commas.
 
 ### Remote access
 
@@ -84,6 +84,12 @@ Remote control & QR
 - **Home network** — Anyone on the same Wi-Fi could use this link. Fine at home, not on a café or office network
 - **This PC only** — This address exists only inside this PC, so no phone can reach it
 - **Open to the internet** — This address is reachable from outside. Anyone who gets the link can operate this PC
+
+### Notifications
+
+The phones that receive notifications
+
+This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 
 ### Shortcuts
 
@@ -177,12 +183,6 @@ Automation & secrets paths
 ### Run results
 
 Download past rally logs
-
-This screen has nothing to fill in. What it shows depends on what is set elsewhere.
-
-### Notifications
-
-The phones that receive notifications
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 

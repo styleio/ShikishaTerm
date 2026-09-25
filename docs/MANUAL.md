@@ -264,12 +264,13 @@ settings screen, so it cannot fall behind.
 
 **The program's settings**
 
+- **Update** — Newer versions, and going back
 - **Basic** — Tab width, chaining, language
-- **Worktrees** — Host-dependent project markers
 - **AI agents** — Assistant AI, deciding AI, connections, agreements
 - **Git accounts** — Tokens, and the sign-ins of this PC's git and gh
-- **Update** — Newer versions, and going back
+- **Worktrees** — Host-dependent project markers
 - **Remote access** — Remote control & QR
+- **Notifications** — The phones that receive notifications
 - **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt
 - **Quick actions** — One-tap buttons in the input bar
@@ -281,7 +282,6 @@ settings screen, so it cannot fall behind.
 - **Carrying conversations** — What survives a restart
 - **Files** — Automation & secrets paths
 - **Run results** — Download past rally logs
-- **Notifications** — The phones that receive notifications
 - **Saved logins** — Browser logins kept for reuse
 - **Snapshots** — Snapshot pictures taken by automation
 
