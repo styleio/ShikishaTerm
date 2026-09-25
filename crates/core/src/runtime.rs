@@ -3625,6 +3625,35 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FarPorts { folder }) => {
                         shell.mail().far_ports.push(folder);
                     }
+                    // The add-a-project dialog, from a phone: the same queues
+                    // the window's dialog fills (see `main.rs`)
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::AddProject {
+                        how,
+                        text,
+                        parent,
+                        ask,
+                        host,
+                        project,
+                        ai,
+                        account,
+                    }) => {
+                        shell.mail().add_projects.push(crate::mailbox::AddAsk {
+                            how,
+                            text,
+                            parent,
+                            ask,
+                            host,
+                            project,
+                            ai,
+                            account,
+                        });
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::RemoteList { host, path, ask }) => {
+                        shell.mail().remote_lists.push((host, path, ask));
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::AddHost { name, at, key, ask }) => {
+                        shell.mail().add_hosts.push((name, at, key, ask));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderColor { folder, color }) => {
                         shell.mail().folder_colors.push((folder, color));
                     }

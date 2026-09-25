@@ -317,6 +317,15 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // whoever asked -- a phone is where a webhook is tried from as often
         // as the window is
         Ev::FarPorts { .. } => true,
+        // The add-a-project dialog: a project looked at, cloned or made, a
+        // MicroVM's clone asked about and started, the folders of a server
+        // listed, a server written into the settings. Each reaches no
+        // further than the worktree dialog (`Ev::Branch`) already reaches
+        // from a phone -- a folder written on this PC or a machine made for
+        // the desk -- and a person working from a phone adds a project the
+        // way they cut a worktree. Refused, the dialog waits for an answer
+        // that never comes and looks stuck
+        Ev::AddProject { .. } | Ev::RemoteList { .. } | Ev::AddHost { .. } => true,
         // Putting a folder that is not on this machine out of sight until the
         // next launch, and telling one to work somewhere else. The first
         // writes nothing at all; the second writes one path, which is less
@@ -2766,6 +2775,20 @@ mod tests {
             Ev::FolderColor { folder: "a".into(), color: "blue".into() },
             Ev::FontSize { px: 14 },
             Ev::TabWidth { px: 200 },
+            // Adding a project, on this PC or onto a MicroVM, is the worktree
+            // dialog's reach: a phone cuts worktrees, so it adds projects
+            Ev::AddProject {
+                how: "microvm".into(),
+                text: "https://example.test/a/b.git".into(),
+                parent: String::new(),
+                ask: 1,
+                host: "vm".into(),
+                project: String::new(),
+                ai: "claude".into(),
+                account: String::new(),
+            },
+            Ev::RemoteList { host: "srv".into(), path: "/srv".into(), ask: 1 },
+            Ev::AddHost { name: "srv".into(), at: "ssh://me@example.test:22".into(), key: String::new(), ask: 1 },
         ] {
             assert!(
                 super::allowed_from_afar(&arranging),

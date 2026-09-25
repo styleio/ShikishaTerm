@@ -437,17 +437,17 @@ pub enum Ev {
     /// `microvm` is a clone onto a MicroVM (`text` is the URL, `host` the
     /// MicroVM's entry). `project` names the project a folder on another
     /// machine is the checkout of, when it was asked for from one.
-    /// Window-only: what it makes is a
-    /// folder on this PC, chosen with this PC's folder picker
+    /// Allowed from a phone as the worktree dialog is: a folder written
+    /// on this PC, or a machine made for the desk, is the same reach either way
     AddProject { how: String, text: String, parent: String, ask: u64, host: String, project: String, ai: String, account: String },
     /// A folder on another machine, listed for the add-a-project dialog.
     /// `host` is the machine's name in the settings; `ask` the dialog's own
     /// number, so an answer to an older listing is not taken for this one.
-    /// Window-only, as `AddProject` is
+    /// Allowed from a phone, as `AddProject` is
     RemoteList { host: String, path: String, ask: u64 },
     /// A machine reached over SSH, written into the settings from the
     /// add-a-project dialog: its name, its address (`ssh://user@host:port`)
-    /// and the key file it signs in with. Window-only, as `AddProject` is
+    /// and the key file it signs in with. Allowed from a phone, as `AddProject` is
     AddHost { name: String, at: String, key: String, ask: u64 },
     /// What to do about a project's worktrees that git knows and the desk does
     /// not list. `family` names the project by its shared git folder; `act` is

@@ -114,6 +114,12 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **"Add a project" works from a phone.** Cloning a project, making a new
+  one, cloning onto a MicroVM, listing a server's folders and writing a
+  server into the settings were refused from afar without a word, so the
+  dialog on a phone waited for an answer that never came -- "checking how it
+  signs in…", "starting" -- and looked stuck. They reach no further than the
+  worktree dialog already does from a phone, and are let through.
 - **A folder on a MicroVM or a server is named and summarised too.** Its
   heading and summary are written from what the input bar sent its AIs, the
   way a folder here is written from what its AIs are asked; the record the
