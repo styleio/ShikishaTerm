@@ -75,13 +75,16 @@ export default {
     // The same row put down where it was carried: the order really written
     carried: carry(5, 1, false),
     // A folder's row: the folder's drawing before its name, and how many it
-    // holds; its dialog is the name and the way in
+    // holds; its dialog opens on the way in, above the name
     'dialog-folder': dialog(6),
-    // Inside the folder: the crumbs above, the way back first, and the rows
+    // Inside the folder, walked into from its dialog: the crumbs above, the way back first, and the rows
     // it holds -- a folder inside it included
     inside: '(async () => {' + open
-      + 'document.querySelector(\'.arow[data-at="6"]\').dispatchEvent(new MouseEvent("dblclick", {bubbles:true}));'
+      + 'document.querySelector(\'.arow[data-at="6"]\').click();'
       + 'await ' + wait(300) + ';'
+      + 'document.querySelector(".modal button.afolderin").click();'
+      + 'await ' + wait(300) + ';'
+      + 'if (document.querySelector(".modal .framed")) throw new Error("the folder dialog stayed up");'
       + 'const rows = [...document.querySelectorAll("#actionslist .arow")].map(r => r.textContent.trim());'
       + 'if (!document.querySelector("#actionslist .arow.aback")) throw new Error("no way back first: " + rows.join(" | "));'
       + 'if (document.querySelector(".acrumbs").hidden) throw new Error("the crumbs are hidden inside a folder");'

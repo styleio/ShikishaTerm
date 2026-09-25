@@ -4119,6 +4119,19 @@ const PAGE: &str = r##"<!doctype html>
  .arow.aback .agrip { cursor:pointer; }
  .arow.into { box-shadow:inset 0 0 0 1px var(--brand); background:var(--panel2); }
  .acrumbs { margin-top:0; margin-bottom:var(--s3); }
+ /* A folder's dialog opens on the way inside it: the first thing in its body,
+    as wide as the body, the folder's drawing, what it holds, and the arrow
+    that says it goes somewhere */
+ button.afolderin { width:100%; display:flex; align-items:center; gap:var(--s2);
+   text-align:left; }
+ button.afolderin .amark { display:inline-flex; width:16px; height:16px; color:var(--dim); }
+ button.afolderin .amark svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:2;
+   stroke-linecap:round; stroke-linejoin:round; }
+ button.afolderin > span { white-space:nowrap; flex:none; }
+ button.afolderin .grow { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+ button.afolderin .hint { font-weight:400; }
+ button.afolderin .go { color:var(--faint); font-size:14px; line-height:1; }
+ button.afolderin:hover .go { color:var(--text); }
  /* Lifted off the list while it is carried: the one layer here that floats */
  .arow.dragging { position:relative; z-index:1; background:var(--raise); box-shadow:0 8px 24px #0007;
    cursor:grabbing; }
@@ -8323,9 +8336,10 @@ async function actionsLintClean() {
 // checked before the dialog lets it in, and again before the page saves.
 //
 // A folder holds more of them, as deep as anyone likes, the way the quick
-// commands' folders do: its row is walked into with a second press or Enter,
-// the way back is the first row inside, and a row carried onto a folder goes
-// in, onto the way back goes out.
+// commands' folders do: its row opens its dialog, whose first line is the way
+// inside, the way back is the first row inside, and a row carried onto a
+// folder goes in, onto the way back goes out. There is no second press to
+// walk in: the first press had already put the dialog up over the row.
 const isActionFolder = a => !!a && a.kind === "folder";
 // Every button inside a folder, folders inside it included
 const actionCount = f => (f.items || []).reduce((n, i) => n + 1 + (isActionFolder(i) ? actionCount(i) : 0), 0);
@@ -8427,7 +8441,7 @@ function actionBackRow(draw) {
 // start is what carries it. What the row says: the name on the button, whether
 // it types or runs, and what it sends, on one line. A Lua that does not parse
 // is said on the row too, since it is what holds the page's save. A folder's
-// row says how many it holds, and is walked into with a second press or Enter
+// row says how many it holds; its dialog is the way inside
 let actionCarrying = false;
 function actionRow(a, i, draw) {
   const folder = isActionFolder(a);
@@ -8450,17 +8464,12 @@ function actionRow(a, i, draw) {
   // An existing break shows at once, not only after the dialog was opened
   if (isLua && !actionErrors.has(a)) lintAction(a).then(err => { broken.hidden = !err; });
   const open = () => actionDialog(i, draw);
-  const enter = () => { actionsAt.path.push(i); draw(); };
   row.addEventListener("click", open);
-  // A folder is walked into with a double press, as a folder is anywhere
-  // else; a single press opens it, to rename it
-  if (folder) row.addEventListener("dblclick", enter);
   grip.addEventListener("click", e => e.stopPropagation());
   grip.addEventListener("pointerdown", e => actionCarry(e, row, draw));
   row.addEventListener("keydown", e => {
     if (e.target !== row) return;
-    if (e.key === "Enter" && folder) { e.preventDefault(); enter(); }
-    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
     else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
       // The same move as carrying it one row, for a keyboard
       e.preventDefault();
@@ -8776,21 +8785,31 @@ function actionFolderDialog(at, draw, have, list) {
   const field = (label, control, hint) => el("div", {class:"field"},
     label, el("div", {class:"fieldctl"}, control), hint);
   const shut = () => back.remove();
+  // The way inside, first: it is what a press on a folder's row is for most
+  // often. A name typed before it is pressed goes along, as the save would
+  // take it; an emptied name is left as it was rather than held against it
+  const goIn = () => {
+    const name = labelIn.value.trim();
+    if (name && name !== (have.label || "")) { list[at].label = name; refreshSave(); }
+    shut();
+    actionsAt.path.push(at);
+    draw();
+  };
   const inside = editing
-    ? el("div", {class:"field"},
-        el("label", {}, T["settings.quick.folder.inside"]),
-        el("div", {class:"row", style:"padding:0"},
-          el("span", {class:"hint"}, fill(T["settings.quick.folder.count"], {n: actionCount(have)})),
-          el("button", {class:"quiet", onclick:() => { shut(); actionsAt.path.push(at); draw(); }}, T["settings.actions.folder.open"])),
-        el("div", {class:"hint"}, T["settings.actions.folder.hint"]))
-    : el("div", {class:"hint"}, T["settings.actions.folder.hint"]);
+    ? el("button", {class:"afolderin", onclick: goIn},
+        actionMark(QUICK_FOLDER_SVG),
+        el("span", {}, T["settings.actions.folder.open"]),
+        el("span", {class:"hint grow"}, fill(T["settings.quick.folder.count"], {n: actionCount(have)})),
+        el("span", {class:"go"}, "›"))
+    : null;
   const back = openModal(
     el("div", {class:"mhead"},
       el("h2", {}, editing ? T["settings.actions.folder.edit_title"] : T["settings.actions.folder.add_title"]),
       el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
     el("div", {class:"mbody"},
+      inside,
       field(el("label", {}, T["settings.actions.folder_name"]), labelIn, el("div", {class:"hint"}, T["settings.actions.folder_name.hint"])),
-      inside),
+      el("div", {class:"hint"}, T["settings.actions.folder.hint"])),
     el("div", {class:"mfoot"},
       editing
         ? el("button", {class:"danger", onclick: async () => {

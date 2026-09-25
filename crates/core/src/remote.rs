@@ -1914,6 +1914,15 @@ fn handle(
             };
             req.respond(json_response(answer))?;
         }
+        // The quick actions, as the board's page is handed them when it loads.
+        // Settings opened from the phone stand in a frame over a board that
+        // is not loaded again, so the board asks for these once the frame is
+        // put away; a save made there then shows in the bar at once
+        ("GET", "/api/actions") => {
+            let list = serde_json::from_str(&crate::shell::actions_json())
+                .unwrap_or_else(|_| serde_json::json!([]));
+            req.respond(json_response(list))?;
+        }
         // The latest run's durable replay script (css/xpath anchors, no
         // digest refs) — the 🎯 panel's download button on the phone.
         // 404 while no run has recorded anything replayable yet
@@ -2502,8 +2511,8 @@ fn cookie_value(req: &tiny_http::Request, name: &str) -> String {
 /// once, and the cost was silent: `/api/replay` was added below and not here,
 /// so the phone's download button asked the settings proxy for it and the code
 /// that actually serves it — a dozen lines away — was never once reached.
-const OWN_VERBS: [&str; 9] = [
-    "state", "send", "auto", "intent", "attach", "read", "replay", "snip", "video",
+const OWN_VERBS: [&str; 10] = [
+    "state", "send", "auto", "intent", "attach", "read", "replay", "snip", "video", "actions",
 ];
 
 /// Answer a viewer asking to watch as video, and remember it.
@@ -3869,7 +3878,7 @@ mod tests {
         }
         for p in [
             "/api/state", "/api/send", "/api/auto", "/api/intent", "/api/attach", "/api/read",
-            "/api/replay", "/api/snip", "/", "/shell", "/ws-state",
+            "/api/replay", "/api/snip", "/api/actions", "/", "/shell", "/ws-state",
         ] {
             assert!(!is_settings_path(p), "{p} is the remote's own route");
         }

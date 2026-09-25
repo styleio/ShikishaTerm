@@ -628,7 +628,7 @@ impl WinSurface {
 
     /// Push the current quick actions into the shell page so a settings edit
     /// reflects live — the window isn't reloaded on a config change. (The phone
-    /// re-reads them on its next page load, i.e. when it returns to the board.)
+    /// asks for them itself, at /api/actions, when its settings frame goes.)
     fn push_actions(&self, actions_json: &str) {
         let _ = self.win.eval(&format!("window.__setActions({actions_json});"));
     }

@@ -3860,6 +3860,10 @@ const ACTIONS = {{ACTIONS}};
 // the label is the translated description a person reads
 const KEY_ACTIONS = {{KEY_ACTIONS}};
 let curActions = (typeof ACTIONS !== "undefined" && ACTIONS) ? ACTIONS : [];
+// Set when the actions changed while the bar could not show them -- shut
+// while the settings covered the board, which is exactly when they change.
+// The bar draws them again the moment it opens, rather than the row it had
+let actionsStale = false;
 // Where the bar stands in the actions' folders: the places walked into,
 // outermost first. Kept across tab switches; the top again when the actions
 // change under it
@@ -14536,11 +14540,24 @@ window.__setTheme = function (vars, light) {
 };
 window.__setActions = function (arr) {
   try {
+    // The same list again (a frame put away with nothing saved) keeps the
+    // bar where it stands, inside a folder included
+    if (JSON.stringify(arr || []) === JSON.stringify(curActions)) return;
     curActions = arr || [];
     actionsPath = [];
     if (castPanel === "actions" && castDock && castDock.style.display === "flex") renderPanel();
+    else actionsStale = true;
   } catch (e) {}
 };
+// A phone's settings stand framed over this page, which is not loaded again
+// when they are put away: the window's push above has no road to a phone, so
+// the phone asks, once, as the frame goes
+function refetchActions() {
+  fetch("api/actions?t=" + encodeURIComponent(TOKEN), {cache:"no-store"})
+    .then(r => r.ok ? r.json() : null)
+    .then(arr => { if (Array.isArray(arr)) window.__setActions(arr); })
+    .catch(() => {});
+}
 // Base64-encode an ArrayBuffer without blowing the call stack on large files.
 function bufToB64(buf) {
   const bytes = new Uint8Array(buf);
@@ -14767,6 +14784,8 @@ function openCfgLayer(params, size) {
 function closeCfgLayer() {
   const wrap = document.getElementById("cfgwrap");
   if (!wrap) return;
+  // The frame may have saved the quick actions; ask for them as it goes
+  if (document.getElementById("cfglayer")) refetchActions();
   wrap.hidden = true;
   wrap.classList.remove("full", "sheet");
   wrap.textContent = "";
@@ -17821,6 +17840,7 @@ function syncSendLabel() {
 // scrolling content, so it stays put while the chips/keys scroll under it.
 function renderPanel() {
   if (!castPanelEl) return;
+  actionsStale = false;
   syncAttach();
   const opts = panelOptions();
   // The panel only changes when the PERSON changes it. Tab switches (the
@@ -18072,7 +18092,7 @@ function syncPen() {
 }
 // Show the sub-input bar (auxiliary key row + input field). Never focused
 // automatically — the keyboard never pops up uninvited. It only opens when the user taps the input field
-function showDock() { ensureBar(); syncAttach(); castDock.style.display = "flex"; syncPen(); }
+function showDock() { ensureBar(); syncAttach(); if (actionsStale) renderPanel(); castDock.style.display = "flex"; syncPen(); }
 function closeBar() {
   if (castDock) castDock.style.display = "none";
   if (castInput) castInput.blur();
