@@ -58,6 +58,19 @@ pub struct ProjectSpec {
     /// and in front of the one an AI writes later
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_prefix: Option<String>,
+    /// Where this project's worktrees go: one folder, written as an absolute
+    /// path or relative to the project's own checkout (`..` is beside it).
+    /// Absent is the app's own place -- or, for a project that is served where
+    /// it stands, beside the checkout (see [`crate::worktree::served_in_place`]).
+    /// Only where; what each worktree's folder is called is worked out from
+    /// its name (see [`crate::worktree::Placement`])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<String>,
+    /// What the person told the AI about this project when it was asked how
+    /// each ignored file should reach a worktree. Kept so asking again starts
+    /// from what was said the first time
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_hint: Option<String>,
     /// What a new worktree of this project is given of what git does not carry:
     /// the files a line of `.gitignore` matches, and files from anywhere else.
     /// A line with no rule here gets the answer [`crate::worktree::default_how`]
@@ -593,6 +606,32 @@ pub struct ServerMark {
     pub careful: bool,
 }
 
+/// The signs that a project is read where it stands by something already
+/// running, so its worktrees have to stand beside it to be read at all.
+///
+/// Two kinds, because the signs come in two kinds: a file the server looks
+/// for (`.htaccess`), and the name of a folder servers are pointed at
+/// (`htdocs`). A list left empty looks for nothing of that kind
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct HostMarkers {
+    /// File names looked for in the checkout and in the folders directly in it
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// Folder names looked for among the parts of the checkout's own path
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
+impl Default for HostMarkers {
+    fn default() -> Self {
+        let own = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
+        HostMarkers {
+            files: own(&[".htaccess", "web.config", "index.php", "wp-config.php"]),
+            paths: own(&["htdocs", "www", "wwwroot", "public_html"]),
+        }
+    }
+}
+
 impl HostSpec {
     /// Whether this machine has to be asked for before anything can run on it.
     pub fn is_made(&self) -> bool {
@@ -654,6 +693,16 @@ pub struct Config {
     /// (default: yes). Turned off from the question itself, with "Don't show
     /// this again", and on again under Basic
     pub confirm_worktree_delete: Option<bool>,
+    /// Whether a worktree's folder goes inside a folder named for its project
+    /// (default: yes): `<place>\<project>\<name>` rather than `<place>\<name>`.
+    /// One answer for every project, because the place it decides about is
+    /// usually one place shared by all of them
+    pub nest_worktrees: Option<bool>,
+    /// What tells a project that is served where it stands -- by a web server,
+    /// or by another program that reads its files from that folder -- from one
+    /// that is not. Absent is [`HostMarkers::default`]; somebody whose project
+    /// is told wrong edits the lists instead of living with the guess
+    pub host_markers: Option<HostMarkers>,
     /// Whether the window's ✕ puts the program away in the notification area
     /// rather than quitting (default: yes). Put away, the tabs go on working
     /// and the phone stays connected; the icon's menu is where quitting is

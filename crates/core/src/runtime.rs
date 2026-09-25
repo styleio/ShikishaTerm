@@ -3653,6 +3653,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 })
                 .collect(),
             first_run,
+            settings_gen,
             // Any desk: a phone registers itself once, for whichever desk
             // sends to it
             push_wanted: desks
@@ -7057,13 +7058,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // front of this one, typed or drawn. A person who typed the prefix
             // themselves is not given it twice
             let prefix = project.and_then(|p| p.branch_prefix.clone()).unwrap_or_default();
+            // Where this project's folders go, and so what "free" means for a
+            // name: a branch nobody has, and a folder nothing stands in there
+            let placement = crate::worktree::Placement::of(&from, project, cfg.as_ref());
             let (wanted, drawn) = match (crate::worktree::tidy(&name), repo.as_deref()) {
                 (Some(kept), _) => (crate::worktree::with_prefix(&prefix, &kept), None),
                 (None, Some(main)) => {
                     let kept = match drawn_names.get(&ask.from) {
-                        Some(kept) if crate::worktree::is_free(main, kept) => kept.clone(),
+                        Some(kept) if crate::worktree::is_free(main, &placement, kept) => kept.clone(),
                         _ => {
-                            let fresh = crate::worktree::suggest(main, &prefix);
+                            let fresh = crate::worktree::suggest(main, &placement);
                             drawn_names.insert(ask.from.clone(), fresh.clone());
                             fresh
                         }
@@ -7149,7 +7153,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     ),
                     None => crate::worktree::plan_for(
                         &from,
-                        project.map(|p| p.name.as_str()),
+                        &placement,
                         &wanted,
                         Some(&ask.base),
                         (!ask.at.trim().is_empty()).then_some(at.as_path()),
@@ -7204,7 +7208,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         } else {
                             let instead = repo
                                 .as_deref()
-                                .map(|main| crate::worktree::next_free(main, &taken.branch))
+                                .map(|main| crate::worktree::next_free(main, &placement, &taken.branch))
                                 .unwrap_or_default();
                             view.in_use = Some(crate::uistate::BranchInUse {
                                 branch: taken.branch.clone(),
@@ -7272,7 +7276,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         &crate::repo::remote_url_of(&from).unwrap_or_default(),
                         ask.setup.then(|| told.clone()).flatten(),
                     ),
-                    None => crate::worktree::fan(&from, &wanted, Some(&ask.base), &ask.ais),
+                    None => crate::worktree::fan(&from, &placement, &wanted, Some(&ask.base), &ask.ais),
                 };
                 view.branch = wanted.clone();
                 view.lines = fanned.iter().filter_map(|(_, p)| p.as_ref().ok().map(|p| p.line())).collect();

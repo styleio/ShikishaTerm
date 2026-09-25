@@ -138,6 +138,9 @@ try {
   await open();
   const kept = await type('fix/crash-on-open');
   check(kept.branch === 'fix/crash-on-open', 'the branch is the name as typed: ' + kept.branch);
+  // The folder is named in one piece, a folder named for the project above it
+  check(path.basename(kept.folder) === 'fix-crash-on-open' && path.basename(path.dirname(kept.folder)) === 'shop',
+    'the folder is the name in one piece, in the project\'s folder: ' + kept.folder);
   check(kept.said === '', 'nothing is said, because there is nothing to say: ' + JSON.stringify(kept.said));
 
   console.log('2. a name partly in letters both can hold keeps that part');

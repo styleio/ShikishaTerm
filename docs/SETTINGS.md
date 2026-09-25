@@ -31,6 +31,17 @@ Tab width, chaining, language
 - **Colours** — The colour scheme, for the terminal and for the window around it. The list is every scheme this PC already has — the ones Windows Terminal is carrying, plus any scheme file dropped into the config/themes folder — so a theme you already use can be picked by the name you already know it by. Choosing a light scheme turns the whole window light.
 - **Language** — Screen language. Automatic follows the OS. Choosing here overrides the OS and takes effect after a restart (add lang/<code>.json to contribute a translation)
 
+### Worktrees
+
+Where they go, host-dependent project markers
+
+- **Project folder** — On, a worktree is made at "place\project\name"; off, at "place\name". Projects whose worktrees go beside the original are not affected.
+
+**Host-dependent project markers**
+
+- **File names** — When a file of one of these names is in the original folder or in a folder directly inside it, the project is treated as host-dependent. Separate names with commas.
+- **Folder names** — When the original folder's path contains a folder of one of these names, the project is treated as host-dependent. Separate names with commas.
+
 ### AI agents
 
 Assistant AI, deciding AI, connections, agreements
@@ -271,19 +282,23 @@ Each project answers these for itself: a team's rules are its repository's, and 
 
 ### The project's page
 
-Name and checkout, git account, protected branches, what the AI is told, what a worktree is given
+Worktree creation rules, name and checkout, git account, protected branches, what the AI is told, setup
 
 **Project**
 
 - **Name**
 - **Checkout** — Worktrees of this repository are cut from here
-- **Branch prefix** — Put in front of every branch made for this project, whether the name is typed, drawn or written by an AI. Leave it empty for no prefix.
 - **Repository**
 
 **Git account**
 
 - **Account to use**
 - **Delete this project** — The working folders and tabs stay. Only their tie to this project goes
+
+**Worktree name and place**
+
+- **Branch prefix** — Put in front of every branch made for this project, whether the name is typed, drawn or written by an AI. Leave it empty for no prefix.
+- **Worktree Placement** — The folder this project's worktrees are made in, written as an absolute path or relative to the original folder (.. is beside it). Empty, they are made in the app's own place. A worktree made beside the original folder is named "original-name" and stands at the same depth as the original.
 
 ## Shortcuts
 

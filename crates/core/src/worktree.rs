@@ -202,11 +202,12 @@ impl std::fmt::Display for InUse {
 impl std::error::Error for InUse {}
 
 /// The first name after `name` -- `name-2`, `name-3` -- that is a new branch
-/// with a free folder, for when `name` is taken
-pub fn next_free(main: &Path, name: &str) -> String {
+/// with a free folder where this project puts its folders, for when `name` is
+/// taken
+pub fn next_free(main: &Path, placement: &Placement, name: &str) -> String {
     (2..100)
         .map(|n| format!("{name}-{n}"))
-        .find(|candidate| is_free(main, candidate))
+        .find(|candidate| is_free(main, placement, candidate))
         .unwrap_or_else(|| format!("{name}-{}", crate::random_hex(3)))
 }
 
@@ -215,6 +216,11 @@ pub fn next_free(main: &Path, name: &str) -> String {
 /// `base` is what a new branch grows from; leave it out for the sensible one.
 pub fn plan(main: &Path, branch: &str, base: Option<&str>) -> Result<Plan> {
     plan_into(main, branch, base, None, None)
+}
+
+/// The same, for a project whose worktrees go where its placement says.
+pub fn plan_placed(main: &Path, placement: &Placement, branch: &str, base: Option<&str>) -> Result<Plan> {
+    plan_for(main, placement, branch, base, None, None)
 }
 
 /// The same, put somewhere of somebody's choosing.
@@ -230,13 +236,13 @@ pub fn plan_into(
     at: Option<&Path>,
     env: Option<crate::devcontainer::Env>,
 ) -> Result<Plan> {
-    plan_for(main, None, branch, base, at, env)
+    plan_for(main, &Placement::default(), branch, base, at, env)
 }
 
-/// The same, for a project that has been written down.
+/// The same, for a project that says where its worktrees go.
 pub fn plan_for(
     main: &Path,
-    project: Option<&str>,
+    placement: &Placement,
     branch: &str,
     base: Option<&str>,
     at: Option<&Path>,
@@ -265,7 +271,18 @@ pub fn plan_for(
     };
     let folder = match at.filter(|p| !p.as_os_str().is_empty()) {
         Some(p) => p.to_path_buf(),
-        None => folder_for_project(&main, project, &branch),
+        None => {
+            let placed = place(&main, placement, &branch);
+            // A place the project wrote that lands inside its own checkout is
+            // said as that, before anything is made there
+            if inside_checkout(&main, &placed) {
+                bail!(crate::i18n::tp(
+                    "err.worktree.inside_checkout",
+                    &[("path", &placed.display().to_string())]
+                ));
+            }
+            placed
+        }
     };
     // Said now rather than when the button is pressed. Every branch of every
     // project shares one place, so the name that is free here can be a folder
@@ -827,18 +844,22 @@ pub fn ignored(main: &Path) -> Vec<Ignored> {
         .collect()
 }
 
-/// What a line of an ignore file does when the project has not said: nothing
-/// if it matches anything that holds a secret or matches nothing at all, a
-/// link if everything it matches is a folder, and a copy otherwise.
+/// What a line of an ignore file does when the project has not said: a copy
+/// of whatever it matches, and nothing when it matches nothing.
+///
+/// A copy of everything, secrets and installed folders included, because a
+/// worktree that lacks any of them is one that does not run: a site served
+/// where it stands has no `vendor/` to fall back on, and a `.env` left behind
+/// is a program that starts and then fails. What is large is said beside the
+/// line on the settings screen, where it can be turned into a link or left
+/// out -- never taken away without anybody seeing.
 ///
 /// The same answer for the settings screen, which shows it beside the line,
 /// and for the dialog that makes a folder, so the two never disagree
 pub fn default_how(found: &[Ignored], source: &str, pattern: &str) -> &'static str {
-    let matched: Vec<&Ignored> = found.iter().filter(|i| i.source == source && i.pattern == pattern).collect();
-    match () {
-        _ if matched.is_empty() || matched.iter().any(|i| i.secret) => "skip",
-        _ if matched.iter().all(|i| i.folder) => "link",
-        _ => "copy",
+    match found.iter().any(|i| i.source == source && i.pattern == pattern) {
+        true => "copy",
+        false => "skip",
     }
 }
 
@@ -987,9 +1008,18 @@ pub fn carry_into(plan: &Plan, items: &[Carry]) -> Brought {
             (how, false) => {
                 let copied = std::fs::copy(&from, &to).is_ok();
                 if copied && how == "replace" && !c.replace.is_empty() {
+                    // The words a replacement writes are this worktree's own
+                    let replaces: Vec<crate::config::Replace> = c
+                        .replace
+                        .iter()
+                        .map(|r| crate::config::Replace {
+                            with: fill_words(&r.with, &plan.folder, &plan.main, r.regex),
+                            ..r.clone()
+                        })
+                        .collect();
                     let written = std::fs::read_to_string(&to)
                         .map_err(|e| e.to_string())
-                        .and_then(|text| apply_replaces(&text, &c.replace))
+                        .and_then(|text| apply_replaces(&text, &replaces))
                         .and_then(|(text, unmatched)| {
                             std::fs::write(&to, text).map_err(|e| e.to_string()).map(|()| unmatched)
                         });
@@ -1563,8 +1593,10 @@ pub fn auto_rename_plan(folder: &Path, drawn: &str, written: &str, prefix: &str)
         return None;
     }
     let main = crate::repo::main_checkout(folder)?;
+    // Only the branch is new: the folder is already there, so where a new
+    // folder would go is not asked about
     let free = match branch_exists(&main, &wanted) {
-        true => next_free(&main, &wanted),
+        true => next_free(&main, &Placement::default(), &wanted),
         false => wanted,
     };
     Some(Rename {
@@ -1677,36 +1709,367 @@ fn unsaved_work(status_z: &str, is_link: &dyn Fn(&str) -> bool) -> usize {
 /// written to, one that is being synced to the cloud, where every branch would
 /// be uploaded in full, and one long enough that what lands inside the folder
 /// would not fit.
+///
+/// A project that says where its worktrees go is taken at its word instead:
+/// see [`Placement`].
 pub fn folder_for(main: &Path, branch: &str) -> PathBuf {
-    folder_for_project(main, None, branch)
+    place(main, &Placement::default(), branch)
 }
 
-/// The same, for a project that has a name of its own.
+/// Where one project's worktrees go, and what decides the folder each gets.
 ///
-/// The name is what keeps two projects apart. Without one there is only the
-/// checkout's folder name, and two clones both sitting in a folder called
-/// `api` are handed the same place -- refused rather than overwritten, but
-/// refused is still a person stuck. A project that has been written down is
-/// told apart by what it is called, which is unique because names are.
-pub fn folder_for_project(main: &Path, project: Option<&str>, branch: &str) -> PathBuf {
-    let name = project
+/// One folder for all of them (`base`), written absolute or relative to the
+/// project's own checkout, and each worktree a folder in it named for its
+/// work. Three shapes come out of that and nothing else:
+///
+/// - nothing said: the app's own place, in a folder named for the project
+///   when `nest` is on (the default) -- `...\branches\<project>\<name>`
+/// - somewhere said: that folder, with or without the project's folder in it
+/// - beside the checkout (`..`, or the checkout's parent written out): the
+///   checkout's own name in front of each, `<parent>\<checkout>-<name>`, so
+///   every worktree stands at the depth the checkout does. A project a server
+///   reads where it stands is the reason: a worktree anywhere else is one the
+///   server cannot see, and one a level deeper breaks every path that climbs
+///   out of it to a neighbour. The project's folder in between would put the
+///   worktrees inside the checkout, and none in front would let them collide
+///   with whatever else lives beside it
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placement {
+    /// The project's name, for the folder named for it. Absent is the
+    /// checkout's own folder name
+    pub project: Option<String>,
+    /// Where they go. Empty is the app's own place
+    pub base: String,
+    /// What stands in front of every branch of the project (`yourname/`). It
+    /// is part of the branch and not of the folder: the folder is named for
+    /// the work, and a prefix every folder shares tells none of them apart
+    pub prefix: String,
+    /// Whether each goes inside a folder named for its project
+    pub nest: bool,
+}
+
+impl Default for Placement {
+    fn default() -> Self {
+        Placement { project: None, base: String::new(), prefix: String::new(), nest: true }
+    }
+}
+
+impl Placement {
+    /// What a project says about where its worktrees go, with the app's own
+    /// answers wherever it says nothing.
+    ///
+    /// A project that names no place and is served where it stands is placed
+    /// beside its checkout: the one place a worktree of it can be served from.
+    /// Only the default: a place somebody wrote is never second-guessed
+    pub fn of(
+        main: &Path,
+        project: Option<&crate::config::ProjectSpec>,
+        cfg: Option<&crate::config::Config>,
+    ) -> Placement {
+        let said = project
+            .and_then(|p| p.placement.as_deref())
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+            .map(str::to_string);
+        let base = match said {
+            Some(b) => b,
+            None => {
+                let markers = cfg.and_then(|c| c.host_markers.clone()).unwrap_or_default();
+                let checkout = crate::repo::main_checkout(main).unwrap_or_else(|| main.to_path_buf());
+                match served_in_place(&checkout, &markers) {
+                    Some(_) => BESIDE.to_string(),
+                    None => String::new(),
+                }
+            }
+        };
+        Placement {
+            project: project.map(|p| p.name.clone()).filter(|n| !n.trim().is_empty()),
+            base,
+            prefix: project.and_then(|p| p.branch_prefix.clone()).unwrap_or_default(),
+            nest: cfg.and_then(|c| c.nest_worktrees).unwrap_or(true),
+        }
+    }
+}
+
+/// Beside the checkout, as a placement writes it
+pub const BESIDE: &str = "..";
+
+/// The folder a branch of this project gets, following its [`Placement`].
+///
+/// Arithmetic on paths and nothing else: the dialog asks on every keystroke,
+/// and whether the folder can really be made there is [`plan_for`]'s question
+pub fn place(main: &Path, placement: &Placement, branch: &str) -> PathBuf {
+    let leaf = folder_leaf(branch, &placement.prefix);
+    let origin = name_of(main);
+    let project = placement
+        .project
+        .as_deref()
         .map(str::trim)
         .filter(|p| !p.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| {
-            main.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "repo".into())
-        });
-    // The branch's own shape is kept: `feature/login` is two folders, which is
-    // what makes it impossible for two branches to want one folder
-    let leaf: PathBuf = branch.split('/').filter(|s| !s.is_empty()).collect();
-    let at = branches_root().join(&name).join(&leaf);
-    match short_enough(&at) {
-        true => at,
-        // Ours, per machine, which is as short as this program can offer
-        false => away_from_home().join(&name).join(&leaf),
+        .unwrap_or_else(|| origin.clone());
+    let base = placement.base.trim();
+    if base.is_empty() {
+        let under = |root: PathBuf| match placement.nest {
+            true => root.join(&project).join(&leaf),
+            false => root.join(&leaf),
+        };
+        let at = under(branches_root());
+        return match short_enough(&at) {
+            true => at,
+            // Ours, per machine, which is as short as this program can offer
+            false => under(away_from_home()),
+        };
     }
+    let root = resolve_base(main, base);
+    let beside = main.parent().is_some_and(|p| crate::uistate::same_folder(p, &root));
+    match (beside, placement.nest) {
+        (true, _) => root.join(format!("{origin}-{leaf}")),
+        (false, true) => root.join(&project).join(&leaf),
+        (false, false) => root.join(&leaf),
+    }
+}
+
+/// A placement's folder, as a path: written absolute it is itself, and
+/// written relative it is read from the checkout. `..` is taken out by reading
+/// the path, so `P:\www\shop\..` is `P:\www`, which is what is shown
+pub fn resolve_base(main: &Path, base: &str) -> PathBuf {
+    let written = Path::new(base.trim());
+    match written.is_absolute() {
+        true => crate::repo::tidy(written.to_path_buf()),
+        false => crate::repo::tidy(main.join(written)),
+    }
+}
+
+/// Whether a folder is the checkout itself or somewhere inside it. A worktree
+/// there would be a worktree inside the project it is a worktree of: git
+/// takes it, and every tool that walks the checkout walks into it
+pub fn inside_checkout(main: &Path, folder: &Path) -> bool {
+    let key = |p: &Path| {
+        let s = crate::repo::tidy(p.to_path_buf()).to_string_lossy().replace('\\', "/");
+        let s = s.trim_end_matches('/').to_string();
+        if cfg!(windows) { s.to_lowercase() } else { s }
+    };
+    let (m, f) = (key(main), key(folder));
+    f == m || f.starts_with(&format!("{m}/"))
+}
+
+/// A folder's own name, for the parts of a path that are named after it
+fn name_of(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "repo".into())
+}
+
+/// What a worktree's folder is called: the name of the work, in one piece.
+///
+/// The project's prefix comes off first, since it is the branch's and not the
+/// work's. Then every run of anything that is not a letter, a digit, `.`, `_`
+/// or `-` becomes one `-` -- a `/` included, so `feature/login` is the folder
+/// `feature-login` and never two folders deep -- a run of `-` is one, a run of
+/// dots is one, and neither is left at either end. One piece because a folder
+/// a level deeper than its neighbours is a folder every path that climbs out
+/// of it to a neighbour gets wrong
+pub fn folder_leaf(branch: &str, prefix: &str) -> String {
+    static GAPS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static DASHES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static DOTS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let prefix = prefix.trim().trim_matches('/');
+    let branch = branch.trim();
+    let work = match prefix.is_empty() {
+        true => branch,
+        false => branch.strip_prefix(&format!("{prefix}/")).unwrap_or(branch),
+    };
+    let gaps = GAPS.get_or_init(|| regex::Regex::new(r"[^\p{L}\p{N}._-]+").expect("the pattern is fixed"));
+    let dashes = DASHES.get_or_init(|| regex::Regex::new(r"-+").expect("the pattern is fixed"));
+    let dots = DOTS.get_or_init(|| regex::Regex::new(r"\.{2,}").expect("the pattern is fixed"));
+    let one = gaps.replace_all(work, "-");
+    let one = dashes.replace_all(&one, "-");
+    let one = dots.replace_all(&one, ".");
+    let one = one.trim_matches(['.', '-']).to_string();
+    match one.is_empty() || reserved_on_windows(&one) {
+        true => format!("work-{}", crate::random_hex(3)),
+        false => one,
+    }
+}
+
+/// Whether this project is read where it stands by something already
+/// running, and what says so: the marker's own name when it is part of the
+/// checkout's path (`htdocs`), or where the marker file is (`webroot/.htaccess`).
+///
+/// Looked for in the checkout and in the folders directly in it, which is
+/// where a site keeps the files a server is pointed at. Not deeper: a marker
+/// found three folders down is as likely a template or a test as a sign.
+/// Remembered for half a minute per checkout, because the dialog asks while a
+/// name is being typed and a checkout on another machine's share answers
+/// every look slowly
+pub fn served_in_place(main: &Path, markers: &crate::config::HostMarkers) -> Option<String> {
+    type Seen = std::collections::HashMap<(PathBuf, String), (std::time::Instant, Option<String>)>;
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let key = (main.to_path_buf(), format!("{:?}{:?}", markers.files, markers.paths));
+    let kept = SEEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|s| s.get(&key).cloned());
+    if let Some((when, said)) = kept
+        && when.elapsed() < std::time::Duration::from_secs(30)
+    {
+        return said;
+    }
+    let said = look_for_markers(main, markers);
+    SEEN.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(key, (std::time::Instant::now(), said.clone()));
+    said
+}
+
+/// [`served_in_place`], asked of the disk
+fn look_for_markers(main: &Path, markers: &crate::config::HostMarkers) -> Option<String> {
+    let wanted = |list: &[String]| -> Vec<String> {
+        list.iter().map(|m| m.trim().to_lowercase()).filter(|m| !m.is_empty()).collect()
+    };
+    let (paths, files) = (wanted(&markers.paths), wanted(&markers.files));
+    for part in main.components() {
+        if let std::path::Component::Normal(n) = part {
+            let n = n.to_string_lossy();
+            if paths.contains(&n.to_lowercase()) {
+                return Some(n.to_string());
+            }
+        }
+    }
+    if files.is_empty() {
+        return None;
+    }
+    let found_in = |dir: &Path| -> Option<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| files.contains(&n.to_lowercase()))
+            .collect();
+        names.sort();
+        names.into_iter().next()
+    };
+    if let Some(n) = found_in(main) {
+        return Some(n);
+    }
+    // Folders that hold what was installed or built rather than what is
+    // served, and the ones a tool keeps for itself, are not looked in
+    const NOT_SITES: &[&str] = &["node_modules", "vendor", "target", "dist", "build", "bin", "obj"];
+    let mut subs: Vec<PathBuf> = std::fs::read_dir(main)
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().to_lowercase();
+            !n.starts_with('.') && !NOT_SITES.contains(&n.as_str())
+        })
+        .map(|e| e.path())
+        .collect();
+    subs.sort();
+    subs.iter().find_map(|d| found_in(d).map(|n| format!("{}/{n}", name_of(d))))
+}
+
+/// The words a replacement may write, filled in for one worktree.
+///
+/// `{name}` is the worktree's folder name, `{folder}` its whole path,
+/// `{origin_folder}` the checkout's whole path and `{origin}` the checkout's
+/// folder name. The name is the one that reaches a server: a server reads the
+/// files by its own path, which is not this PC's, and the folder's name is the
+/// part the two share. In a regular expression's replacement a `$` means a
+/// group, so one that is part of a path is written the way it stays a `$`
+pub fn fill_words(with: &str, folder: &Path, main: &Path, regex: bool) -> String {
+    let words = [
+        ("{name}", name_of(folder)),
+        ("{folder}", folder.display().to_string()),
+        ("{origin_folder}", main.display().to_string()),
+        ("{origin}", name_of(main)),
+    ];
+    let mut out = with.to_string();
+    for (word, value) in words {
+        let value = match regex {
+            true => value.replace('$', "$$"),
+            false => value,
+        };
+        out = out.replace(word, &value);
+    }
+    out
+}
+
+/// Whether a folder made here can be a second name for another folder here,
+/// read through. None when there is no such folder yet to try in.
+///
+/// Asked by trying, the way [`writable`] is: a share lets one kind through and
+/// not another, Windows wants a right for the kind that crosses machines, and
+/// none of it can be read off a path. A folder and a file are made, the folder
+/// is given a second name the way a worktree's would be, the file is read
+/// through it, and all of it is taken away again -- the second name first, so
+/// nothing is ever deleted through it
+pub fn can_link_in(dir: &Path) -> Option<bool> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let probe = dir.join(format!(".shikisha-link-{}", crate::random_hex(6)));
+    let real = probe.join("real");
+    if std::fs::create_dir_all(&real).is_err() {
+        let _ = std::fs::remove_dir_all(&probe);
+        return Some(false);
+    }
+    let second = probe.join("second");
+    let ok = std::fs::write(real.join("seen"), b"1").is_ok()
+        && link_folder(&real, &second)
+        && std::fs::read(second.join("seen")).is_ok_and(|b| b == b"1");
+    unhook_links(&probe);
+    let _ = std::fs::remove_dir_all(&probe);
+    Some(ok)
+}
+
+/// How much there is of one thing a line of an ignore file matches
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Size {
+    /// As [`Ignored::path`] has it
+    pub path: String,
+    pub bytes: u64,
+    pub files: u64,
+    /// Whether counting stopped before the end: there is at least this much
+    pub more: bool,
+}
+
+/// How much each of these holds, counted on disk.
+///
+/// Every file under a folder, without following a second name out of it --
+/// what a copy would copy. Stopped after `most` files in all, because a build
+/// folder can hold a million and "at least this much" is already the answer
+pub fn sizes(main: &Path, paths: &[String], most: u64) -> Vec<Size> {
+    let mut left = most;
+    paths
+        .iter()
+        .map(|p| {
+            let mut size = Size { path: p.clone(), bytes: 0, files: 0, more: false };
+            let mut todo = vec![main.join(p.trim_end_matches('/'))];
+            while let Some(at) = todo.pop() {
+                if left == 0 {
+                    size.more = true;
+                    break;
+                }
+                let Ok(meta) = std::fs::symlink_metadata(&at) else { continue };
+                if meta.file_type().is_symlink() {
+                    continue;
+                }
+                if meta.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(&at) {
+                        todo.extend(entries.flatten().map(|e| e.path()));
+                    }
+                    continue;
+                }
+                left -= 1;
+                size.files += 1;
+                size.bytes += meta.len();
+            }
+            size
+        })
+        .collect()
 }
 
 /// Whether a whole source tree will fit under this folder.
@@ -1902,9 +2265,9 @@ pub fn bases(main: &Path) -> Vec<String> {
 }
 
 /// Whether a name drawn for new work is still free: no branch of that name
-/// here, and nothing standing where its folder would go
-pub fn is_free(main: &Path, name: &str) -> bool {
-    !branch_exists(main, name) && !folder_for(main, name).exists()
+/// here, and nothing standing where this project would put its folder
+pub fn is_free(main: &Path, placement: &Placement, name: &str) -> bool {
+    !branch_exists(main, name) && !place(main, placement, name).exists()
 }
 
 /// A name for the next branch, when nobody has one in mind, with the project's
@@ -1914,7 +2277,8 @@ pub fn is_free(main: &Path, name: &str) -> bool {
 /// pull request, and `work-3` is something a person can say out loud, which
 /// a timestamp and a handful of hex is not. Free names only -- the first one
 /// that is not already a branch here.
-pub fn suggest(main: &Path, prefix: &str) -> String {
+pub fn suggest(main: &Path, placement: &Placement) -> String {
+    let prefix = placement.prefix.as_str();
     // Two words rather than a number, because this name is what the branch is
     // called for as long as the work has no title, and a list of them has to be
     // readable: `work-2` and `work-3` sit next to each other and say the same
@@ -1929,7 +2293,7 @@ pub fn suggest(main: &Path, prefix: &str) -> String {
     // other. Asking costs a look at the disk per draw, which is affordable
     // now that working out where a folder goes is arithmetic on a path and
     // no longer a probe
-    let free = |name: &str| is_free(main, name);
+    let free = |name: &str| is_free(main, placement, name);
     // The project's own prefix is part of the name being drawn, not something
     // added to it afterwards: `yourname/work-2` is free or taken as a whole
     let drawn = |name: &str| with_prefix(prefix, name);
@@ -1956,12 +2320,18 @@ pub fn suggest(main: &Path, prefix: &str) -> String {
 /// One folder per AI: the same name with the AI's own on the end, so the
 /// branches say at a glance who is working on which. Every plan is made
 /// before any runs, so what is shown is the whole of what will happen
-pub fn fan(main: &Path, name: &str, base: Option<&str>, ais: &[String]) -> Vec<(String, Result<Plan>)> {
+pub fn fan(
+    main: &Path,
+    placement: &Placement,
+    name: &str,
+    base: Option<&str>,
+    ais: &[String],
+) -> Vec<(String, Result<Plan>)> {
     ais.iter()
         .map(|ai| {
             let ai = ai.trim().to_string();
             let branch = format!("{}-{ai}", name.trim());
-            (ai.clone(), plan(main, &branch, base))
+            (ai.clone(), plan_placed(main, placement, &branch, base))
         })
         .collect()
 }
@@ -2100,12 +2470,12 @@ fn tidy_part(part: &str) -> String {
 /// `suggest` instead. What was typed is not lost: it stays on the folder's
 /// card, which is this app's own label and goes nowhere near git or the disk.
 ///
-/// `/` survives, because a branch is allowed to carry it and this app writes
-/// it out as folders (`feature/login` is `feature` with `login` inside), which
-/// is what stops two branches from wanting one folder. Dropping it would turn
-/// `feature/login` into `featurelogin` -- a different branch, and one nobody
-/// asked for. It cannot lead anywhere else on its own: a piece can hold no
-/// `\`, no `:` and no `..` by the time this is done with it
+/// `/` survives, because a branch is allowed to carry it and teams name
+/// branches with it (`feature/login`). Dropping it would turn `feature/login`
+/// into `featurelogin` -- a different branch, and one nobody asked for. The
+/// folder is another matter: it is named in one piece (`feature-login`, see
+/// [`folder_leaf`]). A piece can hold no `\`, no `:` and no `..` by the time
+/// this is done with it
 pub fn tidy(typed: &str) -> Option<String> {
     let name = typed
         .split('/')
@@ -2254,6 +2624,128 @@ mod tests {
         d
     }
 
+    /// A worktree's folder is named for its work in one piece, the same way
+    /// for every name: anything that is not a letter, a digit, `.`, `_` or `-`
+    /// is one `-`, runs of `-` and of dots are one, and neither is left at an
+    /// end. The project's prefix is the branch's, not the folder's
+    #[test]
+    fn a_folder_is_named_for_its_work_in_one_piece() {
+        for (branch, prefix, want) in [
+            ("feature/login", "", "feature-login"),
+            ("yourname/feature/login", "yourname/", "feature-login"),
+            ("yourname/feature/login", "yourname", "feature-login"),
+            ("other/feature/login", "yourname/", "other-feature-login"),
+            ("fix  crash!!", "", "fix-crash"),
+            ("--a--b--", "", "a-b"),
+            ("..a...b..", "", "a.b"),
+            ("v1.2_rc", "", "v1.2_rc"),
+            // Letters of any language are letters
+            ("ログイン/画面", "", "ログイン-画面"),
+        ] {
+            assert_eq!(folder_leaf(branch, prefix), want, "{branch:?} with {prefix:?}");
+        }
+        // Nothing usable left, or a name Windows keeps: a name of its own
+        assert!(folder_leaf("///", "").starts_with("work-"));
+        assert!(folder_leaf("con", "").starts_with("work-"));
+    }
+
+    /// Where a project's worktrees go follows what it says, in the three
+    /// shapes there are: the app's place, a folder of its own, and beside the
+    /// checkout at the checkout's depth
+    #[test]
+    fn a_project_puts_its_worktrees_where_it_says() {
+        let main = scratch("placed").join("www").join("site");
+        std::fs::create_dir_all(&main).unwrap();
+        let put = |base: &str, nest: bool| {
+            place(&main, &Placement { base: base.into(), nest, prefix: "me/".into(), project: Some("Site".into()) }, "me/feature/x")
+        };
+        // Nothing said: the app's place, in the project's folder or not
+        assert_eq!(put("", true), branches_root().join("Site").join("feature-x"));
+        assert_eq!(put("", false), branches_root().join("feature-x"));
+        // Beside the checkout: named for the checkout, at its depth, whether
+        // written as `..` or as the parent itself, nested or not
+        let beside = main.parent().unwrap().join("site-feature-x");
+        assert_eq!(put("..", true), beside);
+        assert_eq!(put("..", false), beside);
+        assert_eq!(put(&main.parent().unwrap().display().to_string(), true), beside);
+        // Somewhere else, relative to the checkout or written out
+        let apart = scratch("placed").join("trees");
+        assert_eq!(put("../../trees", true), apart.join("Site").join("feature-x"));
+        assert_eq!(put(&apart.display().to_string(), false), apart.join("feature-x"));
+    }
+
+    /// A place that lands inside the checkout is refused before anything is
+    /// made there: a worktree inside the project it is a worktree of
+    #[test]
+    fn a_place_inside_the_checkout_is_refused() {
+        let main = repo("inside");
+        let inside = Placement { base: "trees".into(), ..Default::default() };
+        let err = plan_for(&main, &inside, "work", Some("main"), None, None).unwrap_err();
+        assert!(format!("{err:#}").contains(&main.join("trees").display().to_string()), "{err:#}");
+        assert!(inside_checkout(&main, &main.join("a").join("b")));
+        assert!(inside_checkout(&main, &main));
+        assert!(!inside_checkout(&main, &main.with_file_name("proj-inside-x")), "a neighbour whose name starts the same is not inside");
+        // Written out by hand for one worktree, the place is taken at its word
+        assert!(plan_for(&main, &inside, "work", Some("main"), Some(&main.with_file_name("elsewhere")), None).is_ok());
+    }
+
+    /// A project a server reads where it stands is told by its markers: a
+    /// file in the checkout or in a folder directly in it, or a folder of the
+    /// checkout's path. Only the default follows: a place written is kept
+    #[test]
+    fn a_project_served_where_it_stands_is_told_by_its_markers() {
+        let markers = crate::config::HostMarkers::default();
+        let site = scratch("served").join("site");
+        std::fs::create_dir_all(site.join("webroot")).unwrap();
+        std::fs::create_dir_all(site.join("vendor")).unwrap();
+        assert_eq!(look_for_markers(&site, &markers), None);
+        // Inside what was installed is not a sign
+        std::fs::write(site.join("vendor").join("index.php"), "<?php").unwrap();
+        assert_eq!(look_for_markers(&site, &markers), None);
+        std::fs::write(site.join("webroot").join(".htaccess"), "").unwrap();
+        assert_eq!(look_for_markers(&site, &markers).as_deref(), Some("webroot/.htaccess"));
+        // A folder of the path
+        let under = scratch("served").join("htdocs").join("shop");
+        std::fs::create_dir_all(&under).unwrap();
+        assert_eq!(look_for_markers(&under, &markers).as_deref(), Some("htdocs"));
+        // Lists emptied look for nothing
+        let none = crate::config::HostMarkers { files: vec![], paths: vec![] };
+        assert_eq!(look_for_markers(&site, &none), None);
+
+        // The default follows; a place written is kept
+        let spec = crate::config::ProjectSpec { name: "site".into(), ..Default::default() };
+        assert_eq!(Placement::of(&site, Some(&spec), None).base, BESIDE);
+        let trees = crate::local_path("D:/trees");
+        let said = crate::config::ProjectSpec { placement: Some(trees.clone()), ..spec.clone() };
+        assert_eq!(Placement::of(&site, Some(&said), None).base, trees);
+        let plain = scratch("served").join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(Placement::of(&plain, Some(&spec), None).base, "");
+        // Turned off, a project's folder is left out
+        let cfg = crate::config::Config { nest_worktrees: Some(false), ..Default::default() };
+        assert!(!Placement::of(&plain, Some(&spec), Some(&cfg)).nest);
+    }
+
+    /// A replacement may write the worktree's own name and paths. In a
+    /// regular expression's replacement a `$` of a path stays a `$`
+    #[test]
+    fn a_replacement_writes_the_worktree_it_is_copied_into() {
+        let (main, folder) = (crate::local_path("P:/www/shop"), crate::local_path("P:/www/shop-feature-x"));
+        let (main, folder) = (Path::new(&main), Path::new(&folder));
+        assert_eq!(fill_words("/srv/{name}/", folder, main, false), "/srv/shop-feature-x/");
+        assert_eq!(fill_words("{origin} in {origin_folder}", folder, main, false), format!("shop in {}", main.display()));
+        assert_eq!(fill_words("{folder}", folder, main, false), folder.display().to_string());
+        let money = crate::local_path("D:/a$b");
+        let money = Path::new(&money);
+        assert_eq!(fill_words("$1{name}", money, main, true), "$1a$$b");
+        assert_eq!(fill_words("{name}", money, main, false), "a$b");
+        // Filled in, then replaced as before
+        let r = crate::config::Replace { find: "/shop/".into(), with: fill_words("/{name}/", folder, main, false), regex: false };
+        let (out, unmatched) = apply_replaces("define('_ROOT_','/srv/shop/');", &[r]).unwrap();
+        assert_eq!(out, "define('_ROOT_','/srv/shop-feature-x/');");
+        assert!(unmatched.is_empty());
+    }
+
     /// A branch already open somewhere is refused while its name is typed,
     /// naming where it is open -- the checkout itself, or a worktree
     #[test]
@@ -2289,9 +2781,13 @@ mod tests {
         assert!(!at.starts_with(main.parent().unwrap()), "it is placed beside the main checkout: {at:?}");
         // One place holds all of them, under the project they belong to
         assert!(at.starts_with(branches_root().join("proj-place")), "{at:?}");
-        assert!(at.ends_with("feature/login"), "the branch name nests as it is: {at:?}");
-        // Two branches that differ only in shape never want the same folder
-        assert_ne!(folder_for(&main, "feature/login"), folder_for(&main, "feature-login"));
+        // In one piece: a worktree a level deeper than its neighbours breaks
+        // every path that climbs out of it to one of them
+        assert!(at.ends_with("feature-login"), "the folder is not named in one piece: {at:?}");
+        assert_eq!(at.parent(), Some(branches_root().join("proj-place").as_path()));
+        // Two branches that differ only in shape want the same folder; the
+        // second is refused when it is already there, and a drawn name skips it
+        assert_eq!(folder_for(&main, "feature/login"), folder_for(&main, "feature-login"));
         // Two projects of the same name in different places still collide here,
         // which is the price of one place; the folder is refused when it is
         // already there rather than written into
@@ -2307,7 +2803,7 @@ mod tests {
     fn a_project_nobody_can_write_to_changes_nothing() {
         let at = folder_for(Path::new("Z:/nowhere/myproject"), "fix/crash");
         assert!(at.starts_with(branches_root()), "{at:?}");
-        assert!(at.ends_with("fix/crash"));
+        assert!(at.ends_with("fix-crash"));
     }
 
     /// A machine that is made fresh has no project on it, so the project is
@@ -2405,13 +2901,11 @@ mod tests {
         // The same folder name, so the same place -- this is the collision
         assert_eq!(folder_for(&a, "work"), folder_for(&b, "work"));
         // Written down, they are two
-        assert_ne!(
-            folder_for_project(&a, Some("ours"), "work"),
-            folder_for_project(&b, Some("theirs"), "work")
-        );
-        assert!(folder_for_project(&a, Some("ours"), "work").ends_with("ours/work"));
+        let named = |n: &str| Placement { project: Some(n.to_string()), ..Default::default() };
+        assert_ne!(place(&a, &named("ours"), "work"), place(&b, &named("theirs"), "work"));
+        assert!(place(&a, &named("ours"), "work").ends_with("ours/work"));
         // An empty name is the same as none: nothing was written down
-        assert_eq!(folder_for_project(&a, Some("  "), "work"), folder_for(&a, "work"));
+        assert_eq!(place(&a, &named("  "), "work"), folder_for(&a, "work"));
     }
 
     /// A project that cannot have a devcontainer says it in the settings, and
@@ -2429,7 +2923,7 @@ tools/conpty.ps1"));
         assert_eq!(env.setup, ["cargo fetch", "tools/conpty.ps1"], "one per line");
         assert!(!env.from.is_empty(), "it cannot say where it came from");
 
-        let p = plan_for(&main, Some("ours"), "work", Some("main"), None, Some(env))
+        let p = plan_for(&main, &Placement { project: Some("ours".into()), ..Default::default() }, "work", Some("main"), None, Some(env))
             .expect("it can be planned");
         assert_eq!(p.argvs().len(), 3, "the branch and two lines: {:?}", p.argvs());
         assert!(p.argvs()[1].last().is_some_and(|l| l.contains("cargo fetch")));
@@ -2776,7 +3270,7 @@ tools/conpty.ps1"));
     fn work_with_no_name_is_offered_two_words() {
         let main = repo("suggest");
         let drawn: std::collections::HashSet<String> =
-            (0..20).map(|_| suggest(&main, "")).collect();
+            (0..20).map(|_| suggest(&main, &Placement::default())).collect();
         assert!(drawn.len() > 15, "20 draws gave only {} different names", drawn.len());
         for name in &drawn {
             assert!(name_is_usable(name), "a name git will not take: {name:?}");
@@ -2785,7 +3279,7 @@ tools/conpty.ps1"));
         }
         // A project that keeps a name in front of its branches gets it here
         // too: a drawn name goes to git like any other
-        let under = suggest(&main, "yourname/");
+        let under = suggest(&main, &Placement { prefix: "yourname/".into(), ..Default::default() });
         assert!(under.starts_with("yourname/"), "the project's prefix is missing: {under:?}");
         assert!(name_is_usable(&under), "a name git will not take: {under:?}");
     }
@@ -2801,7 +3295,7 @@ tools/conpty.ps1"));
     fn a_name_fans_out_into_one_branch_per_ai() {
         let main = repo("fan");
         let ais = vec!["claude".to_string(), "codex".to_string(), " gemini ".to_string()];
-        let out = fan(&main, "kanban", Some("main"), &ais);
+        let out = fan(&main, &Placement::default(), "kanban", Some("main"), &ais);
         let names: Vec<String> = out.iter().map(|(_, p)| p.as_ref().unwrap().branch.clone()).collect();
         assert_eq!(names, ["kanban-claude", "kanban-codex", "kanban-gemini"]);
         assert_eq!(out[2].0, "gemini", "the AI's name is kept tidied");
@@ -2811,7 +3305,7 @@ tools/conpty.ps1"));
         assert_eq!(folders.len(), 3);
         assert!(out.iter().all(|(_, p)| p.as_ref().unwrap().line().contains("worktree add")));
         // A name git would refuse is refused per branch, and the others still plan
-        let bad = fan(&main, "kan ban", Some("main"), &ais);
+        let bad = fan(&main, &Placement::default(), "kan ban", Some("main"), &ais);
         assert!(bad.iter().all(|(_, p)| p.is_err()), "a name with a space got through");
     }
 
@@ -3049,8 +3543,10 @@ tools/conpty.ps1"));
         // including deeper in the tree, where a pattern with a star reaches
         assert!(named(&offered, "readme.md").is_none(), "tracked files are not offered");
         assert!(named(&offered, "build").is_none(), "missing things are not offered");
-        assert_eq!(named(&offered, "node_modules").map(|c| (c.folder, c.how)), Some((true, "link".into())));
-        assert_eq!(named(&offered, ".env").map(|c| c.how), Some("skip".into()), "live keys are left out unless chosen");
+        // A copy of everything that is there, secrets and installed folders
+        // included: a worktree without them is one that does not run
+        assert_eq!(named(&offered, "node_modules").map(|c| (c.folder, c.how)), Some((true, "copy".into())));
+        assert_eq!(named(&offered, ".env").map(|c| c.how), Some("copy".into()), "what the program needs to run is left behind");
         assert_eq!(named(&offered, "web/config.local").map(|c| c.how), Some("copy".into()));
 
         // The project's choices, per line, and a file from somewhere else
@@ -3196,7 +3692,9 @@ tools/conpty.ps1"));
         git(&["add", "-A"]);
         git(&["commit", "-qm", "first"]);
 
-        let offered = carryables(&main, &[]);
+        // Linked because the project says so: nothing is linked unless asked
+        let linked = vec![crate::config::BringRule { pattern: Some("node_modules/".into()), how: "link".into(), ..Default::default() }];
+        let offered = carryables(&main, &linked);
         assert_eq!(
             offered.iter().find(|c| c.name == "web/node_modules").map(|c| c.how.clone()),
             Some("link".into()),
@@ -3521,4 +4019,3 @@ tools/conpty.ps1"));
         ]);
     }
 }
-

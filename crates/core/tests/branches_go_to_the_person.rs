@@ -30,8 +30,8 @@ fn a_branch_lands_under_the_person_and_never_beside_the_project() {
         !at.starts_with(project.parent().unwrap()),
         "it is placed beside the main checkout: {at:?}"
     );
-    // Under the project it belongs to, with the branch's shape kept
-    assert!(at.ends_with("myproject/feature/login"), "{at:?}");
+    // Under the project it belongs to, named for the work in one piece
+    assert!(at.ends_with("myproject/feature-login"), "{at:?}");
 
     let Some(home) = home() else { return };
     // A home being synced to the cloud is a real answer too, and on this

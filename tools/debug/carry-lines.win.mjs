@@ -146,7 +146,7 @@ try {
   await open();
   const first = await rows();
   check(!('www/tmp' in first), 'the folder holding what the line ignores is not offered');
-  check(first['www/tmp/t00'] === 'link' && first['data/config.php'] === 'copy', 'rows start from the project\'s answer: ' + JSON.stringify(first));
+  check(first['www/tmp/t00'] === 'copy' && first['data/config.php'] === 'copy', 'rows start from the project\'s answer, a copy of everything: ' + JSON.stringify(first));
   check(await run(`!document.querySelector('#branch .bctabs').hidden`), 'the two tabs are shown');
   check(await run(`document.querySelector('#branch .bctabs button.on').dataset.ctab === 'each'`), 'the list is the tab in front');
   shot('1-list');
@@ -159,7 +159,7 @@ try {
   check(lines.includes(`www/tmp/*|${TMP} 件`), 'the line and how many it matches: ' + JSON.stringify(lines));
   await run(`(() => { const d = Array.from(document.querySelectorAll('#branch .bclines > div')).find(d => d.querySelector('.nm').textContent === 'www/tmp/*');
     const s = d.querySelector('select'); s.value = 'skip'; s.dispatchEvent(new Event('change')); return true; })()`);
-  check((await rows())['www/tmp/t00'] === 'link', 'choosing by line does not touch the list yet');
+  check((await rows())['www/tmp/t00'] === 'copy', 'choosing by line does not touch the list yet');
   shot('2-lines');
 
   console.log('3. back on the list, applied');

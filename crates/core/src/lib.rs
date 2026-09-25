@@ -46,6 +46,7 @@ pub mod hooks;
 pub mod ideas;
 pub mod host;
 pub mod i18n;
+pub mod inherit;
 pub mod instance;
 pub mod job;
 pub mod keeper;

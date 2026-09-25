@@ -982,6 +982,22 @@ pub struct HostChoice {
     pub project: String,
 }
 
+/// "Now make its first worktree", said by the settings page about a project.
+///
+/// The settings are a page of their own, in a window or a frame the board
+/// does not own, and the dialog that makes a worktree is the board's. This is
+/// the one way from the first to the second that works the same in the window
+/// and on a phone: the page tells the app, and the app tells whichever board
+/// is looking
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct BranchNext {
+    /// Counts up with every ask, from 1; the board opens the dialog for a
+    /// count it has not seen
+    pub seq: u64,
+    /// The project's checkout, as the board lists the folder
+    pub folder: String,
+}
+
 /// A folder on another machine, listed for the add-a-project dialog.
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct RemoteListState {
@@ -1783,6 +1799,11 @@ pub struct UiState {
     pub aim: Option<usize>,
     /// First launch, before any settings exist yet
     pub first_run: bool,
+    /// How many times the settings have been read in since the start. A
+    /// dialog showing an answer worked out from the settings asks again when
+    /// this moves, so a rule saved while it is open is the rule it shows
+    #[serde(default)]
+    pub settings_gen: u64,
     /// The AIs this machine can start in a folder just made
     #[serde(default)]
     pub ais: Vec<AiChoice>,
@@ -1826,6 +1847,11 @@ pub struct UiState {
     /// Where a cloned or new project goes until somebody picks elsewhere
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_home: String,
+    /// The project whose worktree rules were just settled on the settings
+    /// page, which asked for its first worktree next. A count with it, so the
+    /// board opens the dialog once for each ask and never again on a reload
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_next: Option<BranchNext>,
     /// The AI chosen under Basic > Assistant AI (its command), which a new
     /// worktree starts with when this PC has it
     #[serde(default, skip_serializing_if = "String::is_empty")]

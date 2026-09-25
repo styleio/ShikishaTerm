@@ -8,6 +8,60 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **A project's worktree creation rules, on a page of their own.** The
+  project's settings are pages now, chosen the way a desk's are -- a banner
+  that lists the projects, and under it Worktree Creation Rules, Basic, git
+  and Setup. The rules are the three things every worktree of the project is
+  made with: the name in front of its branches, **where its folders go**, and
+  the **files it inherits from the original** (the card that was "What a new
+  worktree gets").
+- **Worktree Placement.** A project says where its worktrees go: one folder,
+  absolute or relative to its checkout. Beside the checkout (`..`) each is
+  named `<checkout>-<name>` and stands at the checkout's depth, which is what
+  a site served where it stands needs -- the server reads a worktree beside it
+  under a URL of its own, and a path that climbs out to a neighbour still
+  finds it. The page shows where a worktree would really be made as the place
+  is typed, and refuses a place inside the checkout.
+- **Host-dependent projects.** A project a server or another program reads
+  where it stands (an `.htaccess`, a `web.config`, a path through `htdocs`) has
+  its worktrees beside it unless it says otherwise. What counts as a sign is
+  under Settings > Worktrees, beside whether worktrees go in a folder named
+  for their project.
+- **Set up with AI.** On the files a worktree inherits, the assistant AI reads
+  what each ignore line matches -- how large it is, and which files name the
+  checkout -- and proposes Copy, Copy and replace, Link or Leave out for each,
+  with a reason. "Is this right?" shows every line of a file a replacement
+  changes, before and after, and nothing is saved until it is pressed. What
+  was told to the AI is kept with the project for the next time.
+- **A replacement can write the worktree's own name.** `{name}`, `{folder}`,
+  `{origin}` and `{origin_folder}` in what a copied file's text becomes. A
+  server reads the files by its own path, not this PC's, and the folder's name
+  is the part the two share.
+- **What each line of the ignore files holds**, in size and files, and for a
+  large copy the fact that it is copied into every worktree -- with a link
+  offered in its place where one can be made and the project is not served
+  where it stands.
+- **A project just added goes through its rules on the way to its first
+  worktree.** Keep and continue is one press; a change made there is saved on
+  the same press, and the worktree dialog opens with it.
+
+### Changed
+- **A worktree's folder is named for its work in one piece**: `feature/login`
+  is the folder `feature-login`, no longer `feature` with `login` inside, and
+  the project's branch prefix is left off it. Worktrees already made stay
+  where they are.
+- **Everything an ignore line matches is copied unless the project says
+  otherwise** -- `.env` and folders such as `node_modules` included. A worktree
+  without them is one that does not run; what is large is said beside the line.
+- The worktree dialog sends only the rows changed in it, and asks again when
+  the settings are read in, so a rule saved while it is open is the rule the
+  folder is made with.
+
+### Removed
+- The warning under a line set to Link. It read as "deleting the worktree
+  deletes the original", which never happens: the links are taken out first.
+
 ## [0.19.0] - 2026-09-25
 
 ### Added

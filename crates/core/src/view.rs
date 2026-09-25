@@ -526,6 +526,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         remote_sticky: ui.remote_sticky,
         aim: ui.aim,
         first_run: ui.first_run,
+        settings_gen: ui.settings_gen,
         push_wanted: ui.push_wanted,
         // A fact about the program rather than about anything on screen, so
         // it is read from where it was written down rather than carried here
@@ -551,6 +552,8 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         ssh_aliases: ui.ssh_aliases.clone(),
         remote_list: ui.remote_list.clone(),
         project_home: ui.project_home.clone(),
+        // Held by the settings server, which is where the page says it
+        branch_next: crate::webui::branch_next(),
         assistant: ui.assistant.clone(),
         thanks: ui.thanks.clone(),
         update: ui.update.clone(),
@@ -1467,6 +1470,9 @@ pub fn surfaces_written(
 pub struct Ui {
     /// First-ever run, before config exists (shows onboarding on INDEX)
     pub first_run: bool,
+    /// How many times the settings have been read in since the start (see
+    /// UiState::settings_gen)
+    pub settings_gen: u64,
     /// Whether the settings name a phone as somewhere answers go (see
     /// UiState::push_wanted)
     pub push_wanted: bool,

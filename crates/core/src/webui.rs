@@ -1408,6 +1408,77 @@ fn quick_json() -> String {
     .to_string()
 }
 
+/// What the settings page has on screen about where a project's worktrees go.
+///
+/// Sent with every question about it rather than read from the saved file:
+/// the answer is about the settings being edited, which are not saved yet
+struct PlaceAsk {
+    base: String,
+    prefix: String,
+    project: Option<String>,
+    nest: bool,
+    markers: crate::config::HostMarkers,
+}
+
+impl PlaceAsk {
+    fn of(p: &serde_json::Value) -> PlaceAsk {
+        let text = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+        PlaceAsk {
+            base: text("placement"),
+            prefix: text("prefix"),
+            project: Some(text("project")).filter(|n| !n.is_empty()),
+            nest: p.get("nest").and_then(serde_json::Value::as_bool).unwrap_or(true),
+            markers: p
+                .get("markers")
+                .filter(|m| m.is_object())
+                .and_then(|m| serde_json::from_value(m.clone()).ok())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// As [`crate::worktree::Placement::of`] would have it, from what is on
+    /// screen: nothing written is the app's own place, or beside the checkout
+    /// for a project served where it stands
+    fn placement(&self, served: bool) -> crate::worktree::Placement {
+        let base = match (self.base.is_empty(), served) {
+            (true, true) => crate::worktree::BESIDE.to_string(),
+            (true, false) => String::new(),
+            (false, _) => self.base.clone(),
+        };
+        crate::worktree::Placement { project: self.project.clone(), base, prefix: self.prefix.clone(), nest: self.nest }
+    }
+}
+
+/// Whether a folder here can be a second name for another, remembered for a
+/// minute per folder: the page asks again whenever the place is changed, and
+/// the answer costs a folder made and taken away on what may be a share
+fn linkable_in(dir: &std::path::Path) -> Option<bool> {
+    type Seen = std::collections::HashMap<std::path::PathBuf, (std::time::Instant, Option<bool>)>;
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let kept = SEEN.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|s| s.get(dir).cloned());
+    if let Some((when, said)) = kept
+        && when.elapsed() < std::time::Duration::from_secs(60)
+    {
+        return said;
+    }
+    let said = crate::worktree::can_link_in(dir);
+    SEEN.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(dir.to_path_buf(), (std::time::Instant::now(), said));
+    said
+}
+
+/// The last "now make its first worktree" the settings page said, counted
+/// (see `/api/project/next`)
+static BRANCH_NEXT: std::sync::Mutex<(u64, String)> = std::sync::Mutex::new((0, String::new()));
+
+/// That ask, for the board's state. None until the page has said it once
+pub fn branch_next() -> Option<crate::uistate::BranchNext> {
+    let next = BRANCH_NEXT.lock().unwrap_or_else(|e| e.into_inner());
+    (next.0 > 0).then(|| crate::uistate::BranchNext { seq: next.0, folder: next.1.clone() })
+}
+
 fn json_resp(v: serde_json::Value) -> Response<Cursor<Vec<u8>>> {
     secure(Response::from_string(v.to_string()).with_header(
         Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap(),
@@ -1989,6 +2060,218 @@ fn handle(
                         "defaults": defaults,
                         "tracked": crate::worktree::tracked_but_ignored(&main),
                     })
+                }
+            };
+            req.respond(json_resp(resp))?;
+        }
+        // Where a project's worktrees would go, as the page has it now: the
+        // folder one named `name` would get, what (if anything) says the
+        // project is served where it stands, and whether a folder there can be
+        // a second name for another. Asked while the place is being typed, so
+        // the answer is the settings on screen and not the ones saved
+        ("POST", "/api/project/place") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let at = std::path::PathBuf::from(p.get("path").and_then(|v| v.as_str()).unwrap_or_default().trim());
+            let resp = match crate::repo::main_checkout(&at) {
+                None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.worktree.not_a_repo") }),
+                Some(main) => {
+                    let asked = PlaceAsk::of(&p);
+                    let served = crate::worktree::served_in_place(&main, &asked.markers);
+                    let placement = asked.placement(served.is_some());
+                    let name = p.get("name").and_then(|v| v.as_str()).map(str::trim).filter(|n| !n.is_empty()).unwrap_or("feature/x");
+                    let branch = crate::worktree::with_prefix(&placement.prefix, name);
+                    let folder = crate::worktree::place(&main, &placement, &branch);
+                    let inside = crate::worktree::inside_checkout(&main, &folder);
+                    // Tried where the folder would be made: the nearest folder
+                    // on the way there that is already on disk
+                    let there = folder.ancestors().skip(1).find(|d| d.is_dir()).map(std::path::Path::to_path_buf);
+                    let probe = p.get("probe").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                    let linkable = match (&there, probe && !inside) {
+                        (Some(d), true) => linkable_in(d),
+                        _ => None,
+                    };
+                    serde_json::json!({
+                        "ok": !inside,
+                        "error": inside.then(|| crate::i18n::tp("err.worktree.inside_checkout", &[("path", &folder.display().to_string())])),
+                        "root": main.display().to_string(),
+                        "origin": main.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                        "base": placement.base,
+                        "default": match served.is_some() { true => crate::worktree::BESIDE, false => "" },
+                        "served": served,
+                        "branch": branch,
+                        "folder": folder.display().to_string(),
+                        "name": folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                        "linkable": linkable,
+                        "long": folder.display().to_string().chars().count() >= 180,
+                    })
+                }
+            };
+            req.respond(json_resp(resp))?;
+        }
+        // How much each thing a project's ignore files match holds on disk.
+        // Counted on a thread of its own: a build folder can hold hundreds of
+        // thousands of files, and the rest of the page is not held up for it
+        ("POST", "/api/project/sizes") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let at = std::path::PathBuf::from(p.get("path").and_then(|v| v.as_str()).unwrap_or_default().trim());
+            std::thread::spawn(move || {
+                let resp = match crate::repo::main_checkout(&at) {
+                    None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.worktree.not_a_repo") }),
+                    Some(main) => {
+                        let paths: Vec<String> = crate::worktree::ignored(&main).into_iter().map(|i| i.path).collect();
+                        serde_json::json!({
+                            "ok": true,
+                            "sizes": crate::worktree::sizes(&main, &paths, crate::inherit::SIZE_MOST),
+                            "large_bytes": crate::inherit::LARGE_BYTES,
+                            "large_files": crate::inherit::LARGE_FILES,
+                        })
+                    }
+                };
+                let _ = req.respond(json_resp(resp));
+            });
+        }
+        // The assistant AI's proposal for how each ignored thing reaches a new
+        // worktree. Only a proposal: the page shows it, and the person saves
+        // it or does not. Asked on a thread of its own, since an AI takes a
+        // while and the page has other questions to ask in the meantime
+        ("POST", "/api/project/inherit-ai") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let at = std::path::PathBuf::from(p.get("path").and_then(|v| v.as_str()).unwrap_or_default().trim());
+            let hint = p.get("hint").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let asked = PlaceAsk::of(&p);
+            std::thread::spawn(move || {
+                let engine = crate::config::load().and_then(|c| c.ai_engine).filter(|e| !e.trim().is_empty());
+                // No assistant AI here: said as that, so the page can offer
+                // the way to choose one rather than a failure to read
+                if assistant_ai(engine.as_deref()).is_none() {
+                    let _ = req.respond(json_resp(serde_json::json!({
+                        "ok": false, "no_ai": true, "error": crate::i18n::t("webui.err.ai_missing"),
+                    })));
+                    return;
+                }
+                let resp = match crate::repo::main_checkout(&at) {
+                    None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.worktree.not_a_repo") }),
+                    Some(main) => {
+                        let served = crate::worktree::served_in_place(&main, &asked.markers);
+                        let placement = asked.placement(served.is_some());
+                        let example = crate::worktree::place(
+                            &main,
+                            &placement,
+                            &crate::worktree::with_prefix(&placement.prefix, "feature/x"),
+                        );
+                        let linkable = example.ancestors().skip(1).find(|d| d.is_dir()).and_then(linkable_in);
+                        let facts = crate::inherit::Facts {
+                            main: &main,
+                            example: &example,
+                            served: served.as_deref(),
+                            linkable,
+                            hint: &hint,
+                        };
+                        match crate::inherit::ask(&facts, engine.as_deref()) {
+                            Ok(lines) => serde_json::json!({
+                                "ok": true,
+                                "lines": lines,
+                                "name": example.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                                "folder": example.display().to_string(),
+                            }),
+                            Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                        }
+                    }
+                };
+                let _ = req.respond(json_resp(resp));
+            });
+        }
+        // What a file a replacement is written for says now, and what it would
+        // say in a worktree: every line that changes, before and after. Read
+        // from the checkout, so what is shown is the file that will be copied
+        ("POST", "/api/project/replace-preview") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let at = std::path::PathBuf::from(p.get("path").and_then(|v| v.as_str()).unwrap_or_default().trim());
+            let folder = std::path::PathBuf::from(p.get("folder").and_then(|v| v.as_str()).unwrap_or_default().trim());
+            let replaces: Vec<crate::config::Replace> =
+                serde_json::from_value(p.get("replace").cloned().unwrap_or_default()).unwrap_or_default();
+            let files: Vec<String> = p
+                .get("files")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let resp = match crate::repo::main_checkout(&at) {
+                None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.worktree.not_a_repo") }),
+                Some(main) => {
+                    let filled: Vec<crate::config::Replace> = replaces
+                        .iter()
+                        .map(|r| crate::config::Replace {
+                            with: crate::worktree::fill_words(&r.with, &folder, &main, r.regex),
+                            ..r.clone()
+                        })
+                        .collect();
+                    let shown: Vec<serde_json::Value> = files
+                        .iter()
+                        .take(10)
+                        .map(|f| {
+                            let text = std::fs::read_to_string(main.join(f));
+                            match text.map_err(|e| e.to_string()).and_then(|t| {
+                                crate::worktree::apply_replaces(&t, &filled).map(|(after, unmatched)| (t, after, unmatched))
+                            }) {
+                                Err(error) => serde_json::json!({ "file": f, "error": error }),
+                                Ok((before, after, unmatched)) => {
+                                    let changed: Vec<serde_json::Value> = before
+                                        .lines()
+                                        .zip(after.lines())
+                                        .enumerate()
+                                        .filter(|(_, (a, b))| a != b)
+                                        .take(30)
+                                        .map(|(n, (a, b))| serde_json::json!({ "n": n + 1, "before": a, "after": b }))
+                                        .collect();
+                                    serde_json::json!({ "file": f, "changed": changed, "unmatched": unmatched })
+                                }
+                            }
+                        })
+                        .collect();
+                    serde_json::json!({ "ok": true, "files": shown })
+                }
+            };
+            req.respond(json_resp(resp))?;
+        }
+        // "Now make its first worktree": the settings page, done with a new
+        // project's rules, hands on to the board's dialog. Held here and read
+        // into the board's state (see `branch_next`), which reaches the board
+        // in the window and on a phone alike
+        ("POST", "/api/project/next") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let folder = p.get("folder").and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+            let resp = match folder.is_empty() {
+                true => serde_json::json!({ "ok": false }),
+                false => {
+                    let mut next = BRANCH_NEXT.lock().unwrap_or_else(|e| e.into_inner());
+                    next.0 += 1;
+                    next.1 = folder;
+                    serde_json::json!({ "ok": true, "seq": next.0 })
                 }
             };
             req.respond(json_resp(resp))?;
@@ -3663,6 +3946,12 @@ pub(crate) fn themed(html: String) -> String {
             "{{SCHEME}}",
             if crate::theme::is_light(&scheme) { "light" } else { "dark" },
         )
+        // What tells a project served where it stands, when nobody has said:
+        // the settings show these and edit a copy of them
+        .replace(
+            "{{HOST_MARKERS}}",
+            &serde_json::to_string(&crate::config::HostMarkers::default()).unwrap_or_else(|_| "{}".into()),
+        )
 }
 
 /// The settings page as it is written, before a language is laid over it.
@@ -4055,6 +4344,31 @@ const PAGE: &str = r##"<!doctype html>
  .ignote { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s2); margin-top:var(--s1); }
  .igbox .caution { color:var(--warn); }
  .igpaths { white-space:pre-wrap; margin-top:var(--s1); }
+ /* How much a line's things hold, under what it matches */
+ .igmatch { display:flex; flex-direction:column; align-items:flex-end; }
+ .igsize { white-space:nowrap; }
+ /* A part of a card with a name of its own: the files brought from elsewhere,
+    inside the card of what a worktree inherits */
+ .subsec { border-top:1px solid var(--line); padding-top:var(--s4);
+   display:flex; flex-direction:column; gap:var(--s2); }
+ .subsec h3 { margin:0; font-size:13px; font-weight:600; }
+ /* The two places most often meant, a line of their own under the box */
+ .row > .placequick { flex-basis:100%; padding:0; margin:0; }
+ /* Where a worktree would really be made, under the place written */
+ .placesaid { display:flex; flex-direction:column; gap:var(--s2); margin-top:var(--s2); }
+ /* The way on for a project just added: above everything else on its page */
+ .firstbar { border-color:var(--brand); }
+ /* The AI's proposal, line by line */
+ .aisaid { display:flex; flex-direction:column; gap:var(--s2); }
+ .aiprop { border-top:1px solid var(--line); padding:var(--s2) var(--s3); display:flex; flex-direction:column; gap:var(--s1); }
+ .aiprop:first-child { border-top:0; }
+ .aiprop .igrow { grid-template-columns:minmax(0,1fr) auto auto; }
+ .aihow { font-weight:600; color:var(--text); }
+ .aichanged { color:var(--warn); font-size:12px; justify-self:end; white-space:nowrap; }
+ .aipreview { display:flex; flex-direction:column; gap:var(--s1); margin-top:var(--s1); }
+ .aidiff { font-size:12px; border-left:3px solid var(--line); padding-left:var(--s2); }
+ .aidiff .before { color:var(--muted); text-decoration:line-through; overflow-wrap:anywhere; }
+ .aidiff .after { color:var(--text); overflow-wrap:anywhere; }
  /* One secret. Reads across on a window, and stacks into a card on a phone. */
  .secretrow { cursor:pointer; padding:10px var(--s3); gap:var(--s3); }
  /* What one AI has been agreed to receive, under its own fields */
@@ -5565,28 +5879,34 @@ function renderNav() {
     el("span", {class:"wspick"}, "▾")));
   for (const s of deskSections(desk)) item(s, inDeskPlace() && sel.dsection === s.id, () => goDeskSection(s.id));
 
-  // Its projects: a repository's checkout and worktrees are one entry, and a
-  // folder in no repository is a project of its own. The entry stays lit while
-  // one of its folders or tabs is the page on screen, so where that page
-  // belongs is never a question
+  // Its projects, the way the desk above is drawn: one banner saying which
+  // project the entries under it are about -- pressing it lists the others --
+  // and that project's pages. A folder in no repository is a project of its
+  // own with one page, so it has no entries under it. The banner stays lit
+  // while one of the project's folders or tabs is the page on screen, so
+  // where that page belongs is never a question
   nav.append(el("div", {class:"navgroup"}, T["settings.nav.projects"]));
   const {projects, loose} = deskProjects(desk);
+  if (!projects.length && !loose.length) {
+    nav.append(el("div", {class:"navnone"}, T["settings.nav.projects.none"]));
+    return;
+  }
+  const at = navProject(desk, projects, loose);
   const within = gi => !sel.global && (sel.grp ?? null) === gi;
-  for (const p of projects) {
-    const on = !sel.global && (sel.proj === p.key && (sel.grp ?? null) === null || p.folders.some(within));
-    nav.append(el("button", {class:"navitem navproject" + (on ? " sel" : ""),
-        onclick:() => { sel = {desk:sel.desk, proj:p.key, grp:null, tab:null, global:false}; render(); }},
-      projectMark(p.family ? (current.folder_colors || {})[p.family] : null),
-      el("div", {class:"body"}, el("span", {}, p.name), el("span", {class:"sub"}, p.at || T["settings.project.no_at"]))));
-  }
-  for (const gi of loose) {
-    const g = desk.folders[gi];
-    nav.append(el("button", {class:"navitem navproject" + (within(gi) ? " sel" : ""),
-        onclick:() => { sel = {desk:sel.desk, grp:gi, tab:null, global:false}; render(); }},
-      folderMark(null),
-      el("div", {class:"body"}, el("span", {}, folderLabel(g, gi)), el("span", {class:"sub"}, folderWhere(g)))));
-  }
-  if (!projects.length && !loose.length) nav.append(el("div", {class:"navnone"}, T["settings.nav.projects.none"]));
+  const lit = at.p
+    ? !sel.global && at.p.folders.some(within)
+    : within(at.gi);
+  const g = at.p ? null : desk.folders[at.gi];
+  nav.append(el("button", {class:"deskbanner projbanner" + (lit ? " sel" : ""), title:T["settings.project.switch"],
+      onclick:e => pickProject(e.currentTarget, desk, projects, loose)},
+    at.p ? projectMark(at.p.family ? (current.folder_colors || {})[at.p.family] : null) : folderMark(null),
+    el("span", {class:"nm"}, at.p ? at.p.name : folderLabel(g, at.gi)),
+    el("span", {class:"wsgap"}),
+    el("span", {class:"wspick"}, "▾")));
+  if (!at.p) return;
+  const onPage = !sel.global && sel.proj === at.p.key && (sel.grp ?? null) === null && sel.tab == null;
+  for (const s of projectSections(at.p)) item(s, onPage && (sel.psection || "rules") === s.id,
+    () => goProjectSection(at.p.key, s.id));
 }
 
 // A project, drawn: a filled square in its colour, the mark the board gives a repository
@@ -5594,6 +5914,79 @@ function projectMark(colour) {
   const m = el("span", {class:"projmark"});
   if (colour) m.style.background = colour;
   return el("span", {class:"mark"}, m);
+}
+
+// The project the column is about: the one whose page or folder is on
+// screen, else the one last looked at, else the first. A folder in no
+// repository stands in for a project the same way
+let lastProject = null;
+function navProject(desk, projects, loose) {
+  const byKey = k => projects.find(p => p.key === k);
+  if (!sel.global && (sel.proj ?? null) !== null && byKey(sel.proj)) return (lastProject = {p: byKey(sel.proj)});
+  if (!sel.global && (sel.grp ?? null) !== null) {
+    const home = projects.find(p => p.folders.includes(sel.grp));
+    if (home) return (lastProject = {p: home});
+    if (loose.includes(sel.grp)) return (lastProject = {gi: sel.grp});
+  }
+  if (lastProject && lastProject.p && byKey(lastProject.p.key)) return {p: byKey(lastProject.p.key)};
+  if (lastProject && lastProject.gi != null && loose.includes(lastProject.gi)) return lastProject;
+  return projects.length ? {p: projects[0]} : {gi: loose[0]};
+}
+
+// The pages of one project, in the order they are needed: how its worktrees
+// are made first, since that is what is set up once and used every day
+function projectSections(p) {
+  const s = id => ({id, label:T["settings.psec." + id], sub:T["settings.psec." + id + ".sub"]});
+  const list = [s("rules"), s("basic"), s("git")];
+  // Read from the checkout, so only where there is one to read
+  if ((p.at || "").trim()) list.push(s("setup"));
+  return list;
+}
+
+// One of a project's pages on screen
+function goProjectSection(key, id, block) {
+  sel = {desk:sel.desk, proj:key, grp:null, tab:null, global:false, psection:id};
+  render();
+  showSelected(block);
+}
+
+// Which page of a project a link lands on, by the card it names. The page is
+// the one holding that card, so a link written before the pages existed
+// still lands on its card
+function projectSectionOf(sec) {
+  const s = sec || "";
+  if (["project-gitacct", "project-basic", "project-folders"].includes(s)) return "basic";
+  if (s.startsWith("project-git")) return "git";
+  if (s === "project-setup" || s === "project-env") return "setup";
+  return "rules";
+}
+
+// Choosing another project: the same floating list the desk's banner opens
+function pickProject(anchor, desk, projects, loose) {
+  const menu = el("div", {class:"fmenu"});
+  for (const p of projects) {
+    menu.append(el("button", {class:"fmenuitem" + (!sel.global && sel.proj === p.key ? " on" : ""),
+      onclick:() => { shut(); lastProject = {p}; goProjectSection(p.key, "rules"); }},
+      projectMark(p.family ? (current.folder_colors || {})[p.family] : null),
+      el("span", {class:"nm"}, p.name)));
+  }
+  for (const gi of loose) {
+    const g = desk.folders[gi];
+    menu.append(el("button", {class:"fmenuitem" + (!sel.global && sel.grp === gi ? " on" : ""),
+      onclick:() => { shut(); lastProject = {gi}; sel = {desk:sel.desk, grp:gi, tab:null, global:false}; render(); showSelected(); }},
+      folderMark(null),
+      el("span", {class:"nm"}, folderLabel(g, gi))));
+  }
+  const at = anchor.getBoundingClientRect();
+  menu.style.top = Math.round(at.bottom + 4) + "px";
+  menu.style.left = Math.max(8, Math.round(at.left)) + "px";
+  const away = e => { if (!menu.contains(e.target)) shut(); };
+  function shut() {
+    menu.remove();
+    document.removeEventListener("mousedown", away, true);
+  }
+  document.body.append(menu);
+  setTimeout(() => document.addEventListener("mousedown", away, true), 0);
 }
 
 // Which repository each folder is in, as the app last said: path -> {family,
@@ -6124,6 +6517,39 @@ function renderDetail() {
 // categories, and adding a feature just adds one more named card (no "which
 // bucket does this go in?"). Each nav item carries a one-line subtitle so the
 // stumble-onto-it discovery a single long scroll used to give isn't lost.
+// Where worktrees go for every project, and what tells a project whose
+// worktrees have to stand beside it. The markers are shown filled with the
+// app's own until somebody edits them; emptying a list looks for nothing of
+// that kind, and "back to the defaults" forgets the edit
+function worktreesCard() {
+  const own = () => current.host_markers || HOST_MARKERS;
+  const listIn = (key, ph) => {
+    const box = el("input", {type:"text", class:"mono grow", placeholder: ph});
+    box.value = (own()[key] || []).join(", ");
+    box.addEventListener("input", () => {
+      const now = own();
+      const next = {files: (now.files || []).slice(), paths: (now.paths || []).slice()};
+      next[key] = box.value.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+      current.host_markers = next;
+      refreshSave();
+    });
+    return box;
+  };
+  return card(T["settings.worktrees.title"],
+    row(T["settings.worktrees.nest"], checkDefaultOn(current, "nest_worktrees", T["settings.worktrees.nest.label"]),
+      el("span", {class:"hint"}, T["settings.worktrees.nest.hint"])),
+    el("div", {class:"subsec"},
+      el("h3", {}, T["settings.worktrees.markers"]),
+      el("div", {class:"hint"}, T["settings.worktrees.markers.hint"]),
+      row(T["settings.worktrees.markers.files"], listIn("files", ".htaccess, web.config"),
+        el("span", {class:"hint"}, T["settings.worktrees.markers.files.hint"])),
+      row(T["settings.worktrees.markers.paths"], listIn("paths", "htdocs, www"),
+        el("span", {class:"hint"}, T["settings.worktrees.markers.paths.hint"])),
+      current.host_markers ? el("div", {class:"row"},
+        el("button", {class:"quiet", onclick:() => { delete current.host_markers; refreshSave(); render(); }},
+          T["settings.worktrees.markers.reset"])) : null));
+}
+
 function basicCard() {
   return card(T["settings.tab.basic"],
     row(T["settings.tabbar_width"], field(current, "tab_bar_width", T["settings.tab.automation_dir.ph"], {type:"number", width:110, grow:false}),
@@ -7214,6 +7640,9 @@ function filesCard() {
 function globalSections() {
   return [
     {id:"basic",     label:T["settings.sec.basic"],     sub:T["settings.sec.basic.sub"],     build:basicCard},
+    // Where every project's worktrees go unless the project says, and what
+    // tells a project that has to keep them beside itself
+    {id:"worktrees", label:T["settings.sec.worktrees"], sub:T["settings.sec.worktrees.sub"], build:worktreesCard},
     // The AIs this app asks, the connections they are reached on, and what
     // each was agreed to receive: one place for the whole app
     {id:"ai",        label:T["settings.sec.ai"],        sub:T["settings.sec.ai.sub"],        build:aiAgentsCard},
@@ -11395,7 +11824,9 @@ function replaceDialog(rule, done) {
       rows,
       el("div", {class:"row"},
         el("button", {onclick: () => { list.push({find:"", with:"", regex:false}); draw(); }}, T["settings.bring.replace.add"])),
-      el("div", {class:"hint"}, T["settings.bring.replace.regex_hint"])),
+      el("div", {class:"hint"}, T["settings.bring.replace.regex_hint"]),
+      // What "with" may say about the worktree it is written into
+      el("div", {class:"hint"}, T["settings.bring.replace.words"])),
     el("div", {class:"mfoot"},
       el("span", {class:"grow"}),
       el("button", {class:"quiet", onclick: shut}, T["common.cancel"]),
@@ -11422,6 +11853,10 @@ function ignoreCard(desk, p) {
     askIgnore(root).then(() => { if (sel.proj === p.key || sel.proj === "p:" + p.name) render(); });
   }
   const j = known || {lines: [], ignored: [], defaults: [], tracked: []};
+  // How much each line's things hold, and whether a folder where worktrees
+  // go can be a second name for another: what a line can sensibly become
+  const sizes = sizesOf(root);
+  const place = placeOf(desk, p);
   const redraw = r => { if (r && r.ok === false && r.error) toast(r.error, true); render(); };
   const matchesOf = (source, pattern) => j.ignored.filter(i => i.source === source && i.pattern === pattern);
   const defaultOf = (source, pattern) => (j.defaults.find(d => d.source === source && d.pattern === pattern) || {}).how || "skip";
@@ -11445,12 +11880,13 @@ function ignoreCard(desk, p) {
           render();
         })}, fill(T["settings.bring.replace.n"], {n: ((rule || {}).replace || []).length}))
       : null;
+    const size = sizeOfMatches(sizes, matched);
     // Every cell is there on every line, empty or not, so the columns hold
     const row = el("div", {class:"igrow"},
       el("div", {class:"igpat"},
         el("span", {class:"mono", title: pattern}, pattern),
         source === ".gitignore" ? null : el("span", {class:"hint"}, fill(T["settings.bring.from_file"], {file: source}))),
-      el("div", {class:"igmatch"}, count),
+      el("div", {class:"igmatch"}, count, size ? el("span", {class:"hint igsize"}, sizeLabel(size)) : null),
       howSelect(how, files, v => { setBringRule(desk, p, source, pattern, r => { r.how = v; }); render(); }),
       !n ? el("span") : el("button", {class:"quiet icon", title: T["settings.bring.remove"], onclick: async () => {
         if (!await confirmAction(fill(T["settings.bring.remove_confirm"], {line: pattern}), T["settings.bring.remove"])) return;
@@ -11467,6 +11903,19 @@ function ignoreCard(desk, p) {
     const swaps = ((rule || {}).replace || []).length;
     if (replaceBtn) under.push(el("div", {class:"hint ignote" + (swaps ? "" : " caution")},
       replaceBtn, swaps ? null : el("span", {}, T["settings.bring.replace.none"])));
+    // A large copy is said as what it costs. A link is offered in its place
+    // only where one can be made and the project is not served where it
+    // stands: a link made on this PC names this PC's path, which the server
+    // reading the worktree cannot follow
+    if (size && size.large && (how === "copy" || how === "replace")) {
+      const linkable = place && place.linkable === true && !place.served && matched.some(m => m.folder);
+      under.push(el("div", {class:"hint ignote caution"},
+        el("span", {}, T["settings.bring.large"]),
+        linkable ? el("button", {class:"quiet", onclick: () => {
+          setBringRule(desk, p, source, pattern, r => { r.how = "link"; });
+          render();
+        }}, T["settings.bring.make_link"]) : null));
+    }
     if (opened.has(key) && matched.length > 1) under.push(el("div", {class:"hint mono igpaths"}, matched.map(m => m.path).join("\n")));
     return el("div", {class:"igitem"}, row, ...under);
   };
@@ -11546,21 +11995,66 @@ function ignoreCard(desk, p) {
   // Native append writes an absent part as the word "null", so the parts that
   // may be absent are left out first
   box.append(...[
+    // Asking the AI comes first: most people set this up once, from its
+    // proposal, and only adjust a line by hand afterwards
+    el("div", {class:"row"},
+      el("button", {onclick: () => inheritAiDialog(desk, p)}, T["settings.inherit.ai.button"]),
+      el("span", {class:"hint"}, T["settings.inherit.ai.button_hint"])),
     el("div", {class:"hint"}, fill(T["settings.bring.hint"], {root: j.root || root, branch: j.branch || "-"})),
     lists,
     el("div", {class:"row"}, addIn, el("button", {onclick: add}, T["settings.bring.add"])),
     trackedBox,
     others.length ? el("div", {class:"hint"}, T["settings.bring.others"]) : null,
     others.length ? el("div", {class:"rows"}, ...others) : null,
-    el("div", {class:"hint"}, T["settings.bring.defaults"])].filter(Boolean));
+    el("div", {class:"hint"}, T["settings.bring.defaults"]),
+    // Files from anywhere else are inherited the same way, so they are part
+    // of the same card rather than a card of their own
+    extraFilesPart(desk, p)].filter(Boolean));
   const c = card(T["settings.bring.title"], box);
   c.id = "project-bring";
   return c;
 }
 
+// How much each thing a project's ignore files match holds, counted once
+// per page by the app (it can take a while on a large project)
+const SIZES = {};
+function sizesOf(root) {
+  const known = SIZES[root];
+  if (known) return known.j;
+  SIZES[root] = {j: null};
+  settingsApi("/api/project/sizes", {path: root}).catch(() => null).then(j => {
+    SIZES[root] = {j: j && j.ok ? j : null};
+    if (j && j.ok && !typingNow()) render();
+  });
+  return null;
+}
+// The things one line matches, added up
+function sizeOfMatches(sizes, matched) {
+  if (!sizes || !matched.length) return null;
+  let bytes = 0, files = 0, more = false, seen = false;
+  for (const m of matched) {
+    const s = (sizes.sizes || []).find(x => x.path === m.path);
+    if (!s) continue;
+    seen = true;
+    bytes += s.bytes; files += s.files; more = more || s.more;
+  }
+  if (!seen) return null;
+  return {bytes, files, more, large: bytes >= sizes.large_bytes || files >= sizes.large_files};
+}
+// "4.2 GB · 18,000 files"
+function sizeLabel(s) {
+  const unit = s.bytes >= 1073741824 ? (s.bytes / 1073741824).toFixed(1) + " GB"
+    : s.bytes >= 1048576 ? (s.bytes / 1048576).toFixed(1) + " MB"
+    : s.bytes >= 1024 ? (s.bytes / 1024).toFixed(1) + " KB"
+    : s.bytes + " B";
+  return fill(T[s.more ? "settings.bring.size_more" : "settings.bring.size"], {size: unit, files: s.files.toLocaleString()});
+}
+
 // Files brought from anywhere else, each put at a place inside the worktree.
-// A file somebody wants made new is a template kept somewhere and copied
-function extraFilesCard(desk, p) {
+// A file somebody wants made new is a template kept somewhere and copied.
+// Drawn inside the card for the ignore file's lines: both are what a
+// worktree inherits, decided the same way
+function extraFilesPart(desk, p) {
   const e = p.entry || {};
   const extras = (e.bring || []).filter(r => r.pattern === undefined || r.pattern === null);
   const rows = el("div");
@@ -11585,7 +12079,8 @@ function extraFilesCard(desk, p) {
       }}, "✕")));
   });
   if (!extras.length) rows.append(el("div", {class:"hint"}, T["settings.bring.extra.empty"]));
-  const c = card(T["settings.bring.extra.title"],
+  const c = el("div", {class:"subsec"},
+    el("h3", {}, T["settings.bring.extra.title"]),
     el("div", {class:"hint"}, T["settings.bring.extra.hint"]),
     el("div", {class:"rows"}, rows),
     el("div", {class:"row"}, el("button", {onclick: () => {
@@ -11599,13 +12094,57 @@ function extraFilesCard(desk, p) {
   return c;
 }
 
-// A project's own page: what it is called, where its own checkout is, the
-// folders that are part of it, and the settings that belong to the repository
-// rather than to any one folder of it. The one place those are offered, so a
-// project's worktrees never each carry a copy
+// A project's own pages: how its worktrees are made, what it is and where,
+// what git does in it, and what a new worktree of it runs. The one place those
+// are offered, so a project's worktrees never each carry a copy.
+//
+// One function draws every page of it, so the help's index -- which reads
+// what a page shows by following the calls out of this function -- finds each
+// page's cards at the same depth
 function projectPane(desk, p) {
   const box = el("div");
-  box.append(pageCrumbs(deskCrumb(desk), {label: p.name}));
+  const secs = projectSections(p);
+  const sec = secs.find(s => s.id === sel.psection) || secs[0];
+  sel.psection = sec.id;
+  box.append(pageCrumbs(deskCrumb(desk), projectCrumb(p), {label: sec.label}));
+
+  // How a worktree of it is made: the name in front of its branch, where its
+  // folder goes, and what it is given of what git does not carry -- the three
+  // things decided once and used every time. A project just added arrives
+  // here first, with the way on to its first worktree above them
+  if (sec.id === "rules") {
+    // The folder just added is the project's checkout, or one of its
+    // folders when what was added is a worktree of a project already here
+    const arrived = firstFlow && (sameCwd(firstFlow.folder, p.at)
+      || p.folders.some(gi => sameCwd(firstFlow.folder, (desk.folders[gi] || {}).cwd)));
+    if (arrived) box.append(firstFlowBar(desk, p));
+    box.append(rulesCard(desk, p));
+    if ((p.at || "").trim()) box.append(ignoreCard(desk, p));
+    return box;
+  }
+
+  // What git does here: the branches guarded, and what the AI is told when it
+  // writes for this repository. A project only worked out from git is written
+  // down by the first change, and what was typed goes with it
+  if (sec.id === "git") {
+    const holder = p.entry || {};
+    const wrote = () => {
+      if (p.entry) return;
+      const e = ensureProject(desk, p);
+      e.git = holder.git;
+      sel.proj = "p:" + e.name;
+    };
+    box.append(...projectGitCards(holder, wrote));
+    return box;
+  }
+
+  // What a new worktree of it runs, read from its own checkout
+  if (sec.id === "setup") {
+    box.append(envCard(desk, p));
+    return box;
+  }
+
+  // What it is called, where its checkout is, and the folders that are part of it
   const nameIn = el("input", {type:"text", value:p.name, style:"width:280px"});
   nameIn.addEventListener("change", () => {
     const to = nameIn.value.trim();
@@ -11630,22 +12169,10 @@ function projectPane(desk, p) {
     sel.proj = "p:" + e.name;
     refreshSave(); render();
   });
-  // What every branch of this project is called before its own name. Typed
-  // once here instead of into every dialog, and kept by the name an AI writes
-  // later as well
-  const prefixIn = el("input", {type:"text", class:"mono", style:"width:200px",
-    value:(p.entry || {}).branch_prefix || "", placeholder:T["settings.project.branch_prefix.ph"]});
-  prefixIn.addEventListener("input", () => {
-    const e = ensureProject(desk, p);
-    if (prefixIn.value.trim()) e.branch_prefix = prefixIn.value.trim(); else delete e.branch_prefix;
-    refreshSave();
-  });
   box.append(card(T["settings.project.title"],
     row(T["settings.project.name"], nameIn),
     row(T["settings.project.at"], atIn,
       el("span", {class:"hint"}, T["settings.project.at.hint"])),
-    row(T["settings.project.branch_prefix"], prefixIn,
-      el("span", {class:"hint"}, T["settings.project.branch_prefix.hint"])),
     row(T["settings.project.repo"],
       el("span", {class:"hint mono"}, p.family || T["settings.project.repo.none"])),
     p.entry ? null : el("div", {class:"hint"}, T["settings.project.inferred"])));
@@ -11661,8 +12188,10 @@ function projectPane(desk, p) {
       el("span", {class:"hint"}, fam.cut ? T["settings.project.worktree"] : T["settings.project.checkout"]),
       el("span", {class:"go"}, "›")));
   }
-  box.append(card(T["settings.project.folders"],
-    p.folders.length ? rows : el("div", {class:"hint"}, T["settings.project.folders.none"])));
+  const folders = card(T["settings.project.folders"],
+    p.folders.length ? rows : el("div", {class:"hint"}, T["settings.project.folders.none"]));
+  folders.id = "project-folders";
+  box.append(folders);
 
   // The git account the column beside its folders signs in with, and reads
   // pull request numbers with. Chosen here once for every folder of it
@@ -11683,23 +12212,6 @@ function projectPane(desk, p) {
     box.append(acctCard);
   }
 
-  // What git does here: the branches guarded, and what the AI is told when
-  // it writes for this repository. A project only worked out from git is
-  // written down by the first change, and what was typed goes with it
-  const holder = p.entry || {};
-  const wrote = () => {
-    if (p.entry) return;
-    const e = ensureProject(desk, p);
-    e.git = holder.git;
-    sel.proj = "p:" + e.name;
-  };
-  box.append(...projectGitCards(holder, wrote));
-
-  // What a new worktree of it is given beyond what git carries, then the
-  // environment and setup of the repository, read from its own checkout --
-  // in the order they happen when a worktree is made
-  if ((p.at || "").trim()) box.append(ignoreCard(desk, p), extraFilesCard(desk, p), envCard(desk, p));
-
   if (p.entry) {
     box.append(el("div", {class:"row"},
       el("button", {class:"danger", onclick: async () => {
@@ -11714,6 +12226,327 @@ function projectPane(desk, p) {
       el("span", {class:"hint"}, T["settings.project.delete.hint"])));
   }
   return box;
+}
+
+// Two spellings of one folder: case and the direction of the slashes do not
+// make a different folder on Windows
+const sameCwd = (a, b) => (a || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
+  === (b || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+
+// The name in front of its branches and where its folders go: one card, the
+// two answers every worktree of it is made with. Where it goes is read from
+// its checkout, so a project with none yet is sent to say where that is.
+// The card is made first and filled after, so what is in it is read as its
+function rulesCard(desk, p) {
+  const c = card(T["settings.place.card"]);
+  c.id = "project-place";
+  const prefixIn = el("input", {type:"text", class:"mono", style:"width:200px",
+    value:(p.entry || {}).branch_prefix || "", placeholder:T["settings.project.branch_prefix.ph"]});
+  prefixIn.addEventListener("input", () => {
+    const e = ensureProject(desk, p);
+    if (prefixIn.value.trim()) e.branch_prefix = prefixIn.value.trim(); else delete e.branch_prefix;
+    sel.proj = "p:" + e.name;
+    refreshSave();
+    if ((p.at || "").trim()) askPlaceSoon(desk, p);
+  });
+  const prefixRow = row(T["settings.project.branch_prefix"], prefixIn,
+    el("span", {class:"hint"}, T["settings.project.branch_prefix.hint"]));
+  prefixRow.id = "project-prefix";
+  c.append(prefixRow);
+  if (!(p.at || "").trim()) {
+    c.append(el("div", {class:"hint"}, T["settings.place.no_at"]),
+      el("div", {class:"row"}, el("button", {onclick:() => goProjectSection(p.key, "basic")}, T["settings.place.set_at"])));
+    return c;
+  }
+  const e = p.entry || {};
+  const j = placeOf(desk, p);
+  const input = el("input", {type:"text", class:"mono grow", value: e.placement || "",
+    placeholder: (j && j.default) ? j.default : T["settings.place.ph"]});
+  input.addEventListener("input", () => {
+    const en = ensureProject(desk, p);
+    const v = input.value.trim();
+    if (v) en.placement = v; else delete en.placement;
+    sel.proj = "p:" + en.name;
+    refreshSave();
+    askPlaceSoon(desk, p);
+  });
+  // The two places a person most often means, one press each
+  const beside = el("button", {class:"quiet", onclick:() => { input.value = ".."; input.dispatchEvent(new Event("input")); }},
+    T["settings.place.beside"]);
+  const own = el("button", {class:"quiet", onclick:() => { input.value = ""; input.dispatchEvent(new Event("input")); }},
+    T["settings.place.own"]);
+  const said = el("div", {id:"placesaid", class:"placesaid"});
+  drawPlace(said, desk, p, j);
+  // The two presses under the box rather than beside it, so the box keeps
+  // its width on a phone
+  c.append(row(T["settings.place"], input,
+    el("div", {class:"row placequick"}, beside, own),
+    el("span", {class:"hint"}, T["settings.place.hint"])), said);
+  return c;
+}
+
+// ── Where its worktrees go ───────────────────────────────────────────────
+// Asked of the app as the settings stand on this page, saved or not: the
+// folder a worktree would get, what says the project is served where it
+// stands, and whether a folder there can be a second name for another
+const PLACES = {};
+const HOST_MARKERS = {{HOST_MARKERS}};
+const placeSig = (desk, p) => {
+  const e = p.entry || {};
+  return JSON.stringify([p.at, e.placement || "", e.branch_prefix || "", e.name || p.name,
+    current.nest_worktrees !== false, current.host_markers || null]);
+};
+const placeAsk = (desk, p) => {
+  const e = p.entry || {};
+  return {path: p.at || "", placement: e.placement || "", prefix: e.branch_prefix || "",
+    project: e.name || p.name, nest: current.nest_worktrees !== false,
+    markers: current.host_markers || null, probe: true};
+};
+// What is known about where this project's worktrees go, as of the settings
+// on screen. Null until the app has answered; asked once per change
+function placeOf(desk, p) {
+  const sig = placeSig(desk, p);
+  const known = PLACES[p.key];
+  if (known && known.sig === sig) return known.j;
+  if (!known || known.asking !== sig) {
+    PLACES[p.key] = {sig: known ? known.sig : "", j: known ? known.j : null, asking: sig};
+    settingsApi("/api/project/place", placeAsk(desk, p)).catch(() => null).then(j => {
+      const now = PLACES[p.key];
+      if (!now || now.asking !== sig) return;
+      PLACES[p.key] = {sig, j: j || {ok:false}};
+      if (sel.proj !== p.key) return;
+      const said = document.getElementById("placesaid");
+      if (said) drawPlace(said, desk, p, PLACES[p.key].j);
+      // What a line can be turned into depends on this answer too; drawn
+      // again unless somebody is in the middle of typing
+      if (!typingNow()) render();
+    });
+  }
+  return known ? known.j : null;
+}
+// Once typing has stopped for a moment
+let placeTimer = 0;
+function askPlaceSoon(desk, p) {
+  clearTimeout(placeTimer);
+  placeTimer = setTimeout(() => placeOf(desk, p), 350);
+}
+const typingNow = () => !!document.activeElement && ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
+
+// Where a worktree would really be made, and what is worth knowing about it
+function drawPlace(box, desk, p, j) {
+  box.textContent = "";
+  if (!j) { box.append(el("div", {class:"hint"}, T["settings.place.asking"])); return; }
+  if (j.ok === false && !j.folder) { box.append(el("div", {class:"hint"}, j.error || T["settings.place.unreachable"])); return; }
+  box.append(el("div", {class:"realcmd"},
+    el("code", {class:"mono"}, j.folder || ""),
+    el("div", {class:"hint"}, fill(T["settings.place.example"], {name: j.branch || ""}))));
+  if (j.error) box.append(el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, j.error)));
+  if (j.served) box.append(el("div", {class:"hint"}, fill(T["settings.place.served"], {why: j.served})));
+  if (j.long) box.append(el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, T["settings.place.long"])));
+  if (j.linkable === false) {
+    const linked = ((p.entry || {}).bring || []).filter(r => r.how === "link");
+    if (!linked.length) box.append(el("div", {class:"hint"}, T["settings.place.nolink"]));
+    else box.append(el("div", {class:"site-warn"},
+      el("span", {}, "⚠"),
+      el("span", {class:"grow"}, T["settings.place.nolink_rules"]),
+      el("button", {onclick:() => {
+        const en = ensureProject(desk, p);
+        for (const r of en.bring || []) if (r.how === "link") r.how = "copy";
+        sel.proj = "p:" + en.name;
+        refreshSave(); render();
+      }}, T["settings.place.nolink_fix"])));
+  }
+}
+
+// ── A project just added ─────────────────────────────────────────────────
+// Opened by the board for a project it has just added (?section=project-first):
+// the rules are looked at once, and the way on is the project's first
+// worktree. Keeping what is on screen is one press -- nothing needs changing
+// for most projects -- and a change made here is saved on the same press
+let firstFlow = null;
+function firstFlowBar(desk, p) {
+  const dirty = () => snapshot() !== savedSnapshot;
+  const go = el("button", {class:"primary", onclick:() => projectNext(desk, p)},
+    dirty() ? T["settings.first.save_next"] : T["settings.first.next"]);
+  // The press says what it will do: save first, once something has changed
+  const relabel = setInterval(() => {
+    if (!go.isConnected) { clearInterval(relabel); return; }
+    go.textContent = dirty() ? T["settings.first.save_next"] : T["settings.first.next"];
+  }, 500);
+  const bar = el("div", {class:"card firstbar"},
+    el("h2", {}, T["settings.first.title"]),
+    el("div", {class:"hint"}, T["settings.first.say"]),
+    el("div", {class:"row"},
+      go,
+      el("button", {class:"quiet", onclick:() => { firstFlow = null; closeSettings(); }}, T["settings.first.later"])));
+  bar.id = "project-first";
+  return bar;
+}
+
+// Saved if anything changed, then on to the project's first worktree: the
+// board is told (it owns that dialog), and this page goes
+let stayAfterSave = false;
+async function projectNext(desk, p) {
+  const folder = (firstFlow && firstFlow.folder) || p.at || "";
+  const was = returnOnSave;
+  returnOnSave = false;
+  stayAfterSave = true;
+  let ok = true;
+  try {
+    if (snapshot() !== savedSnapshot) ok = await save();
+  } finally {
+    returnOnSave = was;
+    stayAfterSave = false;
+  }
+  if (!ok) return false;
+  if (folder) await settingsApi("/api/project/next", {folder}).catch(() => null);
+  firstFlow = null;
+  closeSettings();
+  return true;
+}
+
+// ── Setting it up with the AI ────────────────────────────────────────────
+// What the person tells the AI about the project, then the AI's proposal
+// line by line, then saved or not. The proposal is only ever shown: nothing
+// reaches the settings until "save" is pressed on it
+function inheritAiDialog(desk, p) {
+  const e = p.entry || {};
+  const hint = el("textarea", {rows:"8", class:"mono", style:"width:100%"});
+  hint.value = typeof e.ai_hint === "string" ? e.ai_hint : T["settings.inherit.ai.template"];
+  hint.addEventListener("input", () => {
+    const en = ensureProject(desk, p);
+    en.ai_hint = hint.value;
+    sel.proj = "p:" + en.name;
+    refreshSave();
+  });
+  const said = el("div", {class:"aisaid"});
+  const ask = el("button", {class:"primary"}, T["settings.inherit.ai.ask"]);
+  const shut = () => back.remove();
+  ask.addEventListener("click", async () => {
+    ask.disabled = true;
+    said.textContent = "";
+    said.append(el("div", {class:"hint"}, T["settings.inherit.ai.thinking"]));
+    const body = Object.assign(placeAsk(desk, p), {hint: hint.value});
+    const j = await settingsApi("/api/project/inherit-ai", body).catch(() => ({ok:false, error: T["settings.bring.unreachable"]}));
+    ask.disabled = false;
+    said.textContent = "";
+    if (j && j.ok) { shut(); inheritConfirm(desk, p, j); return; }
+    if (j && j.no_ai) {
+      // Not a dead end: where the assistant AI is chosen is one press away
+      said.append(el("div", {class:"site-warn"},
+        el("span", {}, "⚠"),
+        el("span", {class:"grow"}, T["settings.inherit.ai.no_ai"]),
+        el("button", {onclick:() => { shut(); goSection("ai"); lookAtCard("ai-assistant", 50); }}, T["settings.inherit.ai.open_ai"])));
+      return;
+    }
+    said.append(el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, (j && j.error) || T["settings.inherit.ai.failed"])));
+  });
+  const back = openModal(
+    el("div", {class:"mhead"},
+      el("h2", {}, T["settings.inherit.ai.title"]),
+      el("button", {class:"quiet icon", title: T["common.close"], onclick: shut}, "✕")),
+    el("div", {class:"mbody"},
+      el("div", {class:"hint"}, T["settings.inherit.ai.say"]),
+      sfield(T["settings.inherit.ai.hint_label"], hint, T["settings.inherit.ai.hint_hint"]),
+      said),
+    el("div", {class:"mfoot"},
+      el("span", {class:"grow"}),
+      el("button", {class:"quiet", onclick: shut}, T["common.cancel"]),
+      ask));
+  back.firstChild.classList.add("framed");
+  back.addEventListener("keydown", ev => { if (ev.key === "Escape") { ev.preventDefault(); shut(); } });
+  setTimeout(() => hint.focus(), 0);
+}
+
+// "Is this right?": each line the AI decided, how, why, and -- for a copy that
+// is rewritten -- the lines of the file that change, before and after, for a
+// worktree named the way a new one would be
+function inheritConfirm(desk, p, res) {
+  const root = (p.at || "").trim();
+  const known = IGNORES[root] || {ignored: [], defaults: []};
+  const nowHow = (source, pattern) => {
+    const r = bringRule(p, source, pattern);
+    if (r && BRING_HOWS.includes(r.how)) return r.how;
+    return (known.defaults.find(d => d.source === source && d.pattern === pattern) || {}).how || "skip";
+  };
+  const rows = el("div", {class:"rows"});
+  for (const pr of res.lines) {
+    const was = nowHow(pr.source, pr.pattern);
+    const item = el("div", {class:"igitem aiprop"},
+      el("div", {class:"igrow"},
+        el("div", {class:"igpat"}, el("span", {class:"mono", title: pr.pattern}, pr.pattern),
+          pr.source === ".gitignore" ? null : el("span", {class:"hint"}, fill(T["settings.bring.from_file"], {file: pr.source}))),
+        el("span", {class:"aihow"}, bringLabel(pr.how)),
+        was !== pr.how ? el("span", {class:"aichanged", title: fill(T["settings.inherit.ai.was"], {how: bringLabel(was)})},
+          fill(T["settings.inherit.ai.changed"], {how: bringLabel(was)})) : el("span")),
+      pr.reason ? el("div", {class:"hint"}, pr.reason) : null);
+    if (pr.how === "replace") {
+      item.append(el("div", {class:"hint mono"}, ...pr.replace.map(r =>
+        el("div", {}, (r.regex ? "/" + r.find + "/" : r.find) + "  →  " + r.with))));
+      const files = known.ignored.filter(i => i.source === pr.source && i.pattern === pr.pattern && !i.folder).map(i => i.path);
+      const preview = el("div", {class:"aipreview"}, el("div", {class:"hint"}, T["settings.inherit.ai.previewing"]));
+      item.append(preview);
+      settingsApi("/api/project/replace-preview", {path: root, folder: res.folder, replace: pr.replace, files})
+        .catch(() => null)
+        .then(j => {
+          preview.textContent = "";
+          if (!j || !j.ok) { preview.append(el("div", {class:"hint"}, T["settings.inherit.ai.no_preview"])); return; }
+          for (const f of j.files || []) {
+            preview.append(el("div", {class:"hint mono"}, f.file));
+            if (f.error) { preview.append(el("div", {class:"hint"}, f.error)); continue; }
+            for (const c of (f.changed || []).slice(0, 6)) {
+              preview.append(el("div", {class:"mono aidiff"},
+                el("div", {class:"before"}, c.n + ": " + c.before),
+                el("div", {class:"after"}, c.n + ": " + c.after)));
+            }
+            if ((f.changed || []).length > 6) preview.append(el("div", {class:"hint"}, fill(T["settings.inherit.ai.more"], {n: f.changed.length - 6})));
+            if ((f.unmatched || []).length) preview.append(el("div", {class:"site-warn"}, el("span", {}, "⚠"),
+              el("span", {}, fill(T["settings.inherit.ai.unmatched"], {finds: f.unmatched.join(", ")}))));
+          }
+        });
+    }
+    rows.append(item);
+  }
+  const inFirst = !!firstFlow;
+  const shut = () => back.remove();
+  const apply = () => {
+    for (const pr of res.lines) {
+      setBringRule(desk, p, pr.source, pr.pattern, r => {
+        r.how = pr.how;
+        if (pr.how === "replace") r.replace = pr.replace.map(x => {
+          const o = {find: x.find, with: x.with || ""};
+          if (x.regex) o.regex = true;
+          return o;
+        });
+      });
+    }
+  };
+  const saveBtn = el("button", {class:"primary", onclick: async () => {
+    saveBtn.disabled = true;
+    apply();
+    let done;
+    if (inFirst) done = await projectNext(desk, p);
+    else {
+      stayAfterSave = true;
+      try { done = await save(); } finally { stayAfterSave = false; }
+    }
+    saveBtn.disabled = false;
+    if (done) { shut(); render(); }
+  }}, inFirst ? T["settings.first.save_next"] : T["common.save"]);
+  const back = openModal(
+    el("div", {class:"mhead"},
+      el("h2", {}, T["settings.inherit.ai.confirm"]),
+      el("button", {class:"quiet icon", title: T["common.close"], onclick: shut}, "✕")),
+    el("div", {class:"mbody"},
+      el("div", {class:"hint"}, fill(T["settings.inherit.ai.confirm_say"], {name: res.name || ""})),
+      rows),
+    el("div", {class:"mfoot"},
+      el("button", {class:"quiet", onclick:() => { shut(); inheritAiDialog(desk, p); }}, T["settings.inherit.ai.again"]),
+      el("span", {class:"grow"}),
+      el("button", {class:"quiet", onclick: shut}, T["common.cancel"]),
+      saveBtn));
+  back.firstChild.classList.add("framed");
+  back.addEventListener("keydown", ev => { if (ev.key === "Escape") { ev.preventDefault(); shut(); } });
 }
 
 // Calling this folder's branch something else.
@@ -14019,7 +14852,9 @@ async function doSave() {
   // stood over the board for one thing (a sheet, or a link that returns once
   // saved): the person came from a tab, and closing puts them back on it --
   // sent to INDEX, they lost the page they had pressed [Slow] on
-  if (!floating && !SHEET && !returnOnSave) goIndex();
+  // Nor when what was saved is one step of something still going on this
+  // page (a proposal saved, a project's rules on the way to its worktree)
+  if (!floating && !SHEET && !returnOnSave && !stayAfterSave) goIndex();
   return true;
 }
 
@@ -14396,9 +15231,12 @@ load().then(() => {
   // card's own id: "project-gitacct" for a refusal about the account, put
   // right there; "project-git-message" and its neighbours for the prompt the
   // board's ✨ was pressed on
+  // ...and ?section=project-first is a project the board has just added: its
+  // worktree rules, with the way on to its first worktree above them
   const projectAsk = sec === "project" || (sec || "").startsWith("project-");
+  if (sec === "project-first" && want) firstFlow = {folder: want};
   const markCard = () => {
-    if (sec === "project") return;
+    if (sec === "project" || sec === "project-first") return;
     // The account card is drawn once this PC's accounts are in
     if (sec === "project-gitacct") PC_ACCOUNTS_READ.then(() => lookAtCard(sec, 50));
     else lookAtCard(sec, 50);
@@ -14415,7 +15253,7 @@ load().then(() => {
       const land = tries => {
         if (!(cwd in FAMILIES) && tries > 0) return setTimeout(() => land(tries - 1), 200);
         const home = deskProjects(desks[cur]).projects.find(p => p.folders.includes(gi));
-        sel = home ? {desk:cur, proj:home.key, grp:null, tab:null, global:false}
+        sel = home ? {desk:cur, proj:home.key, grp:null, tab:null, global:false, psection:projectSectionOf(sec)}
                    : {desk:cur, grp:gi, tab:null, global:false};
         render();
         showSelected("center");
@@ -14430,7 +15268,7 @@ load().then(() => {
   if (projectAsk && !want && desks[cur]) {
     const first = deskProjects(desks[cur]).projects[0];
     if (first) {
-      sel = {desk:cur, proj:first.key, grp:null, tab:null, global:false};
+      sel = {desk:cur, proj:first.key, grp:null, tab:null, global:false, psection:projectSectionOf(sec)};
       render();
       showSelected("center");
       markCard();
@@ -15180,8 +16018,12 @@ mod tests {
     /// pressed wins. Every folder page points at the project instead.
     #[test]
     fn the_repositorys_own_settings_are_offered_where_the_repository_is() {
+        // What a worktree inherits is on the rules page, what it runs on the
+        // setup page -- both pages of the project
         assert!(
-            PAGE.contains("if ((p.at || \"\").trim()) box.append(ignoreCard(desk, p), extraFilesCard(desk, p), envCard(desk, p));"),
+            PAGE.contains(r#"if ((p.at || "").trim()) box.append(ignoreCard(desk, p));"#)
+                && PAGE.contains("extraFilesPart(desk, p)].filter(Boolean));")
+                && PAGE.contains("if (sec.id === \"setup\") {\n    box.append(envCard(desk, p));"),
             "the cards that belong to the repository are not on the project's page"
         );
         assert!(
@@ -15866,7 +16708,7 @@ mod tests {
         assert!(PAGE.contains("<div id=\"floatbox\""), "there is no dialog to show");
         assert!(PAGE.contains("if (await save()) closeSettings();"), "adding closes the dialog whether or not it was saved");
         assert!(PAGE.contains("ok = await doSave();"), "a save that said why it failed still counts as done");
-        assert!(PAGE.contains("if (!floating && !SHEET && !returnOnSave) goIndex();"),
+        assert!(PAGE.contains("if (!floating && !SHEET && !returnOnSave && !stayAfterSave) goIndex();"),
             "a save sends the person to INDEX from the dialog or the sheet they opened from a tab");
         assert!(PAGE.contains(r#"postMessage(JSON.stringify({kind:"settingsfull"}))"#),
             "More settings does not ask the window for the whole of it");

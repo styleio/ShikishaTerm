@@ -286,7 +286,7 @@ pub fn worktrees_of(family: &Path) -> Vec<(PathBuf, Option<String>)> {
 /// `..` is resolved by reading the path rather than by asking the disk: the
 /// answer is wanted several times a second, and a folder that has just been
 /// removed should still be recognisable as the family it belonged to
-fn tidy(path: PathBuf) -> PathBuf {
+pub(crate) fn tidy(path: PathBuf) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
     for part in path.components() {

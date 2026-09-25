@@ -5820,7 +5820,7 @@ function drawAddProject() {
     closeAddProject();
     // A project over there cannot be cut into worktrees from here: it is
     // added, and that is the end of it
-    if (!mine.host) openBranch({folder: path});
+    if (!mine.host) rulesFirst(path);
   }
 }
 
@@ -6036,7 +6036,7 @@ function addChosenFolder(path, git) {
   const here = (S && S.groups || []).some(g => sameFolder(g.folder, path));
   if (here || git) {
     send({kind:"browse", path, open:true});
-    if (!here) openBranch({folder: path});
+    if (!here) rulesFirst(path);
     return;
   }
   askQuestion({
@@ -6051,6 +6051,52 @@ function addChosenFolder(path, git) {
 // make a different folder on Windows
 const sameFolder = (a, b) => (a || "").replace(/[\\/]+$/, "").replace(/\//g, "\\").toLowerCase()
   === (b || "").replace(/[\\/]+$/, "").replace(/\//g, "\\").toLowerCase();
+
+// A project just added goes through its worktree rules before its first
+// worktree: the settings open on the rules, and their "next" opens the
+// worktree dialog here (see projectFlow). The settings read the desk from its
+// file, so they are opened once the folder is on the list -- which is once it
+// has been written there
+let projectArriving = null;
+function rulesFirst(path) {
+  projectArriving = {path, at: Date.now()};
+  projectFlow();
+}
+// The last "next" this board has answered. Taken as seen the first time the
+// state arrives, so a board that loads after the ask does not answer it again
+let branchNextSeen = null;
+// The ask being answered: opened once the rules just saved are the app's --
+// the folder names its project once the saved settings have been read in --
+// so the dialog starts from them. A few seconds at most: an answer that never
+// comes still opens the dialog
+let branchNextWaiting = null;
+function projectFlow() {
+  if (!S) return;
+  const next = S.branch_next || null;
+  if (branchNextSeen === null) branchNextSeen = next ? next.seq : 0;
+  else if (next && next.seq > branchNextSeen) {
+    branchNextSeen = next.seq;
+    branchNextWaiting = {folder: next.folder, at: Date.now()};
+    // Looked at again then, whether or not anything else changes by then
+    setTimeout(projectFlow, 4100);
+  }
+  if (branchNextWaiting) {
+    const g = (S.groups || []).find(x => sameFolder(x.folder, branchNextWaiting.folder));
+    if ((g && g.project) || Date.now() - branchNextWaiting.at > 4000) {
+      const folder = branchNextWaiting.folder;
+      branchNextWaiting = null;
+      openBranch(g || {folder});
+    }
+  }
+  if (!projectArriving) return;
+  // A project that never arrived (the add failed, and said so) is not
+  // waited for until some later, unrelated folder turns up
+  if (Date.now() - projectArriving.at > 5 * 60 * 1000) { projectArriving = null; return; }
+  const path = projectArriving.path;
+  if (!(S.groups || []).some(g => sameFolder(g.folder, path))) return;
+  projectArriving = null;
+  openSettings("project-first", true, path);
+}
 
 // ── The tools that start from a picture ──────────────────
 // What the app can run and how long it can wait, handed in by the app
@@ -7657,6 +7703,7 @@ function openBranch(g, preset) {
   byLine.textContent = "";
   carryTab = "each";
   lineChoices.clear();
+  carryByHand.clear();
   branchBase = preset.base || "";
   branchBaseChosen = !!preset.base;
   // Opened for an issue or a pull request, that is what it is made from; given
@@ -8123,11 +8170,12 @@ function preparing() {
   return t ? t.checked : true;
 }
 
-// How each thing offered comes along, as the pickers stand
+// What was changed here for this one folder. Only that is sent: every other
+// row is the project's answer, asked of the project each time, so a rule
+// saved while the dialog is open -- the project's rules settled on the way to
+// its first worktree -- is the rule the folder is made with
 function carrying() {
-  const b = document.getElementById("branch");
-  if (!b) return [];
-  return Array.from(b.querySelectorAll(".bcarry select")).map(s => ({name: s.dataset.name, how: s.value}));
+  return Array.from(carryByHand, ([name, how]) => ({name, how}));
 }
 function drawBranch() {
   const b = document.getElementById("branch");
@@ -8322,14 +8370,16 @@ function drawBases(b, p) {
 }
 let branchBases = [];
 
-// Drawn once per set of names: rebuilding it on every answer would put back
-// whatever was just changed, which is the one thing this list must not do.
-// Each starts where the project's settings put it, and a change here is for
-// this one folder
+// Drawn again only when what it would show changes: rebuilding it on every
+// answer would put back whatever was just changed, which is the one thing
+// this list must not do. Each starts where the project's settings put it, and
+// a change here is for this one folder -- kept by name, so a row changed by
+// hand stays changed when the project's answer for the others moves
+const carryByHand = new Map();
 function drawCarry(b, items) {
   const box = b.querySelector(".bcarry");
   if (!items.length && box.children.length) return;
-  const key = items.map(i => i.name).join("\u0000");
+  const key = items.map(i => i.name + "=" + (i.how || "")).join("\u0000");
   if (box.dataset.key === key) return;
   box.dataset.key = key;
   box.textContent = "";
@@ -8343,8 +8393,12 @@ function drawCarry(b, items) {
       if (how === "replace" && it.folder && it.how !== "replace") continue;
       pick.append(el("option", {value: how}, T["tui.branch.carry." + how] || how));
     }
-    pick.value = it.how || "skip";
-    pick.onchange = () => { showMore(b, !b.querySelector(".bextra").hidden); askBranch(); };
+    pick.value = carryByHand.get(it.name) || it.how || "skip";
+    pick.onchange = () => {
+      carryByHand.set(it.name, pick.value);
+      showMore(b, !b.querySelector(".bextra").hidden);
+      askBranch();
+    };
     // Held left to right inside the marks: the box runs right to left so a
     // long path is cut at the front, and a folder ends in the / that says so
     const name = it.name + (it.folder ? "/" : "");
@@ -8426,6 +8480,9 @@ function applyCarryLines(b, lines) {
     if (!how) continue;
     // A folder has no text to replace in: it is copied
     s.value = Array.from(s.options).some(o => o.value === how) ? how : "copy";
+    // Held here as well until the project's own answer says the same, so
+    // the rows do not go back while the choice is being written down
+    carryByHand.set(s.dataset.name, s.value);
   }
   const chosen = Array.from(lineChoices, ([k, how]) => {
     const [source, pattern] = k.split("\u0000");
@@ -9743,6 +9800,13 @@ window.__state = function (json) {
   const before = S;
   S = JSON.parse(json);
   gitAfterWork(before);
+  projectFlow();
+  // The settings were read in again while the worktree dialog is open: what
+  // it shows was worked out from the ones before, so it is asked again
+  if (before && S && S.settings_gen !== before.settings_gen) {
+    const bd = document.getElementById("branch");
+    if (bd && !bd.hidden && branchFrom) askBranch();
+  }
   // First of all, and before anything below reads PANES: the rectangles and
   // the rows in them are the same moment as the rest of this state
   if (S && S.panes && paneKey(S.panes) !== laidOut) layPanes(S.panes);
@@ -20890,7 +20954,7 @@ mod tests {
         assert!(PAGE.contains("drawAddProject();"), "a clone's progress is never drawn");
         assert!(PAGE.contains("const git = row >= 0 ? !!(st.git || [])[row] : !!st.at_git;"),
             "what was picked is not asked whether it is a repository");
-        assert!(PAGE.contains("if (!here) openBranch({folder: path});"), "a repository does not go on to its first worktree");
+        assert!(PAGE.contains("if (!here) rulesFirst(path);"), "a repository does not go on to its first worktree");
         assert!(PAGE.contains(r#"title: T["tui.nongit.title"] || "","#), "a folder that is not a repository is added without a word");
         assert!(PAGE.contains("if (!document.getElementById(\"addproj\").hidden) return;"), "the board takes the keyboard from the cards");
     }
@@ -21152,7 +21216,7 @@ mod tests {
         assert!(PAGE.contains(r#"send({kind:"addhost", name:name.value.trim(), ask:apAsk, key:key.value.trim(),"#), "a host cannot be added");
         assert!(PAGE.contains(r#"if (kind === "host") { apHost = mine.host; apShow(apHostBack || "start"); return; }"#),
             "a host added does not become where the dialog adds");
-        assert!(PAGE.contains("if (!mine.host) openBranch({folder: path});"), "a project over there goes on to a worktree this PC cannot cut");
+        assert!(PAGE.contains("if (!mine.host) rulesFirst(path);"), "a project over there goes on to a worktree this PC cannot cut");
         assert!(PAGE.contains(r#"create.classList.toggle("held", !!apHost);"#), "a new project is offered on a host");
     }
 
