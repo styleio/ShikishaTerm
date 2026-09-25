@@ -1833,7 +1833,7 @@
   "settings.dsec.permissions.sub": "人間とAIが実行してよい命令",
   "settings.dsec.caps": "自動化の窓口",
   "settings.dsec.caps.sub": "スクリプトが届くファイルとURL",
-  "settings.gitacct.title": "git アカウント",
+  "settings.gitacct.title": "Git アカウント",
   "settings.gitacct.hint": "このアプリが git のサーバーにサインインするアカウントと、この PC の git と GitHub CLI（gh）に保存されているサインインです。プロジェクトがどれを使うかは、プロジェクトのページで選びます。選ぶまでは、この PC の git がいつもどおりにサインインします。",
   "settings.gitacct.empty": "git アカウントはまだありません。下の「＋ git アカウントを追加」から追加してください。",
   "settings.gitacct.add": "＋ git アカウントを追加",
