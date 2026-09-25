@@ -757,6 +757,95 @@ fn device_cookie(key: &str) -> String {
     format!("rk={key}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
 }
 
+/// The same key again, kept only so the device can be recognised when it
+/// arrives from somewhere else.
+///
+/// **`Lax`, where `rk` is `Strict`.** A browser withholds a `Strict` cookie on
+/// a link followed from another app or site -- a notification, a chat, a mail,
+/// a QR reader -- so a phone that opened the board that way looked like a
+/// device never seen before. It was written into the book again, handed a new
+/// key over its old one, and the old row stayed behind: one phone became a
+/// list of rows, each alive for an hour or two.
+///
+/// Loosening it grants nothing. Only the page's own route reads `ri`, and only
+/// to decide which row an arrival on the link is; every data route and socket
+/// still reads `rk`, and still wants the `Strict` session beside it
+fn device_seen_cookie(key: &str) -> String {
+    format!("ri={key}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000")
+}
+
+/// Both of a device's cookies, set together so they never hold different keys.
+fn device_cookies(key: &str) -> [String; 2] {
+    [device_cookie(key), device_seen_cookie(key)]
+}
+
+/// What a device is called until somebody names it, read from what its browser
+/// says it is: "iPhone · Safari", "Windows · Chrome".
+///
+/// Only a first guess -- a browser can say anything -- but a list of empty
+/// names is a list where the only safe press is none. Empty when the browser
+/// says nothing recognisable, so the row reads as unnamed rather than wrong
+fn device_name(agent: &str) -> String {
+    let a = agent.to_ascii_lowercase();
+    let has = |w: &str| a.contains(w);
+    let system = if has("iphone") {
+        "iPhone"
+    } else if has("ipad") {
+        "iPad"
+    } else if has("android") {
+        "Android"
+    } else if has("windows") {
+        "Windows"
+    } else if has("cros") {
+        "ChromeOS"
+    } else if has("macintosh") || has("mac os x") {
+        "Mac"
+    } else if has("linux") {
+        "Linux"
+    } else {
+        ""
+    };
+    // The apps that open links inside themselves come first: each keeps its
+    // own cookies, so each really is a device of its own, and saying which is
+    // what tells the rows apart. Then the browsers, most specific first --
+    // every one of them also calls itself Safari, and most call themselves Chrome
+    let browser = if has("headlesschrome") {
+        "Chrome (headless)"
+    } else if has(" line/") {
+        "LINE"
+    } else if has("fban") || has("fbav") {
+        "Facebook"
+    } else if has("instagram") {
+        "Instagram"
+    } else if has("slack") {
+        "Slack"
+    } else if has("discord") {
+        "Discord"
+    } else if has("edg/") || has("edga/") || has("edgios/") {
+        "Edge"
+    } else if has("samsungbrowser") {
+        "Samsung Internet"
+    } else if has("opr/") {
+        "Opera"
+    } else if has("firefox/") || has("fxios/") {
+        "Firefox"
+    } else if has("crios/") || has("chrome/") {
+        "Chrome"
+    } else if has("safari/") {
+        "Safari"
+    } else if has("ureq/") {
+        "SHIKISHA"
+    } else {
+        ""
+    };
+    match (system, browser) {
+        ("", "") => String::new(),
+        (s, "") => s.to_string(),
+        ("", b) => b.to_string(),
+        (s, b) => format!("{s} · {b}"),
+    }
+}
+
 /// The cookie that says this device has already given the password for a reply
 /// page. Its own cookie, and deliberately not the board's.
 ///
@@ -1508,26 +1597,46 @@ fn handle(
         // fixed the link keeps the pairing key in it, so every reload arrived
         // "pairing" and was written in again: two phones reloading a few times
         // were a list of eight devices, none of which could be told apart
+        // Its key is looked for under both names: `rk` when the link was
+        // opened here, `ri` when it was followed from another app, which is
+        // when a browser keeps `rk` back (see `device_seen_cookie`)
+        let held = ["rk", "ri"].iter().find_map(|name| {
+            let key = cookie_value(&req, name);
+            crate::clients::who(&key).map(|row| (row, key))
+        });
         let opener = match opened_by(&query_value(req.url(), "t"), &token) {
-            Some(Opener::Pairing) => match crate::clients::who(&cookie_value(&req, "rk")) {
-                Some(known) => Some(Opener::Paired(known)),
+            Some(Opener::Pairing) => match &held {
+                Some((known, _)) => Some(Opener::Paired(known.clone())),
                 None => Some(Opener::Pairing),
             },
             other => other,
         };
+        // A device that holds its key is handed both cookies again: the one
+        // that was kept back comes home, a device paired before `ri` existed
+        // gets it, and neither runs out while the device is in use
+        if let Some((_, key)) = &held {
+            for c in device_cookies(key) {
+                resp = resp.with_header(Header::from_bytes(&b"Set-Cookie"[..], c.as_bytes()).unwrap());
+            }
+        }
         match opener {
             Some(Opener::Pairing) => {
-                let paired = crate::clients::pair("").ok();
+                let agent = req
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv("User-Agent"))
+                    .map(|h| h.value.as_str().to_string())
+                    .unwrap_or_default();
+                let paired = crate::clients::pair(&device_name(&agent)).ok();
                 let owner = paired.as_ref().map(|(row, _)| row.id.clone());
                 let id = gate.grants.keep_for(&session, owner);
                 resp = resp.with_header(
                     Header::from_bytes(&b"Set-Cookie"[..], session_cookie(&id).as_bytes()).unwrap(),
                 );
                 if let Some((_, key)) = paired {
-                    resp = resp.with_header(
-                        Header::from_bytes(&b"Set-Cookie"[..], device_cookie(&key).as_bytes())
-                            .unwrap(),
-                    );
+                    for c in device_cookies(&key) {
+                        resp = resp.with_header(Header::from_bytes(&b"Set-Cookie"[..], c.as_bytes()).unwrap());
+                    }
                 }
             }
             Some(Opener::Paired(who)) => {
@@ -3562,6 +3671,98 @@ mod tests {
         ui.shutdown();
     }
 
+    /// A phone that follows the link from another app is still the phone it was.
+    ///
+    /// A browser keeps a `Strict` cookie back on that navigation, so the device
+    /// key never arrived and every open from a notification or a chat wrote
+    /// the phone in again, over its own key: one phone was a list of rows
+    #[test]
+    fn a_device_arriving_from_another_app_is_still_one_device() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let ui = RemoteUi::start(
+            "127.0.0.1".parse().unwrap(),
+            0,
+            "pairing-key-66666".into(),
+            String::new(),
+        )
+        .unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        let mut phone = Phone::new(&base);
+        phone.pair("pairing-key-66666");
+        assert!(phone.cookie.contains("ri="), "no cookie that survives a link from elsewhere: {}", phone.cookie);
+        let rows = ui.clients().len();
+        let key = |jar: &str, name: &str| {
+            jar.split(';')
+                .map(str::trim)
+                .find_map(|c| c.strip_prefix(&format!("{name}=")).map(str::to_string))
+                .unwrap_or_default()
+        };
+        let held = key(&phone.cookie, "rk");
+
+        // What a browser sends on a link followed from another app: the Lax
+        // cookie, and neither of the Strict ones
+        let jar = phone.cookie.clone();
+        phone.cookie = format!("ri={}", key(&jar, "ri"));
+        phone.pair("pairing-key-66666");
+        assert_eq!(ui.clients().len(), rows, "a link opened from another app writes the phone in again");
+        assert_eq!(key(&phone.cookie, "rk"), held, "the key the phone holds is replaced by another");
+        assert_eq!(phone.state("pairing-key-66666"), 200);
+
+        // The Lax cookie tells the page who arrived and nothing more: without
+        // the device's key or the token, the data stays shut
+        let mut only_seen = Phone::new(&base);
+        only_seen.cookie = format!("ri={}; rs={}", key(&phone.cookie, "ri"), key(&phone.cookie, "rs"));
+        assert_eq!(only_seen.status("/api/state"), 403, "the cookie sent from other sites opens the data");
+
+        // A device paired before the Lax cookie existed is handed one
+        let mut older = Phone::new(&base);
+        older.cookie = format!("rk={held}");
+        older.pair("pairing-key-66666");
+        assert!(older.cookie.contains(&format!("ri={held}")), "a device paired earlier is not given the cookie: {}", older.cookie);
+        assert_eq!(ui.clients().len(), rows);
+        ui.shutdown();
+    }
+
+    /// A new row is named from what its browser says it is, so the list can be
+    /// read before anybody has typed a name into it
+    #[test]
+    fn a_new_device_is_named_after_its_browser() {
+        let iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+        assert_eq!(device_name(iphone), "iPhone · Safari");
+        let chrome_ios = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/126.0.6478.54 Mobile/15E148 Safari/604.1";
+        assert_eq!(device_name(chrome_ios), "iPhone · Chrome");
+        let line = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari Line/14.9.0";
+        assert_eq!(device_name(line), "iPhone · LINE");
+        let android = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
+        assert_eq!(device_name(android), "Android · Chrome");
+        let edge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0";
+        assert_eq!(device_name(edge), "Windows · Edge");
+        let headless = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/126.0.0.0 Safari/537.36";
+        assert_eq!(device_name(headless), "Windows · Chrome (headless)");
+        let firefox = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:127.0) Gecko/20100101 Firefox/127.0";
+        assert_eq!(device_name(firefox), "Mac · Firefox");
+        assert_eq!(device_name("ureq/3.0.0"), "SHIKISHA");
+        assert_eq!(device_name(""), "", "a browser that says nothing is given a name anyway");
+        assert_eq!(device_name("curl/8.4.0"), "");
+
+        // And the name is what the row is written with
+        let _book = crate::clients::tests::OwnBook::new();
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "pairing-key-77777".into(), String::new())
+            .unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .new_agent()
+            .get(&format!("{base}/?t=pairing-key-77777"))
+            .header("User-Agent", android)
+            .call()
+            .unwrap();
+        let names: Vec<String> = ui.clients().into_iter().map(|c| c.name).collect();
+        assert_eq!(names, vec!["Android · Chrome".to_string()]);
+        ui.shutdown();
+    }
+
     #[test]
     fn reloading_the_link_keeps_the_session_it_already_has() {
         let ids = Ids::new();
@@ -3772,6 +3973,8 @@ mod tests {
         // No token and no key of its own stays refused, whatever else it holds.
         // (The device's own key is a key: a phone holding it is let in without
         // the token, which is what the key is for)
+        // (`ri` stays in the jar on purpose: it names the device to the page and
+        // must open nothing else)
         let mut keyless = Phone::new(&base);
         keyless.cookie = phone
             .cookie
