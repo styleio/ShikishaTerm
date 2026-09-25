@@ -1948,8 +1948,6 @@
   "settings.bring.untrack_confirm": "{n} 件のファイルの追跡をやめますか？ ファイルはそのまま残り、変更は git 欄に出るのでコミットしてください。",
   "settings.bring.others": "ほかの無視ファイルに書かれた行です。行の変更は、その行があるファイルで行ってください。",
   "settings.bring.defaults": "まだ選んでいない行には、そのまま作ったときの動きを表示しています。当てはまるものがフォルダだけならリンク、何も当てはまらないか秘密らしい名前があれば持っていかない、それ以外はコピーです。",
-  "settings.bring.link_warn": "ワークツリー側で消すと、元のフォルダの中身も消えます。",
-  "settings.bring.link_warn_lines": "「リンク」にした行は、ワークツリー側で消すと、元のフォルダの中身も消えます。",
   "settings.bring.replace.n": "置換（{n}）",
   "settings.bring.replace.none": "置換がまだありません。そのままコピーします。",
   "settings.bring.replace.title": "コピーしたファイルの置換",

@@ -11427,10 +11427,6 @@ function ignoreCard(desk, p) {
   const defaultOf = (source, pattern) => (j.defaults.find(d => d.source === source && d.pattern === pattern) || {}).how || "skip";
   const opened = (ignoreCard.open = ignoreCard.open || new Set());
 
-  // How many lines are set to link: what that does is said once for all of
-  // them, above the lists, rather than the same sentence under every one
-  let linked = 0;
-
   // One line that decides something, with its picker, what it matches, and
   // (for the project's own file) a way to take it out
   const ruleRow = (source, pattern, n) => {
@@ -11469,7 +11465,6 @@ function ignoreCard(desk, p) {
     // copy that is rewritten, and what a choice will do that is worth a word
     const under = [];
     const swaps = ((rule || {}).replace || []).length;
-    if (how === "link") linked++;
     if (replaceBtn) under.push(el("div", {class:"hint ignote" + (swaps ? "" : " caution")},
       replaceBtn, swaps ? null : el("span", {}, T["settings.bring.replace.none"])));
     if (opened.has(key) && matched.length > 1) under.push(el("div", {class:"hint mono igpaths"}, matched.map(m => m.path).join("\n")));
@@ -11552,7 +11547,6 @@ function ignoreCard(desk, p) {
   // may be absent are left out first
   box.append(...[
     el("div", {class:"hint"}, fill(T["settings.bring.hint"], {root: j.root || root, branch: j.branch || "-"})),
-    linked ? el("div", {class:"hint caution"}, T["settings.bring.link_warn_lines"]) : null,
     lists,
     el("div", {class:"row"}, addIn, el("button", {onclick: add}, T["settings.bring.add"])),
     trackedBox,
@@ -11589,7 +11583,6 @@ function extraFilesCard(desk, p) {
         en.bring = (en.bring || []).filter(x => x !== r);
         sel.proj = "p:" + en.name; refreshSave(); render();
       }}, "✕")));
-    if (how === "link") rows.append(el("div", {class:"hint warn"}, T["settings.bring.link_warn"]));
   });
   if (!extras.length) rows.append(el("div", {class:"hint"}, T["settings.bring.extra.empty"]));
   const c = card(T["settings.bring.extra.title"],
