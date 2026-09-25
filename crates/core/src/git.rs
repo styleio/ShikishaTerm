@@ -363,7 +363,127 @@ pub fn run_bytes(dir: &Path, args: &[&str], input: &[u8], limit: Duration) -> Re
     run_bytes_as(dir, args, input, limit, &As::default())
 }
 
+// ── On another machine ───────────────────────────────────────────────────
+// A folder on a MicroVM or a server has its git there, and nowhere else: the
+// path does not exist on this PC, and a git started here about it would say
+// so. Every function in this module takes the folder alone, which is right --
+// the folder is what decides where -- so which machine that is travels beside
+// the folder rather than through sixty signatures: noted once, on the thread
+// that is about to ask, by whoever resolved a tab to its folder.
+
+thread_local! {
+    /// The folder last noted on this thread and the machine it is on, when
+    /// that machine is not this one. Read by the one runner below and by the
+    /// one reader of a working file; nothing else in here knows about it
+    static FAR: std::cell::RefCell<Option<(PathBuf, crate::elsewhere::Elsewhere)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Say which machine `dir` is on, for the git calls that follow on this
+/// thread. `None` is this PC, which is also what every thread starts with.
+///
+/// Called right before git is asked about a folder, by the code that knows
+/// where the folder is (`hooks::git_place`, the panel's own actions): a note
+/// left over from an earlier folder can never reach another one, because it
+/// answers only for the folder it names
+pub fn there(dir: &Path, at: Option<&crate::elsewhere::Elsewhere>) {
+    FAR.with(|f| *f.borrow_mut() = at.map(|a| (dir.to_path_buf(), a.clone())));
+}
+
+/// The machine `dir` is on, when `dir` is the folder noted, one inside it,
+/// or one above it -- `root` answers the top of the tree, and everything
+/// after asks about the top
+fn far_of(dir: &Path) -> Option<crate::elsewhere::Elsewhere> {
+    FAR.with(|f| {
+        let f = f.borrow();
+        let (noted, at) = f.as_ref()?;
+        let key = |p: &Path| p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_string();
+        let (a, b) = (key(dir), key(noted));
+        (a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))).then(|| at.clone())
+    })
+}
+
+/// A word for a POSIX shell: as it is when it is plain, single-quoted when it
+/// is not, with a quote inside closed and reopened the way sh wants
+fn sh_word(s: &str) -> String {
+    let plain = !s.is_empty()
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-./:=@%+,^~".contains(&b));
+    match plain {
+        true => s.to_string(),
+        false => format!("'{}'", s.replace('\'', "'\\''")),
+    }
+}
+
+/// One git on another machine, as one line for the shell there.
+///
+/// `cd` into the folder, then git with its arguments, each quoted for that
+/// shell; what git is to read on the way in is carried as base64 and decoded
+/// in front of it, since a diff is bytes in whatever encoding the file is.
+/// The machine signs in its own way -- a MicroVM at its proxy, a server with
+/// what it holds -- so of who git runs as, only the commit identity and a
+/// sealing travel. A token never leaves this PC
+pub fn far_line(dir: &Path, args: &[&str], input: &[u8], who: &As) -> String {
+    use base64::Engine as _;
+    let mut words: Vec<String> = Vec::new();
+    // Never sit waiting for a person who cannot see the prompt
+    words.push("GIT_TERMINAL_PROMPT=0".into());
+    words.push("GIT_ASKPASS=".into());
+    if who.auth == Auth::Sealed {
+        words.push("GIT_SSH_COMMAND=false".into());
+    }
+    words.push("git".into());
+    if let Some(n) = &who.name {
+        words.push("-c".into());
+        words.push(sh_word(&format!("user.name={n}")));
+    }
+    if let Some(e) = &who.email {
+        words.push("-c".into());
+        words.push(sh_word(&format!("user.email={e}")));
+    }
+    if who.auth == Auth::Sealed {
+        words.push("-c".into());
+        words.push(sh_word("credential.helper="));
+    }
+    words.extend(args.iter().map(|a| sh_word(a)));
+    let fed = match input.is_empty() {
+        true => String::new(),
+        false => format!(
+            "printf '%s' {} | base64 -d | ",
+            base64::engine::general_purpose::STANDARD.encode(input)
+        ),
+    };
+    format!("cd {} && {fed}{}", sh_word(&dir.to_string_lossy().replace('\\', "/")), words.join(" "))
+}
+
+/// The same run as below, on the machine the folder is on
+fn run_far(
+    at: &crate::elsewhere::Elsewhere,
+    dir: &Path,
+    args: &[&str],
+    input: &[u8],
+    limit: Duration,
+    who: &As,
+) -> Result<Vec<u8>> {
+    let ran = crate::elsewhere::exec(at, &far_line(dir, args, input, who), limit.as_millis() as u64)?;
+    if !ran.ok() {
+        let said = without_line_ending_notes(&ran.err);
+        let said = match said.is_empty() {
+            true => ran.out.trim().to_string(),
+            false => said,
+        };
+        if let Some(why) = sign_in_trouble(who, &said, &crate::pr::pc_accounts) {
+            return Err(anyhow::Error::new(SignInTrouble(why)));
+        }
+        bail!(crate::i18n::tp("err.git.failed", &[("cmd", &args.join(" ")), ("said", &said)]));
+    }
+    Ok(ran.out.into_bytes())
+}
+
 fn run_bytes_as(dir: &Path, args: &[&str], input: &[u8], limit: Duration, who: &As) -> Result<Vec<u8>> {
+    // A folder on another machine: the same git, over there. Before the
+    // folder is looked for here, where it is not
+    if let Some(at) = far_of(dir) {
+        return run_far(&at, dir, args, input, limit, who);
+    }
     if !dir.is_dir() {
         bail!(crate::i18n::tp(
             "err.git.no_folder",
@@ -666,10 +786,33 @@ pub fn status(dir: &Path) -> Result<Vec<Change>> {
         let mut change = Change { index, work, path, from, tangled: false };
         // Only the conflicted ones are opened, and only up to a size worth
         // reading: this runs every time the list is drawn
-        change.tangled = change.conflicted() && has_markers(&dir.join(&change.path));
+        change.tangled = change.conflicted() && has_markers_in(dir, &change.path);
         changes.push(change);
     }
     Ok(changes)
+}
+
+/// Whether git's conflict markers are still in `rel`, a file of the tree at
+/// `dir` -- read where the tree is. On another machine the file is asked
+/// about over there; one that cannot be asked about is called tangled, for
+/// the same reason a file too large to read is
+fn has_markers_in(dir: &Path, rel: &str) -> bool {
+    match far_of(dir) {
+        None => has_markers(&dir.join(rel)),
+        Some(at) => {
+            let line = format!(
+                "cd {} && grep -q '<<<<<<<' -- {} && grep -q '>>>>>>>' -- {}",
+                sh_word(&dir.to_string_lossy().replace('\\', "/")),
+                sh_word(rel),
+                sh_word(rel)
+            );
+            match crate::elsewhere::exec(&at, &line, 30_000) {
+                // grep: 0 is found, 1 is not found, anything else is trouble
+                Ok(ran) => ran.code != 1,
+                Err(_) => true,
+            }
+        }
+    }
 }
 
 /// Whether git's conflict markers are still in this file.
@@ -697,7 +840,7 @@ pub fn conflicts(dir: &Path) -> Result<Vec<String>> {
 pub fn tangled(dir: &Path) -> Result<Vec<String>> {
     Ok(conflicts(dir)?
         .into_iter()
-        .filter(|f| has_markers(&dir.join(f)))
+        .filter(|f| has_markers_in(dir, f))
         .collect())
 }
 
@@ -1814,6 +1957,56 @@ pub fn split_args(line: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A git on another machine is one line for the shell there: into the
+    /// folder, then git with each word quoted as that shell wants, what it
+    /// reads on the way in carried as base64 -- and of who runs it, only the
+    /// commit identity and a sealing. A token stays on this PC
+    #[test]
+    fn a_git_on_another_machine_is_one_line_for_the_shell_there() {
+        let dir = Path::new("/home/user/My Project");
+        let plain = far_line(dir, &["status", "--porcelain=v1", "-z"], b"", &As::default());
+        assert_eq!(plain, "cd '/home/user/My Project' && GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= git status --porcelain=v1 -z");
+        let who = As {
+            auth: Auth::Token { host: "github.com".into(), login: "me".into(), token: "ghp_SECRET".into() },
+            account: Some("work".into()),
+            name: Some("Ada O'Neil".into()),
+            email: Some("ada@example.test".into()),
+        };
+        let signed = far_line(Path::new("/srv/p"), &["commit", "-m", "fix: it's done"], b"", &who);
+        assert_eq!(
+            signed,
+            "cd /srv/p && GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= git -c 'user.name=Ada O'\\''Neil' -c user.email=ada@example.test commit -m 'fix: it'\\''s done'"
+        );
+        assert!(!signed.contains("SECRET"), "the token went to the machine: {signed}");
+        let sealed = far_line(Path::new("/srv/p"), &["fetch"], b"", &As::sealed());
+        assert_eq!(sealed, "cd /srv/p && GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= GIT_SSH_COMMAND=false git -c credential.helper= fetch");
+        let fed = far_line(Path::new("/srv/p"), &["apply", "-"], b"@@ -1 +1 @@\n", &As::default());
+        assert_eq!(fed, "cd /srv/p && printf '%s' QEAgLTEgKzEgQEAK | base64 -d | GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= git apply -");
+    }
+
+    /// The machine noted answers for the folder noted, one inside it and the
+    /// top of its tree -- and for nothing else, so a note left over from one
+    /// folder never sends another folder's git to the wrong machine
+    #[test]
+    fn a_noted_machine_answers_for_its_folder_alone() {
+        let at = crate::elsewhere::Elsewhere::Cloud(crate::config::HostSpec {
+            name: "vm".into(),
+            kind: Some("e2b".into()),
+            ..Default::default()
+        });
+        there(Path::new("/home/user/proj/"), Some(&at));
+        assert_eq!(far_of(Path::new("/home/user/proj")), Some(at.clone()));
+        assert_eq!(far_of(Path::new("/home/user/proj/src")), Some(at.clone()), "a folder inside it");
+        assert_eq!(far_of(Path::new("/home/user")), Some(at.clone()), "the top of the tree it is in");
+        assert_eq!(far_of(Path::new("/home/user/project")), None, "a folder whose name merely starts the same");
+        assert_eq!(far_of(Path::new("D:/work/here")), None, "a folder of this PC");
+        there(Path::new("/home/user/proj"), None);
+        assert_eq!(far_of(Path::new("/home/user/proj")), None, "cleared, it answers for nothing");
+        assert_eq!(sh_word("plain-word.txt"), "plain-word.txt");
+        assert_eq!(sh_word("two words"), "'two words'");
+        assert_eq!(sh_word(""), "''");
+    }
 
     /// The settings a terminal is given, as a map, so a test can ask for one
     fn terminal(who: &As) -> std::collections::HashMap<String, String> {

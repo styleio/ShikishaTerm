@@ -1043,9 +1043,9 @@ mod drawn_away_tests {
         let ui = Ui {
             active: 1,
             surfaces: vec![
-                Surface::Git { key: "g1".into(), name: "git".into(), dir: Some(away.clone()),
+                Surface::Git { key: "g1".into(), name: "git".into(), dir: Some(away.clone()), at: None,
                     protect: Vec::new(), git: Default::default() },
-                Surface::Git { key: "g2".into(), name: "git".into(), dir: Some(here.clone()),
+                Surface::Git { key: "g2".into(), name: "git".into(), dir: Some(here.clone()), at: None,
                     protect: Vec::new(), git: Default::default() },
             ],
             folders: vec![(away.clone(), "server".into()), (here.clone(), "here".into())],
@@ -1113,6 +1113,7 @@ mod drawn_away_tests {
             key: dir.display().to_string(),
             name: "git".into(),
             dir: Some(dir.clone()),
+            at: None,
             protect: Vec::new(),
             git: Default::default(),
         };
@@ -1160,6 +1161,7 @@ mod drawn_away_tests {
             key: dir.display().to_string(),
             name: "git".into(),
             dir: Some(dir.clone()),
+            at: None,
             protect: Vec::new(),
             git: Default::default(),
         };
@@ -1366,6 +1368,11 @@ pub fn surfaces_written(
                 out.push((
                     Surface::Git {
                         dir: desk.cwd_of(ft),
+                        // A folder on another machine has its git there
+                        at: desk
+                            .folder_of(ft)
+                            .and_then(|f| f.host.as_ref())
+                            .and_then(|h| crate::elsewhere::Elsewhere::of(h).ok()),
                         protect: desk.folder_of(ft).map(|f| f.protect.clone()).unwrap_or_default(),
                         // Its own choice when it made one, else its folder's
                         // project's -- the one the column beside that folder uses
@@ -1721,6 +1728,9 @@ pub enum Surface {
         key: String,
         name: String,
         dir: Option<std::path::PathBuf>,
+        /// The machine the folder is on, when it is not this one: git is
+        /// run there, about the folder as that machine spells it
+        at: Option<crate::elsewhere::Elsewhere>,
         /// The branches its folder will not take a direct commit onto. The
         /// panel has no tab of its own to borrow the answer from, so it carries
         /// the folder's own

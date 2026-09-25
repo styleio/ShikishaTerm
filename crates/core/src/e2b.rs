@@ -113,6 +113,11 @@ pub struct SignIn {
     /// The name sent with the token. GitHub takes any, and expects this one
     pub login: String,
     pub token: String,
+    /// The name and address commits made on the machine carry, when the
+    /// account says them (see [`crate::microvm::identity_steps`] for what
+    /// the machine is told when it does not)
+    pub name: Option<String>,
+    pub email: Option<String>,
 }
 
 impl std::fmt::Debug for SignIn {

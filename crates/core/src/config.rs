@@ -457,7 +457,13 @@ impl GitUse {
             GitUse::Account { spec } => {
                 let token = spec.token(look).ok_or_else(|| spec.no_token_said())?;
                 let login = spec.login.as_deref().map(str::trim).filter(|l| !l.is_empty()).unwrap_or("x-access-token");
-                Ok(FarSignIn::Given(crate::e2b::SignIn { host: spec.host(), login: login.to_string(), token }))
+                Ok(FarSignIn::Given(crate::e2b::SignIn {
+                    host: spec.host(),
+                    login: login.to_string(),
+                    token,
+                    name: spec.user_name.clone(),
+                    email: spec.user_email.clone(),
+                }))
             }
         }
     }
@@ -507,6 +513,8 @@ impl FarSignIn {
                     host: GITHUB_HOST.into(),
                     login: login.clone().unwrap_or_else(|| "x-access-token".into()),
                     token,
+                    name: None,
+                    email: None,
                 })),
                 Err(crate::pr::PcSignIn::None) => Ok(None),
                 Err(crate::pr::PcSignIn::Many(names)) => {
@@ -515,7 +523,7 @@ impl FarSignIn {
                 Err(crate::pr::PcSignIn::Gone(l)) => Err(crate::i18n::tp("err.microvm.pc_gone", &[("login", &l)])),
             },
             FarSignIn::Gh { host, login } => match crate::pr::gh_token_of(host, login) {
-                Some(token) => Ok(Some(crate::e2b::SignIn { host: host.clone(), login: login.clone(), token })),
+                Some(token) => Ok(Some(crate::e2b::SignIn { host: host.clone(), login: login.clone(), token, name: None, email: None })),
                 None => Err(crate::i18n::tp("err.git.gh_gone", &[("login", login), ("host", host)])),
             },
         }

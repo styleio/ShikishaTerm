@@ -556,6 +556,9 @@ fn git_place(
     if place.dir.as_os_str().is_empty() {
         return Err(mlua::Error::runtime(crate::i18n::t("err.git.no_tab")));
     }
+    // Where the folder is, said to git before git is asked about it: a
+    // folder on another machine has its git there (see `git::there`)
+    crate::git::there(&place.dir, place.remote.as_ref());
     let root = crate::git::root(&place.dir).map_err(|e| mlua::Error::runtime(e.to_string()))?;
     Ok((root, place.protect.clone(), place.git.clone()))
 }

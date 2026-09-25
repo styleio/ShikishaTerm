@@ -26,13 +26,14 @@ pub fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
 /// its own -- a page, a failed tab, the issue list.
 pub fn panel_place(s: &Surface) -> Option<hooks::TabPlace> {
     match s {
-        Surface::Git { key, dir: Some(d), protect, git, .. } => Some(hooks::TabPlace {
+        Surface::Git { key, dir: Some(d), at, protect, git, .. } => Some(hooks::TabPlace {
             key: hooks::TabKey { id: Some(key.clone()) },
             dir: d.clone(),
-            // A git panel reports on a folder on this machine, and is not a
-            // place files can be sent to
-            remote: None,
-            remote_dir: String::new(),
+            // A git panel reports on its folder where the folder is: on
+            // this machine, or on the one the folder lives on -- and then
+            // the folder is the place there, as that machine spells it
+            remote: at.clone(),
+            remote_dir: at.as_ref().map(|_| d.display().to_string()).unwrap_or_default(),
             protect: protect.clone(),
             git: git.clone(),
         }),

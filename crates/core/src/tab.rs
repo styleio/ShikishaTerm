@@ -3056,6 +3056,13 @@ impl Tab {
         self.opts.cloud.as_ref()
     }
 
+    /// The folder on that machine this tab stands in, when its folder is
+    /// there: what the git column beside it reports on, and what a file
+    /// command's path is inside of
+    pub fn remote_cwd(&self) -> Option<&str> {
+        self.opts.remote_cwd.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
     /// Why this tab is not running what it was asked to run, when it is not.
     pub fn held(&self) -> Option<&Held> {
         self.opts.held.as_ref()

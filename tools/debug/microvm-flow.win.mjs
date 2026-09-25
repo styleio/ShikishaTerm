@@ -338,6 +338,25 @@ try {
   const has = await inside('claude --version 2>&1 | head -1; php --version 2>&1 | head -1');
   check(/Claude Code/.test(has) && /PHP \d/.test(has), 'the worktree has what its checkout was prepared with: ' + has.replace(/\n/g, ' | '));
 
+  console.log('4c. the git panel reports on the worktree, with git run over there');
+  // Asked the way the column beside the tab asks -- the tab named, the act,
+  // its arguments -- and answered from the machine's own git in that folder
+  const ai = await aiTab();
+  const gitSend = (act, args) => board.run(`send({kind:"git", panel: ${JSON.stringify(ai.id)}, act: ${JSON.stringify(act)}, args: ${JSON.stringify(args || {})}}); true`);
+  await gitSend('branch');
+  await until(() => board.run('JSON.stringify(G.branch)').then((b) => (JSON.parse(b || 'null') || {}).name === BRANCH), 'the panel to say the branch, read over there', 60000);
+  check(true, 'the panel reports on the worktree\'s machine: ' + await board.run('JSON.stringify(G.branch)'));
+  await inside(`cd ${wt.cwd} && echo "from the panel" > panel.txt`);
+  await gitSend('status');
+  await until(() => board.run('(G.rows || []).some(r => r.path === "panel.txt")'), 'the new file in the panel\'s list', 60000);
+  await gitSend('stage', { paths: ['panel.txt'] });
+  await gitSend('status');
+  await until(() => board.run('(G.rows || []).some(r => r.path === "panel.txt" && r.staged)'), 'staged from the panel', 60000);
+  await gitSend('commit', { text: 'panel: committed over there' });
+  await until(async () => (await inside(`git -C ${wt.cwd} log -1 --format=%s`)) === 'panel: committed over there', 'the commit, made on the machine', 60000);
+  const author = await inside(`git -C ${wt.cwd} log -1 --format='%an <%ae>'`);
+  check(/@users\.noreply\.github\.com>$/.test(author) && !/x-access-token/.test(author), 'by the account, as GitHub knows it: ' + author);
+
   console.log('4b. what it serves answers from anywhere, at the address the menu lists');
   await inside(`cd ${wt.cwd} && printf '<?php echo "served-from-the-" . "worktree";' > index.php && (nohup php -S 0.0.0.0:8000 >/dev/null 2>&1 &) ; sleep 1; echo ok`);
   const g = `(S.groups || []).find(x => x.folder === ${JSON.stringify(wt.cwd)})`;

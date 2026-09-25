@@ -106,6 +106,17 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **The git panel works on a folder on a MicroVM or a server.** Beside a tab
+  whose folder is on another machine, the panel -- status, diff, staging,
+  commit, history, branches, fetch, pull, push, catching up, untangling a
+  merge, the AI's commit message -- runs its git on that machine, in that
+  folder, and reads as it does here; the automation's `git_*` commands and the
+  pull request pages do the same. Of the account, only the commit identity
+  travels: the machine signs in its own way (a MicroVM at its proxy), and a
+  token never leaves this PC. A new MicroVM is also told who its commits are
+  by -- the account's own name and address, else the login and the no-reply
+  address GitHub keeps for it, asked of GitHub from the machine -- so neither
+  the panel's commit nor the AI's is refused for want of an author.
 - **The worktree dialog says whether the checkout's AI is signed in.** A
   worktree on a MicroVM is a copy of the checkout's machine, sign-in and all,
   so one copied before the sign-in has none. On a MicroVM the dialog asks the

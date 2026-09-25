@@ -785,11 +785,47 @@ pub fn places_by_surface(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabPl
         .collect()
 }
 /// Where one tab is working, and what its folder guards.
+/// One file of a working tree, as text, read where the tree is: on this PC,
+/// or on the machine `at` names, where `dir` is the folder as that machine
+/// spells it
+fn tree_file_read(dir: &std::path::Path, rel: &str, at: Option<&crate::elsewhere::Elsewhere>) -> anyhow::Result<String> {
+    match at {
+        None => Ok(std::fs::read_to_string(dir.join(rel))?),
+        Some(at) => {
+            let path = format!("{}/{rel}", dir.to_string_lossy().replace('\\', "/").trim_end_matches('/'));
+            match crate::elsewhere::files(at, crate::ssh::FileJob::Read { path }, TREE_FILE_WAIT_MS)? {
+                crate::ssh::FileAnswer::Bytes(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
+                _ => anyhow::bail!(crate::i18n::t("err.files.binary")),
+            }
+        }
+    }
+}
+/// The same file written back, where the tree is. Over there it goes as a
+/// file of its own sent up, since that is the one way a file gets there
+fn tree_file_write(dir: &std::path::Path, rel: &str, at: Option<&crate::elsewhere::Elsewhere>, text: &str) -> anyhow::Result<()> {
+    match at {
+        None => Ok(std::fs::write(dir.join(rel), text)?),
+        Some(at) => {
+            let from = std::env::temp_dir().join(format!("shikisha-resolve-{}-{}", std::process::id(), crate::random_hex(6)));
+            std::fs::write(&from, text)?;
+            let to = format!("{}/{rel}", dir.to_string_lossy().replace('\\', "/").trim_end_matches('/'));
+            let sent = crate::elsewhere::files(at, crate::ssh::FileJob::Put { from: from.clone(), to, overwrite: true }, TREE_FILE_WAIT_MS);
+            let _ = std::fs::remove_file(&from);
+            sent.map(|_| ())
+        }
+    }
+}
+/// How long a file of a tree on another machine may take to come or go
+const TREE_FILE_WAIT_MS: u64 = 60_000;
 fn tab_place(t: &Tab) -> hooks::TabPlace {
-    let dir = match t.cwd().map(std::path::Path::to_path_buf) {
-        Some(p) if p.is_absolute() => p,
-        Some(p) => std::env::current_dir().map(|c| c.join(&p)).unwrap_or(p),
-        None => std::path::PathBuf::new(),
+    // A folder on another machine is spelled the way that machine spells
+    // it, and stays so: `/home/user/proj` is not a relative path of this PC
+    // to put under the current folder, it is where the tab is over there
+    let dir = match (t.remote_cwd(), t.cwd().map(std::path::Path::to_path_buf)) {
+        (Some(far), _) => std::path::PathBuf::from(far),
+        (None, Some(p)) if p.is_absolute() => p,
+        (None, Some(p)) => std::env::current_dir().map(|c| c.join(&p)).unwrap_or(p),
+        (None, None) => std::path::PathBuf::new(),
     };
     hooks::TabPlace {
         key: t.key(),
@@ -799,12 +835,12 @@ fn tab_place(t: &Tab) -> hooks::TabPlace {
             (None, Some(host)) => Some(crate::elsewhere::Elsewhere::Cloud(host.clone())),
             (None, None) => None,
         },
-        // A terminal tab was given an address, not a folder over there -- a
-        // shell starts wherever signing in puts it. So there is nothing on that
-        // end for a path to be outside of, and the fence that does hold is this
-        // tab's own working folder. A file panel is the one that was given both
-        // (`desk::panel_place`)
-        remote_dir: String::new(),
+        // The folder over there, for a tab whose folder is there. A terminal
+        // tab given only an address has none: a shell starts wherever
+        // signing in puts it, so there is nothing on that end for a path to
+        // be outside of, and the fence that does hold is this tab's own
+        // working folder. A file panel is the one given both (`desk::panel_place`)
+        remote_dir: t.remote_cwd().unwrap_or_default().to_string(),
         protect: t.protect().to_vec(),
         git: t.git_use.clone(),
     }
@@ -5091,6 +5127,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     (None, ..) | (_, None, _) => Err(i18n::t("err.git.no_tab")),
                     (.., None) => Err(i18n::t("msg.quick.no_ai")),
                     (Some(place), Some(desk), Some(choice)) => {
+                        crate::git::there(&place.dir, place.remote.as_ref());
                         let branch = crate::git::branch(&place.dir).ok().flatten().unwrap_or_default();
                         let base = crate::git::recorded_base(&place.dir, &branch).unwrap_or_default();
                         let said = resolve_in_tab(desk, &place.dir, &base, choice, &tabs, &mut pending_quicks, &mut reveal);
@@ -5155,6 +5192,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     (true, Some(place), Some(Ok(who))) => {
                         let dir = place.dir;
+                        // Where the folder is, said to git on this thread for
+                        // what is asked here, and again on the thread that does
+                        // the work (see `git::there`)
+                        let at = place.remote;
+                        crate::git::there(&dir, at.as_ref());
                         // Bringing the latest in needs a base: the one written down
                         // for the branch, or the one just chosen -- written down now,
                         // so it is not asked for again
@@ -5192,6 +5234,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .filter(|s| !s.is_empty());
                         let folder = dir.display().to_string();
                         std::thread::spawn(move || {
+                            crate::git::there(&dir, at.as_ref());
                             let done = match act2.as_str() {
                                 "fetch" => crate::git::fetch(&dir, &who),
                                 "pull" => crate::git::pull(&dir, &who),
@@ -5207,15 +5250,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     let mut done: Vec<String> = Vec::new();
                                     let mut failed: Vec<String> = Vec::new();
                                     for f in &files {
-                                        let at = dir.join(f);
-                                        let said = std::fs::read_to_string(&at)
-                                            .map_err(anyhow::Error::from)
+                                        // The file where the tree is: read
+                                        // and written back over there when
+                                        // the folder is on another machine
+                                        let said = tree_file_read(&dir, f, at.as_ref())
                                             .and_then(|body| {
                                                 crate::webui::resolve_conflict(f, &body, ai.as_deref())
                                             })
-                                            .and_then(|text| {
-                                                std::fs::write(&at, text).map_err(Into::into)
-                                            });
+                                            .and_then(|text| tree_file_write(&dir, f, at.as_ref(), &text));
                                         match said {
                                             Ok(()) => done.push(f.clone()),
                                             Err(e) => failed.push(format!("{f}: {e}")),

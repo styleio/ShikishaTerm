@@ -49,6 +49,10 @@ impl Checkout {
             let made = (|| -> Result<(String, String), String> {
                 let key = crate::e2b::key().ok_or_else(|| crate::i18n::t("err.e2b.no_key"))?;
                 let sign_in = sign_in.resolve()?;
+                // Who commits made on the machine are by, told to git there
+                // once: the AI in the terminal and the git panel both commit
+                // there, and a machine that has never been told refuses both
+                let identity = sign_in.as_ref().map(identity_steps).unwrap_or_default();
                 let asking = crate::e2b::Asking {
                     template: host.template_or_default().to_string(),
                     minutes: host.minutes_or_default(),
@@ -66,6 +70,7 @@ impl Checkout {
                 // The clone, then what the machine is prepared with, each in
                 // turn; the first that fails ends it, and the machine goes
                 let mut steps = vec![(PHASE_CLONING, clone)];
+                steps.extend(identity.into_iter().map(|a| (PHASE_CLONING, a)));
                 match preparing.commands(&at) {
                     Ok(c) => steps.extend(c.into_iter().map(|a| (PHASE_PREPARING, a))),
                     Err(e) => {
@@ -214,6 +219,56 @@ impl Preparing {
 
 /// What "no AI" is written as
 pub const NO_AI: &str = "none";
+
+/// GitHub asked, from the machine, who the sign-in is: the login and the
+/// no-reply address GitHub keeps for it, told to git there where nothing is
+/// set yet. The machine's requests to GitHub carry the sign-in, so this is
+/// answered without a token on the machine. Nothing to say, nothing set:
+/// a clone must not fail over an author
+const GITHUB_IDENTITY: &str = r#"u=$(curl -sf https://api.github.com/user) || exit 0
+n=$(printf '%s\n' "$u" | sed -n 's/^ *"login": *"\([^"]*\)".*/\1/p' | head -n1)
+i=$(printf '%s\n' "$u" | sed -n 's/^ *"id": *\([0-9]*\).*/\1/p' | head -n1)
+[ -n "$n" ] || exit 0
+git config --global user.name >/dev/null 2>&1 || git config --global user.name "$n"
+git config --global user.email >/dev/null 2>&1 || git config --global user.email "${i}+${n}@users.noreply.github.com"
+"#;
+
+/// What git on a new machine is told about who commits made there are by.
+///
+/// A commit needs an author, and a machine nobody has told refuses every
+/// commit -- the AI's in the terminal and the panel's alike. The account's
+/// own name and address, where it says them. What it leaves unsaid is, on
+/// GitHub, asked of GitHub from the machine ([`GITHUB_IDENTITY`]): the
+/// login and the no-reply address GitHub keeps for it, never one made up
+/// here. On another server, the login and that server's no-reply form
+pub fn identity_steps(sign_in: &crate::e2b::SignIn) -> Vec<Vec<String>> {
+    let set = |key: &str, value: &str| {
+        vec!["git".to_string(), "config".into(), "--global".into(), key.into(), value.to_string()]
+    };
+    let given = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let (name, email) = (given(&sign_in.name), given(&sign_in.email));
+    let mut steps = Vec::new();
+    if let Some(n) = &name {
+        steps.push(set("user.name", n));
+    }
+    if let Some(e) = &email {
+        steps.push(set("user.email", e));
+    }
+    if name.is_some() && email.is_some() {
+        return steps;
+    }
+    if sign_in.host.eq_ignore_ascii_case(crate::config::GITHUB_HOST) {
+        steps.push(vec!["sh".into(), "-c".into(), GITHUB_IDENTITY.into()]);
+        return steps;
+    }
+    if name.is_none() {
+        steps.push(set("user.name", &sign_in.login));
+    }
+    if email.is_none() {
+        steps.push(set("user.email", &format!("{}@users.noreply.{}", sign_in.login, sign_in.host)));
+    }
+    steps
+}
 
 /// What a folder on a MicroVM opens with.
 ///
@@ -701,6 +756,42 @@ pub fn ai_sign_in_note(
 mod tests {
     use super::*;
 
+    /// A new machine is told who commits there are by: the account's own
+    /// name and address where it says them, else asked of GitHub from the
+    /// machine, else the login and the server's no-reply form. Never a
+    /// token, and never a clone that fails over an author
+    #[test]
+    fn a_new_machine_is_told_who_its_commits_are_by() {
+        let s = crate::e2b::SignIn {
+            host: "github.com".into(),
+            login: "x-access-token".into(),
+            token: "github_pat_SECRET".into(),
+            name: None,
+            email: None,
+        };
+        let steps = identity_steps(&s);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert_eq!(&steps[0][..2], &["sh".to_string(), "-c".into()]);
+        assert!(steps[0][2].contains("api.github.com/user") && steps[0][2].contains("users.noreply.github.com"));
+        assert!(!steps[0][2].contains("SECRET") && !steps[0][2].contains("x-access-token"));
+        let named = crate::e2b::SignIn { name: Some("Ada".into()), email: Some("ada@example.test".into()), ..s.clone() };
+        assert_eq!(
+            identity_steps(&named),
+            vec![
+                vec!["git", "config", "--global", "user.name", "Ada"].into_iter().map(String::from).collect::<Vec<_>>(),
+                vec!["git", "config", "--global", "user.email", "ada@example.test"].into_iter().map(String::from).collect::<Vec<_>>(),
+            ]
+        );
+        let half = crate::e2b::SignIn { name: Some("Ada".into()), ..s.clone() };
+        let steps = identity_steps(&half);
+        assert_eq!(steps.len(), 2, "the name given, the address asked of GitHub: {steps:?}");
+        assert_eq!(steps[1][0], "sh");
+        let elsewhere = crate::e2b::SignIn { host: "gitlab.example.com".into(), login: "ada".into(), ..s.clone() };
+        let steps = identity_steps(&elsewhere);
+        assert_eq!(steps[0][4], "ada");
+        assert_eq!(steps[1][4], "ada@users.noreply.gitlab.example.com");
+    }
+
     /// Every AI a MicroVM can be given says how to see whether it is signed
     /// in there, so the dialog is never silent about one of them. A line is
     /// one `sh` test or several joined by `||`, and never quotes the way a
@@ -839,7 +930,7 @@ mod tests {
     /// or a panic says whose it is and never what it is
     #[test]
     fn a_sign_in_is_put_on_requests_and_never_printed() {
-        let s = crate::e2b::SignIn { host: "github.com".into(), login: "x-access-token".into(), token: "github_pat_SECRET".into() };
+        let s = crate::e2b::SignIn { host: "github.com".into(), login: "x-access-token".into(), token: "github_pat_SECRET".into(), name: None, email: None };
         let rules = crate::e2b::network_of(Some(&s));
         let git = rules["rules"]["github.com"][0]["transform"]["headers"]["Authorization"].as_str().unwrap();
         use base64::Engine as _;
@@ -864,6 +955,8 @@ mod tests {
             host: "github.com".into(),
             login: "x-access-token".into(),
             token: "ghp_0123456789".into(),
+            name: None,
+            email: None,
         }));
         let note = sign_in_note("home", &given).expect("a token in hand is said at once");
         assert_eq!((note.account.as_str(), note.kind.as_str()), ("home", "classic"));
