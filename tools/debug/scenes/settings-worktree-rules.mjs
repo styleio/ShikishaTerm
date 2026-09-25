@@ -42,6 +42,9 @@ export default {
       + '  {source: ".gitignore", pattern: "/target", how: "link", replace: [], reason: "Build output, rebuilt rather than edited."},'
       + '  {source: ".gitignore", pattern: "/.private/", how: "copy", replace: [], reason: "Local notes the project reads."}]});'
       + ' await ' + wait(600) + '; })()' },
+    // The projects listed from the banner (the one floating list, floatMenu)
+    pickers: { query: onRules, run: '(async () => { await ' + settled + ';'
+      + ' document.querySelector(".projbanner").click(); })()' },
     // The program-wide part: where worktrees go, and what tells a project served where it stands
     global: '(async () => { sel = {desk:0, tab:null, global:true, section:"worktrees"}; render(); })()',
   },

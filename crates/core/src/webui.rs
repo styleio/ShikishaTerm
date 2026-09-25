@@ -5828,29 +5828,55 @@ function folderMark(colour) {
   if (colour) s.style.color = colour;
   return s;
 }
+// A menu that floats (.fmenu, style guide 5): a few things to choose from,
+// one row each. Under the element it was opened from, or at a point; gone
+// on a choice, on a press outside it, or on Esc. The one way this page
+// floats a list -- the desks, the projects, a quick action's own menu.
+//
+//   at     an element to open under, or {x, y}
+//   items  [{kids, go, on, cls}]: what the row shows, what choosing it does,
+//          whether it is the one in use, and a class of its own ("add", "bad")
+//   opts   {cls: a class for the menu, focus: put the keyboard on the first row}
+function floatMenu(at, items, opts = {}) {
+  document.querySelectorAll(".fmenu").forEach(m => m.remove());
+  const menu = el("div", {class:"fmenu" + (opts.cls ? " " + opts.cls : ""), role:"menu"});
+  const close = () => {
+    menu.remove();
+    removeEventListener("mousedown", outside, true);
+    removeEventListener("keydown", esc, true);
+  };
+  const outside = e => { if (!menu.contains(e.target)) close(); };
+  const esc = e => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  for (const it of items) {
+    menu.append(el("button", {class:"fmenuitem" + (it.on ? " on" : "") + (it.cls ? " " + it.cls : ""), role:"menuitem",
+      onclick:() => { close(); it.go(); }}, ...[].concat(it.kids)));
+  }
+  document.body.append(menu);
+  if (at instanceof Element) {
+    // Under the row it opened from, and never off the left of the screen
+    const r = at.getBoundingClientRect();
+    menu.style.top = Math.round(r.bottom + 4) + "px";
+    menu.style.left = Math.max(8, Math.round(r.left)) + "px";
+  } else {
+    // At the point, kept whole on the screen
+    const r = menu.getBoundingClientRect();
+    menu.style.left = Math.max(8, Math.min(at.x, innerWidth - r.width - 8)) + "px";
+    menu.style.top = Math.max(8, Math.min(at.y, innerHeight - r.height - 8)) + "px";
+  }
+  setTimeout(() => { addEventListener("mousedown", outside, true); addEventListener("keydown", esc, true); }, 0);
+  const first = menu.querySelector("button");
+  if (opts.focus && first) first.focus();
+}
+
 // Which desk the sidebar is showing. A menu rather than a list, because
 // the list under it belongs to one of them at a time
 function pickDesk(anchor) {
-  const menu = el("div", {class:"fmenu"});
-  desks.forEach((w, i) => {
-    menu.append(el("button", {class:"fmenuitem" + (i === sel.desk ? " on" : ""),
-      onclick:() => { shut(); toTree(i); render(); }},
-      el("span", {class:"wsbadge"}, (w.name || "?").trim().slice(0, 1).toUpperCase()),
-      el("span", {class:"nm"}, w.name || T["settings.tab.unnamed"])));
-  });
-  menu.append(el("button", {class:"fmenuitem add",
-    onclick:() => { shut(); addWs(); }}, T["settings.desk.add"]));
-  // Under the row it opened from, and never off the left of the screen
-  const at = anchor.getBoundingClientRect();
-  menu.style.top = Math.round(at.bottom + 4) + "px";
-  menu.style.left = Math.max(8, Math.round(at.left)) + "px";
-  const away = e => { if (!menu.contains(e.target)) shut(); };
-  function shut() {
-    menu.remove();
-    document.removeEventListener("mousedown", away, true);
-  }
-  document.body.append(menu);
-  setTimeout(() => document.addEventListener("mousedown", away, true), 0);
+  floatMenu(anchor, desks.map((w, i) => ({
+    on: i === sel.desk,
+    go: () => { toTree(i); render(); },
+    kids: [el("span", {class:"wsbadge"}, (w.name || "?").trim().slice(0, 1).toUpperCase()),
+           el("span", {class:"nm"}, w.name || T["settings.tab.unnamed"])],
+  })).concat([{cls: "add", go: () => addWs(), kids: T["settings.desk.add"]}]));
 }
 
 function renderNav() {
@@ -5964,30 +5990,15 @@ function projectSectionOf(sec) {
 
 // Choosing another project: the same floating list the desk's banner opens
 function pickProject(anchor, desk, projects, loose) {
-  const menu = el("div", {class:"fmenu"});
-  for (const p of projects) {
-    menu.append(el("button", {class:"fmenuitem" + (!sel.global && sel.proj === p.key ? " on" : ""),
-      onclick:() => { shut(); lastProject = {p}; goProjectSection(p.key, "rules"); }},
-      projectMark(p.family ? (current.folder_colors || {})[p.family] : null),
-      el("span", {class:"nm"}, p.name)));
-  }
-  for (const gi of loose) {
-    const g = desk.folders[gi];
-    menu.append(el("button", {class:"fmenuitem" + (!sel.global && sel.grp === gi ? " on" : ""),
-      onclick:() => { shut(); lastProject = {gi}; sel = {desk:sel.desk, grp:gi, tab:null, global:false}; render(); showSelected(); }},
-      folderMark(null),
-      el("span", {class:"nm"}, folderLabel(g, gi))));
-  }
-  const at = anchor.getBoundingClientRect();
-  menu.style.top = Math.round(at.bottom + 4) + "px";
-  menu.style.left = Math.max(8, Math.round(at.left)) + "px";
-  const away = e => { if (!menu.contains(e.target)) shut(); };
-  function shut() {
-    menu.remove();
-    document.removeEventListener("mousedown", away, true);
-  }
-  document.body.append(menu);
-  setTimeout(() => document.addEventListener("mousedown", away, true), 0);
+  floatMenu(anchor, projects.map(p => ({
+    on: !sel.global && sel.proj === p.key,
+    go: () => { lastProject = {p}; goProjectSection(p.key, "rules"); },
+    kids: [projectMark(p.family ? (current.folder_colors || {})[p.family] : null), el("span", {class:"nm"}, p.name)],
+  })).concat(loose.map(gi => ({
+    on: !sel.global && sel.grp === gi,
+    go: () => { lastProject = {gi}; sel = {desk:sel.desk, grp:gi, tab:null, global:false}; render(); showSelected(); },
+    kids: [folderMark(null), el("span", {class:"nm"}, folderLabel(desk.folders[gi], gi))],
+  }))));
 }
 
 // Which repository each folder is in, as the app last said: path -> {family,
@@ -7306,24 +7317,10 @@ async function quickDelete(item, draw) {
   draw();
 }
 
-// A small menu at the pointer. The one kind of floating list this page has
+// A small menu at the pointer
 function quickMenu(x, y, rows) {
-  document.querySelectorAll(".fmenu.qmenu").forEach(m => m.remove());
-  const menu = el("div", {class:"fmenu qmenu", role:"menu"});
-  const close = () => { menu.remove(); removeEventListener("mousedown", outside, true); removeEventListener("keydown", esc, true); };
-  const outside = e => { if (!menu.contains(e.target)) close(); };
-  const esc = e => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
-  for (const [label, act, bad] of rows) {
-    menu.append(el("button", {class:"fmenuitem" + (bad ? " bad" : ""), role:"menuitem",
-      onclick:() => { close(); act(); }}, label));
-  }
-  document.body.append(menu);
-  const r = menu.getBoundingClientRect();
-  menu.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + "px";
-  menu.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + "px";
-  setTimeout(() => { addEventListener("mousedown", outside, true); addEventListener("keydown", esc, true); }, 0);
-  const first = menu.querySelector("button");
-  if (first) first.focus();
+  floatMenu({x, y}, rows.map(([label, act, bad]) => ({kids: label, go: act, cls: bad ? "bad" : ""})),
+    {cls: "qmenu", focus: true});
 }
 
 // The picked place: what to make there, or the button that is there
@@ -16843,6 +16840,41 @@ mod tests {
             "what a tab runs is not asked with the one card on its page and in the dialog"
         );
         assert_eq!(PAGE.matches("launchCard(t").count(), 3, "what a tab runs is asked in more or fewer places than two");
+    }
+
+    /// The style guide's list of where each part is in the code names only
+    /// functions that are there, on the page it says.
+    ///
+    /// The list is what stops a second copy of a part being written: somebody
+    /// about to write one looks there first. A name in it that no longer
+    /// exists sends them looking for nothing -- and then writing their own
+    #[test]
+    fn every_code_entry_in_the_style_guide_exists() {
+        let board = crate::shell::page();
+        for (lang, guide) in [
+            ("ja", include_str!("../../../docs/design/STYLEGUIDE.ja.md")),
+            ("en", include_str!("../../../docs/design/STYLEGUIDE.md")),
+        ] {
+            let guide = guide.replace("\r\n", "\n");
+            let from = guide.find("<!-- code-entries -->").unwrap_or_else(|| panic!("{lang}: the list is gone"));
+            let to = guide.find("<!-- /code-entries -->").unwrap_or_else(|| panic!("{lang}: the list does not end"));
+            let rows: Vec<&str> = guide[from..to].lines().filter(|l| l.starts_with("| ") && !l.starts_with("|---")).skip(1).collect();
+            assert!(rows.len() >= 10, "{lang}: only {} rows were read", rows.len());
+            let named = regex::Regex::new(r"`([A-Za-z_][A-Za-z0-9_]*)\(").unwrap();
+            for row in rows {
+                let cells: Vec<&str> = row.split(" | ").collect();
+                let page = cells.last().copied().unwrap_or_default();
+                let names: Vec<&str> = named.captures_iter(row).map(|c| c.get(1).unwrap().as_str()).collect();
+                assert!(!names.is_empty(), "{lang}: a row names no function: {row}");
+                for name in names {
+                    let defined = format!("function {name}(");
+                    let found = (page.contains("webui.rs") && PAGE.contains(&defined))
+                        || (page.contains("shell.rs") && board.contains(&defined))
+                        || (page.contains("toast.rs") && crate::toast::JS.contains(&defined));
+                    assert!(found, "{lang}: `{name}` is not a function on the page the style guide says ({page})");
+                }
+            }
+        }
     }
 
     /// The board's + asks only what the new tab runs, in a dialog, and a save

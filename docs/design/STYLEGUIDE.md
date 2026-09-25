@@ -192,6 +192,7 @@ Use the part that exists. Adding a new kind of part is a change to this page.
 | **Dialog** (`.vbox`) | One decision | title · one sentence · fields · the exact thing that will run (mono well) · one primary button at the right, ✕ at the top |
 | **Dialog** (settings, `.framed`) | One record, edited | **header** (title · ✕) · **body** (fields) · **footer** (destructive at the left, then the reason it cannot be saved, then Cancel and the primary at the right), each divided by a `--line` |
 | **Dialog** (choosing, `.picker`) | One place out of many | The same header, body and footer as `.framed`, with the body in **two columns** (left 200px = places to start from, right = breadcrumb · list). Width `min(760px,100%)`, body at a fixed height so the window does not grow and shrink with what is listed. A filter field under the header. One press on a row **selects** it; `›` or a double press **goes in** (on a phone `›` is the only way in). Footer: what is selected · an **add** button at the left · Cancel and the primary at the right. Line-drawn marks, no emoji. At 640px and below the left column becomes a row across the top |
+| **A question stood over the board** (settings, `#floatbox`) | Ask one thing in the middle of work on the board (adding a tab, a new project's worktree rules) | The settings page itself becomes the dialog over the board; the settings' header and column stay out of sight. Header (title · the one fact · ✕) · body · footer ("More settings" at the left, Cancel and the primary at the right). Sized as §5.2's dialog or sheet. Esc and ✕ close it |
 | **Field** | One thing to fill in | its name above it (12px `--text`), the control, the line that explains it under (11.5px `--faint`); `--s2` between them and `--s5` to the next field |
 | **Boxed list** (`.rows`) | Several of the same thing | one border round the whole, `--line` between rows, `--panel2` on hover, a `›` at the right when the row opens something |
 | **Sidebar** (settings) | Which setting is being edited | One column, the larger world first: the **General** heading and its entries · the **Desk** heading (initial plate · name · `▾` listing the desks; choosing one switches what is under it) and the desk's entries · the **Projects** heading with one row per project (colour square · name · path under it; a folder in no repository wears a line-art folder). Each row opens one page (a name and one line under it). No place to enter and leave. **No button adds anything** (projects, worktrees and tabs are added on the board). Worktrees and tabs are not listed: they open from the board's right-click (Project settings / Tab settings / Edit…) or from a row on the project's page. While such a page is open its project's row stays selected. A project, folder or tab page starts with breadcrumbs (desk › project › folder › tab; 12.5px `--dim`, the levels above pressable, the page itself `--text`/600 and not). A right-click menu opens where the pointer is |
@@ -226,6 +227,36 @@ Three rules from the rows above that are most often broken:
   written differently (`example.com` meaning one thing and `http://example.com`
   another), write both out in full instead. What is in the box is what is
   compared.
+
+### Where each part is in the code
+
+**Look here before writing a part.** The table above is how a part looks; this
+is the function that makes it. A part listed here is made by calling this
+function. Do not write a lookalike with a function of its own -- the moment a
+second one exists there are two places to fix. A part that is not here is
+written as a shared function, and given a row here in the same commit.
+
+The function names are read by a test in `crates/core/src/webui.rs`
+(`every_code_entry_in_the_style_guide_exists`), which fails when one of them is
+not on its page. A name changed is a name changed here too.
+
+<!-- code-entries -->
+| Part | Function to call | Page |
+|---|---|---|
+| Dialog (settings, `.framed`) | `openModal(...kids)` (give the returned frame `.framed`) | settings (`webui.rs`) |
+| Confirming something that cannot be undone | `confirmAction(message, action)` | settings (`webui.rs`) |
+| A question stood over the board (`#floatbox`) | `frameOpen(spec)`. Drawn again with `frameDraw()`, closed with `frameLeave()`, "More settings" is `frameMore()`, Esc and ✕ are `frameCancel()` | settings (`webui.rs`) |
+| Field | `sfield(label, control, hint)`. A field tied to a setting: `field(obj, key, ph)`, `check(obj, key, label)`, `checkDefaultOn(obj, key, label)`, `choose(obj, key, opts)`, `pathField(obj, key, ph, kind, title)` | settings (`webui.rs`) |
+| A name and what it sets, on one line | `row(label, ...kids)` | settings (`webui.rs`) |
+| Card | `card(title, ...kids)` | settings (`webui.rs`) |
+| List (`.fmenu`) | On the settings page `floatMenu(at, items, opts)`; on the board `openList(anchor, rows, tall, point)` (two pages' JavaScript, which cannot be shared) | settings (`webui.rs`), board (`shell.rs`) |
+| Breadcrumb | `pageCrumbs(...parts)` | settings (`webui.rs`) |
+| A question about something that cannot be undone (board) | `askQuestion({title, say, what, label, go})` | board (`shell.rs`) |
+| Dialog (choosing, `.picker`) | `openBrowse(at, handBack)` | board (`shell.rs`) |
+| Settings stood over the board | `openSettings(section, ret, folder)` (window and phone alike; on a phone `openCfgLayer(params, size)` makes the frame inside it) | board (`shell.rs`) |
+| Line-drawn mark | `pickIcon(name)` | board (`shell.rs`) |
+| Toast | `toast(text, warn)` (`toast.rs` puts it into both pages) | both (`toast.rs`) |
+<!-- /code-entries -->
 
 ### 5.1 A field
 
