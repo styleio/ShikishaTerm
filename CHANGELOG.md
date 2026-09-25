@@ -101,7 +101,11 @@ once it reaches its first tagged release.
   a worktree here opens on what its original runs. A machine given no AI opens
   on its shell, as before. (The AI's proposal for the machine setup ends in
   "Put in the field", not a second "Save": it fills the field, and "Save and
-  run on the MicroVM" is the next press.)
+  run on the MicroVM" is the next press. And the rules page of a project just
+  cloned onto a MicroVM has one way on, "Set up the MicroVM and continue",
+  which puts what is written on the checkout's machine and goes on to the
+  first worktree -- not that beside a "Save and run on the MicroVM" that did
+  half of it.)
 - **"Clone onto a MicroVM" asks which git account the machine signs in as**,
   on screen: the app's accounts, the ones for the address's owner first and
   the first of them chosen, and this PC's git last -- two accounts can be for

@@ -11912,8 +11912,10 @@ function microvmNow(p) {
   const want = preparedSaid(e.machine_ai, e.machine_setup);
   return [
     el("span", {}, fill(T["settings.microvm.now"], {ai: ai ? ai.name : T["settings.microvm.ai.none"], n: lines})),
+    // A machine without it names the press that gives it: on the page of a
+    // project just added that press is the way on, and there is no other
     ...microvmHomes(p).map(h => el("div", {class: h.prepared === want ? "hint" : "hint caution"},
-      fill(T[h.prepared === want ? "settings.microvm.done" : "settings.microvm.not_done"], {host: h.host}))),
+      fill(T[h.prepared === want ? "settings.microvm.done" : firstFlow ? "settings.microvm.not_done_first" : "settings.microvm.not_done"], {host: h.host}))),
   ];
 }
 // The parts: the AI, the machine setup with the AI to write it, and the
@@ -11950,7 +11952,11 @@ function microvmParts(desk, p) {
     el("div", {class:"hint"}, T["settings.microvm.ai.hint"]),
     row(T["settings.microvm.setup"], el("div", {style:"flex:1;min-width:0"}, lines), ask),
     el("div", {class:"hint"}, T["settings.microvm.setup.hint"]),
-    el("div", {class:"row"}, run),
+    // One press, not two. On the page of a project just added, the way on
+    // ("Set up the MicroVM and continue") puts this on the machine itself;
+    // a second button that did half of that beside it was two presses with
+    // no way to tell which to press
+    firstFlow ? el("div", {class:"hint"}, T["settings.microvm.first_hint"]) : el("div", {class:"row"}, run),
   ];
 }
 function microvmCard(desk, p) {
@@ -12811,14 +12817,23 @@ function drawPlace(box, desk, p, j) {
 // worktree. Keeping what is on screen is one press -- nothing needs changing
 // for most projects -- and a change made here is saved on the same press
 let firstFlow = null;
+// What the way on will do, said on the button: save first once something
+// has changed, and put what is written on the checkout's MicroVM when that
+// machine does not have it yet (see projectNext, which does exactly this)
+function firstNextLabel(desk, p) {
+  const dirty = snapshot() !== savedSnapshot;
+  const q = p && (deskProjects(desk).projects.find(x => x.key === "p:" + p.name) || p);
+  const want = q ? preparedSaid((q.entry || {}).machine_ai, (q.entry || {}).machine_setup) : "";
+  const vm = !!q && microvmHomes(q).some(h => h.prepared !== want);
+  return T[vm ? (dirty ? "settings.first.save_vm_next" : "settings.first.vm_next")
+             : (dirty ? "settings.first.save_next" : "settings.first.next")];
+}
 function firstFlowBar(desk, p) {
-  const dirty = () => snapshot() !== savedSnapshot;
-  const go = el("button", {class:"primary", onclick:() => projectNext(desk, p)},
-    dirty() ? T["settings.first.save_next"] : T["settings.first.next"]);
+  const go = el("button", {class:"primary", onclick:() => projectNext(desk, p)}, firstNextLabel(desk, p));
   // The press says what it will do: save first, once something has changed
   const relabel = setInterval(() => {
     if (!go.isConnected) { clearInterval(relabel); return; }
-    go.textContent = dirty() ? T["settings.first.save_next"] : T["settings.first.next"];
+    go.textContent = firstNextLabel(desk, p);
   }, 500);
   const bar = el("div", {class:"card firstbar"},
     el("h2", {}, T["settings.first.title"]),
@@ -12856,7 +12871,7 @@ function enterRulesFloat(di, p) {
     if (found) at.key = found.key;
     return found;
   };
-  const go = el("button", {class:"primary", id:"rulesgo"}, T["settings.first.next"]);
+  const go = el("button", {class:"primary", id:"rulesgo"}, firstNextLabel(desks[at.di], project()));
   go.addEventListener("click", async () => {
     go.disabled = true;
     try { await projectNext(desks[at.di], project()); } finally { go.disabled = false; }
@@ -12864,7 +12879,7 @@ function enterRulesFloat(di, p) {
   // The press says what it will do: save first, once something has changed
   const relabel = setInterval(() => {
     if (!framed || framed.kind !== "rules") { clearInterval(relabel); return; }
-    go.textContent = snapshot() !== savedSnapshot ? T["settings.first.save_next"] : T["settings.first.next"];
+    go.textContent = firstNextLabel(desks[at.di], project());
   }, 500);
   frameOpen({
     kind: "rules",

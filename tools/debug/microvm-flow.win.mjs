@@ -258,6 +258,11 @@ try {
   await cfg.run(`(() => { const t = document.querySelector("#floatbody .rulesedit textarea"); t.value = ${JSON.stringify(SETUP)}; t.dispatchEvent(new Event("input")); t.dispatchEvent(new Event("change")); return true; })()`);
   await until(() => cfg.run('document.querySelector("#floatbody").textContent.includes("まだ入っていません")'), 'the line to say the machine does not have it yet');
   check(true, 'written, the line says the checkout\'s machine does not have it yet');
+  // One press, named for what it does: the page has no "run on the MicroVM"
+  // of its own beside the way on
+  await until(() => cfg.run('document.getElementById("rulesgo").textContent === "保存して MicroVM に入れて次へ"'), 'the way on to say it sets up the MicroVM');
+  check(!(await cfg.run('document.querySelector("#floatbody").textContent')).includes('保存して MicroVM で実行'),
+    'no second button: the way on is the one press that sets up the MicroVM');
   await cfg.shot('2-rules');
   await cfg.run('document.getElementById("rulesgo").click(); true');
   // "Next" hands the checkout's machine to the app to prepare, closes, and
