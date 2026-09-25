@@ -1430,7 +1430,7 @@
   "settings.group.summary.hint": "Shown when the pointer rests on its name in the list. On a phone, under its name",
   "settings.group.auto": "Auto",
   "settings.group.auto.label": "Write the name and summary from what the AIs here are asked",
-  "settings.group.auto.hint": "Written at the first request, then again when an AI here finishes its work, at most once every 10 minutes. Changing the name or the summary by hand turns this off. The AI that writes them is chosen in the desk's settings, under Automatic names.",
+  "settings.group.auto.hint": "Written at the first request, then again when an AI here finishes its work, at most once every 10 minutes. Changing the name or the summary by hand turns this off. The AI that writes them is chosen in the desk's settings, under Automatic names. For a folder on a MicroVM or a server, the requests are what the input bar sent its AIs (what is typed straight into the terminal cannot be read from this PC).",
   "settings.group.auto.failed": "Could not write the name and summary: {why}. The AI that writes them is chosen in the desk's settings, under Automatic names.",
   "settings.group.folder": "Folder",
   "settings.group.folder.ph": "no folder chosen",

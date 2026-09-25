@@ -1418,7 +1418,7 @@
   "settings.group.summary.hint": "左の一覧で名前にポインタを乗せると出ます。スマホでは名前の下に出ます",
   "settings.group.auto": "自動",
   "settings.group.auto.label": "AIへの依頼内容から名前と概要を付ける",
-  "settings.group.auto.hint": "最初の依頼ですぐ付き、その後はここのAIが作業を終えたときに付け直します（10分に1回まで）。名前か概要を手で書き換えるとチェックが外れます。使うAIは、デスクの設定の「自動の名前」で選べます。",
+  "settings.group.auto.hint": "最初の依頼ですぐ付き、その後はここのAIが作業を終えたときに付け直します（10分に1回まで）。名前か概要を手で書き換えるとチェックが外れます。使うAIは、デスクの設定の「自動の名前」で選べます。MicroVM やサーバー上のフォルダでは、サブ入力欄から AI に送った依頼を材料にします（端末に直接打った依頼は、この PC からは読めません）。",
   "settings.group.auto.failed": "名前と概要を付けられませんでした: {why}。使うAIは、デスクの設定の「自動の名前」で選べます。",
   "settings.group.folder": "フォルダ",
   "settings.group.folder.ph": "フォルダ未選択",

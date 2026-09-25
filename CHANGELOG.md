@@ -114,6 +114,12 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **A folder on a MicroVM or a server is named and summarised too.** Its
+  heading and summary are written from what the input bar sent its AIs, the
+  way a folder here is written from what its AIs are asked; the record the
+  AI keeps of its own conversation is on that machine, so what is typed
+  straight into the terminal there is not read. A worktree made there with
+  "name it from the work" starts on its branch's name, as one here does.
 - **The git panel works on a folder on a MicroVM or a server.** Beside a tab
   whose folder is on another machine, the panel -- status, diff, staging,
   commit, history, branches, fetch, pull, push, catching up, untangling a

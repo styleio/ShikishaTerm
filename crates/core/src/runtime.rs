@@ -311,9 +311,9 @@ impl Pending {
         if plan.host.is_none() {
             config::set_folder_branch(&self.desk, &plan.folder, &plan.branch, self.drawn.as_deref())?;
         }
-        // Named for its branch until something is asked in it. A folder on
-        // another machine is not: what its AIs are asked is not heard here
-        if self.auto && plan.host.is_none() {
+        // Named for its branch until something is asked in it -- on another
+        // machine too, from what the input bar hands its AIs
+        if self.auto {
             config::set_folder_auto_label(&self.desk, &plan.folder, true)?;
         }
         Ok(())
@@ -5493,10 +5493,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 heard.finished(&job.folder, now, Some(job.asks));
             }
             if let Some(desk) = desks.get(desk_index) {
+                // A folder on another machine asks like any other. Of the
+                // three roads below, the record the AI keeps of its own
+                // conversation is on that machine and cannot be read from
+                // here, so such a folder is named from what the input bar
+                // handed its AIs -- which is what a person working there
+                // from the board types
                 let mut wanted = Vec::new();
                 for f in &desk.folders {
                     let Some(cwd) = f.cwd.as_ref() else { continue };
-                    match f.auto_label && f.host.is_none() {
+                    match f.auto_label {
                         true => wanted.push((cwd.clone(), f.summary.is_some())),
                         // Heard for nothing: a folder that does not ask keeps nothing
                         false => heard.forget(cwd),
