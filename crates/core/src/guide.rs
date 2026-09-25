@@ -1717,8 +1717,10 @@ mod tests {
                 // prompts) is the project screen, which the settings' own
                 // test checks the card is on; a browser tab's models
                 // ("words", and "words-slow" opened to say why it is slow)
-                // are reached by the tab's key and are no screen
-                if id.starts_with("project-") || id == "words" || id == "words-slow" {
+                // are reached by the tab's key and are no screen; and the
+                // MicroVM form a picker opens over the board is a form, the
+                // same one "Where it runs" holds
+                if id.starts_with("project-") || id == "words" || id == "words-slow" || id == "microvm-add" {
                     continue;
                 }
                 assert!(

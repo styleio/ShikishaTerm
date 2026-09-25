@@ -58,7 +58,112 @@ const STEPS: &[Step] = &[
     Step { to: "0.16.0", apply: to_0_16_0 },
     Step { to: "0.18.0", apply: to_0_18_0 },
     Step { to: "0.19.0", apply: to_0_19_0 },
+    Step { to: "0.20.0", apply: to_0_20_0 },
 ];
+
+/// Where a project is checked out on another machine is the project's, not
+/// the machine's.
+///
+/// A machine held one `project` -- the folder its worktrees were cut from --
+/// and one `branches`, where they went. One machine holds many projects, so
+/// both go to the project, as a checkout of its own on that machine
+/// (`homes`). Which project is read off the desk: the folders on that
+/// machine, which name their project or are named for it here. A machine no
+/// desk has a folder on keeps what it said, untouched, for the start on
+/// which one appears -- nothing is carried to a project nobody chose. A
+/// MicroVM's entry never meant anything by either, and loses both
+fn to_0_20_0(doc: &mut serde_json::Value) -> Result<()> {
+    let hosts: Vec<(String, bool, Option<String>, Option<String>)> = doc
+        .get("hosts")
+        .and_then(|h| h.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|h| {
+                    let text = |k: &str| {
+                        h.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+                    };
+                    let made = text("kind").is_some_and(|k| k.eq_ignore_ascii_case("e2b"));
+                    Some((text("name")?, made, text("project"), text("branches")))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut carried: Vec<String> = Vec::new();
+    for (name, made, project, branches) in &hosts {
+        if *made {
+            carried.push(name.clone());
+            continue;
+        }
+        let Some(checkout) = project else {
+            // Nothing said where the project is: nothing to carry, and a
+            // place for worktrees with no checkout to measure it from means
+            // nothing either
+            carried.push(name.clone());
+            continue;
+        };
+        let leaf = checkout.trim_end_matches('/').rsplit('/').next().filter(|l| !l.is_empty()).unwrap_or("project").to_string();
+        let Some(desks) = doc.get_mut("desks").and_then(|d| d.as_array_mut()) else { continue };
+        let mut any = false;
+        for desk in desks.iter_mut() {
+            let on_it = |f: &serde_json::Value| f.get("host").and_then(|h| h.as_str()).map(str::trim) == Some(name.as_str());
+            let Some(folders) = desk.get("folders").and_then(|f| f.as_array()) else { continue };
+            if !folders.iter().any(on_it) {
+                continue;
+            }
+            any = true;
+            // The project the folders there say they are, else the one named
+            // for the checkout
+            let said = folders
+                .iter()
+                .filter(|f| on_it(f))
+                .find_map(|f| f.get("project").and_then(|p| p.as_str()).map(str::trim).filter(|p| !p.is_empty()).map(str::to_string))
+                .unwrap_or_else(|| leaf.clone());
+            if let Some(folders) = desk.get_mut("folders").and_then(|f| f.as_array_mut()) {
+                for f in folders.iter_mut().filter(|f| on_it(f)) {
+                    if f.get("project").and_then(|p| p.as_str()).is_none_or(|p| p.trim().is_empty()) {
+                        f["project"] = serde_json::json!(said);
+                    }
+                }
+            }
+            let Some(obj) = desk.as_object_mut() else { continue };
+            let projects = obj.entry("projects").or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            let Some(projects) = projects.as_array_mut() else { continue };
+            let at = match projects.iter().position(|p| project_name(p) == said) {
+                Some(i) => i,
+                None => {
+                    projects.push(serde_json::json!({ "name": said }));
+                    projects.len() - 1
+                }
+            };
+            let Some(p) = projects[at].as_object_mut() else { continue };
+            let homes = p.entry("homes").or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            let Some(homes) = homes.as_array_mut() else { continue };
+            if homes.iter().any(|h| h.get("host").and_then(|n| n.as_str()) == Some(name.as_str())) {
+                continue;
+            }
+            let mut home = serde_json::json!({ "host": name, "at": checkout });
+            if let Some(b) = branches {
+                home["placement"] = serde_json::json!(b);
+            }
+            homes.push(home);
+        }
+        if any {
+            carried.push(name.clone());
+        }
+    }
+    if let Some(list) = doc.get_mut("hosts").and_then(|h| h.as_array_mut()) {
+        for h in list.iter_mut() {
+            let named = h.get("name").and_then(|v| v.as_str()).map(str::trim).map(str::to_string);
+            if let (Some(n), Some(obj)) = (named, h.as_object_mut())
+                && carried.contains(&n)
+            {
+                obj.remove("project");
+                obj.remove("branches");
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Where a project's worktrees go says what it is measured from.
 ///
@@ -728,6 +833,39 @@ mod tests {
         let once = doc.clone();
         to_0_19_0(&mut doc).unwrap();
         assert_eq!(doc, once);
+    }
+
+    /// A machine's checkout and its place for worktrees become the checkout of
+    /// the project its folders are in: the one they name, else the one named
+    /// for the checkout. A machine no folder is on keeps what it said, and a
+    /// MicroVM's entry loses both
+    #[test]
+    fn a_checkout_on_a_machine_is_the_projects() {
+        let mut doc: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(crate::repo_root().join("tests").join("fixtures").join("config-0.20.0.json")).unwrap(),
+        )
+        .unwrap();
+        to_0_20_0(&mut doc).unwrap();
+        let projects = doc["desks"][0]["projects"].as_array().unwrap();
+        let site = projects.iter().find(|p| p["name"] == "site").expect("the project named for the checkout");
+        assert_eq!(site["homes"], serde_json::json!([{ "host": "pi", "at": "/home/pi/site", "placement": "/home/pi/trees/{origin}" }]));
+        assert_eq!(site["at"], "D:/work/site", "the checkout on this PC is untouched");
+        let backend = projects.iter().find(|p| p["name"] == "backend").expect("the project the folder names");
+        assert_eq!(backend["homes"], serde_json::json!([{ "host": "box", "at": "/srv/app" }]));
+        let folders = doc["desks"][0]["folders"].as_array().unwrap();
+        assert_eq!(folders[1]["project"], "site");
+        assert_eq!(folders[2]["project"], "site");
+        assert_eq!(folders[3]["project"], "backend");
+        let hosts = doc["hosts"].as_array().unwrap();
+        for carried in [0, 1, 3] {
+            assert!(hosts[carried].get("project").is_none() && hosts[carried].get("branches").is_none(), "{}", hosts[carried]);
+        }
+        assert_eq!(hosts[2]["project"], "/srv/old", "a machine no folder is on keeps what it said");
+        // Once is enough
+        let once = doc.clone();
+        to_0_20_0(&mut doc).unwrap();
+        assert_eq!(doc, once);
+        let _: crate::config::Config = serde_json::from_value(doc).expect("it cannot be read after migrating");
     }
 
     /// The rename arrives without anybody losing what they had written.

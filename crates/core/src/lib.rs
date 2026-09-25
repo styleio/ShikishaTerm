@@ -94,6 +94,7 @@ pub mod snip;
 pub mod devcontainer;
 pub mod e2b;
 pub mod elsewhere;
+pub mod microvm;
 /// The runtime half of a program split in two on one machine: it keeps the
 /// work, and the window that draws it is another process entirely
 #[cfg(windows)]

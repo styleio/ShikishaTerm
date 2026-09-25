@@ -28,7 +28,13 @@ fn probe() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("E2B_API_TOKEN is not set"))?;
 
     println!("asking for a machine...");
-    let sandbox = shikisha_core::e2b::create(&key, "base", 5)?;
+    let asking = shikisha_core::e2b::Asking {
+        template: "base".into(),
+        minutes: 5,
+        marks: shikisha_core::e2b::marks("e2b_probe"),
+        sign_in: None,
+    };
+    let sandbox = shikisha_core::e2b::create(&key, &asking)?;
     println!("  got {}", sandbox.id);
 
     // Whatever happens from here, the machine is killed before this returns

@@ -11,9 +11,10 @@
 //! So the difference stops here: [`Elsewhere`] says which, and the two
 //! functions below say what, and everything else names a machine and asks.
 //!
-//! **Naming one costs nothing.** A sandbox is made by the first call that
-//! actually needs it, not by building the value -- which is what lets a screen
-//! that merely draws a file panel hold one without renting a machine to do it.
+//! **Naming one costs nothing.** A MicroVM is made with the folder that is on
+//! it, and asked for by the first call that actually needs it, not by building
+//! the value -- which is what lets a screen that merely draws a file panel hold
+//! one without starting a paused machine to do it.
 //!
 //! What is deliberately *not* here is the terminal. A terminal is handed out
 //! once and then belongs to the tab that holds it -- it is a thing, not a
@@ -27,7 +28,8 @@ use anyhow::Result;
 pub enum Elsewhere {
     /// One that is already there, reached over SSH
     Ssh(crate::ssh::Spec),
-    /// One that is made when something is finally wanted of it
+    /// A MicroVM: the entry, naming which of its machines
+    /// ([`crate::config::HostSpec::instance`])
     Cloud(crate::config::HostSpec),
 }
 
@@ -79,7 +81,7 @@ pub fn files(
     match at {
         Elsewhere::Ssh(spec) => crate::ssh::files(spec, job, wait_ms),
         Elsewhere::Cloud(host) => {
-            crate::e2b::files(&crate::e2b::sandbox_for(host, None)?, job, wait_ms)
+            crate::e2b::files(&crate::e2b::machine(host)?, job, wait_ms)
         }
     }
 }
@@ -91,7 +93,7 @@ pub fn exec(at: &Elsewhere, command: &str, wait_ms: u64) -> Result<crate::ssh::R
         // The far end keeps its own deadline on this call, so the number is
         // not passed on -- it would be a second one meaning something else
         Elsewhere::Cloud(host) => {
-            crate::e2b::exec(&crate::e2b::sandbox_for(host, None)?, command, None)
+            crate::e2b::exec(&crate::e2b::machine(host)?, command, None)
         }
     }
 }

@@ -115,14 +115,12 @@ One-tap buttons in the input bar
 
 ### Where it runs
 
-Places to open a branch other than this PC
+Servers over SSH, and MicroVMs, to cut worktrees on besides this PC
 
 - **Name** — What the picker calls it. Two accounts on one server are two entries
-- **Image** — What the machine is built from
-- **Minutes it lives** — A machine nobody stops stops on its own after this
+- **Image** — The service's image a project's MicroVM is made from
+- **Minutes before it pauses** — Running untouched this long, a MicroVM pauses. Paused, it keeps everything; a request to one of its addresses, or opening it again, starts it where it stopped.
 - **Address** — ssh://you@machine:22
-- **Where the project is on it** — A branch cut on that machine is cut from this checkout
-- **Where branches go on it** — Begin it with {origin_folder} (the project's folder on that machine), or write an absolute path of that machine (such as /var/www/html). {origin} is the project folder's name. {origin_folder}/.. is beside the project's folder.
 - **Colour** — A small square in front of the name. The name is always shown with it.
 - **Ask for this name to be typed before anything that cannot be undone** — Deleting, renaming or replacing files on this server waits until the name is typed.
 - **Name for this server** — Shown beside every tab that reaches this server, and in every question about something that cannot be undone there:
@@ -286,6 +284,7 @@ Worktree creation rules, name and checkout, git account, protected branches, wha
 
 - **Name**
 - **Checkout** — Worktrees of this repository are cut from here
+- **On other machines**
 - **Repository**
 
 **Git account**

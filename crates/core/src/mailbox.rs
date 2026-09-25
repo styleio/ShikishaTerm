@@ -129,9 +129,8 @@ pub struct Mailbox {
     /// The setup's "Refresh" was pressed, on which of its pages: look for
     /// what is installed again
     pub setup_refresh: Option<u8>,
-    /// A project to clone or make new, or the clone under way to stop:
-    /// (how, the URL or the name, the folder it goes in)
-    pub add_projects: Vec<(String, String, String, u64, String)>,
+    /// A project to clone or make new, or the clone under way to stop
+    pub add_projects: Vec<AddAsk>,
     /// Folders on another machine to list: (host, path, the dialog's number)
     pub remote_lists: Vec<(String, String, u64)>,
     /// Machines to write into the settings: (name, address, key file, number)
@@ -251,11 +250,32 @@ pub struct Mailbox {
     /// Branch folders thrown away for good: (folder, and whether the person
     /// asked not to be asked about it again)
     pub folder_discards: Vec<(String, bool)>,
+    /// Folders on a MicroVM whose public addresses were asked for
+    pub far_ports: Vec<String>,
     /// Folders put out of sight until the next launch: (folder, hide). An
     /// empty folder with `false` brings back every one of them
     pub folder_hides: Vec<(String, bool)>,
     /// Folders told to work somewhere else: (folder, where)
     pub folder_moves: Vec<(String, String)>,
+}
+
+/// A project asked for from the add-a-project dialog (see
+/// `shikisha_shared::Ev::AddProject`)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AddAsk {
+    /// `clone`, `microvm`, `create`, `remote` or `stop`
+    pub how: String,
+    /// The URL, the name, or the folder over there
+    pub text: String,
+    /// The folder it goes in
+    pub parent: String,
+    /// The dialog's own number for this attempt
+    pub ask: u64,
+    /// The machine, by its entry's name. Empty is this PC
+    pub host: String,
+    /// The project a folder over there is the checkout of, when it was asked
+    /// for from one
+    pub project: String,
 }
 
 impl Mailbox {
@@ -374,7 +394,7 @@ impl Mailbox {
     pub fn take_makings(&mut self) -> Vec<(u64, String)> {
         std::mem::take(&mut self.makings)
     }
-    pub fn take_add_projects(&mut self) -> Vec<(String, String, String, u64, String)> {
+    pub fn take_add_projects(&mut self) -> Vec<AddAsk> {
         std::mem::take(&mut self.add_projects)
     }
     pub fn take_remote_lists(&mut self) -> Vec<(String, String, u64)> {
@@ -528,6 +548,9 @@ impl Mailbox {
     }
     pub fn take_folder_discards(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.folder_discards)
+    }
+    pub fn take_far_ports(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.far_ports)
     }
     pub fn take_folder_hides(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.folder_hides)

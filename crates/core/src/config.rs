@@ -36,6 +36,12 @@ pub struct ProjectSpec {
     /// Where its own checkout is on this machine
     #[serde(default)]
     pub at: Option<String>,
+    /// Where its own checkout is on the other machines it is worked on: one
+    /// per machine, each the checkout that machine's worktrees are cut from.
+    /// The same project on this PC and on a server is one project, with one
+    /// set of rules, whichever of its checkouts a worktree is cut from
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub homes: Vec<ProjectHome>,
     /// What to run in a new worktree of it, for a project that cannot carry a
     /// devcontainer -- one that is built for Windows, or for a phone, or
     /// against hardware. Where there is a devcontainer, that is read instead
@@ -84,6 +90,39 @@ pub struct ProjectSpec {
     /// answer to every one of them
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitSpec>,
+}
+
+/// A project's own checkout on a machine that is not this one.
+///
+/// Every worktree is cut from a checkout that is already there, wherever it
+/// is: on this PC the project's own folder, on a server the folder it is
+/// checked out in over there, and on a MicroVM the one made for it when the
+/// project was first wanted there. A worktree on a MicroVM is a copy of that
+/// machine as it is at that moment, so whatever was installed or signed in to
+/// on it is there in every worktree cut afterwards
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default, PartialEq, Eq)]
+pub struct ProjectHome {
+    /// The machine, by its name in `hosts`
+    pub host: String,
+    /// Where the checkout is over there
+    pub at: String,
+    /// Where this machine's worktrees go, written the way a project's
+    /// placement is (`{origin_folder}` for the checkout over there, or an
+    /// absolute path of that machine). Absent is
+    /// [`crate::worktree::REMOTE_PLACEMENT`], shown as it is written. A
+    /// MicroVM's worktree is a machine of its own and goes beside the checkout
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<String>,
+    /// For a MicroVM: which one of its machines holds the checkout
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+}
+
+impl ProjectSpec {
+    /// The checkout on a machine that is not this one, by the machine's name
+    pub fn home_on(&self, host: &str) -> Option<&ProjectHome> {
+        self.homes.iter().find(|h| h.host == host)
+    }
 }
 
 /// How one thing reaches a new worktree.
@@ -379,6 +418,33 @@ impl GitUse {
         }
     }
 
+    /// How a MicroVM of this project signs in to its git server: the same
+    /// account this PC signs in as, handed over as a token the service puts on
+    /// the machine's requests (see [`crate::e2b::SignIn`]).
+    ///
+    /// Worked out without asking anything that can keep somebody waiting: a
+    /// token of the app's own is read here, and one git or GitHub CLI holds is
+    /// asked for by [`FarSignIn::resolve`], on the thread that makes the
+    /// machine. An account that signs in with a key file cannot be handed
+    /// over -- a key file is not put on a machine that is not this one -- and
+    /// says so in words that point at the fix
+    pub fn far(&self, look: &dyn Fn(&str) -> Option<String>) -> Result<FarSignIn, String> {
+        match self {
+            GitUse::Unset | GitUse::Pc(None) => Ok(FarSignIn::Pc { login: None }),
+            GitUse::Pc(Some(login)) => Ok(FarSignIn::Pc { login: Some(login.clone()) }),
+            GitUse::Gh { host, login } => Ok(FarSignIn::Gh { host: host.clone(), login: login.clone() }),
+            GitUse::Missing(name) => Err(crate::i18n::tp("err.git.account.missing", &[("name", name)])),
+            GitUse::Account { spec } if spec.is_ssh() => {
+                Err(crate::i18n::tp("err.microvm.key_account", &[("name", &spec.name)]))
+            }
+            GitUse::Account { spec } => {
+                let token = spec.token(look).ok_or_else(|| spec.no_token_said())?;
+                let login = spec.login.as_deref().map(str::trim).filter(|l| !l.is_empty()).unwrap_or("x-access-token");
+                Ok(FarSignIn::Given(crate::e2b::SignIn { host: spec.host(), login: login.to_string(), token }))
+            }
+        }
+    }
+
     /// The name the pull request watch files a token under: an account, or
     /// [`THIS_PC`] -- which is what nothing chosen signs in as, too. None
     /// where there is nothing to ask with
@@ -390,6 +456,69 @@ impl GitUse {
             GitUse::Account { spec, .. } if spec.host() == GITHUB_HOST => Some(spec.name.clone()),
             _ => None,
         }
+    }
+}
+
+/// Where a MicroVM's sign-in to its git server comes from (see
+/// [`GitUse::far`]): a token already in hand, or one to ask git or GitHub
+/// CLI on this PC for
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum FarSignIn {
+    /// Nothing: the machine signs in to nothing, and clones only what anybody
+    /// may clone
+    #[default]
+    Nobody,
+    Given(crate::e2b::SignIn),
+    /// What git on this PC hands out for GitHub, as the account named when it
+    /// holds more than one
+    Pc { login: Option<String> },
+    /// What GitHub CLI holds for one of its accounts
+    Gh { host: String, login: String },
+}
+
+impl FarSignIn {
+    /// The sign-in itself. Asks git or GitHub CLI when that is where it is, so
+    /// it is asked on a thread of its own. Git on this PC holding nothing for
+    /// GitHub is no sign-in rather than a failure: a public repository clones
+    /// without one, and a private one fails in git's own words over there
+    pub fn resolve(&self) -> Result<Option<crate::e2b::SignIn>, String> {
+        match self {
+            FarSignIn::Nobody => Ok(None),
+            FarSignIn::Given(s) => Ok(Some(s.clone())),
+            FarSignIn::Pc { login } => match crate::pr::pc_token(login.as_deref()) {
+                Ok(token) => Ok(Some(crate::e2b::SignIn {
+                    host: GITHUB_HOST.into(),
+                    login: login.clone().unwrap_or_else(|| "x-access-token".into()),
+                    token,
+                })),
+                Err(crate::pr::PcSignIn::None) => Ok(None),
+                Err(crate::pr::PcSignIn::Many(names)) => {
+                    Err(crate::i18n::tp("err.microvm.pc_many", &[("names", &names.join(", "))]))
+                }
+                Err(crate::pr::PcSignIn::Gone(l)) => Err(crate::i18n::tp("err.microvm.pc_gone", &[("login", &l)])),
+            },
+            FarSignIn::Gh { host, login } => match crate::pr::gh_token_of(host, login) {
+                Some(token) => Ok(Some(crate::e2b::SignIn { host: host.clone(), login: login.clone(), token })),
+                None => Err(crate::i18n::tp("err.git.gh_gone", &[("login", login), ("host", host)])),
+            },
+        }
+    }
+}
+
+/// What kind of token a git server's sign-in is, where the token says: a
+/// GitHub token begins with what it is. `fine` is a fine-grained personal
+/// access token -- one that names the repositories it reaches and ends on a
+/// day somebody chose -- and anything else from GitHub is one that reaches
+/// every repository its owner can, for as long as nobody takes it back.
+/// `unknown` is a token that does not say, from a server that is not GitHub
+pub fn token_kind(token: &str) -> &'static str {
+    let t = token.trim();
+    match () {
+        _ if t.starts_with("github_pat_") => "fine",
+        _ if t.starts_with("ghp_") => "classic",
+        _ if t.starts_with("gho_") => "oauth",
+        _ if t.starts_with("ghu_") || t.starts_with("ghs_") => "app",
+        _ => "unknown",
     }
 }
 
@@ -546,36 +675,45 @@ pub struct HostSpec {
     /// What this machine is called in the picker. Its own, not the address:
     /// two accounts on one server are two entries
     pub name: String,
-    /// Where it is, written the way the world writes it: `ssh://me@host:22`
+    /// Where it is, written the way the world writes it: `ssh://me@host:22`.
+    /// Empty for a MicroVM, which has no address until it is made
+    #[serde(default)]
     pub at: String,
-    /// The folder a project is checked out in over there. A worktree cut on
-    /// that machine is cut from this
-    #[serde(default)]
-    pub project: Option<String>,
-    /// Where branches go over there, written the way a project's placement is
-    /// (`{origin_folder}` for the checkout over there, or an absolute path of
-    /// that machine). Absent is [`crate::worktree::REMOTE_PLACEMENT`], a
-    /// folder beside the checkout, shown as it is written
-    #[serde(default)]
-    pub branches: Option<String>,
+    // Where a project is checked out over there, and where its worktrees go,
+    // are the project's (`ProjectSpec::homes`): one machine holds many
+    // projects, each with its own checkout
     /// What kind of machine it is: `ssh` for one that is already there, `e2b`
-    /// for one that is made when it is wanted. Absent is `ssh`, because that
+    /// for a MicroVM, made when it is wanted. Absent is `ssh`, because that
     /// is what a machine with an address written down is
     #[serde(default)]
     pub kind: Option<String>,
-    /// For a machine that is made: the image it is made from
+    /// For a MicroVM: the image it is made from
     #[serde(default)]
     pub template: Option<String>,
-    /// For a machine that is made: how many minutes it lives untouched. One
-    /// that nobody stops still stops on its own, which is the only reason a
-    /// program may ask for one
+    /// For a MicroVM: how many minutes it runs untouched before it is paused.
+    /// Paused, it keeps everything and costs no time; a request to one of its
+    /// addresses, or opening it again, starts it where it stopped
     #[serde(default)]
     pub minutes: Option<u32>,
     /// The key file it signs in with (`~/.ssh/id_ed25519`). Absent means the
     /// password stored under the machine's name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// For a MicroVM: which one of its machines this is -- the one a folder
+    /// is on, filled in from that folder (`FolderConfig::sandbox`) or from a
+    /// project's checkout (`ProjectHome::sandbox`). Never written: the entry
+    /// in the settings names a kind of machine, and a folder names one of them
+    #[serde(skip)]
+    pub instance: Option<String>,
 }
+
+/// How many minutes a MicroVM runs untouched when its entry does not say:
+/// written into the entry's form as it is, never assumed behind it
+pub const MICROVM_MINUTES: u32 = 30;
+
+/// What a MicroVM is made from when its entry does not say: the service's own
+/// plain image, written into the entry's form as it is
+pub const MICROVM_TEMPLATE: &str = "base";
 
 /// What a person calls a server, so that production can be told from staging
 /// without reading an address.
@@ -637,6 +775,24 @@ impl HostSpec {
     /// Whether this machine has to be asked for before anything can run on it.
     pub fn is_made(&self) -> bool {
         self.kind.as_deref().map(str::trim).unwrap_or("ssh").eq_ignore_ascii_case("e2b")
+    }
+
+    /// The same entry, naming one of its machines
+    pub fn with_instance(&self, id: Option<&str>) -> HostSpec {
+        HostSpec {
+            instance: id.map(str::trim).filter(|i| !i.is_empty()).map(str::to_string),
+            ..self.clone()
+        }
+    }
+
+    /// For a MicroVM: how many minutes it runs untouched before it is paused
+    pub fn minutes_or_default(&self) -> u32 {
+        self.minutes.filter(|m| *m > 0).unwrap_or(MICROVM_MINUTES)
+    }
+
+    /// For a MicroVM: the image it is made from
+    pub fn template_or_default(&self) -> &str {
+        self.template.as_deref().map(str::trim).filter(|t| !t.is_empty()).unwrap_or(MICROVM_TEMPLATE)
     }
 }
 
@@ -2846,6 +3002,11 @@ pub struct FolderConfig {
     /// never meant to be here -- so nothing about it is repaired or offered
     #[serde(default)]
     pub host: Option<String>,
+    /// For a folder on a MicroVM: which one of that entry's machines it is on.
+    /// Every worktree there is a machine of its own, so the entry alone does
+    /// not say where the folder is
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
     /// The branches this folder will not commit straight onto, when it wants
     /// something other than its project's answer ([`ProjectSpec::git`]).
     /// Absent means it follows that one; an empty list means this folder
@@ -3239,26 +3400,146 @@ pub fn add_host_at(path: &Path, spec: &HostSpec) -> Result<()> {
     Ok(())
 }
 
-/// Names the folder a machine's project is checked out in, when nothing is
-/// named yet. A worktree cut over there is cut from it
-pub fn set_host_project_if_unset(name: &str, folder: &str) -> Result<()> {
+/// Writes where a project is checked out on another machine, as that
+/// project's own: the checkout its worktrees there are cut from. A project not
+/// written down yet is written down with it, and one that already has a
+/// checkout on that machine has it replaced -- one machine, one checkout
+pub fn set_project_home(desk_id: &str, project: &str, home: &ProjectHome, here: Option<&str>) -> Result<()> {
+    set_project_home_at(&config_file_path(), desk_id, project, home, here)
+}
+
+/// The same, told which settings file to edit. `here` is the project's
+/// checkout on this PC, written with a project written down now for the first
+/// time -- a project worked out from its checkout would otherwise lose it
+pub fn set_project_home_at(path: &Path, desk_id: &str, project: &str, home: &ProjectHome, here: Option<&str>) -> Result<()> {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
+    let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))
+        .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
+    let entry = desk_entry_mut(&mut doc, desk_id)
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.desk.missing", &[("name", desk_id)])))?;
+    let projects = entry
+        .entry("projects")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())])))?;
+    let at = match projects.iter().position(|p| p.get("name").and_then(|n| n.as_str()) == Some(project)) {
+        Some(i) => i,
+        None => {
+            let mut fresh = serde_json::json!({ "name": project });
+            if let Some(h) = here.map(str::trim).filter(|h| !h.is_empty()) {
+                fresh["at"] = serde_json::json!(h);
+            }
+            projects.push(fresh);
+            projects.len() - 1
+        }
+    };
+    let homes = projects[at]
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())])))?
+        .entry("homes")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let Some(homes) = homes.as_array_mut() else {
+        anyhow::bail!(crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]));
+    };
+    let written = serde_json::to_value(home)?;
+    match homes.iter().position(|h| h.get("host").and_then(|n| n.as_str()) == Some(home.host.as_str())) {
+        Some(i) => homes[i] = written,
+        None => homes.push(written),
+    }
+    crate::crypto::write_atomic(path, &serde_json::to_string_pretty(&doc)?)?;
+    Ok(())
+}
+
+/// Takes a project's checkout on a machine off the project: the checkout is
+/// gone, and the next worktree there makes a new one (on a MicroVM) or asks
+/// where one is (on a server)
+pub fn drop_project_home(desk_id: &str, project: &str, host: &str) -> Result<()> {
     let path = config_file_path();
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
-    let mut root: serde_json::Value = serde_json::from_str(without_bom(&text))
+    let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))
         .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
-    let Some(host) = root
-        .get_mut("hosts")
-        .and_then(|h| h.as_array_mut())
-        .and_then(|h| h.iter_mut().find(|h| h.get("name").and_then(|n| n.as_str()) == Some(name)))
+    let Some(entry) = desk_entry_mut(&mut doc, desk_id) else { return Ok(()) };
+    let Some(p) = entry
+        .get_mut("projects")
+        .and_then(|p| p.as_array_mut())
+        .and_then(|list| list.iter_mut().find(|p| p.get("name").and_then(|n| n.as_str()) == Some(project)))
+        .and_then(|p| p.as_object_mut())
     else {
         return Ok(());
     };
-    if host.get("project").and_then(|p| p.as_str()).is_some_and(|p| !p.trim().is_empty()) {
-        return Ok(());
+    if let Some(homes) = p.get_mut("homes").and_then(|h| h.as_array_mut()) {
+        homes.retain(|h| h.get("host").and_then(|n| n.as_str()) != Some(host));
+        if homes.is_empty() {
+            p.shift_remove("homes");
+        }
     }
-    host["project"] = serde_json::json!(folder);
-    crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&root)?)?;
+    crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&doc)?)?;
     Ok(())
+}
+
+/// Writes the git account a project signs in with, as the project's own: a
+/// project written down by name, with no folder on this PC to find it by
+pub fn set_project_git_account(desk_id: &str, project: &str, account: &str) -> Result<()> {
+    let path = config_file_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+    let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))
+        .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
+    let Some(entry) = desk_entry_mut(&mut doc, desk_id) else { return Ok(()) };
+    let Some(p) = entry
+        .get_mut("projects")
+        .and_then(|p| p.as_array_mut())
+        .and_then(|list| list.iter_mut().find(|p| p.get("name").and_then(|n| n.as_str()) == Some(project)))
+        .and_then(|p| p.as_object_mut())
+    else {
+        return Ok(());
+    };
+    p.insert("git_account".into(), serde_json::Value::String(account.to_string()));
+    crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&doc)?)?;
+    Ok(())
+}
+
+/// What a folder on another machine says about itself beyond where it is:
+/// which project it is a piece of, and -- on a MicroVM -- which of the
+/// entry's machines it is on. Written onto the folder that is at `cwd` on
+/// `host`, which is then put beside the other folders of the same project on
+/// the same machine, since the list is drawn in the order it is written in
+pub fn set_folder_far(desk_name: &str, cwd: &Path, host: &str, project: Option<&str>, sandbox: Option<&str>) -> Result<()> {
+    set_folder_far_at(&config_file_path(), desk_name, cwd, host, project, sandbox)
+}
+
+/// The same, told which settings file to edit
+pub fn set_folder_far_at(
+    path: &Path,
+    desk_name: &str,
+    cwd: &Path,
+    host: &str,
+    project: Option<&str>,
+    sandbox: Option<&str>,
+) -> Result<()> {
+    let want = cwd.to_string_lossy().trim_end_matches('/').to_string();
+    let on = |g: &serde_json::Value| g.get("host").and_then(|h| h.as_str()) == Some(host);
+    with_folders(path, desk_name, |folders| {
+        let Some(at) = folders.iter().position(|g| {
+            on(g) && g.get("cwd").and_then(|c| c.as_str()).is_some_and(|c| c.trim_end_matches('/') == want)
+        }) else {
+            return Ok(());
+        };
+        let mut folder = folders.remove(at);
+        if let Some(p) = project.map(str::trim).filter(|p| !p.is_empty()) {
+            folder["project"] = serde_json::json!(p);
+        }
+        if let Some(s) = sandbox.map(str::trim).filter(|s| !s.is_empty()) {
+            folder["sandbox"] = serde_json::json!(s);
+        }
+        let kin = |g: &serde_json::Value| {
+            on(g) && project.is_some() && g.get("project").and_then(|p| p.as_str()) == project
+        };
+        match folders.iter().rposition(kin) {
+            Some(last) => folders.insert(last + 1, folder),
+            None => folders.insert(at, folder),
+        }
+        Ok(())
+    })
 }
 
 /// Where a tab's terminal is, when it is not on this machine.
@@ -3866,13 +4147,14 @@ fn resolve_folders(
             // Looked up once, here, so that nothing downstream has to know
             // there was a name to look up. A name nothing answers to is the
             // same as none: the folder is on this machine
+            // A MicroVM's folder names which of its machines it is on
             host: def
                 .host
                 .as_deref()
                 .map(str::trim)
                 .filter(|h| !h.is_empty())
                 .and_then(|h| hosts.iter().find(|x| x.name == h))
-                .cloned(),
+                .map(|h| h.with_instance(def.sandbox.as_deref())),
             cwd,
             source: def.source.as_ref().map(SourceSpec::read).unwrap_or_default(),
             protect,
@@ -5060,7 +5342,9 @@ pub fn set_folder_work_item(desk_name: &str, cwd: &Path, item: &str) -> Result<(
 /// A group's folder as an absolute path, the same way launching resolves it.
 pub fn resolve_folder_cwd(c: &str) -> std::path::PathBuf {
     let p = std::path::PathBuf::from(c.trim());
-    match p.is_absolute() {
+    // A path begun with `/` is a server's or a MicroVM's, written the way that
+    // machine writes it: absolute over there, whatever Windows makes of it
+    match p.is_absolute() || c.trim().starts_with('/') {
         true => p,
         false => root_dir().join(p),
     }
@@ -7668,6 +7952,42 @@ mod tests {
             "a folder the desk did not have was refused instead of added"
         );
         assert_eq!(desk.tabs.len(), 2, "the tab was copied rather than moved");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder on another machine is named the way that machine names it,
+    /// and found by that name: said about, put beside its project's other
+    /// folders there, and taken off the list
+    #[test]
+    fn a_folder_on_another_machine_is_found_by_its_own_path() {
+        let dir = std::env::temp_dir().join(format!("shikisha-far-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        let here = crate::local_path("D:/work/site");
+        std::fs::write(
+            &file,
+            r#"{"desks": [{"name": "Demo", "id": "demo", "folders": [
+                {"cwd": "/home/user/site", "host": "vm", "project": "site", "tabs": []},
+                {"cwd": "<here>", "tabs": []},
+                {"cwd": "/home/user/site-login", "host": "vm", "tabs": []}]}]}"#
+                .replace("<here>", &json_path(&here)),
+        )
+        .unwrap();
+        assert_eq!(resolve_folder_cwd("/home/user/site"), std::path::PathBuf::from("/home/user/site"));
+        set_folder_far_at(&file, "Demo", Path::new("/home/user/site-login"), "vm", Some("site"), Some("isb2")).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let folders = doc["desks"][0]["folders"].as_array().unwrap();
+        assert_eq!(folders[1]["cwd"], "/home/user/site-login", "it is not beside the project's checkout there");
+        assert_eq!((folders[1]["project"].as_str(), folders[1]["sandbox"].as_str()), (Some("site"), Some("isb2")));
+        let taken = take_folder_at(&file, "Demo", Path::new("/home/user/site-login")).unwrap();
+        assert!(taken.is_some(), "a folder over there is not found by its own path");
+        let home = ProjectHome { host: "vm".into(), at: "/home/user/site".into(), sandbox: Some("isb1".into()), ..Default::default() };
+        set_project_home_at(&file, "demo", "site", &home, Some("D:/work/site")).unwrap();
+        set_project_home_at(&file, "demo", "site", &ProjectHome { sandbox: Some("isb3".into()), ..home }, None).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let p = &doc["desks"][0]["projects"][0];
+        assert_eq!(p["at"], "D:/work/site", "a project written down now loses its checkout here");
+        assert_eq!(p["homes"], serde_json::json!([{ "host": "vm", "at": "/home/user/site", "sandbox": "isb3" }]), "one machine holds two checkouts");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

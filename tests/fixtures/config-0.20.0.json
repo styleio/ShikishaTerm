@@ -1,0 +1,24 @@
+{
+  "language": "ja",
+  "hosts": [
+    { "name": "pi", "at": "ssh://pi@raspberrypi.local:22", "project": "/home/pi/site", "branches": "/home/pi/trees/{origin}" },
+    { "name": "box", "at": "ssh://me@box:22", "project": "/srv/app" },
+    { "name": "spare", "at": "ssh://me@spare:22", "project": "/srv/old" },
+    { "name": "sandbox", "at": "", "kind": "e2b", "template": "base", "minutes": 30, "project": "/home/user" }
+  ],
+  "desks": [
+    {
+      "name": "Check",
+      "id": "check",
+      "folders": [
+        { "cwd": "D:/work/site", "project": "site", "tabs": [] },
+        { "cwd": "/home/pi/site", "host": "pi", "tabs": [{ "name": "pi", "command": "sh" }] },
+        { "cwd": "/home/pi/trees/site/login", "host": "pi", "tabs": [] },
+        { "cwd": "/srv/app", "host": "box", "project": "backend", "tabs": [] }
+      ],
+      "projects": [
+        { "name": "site", "at": "D:/work/site" }
+      ]
+    }
+  ]
+}

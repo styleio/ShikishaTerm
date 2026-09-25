@@ -69,58 +69,231 @@ fn agent() -> ureq::Agent {
         .new_agent()
 }
 
-/// Ask for a machine.
+/// What a new machine is asked for with.
 ///
-/// `template` is the image it is built from; `minutes` is how long it lives
-/// without being touched. A sandbox that is never killed still stops on its
-/// own, which is the only reason it is safe to make one from a program
-pub fn create(key: &str, template: &str, minutes: u32) -> Result<Sandbox> {
-    let body = serde_json::json!({
-        "templateID": template,
-        "timeout": minutes.max(1) * 60,
-    });
-    let mut resp = agent()
-        .post(&format!("{API}/sandboxes"))
-        .header("X-API-Key", key)
-        .header("Content-Type", "application/json")
-        .send(serde_json::to_string(&body)?)
-        .map_err(|e| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])))?;
+/// Every one of them pauses when its time runs out rather than being thrown
+/// away, and starts again where it stopped when a request reaches one of its
+/// addresses -- which is what lets a MicroVM hold a piece of work for as long
+/// as the work lasts, and still take a webhook while nobody is looking at it
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Asking {
+    /// The image it is built from
+    pub template: String,
+    /// How many minutes it runs untouched before it is paused
+    pub minutes: u32,
+    /// What marks it as this app's, and whose (see [`marks`]). Never a secret:
+    /// this is shown on the service's own pages
+    pub marks: Vec<(String, String)>,
+    /// A git server's sign-in, put on its requests on the way out (see
+    /// [`SignIn`]). Absent is a machine that signs in to nothing
+    pub sign_in: Option<SignIn>,
+}
+
+/// A git server's sign-in, added to the requests a machine sends it.
+///
+/// Added by the service on the way out, so the token never enters the
+/// machine: nothing running in there -- an AI included -- can read it, and a
+/// machine paused or copied carries none of it. What runs in there can still
+/// use it, by sending a request to that server; that is what it is for
+#[derive(Clone, PartialEq, Eq)]
+pub struct SignIn {
+    /// The server, `github.com`
+    pub host: String,
+    /// The name sent with the token. GitHub takes any, and expects this one
+    pub login: String,
+    pub token: String,
+}
+
+impl std::fmt::Debug for SignIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A token is not something a log or a panic prints
+        f.debug_struct("SignIn").field("host", &self.host).field("login", &self.login).finish_non_exhaustive()
+    }
+}
+
+/// The rules that put a sign-in on a machine's requests: git's own server
+/// with the sign-in git sends, and -- for GitHub -- its API with the one the
+/// API takes, so `gh` and a plain `curl` in there are signed in as well
+pub fn network_of(sign_in: Option<&SignIn>) -> serde_json::Value {
+    use base64::Engine as _;
+    let Some(s) = sign_in else { return serde_json::json!({}) };
+    let host = s.host.trim().to_ascii_lowercase();
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", s.login, s.token))
+    );
+    let header = |value: String| serde_json::json!([{ "transform": { "headers": { "Authorization": value } } }]);
+    let mut rules = serde_json::Map::new();
+    rules.insert(host.clone(), header(basic));
+    if host == crate::config::GITHUB_HOST {
+        rules.insert("api.github.com".into(), header(format!("Bearer {}", s.token)));
+    }
+    serde_json::json!({ "rules": rules })
+}
+
+/// What marks a machine as this app's: that it is, which PC asked for it, and
+/// for which project. What lets a list show only this app's machines, and a
+/// person on the service's own pages tell them apart
+pub fn marks(project: &str) -> Vec<(String, String)> {
+    let pc = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_default();
+    vec![
+        (MARK.into(), "1".into()),
+        ("pc".into(), pc.trim().to_string()),
+        ("project".into(), project.trim().to_string()),
+    ]
+}
+
+/// The mark every machine this app makes carries
+pub const MARK: &str = "shikisha";
+
+/// Where the service puts a machine's ports on the internet
+const PUBLIC_DOMAIN: &str = "e2b.app";
+
+/// The ports the service's own agents listen on inside every machine, which
+/// are not the machine's to offer
+pub const OWN_PORTS: &[u16] = &[AGENT_PORT, 49982];
+
+/// The address a machine's port answers on from anywhere, over HTTPS
+pub fn public_url(id: &str, port: u16) -> String {
+    format!("https://{port}-{id}.{PUBLIC_DOMAIN}")
+}
+
+/// One call to the service, and what it answered
+fn answered(resp: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<serde_json::Value> {
+    let mut resp = resp.map_err(|e| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])))?;
     let said = resp.body_mut().read_to_string()?;
-    let v: serde_json::Value = serde_json::from_str(&said)
-        .map_err(|_| anyhow!(crate::i18n::tp("err.e2b.said", &[("said", &said)])))?;
+    if said.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str(&said).map_err(|_| anyhow!(crate::i18n::tp("err.e2b.said", &[("said", &said)])))
+}
+
+/// A machine, as the service describes one it has just made or started
+fn sandbox_of(v: &serde_json::Value) -> Result<Sandbox> {
     let id = v
         .get("sandboxID")
         .and_then(|x| x.as_str())
-        .ok_or_else(|| anyhow!(crate::i18n::tp("err.e2b.said", &[("said", &said)])))?;
+        .ok_or_else(|| anyhow!(crate::i18n::tp("err.e2b.said", &[("said", &v.to_string())])))?;
     Ok(Sandbox {
         id: id.to_string(),
         token: v.get("envdAccessToken").and_then(|x| x.as_str()).map(str::to_string),
     })
 }
 
-/// Let it go. A sandbox nobody kills still stops when its time runs out, so
-/// this is tidiness rather than the only way out
+/// Ask for a machine.
+pub fn create(key: &str, asking: &Asking) -> Result<Sandbox> {
+    let mut body = serde_json::json!({
+        "templateID": asking.template,
+        "timeout": asking.minutes.max(1) * 60,
+        "autoPause": true,
+        "autoResume": { "enabled": true },
+        "metadata": asking
+            .marks
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+            .collect::<serde_json::Map<String, serde_json::Value>>(),
+    });
+    if asking.sign_in.is_some() {
+        body["network"] = network_of(asking.sign_in.as_ref());
+    }
+    let v = answered(
+        agent()
+            .post(&format!("{API}/v2/sandboxes"))
+            .header("X-API-Key", key)
+            .header("Content-Type", "application/json")
+            .send(serde_json::to_string(&body)?),
+    )?;
+    let made = sandbox_of(&v)?;
+    remember(&made);
+    Ok(made)
+}
+
+/// The machine by its id, started again if it was paused, and given its full
+/// time from now. Asked before anything is done in a machine this program has
+/// not spoken to since it started: the answer carries what the agent inside
+/// wants to see
+pub fn connect(key: &str, id: &str, minutes: u32) -> Result<Sandbox> {
+    let v = answered(
+        agent()
+            .post(&format!("{API}/v2/sandboxes/{id}/connect"))
+            .header("X-API-Key", key)
+            .header("Content-Type", "application/json")
+            .send(serde_json::json!({ "timeout": minutes.max(1) * 60 }).to_string()),
+    )?;
+    let found = sandbox_of(&v)?;
+    remember(&found);
+    Ok(found)
+}
+
+/// A copy of a machine as it is this moment -- its files, and what was
+/// running in it -- as a machine of its own. The machine copied is stopped
+/// for the moment it takes and goes on as it was. A paused one is started
+/// first: the service copies only a running machine
+pub fn fork(key: &str, id: &str, minutes: u32) -> Result<Sandbox> {
+    connect(key, id, minutes)?;
+    let v = answered(
+        agent()
+            .post(&format!("{API}/sandboxes/{id}/fork"))
+            .header("X-API-Key", key)
+            .header("Content-Type", "application/json")
+            .send(serde_json::json!({ "timeout": minutes.max(1) * 60, "count": 1 }).to_string()),
+    )?;
+    let one = v.as_array().and_then(|a| a.first()).cloned().unwrap_or_default();
+    if let Some(e) = one.get("error").filter(|e| !e.is_null()) {
+        bail!(crate::i18n::tp("err.e2b.said", &[("said", &e.to_string())]));
+    }
+    let made = sandbox_of(one.get("sandbox").unwrap_or(&serde_json::Value::Null))?;
+    remember(&made);
+    Ok(made)
+}
+
+/// Puts a sign-in on a running machine's requests, in place of the one it
+/// had: a token changed since the machine was made reaches it without the
+/// machine being made again
+pub fn sign_in_as(key: &str, id: &str, sign_in: Option<&SignIn>) -> Result<()> {
+    answered(
+        agent()
+            .put(&format!("{API}/sandboxes/{id}/network"))
+            .header("X-API-Key", key)
+            .header("Content-Type", "application/json")
+            .send(network_of(sign_in).to_string()),
+    )
+    .map(|_| ())
+}
+
+/// Let it go. A sandbox nobody kills still pauses when its time runs out, so
+/// this is what ends one for good
 pub fn kill(key: &str, id: &str) -> Result<()> {
     let resp = agent()
         .delete(&format!("{API}/sandboxes/{id}"))
         .header("X-API-Key", key)
         .call();
+    forget(id);
     match resp {
         Ok(_) => Ok(()),
         Err(e) => bail!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])),
     }
 }
 
-/// Every sandbox this key currently has, as ids.
-pub fn list(key: &str) -> Result<Vec<String>> {
-    let mut resp = agent()
-        .get(&format!("{API}/v2/sandboxes"))
-        .header("X-API-Key", key)
-        .call()
-        .map_err(|e| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])))?;
-    let said = resp.body_mut().read_to_string()?;
-    let v: serde_json::Value = serde_json::from_str(&said).unwrap_or_default();
-    // The list has been in two shapes; take whichever this one is
+/// One machine as the list gives it
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub id: String,
+    /// `running` or `paused`
+    pub state: String,
+    pub marks: std::collections::BTreeMap<String, String>,
+}
+
+/// The machines this key has, running or paused, carrying this app's mark
+pub fn list(key: &str) -> Result<Vec<Listed>> {
+    let v = answered(
+        agent()
+            .get(&format!("{API}/v2/sandboxes?metadata={MARK}%3D1&state=running,paused"))
+            .header("X-API-Key", key)
+            .call(),
+    )?;
     let rows = v
         .get("sandboxes")
         .and_then(|x| x.as_array())
@@ -129,8 +302,58 @@ pub fn list(key: &str) -> Result<Vec<String>> {
         .unwrap_or_default();
     Ok(rows
         .iter()
-        .filter_map(|r| r.get("sandboxID").and_then(|x| x.as_str()).map(str::to_string))
+        .filter_map(|r| {
+            Some(Listed {
+                id: r.get("sandboxID")?.as_str()?.to_string(),
+                state: r.get("state").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
+                marks: r
+                    .get("metadata")
+                    .and_then(|m| m.as_object())
+                    .map(|m| {
+                        m.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string())).collect()
+                    })
+                    .unwrap_or_default(),
+            })
+        })
         .collect())
+}
+
+/// What the agent inside each machine wants to see, as the service last
+/// handed it over. Kept for the life of this program, so a machine is asked
+/// for once and not before every keystroke: a paused machine is started
+/// again by the request itself, and the token does not change while it sleeps
+static KNOWN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Sandbox>>> =
+    std::sync::OnceLock::new();
+
+fn remember(s: &Sandbox) {
+    if let Ok(mut k) = KNOWN.get_or_init(Default::default).lock() {
+        k.insert(s.id.clone(), s.clone());
+    }
+}
+
+fn forget(id: &str) {
+    if let Ok(mut k) = KNOWN.get_or_init(Default::default).lock() {
+        k.remove(id);
+    }
+}
+
+/// The machine an entry in the settings names, through the folder that is
+/// on it (see [`crate::config::HostSpec::instance`]).
+///
+/// Never made here: a folder on a MicroVM was made with its machine, and a
+/// machine that is gone is said as gone rather than replaced by an empty one
+/// -- an empty one in its place would look like the work was lost
+pub fn machine(host: &crate::config::HostSpec) -> Result<Sandbox> {
+    let id = host
+        .instance
+        .as_deref()
+        .ok_or_else(|| anyhow!(crate::i18n::tp("err.e2b.no_machine", &[("host", &host.name)])))?;
+    if let Some(s) = KNOWN.get_or_init(Default::default).lock().ok().and_then(|k| k.get(id).cloned()) {
+        return Ok(s);
+    }
+    let key = key().ok_or_else(|| anyhow!(crate::i18n::t("err.e2b.no_key")))?;
+    connect(&key, id, host.minutes_or_default())
+        .map_err(|e| anyhow!(crate::i18n::tp("err.e2b.gone", &[("host", &host.name), ("id", id), ("e", &format!("{e:#}"))])))
 }
 
 /// Run one command inside a sandbox, and wait for it to finish.
@@ -235,44 +458,6 @@ const START_MS: u64 = 30_000;
 /// How long a keystroke may take to arrive before we stop waiting for it. The
 /// terminal is no use if a slow network can hang the window
 const INPUT_MS: u64 = 10_000;
-
-/// The machine for this entry in the settings, made if it is not there yet.
-///
-/// One per name, for the life of this program: a sandbox costs money by the
-/// minute, and "open a second tab" must not mean "rent a second machine".
-/// Every path that wants a machine comes through here for that reason
-pub fn sandbox_for(host: &crate::config::HostSpec, image: Option<&str>) -> Result<Sandbox> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static LIVE: OnceLock<Mutex<HashMap<String, Sandbox>>> = OnceLock::new();
-    let live = LIVE.get_or_init(Default::default);
-    if let Some(s) = live.lock().ok().and_then(|m| m.get(&host.name).cloned()) {
-        return Ok(s);
-    }
-    let key = key().ok_or_else(|| anyhow!(crate::i18n::t("err.e2b.no_key")))?;
-    let made = create(&key, template_for(host, image), host.minutes.unwrap_or(30))?;
-    if let Ok(mut m) = live.lock() {
-        m.insert(host.name.clone(), made.clone());
-    }
-    Ok(made)
-}
-
-/// What a machine is built from.
-///
-/// The project's own word first: a repository that says which image it wants
-/// has said the thing that matters most about its environment, and overruling
-/// it with a setting would make that file decoration. The machine's own
-/// setting is what stands when the project says nothing
-pub(crate) fn template_for<'a>(
-    host: &'a crate::config::HostSpec,
-    image: Option<&'a str>,
-) -> &'a str {
-    image
-        .map(str::trim)
-        .filter(|i| !i.is_empty())
-        .or_else(|| host.template.as_deref().map(str::trim).filter(|t| !t.is_empty()))
-        .unwrap_or("base")
-}
 
 /// What the writing thread is asked to do. Typing and resizing go down the
 /// same queue because their order matters: a program redrawing for a width

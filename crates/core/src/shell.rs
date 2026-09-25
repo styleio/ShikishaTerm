@@ -3704,6 +3704,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div class="bfield bdestf" hidden>
         <span class="blabel"></span>
         <div id="bdest" class="bpick" tabindex="0"><span class="nm"></span><span class="caret">&#9662;</span></div>
+        <div class="bdestsay"></div>
+        <div class="bsignin" hidden></div>
       </div>
       <div class="bfield">
         <label class="blabel" for="bq"></label>
@@ -5567,6 +5569,8 @@ function openAddProject() {
   box.onpointerdown = e => { box.dataset.down = e.target === box ? "1" : ""; };
   box.onclick = e => { if (e.target === box && box.dataset.down === "1") closeAddProject(); };
   apHost = "";
+  apFor = "";
+  apReturn = null;
   apShow("start");
 }
 // Closing it while a clone is under way stops the clone: nobody is left to
@@ -5586,7 +5590,7 @@ function apShow(step) {
   apLive = null;
   box.textContent = "";
   const title = {start:"tui.addproj.title", clone:"tui.addproj.clone", create:"tui.addproj.create",
-    remote:"tui.addproj.remote", host:"tui.addproj.host"}[step];
+    remote:"tui.addproj.remote", host:"tui.addproj.host", microvm:"tui.addproj.microvm"}[step];
   const body = el("div", {class:"sbody"});
   box.append(el("div", {class:"sbox", role:"dialog", "aria-modal":"true"},
     el("div", {class:"shead"},
@@ -5597,6 +5601,7 @@ function apShow(step) {
   else if (step === "clone") apClone(body);
   else if (step === "remote") apRemote(body);
   else if (step === "host") apHostAdd(body);
+  else if (step === "microvm") apMicrovm(body);
   else apCreate(body);
 }
 
@@ -5639,6 +5644,7 @@ function apStart(body) {
       el("div", {class:"aplist"},
         way("clone", "globe", T["tui.addproj.clone"] || "", T["tui.addproj.clone.say"] || "", () => apShow("clone")),
         create,
+        way("microvm", "cloud", T["tui.addproj.microvm"] || "", T["tui.addproj.microvm.say"] || "", () => apShow("microvm")),
         // With no host yet, the door to adding one; after that it is at the
         // end of the "where" list above
         ...[where ? null : way("ssh", "server", T["tui.addproj.ssh"] || "", T["tui.addproj.ssh.say"] || "",
@@ -5734,6 +5740,65 @@ function apClone(body) {
   setTimeout(() => url.focus(), 0);
 }
 
+// A project put straight onto a MicroVM: its address, the MicroVM, and what
+// it signs in to the git server as -- said before anything is made. The
+// MicroVM is chosen the way an AI's connection is: the ones there are, and
+// last a way to add one, which is the settings' own form over the board
+function apMicrovm(body) {
+  const url = apInput("", "https://github.com/user/repo.git", true);
+  const vms = () => ((S && S.hosts) || []).filter(h => h.kind === "microvm");
+  if (!vms().some(h => h.name === apVm)) apVm = (vms()[0] || {}).name || "";
+  const vm = el("button", {class:"bpick", type:"button"});
+  const drawVm = () => {
+    vm.textContent = "";
+    vm.append(pickIcon("cloud"), el("span", {class:"nm"}, apVm || T["tui.addproj.microvm.none"] || ""), el("span", {class:"caret"}, "▾"));
+  };
+  const signin = el("div", {class:"bsignin"});
+  let lookAsk = 0;
+  const look = () => {
+    if (!apVm || !url.value.trim()) { drawSignIn(signin, null, false); return; }
+    lookAsk = Date.now();
+    apLive.lookAsk = lookAsk;
+    send({kind:"addproject", how:"microvm_look", text:url.value.trim(), parent:"", ask:lookAsk, host:apVm});
+    drawSignIn(signin, null, true);
+  };
+  let lookSoon = null;
+  const lookLater = () => { clearTimeout(lookSoon); lookSoon = setTimeout(look, 400); };
+  vm.onclick = e => {
+    e.stopPropagation();
+    const row = name => el("div", {class:"aphost", onclick:() => { closeFolderMenu(); apVm = name; drawVm(); go.check(); look(); }},
+      el("span", {class:"ck"}, name === apVm ? "✓" : ""), el("span", {class:"nm"}, name));
+    openList(vm, [...vms().map(h => row(h.name)),
+      el("div", {class:"aphostadd", onclick:() => { closeFolderMenu(); addMicrovm(name => { apVm = name; drawVm(); go.check(); look(); }); }},
+        T["tui.addproj.microvm.add"] || "")]);
+  };
+  const prog = apProgress();
+  const go = apGo(T["tui.addproj.clone.go"] || "", () =>
+      !url.value.trim() ? {at:url, why:T["tui.addproj.clone.need_url"] || ""}
+      : !apVm ? {at:vm, why:T["tui.addproj.microvm.need_vm"] || ""} : null,
+    () => {
+      apAsk = Date.now();
+      send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm});
+      apLive.running = true;
+      drawAddProject();
+    });
+  body.append(apBack(), el("div", {class:"ssay"}, T["tui.addproj.microvm.say2"] || ""),
+    apField(T["tui.addproj.url"] || "", url),
+    apField(T["tui.addproj.microvm.vm"] || "", vm),
+    signin,
+    el("div", {class:"apfoot"}, go.why, go.btn, prog.bar));
+  url.addEventListener("input", () => { go.check(); lookLater(); });
+  url.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); go.btn.click(); } });
+  drawVm();
+  go.check();
+  apLive = {kind:"microvm", running:false, go, prog, label:T["tui.addproj.clone.go"] || "",
+    busy:T["tui.addproj.microvm.busy"] || "", signin, lookAsk:0,
+    // No project yet to choose an account for: the accounts themselves
+    change:() => openSettings("gitaccounts", true)};
+  drawSignIn(signin, null, false);
+  setTimeout(() => url.focus(), 0);
+}
+
 function apCreate(body) {
   const name = apInput("", "my-project", true);
   const parent = apInput((S && S.project_home) || "", "", true);
@@ -5793,6 +5858,11 @@ function drawAddProject() {
   if (!box || box.hidden || !apLive) return;
   drawRemoteList();
   const st = S && S.add_project;
+  // What a clone onto a MicroVM would sign in as, answered for the address
+  // as it was last typed
+  if (apLive.kind === "microvm" && st && st.ask && st.ask === apLive.lookAsk && st.sign_in) {
+    drawSignIn(apLive.signin, st.sign_in, true, apLive.change);
+  }
   const mine = st && st.ask === apAsk && apAsk ? st : null;
   const running = !!(mine ? mine.running : apLive.running) && !(mine && (mine.error || mine.done));
   apLive.running = running;
@@ -5817,17 +5887,37 @@ function drawAddProject() {
     apLive = null;
     // A host added: the dialog goes on where it was, on that host
     if (kind === "host") { apHost = mine.host; apShow(apHostBack || "start"); return; }
+    const back = apReturn;
     closeAddProject();
-    // A project over there cannot be cut into worktrees from here: it is
-    // added, and that is the end of it
-    if (!mine.host) rulesFirst(path);
+    // Where a project is on a server, said from the worktree dialog: back to
+    // it, on that server
+    if (back) { reopenBranchOn(back.folder, back.host); return; }
+    // A project goes on through its worktree rules to its first worktree --
+    // one onto a MicroVM as well, cut on that machine. A folder added over
+    // SSH is added, and that is the end of it
+    if (!mine.host || mine.microvm) rulesFirst(path);
   }
+}
+// The worktree dialog opened again on a folder, on a machine chosen for it
+function reopenBranchOn(folder, host) {
+  const g = ((S && S.groups) || []).find(x => sameFolder(x.folder, folder));
+  openBranch(g || {folder});
+  branchHost = host;
+  drawBranch();
+  askBranch();
 }
 
 // ── A project on another machine ──────────────────
 // The machine the dialog adds on: empty for this PC, else the name of a host
 // in the settings. Kept while the dialog is open, so the pages agree
 let apHost = "";
+// The project a folder chosen over there is the checkout of, when the dialog
+// was opened to say where one project is on that machine; and the worktree
+// dialog it goes back to once that is said
+let apFor = "";
+let apReturn = null;
+// The MicroVM a clone onto one goes to
+let apVm = "";
 // The page the SSH host page goes back to once a host is added
 let apHostBack = "start";
 // The dialog's own number for the newest listing of a folder over there
@@ -5844,7 +5934,9 @@ const apAt = at => (at || "").replace(/^ssh:\/\//, "");
 // "Where": this PC or one of the hosts, and at the end of the list a way to
 // add another. Only once there is a host: until then the question has one answer
 function apWhere(redraw) {
-  const hosts = (S && S.hosts) || [];
+  // Machines reached over SSH: a MicroVM has no folders of its own to add,
+  // and is cloned onto from its own page
+  const hosts = ((S && S.hosts) || []).filter(h => h.kind === "ssh");
   if (!hosts.length && !apHost) return null;
   const h = apHostOf(apHost);
   const btn = el("button", {class:"bpick", type:"button"},
@@ -5887,7 +5979,7 @@ function apRemote(body) {
       const st = apListing();
       const add = () => {
         apAsk = Date.now();
-        send({kind:"addproject", how:"remote", text:st.at, parent:"", ask:apAsk, host:apHost});
+        send({kind:"addproject", how:"remote", text:st.at, parent:"", ask:apAsk, host:apHost, project:apFor});
         if (apLive) apLive.running = true;
         drawAddProject();
       };
@@ -7145,13 +7237,54 @@ function folderMenu(e, g) {
     // project's own checkout included -- that one is never thrown away, and
     // until this was here it was the one folder with no way off the list at
     // all except a settings page that refused while it had tabs
+    // On a MicroVM: the addresses it answers on from anywhere -- what a
+    // webhook is pointed at, and a page opened on a phone
+    onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, e.currentTarget)) : null,
     item(T["tui.menu.forget"] || "", () => forgetHere(g)),
     // Last and in red, the one entry that cannot be taken back. Only a
-    // worktree: a project's own checkout is the repository itself
-    g.linked && !g.host
+    // worktree: a project's own checkout is the repository itself. On a
+    // MicroVM the folder is its machine, and the checkout's machine is one
+    // more machine to be rid of -- the next worktree makes a new one
+    (g.linked && !g.host) || onMicrovm(g)
       ? el("div", {class:"warn", onclick:() => { closeFolderMenu(); discardFolder(g); }}, T["tui.menu.discard"] || "")
       : null,
   ], false, e);
+}
+// Whether a folder is on a MicroVM, as the settings name its machine
+const onMicrovm = g => !!(g && g.host && ((S && S.hosts) || []).some(h => h.name === g.host && h.kind === "microvm"));
+
+// The addresses a folder on a MicroVM answers on from anywhere, asked of its
+// machine when somebody asks -- asking starts a paused one, so never on a
+// timer -- and listed where its menu was, each a press to copy
+let farPortsOpen = null;
+function openFarPorts(g, anchor) {
+  farPortsOpen = {folder: g.folder, anchor, drawn: ""};
+  send({kind:"farports", folder: g.folder});
+  drawFarPorts();
+}
+function drawFarPorts() {
+  const o = farPortsOpen;
+  if (!o) return;
+  // Put away by a press elsewhere: it stays away
+  if (o.drawn && !document.querySelector(".fmenu.farports")) { farPortsOpen = null; return; }
+  const st = S && S.far_ports && sameFolder(S.far_ports.folder, o.folder) ? S.far_ports : {busy: true, ports: []};
+  const sig = JSON.stringify(st);
+  if (o.drawn === sig) return;
+  o.drawn = sig;
+  const rows = [el("div", {class:"say"}, T["tui.urls.title"] || "")];
+  if (st.busy) rows.push(el("div", {class:"say"}, T["tui.urls.asking"] || ""));
+  else if (st.error) rows.push(el("div", {class:"warn"}, st.error));
+  else if (!st.ports.length) rows.push(el("div", {class:"say"}, T["tui.urls.none"] || ""));
+  for (const p of st.ports || []) {
+    rows.push(el("div", {class:"aphost", title:p.url, onclick:() => { copyText(p.url).then(() => toast(T["tui.urls.copied"] || "")); }},
+      el("span", {class:"nm"}, ":" + p.port), el("span", {class:"at"}, p.url)));
+  }
+  if (!st.busy) rows.push(el("div", {class:"aphostadd", onclick:() => { o.drawn = ""; send({kind:"farports", folder:o.folder}); }},
+    T["tui.urls.again"] || ""));
+  if (!document.body.contains(o.anchor)) { farPortsOpen = null; return; }
+  openList(o.anchor, rows);
+  const m = [...document.querySelectorAll(".fmenu")].pop();
+  if (m) m.classList.add("farports");
 }
 // A folder taken off the list while it is right here. Nothing on disk is
 // touched -- the folder and everything in it stays where it is -- and the tabs
@@ -7221,6 +7354,7 @@ const PICK_ICON = {
   open: '<path d="M8.5 2h3.5v3.5"/><path d="M6.5 7.5 12 2"/><path d="M10.5 8v3.5a.5.5 0 0 1-.5.5H2.5a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5H6"/>',
   sparkles: '<path d="M6 2.5 7 5.5 10 6.5 7 7.5 6 10.5 5 7.5 2 6.5 5 5.5z"/><path d="M11 1.5v3M9.5 3h3"/><path d="M11 9.5v2M10 10.5h2"/>',
   server: '<rect x="2" y="2" width="10" height="4" rx="1"/><rect x="2" y="8" width="10" height="4" rx="1"/><path d="M4.5 4h.01M4.5 10h.01"/>',
+  cloud: '<path d="M4 11h6.2a2.8 2.8 0 0 0 .3-5.6A3.6 3.6 0 0 0 3.6 6.2 2.4 2.4 0 0 0 4 11z"/>',
   copy: '<rect x="4.5" y="4.5" width="7.5" height="7.5" rx="1"/><path d="M9.5 4.5V2.5a.5.5 0 0 0-.5-.5H2.5a.5.5 0 0 0-.5.5V9a.5.5 0 0 0 .5.5h2"/>',
   grip: '<circle cx="5" cy="3.5" r=".7" fill="currentColor"/><circle cx="9" cy="3.5" r=".7" fill="currentColor"/><circle cx="5" cy="7" r=".7" fill="currentColor"/><circle cx="9" cy="7" r=".7" fill="currentColor"/><circle cx="5" cy="10.5" r=".7" fill="currentColor"/><circle cx="9" cy="10.5" r=".7" fill="currentColor"/>',
   refresh: '<path d="M12 7a5 5 0 0 1-8.7 3.4"/><path d="M2 7a5 5 0 0 1 8.7-3.4"/><path d="M11 1.5v2.5H8.5"/><path d="M3 12.5V10h2.5"/>',
@@ -8306,34 +8440,122 @@ function drawSetup(b, p) {
     .replace("{names}", missing.join(", ")));
   say.textContent = lines.join("  ");
 }
+// Where the worktree is cut: this PC when the project is checked out here,
+// each machine it is checked out on, the ones it could be -- a MicroVM makes
+// its checkout, a server is told where it is -- and, last, a MicroVM to add.
+// Asked on every PC: a MicroVM can be added from here, so there is always a
+// second answer
 function drawDest(b, p) {
   const box = document.getElementById("bdest");
   if (!box) return;
   const machines = (p && p.hosts) || [];
-  // Asked only where there is a choice: on a PC with no other machine set up,
-  // "where it runs" has one answer and a picker for it is a question nobody
-  // can get wrong
-  b.querySelector(".bdestf").hidden = !machines.length && !branchHost;
+  b.querySelector(".bdestf").hidden = !p;
   const here = T["tui.branch.dest.here"] || "This PC";
-  const said = branchHost || here;
+  // Nothing chosen from a folder on another machine is that machine, as the
+  // app answered; this PC is said in so many words (HERE)
+  const on = branchHost === HERE ? "" : (branchHost || (p && p.host) || "");
+  const offer = machines.find(m => m.name === on) || null;
+  const said = on || here;
   if (box.dataset.said !== said) {
     box.dataset.said = said;
     box.textContent = "";
-    box.append(el("span", {class:"nm"}, said), el("span", {class:"caret"}, "▾"));
+    box.append(el("span", {class:"nm"}, said),
+      offer && offer.kind === "microvm" ? el("span", {class:"at"}, T["tui.branch.dest.microvm"] || "") : null,
+      el("span", {class:"caret"}, "▾"));
   }
+  const pick = name => { closeFolderMenu(); branchHost = name; box.dataset.said = ""; drawBranch(); askBranch(); };
   box.onclick = e => {
     e.stopPropagation();
-    const rows = [el("div", {onclick:() => {
-      closeFolderMenu(); branchHost = ""; box.dataset.said = ""; drawBranch(); askBranch();
-    }}, here)];
-    machines.forEach(name => rows.push(el("div", {onclick:() => {
-      closeFolderMenu(); branchHost = name; box.dataset.said = ""; drawBranch(); askBranch();
-    }}, name)));
-    // Where machines come from, said once rather than offered as a button that
-    // would have to leave this dialog half-finished to be pressed
-    rows.push(el("div", {class:"say"}, T["tui.branch.dest.add.hint"] || ""));
+    const rows = [];
+    if (p && p.here) rows.push(el("div", {class:"aphost", onclick:() => pick(HERE)},
+      el("span", {class:"ck"}, !on ? "✓" : ""), el("span", {class:"nm"}, here)));
+    for (const m of machines) {
+      // A server the project has no checkout on is told where it is, from
+      // the same listing a project is added from over there
+      const untold = m.kind === "ssh" && !m.at;
+      const note = m.at ? m.at
+        : m.kind === "microvm" ? (T["tui.branch.dest.first_vm"] || "") : (T["tui.branch.dest.tell_ssh"] || "");
+      rows.push(el("div", {class:"aphost", onclick:() => untold ? tellCheckout(m.name, p) : pick(m.name)},
+        el("span", {class:"ck"}, m.name === on ? "✓" : ""), el("span", {class:"nm"}, m.name),
+        el("span", {class:"at"}, (m.kind === "microvm" ? (T["tui.branch.dest.microvm"] || "") + " · " : "") + note)));
+    }
+    rows.push(el("div", {class:"aphostadd", onclick:() => { closeFolderMenu(); addMicrovm(name => pick(name)); }},
+      T["tui.addproj.microvm.add"] || ""));
     openList(box, rows);
   };
+  const say = b.querySelector(".bdestsay");
+  say.textContent = offer && offer.kind === "microvm" && !offer.at ? (T["tui.branch.dest.first_vm.say"] || "") : "";
+  drawSignIn(b.querySelector(".bsignin"), offer && offer.kind === "microvm" ? p.sign_in : null, !!(offer && offer.kind === "microvm"),
+    () => { closeBranch(); openSettings("project-gitacct", true, branchFrom); });
+}
+
+// What the dialog sends for "this PC" from a folder on another machine,
+// where sending nothing means that machine (runtime::HERE)
+const HERE = "@here";
+
+// What a MicroVM signs in to the git server as, said before it is made: the
+// account, and -- for a token that reaches every repository and never ends --
+// what that means and what to use instead. Said, never in the way: somebody
+// who knows what they are doing goes on with the button as it is
+function drawSignIn(box, note, shown, change) {
+  if (!box) return;
+  box.hidden = !shown;
+  if (!shown) return;
+  const sig = JSON.stringify(note || null);
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.textContent = "";
+  if (!note) {
+    box.append(el("div", {class:"say"}, T["tui.signin.asking"] || ""));
+    return;
+  }
+  const kind = T["tui.signin.kind." + note.kind] || "";
+  box.append(el("div", {class:"say"},
+    (T["tui.signin.as"] || "{account}").replace("{account}", note.account) + (kind ? " · " + kind : "")));
+  if (note.error) box.append(el("div", {class:"warn"}, note.error));
+  else if (note.kind === "none") box.append(el("div", {class:"say"}, T["tui.signin.none"] || ""));
+  // A token that never ends and may reach every repository: said, with what
+  // to use instead. A token that does not say what it is: what it allows
+  const broad = note.kind === "classic" || note.kind === "oauth";
+  if (broad) box.append(el("div", {class:"warn"}, T["tui.signin.broad"] || ""));
+  if (note.kind === "unknown") box.append(el("div", {class:"say"}, T["tui.signin.unknown"] || ""));
+  if (broad || note.error) box.append(el("div", {class:"row"},
+    broad ? el("a", {href:"https://github.com/settings/personal-access-tokens/new", target:"_blank", rel:"noopener"}, T["tui.signin.make_fine"] || "") : null,
+    change ? el("button", {type:"button", class:"quiet", onclick:change}, T["tui.signin.change"] || "") : null));
+}
+
+// A MicroVM added from a picker: the settings' own form, over the board.
+// `chosen` is told its name once it is in the settings the board has read,
+// so the picker goes on with it chosen
+let microvmAdding = null;
+function addMicrovm(chosen) {
+  const before = new Set(((S && S.hosts) || []).map(h => h.name));
+  microvmAdding = {before, chosen, at: Date.now()};
+  openSettings("microvm-add", true);
+}
+// Looked at on every state: the one added is the one not there before
+function microvmArrived() {
+  if (!microvmAdding || !S) return;
+  if (Date.now() - microvmAdding.at > 10 * 60 * 1000) { microvmAdding = null; return; }
+  const added = (S.hosts || []).find(h => h.kind === "microvm" && !microvmAdding.before.has(h.name));
+  if (!added) return;
+  const {chosen} = microvmAdding;
+  microvmAdding = null;
+  chosen(added.name);
+}
+
+// A server the project has no checkout on: where it is there is chosen from
+// the same listing a project is added from over there, as this project's,
+// and the dialog comes back on that machine
+function tellCheckout(host, p) {
+  closeFolderMenu();
+  const back = {folder: branchFrom, host};
+  closeBranch();
+  openAddProject();
+  apHost = host;
+  apFor = (p && (p.project_name || p.project)) || "";
+  apReturn = back;
+  apShow("remote");
 }
 function drawBases(b, p) {
   const box = document.getElementById("bbase");
@@ -9801,6 +10023,8 @@ window.__state = function (json) {
   S = JSON.parse(json);
   gitAfterWork(before);
   projectFlow();
+  microvmArrived();
+  drawFarPorts();
   // The settings were read in again while the worktree dialog is open: what
   // it shows was worked out from the ones before, so it is asked again
   if (before && S && S.settings_gen !== before.settings_gen) {
@@ -21025,7 +21249,10 @@ mod tests {
             "the questions are not in the order they are asked");
         assert!(at(r#"class="bmore""#) < at(r#"id="bat""#), "where it goes is not folded away");
         assert!(dialog.contains(r#"id="bagain""#) && dialog.contains(r#"<span class="kbd">"#), "the foot has no create-more or no keys on the button");
-        assert!(PAGE.contains(r#"b.querySelector(".bdestf").hidden = !machines.length && !branchHost;"#), "where it runs is asked on a PC with one answer");
+        // Where it runs is asked on every PC: a MicroVM can be added from the
+        // list, so there is always a second answer
+        assert!(PAGE.contains(r#"b.querySelector(".bdestf").hidden = !p;"#), "where it runs is not asked");
+        assert!(PAGE.contains(r#"addMicrovm(name => pick(name))"#), "a MicroVM cannot be added from where it runs");
         assert!(PAGE.contains(r#"err.textContent = T["tui.branch.need_project"] || "";"#), "a press with no project says nothing");
         assert!(PAGE.contains(r#"rows.push(el("div", {class:"projadd", onclick:() => { closeFolderMenu(); openAddProject(); }},"#),
             "a project cannot be added from the picker");
@@ -21096,9 +21323,13 @@ mod tests {
     /// and the answer is kept in the settings (Basic) rather than in this page
     #[test]
     fn a_worktree_is_deleted_from_its_right_click_asking_first_unless_told_not_to() {
-        assert!(PAGE.contains(r#"g.linked && !g.host
+        // A worktree here, never a project's own checkout here; on a MicroVM
+        // every folder is a machine of its own, and each can be let go
+        assert!(PAGE.contains(r#"(g.linked && !g.host) || onMicrovm(g)
       ? el("div", {class:"warn", onclick:() => { closeFolderMenu(); discardFolder(g); }}, T["tui.menu.discard"] || "")"#),
             "the menu has no red delete, or offers it on a project's own checkout");
+        assert!(PAGE.contains(r#"onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, e.currentTarget)) : null,"#),
+            "a folder on a MicroVM does not say where it answers from");
         assert!(PAGE.contains("if (S && S.discard_unasked) { go(false); return; }"), "turned off, it still asks");
         assert!(PAGE.contains(r#"never: T["tui.discard.never"] || "","#), "the question has no box to stop it asking");
         assert!(PAGE.contains("go(input.value.trim(), !!never && unasked.checked)"), "the box's answer is not handed on");
@@ -21210,13 +21441,20 @@ mod tests {
     #[test]
     fn a_project_can_be_added_on_an_ssh_host_from_the_same_dialog() {
         assert!(PAGE.contains(r#"send({kind:"remotelist", host:apHost, path:p, ask:apListAsk});"#), "a folder over there is never listed");
-        assert!(PAGE.contains(r#"send({kind:"addproject", how:"remote", text:st.at, parent:"", ask:apAsk, host:apHost});"#),
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"remote", text:st.at, parent:"", ask:apAsk, host:apHost, project:apFor});"#),
             "a folder over there is never added");
         assert!(PAGE.contains("if (st.git) { add(); return; }"), "a folder that is not a repository is added without asking");
         assert!(PAGE.contains(r#"send({kind:"addhost", name:name.value.trim(), ask:apAsk, key:key.value.trim(),"#), "a host cannot be added");
         assert!(PAGE.contains(r#"if (kind === "host") { apHost = mine.host; apShow(apHostBack || "start"); return; }"#),
             "a host added does not become where the dialog adds");
-        assert!(PAGE.contains("if (!mine.host) rulesFirst(path);"), "a project over there goes on to a worktree this PC cannot cut");
+        // A folder added over SSH ends the dialog; a project cloned onto a
+        // MicroVM goes on through its rules to its first worktree, there
+        assert!(PAGE.contains("if (!mine.host || mine.microvm) rulesFirst(path);"),
+            "a project added over SSH goes on to a worktree, or one onto a MicroVM does not");
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm});"#),
+            "a project cannot be cloned onto a MicroVM");
+        assert!(PAGE.contains(r#"addMicrovm(name => { apVm = name; drawVm(); go.check(); look(); });"#),
+            "a MicroVM cannot be added from where it is chosen");
         assert!(PAGE.contains(r#"create.classList.toggle("held", !!apHost);"#), "a new project is offered on a host");
     }
 

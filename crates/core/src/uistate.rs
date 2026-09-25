@@ -718,13 +718,21 @@ pub struct BranchPlan {
     pub project: String,
     #[serde(default)]
     pub project_at: String,
-    /// The machines this can be made on, this one first. Names only: the
-    /// addresses and what is filed under them are the settings' business
+    /// The machines this can be made on besides this one: the ones the project
+    /// has a checkout on, and the ones it could have one on. Names and kinds
+    /// only: the addresses and what is filed under them are the settings'
     #[serde(default)]
-    pub hosts: Vec<String>,
+    pub hosts: Vec<HostOffer>,
+    /// Whether this PC is one of the places: the project has a checkout here
+    #[serde(default)]
+    pub here: bool,
     /// Which of them is chosen. Empty is this machine
     #[serde(default)]
     pub host: String,
+    /// On a MicroVM: what it will sign in to the project's git server as, and
+    /// what kind of token that is. Absent while it is being asked for
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in: Option<SignInNote>,
     /// The file this project's own preparation came from, when it has one
     #[serde(default)]
     pub setup_from: String,
@@ -745,6 +753,56 @@ pub struct BranchPlan {
     /// the other name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_use: Option<BranchInUse>,
+}
+
+/// A machine a worktree could be cut on, as the branch dialog lists it.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct HostOffer {
+    pub name: String,
+    /// `ssh` or `microvm`
+    pub kind: String,
+    /// Where the project is checked out there. Empty when it has no checkout
+    /// there yet: a MicroVM makes one, a server has to be told where it is
+    #[serde(default)]
+    pub at: String,
+}
+
+/// What a MicroVM will sign in to the project's git server as.
+///
+/// Said before anything is made, because the token goes with every request
+/// the machine sends there, and what runs in it -- an AI included -- can use
+/// all of what the token allows
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct SignInNote {
+    /// The account, as the project settings name it
+    pub account: String,
+    /// `fine`, `classic`, `oauth`, `app`, `unknown` (see
+    /// [`crate::config::token_kind`]), or `none` when there is nothing to sign
+    /// in with
+    pub kind: String,
+    /// Why there is none to be had, when that is what happened
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+}
+
+/// The public addresses of a folder on a MicroVM, as asked for from its menu
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct FarPortsState {
+    /// The folder it is about
+    pub folder: String,
+    /// Still being asked
+    pub busy: bool,
+    pub ports: Vec<FarPort>,
+    /// Why they could not be had
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub error: String,
+}
+
+/// One port something listens on in a MicroVM, and where it answers from
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct FarPort {
+    pub port: u16,
+    pub url: String,
 }
 
 /// A branch already open elsewhere, as the branch dialog asks about it.
@@ -965,19 +1023,29 @@ pub struct AddProjectState {
     /// The project it made, once it is on the desk
     #[serde(skip_serializing_if = "Option::is_none")]
     pub done: Option<String>,
-    /// Made on another machine: its name. What was made there cannot be cut
-    /// into worktrees from here, so the dialog ends instead of going on
+    /// Made on another machine: its name
     #[serde(skip_serializing_if = "String::is_empty")]
     pub host: String,
+    /// Made on a MicroVM, where the dialog goes on to the project's first
+    /// worktree, cut on that machine
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub microvm: bool,
+    /// For a clone onto a MicroVM: what it will sign in to the git server as,
+    /// said before it is pressed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sign_in: Option<SignInNote>,
 }
 
 /// A machine a project can be on, besides this PC: one reached over SSH.
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct HostChoice {
     pub name: String,
-    /// Its address as written, `ssh://user@host:port`
+    /// Its address as written, `ssh://user@host:port`. Empty for a MicroVM
     pub at: String,
-    /// The folder its project was last added from, where looking starts
+    /// `ssh` or `microvm`: one already there, or one made when wanted
+    pub kind: String,
+    /// The checkout of the project last written down on it, where looking
+    /// starts
     #[serde(skip_serializing_if = "String::is_empty")]
     pub project: String,
 }
@@ -1104,7 +1172,16 @@ pub struct Project {
 /// A project's name read off the git folder its checkouts share: the folder
 /// the repository is checked out in (`D:\orion\.git` is orion), or a bare
 /// repository's own name without its `.git`
-fn project_by_family(family: &str) -> Option<String> {
+/// The household of a project's folders on another machine: the git folder of
+/// its checkout there, named with the machine so that two machines holding
+/// the same path are two households. Read the same way as a git folder here
+/// ([`project_by_family`] names it after the checkout), and never a path on
+/// this PC
+pub fn far_family(host: &str, checkout: &str) -> String {
+    format!("{host}:{}/.git", checkout.trim_end_matches('/'))
+}
+
+pub(crate) fn project_by_family(family: &str) -> Option<String> {
     let p = std::path::Path::new(family.trim_end_matches(['\\', '/']));
     let name = if p.file_name().is_some_and(|n| n.eq_ignore_ascii_case(".git")) {
         p.parent()?.file_name()?
@@ -1172,7 +1249,7 @@ fn adopt_checkouts(list: &mut [(std::path::PathBuf, GroupState)]) {
 /// no household stay exactly where they were. Tabs keep their numbers
 /// whatever the order here -- the number is on the row -- so the only thing
 /// that moves is which heading stands under which
-fn by_family(list: Vec<(std::path::PathBuf, GroupState)>) -> Vec<(std::path::PathBuf, GroupState)> {
+pub(crate) fn by_family(list: Vec<(std::path::PathBuf, GroupState)>) -> Vec<(std::path::PathBuf, GroupState)> {
     let mut out = Vec::with_capacity(list.len());
     let mut placed = vec![false; list.len()];
     for i in 0..list.len() {
@@ -1844,6 +1921,9 @@ pub struct UiState {
     /// A folder on another machine, listed for the add-a-project dialog
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_list: Option<RemoteListState>,
+    /// The public addresses of a folder on a MicroVM, last asked for
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub far_ports: Option<FarPortsState>,
     /// Where a cloned or new project goes until somebody picks elsewhere
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_home: String,

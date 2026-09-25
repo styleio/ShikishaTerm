@@ -459,6 +459,24 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         .chain(ui.making.iter().map(|m| std::path::PathBuf::from(&m.folder)))
         .collect();
     let discovered = discovered_of(&cuts, &listed, &ui.worktrees_kept);
+    // A folder on another machine joins its project's household there, as
+    // the settings say it -- the checkout at the head, its worktrees under it
+    let mut far_joined = false;
+    for (at, g) in groups.iter_mut() {
+        if g.family.is_some() {
+            continue;
+        }
+        if let Some((_, family, linked)) = ui.folder_far.iter().find(|(k, _, _)| k == at) {
+            g.color = Some(crate::uistate::GroupState::color_of(std::path::Path::new(family), &ui.folder_colors));
+            g.family = Some(family.clone());
+            g.linked = *linked;
+            g.project = g.project.clone().or_else(|| crate::uistate::project_by_family(family));
+            far_joined = true;
+        }
+    }
+    if far_joined {
+        groups = crate::uistate::by_family(groups);
+    }
     for (at, g) in groups.iter_mut() {
         g.host = ui.folder_hosts.iter().find(|(k, _)| k == at).map(|(_, h)| h.clone());
         g.mark = ui
@@ -551,6 +569,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         hosts: ui.hosts.clone(),
         ssh_aliases: ui.ssh_aliases.clone(),
         remote_list: ui.remote_list.clone(),
+        far_ports: ui.far_ports.clone(),
         project_home: ui.project_home.clone(),
         // Held by the settings server, which is where the page says it
         branch_next: crate::webui::branch_next(),
@@ -1579,6 +1598,12 @@ pub struct Ui {
     pub folders_hidden: std::collections::BTreeSet<std::path::PathBuf>,
     /// Those same folders, each with the name of the machine it is on
     pub folder_hosts: Vec<(std::path::PathBuf, String)>,
+    /// And the household each belongs to over there, where its project has a
+    /// checkout on that machine: the checkout's git folder named with the
+    /// machine ([`crate::uistate::far_family`]), and whether the folder is a
+    /// worktree cut from it rather than the checkout itself. Nothing here can
+    /// read a git folder over there, so the settings say it
+    pub folder_far: Vec<(std::path::PathBuf, String, bool)>,
     /// And each with the server that machine is, for the name a person gave it
     /// ([`crate::ssh::Spec::machine`]). Absent for a sandbox, which is no
     /// lasting machine to name
@@ -1625,6 +1650,8 @@ pub struct Ui {
     pub ssh_aliases: Vec<crate::discover::SshAlias>,
     /// A folder on another machine being walked
     pub remote_list: Option<crate::uistate::RemoteListState>,
+    /// The public addresses of a folder on a MicroVM, last asked for
+    pub far_ports: Option<crate::uistate::FarPortsState>,
     /// Where a cloned or new project goes by default
     pub project_home: String,
     /// The Assistant AI setting, as its command

@@ -117,14 +117,25 @@ pub fn projects(desks: &[Desk]) -> Known {
         for f in &desk.folders {
             let Some(cwd) = f.cwd.as_deref() else { continue };
             let (key, checkout) = match &f.host {
-                // Over SSH nothing here can read its git folder; the host says
-                // where the project is checked out over there, and a folder on
-                // a host that names none is no project
+                // On another machine nothing here can read its git folder; the
+                // project says where it is checked out over there, and a folder
+                // there that names no project with a checkout there is no project
                 Some(h) => {
-                    let Some(at) = h.project.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
+                    let home = f
+                        .project
+                        .as_deref()
+                        .and_then(|n| desk.projects.iter().find(|p| p.name == n))
+                        .and_then(|p| p.home_on(&h.name));
+                    let Some(at) = home.map(|x| x.at.trim()).filter(|p| !p.is_empty()) else {
                         continue;
                     };
-                    (format!("{}|{}", h.at, at), PathBuf::from(at))
+                    // Keyed by the address, as the cards already written are;
+                    // a MicroVM has none, and is keyed by its entry's name
+                    let machine = match h.at.trim() {
+                        "" => h.name.as_str(),
+                        at => at,
+                    };
+                    (format!("{machine}|{at}"), PathBuf::from(at))
                 }
                 None => {
                     if !cwd.exists() {

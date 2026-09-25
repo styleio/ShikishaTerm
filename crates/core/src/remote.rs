@@ -313,6 +313,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         | Ev::FolderClose { .. }
         | Ev::FolderDiscard { .. }
         | Ev::FolderColor { .. } => true,
+        // The public addresses of a folder on a MicroVM: read, and handed to
+        // whoever asked -- a phone is where a webhook is tried from as often
+        // as the window is
+        Ev::FarPorts { .. } => true,
         // Putting a folder that is not on this machine out of sight until the
         // next launch, and telling one to work somewhere else. The first
         // writes nothing at all; the second writes one path, which is less
@@ -2758,6 +2762,7 @@ mod tests {
             Ev::FolderView { folder: "a".into() },
             Ev::FolderClose { folder: "a".into() },
             Ev::FolderDiscard { folder: "a".into(), unasked: false },
+            Ev::FarPorts { folder: "a".into() },
             Ev::FolderColor { folder: "a".into(), color: "blue".into() },
             Ev::FontSize { px: 14 },
             Ev::TabWidth { px: 200 },

@@ -50,6 +50,34 @@ once it reaches its first tagged release.
   worktree**, in a dialog over the board -- the settings do not come up
   around it. Keep and continue is one press; a change made there is saved on
   the same press, and the worktree dialog opens with it.
+- **MicroVMs: a project worked on in the cloud, the same way it is on this
+  PC.** "Add a project" > "Clone onto a MicroVM" makes a machine for the
+  project and clones it there -- its checkout, with a folder of its own on the
+  desk -- and goes on through its rules to its first worktree. A project
+  already here can have one too: choose a MicroVM under "Where it runs" in the
+  worktree dialog. Every worktree is a copy of the checkout's machine as it is
+  at that moment, on a machine of its own, so whatever was installed or signed
+  in to on the checkout's machine is in each of them. A MicroVM is chosen the
+  way an AI's connection is: the ones there are, and last "+ Add a MicroVM",
+  the settings' own form over the board.
+- **A MicroVM pauses instead of ending.** Untouched for its minutes, it
+  pauses and keeps everything; a request to one of its addresses -- a webhook
+  included -- or opening it again starts it where it stopped. Deleting its
+  folder deletes the machine.
+- **A MicroVM signs in to the git server without holding the token.** The
+  project's git account is put on the machine's requests to the server on the
+  way out, so nothing running in it -- an AI included -- can read the token,
+  and a paused or copied machine carries none of it. What it signs in as is
+  said before a machine is made; a token that never ends and may reach every
+  repository is said as that, with a fine-grained personal access token as
+  what to use instead -- and nothing stops somebody who chooses it anyway.
+- **Public URLs.** A folder on a MicroVM lists, from its menu, the ports a
+  server started there listens on, each with the address it answers on from
+  anywhere, a press to copy.
+- **A project checked out on a server is one project with its checkout
+  there**: the folder added over SSH is written as the project's checkout on
+  that machine, and where its worktrees go there is on the project's rules
+  page, beside this PC's.
 
 ### Changed
 - **A worktree's folder is named for its work in one piece**: `feature/login`
@@ -65,6 +93,13 @@ once it reaches its first tagged release.
 - The worktree dialog sends only the rows changed in it, and asks again when
   the settings are read in, so a rule saved while it is open is the rule the
   folder is made with.
+- **Where a project is on a machine is the project's, not the machine's.** A
+  machine's "where the project is" and "where branches go" are carried to the
+  project whose folders are on it, as its checkout there; a machine no folder
+  is on keeps what it said until one is. "Cloud sandbox" is called MicroVM
+  everywhere, and its minutes are the minutes before it pauses.
+- **"Where it runs" is asked on every PC**, with the machines the project is
+  checked out on, the ones it could be, and a MicroVM to add.
 
 ### Removed
 - The warning under a line set to Link. It read as "deleting the worktree

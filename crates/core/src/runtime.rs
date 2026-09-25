@@ -89,7 +89,7 @@ pub fn coach_step(folders: usize, seen: u8, past_the_plus: bool) -> (Option<u8>,
 }
 /// The same for a folder on another machine. What it is cannot be asked of the
 /// disk here, so the dialog says whether it is a repository: it listed it
-fn add_remote_to_desk(desk: Option<&config::Desk>, host: &str, at: &str) -> Result<Added, String> {
+fn add_remote_to_desk(desk: Option<&config::Desk>, host: &str, at: &str, project: Option<&str>) -> Result<Added, String> {
     let at = at.trim().trim_end_matches('/');
     let at = if at.is_empty() { "/" } else { at };
     let name = at.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or(at).to_string();
@@ -105,10 +105,20 @@ fn add_remote_to_desk(desk: Option<&config::Desk>, host: &str, at: &str) -> Resu
     let desk_name = desk.map(|w| w.name.clone()).unwrap_or_default();
     config::append_folder_starting(&desk_name, None, std::path::Path::new(at), None, &config::Start::Same, Some(host))
         .map_err(|e| format!("{e:#}"))?;
-    // The first folder added on a machine is where its worktrees are cut from
-    if let Err(e) = config::set_host_project_if_unset(host, at) {
-        append_hook_log(&format!("could not note the project of {host}: {e:#}"));
-    }
+    // The folder is the project's checkout on that machine, which its
+    // worktrees there are cut from: a project of its own, named for the
+    // folder, or the one it was asked for from
+    let project = project.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).unwrap_or_else(|| {
+        let taken = |n: &str| desk.is_some_and(|w| w.projects.iter().any(|p| p.name == n && p.home_on(host).is_some()));
+        match taken(&name) {
+            false => name.clone(),
+            true => (2..).map(|i| format!("{name} {i}")).find(|n| !taken(n)).expect("endless"),
+        }
+    });
+    let home = config::ProjectHome { host: host.to_string(), at: at.to_string(), ..Default::default() };
+    let desk_id = desk.map(|w| w.id.clone()).unwrap_or_default();
+    config::set_project_home(&desk_id, &project, &home, None).map_err(|e| format!("{e:#}"))?;
+    config::set_folder_far(&desk_name, std::path::Path::new(at), host, Some(&project), None).map_err(|e| format!("{e:#}"))?;
     Ok(Added::New(i18n::tp("msg.project.remote_added", &[("name", &name), ("host", host)])))
 }
 
@@ -120,6 +130,12 @@ struct Pending {
     id: u64,
     making: crate::worktree::Making,
     desk: String,
+    /// The same desk by its id, which is how its projects are written
+    desk_id: String,
+    /// On a MicroVM: the project's checkout machine this making made has been
+    /// written down as the project's -- which happens the moment it is made,
+    /// whether or not the worktree after it is
+    checkout_noted: bool,
     /// The folder the dialog was opened on
     from: std::path::PathBuf,
     /// What the folder's card is called. What the person wrote, in whatever
@@ -203,6 +219,28 @@ impl Pending {
         }
     }
 
+    /// On a MicroVM: the project's checkout machine, once this making has
+    /// made one, written down as the project's -- with a folder of its own on
+    /// the desk, which is where the machine every later worktree is copied
+    /// from is signed in to and set up
+    fn note_checkout(&mut self) -> anyhow::Result<()> {
+        if self.checkout_noted {
+            return Ok(());
+        }
+        let plan = self.making.plan.clone();
+        let (Some(host), Some(id)) = (plan.host.as_ref(), self.making.machines().checkout) else { return Ok(()) };
+        self.checkout_noted = true;
+        let at = plan.main.to_string_lossy().to_string();
+        let home = config::ProjectHome { host: host.name.clone(), at: at.clone(), placement: None, sandbox: Some(id.clone()) };
+        // A project nobody had written down is written down with its checkout
+        // here, so the folders here stay in it
+        let here = crate::repo::main_checkout(&self.from).map(|m| m.display().to_string().replace('\\', "/"));
+        config::set_project_home(&self.desk_id, &plan.project, &home, here.as_deref())?;
+        config::append_folder_starting(&self.desk, None, &plan.main, None, &config::Start::Same, Some(&host.name))?;
+        config::set_folder_far(&self.desk, &plan.main, &host.name, Some(&plan.project), Some(&id))?;
+        Ok(())
+    }
+
     /// Writes the made folder into the settings, beside the folder it was
     /// asked from, running what the dialog chose
     fn write_down(&self) -> anyhow::Result<()> {
@@ -215,6 +253,18 @@ impl Pending {
             &self.start,
             plan.host.as_ref().map(|h| h.name.as_str()),
         )?;
+        // A folder on another machine says which project it is a piece of --
+        // nothing here can read that off its git folder -- and on a MicroVM,
+        // which machine it is
+        if let Some(h) = plan.host.as_ref() {
+            config::set_folder_far(
+                &self.desk,
+                &plan.folder,
+                &h.name,
+                Some(&plan.project).filter(|p| !p.is_empty()).map(String::as_str),
+                self.making.machines().worktree.as_deref(),
+            )?;
+        }
         // The branch it is really on, and whether this app is the one that
         // thought of that name. The line above writes the label as the branch,
         // which is right for a card and wrong for git: a label keeps what was
@@ -376,6 +426,116 @@ pub fn startable_ais() -> Vec<crate::uistate::AiChoice> {
     }
     out
 }
+/// A project on its way onto a MicroVM from the add-a-project dialog: what it
+/// is written down as once its checkout is there
+#[derive(Clone)]
+struct MicrovmAdd {
+    host: String,
+    project: String,
+    /// The account the dialog said it signs in as, written as the project's
+    /// own when it is one the person set up -- so every worktree after signs
+    /// in the same way, and the settings say so
+    account: Option<String>,
+}
+
+/// The account a project from `url` signs in to its git server as, before
+/// the project is written down: the one of the desk's that says it is for
+/// the address's owner, else the way git on this PC signs in
+fn account_for_url(desk: Option<&config::Desk>, url: &str) -> Option<String> {
+    let (host, owner) = crate::microvm::host_and_owner(url)?;
+    let desk = desk?;
+    config::git_accounts_for(&desk.git_accounts, Some(&host), Some(&owner))
+        .into_iter()
+        .find(|(_, fits)| *fits)
+        .map(|(a, _)| a.name)
+}
+
+/// The household a worktree being made belongs to, which puts its row under
+/// its project's heading: the git folder here, or -- on another machine --
+/// the one its checkout there has, named with the machine
+fn making_family(plan: &crate::worktree::Plan, from: &std::path::Path) -> String {
+    match plan.host.as_ref() {
+        Some(h) => crate::uistate::far_family(&h.name, &plan.main.to_string_lossy()),
+        None => crate::repo::family_of(from).map(|f| f.display().to_string()).unwrap_or_default(),
+    }
+}
+
+/// What the worktree dialog sends for "this PC" from a folder that is on
+/// another machine, where saying nothing means that machine
+const HERE: &str = "@here";
+
+/// A project on another machine, as a worktree there is planned from: what
+/// [`crate::worktree::Far`] borrows, held
+struct FarProject {
+    host: config::HostSpec,
+    home: Option<config::ProjectHome>,
+    project: String,
+    origin: String,
+    env: Option<crate::devcontainer::Env>,
+    sign_in: config::FarSignIn,
+}
+
+impl FarProject {
+    fn of(&self) -> crate::worktree::Far<'_> {
+        crate::worktree::Far {
+            host: &self.host,
+            home: self.home.as_ref(),
+            project: &self.project,
+            origin: &self.origin,
+            env: self.env.clone(),
+            sign_in: self.sign_in.clone(),
+        }
+    }
+}
+
+/// A project on `host`, for cutting a worktree there from the folder `from`:
+/// its checkout there, what it is called, where it is fetched from, and --
+/// on a MicroVM -- what it signs in to its git server as, with the account's
+/// name as the dialog says it. A project nobody has written down is called
+/// what its checkout here is called, the way the settings would name it
+fn far_of(
+    desk: Option<&config::Desk>,
+    project: Option<&config::ProjectSpec>,
+    host: &config::HostSpec,
+    from: &std::path::Path,
+    checkout: &Option<std::path::PathBuf>,
+    env: Option<crate::devcontainer::Env>,
+) -> (FarProject, String, Result<config::FarSignIn, String>) {
+    let name = project
+        .map(|p| p.name.clone())
+        .or_else(|| checkout.as_deref().and_then(|c| c.file_name()).map(|n| n.to_string_lossy().to_string()))
+        .or_else(|| from.to_string_lossy().trim_end_matches('/').rsplit(['/', '\\']).next().map(str::to_string))
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| "project".into());
+    let origin = checkout
+        .as_deref()
+        .and_then(crate::repo::remote_url_of)
+        .map(|u| crate::worktree::fetchable(&u))
+        .unwrap_or_default();
+    let git = desk.map(|d| d.git_use(project.and_then(|p| p.git_account.as_deref()))).unwrap_or_default();
+    let account = match &git {
+        config::GitUse::Unset | config::GitUse::Pc(None) => i18n::t("tui.branch.signin.pc"),
+        config::GitUse::Pc(Some(login)) | config::GitUse::Gh { login, .. } => login.clone(),
+        config::GitUse::Account { spec } => spec.name.clone(),
+        config::GitUse::Missing(n) => n.clone(),
+    };
+    let sign_in = match host.is_made() {
+        true => git.far(&|k| crate::git::secret(k)),
+        false => Ok(config::FarSignIn::Nobody),
+    };
+    let far = FarProject {
+        host: host.clone(),
+        home: project.and_then(|p| p.home_on(&host.name)).cloned(),
+        project: name,
+        origin,
+        env,
+        // One that cannot be had is said in the dialog, and the machine signs
+        // in to nothing: a public repository still clones
+        sign_in: sign_in.clone().unwrap_or_default(),
+    };
+    (far, account, sign_in)
+}
+
 /// What a new folder should run, from the word the dialog sent.
 ///
 /// Empty is "the same as the folder it is cut from", `none` is nothing, and
@@ -1243,10 +1403,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // is asked once
     // With the machine it runs on, empty for this PC
     let mut add_job: Option<(u64, crate::addproject::Job, String)> = None;
+    // A project being cloned onto a MicroVM from the same dialog: the ask, the
+    // job, and what it will be written down as once it is there
+    let mut microvm_job: Option<(u64, crate::microvm::Checkout, MicrovmAdd)> = None;
     let mut add_view: Option<crate::uistate::AddProjectState> = None;
     // A folder on another machine, walked from the same dialog. Listed on a
     // thread: a machine that does not answer takes as long as its timeout
     let mut remote_view: Option<crate::uistate::RemoteListState> = None;
+    // The public addresses of a folder on a MicroVM, and the answers on their
+    // way from the thread that asks the machine
+    let mut far_ports_view: Option<crate::uistate::FarPortsState> = None;
+    let (far_ports_tx, far_ports_rx) = std::sync::mpsc::channel::<crate::uistate::FarPortsState>();
     let (listing_tx, listing_rx) = std::sync::mpsc::channel::<crate::uistate::RemoteListState>();
     // The aliases a new machine can be filled in from, read again with the settings
     let mut ssh_aliases = crate::discover::ssh_aliases();
@@ -1295,6 +1462,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // What making a branch would do. Answered while the name is being typed,
     // and cleared once the folder exists so the dialog can close itself
     let mut branch_view: Option<crate::uistate::BranchPlan> = None;
+    // What a MicroVM would sign in as, still being found out for the dialog
+    // on screen: the account's name and how it is handed over. Asked again
+    // each turn until it is known, since it is found on a thread
+    let mut signin_waiting: Option<(String, Result<config::FarSignIn, String>)> = None;
     // What it would take to have a missing working folder here. Answered when
     // one is opened, and cleared once the folder exists so the dialog closes
     let mut repair_view: Option<crate::uistate::RepairPlan> = None;
@@ -3272,6 +3443,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderDiscard { folder, unasked }) => {
                         shell.mail().folder_discards.push((folder, unasked));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FarPorts { folder }) => {
+                        shell.mail().far_ports.push(folder);
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderColor { folder, color }) => {
                         shell.mail().folder_colors.push((folder, color));
                     }
@@ -3617,17 +3791,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .map(|c| {
                     c.hosts
                         .iter()
-                        .filter(|h| !h.is_made() && !h.name.trim().is_empty())
+                        .filter(|h| !h.name.trim().is_empty())
                         .map(|h| crate::uistate::HostChoice {
                             name: h.name.clone(),
                             at: h.at.clone(),
-                            project: h.project.clone().unwrap_or_default(),
+                            kind: if h.is_made() { "microvm" } else { "ssh" }.into(),
+                            project: desks
+                                .get(desk_index)
+                                .and_then(|d| d.projects.iter().rev().find_map(|p| p.home_on(&h.name)))
+                                .map(|home| home.at.clone())
+                                .unwrap_or_default(),
                         })
                         .collect()
                 })
                 .unwrap_or_default(),
             ssh_aliases: ssh_aliases.clone(),
             remote_list: remote_view.clone(),
+            far_ports: far_ports_view.clone(),
             project_home: project_home.clone(),
             assistant: assistant_ai.clone(),
             usage,
@@ -3762,6 +3942,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     w.folders
                         .iter()
                         .filter_map(|f| f.cwd.clone().zip(f.host.as_ref().map(|h| h.name.clone())))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            folder_far: desks
+                .get(desk_index)
+                .map(|w| {
+                    w.folders
+                        .iter()
+                        .filter_map(|f| {
+                            let (cwd, host) = (f.cwd.clone()?, f.host.as_ref()?);
+                            let home = f
+                                .project
+                                .as_deref()
+                                .and_then(|n| w.projects.iter().find(|p| p.name == n))
+                                .and_then(|p| p.home_on(&host.name))?;
+                            let checkout = home.at.trim_end_matches('/');
+                            let linked = cwd.to_string_lossy().trim_end_matches('/') != checkout;
+                            Some((cwd, crate::uistate::far_family(&host.name, checkout), linked))
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -6231,6 +6430,53 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 config::save_setting(&["confirm_worktree_delete"], serde_json::json!(false));
             }
             let at = std::path::PathBuf::from(&folder);
+            // A folder on a MicroVM is its machine: the machine goes, and with
+            // it everything in the folder. The project's checkout there going
+            // is the project's checkout there going -- the next worktree makes
+            // a new one -- while the worktrees copied from it are machines of
+            // their own and stay
+            let on_microvm = desks.get(desk_index).and_then(|d| {
+                d.folders
+                    .iter()
+                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &at)))
+                    .and_then(|f| f.host.clone().filter(|h| h.is_made()).map(|h| (h, f.project.clone())))
+            });
+            if let Some((h, project)) = on_microvm {
+                let Some(d) = desks.get(desk_index) else { continue };
+                let checkout = project
+                    .as_deref()
+                    .and_then(|n| d.projects.iter().find(|p| p.name == n))
+                    .and_then(|p| p.home_on(&h.name))
+                    .filter(|home| home.sandbox.is_some() && home.sandbox == h.instance);
+                if let (Some(home), Some(p)) = (checkout, project.as_deref()) {
+                    if let Err(e) = config::drop_project_home(&d.id, p, &h.name) {
+                        flash = Some(format!("{e:#}"));
+                        continue;
+                    }
+                    if let Some(id) = home.sandbox.as_deref() {
+                        crate::worktree::forget_checkout(id);
+                    }
+                }
+                match config::take_folder(&d.name, &at) {
+                    Ok(taken) => {
+                        making_seq += 1;
+                        leavings.push(Leaving {
+                            id: making_seq,
+                            family: String::new(),
+                            name: at.to_string_lossy().rsplit('/').next().unwrap_or_default().to_string(),
+                            removal: crate::worktree::Removal::start_on_microvm(at, h),
+                            desk: d.name.clone(),
+                            main: None,
+                            taken,
+                            error: None,
+                            restored: None,
+                            gone: false,
+                        });
+                    }
+                    Err(e) => flash = Some(format!("{e:#}")),
+                }
+                continue;
+            }
             if let Err(e) = crate::worktree::ready_to_discard(&at) {
                 flash = Some(format!("{e:#}"));
                 continue;
@@ -6262,6 +6508,34 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     });
                 }
                 Err(e) => flash = Some(format!("{e:#}")),
+            }
+        }
+        // The public addresses of a folder on a MicroVM: asked of the machine
+        // on a thread, since asking starts one that was paused
+        for folder in shell.mail().take_far_ports() {
+            let at = std::path::PathBuf::from(&folder);
+            let host = desks.get(desk_index).and_then(|d| {
+                d.folders
+                    .iter()
+                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &at)))
+                    .and_then(|f| f.host.clone())
+                    .filter(|h| h.is_made())
+            });
+            let Some(host) = host else { continue };
+            far_ports_view = Some(crate::uistate::FarPortsState { folder: folder.clone(), busy: true, ..Default::default() });
+            let tx = far_ports_tx.clone();
+            std::thread::spawn(move || {
+                let said = crate::microvm::ports_of(&host);
+                let _ = tx.send(match said {
+                    Ok(ports) => crate::uistate::FarPortsState { folder, busy: false, ports, error: String::new() },
+                    Err(error) => crate::uistate::FarPortsState { folder, busy: false, ports: Vec::new(), error },
+                });
+            });
+        }
+        while let Ok(answer) = far_ports_rx.try_recv() {
+            // Only the folder last asked about
+            if far_ports_view.as_ref().is_none_or(|v| v.folder == answer.folder) {
+                far_ports_view = Some(answer);
             }
         }
         // The folders whose tabs are on their way out. Tried again each time
@@ -6479,6 +6753,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // How each is getting on. Made: written down, and the row waits for
         // the card that replaces it
         for p in makings.iter_mut().filter(|p| p.error.is_none() && p.written.is_none() && !p.gone) {
+            // A checkout a MicroVM making made is the project's the moment it
+            // is there, however the rest of the making goes
+            if let Err(e) = p.note_checkout() {
+                append_hook_log(&format!("could not write down the checkout of {}: {e:#}", p.making.plan.project));
+                flash = Some(format!("{e:#}"));
+            }
             if !p.made {
                 match p.making.outcome() {
                     None => continue,
@@ -6594,16 +6874,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // A project from a URL, or made new. Cloning takes as long as the
         // network does, so it runs on its own and is looked at every turn; a
         // new project is a folder and two quick git commands, done here
-        // The machine a project is asked for on, by name. Only one reached
-        // over SSH: a machine that is made when wanted has no folders to add
-        let host_named = |name: &str| {
-            cfg.as_ref().and_then(|c| c.hosts.iter().find(|h| h.name == name && !h.is_made()).cloned())
+        // The machine a project is asked for on, by name, of the kind asked
+        // for: one reached over SSH has folders to add and clone into; a
+        // MicroVM has the one a clone onto it makes
+        let host_named = |name: &str, made: bool| {
+            cfg.as_ref().and_then(|c| c.hosts.iter().find(|h| h.name == name && h.is_made() == made).cloned())
         };
-        for (how, text, parent, ask, host) in shell.mail().take_add_projects() {
+        for a in shell.mail().take_add_projects() {
+            let (how, text, parent, ask, host) = (a.how.clone(), a.text.clone(), a.parent.clone(), a.ask, a.host.clone());
             let failed = |e: String| Some(crate::uistate::AddProjectState { ask, error: Some(e), ..Default::default() });
+            let made = matches!(how.as_str(), "microvm" | "microvm_look");
             let on = match host.is_empty() {
                 true => None,
-                false => match host_named(&host) {
+                false => match host_named(&host, made) {
                     Some(h) => Some(h),
                     None => {
                         add_view = failed(i18n::tp("err.addproj.no_host", &[("host", &host)]));
@@ -6616,6 +6899,37 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     if let Some((_, job, _)) = &add_job {
                         job.stop();
                     }
+                    if let Some((_, job, _)) = &microvm_job {
+                        job.stop();
+                    }
+                }
+                // What a clone onto a MicroVM would sign in as, asked while
+                // the address is typed, so it is said before anything is made
+                ("microvm_look", Some(_)) => {
+                    let desk = desks.get(desk_index);
+                    let account = account_for_url(desk, &text);
+                    let git = desk.map(|d| d.git_use(account.as_deref())).unwrap_or_default();
+                    let label = account.clone().unwrap_or_else(|| i18n::t("tui.branch.signin.pc"));
+                    let far = git.far(&|k| crate::git::secret(k));
+                    let note = crate::microvm::sign_in_note(&label, &far);
+                    signin_waiting = note.is_none().then(|| (label.clone(), far.clone()));
+                    add_view = Some(crate::uistate::AddProjectState { ask, sign_in: note, microvm: true, ..Default::default() });
+                }
+                ("microvm", Some(h)) if microvm_job.is_none() => {
+                    let desk = desks.get(desk_index);
+                    let account = account_for_url(desk, &text);
+                    let git = desk.map(|d| d.git_use(account.as_deref())).unwrap_or_default();
+                    // Named for its address, and never onto a project of that
+                    // name that already has a checkout on this machine
+                    let base = crate::microvm::name_of_url(&text);
+                    let taken = |n: &str| desk.is_some_and(|w| w.projects.iter().any(|p| p.name == n && p.home_on(&h.name).is_some()));
+                    let project = match taken(&base) {
+                        false => base.clone(),
+                        true => (2..).map(|i| format!("{base} {i}")).find(|n| !taken(n)).expect("endless"),
+                    };
+                    let job = crate::microvm::Checkout::start(h.clone(), &text, &project, git.far(&|k| crate::git::secret(k)).unwrap_or_default());
+                    add_view = Some(crate::uistate::AddProjectState { ask, running: true, microvm: true, phase: "microvm.making".into(), ..Default::default() });
+                    microvm_job = Some((ask, job, MicrovmAdd { host: h.name.clone(), project, account }));
                 }
                 ("clone", on) if add_job.is_none() => {
                     let started = match &on {
@@ -6634,7 +6948,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 // A folder over there, chosen in the dialog's own listing
                 ("remote", Some(h)) => {
-                    add_view = match add_remote_to_desk(desks.get(desk_index), &h.name, &text) {
+                    add_view = match add_remote_to_desk(desks.get(desk_index), &h.name, &text, Some(&a.project)) {
                         Ok(Added::New(said)) | Ok(Added::Already(said)) => {
                             said_before_reload = Some((Instant::now(), said.clone()));
                             flash = Some(said);
@@ -6663,7 +6977,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // A folder on another machine to list, and the listings that came back.
         // Only the newest listing the dialog asked for is kept
         for (host, path, ask) in shell.mail().take_remote_lists() {
-            let Some(h) = host_named(&host) else {
+            let Some(h) = host_named(&host, false) else {
                 remote_view = Some(crate::uistate::RemoteListState {
                     ask,
                     host: host.clone(),
@@ -6718,7 +7032,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     add_job = None;
                     let added = match on.is_empty() {
                         true => add_to_desk(desks.get(desk_index), &at, &config::default_shell_start(cfg.as_ref().and_then(|c| c.default_shell.as_deref()))),
-                        false => add_remote_to_desk(desks.get(desk_index), &on, &at.to_string_lossy()),
+                        false => add_remote_to_desk(desks.get(desk_index), &on, &at.to_string_lossy(), None),
                     };
                     add_view = Some(match added {
                         Ok(Added::New(said)) | Ok(Added::Already(said)) => {
@@ -6732,6 +7046,46 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 crate::addproject::Outcome::Failed(e) => {
                     add_job = None;
                     add_view = Some(crate::uistate::AddProjectState { ask, error: Some(e), ..Default::default() });
+                }
+            }
+        }
+        // A project on its way onto a MicroVM. Once its checkout is there it is
+        // the project's, with a folder of its own on the desk, and the dialog
+        // goes on to its first worktree
+        if let Some((ask, job, add)) = microvm_job.clone() {
+            match job.outcome() {
+                crate::microvm::Outcome::Running(phase) => {
+                    add_view = Some(crate::uistate::AddProjectState { ask, running: true, microvm: true, phase: phase.into(), ..Default::default() });
+                }
+                crate::microvm::Outcome::Done { sandbox, at } => {
+                    microvm_job = None;
+                    let desk = desks.get(desk_index);
+                    let (desk_name, desk_id) = desk.map(|d| (d.name.clone(), d.id.clone())).unwrap_or_default();
+                    let home = config::ProjectHome { host: add.host.clone(), at: at.clone(), placement: None, sandbox: Some(sandbox.clone()) };
+                    let written = config::set_project_home(&desk_id, &add.project, &home, None)
+                        .and_then(|()| match &add.account {
+                            Some(a) => config::set_project_git_account(&desk_id, &add.project, a),
+                            None => Ok(()),
+                        })
+                        .and_then(|()| config::append_folder_starting(&desk_name, None, std::path::Path::new(&at), None, &config::Start::Same, Some(&add.host)))
+                        .and_then(|()| config::set_folder_far(&desk_name, std::path::Path::new(&at), &add.host, Some(&add.project), Some(&sandbox)));
+                    add_view = Some(match written {
+                        Ok(()) => {
+                            let said = i18n::tp("msg.project.remote_added", &[("name", &add.project), ("host", &add.host)]);
+                            said_before_reload = Some((Instant::now(), said.clone()));
+                            flash = Some(said);
+                            crate::uistate::AddProjectState { ask, done: Some(at), host: add.host.clone(), microvm: true, ..Default::default() }
+                        }
+                        Err(e) => crate::uistate::AddProjectState { ask, error: Some(format!("{e:#}")), microvm: true, ..Default::default() },
+                    });
+                }
+                crate::microvm::Outcome::Failed(e) => {
+                    microvm_job = None;
+                    add_view = Some(match e.is_empty() {
+                        // Stopped: the dialog was closed, and nobody is waiting
+                        true => crate::uistate::AddProjectState { ask, ..Default::default() },
+                        false => crate::uistate::AddProjectState { ask, error: Some(e), microvm: true, ..Default::default() },
+                    });
                 }
             }
         }
@@ -6998,11 +7352,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for ask in shell.mail().take_branches() {
             let from = std::path::PathBuf::from(&ask.from);
             let name = ask.branch.clone();
-            // The machines this could be made on. This one is always there and
-            // is not in the list: it is what an empty choice means
+            // The machines this could be made on besides this one
             let machines: Vec<crate::config::HostSpec> =
                 cfg.as_ref().map(|c| c.hosts.clone()).unwrap_or_default();
-            let on = machines.iter().find(|h| h.name == ask.host.trim() && !h.name.is_empty());
+            // The folder asked from, when it is on another machine: a worktree
+            // of it is cut on that machine unless another place is chosen.
+            // Nothing chosen means "where the folder is", and this PC chosen
+            // from a folder elsewhere is said in so many words
+            let from_far = desks.get(desk_index).and_then(|d| {
+                d.folders
+                    .iter()
+                    .find(|f| f.host.is_some() && f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &from)))
+                    .and_then(|f| f.host.clone())
+            });
+            let wanted_host = match (ask.host.trim(), &from_far) {
+                (HERE, _) => "",
+                ("", Some(f)) => f.name.as_str(),
+                (h, _) => h,
+            };
+            let on = machines.iter().find(|h| h.name == wanted_host && !h.name.is_empty());
             // What this project can offer -- the branches to grow from, and
             // the things git will not carry -- is a fact about the folder, not
             // about what has been typed so far. Answered even when the name is
@@ -7075,6 +7443,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // Drawn, so the work may write over it once it has a title
                     (kept.clone(), Some(kept))
                 }
+                // A project with no checkout here: drawn all the same, and the
+                // machine it is cut on is the one that says a name is taken
+                (None, None) if on.is_some() => {
+                    let kept = drawn_names
+                        .entry(ask.from.clone())
+                        .or_insert_with(|| crate::worktree::suggest_anywhere(&prefix))
+                        .clone();
+                    (kept.clone(), Some(kept))
+                }
                 (None, None) => (String::new(), None),
             };
             // What the folder's card will be called. This app's own label: it
@@ -7114,7 +7491,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .as_deref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default(),
-                hosts: machines.iter().map(|h| h.name.clone()).collect(),
+                hosts: machines
+                    .iter()
+                    .filter(|h| !h.name.trim().is_empty())
+                    .map(|h| crate::uistate::HostOffer {
+                        name: h.name.clone(),
+                        kind: if h.is_made() { "microvm" } else { "ssh" }.into(),
+                        at: project.and_then(|p| p.home_on(&h.name)).map(|home| home.at.clone()).unwrap_or_default(),
+                    })
+                    .collect(),
+                // This PC is a place when the project is checked out here
+                here: repo.is_some(),
                 host: on.map(|h| h.name.clone()).unwrap_or_default(),
                 // Said whether or not it is switched on, so the switch is not
                 // one nobody can tell the meaning of
@@ -7140,18 +7527,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // with a switch inside it: almost nothing the local one does
                 // can be done about a machine we would have to ask
                 let planned = match on {
-                    Some(h) => crate::worktree::plan_on(
-                        h,
-                        &wanted,
-                        &prefix,
-                        Some(&ask.base),
-                        Some(ask.at.trim()),
-                        // Where a machine that has never seen this project can
-                        // fetch it from. The project's own remote, because that
-                        // is the one address both ends already agree on
-                        &crate::repo::remote_url_of(&from).unwrap_or_default(),
-                        env.clone(),
-                    ),
+                    Some(h) => {
+                        let far = far_of(desks.get(desk_index), project, h, &from, &checkout, env.clone());
+                        if h.is_made() {
+                            view.sign_in = crate::microvm::sign_in_note(&far.1, &far.2);
+                            signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
+                        }
+                        crate::worktree::plan_on(&far.0.of(), &wanted, &prefix, Some(&ask.base), Some(ask.at.trim()))
+                    }
                     None => crate::worktree::plan_for(
                         &from,
                         &placement,
@@ -7240,11 +7623,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             making_seq += 1;
                             if !already { makings.push(Pending {
                                 id: making_seq,
+                                family: making_family(&plan, &from),
                                 making: crate::worktree::Making::start(plan, carryable.clone()),
                                 desk: desk.clone(),
+                                desk_id: desks.get(desk_index).map(|d| d.id.clone()).unwrap_or_default(),
+                                checkout_noted: false,
                                 from: from.clone(),
                                 label: label.clone(),
-                                family: crate::repo::family_of(&from).map(|f| f.display().to_string()).unwrap_or_default(),
                                 start: start.clone(),
                                 link: ask.link.clone(),
                                 auto: ask.auto,
@@ -7269,15 +7654,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // is a state nobody asked for
                 // On the machine that was chosen, the same as a single one
                 let fanned = match on {
-                    Some(h) => crate::worktree::fan_on(
-                        h,
-                        &wanted,
-                        &prefix,
-                        Some(&ask.base),
-                        &ask.ais,
-                        &crate::repo::remote_url_of(&from).unwrap_or_default(),
-                        ask.setup.then(|| told.clone()).flatten(),
-                    ),
+                    Some(h) => {
+                        let env = ask.setup.then(|| told.clone()).flatten();
+                        let far = far_of(desks.get(desk_index), project, h, &from, &checkout, env);
+                        if h.is_made() {
+                            view.sign_in = crate::microvm::sign_in_note(&far.1, &far.2);
+                            signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
+                        }
+                        crate::worktree::fan_on(&far.0.of(), &wanted, &prefix, Some(&ask.base), &ask.ais)
+                    }
                     None => crate::worktree::fan(&from, &placement, &wanted, Some(&ask.base), &ask.ais),
                 };
                 view.branch = wanted.clone();
@@ -7304,13 +7689,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         making_seq += 1;
                         makings.push(Pending {
                             id: making_seq,
+                            family: making_family(&plan, &from),
                             making: crate::worktree::Making::start(plan, carryable.clone()),
                             desk: desk.clone(),
+                            desk_id: desks.get(desk_index).map(|d| d.id.clone()).unwrap_or_default(),
+                            checkout_noted: false,
                             from: from.clone(),
                             // The AI on the end, the same way its branch has
                             // it, so a card and its branch read as one pair
                             label: format!("{label}-{ai}"),
-                            family: crate::repo::family_of(&from).map(|f| f.display().to_string()).unwrap_or_default(),
                             start: start_of(&ai, &ai_choices),
                             link: ask.link.clone(),
                             auto: ask.auto,
@@ -7337,6 +7724,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             }
             branch_view = Some(view);
+        }
+        // What a MicroVM would sign in as, once it has been found out: put on
+        // whichever dialog is waiting for it
+        if let Some((account, far)) = &signin_waiting
+            && let Some(note) = crate::microvm::sign_in_note(account, far)
+        {
+            if let Some(v) = branch_view.as_mut().filter(|v| v.sign_in.is_none()) {
+                v.sign_in = Some(note.clone());
+            }
+            if let Some(v) = add_view.as_mut().filter(|v| v.microvm && !v.running && v.sign_in.is_none()) {
+                v.sign_in = Some(note);
+            }
+            signin_waiting = None;
         }
         for ev in shell.mail().take_vault_opens() {
             if let shikisha_shared::Ev::VaultOpen { program, id, cwd, title } = ev {

@@ -776,6 +776,7 @@ impl WinSurface {
                 Ev::TabFolder { tab, folder } => self.mail.tab_folders.push((tab, folder)),
                 Ev::FolderClose { folder } => self.mail.folder_closes.push(folder),
                 Ev::FolderDiscard { folder, unasked } => self.mail.folder_discards.push((folder, unasked)),
+                Ev::FarPorts { folder } => self.mail.far_ports.push(folder),
                 Ev::FolderHide { folder, hide } => self.mail.folder_hides.push((folder, hide)),
                 Ev::FolderMove { folder, to } => self.mail.folder_moves.push((folder, to)),
                 Ev::RemoteCut => self.mail.remote_cut = true,
@@ -787,7 +788,9 @@ impl WinSurface {
                 Ev::InstallHelp { prog: Some(prog) } => self.mail.install_pages.push(prog),
                 Ev::Setup { ai, yolo } => self.mail.setup = Some((ai, yolo)),
                 Ev::SetupRefresh { step } => self.mail.setup_refresh = Some(step),
-                Ev::AddProject { how, text, parent, ask, host } => self.mail.add_projects.push((how, text, parent, ask, host)),
+                Ev::AddProject { how, text, parent, ask, host, project } => {
+                    self.mail.add_projects.push(shikisha_core::mailbox::AddAsk { how, text, parent, ask, host, project })
+                }
                 Ev::RemoteList { host, path, ask } => self.mail.remote_lists.push((host, path, ask)),
                 Ev::AddHost { name, at, key, ask } => self.mail.add_hosts.push((name, at, key, ask)),
                 Ev::Found { family, act } => self.mail.found.push((family, act)),

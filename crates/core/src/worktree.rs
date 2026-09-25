@@ -38,6 +38,22 @@ pub struct Plan {
     /// made a second ago holds the source and nothing else, so without this a
     /// clone is a folder nothing can be built in
     pub env: Option<crate::devcontainer::Env>,
+    /// The project it is a piece of, by name: what a MicroVM made for it is
+    /// marked with. Empty where nothing is made
+    pub project: String,
+    /// How a MicroVM made for it signs in to the project's git server. Worked
+    /// out by the one pressing the button; asked for on the thread that makes it
+    pub sign_in: crate::config::FarSignIn,
+}
+
+/// The machines a making on a MicroVM made, as soon as it made them: the one
+/// the project's checkout is on, when there was none yet, and the worktree's
+/// own. Read by whoever writes the folder down, which is how a machine made
+/// is never a machine nobody knows about
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Machines {
+    pub checkout: Option<String>,
+    pub worktree: Option<String>,
 }
 
 impl Plan {
@@ -64,46 +80,56 @@ impl Plan {
     /// Everything that will run, in order.
     ///
     /// One command nearly always: a branch is cut from a checkout that is
-    /// already there. A machine that is made fresh has no checkout, so the
-    /// project is fetched first and the branch cut second -- two commands, and
-    /// both of them on screen, because a person checking what will happen is
-    /// owed all of it and not the first half.
+    /// already there. On a MicroVM the checkout is fetched first -- cloned,
+    /// when the project has none there yet -- and the branch cut after, in a
+    /// copy of that machine; every command of it on screen, because a person
+    /// checking what will happen is owed all of it and not the last half.
     pub fn argvs(&self) -> Vec<Vec<String>> {
-        let mut steps = self.cutting();
+        let mut steps = self.checking_out();
+        steps.extend(self.cutting());
         steps.extend(self.getting_ready());
         steps
     }
 
-    /// The commands that make the folder, before anything is run inside it
+    /// Whether this is made on a MicroVM
+    pub fn on_microvm(&self) -> bool {
+        self.host.as_ref().is_some_and(|h| h.is_made())
+    }
+
+    /// On a MicroVM with no checkout of the project yet: the clone that makes
+    /// one, on the machine made for it. Run once for the project, and every
+    /// worktree after is cut from what it made
+    fn checking_out(&self) -> Vec<Vec<String>> {
+        match self.host.as_ref() {
+            Some(h) if h.is_made() && h.instance.is_none() => vec![vec![
+                "git".into(),
+                "clone".into(),
+                "--".into(),
+                self.origin.clone(),
+                self.main.display().to_string(),
+            ]],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The commands that make the folder, before anything is run inside it.
+    /// On a MicroVM, in the copy made for the worktree: what the remote has
+    /// now first, so the branch grows from the base as it is today and not as
+    /// it was when the checkout was made
     fn cutting(&self) -> Vec<Vec<String>> {
-        let fresh_machine = self.host.as_ref().is_some_and(|h| h.is_made());
-        if !fresh_machine {
+        if !self.on_microvm() {
             return vec![self.argv()];
         }
-        let at = self.folder.display().to_string();
         vec![
             vec![
                 "git".into(),
-                "clone".into(),
-                "--branch".into(),
-                // The branch a clone lands on is named as the remote has it,
-                // without the remote's own prefix
-                self.base.rsplit('/').next().unwrap_or(&self.base).to_string(),
-                self.origin.clone(),
-                at.clone(),
-            ],
-            vec![
-                "git".into(),
                 "-C".into(),
-                at.clone(),
-                "switch".into(),
-                // Following nothing, for the same reason as a worktree's
-                // branch (`argv`): grown from the clone's own branch, a
-                // setting of "always" would have it follow that one
-                "--no-track".into(),
-                "-c".into(),
-                self.branch.clone(),
+                self.main.display().to_string(),
+                "fetch".into(),
+                "--quiet".into(),
+                "origin".into(),
             ],
+            self.argv(),
         ]
     }
 
@@ -289,7 +315,18 @@ pub fn plan_for(
     // somebody else's project is already standing in -- and a path that is on
     // screen looking fine until you press it is the worst way to find out
     free_to_make(&folder)?;
-    Ok(Plan { folder, main, branch, base, fresh, host: None, origin: String::new(), env })
+    Ok(Plan {
+        folder,
+        main,
+        branch,
+        base,
+        fresh,
+        host: None,
+        origin: String::new(),
+        env,
+        project: String::new(),
+        sign_in: Default::default(),
+    })
 }
 
 /// Whether a folder can be made here, in the words the person will read.
@@ -316,15 +353,8 @@ fn free_to_make(folder: &Path) -> Result<()> {
 /// the line, shows it, and lets git on the far side be the one that refuses.
 /// A refusal from git arrives with git's own words, which is better than a
 /// guess made here.
-pub fn plan_on(
-    host: &crate::config::HostSpec,
-    branch: &str,
-    prefix: &str,
-    base: Option<&str>,
-    at: Option<&str>,
-    origin: &str,
-    env: Option<crate::devcontainer::Env>,
-) -> Result<Plan> {
+pub fn plan_on(far: &Far, branch: &str, prefix: &str, base: Option<&str>, at: Option<&str>) -> Result<Plan> {
+    let host = far.host;
     let branch = branch.trim().to_string();
     if branch.is_empty() {
         bail!(crate::i18n::t("err.worktree.no_branch"));
@@ -332,49 +362,110 @@ pub fn plan_on(
     if !name_is_usable(&branch) {
         bail!(crate::i18n::tp("err.worktree.bad_branch", &[("name", &branch)]));
     }
-    // A machine that is made has no project on it yet, so what it needs is
-    // somewhere to fetch one from; one that is already there needs the folder
-    // the project is already in. Neither can stand in for the other
-    let project = match host.is_made() {
-        true => {
-            if origin.trim().is_empty() {
+    // Where the project is checked out over there, which every worktree there
+    // is cut from. A server has to have been told; a MicroVM with none yet
+    // gets one, cloned from where the project is fetched from, in a folder
+    // named for the project in the one place every such machine has
+    let (checkout, instance, placement) = match (far.home, host.is_made()) {
+        (Some(h), _) if !h.at.trim().is_empty() => {
+            (h.at.trim().trim_end_matches('/').to_string(), h.sandbox.clone(), h.placement.clone())
+        }
+        (_, true) => {
+            if far.origin.trim().is_empty() {
                 bail!(crate::i18n::tp("err.worktree.no_origin", &[("host", &host.name)]));
             }
-            // Where a clone lands on a machine built from an image: its own
-            // home, which is the one path every one of these images has
-            host.project.as_deref().map(str::trim).filter(|p| !p.is_empty()).unwrap_or("/home/user")
+            (format!("{MICROVM_HOME}/{}", folder_leaf(far.project, "")), None, None)
         }
-        false => {
-            let p = host.project.as_deref().map(str::trim).unwrap_or_default();
-            if p.is_empty() {
-                bail!(crate::i18n::tp("err.worktree.no_project", &[("host", &host.name)]));
-            }
-            p
-        }
+        (_, false) => bail!(crate::i18n::tp(
+            "err.worktree.no_home",
+            &[("host", &host.name), ("project", far.project)]
+        )),
     };
     let folder = match at.map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => p.to_string(),
-        None => match host.is_made() {
-            // Nothing is there yet: the clone is made in the machine's own
-            // place, a folder named for the work as it is everywhere else
-            true => format!("{}/{}", project.trim_end_matches('/'), folder_leaf(&branch, prefix)),
-            false => remote_folder(host, project, &branch, prefix).map_err(|e| anyhow::anyhow!(e))?,
-        },
+        // A worktree on a MicroVM is a machine of its own, standing beside the
+        // checkout it was copied with, at the checkout's depth
+        None => {
+            let spec = match host.is_made() {
+                true => MICROVM_PLACEMENT.to_string(),
+                false => placement.as_deref().map(str::trim).filter(|p| !p.is_empty()).unwrap_or(REMOTE_PLACEMENT).to_string(),
+            };
+            remote_folder(&spec, &checkout, &branch, prefix).map_err(|e| anyhow::anyhow!(e))?
+        }
     };
     Ok(Plan {
-        main: PathBuf::from(project),
+        main: PathBuf::from(&checkout),
         branch,
         folder: PathBuf::from(folder),
-        base: base.map(str::trim).filter(|b| !b.is_empty()).unwrap_or("origin/main").to_string(),
+        // A clone knows the remote's own default as `origin/HEAD`, which is
+        // what a branch grows from when nobody named another
+        base: base.map(str::trim).filter(|b| !b.is_empty()).unwrap_or(REMOTE_BASE).to_string(),
         // Git says otherwise if it is not, and says it in git's words
         fresh: true,
-        host: Some(host.clone()),
-        origin: origin.trim().to_string(),
+        host: Some(host.with_instance(instance.as_deref())),
+        origin: far.origin.trim().to_string(),
         // Whatever kind of machine it is. A new worktree is bare wherever it
         // is cut: nothing is installed in it, here or on a server
-        env,
+        env: far.env.clone(),
+        project: far.project.to_string(),
+        sign_in: far.sign_in.clone(),
     })
 }
+
+/// A project on a machine that is not this one, as a worktree there is
+/// planned from
+#[derive(Debug, Clone)]
+pub struct Far<'a> {
+    pub host: &'a crate::config::HostSpec,
+    /// The project's checkout on that machine, when it has one
+    pub home: Option<&'a crate::config::ProjectHome>,
+    /// The project, by name
+    pub project: &'a str,
+    /// Where the project can be fetched from, for a MicroVM that has no
+    /// checkout of it yet
+    pub origin: &'a str,
+    pub env: Option<crate::devcontainer::Env>,
+    pub sign_in: crate::config::FarSignIn,
+}
+
+/// Where a MicroVM fetches a project from: the project's own remote, spelled
+/// the way a machine with no keys of this PC's can fetch it -- over HTTPS,
+/// where the sign-in the service puts on its requests reaches it -- and with
+/// any credential written into the address taken out
+pub fn fetchable(url: &str) -> String {
+    let url = crate::folders::scrub(url.trim());
+    // `git@github.com:owner/repo.git`
+    if let Some((user_host, path)) = url.split_once(':')
+        && !user_host.contains('/')
+        && user_host.contains('@')
+        && !path.starts_with("//")
+    {
+        let host = user_host.rsplit('@').next().unwrap_or(user_host);
+        return format!("https://{host}/{}", path.trim_start_matches('/'));
+    }
+    // `ssh://git@github.com[:22]/owner/repo.git`
+    if let Some(rest) = url.strip_prefix("ssh://") {
+        let rest = rest.rsplit_once('@').map(|(_, r)| r).unwrap_or(rest);
+        let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let host = host.split(':').next().unwrap_or(host);
+        return format!("https://{host}/{path}");
+    }
+    url
+}
+
+/// Where a project is checked out on a MicroVM made for it: the home every
+/// image of the service has, which is the one path to be sure of
+pub const MICROVM_HOME: &str = "/home/user";
+
+/// Where a worktree goes on a MicroVM: beside the checkout, as
+/// `<checkout>-<name>`. Its machine is a copy of the checkout's, so the two
+/// never meet, and a path that says which piece of work it is reads the same
+/// in every list
+pub const MICROVM_PLACEMENT: &str = "{origin_folder}/..";
+
+/// What a branch on another machine grows from when nobody names another:
+/// the remote's own default, as a clone knows it
+pub const REMOTE_BASE: &str = "origin/HEAD";
 
 /// Where a branch goes on a machine this program has never looked at.
 ///
@@ -383,17 +474,11 @@ pub fn plan_on(
 /// `{origin_folder}` it is measured from the checkout over there, and anything
 /// else is an absolute path of that machine. `{worktrees}` is refused: this
 /// app keeps no place of its own on a machine it has never looked at, and
-/// inventing `$HOME` for one would be inventing. A machine that says nothing
+/// inventing `$HOME` for one would be inventing. A checkout that says nothing
 /// is given [`REMOTE_PLACEMENT`], which the settings show as it is written
-fn remote_folder(host: &crate::config::HostSpec, project: &str, branch: &str, prefix: &str) -> Result<String, String> {
+pub fn remote_folder(spec: &str, project: &str, branch: &str, prefix: &str) -> Result<String, String> {
     let project = project.trim_end_matches('/');
     let origin = project.rsplit('/').next().unwrap_or("repo").to_string();
-    let spec = host
-        .branches
-        .as_deref()
-        .map(str::trim)
-        .filter(|b| !b.is_empty())
-        .unwrap_or(REMOTE_PLACEMENT);
     let base = resolve_placement(spec, project, "", &origin, &origin, true)?;
     let leaf = folder_leaf(branch, prefix);
     let parent = project.rsplit_once('/').map(|(p, _)| if p.is_empty() { "/" } else { p }).unwrap_or("");
@@ -466,6 +551,15 @@ impl std::error::Error for Stopped {}
 /// back: a folder half made and written down nowhere is one nobody will find
 /// again, and it would stand in the way of trying the same name once more
 fn make(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool) -> Result<()> {
+    make_noting(plan, at_stage, stop, &|_| {})
+}
+
+/// The same, telling `made` about each machine a MicroVM making makes, the
+/// moment it is made
+fn make_noting(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool, made: &dyn Fn(&Machines)) -> Result<()> {
+    if plan.on_microvm() {
+        return make_on_microvm(plan, at_stage, stop, made);
+    }
     at_stage(Stage::Preparing);
     // A folder on another machine is not ours to look at, and git over there
     // refuses in its own words if something is already standing in the way
@@ -514,13 +608,175 @@ fn make(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool) -> Resul
     Ok(())
 }
 
+/// A worktree made on a MicroVM.
+///
+/// The project's checkout there is the machine every worktree is copied from:
+/// made the first time -- a machine, and the project cloned into it -- and
+/// copied each time after, as it is at that moment, so whatever was installed
+/// or signed in to on it is there in the copy. The branch is cut in the copy,
+/// from what the remote has now.
+///
+/// The machine a making made is said the moment it is made, so a making that
+/// fails later still leaves the checkout's machine written down; the copy,
+/// which holds nothing yet, is thrown away with the failure
+fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool, made: &dyn Fn(&Machines)) -> Result<()> {
+    at_stage(Stage::Preparing);
+    let host = plan.host.as_ref().expect("a MicroVM plan names its machine");
+    let key = crate::e2b::key().ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.e2b.no_key")))?;
+    let sign_in = plan.sign_in.resolve().map_err(|e| anyhow::anyhow!(e))?;
+    let minutes = host.minutes_or_default();
+    if stop() {
+        return Err(Stopped.into());
+    }
+    at_stage(Stage::Creating);
+    let mut noted = Machines::default();
+    // Several worktrees asked for at once -- one per AI -- share the one
+    // checkout the first of them makes, rather than each making its own
+    let made_here = match host.instance.clone() {
+        Some(id) => Ok(Err(id)),
+        None => checkout_slot(&host.name, &plan.project),
+    };
+    let checkout = match made_here {
+        Ok(Err(id)) => {
+            // Signed in as the account chosen now, which may not be the one it
+            // was made with, before it is copied: the copy keeps what it had
+            crate::e2b::connect(&key, &id, minutes)?;
+            crate::e2b::sign_in_as(&key, &id, sign_in.as_ref())?;
+            id
+        }
+        Err(why) => bail!(why),
+        Ok(Ok(slot)) => {
+            let making = || -> Result<String> {
+                let asking = crate::e2b::Asking {
+                    template: host.template_or_default().to_string(),
+                    minutes,
+                    marks: crate::e2b::marks(&plan.project),
+                    sign_in: sign_in.clone(),
+                };
+                let box_ = crate::e2b::create(&key, &asking)?;
+                let here = Plan { host: Some(host.with_instance(Some(&box_.id))), ..plan.clone() };
+                for argv in plan.checking_out() {
+                    if let Err(e) = run_for(&here, &argv) {
+                        // A machine the project could not be put on is no checkout
+                        let _ = crate::e2b::kill(&key, &box_.id);
+                        return Err(e);
+                    }
+                }
+                Ok(box_.id)
+            };
+            let got = making();
+            slot.publish(got.as_ref().map(String::clone).map_err(|e| format!("{e:#}")));
+            let id = got?;
+            noted.checkout = Some(id.clone());
+            made(&noted);
+            id
+        }
+    };
+    if stop() {
+        return Err(Stopped.into());
+    }
+    let copy = crate::e2b::fork(&key, &checkout, minutes)?;
+    noted.worktree = Some(copy.id.clone());
+    made(&noted);
+    let here = Plan { host: Some(host.with_instance(Some(&copy.id))), ..plan.clone() };
+    let steps = here.cutting().into_iter().map(|a| (Stage::Creating, a))
+        .chain(here.getting_ready().into_iter().map(|a| (Stage::SettingUp, a)));
+    for (stage, argv) in steps {
+        at_stage(stage);
+        let ran = run_for(&here, &argv);
+        let stopped = stop();
+        if ran.is_err() || stopped {
+            if stopped {
+                at_stage(Stage::Stopping);
+            }
+            let _ = crate::e2b::kill(&key, &copy.id);
+            return match ran {
+                Err(e) if !stopped => Err(e),
+                _ => Err(Stopped.into()),
+            };
+        }
+    }
+    let _ = run_for(
+        &here,
+        &[
+            "git".into(),
+            "-C".into(),
+            here.folder.display().to_string(),
+            "config".into(),
+            format!("branch.{}.shikishaBase", here.branch),
+            here.base.clone(),
+        ],
+    );
+    Ok(())
+}
+
+/// A project's checkout on a MicroVM, while the first making that wanted one
+/// is making it
+struct Slot {
+    made: std::sync::Mutex<Option<Result<String, String>>>,
+    said: std::sync::Condvar,
+}
+
+impl Slot {
+    fn publish(&self, got: Result<String, String>) {
+        let failed = got.is_err();
+        *self.made.lock().unwrap_or_else(|e| e.into_inner()) = Some(got);
+        self.said.notify_all();
+        // A failure is not kept: the next making tries again
+        if failed && let Ok(mut all) = CHECKOUTS.get_or_init(Default::default).lock() {
+            all.retain(|_, s| !std::ptr::eq(std::sync::Arc::as_ptr(s), self));
+        }
+    }
+}
+
+type Slots = std::collections::HashMap<(String, String), std::sync::Arc<Slot>>;
+
+static CHECKOUTS: std::sync::OnceLock<std::sync::Mutex<Slots>> = std::sync::OnceLock::new();
+
+/// The checkout of `project` on the MicroVM entry `host`, for a making that
+/// found none written down: `Ok(Ok(slot))` when this making is the one to
+/// make it (and publish it through the slot), `Ok(Err(id))` when another
+/// making has made it -- waited for, if it is still being made -- and `Err`
+/// when that one failed
+fn checkout_slot(host: &str, project: &str) -> Result<Result<std::sync::Arc<Slot>, String>, String> {
+    let key = (host.to_string(), project.to_string());
+    let slot = {
+        let mut all = CHECKOUTS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        match all.get(&key) {
+            Some(s) => s.clone(),
+            None => {
+                let s = std::sync::Arc::new(Slot { made: Default::default(), said: Default::default() });
+                all.insert(key, s.clone());
+                return Ok(Ok(s));
+            }
+        }
+    };
+    let mut made = slot.made.lock().unwrap_or_else(|e| e.into_inner());
+    while made.is_none() {
+        made = slot.said.wait(made).unwrap_or_else(|e| e.into_inner());
+    }
+    match made.clone().unwrap_or_else(|| Err(String::new())) {
+        Ok(id) => Ok(Err(id)),
+        Err(e) => Err(e),
+    }
+}
+
+/// A checkout on a MicroVM that is gone: the next making that wants one makes
+/// it afresh rather than being handed a machine that no longer exists
+pub fn forget_checkout(id: &str) {
+    if let Ok(mut all) = CHECKOUTS.get_or_init(Default::default).lock() {
+        all.retain(|_, s| !matches!(&*s.made.lock().unwrap_or_else(|e| e.into_inner()), Some(Ok(x)) if x == id));
+    }
+}
+
 /// Takes back a folder that was being made. Only what this making made: the
 /// folder was not there before it began (`free_to_make`), and a new branch is
 /// deleted only while it still points where it grew from, so nothing anybody
 /// committed is ever lost to it
 fn take_back(plan: &Plan) {
-    // A made machine is thrown away whole; nothing in it outlives the making
-    if plan.host.as_ref().is_some_and(|h| h.is_made()) {
+    // A worktree on a MicroVM is its own machine, and goes with it (see
+    // `Making::start`); nothing of it is anywhere else
+    if plan.on_microvm() {
         return;
     }
     let folder = plan.folder.display().to_string();
@@ -571,6 +827,7 @@ pub struct Making {
     stage: std::sync::Arc<std::sync::atomic::AtomicU8>,
     stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
     outcome: std::sync::Arc<std::sync::Mutex<Option<Result<Brought, String>>>>,
+    machines: std::sync::Arc<std::sync::Mutex<Machines>>,
 }
 
 impl Making {
@@ -582,8 +839,10 @@ impl Making {
             stage: Default::default(),
             stopping: Default::default(),
             outcome: Default::default(),
+            machines: Default::default(),
         };
         let (stage, stopping, outcome) = (making.stage.clone(), making.stopping.clone(), making.outcome.clone());
+        let machines = making.machines.clone();
         std::thread::spawn(move || {
             let at_stage = |s: Stage| {
                 // Once stopping, it says so until it has stopped
@@ -592,7 +851,8 @@ impl Making {
                 }
             };
             let stop = || stopping.load(Ordering::Relaxed);
-            let made = make(&plan, &at_stage, &stop).map(|()| {
+            let noted = |m: &Machines| *machines.lock().unwrap_or_else(|e| e.into_inner()) = m.clone();
+            let made = make_noting(&plan, &at_stage, &stop, &noted).map(|()| {
                 at_stage(Stage::SettingUp);
                 carry_into(&plan, &carry)
             });
@@ -601,6 +861,11 @@ impl Making {
             let made = match made {
                 Ok(_) if stop() => {
                     take_back(&plan);
+                    // ...and on a MicroVM the worktree is its machine
+                    let copy = machines.lock().unwrap_or_else(|e| e.into_inner()).worktree.take();
+                    if let (Some(id), Some(key)) = (copy, crate::e2b::key()) {
+                        let _ = crate::e2b::kill(&key, &id);
+                    }
                     Err(Stopped.into())
                 }
                 other => other,
@@ -628,6 +893,7 @@ impl Making {
             stage: Default::default(),
             stopping: Default::default(),
             outcome: Default::default(),
+            machines: Default::default(),
         };
         making.stage.store(Stage::SettingUp as u8, Ordering::Relaxed);
         let outcome = making.outcome.clone();
@@ -640,6 +906,11 @@ impl Making {
 
     pub fn stage(&self) -> Stage {
         Stage::of(self.stage.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// The machines a making on a MicroVM has made so far
+    pub fn machines(&self) -> Machines {
+        self.machines.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Asks it to stop at the next command, and to take back what it made
@@ -1456,6 +1727,25 @@ impl Removal {
             let said = discard_waiting(&folder).map_err(|e| format!("{e:#}"));
             if let Err(why) = &said {
                 crate::append_hook_log(&format!("could not remove {}: {why}", folder.display()));
+            }
+            *outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(said);
+        });
+        removal
+    }
+
+    /// A folder on a MicroVM, which is its machine: the machine goes, and
+    /// with it everything in the folder. Nothing of it is on this PC to remove
+    pub fn start_on_microvm(folder: PathBuf, host: crate::config::HostSpec) -> Removal {
+        let removal = Removal { folder: folder.clone(), outcome: Default::default() };
+        let outcome = removal.outcome.clone();
+        std::thread::spawn(move || {
+            let said = match (host.instance.as_deref(), crate::e2b::key()) {
+                (None, _) => Ok(()),
+                (Some(_), None) => Err(crate::i18n::t("err.e2b.no_key")),
+                (Some(id), Some(key)) => crate::e2b::kill(&key, id).map_err(|e| format!("{e:#}")),
+            };
+            if let Err(why) = &said {
+                crate::append_hook_log(&format!("could not remove {} on {}: {why}", folder.display(), host.name));
             }
             *outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(said);
         });
@@ -2386,6 +2676,17 @@ pub fn suggest(main: &Path, placement: &Placement) -> String {
     String::new()
 }
 
+/// A name for the next branch of a project with no checkout on this PC: drawn
+/// the same way, with the project's prefix in front. Whether it is free is the
+/// far machine's to say -- git there refuses a branch it already has, in its
+/// own words -- since asking it on every keystroke would be a round trip each
+pub fn suggest_anywhere(prefix: &str) -> String {
+    match petname::petname(2, "-") {
+        Some(name) => with_prefix(prefix, &name),
+        None => with_prefix(prefix, &format!("work-{}", crate::random_hex(3))),
+    }
+}
+
 /// One folder per AI: the same name with the AI's own on the end, so the
 /// branches say at a glance who is working on which. Every plan is made
 /// before any runs, so what is shown is the whole of what will happen
@@ -2406,20 +2707,12 @@ pub fn fan(
 }
 
 /// The same, on another machine: one folder there per AI.
-pub fn fan_on(
-    host: &crate::config::HostSpec,
-    name: &str,
-    prefix: &str,
-    base: Option<&str>,
-    ais: &[String],
-    origin: &str,
-    env: Option<crate::devcontainer::Env>,
-) -> Vec<(String, Result<Plan>)> {
+pub fn fan_on(far: &Far, name: &str, prefix: &str, base: Option<&str>, ais: &[String]) -> Vec<(String, Result<Plan>)> {
     ais.iter()
         .map(|ai| {
             let ai = ai.trim().to_string();
             let branch = format!("{}-{ai}", name.trim());
-            (ai.clone(), plan_on(host, &branch, prefix, base, None, origin, env.clone()))
+            (ai.clone(), plan_on(far, &branch, prefix, base, None))
         })
         .collect()
 }
@@ -2586,12 +2879,10 @@ pub fn run_for(plan: &Plan, argv: &[String]) -> Result<()> {
     let Some(host) = plan.host.as_ref() else {
         return run(argv);
     };
-    // A machine that is made is asked for once and then kept, so the two
-    // commands of a clone land on the same machine. A second plan gets a
-    // second machine, which is right: two folders are two machines
+    // A MicroVM: the one of its machines the plan names at this step -- the
+    // checkout's for the clone, the worktree's own after it is copied
     if host.is_made() {
-        let sandbox =
-            crate::e2b::sandbox_for(host, plan.env.as_ref().and_then(|e| e.image.as_deref()))?;
+        let sandbox = crate::e2b::machine(host)?;
         let line = for_a_shell(argv);
         let ran = crate::e2b::exec(&sandbox, &line, None)?;
         if ran.ok() {
@@ -2766,18 +3057,28 @@ mod tests {
         assert!(at("{worktrees}").is_err(), "a server has no place of this app's");
         assert!(at("trees").is_err());
         assert!(at("C:\\trees").is_err(), "a Windows path is not a server's");
-        let host = crate::config::HostSpec {
-            name: "pi".into(),
-            project: Some("/home/pi/site".into()),
-            ..Default::default()
-        };
-        let p = plan_on(&host, "me/feature/x", "me/", Some("main"), None, "", None).unwrap();
+        let host = crate::config::HostSpec { name: "pi".into(), ..Default::default() };
+        let home = crate::config::ProjectHome { host: "pi".into(), at: "/home/pi/site".into(), ..Default::default() };
+        let p = plan_on(&far(&host, Some(&home), "site", ""), "me/feature/x", "me/", Some("main"), None).unwrap();
         assert_eq!(p.folder, PathBuf::from("/home/pi/site.branches/feature-x"), "the default, as it is written");
-        let beside = crate::config::HostSpec { branches: Some("{origin_folder}/..".into()), ..host.clone() };
-        let p = plan_on(&beside, "me/feature/x", "me/", Some("main"), None, "", None).unwrap();
+        let beside = crate::config::ProjectHome { placement: Some("{origin_folder}/..".into()), ..home.clone() };
+        let p = plan_on(&far(&host, Some(&beside), "site", ""), "me/feature/x", "me/", Some("main"), None).unwrap();
         assert_eq!(p.folder, PathBuf::from("/home/pi/site-feature-x"));
-        let bad = crate::config::HostSpec { branches: Some("{worktrees}".into()), ..host };
-        assert!(plan_on(&bad, "feature", "", Some("main"), None, "", None).is_err());
+        let bad = crate::config::ProjectHome { placement: Some("{worktrees}".into()), ..home };
+        assert!(plan_on(&far(&host, Some(&bad), "site", ""), "feature", "", Some("main"), None).is_err());
+        // A server the project has no checkout on is said as that, naming both
+        let err = plan_on(&far(&host, None, "site", ""), "feature", "", Some("main"), None).unwrap_err();
+        assert!(format!("{err:#}").contains("pi"), "{err:#}");
+    }
+
+    /// A project on another machine, as the dialog plans a worktree of it
+    fn far<'a>(
+        host: &'a crate::config::HostSpec,
+        home: Option<&'a crate::config::ProjectHome>,
+        project: &'a str,
+        origin: &'a str,
+    ) -> Far<'a> {
+        Far { host, home, project, origin, env: None, sign_in: Default::default() }
     }
 
     /// A place that lands inside the checkout is refused before anything is
@@ -2909,50 +3210,65 @@ mod tests {
         assert!(at.ends_with("fix-crash"));
     }
 
-    /// A machine that is made fresh has no project on it, so the project is
-    /// fetched before the branch is cut.
+    /// A MicroVM with no checkout of the project gets one first, cloned from
+    /// where the project is fetched from; every worktree after is cut from it,
+    /// in a copy of that machine, from what the remote has now.
     ///
-    /// Two commands, both on screen. A person checking what is about to happen
-    /// is owed all of it: shown only the first half, they would be agreeing to
-    /// a clone and getting a branch as well
+    /// Every command on screen. A person checking what is about to happen is
+    /// owed all of it: shown only the last half, they would be agreeing to a
+    /// branch and getting a clone as well
     #[test]
-    fn a_machine_made_from_nothing_is_given_the_project_first() {
+    fn a_microvm_is_given_the_project_once_and_cut_from_it_after() {
         let host = crate::config::HostSpec {
-            name: "sandbox".into(),
+            name: "vm".into(),
             kind: Some("e2b".into()),
             template: Some("base".into()),
             ..Default::default()
         };
         assert!(host.is_made(), "it is not treated as a machine that gets made");
 
-        let p = plan_on(&host, "polite-marmot", "", Some("origin/master"), None, "https://example.test/p.git", None)
+        let p = plan_on(&far(&host, None, "Polite App", "https://example.test/p.git"), "polite-marmot", "", None, None)
             .expect("it can be planned");
+        assert!(p.host.as_ref().is_some_and(|h| h.instance.is_none()), "a checkout machine was assumed");
         let steps = p.argvs();
-        assert_eq!(steps.len(), 2, "not two steps: {steps:?}");
-        // The project arrives first, on the branch the remote calls it, with
-        // the remote's own prefix left off -- a clone has no remotes yet
         assert_eq!(
-            steps[0],
-            ["git", "clone", "--branch", "master", "https://example.test/p.git", "/home/user/polite-marmot"]
+            steps,
+            [
+                vec!["git", "clone", "--", "https://example.test/p.git", "/home/user/Polite-App"],
+                vec!["git", "-C", "/home/user/Polite-App", "fetch", "--quiet", "origin"],
+                vec![
+                    "git", "-C", "/home/user/Polite-App", "worktree", "add", "--no-track", "-b", "polite-marmot",
+                    "/home/user/Polite-App-polite-marmot", "origin/HEAD"
+                ],
+            ]
         );
-        assert_eq!(steps[1], ["git", "-C", "/home/user/polite-marmot", "switch", "--no-track", "-c", "polite-marmot"]);
-        // Both of them are what the person reads
-        assert_eq!(p.line().lines().count(), 2, "only one of them is visible: {}", p.line());
+        // All of them are what the person reads
+        assert_eq!(p.line().lines().count(), 3, "not all of them are visible: {}", p.line());
+        assert_eq!(p.project, "Polite App", "the machine would not be marked with its project");
 
         // Nowhere to fetch from is a refusal, not a clone of nothing
-        assert!(plan_on(&host, "polite-marmot", "", Some("origin/master"), None, "", None).is_err());
+        assert!(plan_on(&far(&host, None, "app", ""), "polite-marmot", "", None, None).is_err());
 
-        // A machine that is already there is one command, from the checkout
-        let there = crate::config::HostSpec {
-            name: "bench".into(),
-            at: "ssh://me@host:22".into(),
-            project: Some("/srv/p".into()),
+        // With a checkout there, the worktree is cut from it: no clone, and
+        // the machine named is the checkout's, which is what is copied
+        let home = crate::config::ProjectHome {
+            host: "vm".into(),
+            at: "/home/user/app".into(),
+            sandbox: Some("isb123".into()),
             ..Default::default()
         };
+        let q = plan_on(&far(&host, Some(&home), "app", ""), "login", "", Some("origin/main"), None).expect("it can be planned");
+        assert_eq!(q.host.as_ref().and_then(|h| h.instance.as_deref()), Some("isb123"));
+        assert_eq!(q.argvs().len(), 2, "{:?}", q.argvs());
+        assert_eq!(q.folder, PathBuf::from("/home/user/app-login"));
+
+        // A machine that is already there is one command, from the checkout
+        let there = crate::config::HostSpec { name: "bench".into(), at: "ssh://me@host:22".into(), ..Default::default() };
+        let home = crate::config::ProjectHome { host: "bench".into(), at: "/srv/p".into(), ..Default::default() };
         assert!(!there.is_made());
-        let q = plan_on(&there, "polite-marmot", "", Some("main"), None, "", None).expect("it can be planned");
-        assert_eq!(q.argvs().len(), 1);
-        assert!(q.line().contains("worktree add"), "{}", q.line());
+        let r = plan_on(&far(&there, Some(&home), "p", ""), "polite-marmot", "", Some("main"), None).expect("it can be planned");
+        assert_eq!(r.argvs().len(), 1);
+        assert!(r.line().contains("worktree add"), "{}", r.line());
     }
 
     /// One per AI on another machine is made on that machine, and nothing of
@@ -2962,13 +3278,9 @@ mod tests {
     /// files that come along were copied to a folder of that name on this one
     #[test]
     fn work_for_another_machine_stays_on_that_machine() {
-        let there = crate::config::HostSpec {
-            name: "bench".into(),
-            at: "ssh://me@host:22".into(),
-            project: Some("/srv/p".into()),
-            ..Default::default()
-        };
-        let fanned = fan_on(&there, "login", "", Some("main"), &["claude".into(), "codex".into()], "", None);
+        let there = crate::config::HostSpec { name: "bench".into(), at: "ssh://me@host:22".into(), ..Default::default() };
+        let home = crate::config::ProjectHome { host: "bench".into(), at: "/srv/p".into(), ..Default::default() };
+        let fanned = fan_on(&far(&there, Some(&home), "p", ""), "login", "", Some("main"), &["claude".into(), "codex".into()]);
         assert_eq!(fanned.len(), 2);
         for (ai, plan) in &fanned {
             let plan = plan.as_ref().expect("it can be planned");
@@ -3047,7 +3359,7 @@ tools/conpty.ps1"));
     #[test]
     fn a_project_that_says_what_it_needs_is_listened_to() {
         let host = crate::config::HostSpec {
-            name: "sandbox".into(),
+            name: "vm".into(),
             kind: Some("e2b".into()),
             template: Some("base".into()),
             ..Default::default()
@@ -3055,31 +3367,34 @@ tools/conpty.ps1"));
         let env = crate::devcontainer::read(
             r#"{"image":"node:22","onCreateCommand":"npm ci","postCreateCommand":["npm","run","build"]}"#,
         );
-        let p = plan_on(&host, "work", "", Some("origin/main"), None, "https://example.test/p.git", env)
-            .expect("it can be planned");
+        let home = crate::config::ProjectHome {
+            host: "vm".into(),
+            at: "/home/user/p".into(),
+            sandbox: Some("isb1".into()),
+            ..Default::default()
+        };
+        let mut asked = far(&host, Some(&home), "p", "");
+        asked.env = env;
+        let p = plan_on(&asked, "work", "", Some("origin/main"), None).expect("it can be planned");
         let steps = p.argvs();
         assert_eq!(steps.len(), 4, "fetch, branch and two preparation steps: {steps:?}");
-        assert_eq!(steps[2], ["sh", "-lc", "cd /home/user/work && npm ci"]);
-        assert_eq!(steps[3], ["sh", "-lc", "cd /home/user/work && npm run build"]);
-        // The project's word about the image beats the machine's setting: a
-        // repository that names one has said the thing that matters most
-        let picked = |i| crate::e2b::template_for(&host, i);
-        assert_eq!(picked(p.env.as_ref().and_then(|e| e.image.as_deref())), "node:22");
-        assert_eq!(picked(None), "base", "say nothing and the machine's setting applies");
+        assert_eq!(steps[2], ["sh", "-lc", "cd /home/user/p-work && npm ci"]);
+        assert_eq!(steps[3], ["sh", "-lc", "cd /home/user/p-work && npm run build"]);
+        // What the machine is made from is the machine's own setting. An
+        // image a devcontainer names is a container's, which the service
+        // cannot make a machine from
+        assert_eq!(host.template_or_default(), "base");
+        assert_eq!(crate::config::HostSpec::default().template_or_default(), crate::config::MICROVM_TEMPLATE);
         // Every one of them is read before any of them runs
         assert_eq!(p.line().lines().count(), 4, "{}", p.line());
 
         // A machine that is already there still gets a folder with nothing
         // installed in it. The preparation follows the folder, not the machine
-        let there = crate::config::HostSpec {
-            name: "bench".into(),
-            at: "ssh://me@host:22".into(),
-            project: Some("/srv/p".into()),
-            ..Default::default()
-        };
-        let q = plan_on(&there, "work", "", Some("main"), None, "",
-                        crate::devcontainer::read(r#"{"postCreateCommand":"npm ci"}"#))
-            .expect("it can be planned");
+        let there = crate::config::HostSpec { name: "bench".into(), at: "ssh://me@host:22".into(), ..Default::default() };
+        let home = crate::config::ProjectHome { host: "bench".into(), at: "/srv/p".into(), ..Default::default() };
+        let mut asked = far(&there, Some(&home), "p", "");
+        asked.env = crate::devcontainer::read(r#"{"postCreateCommand":"npm ci"}"#);
+        let q = plan_on(&asked, "work", "", Some("main"), None).expect("it can be planned");
         assert_eq!(q.argvs().len(), 2, "no preparation on a machine that already exists: {:?}", q.argvs());
         assert!(q.argvs()[1].last().is_some_and(|l| l.contains("npm ci")), "{:?}", q.argvs()[1]);
         // Nothing is fetched there: the project is on that machine already
@@ -3169,6 +3484,8 @@ tools/conpty.ps1"));
             host: None,
             origin: String::new(),
             env: None,
+            project: String::new(),
+            sign_in: Default::default(),
         };
         assert_eq!(
             plan.argv(),

@@ -256,6 +256,8 @@ not on its page. A name changed is a name changed here too.
 | Dialog (choosing, `.picker`) | `openBrowse(at, handBack)` | board (`shell.rs`) |
 | Settings stood over the board | `openSettings(section, ret, folder)` (window and phone alike; on a phone `openCfgLayer(params, size)` makes the frame inside it) | board (`shell.rs`) |
 | Line-drawn mark | `pickIcon(name)` | board (`shell.rs`) |
+| "+ Add a MicroVM" at the end of a MicroVM list | `addMicrovm(chosen)` (the settings' own form over the board; once it is saved, the function handed in is given the new MicroVM's name and carries the list on with it) | board (`shell.rs`) |
+| What a MicroVM signs in to the git server as | `drawSignIn(box, note, shown, change)` (the account, the kind of token, and what to use instead of one that never ends, in one place) | board (`shell.rs`) |
 | Toast | `toast(text, warn)` (`toast.rs` puts it into both pages) | both (`toast.rs`) |
 <!-- /code-entries -->
 

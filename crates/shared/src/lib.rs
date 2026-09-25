@@ -287,6 +287,10 @@ pub enum Ev {
     /// anything in it that is not committed. `unasked` is the person's
     /// "don't show this again", ticked in the question that came before it
     FolderDiscard { folder: String, unasked: bool },
+    /// The addresses a folder on a MicroVM answers on from anywhere: the
+    /// ports something listens on in there, each with its public URL. Asked
+    /// once when it is asked, since asking starts a paused machine
+    FarPorts { folder: String },
     /// A folder put out of sight until the program is started again. Nothing
     /// is written down and nothing on disk is touched: the settings still hold
     /// it, and the next launch shows it again. `hide` false with an empty
@@ -426,9 +430,12 @@ pub enum Ev {
     /// URL), `create` (`text` is the name) or `stop` (the clone under way).
     /// `parent` is the folder it goes in, and `ask` the dialog's own number
     /// for this attempt, so what it is told is about the attempt it is showing.
+    /// `microvm` is a clone onto a MicroVM (`text` is the URL, `host` the
+    /// MicroVM's entry). `project` names the project a folder on another
+    /// machine is the checkout of, when it was asked for from one.
     /// Window-only: what it makes is a
     /// folder on this PC, chosen with this PC's folder picker
-    AddProject { how: String, text: String, parent: String, ask: u64, host: String },
+    AddProject { how: String, text: String, parent: String, ask: u64, host: String, project: String },
     /// A folder on another machine, listed for the add-a-project dialog.
     /// `host` is the machine's name in the settings; `ask` the dialog's own
     /// number, so an answer to an older listing is not taken for this one.
@@ -985,6 +992,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             unasked: v.get("unasked").and_then(|x| x.as_bool()).unwrap_or(false),
         },
+        Some("farports") => Ev::FarPorts {
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
         Some("folderhide") => Ev::FolderHide {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             hide: v.get("hide").and_then(|x| x.as_bool()).unwrap_or(false),
@@ -1143,6 +1153,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             parent: v.get("parent").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             ask: v.get("ask").and_then(|x| x.as_u64()).unwrap_or(0),
             host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
+            project: v.get("project").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
         },
         Some("remotelist") => Ev::RemoteList {
             host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),

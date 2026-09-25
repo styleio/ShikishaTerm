@@ -3978,6 +3978,19 @@ pub(crate) fn themed(html: String) -> String {
             "{{HOST_MARKERS}}",
             &serde_json::to_string(&crate::config::HostMarkers::default()).unwrap_or_else(|_| "{}".into()),
         )
+        // What a machine that is not this one is given when its entry or its
+        // checkout says nothing, written into the forms as it is -- one
+        // spelling, the app's own
+        .replace(
+            "{{FAR_DEFAULTS}}",
+            &serde_json::json!({
+                "placement": crate::worktree::REMOTE_PLACEMENT,
+                "beside": crate::worktree::MICROVM_PLACEMENT,
+                "minutes": crate::config::MICROVM_MINUTES,
+                "template": crate::config::MICROVM_TEMPLATE,
+            })
+            .to_string(),
+        )
 }
 
 /// The settings page as it is written, before a language is laid over it.
@@ -9531,7 +9544,7 @@ function hostsCard() {
       rows.append(el("div", {class:"listrow secretrow", onclick: () => hostDialog(i, draw)},
         el("span", {class:"mono secretname"}, h.name || ""),
         el("span", {class:"hint mono secretdesc"},
-          made ? (h.template || "base") : (h.at || T["settings.hosts.at.ph"])),
+          made ? (h.template || FAR_DEFAULTS.template) : (h.at || T["settings.hosts.at.ph"])),
         el("span", {class:"hint"}, made ? T["settings.hosts.kind.e2b"] : T["settings.hosts.kind.ssh"]),
         el("span", {class:"go"}, "\u203a")));
     });
@@ -9556,25 +9569,24 @@ function freeHostName(base) {
 }
 
 // Adding one, or changing one. `at` is null for a new one, and `kind` says
-// which of the two it will be
-function hostDialog(at, redraw, kind) {
+// which of the two it will be. `done` is told the name of one added and
+// saved, for a dialog asked for from somewhere else (the board's "+ MicroVM"):
+// the settings are then saved as it closes, since nobody is on the page to
+// press Save
+function hostDialog(at, redraw, kind, done) {
   const editing = at !== null && at !== undefined;
   const h = editing ? (current.hosts[at] || {}) : {};
   const made = editing ? (h.kind || "").trim().toLowerCase() === "e2b" : kind === "e2b";
 
   const nameIn = el("input", {type:"text", class:"mono"});
-  nameIn.value = h.name || freeHostName(made ? "sandbox" : "machine");
+  nameIn.value = h.name || freeHostName(made ? "microvm" : "machine");
   const atIn = el("input", {type:"text", class:"mono", placeholder:T["settings.hosts.at.ph"]});
   atIn.value = h.at || "";
-  const projectIn = el("input", {type:"text", class:"mono", placeholder:T["settings.hosts.project.ph"]});
-  projectIn.value = h.project || "";
-  const branchesIn = el("input", {type:"text", class:"mono", placeholder:T["settings.hosts.branches.ph"]});
-  // Written out, the default too: where a worktree goes is never left unsaid
-  branchesIn.value = h.branches || "{origin_folder}.branches";
+  // Written out, the defaults too: nothing about a machine is left unsaid
   const templateIn = el("input", {type:"text", class:"mono", placeholder:T["settings.hosts.template.ph"]});
-  templateIn.value = h.template || "base";
-  const minutesIn = el("input", {type:"number", min:"1", class:"mono narrow", placeholder:"30"});
-  minutesIn.value = h.minutes != null ? String(h.minutes) : "";
+  templateIn.value = h.template || FAR_DEFAULTS.template;
+  const minutesIn = el("input", {type:"number", min:"1", class:"mono narrow"});
+  minutesIn.value = String(h.minutes != null ? h.minutes : FAR_DEFAULTS.minutes);
   // One service today. A picker with one entry rather than none, because the
   // next one is a row in this list and not a new screen
   const serviceIn = el("select");
@@ -9610,10 +9622,6 @@ function hostDialog(at, redraw, kind) {
         : (!/^ssh:\/\/[^@\s]+@[^\s:]+(:\d+)?$/.test(a) ? T["settings.hosts.at_bad"] : null);
       fieldFault(atIn, atWhy);
       if (atWhy && !first) first = {at: atIn, why: atWhy};
-      const pr = projectIn.value.trim();
-      const prWhy = !pr ? T["settings.hosts.project_required"] : null;
-      fieldFault(projectIn, prWhy);
-      if (prWhy && !first) first = {at: projectIn, why: prWhy};
     }
     held = first;
     save.classList.toggle("held", !!held);
@@ -9630,7 +9638,7 @@ function hostDialog(at, redraw, kind) {
     held.at.classList.add("lookhere");
     held.at.focus();
   }
-  for (const i of [nameIn, atIn, projectIn, templateIn, minutesIn]) i.addEventListener("input", recheck);
+  for (const i of [nameIn, atIn, templateIn, minutesIn]) i.addEventListener("input", recheck);
 
   const field = (label, control, hint) => el("div", {class:"field"},
     el("label", {}, label), el("div", {class:"fieldctl"}, control),
@@ -9659,7 +9667,8 @@ function hostDialog(at, redraw, kind) {
   }}, false);
   if (mark) atIn.addEventListener("input", () => mark.schedule());
 
-  const shut = () => back.remove();
+  const shut = () => { back.remove(); if (done && !closedBy) done(null); };
+  let closedBy = null;
   const back = openModal(
     el("div", {class:"mhead"},
       el("h2", {}, made ? T["settings.hosts.title.e2b"] : T["settings.hosts.title.ssh"]),
@@ -9674,8 +9683,7 @@ function hostDialog(at, redraw, kind) {
         : [field(T["settings.hosts.at"], atIn, ""),
            mark.box,
            credential,
-           field(T["settings.hosts.project"], projectIn, T["settings.hosts.project.hint"]),
-           field(T["settings.hosts.branches"], branchesIn, T["settings.hosts.branches.hint"])])),
+           el("div", {class:"hint"}, T["settings.hosts.projects.hint"])])),
     el("div", {class:"mfoot"},
       editing
         ? el("button", {class:"danger", onclick: async () => {
@@ -9702,23 +9710,25 @@ function hostDialog(at, redraw, kind) {
     if (held) { sayWhy(); return; }
     const it = editing ? current.hosts[at] : {};
     it.name = nameIn.value.trim();
+    // Where a project is checked out over there, and where its worktrees go,
+    // are the project's: whatever an older entry said of them goes
+    delete it.project; delete it.branches;
     if (made) {
       it.kind = "e2b";
-      it.template = templateIn.value.trim() || "base";
+      it.template = templateIn.value.trim() || FAR_DEFAULTS.template;
       const m = parseInt(minutesIn.value, 10);
-      if (Number.isFinite(m) && m > 0) it.minutes = m; else delete it.minutes;
+      it.minutes = Number.isFinite(m) && m > 0 ? m : FAR_DEFAULTS.minutes;
       // The leftovers of the other kind go, so a machine is only ever one kind
-      delete it.at; delete it.project; delete it.branches;
+      it.at = "";
     } else {
       delete it.kind; delete it.template; delete it.minutes;
       it.at = atIn.value.trim();
-      it.project = projectIn.value.trim();
-      const b = branchesIn.value.trim();
-      if (b) it.branches = b; else delete it.branches;
     }
     if (!editing) (current.hosts = current.hosts || []).push(it);
     if (mark) mark.commit();
+    closedBy = "save";
     refreshSave(); shut(); redraw();
+    if (done) done(it.name);
   });
   setTimeout(recheck, 0);
 }
@@ -12198,10 +12208,15 @@ function projectPane(desk, p) {
     sel.proj = "p:" + e.name;
     refreshSave(); render();
   });
+  const homes = (p.entry || {}).homes || [];
   box.append(card(T["settings.project.title"],
     row(T["settings.project.name"], nameIn),
     row(T["settings.project.at"], atIn,
       el("span", {class:"hint"}, T["settings.project.at.hint"])),
+    // Its checkouts on the other machines, each the one that machine's
+    // worktrees are cut from. Made where the project was added there
+    homes.length ? row(T["settings.project.homes"],
+      el("div", {}, ...homes.map(h => el("div", {class:"hint mono"}, h.host + ": " + h.at)))) : null,
     row(T["settings.project.repo"],
       el("span", {class:"hint mono"}, p.family || T["settings.project.repo.none"])),
     p.entry ? null : el("div", {class:"hint"}, T["settings.project.inferred"])));
@@ -12223,8 +12238,9 @@ function projectPane(desk, p) {
   box.append(folders);
 
   // The git account the column beside its folders signs in with, and reads
-  // pull request numbers with. Chosen here once for every folder of it
-  if (p.family) {
+  // pull request numbers with -- and a MicroVM of it signs in to the git
+  // server as. Chosen here once for every folder of it
+  if (p.family || homes.length) {
     const origin = [p.at].concat(p.folders.map(gi => (desk.folders[gi] || {}).cwd))
       .map(x => (FAMILIES[(x || "").trim()] || {}).origin).find(Boolean);
     const acctCard = card(T["settings.project.gitacct"],
@@ -12294,7 +12310,13 @@ function rulesCard(desk, p) {
   c.append(prefixRow);
   if (rulesOpen(p, "prefix")) c.append(prefixEditor(desk, p));
 
+  // Where its worktrees go on each other machine it is checked out on
+  for (const home of e.homes || []) c.append(...farPlaceRows(desk, p, home, change, now, ruled));
+
   // Where its folders go, and what it inherits, are read from its checkout
+  // here. A project checked out only on other machines has said all there
+  // is to say above
+  if (!(p.at || "").trim() && (e.homes || []).length) return c;
   if (!(p.at || "").trim()) {
     c.append(el("div", {class:"hint"}, T["settings.place.no_at"]),
       el("div", {class:"row"}, el("button", {onclick:() => goProjectSection(p.key, "basic")}, T["settings.place.set_at"])));
@@ -12313,6 +12335,41 @@ function rulesCard(desk, p) {
   c.append(inheritRow);
   if (rulesOpen(p, "inherit")) c.append(el("div", {class:"rulesedit"}, inheritPart(desk, p)));
   return c;
+}
+
+// Where a project's worktrees go on another machine it is checked out on.
+// A server's are written the way this PC's are, measured from the checkout
+// over there; a MicroVM's worktree is a machine of its own, standing beside
+// the checkout, and there is nothing to choose
+function farPlaceRows(desk, p, home, change, now, ruled) {
+  const h = (current.hosts || []).find(x => x.name === home.host) || {};
+  const made = (h.kind || "").trim().toLowerCase() === "e2b";
+  const part = "place@" + home.host;
+  const spec = made ? FAR_DEFAULTS.beside : (home.placement || FAR_DEFAULTS.placement);
+  const r = ruled(row(fill(T["settings.place.on"], {host: home.host}),
+    now(made ? el("span", {}, T["settings.place.microvm"]) : el("span", {class:"mono"}, spec),
+      el("div", {class:"hint mono"}, fill(T["settings.place.checkout_at"], {at: home.at}))),
+    made ? null : change(part)));
+  if (made || !rulesOpen(p, part)) return [r];
+  const input = el("input", {type:"text", class:"mono grow"});
+  input.value = spec;
+  // Written to the project's own entry for that machine, as it is typed
+  const put = v => {
+    const en = ensureProject(desk, p);
+    const it = (en.homes || []).find(x => x.host === home.host);
+    if (!it) return;
+    if (v.trim()) it.placement = v.trim(); else delete it.placement;
+    sel.proj = "p:" + en.name;
+    refreshSave();
+  };
+  input.addEventListener("input", () => put(input.value));
+  const set = v => { input.value = v; put(v); };
+  return [r, el("div", {class:"rulesedit"},
+    el("div", {class:"row"}, input),
+    el("div", {class:"row placequick"},
+      el("button", {class:"quiet", onclick:() => set(FAR_DEFAULTS.placement)}, T["settings.place.far_own"]),
+      el("button", {class:"quiet", onclick:() => set(FAR_DEFAULTS.beside)}, T["settings.place.beside"])),
+    el("div", {class:"hint"}, T["settings.place.far_hint"]))];
 }
 
 // What every branch of this project is called before its own name. Typed
@@ -12414,6 +12471,10 @@ function inheritNow(desk, p) {
 // be a second name for another
 const PLACES = {};
 const HOST_MARKERS = {{HOST_MARKERS}};
+// What a machine that is not this one is given when nothing is written: where
+// a server's worktrees go, where a MicroVM's go, how long a MicroVM runs
+// untouched, and what it is made from. Written into the forms as they are
+const FAR_DEFAULTS = {{FAR_DEFAULTS}};
 const placeSig = (desk, p) => {
   const e = p.entry || {};
   return JSON.stringify([p.at, e.placement || "", e.branch_prefix || "", e.name || p.name, current.host_markers || null]);
@@ -15363,6 +15424,16 @@ load().then(() => {
   returnOnSave = q.get("ret") === "1";
   // ?section=<id> deep-links straight to one global card (the ⚙ shortcuts).
   const sec = q.get("section");
+  // The board's "+ Add a MicroVM": the one form, over the board, and saved as
+  // it closes -- the picker it was pressed in goes on with the new one chosen
+  if (sec === "microvm-add") {
+    render();
+    hostDialog(null, () => {}, "e2b", async name => {
+      if (name) await save();
+      closeSettings();
+    });
+    return;
+  }
   if (sec && globalSections().some(s => s.id === sec)) {
     goSection(sec, "center");
     return;
@@ -16572,6 +16643,9 @@ mod tests {
             .contains(r#"const projectAsk = sec === "project" || (sec || "").startsWith("project-");"#);
         assert!(project, "the project's own page is no longer reachable by name");
 
+        // The one form the board opens by itself, over the board: a MicroVM
+        // added from a picker. It has to be answered on this page
+        assert!(PAGE.contains(r#"if (sec === "microvm-add") {"#), "the board's + MicroVM opens nothing");
         for ask in &asks {
             // "words" is a browser tab's own models, reached by the tab's key,
             // and "words-slow" the same, opened to say why the page is slow
@@ -16583,7 +16657,8 @@ mod tests {
                 || ask == "project"
                 || project_card
                 || ask == "words"
-                || ask == "words-slow";
+                || ask == "words-slow"
+                || ask == "microvm-add";
             assert!(known, "the board sends people to \"{ask}\", which is no screen these settings have");
         }
         // ...and the desk's own cards, which those names point at
