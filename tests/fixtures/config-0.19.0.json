@@ -1,0 +1,21 @@
+{
+  "language": "ja",
+  "nest_worktrees": false,
+  "hosts": [
+    { "name": "pi", "at": "ssh://pi@raspberrypi.local:22", "project": "/home/pi/site", "branches": "/home/pi/trees" },
+    { "name": "box", "at": "ssh://me@box:22", "project": "/srv/app" }
+  ],
+  "desks": [
+    {
+      "name": "Check",
+      "id": "check",
+      "folders": [{ "cwd": "D:/work/site", "project": "site", "tabs": [] }],
+      "projects": [
+        { "name": "site", "at": "D:/work/site", "placement": ".." },
+        { "name": "app", "at": "D:/work/app", "placement": "" },
+        { "name": "api", "at": "D:/work/api", "placement": "D:\\trees" },
+        { "name": "web", "at": "D:/work/web" }
+      ]
+    }
+  ]
+}

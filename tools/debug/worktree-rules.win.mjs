@@ -195,23 +195,39 @@ try {
     + ' && getComputedStyle(document.querySelector("body > .layout")).display === "none"'), 'the settings page itself is not shown, only the dialog');
   check(await cfg.run('document.getElementById("floattitle").textContent') === '新しいプロジェクトの、ワークツリーの作成ルール', 'the dialog says what it is about');
   check(await cfg.run('document.getElementById("floatwhere").textContent') === 'site', 'and which project');
-  check(await cfg.run('!!document.querySelector("#floatbody #project-prefix") && !!document.querySelector("#floatbody #project-place") && !!document.querySelector("#floatbody #project-bring")'),
-    'prefix, placement and the files to inherit are in the dialog');
-  check(await cfg.run('document.getElementById("rulesgo").textContent') === 'このまま次へ', 'nothing changed yet: the press keeps what is there');
+  // Each rule first as one line of what it is now; nothing opened to change
+  check(await cfg.run('!!document.querySelector("#floatbody #project-prefix") && !!document.querySelector("#floatbody #project-place") && !!document.querySelector("#floatbody #project-inherit")'),
+    'prefix, placement and the files to inherit are each one line in the dialog');
+  check(await cfg.run('document.querySelectorAll("#floatbody .rulesedit").length') === 0, 'none of them is open until asked');
   check(await cfg.run('document.querySelectorAll("#detail > *").length') === 0, 'nothing is drawn under the dialog');
 
-  console.log('2. where a worktree would go, and what the lines hold');
+  console.log('2. where a worktree would go, written out, and what the lines hold');
+  // Offered and written in for a project a server reads where it stands:
+  // beside the checkout, as the placement says it
+  await until(() => (project()?.placement ?? null) !== null || cfg.run('(deskProjects(desks[sel.desk]).projects.find(x => x.entry && x.entry.placement) || {}).name === "site"'),
+    'the place offered for the project', 30000);
+  await until(() => cfg.run('document.querySelector("#project-place .rulesnow").textContent.includes("元のフォルダの隣")'), 'the line to say it', 30000);
+  const summary = await cfg.run('document.querySelector("#project-place .rulesnow").textContent');
+  await cfg.shot('0-summary');
+  check(summary.includes('元のフォルダの隣') && summary.includes('site-feature-x'), 'the line says where, and the folder a worktree gets: ' + summary);
+  check(await until(() => cfg.run('document.getElementById("rulesgo").textContent === "保存して次へ"'), 'the press to say it saves', 5000).catch(() => false),
+    'what was written in is saved on the way on');
+  await cfg.run('document.querySelector("#project-place [data-rules=place]").click(); true');
   await until(() => cfg.run('!!document.querySelector("#placesaid code") && !!document.querySelector("#placesaid code").textContent'), 'the place a worktree would go', 30000);
   const place = await cfg.run('document.querySelector("#placesaid code").textContent');
   check(same(place, BESIDE), 'beside the checkout, named for it and the work: ' + place);
-  const served = await cfg.run('document.getElementById("placesaid").textContent');
-  check(served.includes('webroot/.htaccess'), 'it says what makes the project served where it stands');
-  check(await cfg.run('document.querySelector("#project-place input.grow").placeholder') === '..', 'the default shown is beside the checkout');
+  check(await cfg.run('document.querySelector(".rulesedit input.grow").value') === '{origin_folder}\\..', 'the place as written says what it is measured from');
+  const why = await cfg.run('document.getElementById("placesaid").textContent');
+  check(why.includes('webroot/.htaccess'), 'and why it was offered');
+  check(await cfg.run('[...document.querySelectorAll(".placequick button")].map(b => b.textContent).join("|")') === 'アプリの置き場|元のフォルダの隣|フォルダを選ぶ…',
+    'the three usual places are a press each');
+  await cfg.run('document.querySelector("#project-inherit [data-rules=inherit]").click(); true');
   await until(() => cfg.run('document.querySelectorAll("#project-bring .igsize").length >= 2'), 'what each line holds', 30000);
   const hows = await cfg.run('[...document.querySelectorAll("#project-bring .igitem")].map(i => i.querySelector(".igpat .mono").textContent + "=" + i.querySelector("select").value)');
   check(hows.includes('config/local.php=copy') && hows.includes('vendor/=copy'), 'every line starts as a copy: ' + hows.join(', '));
-  check(await cfg.run('!!Array.from(document.querySelectorAll("#project-bring button")).find(b => b.textContent === "AIで設定")'), 'the AI is offered on the card');
-  check(await cfg.run('!!document.getElementById("project-extra")'), 'files from elsewhere are part of the same card');
+  check(await cfg.run('document.querySelector("#project-inherit .rulesnow").textContent').then((t) => t.includes('コピー 2 行')), 'the line counts them');
+  check(await cfg.run('!!Array.from(document.querySelectorAll("#project-inherit button")).find(b => b.textContent === "AIで設定")'), 'the AI is offered on the line');
+  check(await cfg.run('!!document.getElementById("project-extra")'), 'files from elsewhere are part of what is inherited');
   await cfg.shot('1-rules');
   // The whole window, so the dialog is seen where it stands: over the board
   ps('-File', path.join(ROOT, 'tools', 'debug', 'shot-window.win.ps1'), '-Under', RUN,
@@ -220,7 +236,7 @@ try {
   console.log('2b. asking the AI starts from what to tell it');
   const modals = () => cfg.run('document.querySelectorAll(".modal").length');
   const before = await modals();
-  await cfg.run('Array.from(document.querySelectorAll("#project-bring button")).find(b => b.textContent === "AIで設定").click(); true');
+  await cfg.run('Array.from(document.querySelectorAll("#project-inherit button")).find(b => b.textContent === "AIで設定").click(); true');
   const top = '[...document.querySelectorAll(".modal")].pop()';
   await until(() => cfg.run(`!!(${top} && ${top}.querySelector("textarea"))`), 'the AI dialog');
   const hint = await cfg.run(`${top}.querySelector("textarea").value`);
@@ -249,6 +265,7 @@ try {
   await until(() => (project()?.bring || []).some((r) => r.pattern === 'config/local.php' && r.how === 'replace'), 'the proposal in the settings file', 20000);
   const rule = project().bring.find((r) => r.pattern === 'config/local.php');
   check(JSON.stringify(rule.replace) === JSON.stringify([{ find: '/site/', with: '/{name}/' }]), 'the replacement is saved as proposed: ' + JSON.stringify(rule.replace));
+  check(project().placement === '{origin_folder}\\..', 'the place written in is saved with it: ' + project().placement);
 
   console.log('4. the board opens the first worktree, where the page said');
   await until(() => board.run('!document.getElementById("branch").hidden'), 'the worktree dialog on the board', 30000);
@@ -300,8 +317,6 @@ try {
   const markers = await cfg.run('[...document.querySelectorAll(".subsec input")].map(i => i.value)');
   check(markers.length === 2 && markers[0].includes('.htaccess') && markers[1].includes('htdocs'),
     'the markers are shown filled with the defaults: ' + markers.join(' | '));
-  check(await cfg.run('!!document.querySelector("#detail input[type=checkbox]") && document.querySelector("#detail input[type=checkbox]").checked'),
-    'worktrees go in a folder named for their project unless turned off');
   await cfg.shot('4-global');
 } catch (e) {
   check(false, e.message);

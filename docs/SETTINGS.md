@@ -33,9 +33,7 @@ Tab width, chaining, language
 
 ### Worktrees
 
-Where they go, host-dependent project markers
-
-- **Project folder** — On, a worktree is made at "place\project\name"; off, at "place\name". Projects whose worktrees go beside the original are not affected.
+Host-dependent project markers
 
 **Host-dependent project markers**
 
@@ -124,7 +122,7 @@ Places to open a branch other than this PC
 - **Minutes it lives** — A machine nobody stops stops on its own after this
 - **Address** — ssh://you@machine:22
 - **Where the project is on it** — A branch cut on that machine is cut from this checkout
-- **Where branches go on it** — empty: beside the project
+- **Where branches go on it** — Begin it with {origin_folder} (the project's folder on that machine), or write an absolute path of that machine (such as /var/www/html). {origin} is the project folder's name. {origin_folder}/.. is beside the project's folder.
 - **Colour** — A small square in front of the name. The name is always shown with it.
 - **Ask for this name to be typed before anything that cannot be undone** — Deleting, renaming or replacing files on this server waits until the name is typed.
 - **Name for this server** — Shown beside every tab that reaches this server, and in every question about something that cannot be undone there:
@@ -295,10 +293,11 @@ Worktree creation rules, name and checkout, git account, protected branches, wha
 - **Account to use**
 - **Delete this project** — The working folders and tabs stay. Only their tie to this project goes
 
-**Worktree name and place**
+**Worktree Creation Rules**
 
 - **Branch prefix** — Put in front of every branch made for this project, whether the name is typed, drawn or written by an AI. Leave it empty for no prefix.
-- **Worktree Placement** — The folder this project's worktrees are made in, written as an absolute path or relative to the original folder (.. is beside it). Empty, they are made in the app's own place. A worktree made beside the original folder is named "original-name" and stands at the same depth as the original.
+- **Worktree Placement** — The folder this project's worktrees are made in. Begin it with {worktrees} (the app's place) or {origin_folder} (the original folder), or write an absolute path. {project} is the project's name and {origin} the original folder's name. A worktree made beside the original ({origin_folder}\..) is named "original-name" and stands at the same depth as the original.
+- **Files to Inherit from Original**
 
 ## Shortcuts
 

@@ -272,7 +272,7 @@ pub fn plan_for(
     let folder = match at.filter(|p| !p.as_os_str().is_empty()) {
         Some(p) => p.to_path_buf(),
         None => {
-            let placed = place(&main, placement, &branch);
+            let placed = place(&main, placement, &branch).map_err(|e| anyhow::anyhow!(e))?;
             // A place the project wrote that lands inside its own checkout is
             // said as that, before anything is made there
             if inside_checkout(&main, &placed) {
@@ -319,6 +319,7 @@ fn free_to_make(folder: &Path) -> Result<()> {
 pub fn plan_on(
     host: &crate::config::HostSpec,
     branch: &str,
+    prefix: &str,
     base: Option<&str>,
     at: Option<&str>,
     origin: &str,
@@ -354,13 +355,10 @@ pub fn plan_on(
     let folder = match at.map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => p.to_string(),
         None => match host.is_made() {
-            // Nothing is there yet, so the only shape to keep is the branch's
-            true => format!(
-                "{}/{}",
-                project.trim_end_matches('/'),
-                branch.split('/').filter(|s| !s.is_empty()).collect::<Vec<_>>().join("/")
-            ),
-            false => remote_folder(host, project, &branch),
+            // Nothing is there yet: the clone is made in the machine's own
+            // place, a folder named for the work as it is everywhere else
+            true => format!("{}/{}", project.trim_end_matches('/'), folder_leaf(&branch, prefix)),
+            false => remote_folder(host, project, &branch, prefix).map_err(|e| anyhow::anyhow!(e))?,
         },
     };
     Ok(Plan {
@@ -380,26 +378,34 @@ pub fn plan_on(
 
 /// Where a branch goes on a machine this program has never looked at.
 ///
-/// The same shape as here -- one place, a folder per project, the branch's own
-/// shape kept -- with forward slashes, because the far end is a server and a
-/// server is not Windows often enough to guess otherwise. Where that one place
-/// is has to be told to us: nothing can be worked out about a machine from
-/// here, and inventing `$HOME` for a server we have never seen is inventing
-fn remote_folder(host: &crate::config::HostSpec, project: &str, branch: &str) -> String {
+/// The same placement, written the same way, as a project's on this PC (see
+/// [`Placement`]), read with `/` because the far end is a server: begun with
+/// `{origin_folder}` it is measured from the checkout over there, and anything
+/// else is an absolute path of that machine. `{worktrees}` is refused: this
+/// app keeps no place of its own on a machine it has never looked at, and
+/// inventing `$HOME` for one would be inventing. A machine that says nothing
+/// is given [`REMOTE_PLACEMENT`], which the settings show as it is written
+fn remote_folder(host: &crate::config::HostSpec, project: &str, branch: &str, prefix: &str) -> Result<String, String> {
     let project = project.trim_end_matches('/');
-    let leaf = project.rsplit('/').next().unwrap_or("repo");
-    let root = match host.branches.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
-        Some(b) => b.trim_end_matches('/').to_string(),
-        // Beside the checkout, which is the only place we can name without
-        // being told -- and it is where a person who has not said would look
-        None => format!("{}.branches", project),
-    };
-    let leafs: Vec<&str> = branch.split('/').filter(|s| !s.is_empty()).collect();
-    match host.branches.is_some() {
-        true => format!("{root}/{leaf}/{}", leafs.join("/")),
-        false => format!("{root}/{}", leafs.join("/")),
-    }
+    let origin = project.rsplit('/').next().unwrap_or("repo").to_string();
+    let spec = host
+        .branches
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .unwrap_or(REMOTE_PLACEMENT);
+    let base = resolve_placement(spec, project, "", &origin, &origin, true)?;
+    let leaf = folder_leaf(branch, prefix);
+    let parent = project.rsplit_once('/').map(|(p, _)| if p.is_empty() { "/" } else { p }).unwrap_or("");
+    Ok(match base == tidy_posix(parent) {
+        true => format!("{}/{origin}-{leaf}", base.trim_end_matches('/')),
+        false => format!("{}/{leaf}", base.trim_end_matches('/')),
+    })
 }
+
+/// Where a machine's worktrees go when it says nothing: beside the checkout,
+/// in a folder named for it
+pub const REMOTE_PLACEMENT: &str = "{origin_folder}.branches";
 
 /// Makes the folder, and remembers what it was cut from.
 ///
@@ -1713,92 +1719,89 @@ fn unsaved_work(status_z: &str, is_link: &dyn Fn(&str) -> bool) -> usize {
 /// A project that says where its worktrees go is taken at its word instead:
 /// see [`Placement`].
 pub fn folder_for(main: &Path, branch: &str) -> PathBuf {
-    place(main, &Placement::default(), branch)
+    place(main, &Placement::default(), branch).unwrap_or_else(|_| branches_root().join(folder_leaf(branch, "")))
+}
+
+/// The app's own place for worktrees, as a placement names it
+pub const WORKTREES: &str = "{worktrees}";
+/// The project's own checkout, as a placement names it -- the same word, with
+/// the same meaning, as a replacement writes (see [`fill_words`])
+pub const ORIGIN_FOLDER: &str = "{origin_folder}";
+
+/// What a placement says when a project has not written one: the app's own
+/// place, in a folder named for the project. Shown as it is written wherever
+/// the placement is shown, so nothing about where a worktree goes is unsaid
+pub fn default_placement() -> String {
+    format!("{WORKTREES}{}{{project}}", std::path::MAIN_SEPARATOR)
+}
+
+/// Beside the checkout, as a placement writes it
+pub fn beside_placement() -> String {
+    format!("{ORIGIN_FOLDER}{}..", std::path::MAIN_SEPARATOR)
 }
 
 /// Where one project's worktrees go, and what decides the folder each gets.
 ///
-/// One folder for all of them (`base`), written absolute or relative to the
-/// project's own checkout, and each worktree a folder in it named for its
-/// work. Three shapes come out of that and nothing else:
+/// `spec` is one folder, and it says what it is measured from: it begins with
+/// `{worktrees}` (the app's own place) or `{origin_folder}` (the project's
+/// checkout), or it is an absolute path of the machine the worktree is made
+/// on -- `C:\trees`, `\\nas\share`, `/var/www/html`. `{project}` and `{origin}`
+/// may stand anywhere in it for the project's name and the checkout's folder
+/// name. Nothing about it is left to be guessed: a path that is none of those
+/// is refused, and a project that has written nothing is given
+/// [`default_placement`], which is shown as it is written.
 ///
-/// - nothing said: the app's own place, in a folder named for the project
-///   when `nest` is on (the default) -- `...\branches\<project>\<name>`
-/// - somewhere said: that folder, with or without the project's folder in it
-/// - beside the checkout (`..`, or the checkout's parent written out): the
-///   checkout's own name in front of each, `<parent>\<checkout>-<name>`, so
-///   every worktree stands at the depth the checkout does. A project a server
-///   reads where it stands is the reason: a worktree anywhere else is one the
-///   server cannot see, and one a level deeper breaks every path that climbs
-///   out of it to a neighbour. The project's folder in between would put the
-///   worktrees inside the checkout, and none in front would let them collide
-///   with whatever else lives beside it
+/// Each worktree is a folder in that one, named for its work (see
+/// [`folder_leaf`]). A folder beside the checkout -- `{origin_folder}\..`, or
+/// the checkout's parent written out -- is named `<checkout>-<name>` instead,
+/// so every worktree stands at the depth the checkout does and none collides
+/// with whatever else lives beside it
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
-    /// The project's name, for the folder named for it. Absent is the
-    /// checkout's own folder name
+    /// The project's name, for `{project}`. Absent is the checkout's own
+    /// folder name
     pub project: Option<String>,
-    /// Where they go. Empty is the app's own place
-    pub base: String,
+    /// Where they go, as written
+    pub spec: String,
     /// What stands in front of every branch of the project (`yourname/`). It
     /// is part of the branch and not of the folder: the folder is named for
     /// the work, and a prefix every folder shares tells none of them apart
     pub prefix: String,
-    /// Whether each goes inside a folder named for its project
-    pub nest: bool,
 }
 
 impl Default for Placement {
     fn default() -> Self {
-        Placement { project: None, base: String::new(), prefix: String::new(), nest: true }
+        Placement { project: None, spec: default_placement(), prefix: String::new() }
     }
 }
 
 impl Placement {
-    /// What a project says about where its worktrees go, with the app's own
-    /// answers wherever it says nothing.
-    ///
-    /// A project that names no place and is served where it stands is placed
-    /// beside its checkout: the one place a worktree of it can be served from.
-    /// Only the default: a place somebody wrote is never second-guessed
-    pub fn of(
-        main: &Path,
-        project: Option<&crate::config::ProjectSpec>,
-        cfg: Option<&crate::config::Config>,
-    ) -> Placement {
-        let said = project
-            .and_then(|p| p.placement.as_deref())
-            .map(str::trim)
-            .filter(|b| !b.is_empty())
-            .map(str::to_string);
-        let base = match said {
-            Some(b) => b,
-            None => {
-                let markers = cfg.and_then(|c| c.host_markers.clone()).unwrap_or_default();
-                let checkout = crate::repo::main_checkout(main).unwrap_or_else(|| main.to_path_buf());
-                match served_in_place(&checkout, &markers) {
-                    Some(_) => BESIDE.to_string(),
-                    None => String::new(),
-                }
-            }
-        };
+    /// What a project says about where its worktrees go and what its branches
+    /// are called. Only what it says: a project that says nothing is given
+    /// the default, never an answer worked out from what the project looks
+    /// like. What it looks like is offered when the rules are set (see
+    /// [`served_in_place`]) and written down if it is taken
+    pub fn of(project: Option<&crate::config::ProjectSpec>) -> Placement {
         Placement {
             project: project.map(|p| p.name.clone()).filter(|n| !n.trim().is_empty()),
-            base,
+            spec: project
+                .and_then(|p| p.placement.as_deref())
+                .map(str::trim)
+                .filter(|b| !b.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(default_placement),
             prefix: project.and_then(|p| p.branch_prefix.clone()).unwrap_or_default(),
-            nest: cfg.and_then(|c| c.nest_worktrees).unwrap_or(true),
         }
     }
 }
 
-/// Beside the checkout, as a placement writes it
-pub const BESIDE: &str = "..";
-
 /// The folder a branch of this project gets, following its [`Placement`].
 ///
 /// Arithmetic on paths and nothing else: the dialog asks on every keystroke,
-/// and whether the folder can really be made there is [`plan_for`]'s question
-pub fn place(main: &Path, placement: &Placement, branch: &str) -> PathBuf {
+/// and whether the folder can really be made there is [`plan_for`]'s question.
+/// A placement that says nothing this machine can read is said as that, in the
+/// words the person will read
+pub fn place(main: &Path, placement: &Placement, branch: &str) -> Result<PathBuf, String> {
     let leaf = folder_leaf(branch, &placement.prefix);
     let origin = name_of(main);
     let project = placement
@@ -1808,36 +1811,100 @@ pub fn place(main: &Path, placement: &Placement, branch: &str) -> PathBuf {
         .filter(|p| !p.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| origin.clone());
-    let base = placement.base.trim();
-    if base.is_empty() {
-        let under = |root: PathBuf| match placement.nest {
-            true => root.join(&project).join(&leaf),
+    let within = |worktrees: &Path| -> Result<PathBuf, String> {
+        let base = resolve_placement(&placement.spec, &main.display().to_string(), &worktrees.display().to_string(), &project, &origin, false)?;
+        let root = PathBuf::from(base);
+        let beside = main.parent().is_some_and(|p| crate::uistate::same_folder(p, &root));
+        Ok(match beside {
+            true => root.join(format!("{origin}-{leaf}")),
             false => root.join(&leaf),
-        };
-        let at = under(branches_root());
-        return match short_enough(&at) {
-            true => at,
-            // Ours, per machine, which is as short as this program can offer
-            false => under(away_from_home()),
-        };
+        })
+    };
+    let at = within(&branches_root())?;
+    // The app's own place, grown too long to hold a source tree: ours, per
+    // machine, which is as short as this program can offer
+    if placement.spec.trim_start().starts_with(WORKTREES) && !short_enough(&at) {
+        return within(&away_from_home());
     }
-    let root = resolve_base(main, base);
-    let beside = main.parent().is_some_and(|p| crate::uistate::same_folder(p, &root));
-    match (beside, placement.nest) {
-        (true, _) => root.join(format!("{origin}-{leaf}")),
-        (false, true) => root.join(&project).join(&leaf),
-        (false, false) => root.join(&leaf),
-    }
+    Ok(at)
 }
 
-/// A placement's folder, as a path: written absolute it is itself, and
-/// written relative it is read from the checkout. `..` is taken out by reading
-/// the path, so `P:\www\shop\..` is `P:\www`, which is what is shown
-pub fn resolve_base(main: &Path, base: &str) -> PathBuf {
-    let written = Path::new(base.trim());
-    match written.is_absolute() {
-        true => crate::repo::tidy(written.to_path_buf()),
-        false => crate::repo::tidy(main.join(written)),
+/// A placement read as a folder, on a machine that spells paths one way or
+/// the other: `/` alone (`posix`, a server) or this one's.
+///
+/// The words are filled in first -- `{project}`, `{origin}` -- then what it
+/// begins with says where it is measured from. What follows the word is
+/// written straight after it, so `{origin_folder}.branches` is the folder
+/// beside the checkout with `.branches` on its name, and `{origin_folder}\..`
+/// is the checkout's parent. `..` is taken out by reading the path, never the
+/// disk
+pub fn resolve_placement(
+    spec: &str,
+    origin_folder: &str,
+    worktrees: &str,
+    project: &str,
+    origin: &str,
+    posix: bool,
+) -> Result<String, String> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return Err(crate::i18n::t("err.place.empty"));
+    }
+    let filled = spec.replace("{project}", project).replace("{origin}", origin);
+    let joined = if let Some(rest) = filled.strip_prefix(WORKTREES) {
+        if worktrees.is_empty() {
+            return Err(crate::i18n::tp("err.place.no_worktrees", &[("word", WORKTREES)]));
+        }
+        format!("{worktrees}{rest}")
+    } else if let Some(rest) = filled.strip_prefix(ORIGIN_FOLDER) {
+        format!("{origin_folder}{rest}")
+    } else {
+        let absolute = match posix {
+            true => filled.starts_with('/'),
+            false => Path::new(&filled).is_absolute(),
+        };
+        if !absolute {
+            return Err(crate::i18n::tp(
+                "err.place.not_absolute",
+                &[("place", spec), ("worktrees", WORKTREES), ("origin", ORIGIN_FOLDER)],
+            ));
+        }
+        filled
+    };
+    // A word nobody knows is refused rather than made into a folder of
+    // that name
+    if let Some(at) = joined.find('{')
+        && joined[at..].contains('}')
+    {
+        let word: String = joined[at..].chars().take_while(|c| *c != '}').chain(['}']).collect();
+        return Err(crate::i18n::tp("err.place.unknown_word", &[("word", &word)]));
+    }
+    Ok(match posix {
+        true => tidy_posix(&joined),
+        false => crate::repo::tidy(PathBuf::from(joined)).display().to_string(),
+    })
+}
+
+/// A path of a server's, with `.` and `..` read out and `/` between the parts
+fn tidy_posix(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if parts.last().is_some_and(|p| *p != "..") {
+                    parts.pop();
+                } else if !path.starts_with('/') {
+                    parts.push("..");
+                }
+            }
+            p => parts.push(p),
+        }
+    }
+    let joined = parts.join("/");
+    match path.starts_with('/') {
+        true => format!("/{joined}"),
+        false => joined,
     }
 }
 
@@ -2267,7 +2334,9 @@ pub fn bases(main: &Path) -> Vec<String> {
 /// Whether a name drawn for new work is still free: no branch of that name
 /// here, and nothing standing where this project would put its folder
 pub fn is_free(main: &Path, placement: &Placement, name: &str) -> bool {
-    !branch_exists(main, name) && !place(main, placement, name).exists()
+    // A placement that cannot be read cannot hold a folder either: the name
+    // is free as far as the disk goes, and the plan says what is wrong
+    !branch_exists(main, name) && !place(main, placement, name).is_ok_and(|f| f.exists())
 }
 
 /// A name for the next branch, when nobody has one in mind, with the project's
@@ -2340,6 +2409,7 @@ pub fn fan(
 pub fn fan_on(
     host: &crate::config::HostSpec,
     name: &str,
+    prefix: &str,
     base: Option<&str>,
     ais: &[String],
     origin: &str,
@@ -2349,7 +2419,7 @@ pub fn fan_on(
         .map(|ai| {
             let ai = ai.trim().to_string();
             let branch = format!("{}-{ai}", name.trim());
-            (ai.clone(), plan_on(host, &branch, base, None, origin, env.clone()))
+            (ai.clone(), plan_on(host, &branch, prefix, base, None, origin, env.clone()))
         })
         .collect()
 }
@@ -2649,29 +2719,65 @@ mod tests {
         assert!(folder_leaf("con", "").starts_with("work-"));
     }
 
-    /// Where a project's worktrees go follows what it says, in the three
-    /// shapes there are: the app's place, a folder of its own, and beside the
-    /// checkout at the checkout's depth
+    /// Where a project's worktrees go follows what it says, and it says what
+    /// it is measured from: the app's place, the checkout, or an absolute
+    /// path. Beside the checkout each is named for the checkout, at its depth
     #[test]
     fn a_project_puts_its_worktrees_where_it_says() {
         let main = scratch("placed").join("www").join("site");
         std::fs::create_dir_all(&main).unwrap();
-        let put = |base: &str, nest: bool| {
-            place(&main, &Placement { base: base.into(), nest, prefix: "me/".into(), project: Some("Site".into()) }, "me/feature/x")
+        let sep = std::path::MAIN_SEPARATOR;
+        let put = |spec: &str| {
+            place(&main, &Placement { spec: spec.into(), prefix: "me/".into(), project: Some("Site".into()) }, "me/feature/x")
         };
-        // Nothing said: the app's place, in the project's folder or not
-        assert_eq!(put("", true), branches_root().join("Site").join("feature-x"));
-        assert_eq!(put("", false), branches_root().join("feature-x"));
+        // Nothing said is the default, which says it: the app's place, in the
+        // project's folder
+        assert_eq!(default_placement(), format!("{{worktrees}}{sep}{{project}}"));
+        assert_eq!(put(&default_placement()), Ok(branches_root().join("Site").join("feature-x")));
+        assert_eq!(place(&main, &Placement { prefix: "me/".into(), project: Some("Site".into()), ..Default::default() }, "me/feature/x"),
+            put(&default_placement()));
+        assert_eq!(put("{worktrees}"), Ok(branches_root().join("feature-x")));
         // Beside the checkout: named for the checkout, at its depth, whether
-        // written as `..` or as the parent itself, nested or not
+        // written from the checkout or as the parent itself
         let beside = main.parent().unwrap().join("site-feature-x");
-        assert_eq!(put("..", true), beside);
-        assert_eq!(put("..", false), beside);
-        assert_eq!(put(&main.parent().unwrap().display().to_string(), true), beside);
-        // Somewhere else, relative to the checkout or written out
+        assert_eq!(put(&beside_placement()), Ok(beside.clone()));
+        assert_eq!(put(&main.parent().unwrap().display().to_string()), Ok(beside));
+        // Somewhere else, from the checkout or written out, with the
+        // project's or the checkout's name where it is asked for
         let apart = scratch("placed").join("trees");
-        assert_eq!(put("../../trees", true), apart.join("Site").join("feature-x"));
-        assert_eq!(put(&apart.display().to_string(), false), apart.join("feature-x"));
+        assert_eq!(put(&format!("{{origin_folder}}{sep}..{sep}..{sep}trees{sep}{{project}}")), Ok(apart.join("Site").join("feature-x")));
+        assert_eq!(put(&format!("{}{sep}{{origin}}", apart.display())), Ok(apart.join("site").join("feature-x")));
+        // Nothing left to be guessed: a path that says nothing of where it is
+        // measured from, a word nobody knows, and nothing at all are refused
+        assert!(put("trees").unwrap_err().contains("{origin_folder}"));
+        assert!(put("{home}/trees").unwrap_err().contains("{home}"));
+        assert!(put("  ").is_err());
+    }
+
+    /// A machine that is not this one reads the same placement with `/`: from
+    /// the checkout over there, or an absolute path of that machine. It keeps
+    /// no place of this app's
+    #[test]
+    fn a_placement_reads_the_same_on_a_server() {
+        let at = |spec: &str| resolve_placement(spec, "/home/pi/site", "", "site", "site", true);
+        assert_eq!(at("{origin_folder}.branches"), Ok("/home/pi/site.branches".into()));
+        assert_eq!(at("{origin_folder}/.."), Ok("/home/pi".into()));
+        assert_eq!(at("/var/www/html/{project}"), Ok("/var/www/html/site".into()));
+        assert!(at("{worktrees}").is_err(), "a server has no place of this app's");
+        assert!(at("trees").is_err());
+        assert!(at("C:\\trees").is_err(), "a Windows path is not a server's");
+        let host = crate::config::HostSpec {
+            name: "pi".into(),
+            project: Some("/home/pi/site".into()),
+            ..Default::default()
+        };
+        let p = plan_on(&host, "me/feature/x", "me/", Some("main"), None, "", None).unwrap();
+        assert_eq!(p.folder, PathBuf::from("/home/pi/site.branches/feature-x"), "the default, as it is written");
+        let beside = crate::config::HostSpec { branches: Some("{origin_folder}/..".into()), ..host.clone() };
+        let p = plan_on(&beside, "me/feature/x", "me/", Some("main"), None, "", None).unwrap();
+        assert_eq!(p.folder, PathBuf::from("/home/pi/site-feature-x"));
+        let bad = crate::config::HostSpec { branches: Some("{worktrees}".into()), ..host };
+        assert!(plan_on(&bad, "feature", "", Some("main"), None, "", None).is_err());
     }
 
     /// A place that lands inside the checkout is refused before anything is
@@ -2679,7 +2785,7 @@ mod tests {
     #[test]
     fn a_place_inside_the_checkout_is_refused() {
         let main = repo("inside");
-        let inside = Placement { base: "trees".into(), ..Default::default() };
+        let inside = Placement { spec: format!("{{origin_folder}}{}trees", std::path::MAIN_SEPARATOR), ..Default::default() };
         let err = plan_for(&main, &inside, "work", Some("main"), None, None).unwrap_err();
         assert!(format!("{err:#}").contains(&main.join("trees").display().to_string()), "{err:#}");
         assert!(inside_checkout(&main, &main.join("a").join("b")));
@@ -2691,7 +2797,8 @@ mod tests {
 
     /// A project a server reads where it stands is told by its markers: a
     /// file in the checkout or in a folder directly in it, or a folder of the
-    /// checkout's path. Only the default follows: a place written is kept
+    /// checkout's path. That is only ever something to offer: where a
+    /// project's worktrees go is what it wrote, and nothing else
     #[test]
     fn a_project_served_where_it_stands_is_told_by_its_markers() {
         let markers = crate::config::HostMarkers::default();
@@ -2712,18 +2819,14 @@ mod tests {
         let none = crate::config::HostMarkers { files: vec![], paths: vec![] };
         assert_eq!(look_for_markers(&site, &none), None);
 
-        // The default follows; a place written is kept
+        // What is written is what is used, served or not; nothing written is
+        // the default, never a guess from what the project looks like
         let spec = crate::config::ProjectSpec { name: "site".into(), ..Default::default() };
-        assert_eq!(Placement::of(&site, Some(&spec), None).base, BESIDE);
-        let trees = crate::local_path("D:/trees");
-        let said = crate::config::ProjectSpec { placement: Some(trees.clone()), ..spec.clone() };
-        assert_eq!(Placement::of(&site, Some(&said), None).base, trees);
-        let plain = scratch("served").join("plain");
-        std::fs::create_dir_all(&plain).unwrap();
-        assert_eq!(Placement::of(&plain, Some(&spec), None).base, "");
-        // Turned off, a project's folder is left out
-        let cfg = crate::config::Config { nest_worktrees: Some(false), ..Default::default() };
-        assert!(!Placement::of(&plain, Some(&spec), Some(&cfg)).nest);
+        assert_eq!(Placement::of(Some(&spec)).spec, default_placement());
+        let said = crate::config::ProjectSpec { placement: Some(beside_placement()), ..spec.clone() };
+        assert_eq!(Placement::of(Some(&said)).spec, beside_placement());
+        let app = crate::config::ProjectSpec { placement: Some("{worktrees}".into()), ..spec };
+        assert_eq!(Placement::of(Some(&app)).spec, "{worktrees}", "a served project can be put in the app's place");
     }
 
     /// A replacement may write the worktree's own name and paths. In a
@@ -2822,7 +2925,7 @@ mod tests {
         };
         assert!(host.is_made(), "it is not treated as a machine that gets made");
 
-        let p = plan_on(&host, "polite-marmot", Some("origin/master"), None, "https://example.test/p.git", None)
+        let p = plan_on(&host, "polite-marmot", "", Some("origin/master"), None, "https://example.test/p.git", None)
             .expect("it can be planned");
         let steps = p.argvs();
         assert_eq!(steps.len(), 2, "not two steps: {steps:?}");
@@ -2837,7 +2940,7 @@ mod tests {
         assert_eq!(p.line().lines().count(), 2, "only one of them is visible: {}", p.line());
 
         // Nowhere to fetch from is a refusal, not a clone of nothing
-        assert!(plan_on(&host, "polite-marmot", Some("origin/master"), None, "", None).is_err());
+        assert!(plan_on(&host, "polite-marmot", "", Some("origin/master"), None, "", None).is_err());
 
         // A machine that is already there is one command, from the checkout
         let there = crate::config::HostSpec {
@@ -2847,7 +2950,7 @@ mod tests {
             ..Default::default()
         };
         assert!(!there.is_made());
-        let q = plan_on(&there, "polite-marmot", Some("main"), None, "", None).expect("it can be planned");
+        let q = plan_on(&there, "polite-marmot", "", Some("main"), None, "", None).expect("it can be planned");
         assert_eq!(q.argvs().len(), 1);
         assert!(q.line().contains("worktree add"), "{}", q.line());
     }
@@ -2865,7 +2968,7 @@ mod tests {
             project: Some("/srv/p".into()),
             ..Default::default()
         };
-        let fanned = fan_on(&there, "login", Some("main"), &["claude".into(), "codex".into()], "", None);
+        let fanned = fan_on(&there, "login", "", Some("main"), &["claude".into(), "codex".into()], "", None);
         assert_eq!(fanned.len(), 2);
         for (ai, plan) in &fanned {
             let plan = plan.as_ref().expect("it can be planned");
@@ -2903,9 +3006,9 @@ mod tests {
         // Written down, they are two
         let named = |n: &str| Placement { project: Some(n.to_string()), ..Default::default() };
         assert_ne!(place(&a, &named("ours"), "work"), place(&b, &named("theirs"), "work"));
-        assert!(place(&a, &named("ours"), "work").ends_with("ours/work"));
+        assert!(place(&a, &named("ours"), "work").unwrap().ends_with("ours/work"));
         // An empty name is the same as none: nothing was written down
-        assert_eq!(place(&a, &named("  "), "work"), folder_for(&a, "work"));
+        assert_eq!(place(&a, &named("  "), "work").unwrap(), folder_for(&a, "work"));
     }
 
     /// A project that cannot have a devcontainer says it in the settings, and
@@ -2952,7 +3055,7 @@ tools/conpty.ps1"));
         let env = crate::devcontainer::read(
             r#"{"image":"node:22","onCreateCommand":"npm ci","postCreateCommand":["npm","run","build"]}"#,
         );
-        let p = plan_on(&host, "work", Some("origin/main"), None, "https://example.test/p.git", env)
+        let p = plan_on(&host, "work", "", Some("origin/main"), None, "https://example.test/p.git", env)
             .expect("it can be planned");
         let steps = p.argvs();
         assert_eq!(steps.len(), 4, "fetch, branch and two preparation steps: {steps:?}");
@@ -2974,7 +3077,7 @@ tools/conpty.ps1"));
             project: Some("/srv/p".into()),
             ..Default::default()
         };
-        let q = plan_on(&there, "work", Some("main"), None, "",
+        let q = plan_on(&there, "work", "", Some("main"), None, "",
                         crate::devcontainer::read(r#"{"postCreateCommand":"npm ci"}"#))
             .expect("it can be planned");
         assert_eq!(q.argvs().len(), 2, "no preparation on a machine that already exists: {:?}", q.argvs());

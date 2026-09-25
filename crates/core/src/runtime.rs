@@ -7060,7 +7060,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let prefix = project.and_then(|p| p.branch_prefix.clone()).unwrap_or_default();
             // Where this project's folders go, and so what "free" means for a
             // name: a branch nobody has, and a folder nothing stands in there
-            let placement = crate::worktree::Placement::of(&from, project, cfg.as_ref());
+            let placement = crate::worktree::Placement::of(project);
             let (wanted, drawn) = match (crate::worktree::tidy(&name), repo.as_deref()) {
                 (Some(kept), _) => (crate::worktree::with_prefix(&prefix, &kept), None),
                 (None, Some(main)) => {
@@ -7143,6 +7143,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     Some(h) => crate::worktree::plan_on(
                         h,
                         &wanted,
+                        &prefix,
                         Some(&ask.base),
                         Some(ask.at.trim()),
                         // Where a machine that has never seen this project can
@@ -7271,6 +7272,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     Some(h) => crate::worktree::fan_on(
                         h,
                         &wanted,
+                        &prefix,
                         Some(&ask.base),
                         &ask.ais,
                         &crate::repo::remote_url_of(&from).unwrap_or_default(),

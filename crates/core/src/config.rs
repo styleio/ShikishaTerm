@@ -58,12 +58,12 @@ pub struct ProjectSpec {
     /// and in front of the one an AI writes later
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_prefix: Option<String>,
-    /// Where this project's worktrees go: one folder, written as an absolute
-    /// path or relative to the project's own checkout (`..` is beside it).
-    /// Absent is the app's own place -- or, for a project that is served where
-    /// it stands, beside the checkout (see [`crate::worktree::served_in_place`]).
-    /// Only where; what each worktree's folder is called is worked out from
-    /// its name (see [`crate::worktree::Placement`])
+    /// Where this project's worktrees go: one folder, begun with
+    /// `{worktrees}` (the app's own place) or `{origin_folder}` (this
+    /// checkout), or an absolute path -- `{origin_folder}\..` is beside the
+    /// checkout. Absent is [`crate::worktree::default_placement`], shown as it
+    /// is written. Only where; what each worktree's folder is called is
+    /// worked out from its name (see [`crate::worktree::Placement`])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<String>,
     /// What the person told the AI about this project when it was asked how
@@ -552,9 +552,10 @@ pub struct HostSpec {
     /// that machine is cut from this
     #[serde(default)]
     pub project: Option<String>,
-    /// Where branches go over there. Absent means beside the checkout's own
-    /// parent, which is the only thing that can be guessed about a machine
-    /// this program has never seen
+    /// Where branches go over there, written the way a project's placement is
+    /// (`{origin_folder}` for the checkout over there, or an absolute path of
+    /// that machine). Absent is [`crate::worktree::REMOTE_PLACEMENT`], a
+    /// folder beside the checkout, shown as it is written
     #[serde(default)]
     pub branches: Option<String>,
     /// What kind of machine it is: `ssh` for one that is already there, `e2b`
@@ -693,15 +694,13 @@ pub struct Config {
     /// (default: yes). Turned off from the question itself, with "Don't show
     /// this again", and on again under Basic
     pub confirm_worktree_delete: Option<bool>,
-    /// Whether a worktree's folder goes inside a folder named for its project
-    /// (default: yes): `<place>\<project>\<name>` rather than `<place>\<name>`.
-    /// One answer for every project, because the place it decides about is
-    /// usually one place shared by all of them
-    pub nest_worktrees: Option<bool>,
     /// What tells a project that is served where it stands -- by a web server,
     /// or by another program that reads its files from that folder -- from one
     /// that is not. Absent is [`HostMarkers::default`]; somebody whose project
-    /// is told wrong edits the lists instead of living with the guess
+    /// is told wrong edits the lists instead of living with the guess. Only
+    /// ever a proposal: a project found to be one is offered a place beside
+    /// its checkout when its rules are set, and has it only once that is
+    /// written down (see [`crate::worktree::Placement::of`])
     pub host_markers: Option<HostMarkers>,
     /// Whether the window's ✕ puts the program away in the notification area
     /// rather than quitting (default: yes). Put away, the tabs go on working

@@ -241,6 +241,7 @@ AI の名前。ほかは太くしない。字間 `.02em` は 11〜12px の見出
 | カード | `card(title, ...kids)` | 設定（`webui.rs`） |
 | 一覧（`.fmenu`） | 設定のページは `floatMenu(at, items, opts)`、盤面は `openList(anchor, rows, tall, point)`（2つは別のページの JavaScript なので共有できない） | 設定（`webui.rs`）・盤面（`shell.rs`） |
 | パンくず | `pageCrumbs(...parts)` | 設定（`webui.rs`） |
+| フォルダ・ファイルを選ぶ | `choosePath(kind, title, now)`（この PC ではシステムのダイアログ、スマホではページの中でたどる）。欄と組にするなら `pathField(obj, key, ph, kind, title)` | 設定（`webui.rs`） |
 | 取り消せない操作の質問（盤面） | `askQuestion({title, say, what, label, go})` | 盤面（`shell.rs`） |
 | ダイアログ（選ぶ・`.picker`） | `openBrowse(at, handBack)` | 盤面（`shell.rs`） |
 | 盤面の上に設定を立てる | `openSettings(section, ret, folder)`（窓もスマホも。スマホでは中で `openCfgLayer(params, size)` が枠を作る） | 盤面（`shell.rs`） |

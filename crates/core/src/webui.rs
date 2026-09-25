@@ -1413,10 +1413,9 @@ fn quick_json() -> String {
 /// Sent with every question about it rather than read from the saved file:
 /// the answer is about the settings being edited, which are not saved yet
 struct PlaceAsk {
-    base: String,
+    spec: String,
     prefix: String,
     project: Option<String>,
-    nest: bool,
     markers: crate::config::HostMarkers,
 }
 
@@ -1424,10 +1423,9 @@ impl PlaceAsk {
     fn of(p: &serde_json::Value) -> PlaceAsk {
         let text = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
         PlaceAsk {
-            base: text("placement"),
+            spec: text("placement"),
             prefix: text("prefix"),
             project: Some(text("project")).filter(|n| !n.is_empty()),
-            nest: p.get("nest").and_then(serde_json::Value::as_bool).unwrap_or(true),
             markers: p
                 .get("markers")
                 .filter(|m| m.is_object())
@@ -1437,15 +1435,16 @@ impl PlaceAsk {
     }
 
     /// As [`crate::worktree::Placement::of`] would have it, from what is on
-    /// screen: nothing written is the app's own place, or beside the checkout
-    /// for a project served where it stands
-    fn placement(&self, served: bool) -> crate::worktree::Placement {
-        let base = match (self.base.is_empty(), served) {
-            (true, true) => crate::worktree::BESIDE.to_string(),
-            (true, false) => String::new(),
-            (false, _) => self.base.clone(),
-        };
-        crate::worktree::Placement { project: self.project.clone(), base, prefix: self.prefix.clone(), nest: self.nest }
+    /// screen: what is written, or the default, which is shown as written
+    fn placement(&self) -> crate::worktree::Placement {
+        crate::worktree::Placement {
+            project: self.project.clone(),
+            spec: match self.spec.is_empty() {
+                true => crate::worktree::default_placement(),
+                false => self.spec.clone(),
+            },
+            prefix: self.prefix.clone(),
+        }
     }
 }
 
@@ -2082,33 +2081,54 @@ fn handle(
                 Some(main) => {
                     let asked = PlaceAsk::of(&p);
                     let served = crate::worktree::served_in_place(&main, &asked.markers);
-                    let placement = asked.placement(served.is_some());
+                    let placement = asked.placement();
                     let name = p.get("name").and_then(|v| v.as_str()).map(str::trim).filter(|n| !n.is_empty()).unwrap_or("feature/x");
                     let branch = crate::worktree::with_prefix(&placement.prefix, name);
-                    let folder = crate::worktree::place(&main, &placement, &branch);
-                    let inside = crate::worktree::inside_checkout(&main, &folder);
-                    // Tried where the folder would be made: the nearest folder
-                    // on the way there that is already on disk
-                    let there = folder.ancestors().skip(1).find(|d| d.is_dir()).map(std::path::Path::to_path_buf);
-                    let probe = p.get("probe").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                    let linkable = match (&there, probe && !inside) {
-                        (Some(d), true) => linkable_in(d),
-                        _ => None,
+                    // What the page offers to write, and why: never taken
+                    // unless it is written down
+                    let proposal = match served.is_some() {
+                        true => crate::worktree::beside_placement(),
+                        false => crate::worktree::default_placement(),
                     };
-                    serde_json::json!({
-                        "ok": !inside,
-                        "error": inside.then(|| crate::i18n::tp("err.worktree.inside_checkout", &[("path", &folder.display().to_string())])),
+                    let said = serde_json::json!({
                         "root": main.display().to_string(),
                         "origin": main.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
-                        "base": placement.base,
-                        "default": match served.is_some() { true => crate::worktree::BESIDE, false => "" },
+                        "spec": placement.spec,
+                        "default": crate::worktree::default_placement(),
+                        "beside": crate::worktree::beside_placement(),
+                        "proposal": proposal,
                         "served": served,
                         "branch": branch,
-                        "folder": folder.display().to_string(),
-                        "name": folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
-                        "linkable": linkable,
-                        "long": folder.display().to_string().chars().count() >= 180,
-                    })
+                    });
+                    match crate::worktree::place(&main, &placement, &branch) {
+                        Err(error) => {
+                            let mut out = said;
+                            out["ok"] = false.into();
+                            out["error"] = error.into();
+                            out
+                        }
+                        Ok(folder) => {
+                            let inside = crate::worktree::inside_checkout(&main, &folder);
+                            // Tried where the folder would be made: the nearest
+                            // folder on the way there that is already on disk
+                            let there = folder.ancestors().skip(1).find(|d| d.is_dir()).map(std::path::Path::to_path_buf);
+                            let probe = p.get("probe").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                            let linkable = match (&there, probe && !inside) {
+                                (Some(d), true) => linkable_in(d),
+                                _ => None,
+                            };
+                            let mut out = said;
+                            out["ok"] = (!inside).into();
+                            if inside {
+                                out["error"] = crate::i18n::tp("err.worktree.inside_checkout", &[("path", &folder.display().to_string())]).into();
+                            }
+                            out["folder"] = folder.display().to_string().into();
+                            out["name"] = folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default().into();
+                            out["linkable"] = serde_json::json!(linkable);
+                            out["long"] = (folder.display().to_string().chars().count() >= 180).into();
+                            out
+                        }
+                    }
                 }
             };
             req.respond(json_resp(resp))?;
@@ -2168,12 +2188,18 @@ fn handle(
                     None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.worktree.not_a_repo") }),
                     Some(main) => {
                         let served = crate::worktree::served_in_place(&main, &asked.markers);
-                        let placement = asked.placement(served.is_some());
-                        let example = crate::worktree::place(
+                        let placement = asked.placement();
+                        let example = match crate::worktree::place(
                             &main,
                             &placement,
                             &crate::worktree::with_prefix(&placement.prefix, "feature/x"),
-                        );
+                        ) {
+                            Ok(f) => f,
+                            Err(error) => {
+                                let _ = req.respond(json_resp(serde_json::json!({ "ok": false, "error": error })));
+                                return;
+                            }
+                        };
                         let linkable = example.ancestors().skip(1).find(|d| d.is_dir()).and_then(linkable_in);
                         let facts = crate::inherit::Facts {
                             main: &main,
@@ -4839,8 +4865,13 @@ const PAGE: &str = r##"<!doctype html>
  #floatbox .ffoot .spacer { flex:1; }
  /* A project's worktree rules as the dialog: two parts, each under its name */
  #floatbox[data-kind="rules"] .fbody { display:flex; flex-direction:column; gap:var(--s5); }
- #floatbox[data-kind="rules"] .fbody > .card > h2 { display:block; }
- #floatbox[data-kind="rules"] .fbody > .card + .card { border-top:1px solid var(--line); border-radius:0; padding-top:var(--s5); }
+ /* The rules, each first one line of what it is now, opened to change */
+ .rulesrow { align-items:flex-start; }
+ .row.rulesrow > label:not(.check):not(.beside) { flex:0 0 200px; padding-top:2px; }
+ .rulesnow { flex:1; min-width:0; display:flex; flex-direction:column; gap:var(--s1); overflow-wrap:anywhere; }
+ .rulesedit { border-left:3px solid var(--line); padding:var(--s1) 0 var(--s2) var(--s4); margin:0 0 var(--s3);
+   display:flex; flex-direction:column; gap:var(--s2); }
+ @media (max-width: 760px) { .row.rulesrow > label:not(.check):not(.beside) { flex-basis:100%; } }
 </style></head><body>
 
 <div id="floatbox" role="dialog" aria-modal="true" aria-labelledby="floattitle">
@@ -5523,14 +5554,17 @@ function walkPath(kind, title, start) {
     go(start || "");
   });
 }
+// A folder or a file, picked. On this PC the operating system's own dialog,
+// which knows about quick access, search and network places. On a phone that
+// dialog would open at a screen nobody is looking at, so the page walks the
+// PC's folders itself. Null when nothing was picked
+function choosePath(kind, title, now) {
+  return (REMOTE ? walkPath : pickPath)(kind, title, now);
+}
 function pathField(obj, key, ph, kind, title) {
   const i = field(obj, key, ph, {mono:true});
-  // On this PC the operating system's own dialog, which knows about quick
-  // access, search and network places. On a phone that dialog would open at
-  // a screen nobody is looking at, so the page walks the PC's folders itself
-  const pick = REMOTE ? walkPath : pickPath;
   const b = el("button", {class:"quiet", onclick: async () => {
-    const p = await pick(kind, title, obj[key]);
+    const p = await choosePath(kind, title, obj[key]);
     if (p !== null) { obj[key] = p; i.value = p; refreshSave(); }
   }}, T["common.browse"]);
   return [i, b];
@@ -6552,8 +6586,6 @@ function worktreesCard() {
     return box;
   };
   return card(T["settings.worktrees.title"],
-    row(T["settings.worktrees.nest"], checkDefaultOn(current, "nest_worktrees", T["settings.worktrees.nest.label"]),
-      el("span", {class:"hint"}, T["settings.worktrees.nest.hint"])),
     el("div", {class:"subsec"},
       el("h3", {}, T["settings.worktrees.markers"]),
       el("div", {class:"hint"}, T["settings.worktrees.markers.hint"]),
@@ -9537,7 +9569,8 @@ function hostDialog(at, redraw, kind) {
   const projectIn = el("input", {type:"text", class:"mono", placeholder:T["settings.hosts.project.ph"]});
   projectIn.value = h.project || "";
   const branchesIn = el("input", {type:"text", class:"mono", placeholder:T["settings.hosts.branches.ph"]});
-  branchesIn.value = h.branches || "";
+  // Written out, the default too: where a worktree goes is never left unsaid
+  branchesIn.value = h.branches || "{origin_folder}.branches";
   const templateIn = el("input", {type:"text", class:"mono", placeholder:T["settings.hosts.template.ph"]});
   templateIn.value = h.template || "base";
   const minutesIn = el("input", {type:"number", min:"1", class:"mono narrow", placeholder:"30"});
@@ -9642,7 +9675,7 @@ function hostDialog(at, redraw, kind) {
            mark.box,
            credential,
            field(T["settings.hosts.project"], projectIn, T["settings.hosts.project.hint"]),
-           field(T["settings.hosts.branches"], branchesIn, "")])),
+           field(T["settings.hosts.branches"], branchesIn, T["settings.hosts.branches.hint"])])),
     el("div", {class:"mfoot"},
       editing
         ? el("button", {class:"danger", onclick: async () => {
@@ -11845,8 +11878,9 @@ function replaceDialog(rule, done) {
   draw();
 }
 
-// The project's .gitignore, line by line, each with how its files come along
-function ignoreCard(desk, p) {
+// The project's .gitignore, line by line, each with how its files come along:
+// what the rules' "Files to inherit" opens into
+function inheritPart(desk, p) {
   const root = (p.at || "").trim();
   const box = el("div", {class:"igbox"});
   const known = IGNORES[root];
@@ -11862,7 +11896,7 @@ function ignoreCard(desk, p) {
   const redraw = r => { if (r && r.ok === false && r.error) toast(r.error, true); render(); };
   const matchesOf = (source, pattern) => j.ignored.filter(i => i.source === source && i.pattern === pattern);
   const defaultOf = (source, pattern) => (j.defaults.find(d => d.source === source && d.pattern === pattern) || {}).how || "skip";
-  const opened = (ignoreCard.open = ignoreCard.open || new Set());
+  const opened = (inheritPart.open = inheritPart.open || new Set());
 
   // One line that decides something, with its picker, what it matches, and
   // (for the project's own file) a way to take it out
@@ -11997,11 +12031,6 @@ function ignoreCard(desk, p) {
   // Native append writes an absent part as the word "null", so the parts that
   // may be absent are left out first
   box.append(...[
-    // Asking the AI comes first: most people set this up once, from its
-    // proposal, and only adjust a line by hand afterwards
-    el("div", {class:"row"},
-      el("button", {onclick: () => inheritAiDialog(desk, p)}, T["settings.inherit.ai.button"]),
-      el("span", {class:"hint"}, T["settings.inherit.ai.button_hint"])),
     el("div", {class:"hint"}, fill(T["settings.bring.hint"], {root: j.root || root, branch: j.branch || "-"})),
     lists,
     el("div", {class:"row"}, addIn, el("button", {onclick: add}, T["settings.bring.add"])),
@@ -12012,9 +12041,8 @@ function ignoreCard(desk, p) {
     // Files from anywhere else are inherited the same way, so they are part
     // of the same card rather than a card of their own
     extraFilesPart(desk, p)].filter(Boolean));
-  const c = card(T["settings.bring.title"], box);
-  c.id = "project-bring";
-  return c;
+  box.id = "project-bring";
+  return box;
 }
 
 // How much each thing a project's ignore files match holds, counted once
@@ -12121,7 +12149,6 @@ function projectPane(desk, p) {
       || p.folders.some(gi => sameCwd(firstFlow.folder, (desk.folders[gi] || {}).cwd)));
     if (arrived) box.append(firstFlowBar(desk, p));
     box.append(rulesCard(desk, p));
-    if ((p.at || "").trim()) box.append(ignoreCard(desk, p));
     return box;
   }
 
@@ -12235,13 +12262,63 @@ function projectPane(desk, p) {
 const sameCwd = (a, b) => (a || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
   === (b || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 
-// The name in front of its branches and where its folders go: one card, the
-// two answers every worktree of it is made with. Where it goes is read from
-// its checkout, so a project with none yet is sent to say where that is.
-// The card is made first and filled after, so what is in it is read as its
+// ── A project's worktree rules ───────────────────────────────────────────
+// The three things every worktree of the project is made with -- the name in
+// front of its branches, where its folders go, what it inherits -- each said
+// first as one line of what it is now, and opened for changing only when
+// asked. All three written out at once is a screen that asks to be filled
+// in, and most people keep what is there. The same card is the rules' page
+// and the dialog a new project is asked about in, so the two cannot differ
+const RULES_OPEN = {};
+const rulesOpen = (p, part) => !!(RULES_OPEN[p.key] || {})[part];
+function openRules(p, part, on) {
+  const o = RULES_OPEN[p.key] = RULES_OPEN[p.key] || {};
+  o[part] = on === undefined ? !o[part] : on;
+  render();
+}
 function rulesCard(desk, p) {
-  const c = card(T["settings.place.card"]);
-  c.id = "project-place";
+  const c = card(T["settings.psec.rules"]);
+  c.id = "project-rules";
+  const e = p.entry || {};
+  const change = part => el("button", {class:"quiet", "data-rules": part, onclick:() => openRules(p, part)},
+    rulesOpen(p, part) ? T["settings.rules.close"] : T["settings.rules.change"]);
+  // What one rule is now, as the line's middle
+  const now = (...kids) => el("div", {class:"rulesnow"}, ...kids.flat().filter(Boolean));
+  const ruled = r => { r.classList.add("rulesrow"); return r; };
+
+  // The name in front of its branches
+  const prefixRow = ruled(row(T["settings.project.branch_prefix"],
+    now(e.branch_prefix ? el("span", {class:"mono"}, e.branch_prefix) : el("span", {class:"hint"}, T["settings.rules.none"])),
+    change("prefix")));
+  prefixRow.id = "project-prefix";
+  c.append(prefixRow);
+  if (rulesOpen(p, "prefix")) c.append(prefixEditor(desk, p));
+
+  // Where its folders go, and what it inherits, are read from its checkout
+  if (!(p.at || "").trim()) {
+    c.append(el("div", {class:"hint"}, T["settings.place.no_at"]),
+      el("div", {class:"row"}, el("button", {onclick:() => goProjectSection(p.key, "basic")}, T["settings.place.set_at"])));
+    return c;
+  }
+  const j = placeOf(desk, p);
+  const placeRow = ruled(row(T["settings.place"], now(placeNow(p, j)), change("place")));
+  placeRow.id = "project-place";
+  c.append(placeRow);
+  if (rulesOpen(p, "place")) c.append(placeEditor(desk, p, j));
+
+  const inheritRow = ruled(row(T["settings.bring.title"], now(inheritNow(desk, p)),
+    el("button", {class:"quiet", onclick:() => inheritAiDialog(desk, p)}, T["settings.inherit.ai.button"]),
+    change("inherit")));
+  inheritRow.id = "project-inherit";
+  c.append(inheritRow);
+  if (rulesOpen(p, "inherit")) c.append(el("div", {class:"rulesedit"}, inheritPart(desk, p)));
+  return c;
+}
+
+// What every branch of this project is called before its own name. Typed
+// once here instead of into every dialog, and kept by the name an AI writes
+// later as well
+function prefixEditor(desk, p) {
   const prefixIn = el("input", {type:"text", class:"mono", style:"width:200px",
     value:(p.entry || {}).branch_prefix || "", placeholder:T["settings.project.branch_prefix.ph"]});
   prefixIn.addEventListener("input", () => {
@@ -12251,58 +12328,100 @@ function rulesCard(desk, p) {
     refreshSave();
     if ((p.at || "").trim()) askPlaceSoon(desk, p);
   });
-  const prefixRow = row(T["settings.project.branch_prefix"], prefixIn,
-    el("span", {class:"hint"}, T["settings.project.branch_prefix.hint"]));
-  prefixRow.id = "project-prefix";
-  c.append(prefixRow);
-  if (!(p.at || "").trim()) {
-    c.append(el("div", {class:"hint"}, T["settings.place.no_at"]),
-      el("div", {class:"row"}, el("button", {onclick:() => goProjectSection(p.key, "basic")}, T["settings.place.set_at"])));
-    return c;
-  }
+  return el("div", {class:"rulesedit"},
+    el("div", {class:"row"}, prefixIn),
+    el("div", {class:"hint"}, T["settings.project.branch_prefix.hint"]));
+}
+
+// Where its folders go, said the way a person reads it: the one of the two
+// usual places it is, or the place as written, and the folder a worktree
+// would really get
+function placeNow(p, j) {
+  if (!j) return el("span", {class:"hint"}, T["settings.place.asking"]);
+  const spec = j.spec || "";
+  const said = spec === j.beside ? T["settings.place.beside"]
+    : spec === j.default ? T["settings.place.own"]
+    : null;
+  return [
+    said ? el("span", {}, said) : el("span", {class:"mono"}, spec),
+    j.folder ? el("div", {class:"hint mono"}, "→ " + j.folder) : null,
+    j.error ? el("div", {class:"warn"}, j.error) : null,
+  ].filter(Boolean);
+}
+
+// The place as written, with the three ways people most often mean one a
+// press each: the app's place, beside the checkout, or a folder picked. What
+// is written is always written out -- the default too -- so nothing about
+// where a worktree goes is left unsaid
+function placeEditor(desk, p, j) {
   const e = p.entry || {};
-  const j = placeOf(desk, p);
-  const input = el("input", {type:"text", class:"mono grow", value: e.placement || "",
-    placeholder: (j && j.default) ? j.default : T["settings.place.ph"]});
-  input.addEventListener("input", () => {
+  const input = el("input", {type:"text", class:"mono grow"});
+  input.value = e.placement || (j && j.spec) || "";
+  const put = v => {
     const en = ensureProject(desk, p);
-    const v = input.value.trim();
-    if (v) en.placement = v; else delete en.placement;
+    if (v.trim()) en.placement = v.trim(); else delete en.placement;
     sel.proj = "p:" + en.name;
     refreshSave();
     askPlaceSoon(desk, p);
-  });
-  // The two places a person most often means, one press each
-  const beside = el("button", {class:"quiet", onclick:() => { input.value = ".."; input.dispatchEvent(new Event("input")); }},
-    T["settings.place.beside"]);
-  const own = el("button", {class:"quiet", onclick:() => { input.value = ""; input.dispatchEvent(new Event("input")); }},
-    T["settings.place.own"]);
+  };
+  input.addEventListener("input", () => put(input.value));
+  const set = v => { input.value = v; put(v); };
+  const own = el("button", {class:"quiet", onclick:() => j && set(j.default)}, T["settings.place.own"]);
+  const beside = el("button", {class:"quiet", onclick:() => j && set(j.beside)}, T["settings.place.beside"]);
+  const pick = el("button", {class:"quiet", onclick: async () => {
+    const at = await choosePath("dir", T["settings.place.pick"], (j && j.folder) || "");
+    if (at !== null) set(at);
+  }}, T["settings.place.pick"]);
   const said = el("div", {id:"placesaid", class:"placesaid"});
   drawPlace(said, desk, p, j);
-  // The two presses under the box rather than beside it, so the box keeps
-  // its width on a phone
-  c.append(row(T["settings.place"], input,
-    el("div", {class:"row placequick"}, beside, own),
-    el("span", {class:"hint"}, T["settings.place.hint"])), said);
-  return c;
+  return el("div", {class:"rulesedit"},
+    el("div", {class:"row"}, input),
+    el("div", {class:"row placequick"}, own, beside, pick),
+    el("div", {class:"hint"}, T["settings.place.hint"]),
+    said);
+}
+
+// What it inherits, in one line: how many lines come along each way, and
+// whether a large copy is among them
+function inheritNow(desk, p) {
+  const root = (p.at || "").trim();
+  const known = IGNORES[root];
+  if (!known) {
+    askIgnore(root).then(() => { if (!typingNow()) render(); });
+    return el("span", {class:"hint"}, T["settings.bring.reading"]);
+  }
+  const sizes = sizesOf(root);
+  const counts = {};
+  let large = false;
+  for (const d of known.defaults || []) {
+    const rule = bringRule(p, d.source, d.pattern);
+    const how = rule && BRING_HOWS.includes(rule.how) ? rule.how : d.how;
+    counts[how] = (counts[how] || 0) + 1;
+    const matched = (known.ignored || []).filter(i => i.source === d.source && i.pattern === d.pattern);
+    const size = sizeOfMatches(sizes, matched);
+    if (size && size.large && (how === "copy" || how === "replace")) large = true;
+  }
+  const said = BRING_HOWS.filter(h => counts[h]).map(h => fill(T["settings.rules.count"], {how: bringLabel(h), n: counts[h]}));
+  if (!said.length) return el("span", {class:"hint"}, T["settings.rules.inherit_none"]);
+  return [el("span", {}, said.join(T["settings.rules.and"])),
+    large ? el("div", {class:"hint caution"}, T["settings.rules.large"]) : null].filter(Boolean);
 }
 
 // ── Where its worktrees go ───────────────────────────────────────────────
 // Asked of the app as the settings stand on this page, saved or not: the
-// folder a worktree would get, what says the project is served where it
-// stands, and whether a folder there can be a second name for another
+// folder a worktree would get, what the project's placement says when it has
+// written none, what would be offered for it, and whether a folder there can
+// be a second name for another
 const PLACES = {};
 const HOST_MARKERS = {{HOST_MARKERS}};
 const placeSig = (desk, p) => {
   const e = p.entry || {};
-  return JSON.stringify([p.at, e.placement || "", e.branch_prefix || "", e.name || p.name,
-    current.nest_worktrees !== false, current.host_markers || null]);
+  return JSON.stringify([p.at, e.placement || "", e.branch_prefix || "", e.name || p.name, current.host_markers || null]);
 };
 const placeAsk = (desk, p) => {
   const e = p.entry || {};
   return {path: p.at || "", placement: e.placement || "", prefix: e.branch_prefix || "",
-    project: e.name || p.name, nest: current.nest_worktrees !== false,
-    markers: current.host_markers || null, probe: true};
+    project: e.name || p.name, markers: current.host_markers || null, probe: true};
 };
 // What is known about where this project's worktrees go, as of the settings
 // on screen. Null until the app has answered; asked once per change
@@ -12316,11 +12435,10 @@ function placeOf(desk, p) {
       const now = PLACES[p.key];
       if (!now || now.asking !== sig) return;
       PLACES[p.key] = {sig, j: j || {ok:false}};
-      if (sel.proj !== p.key) return;
       const said = document.getElementById("placesaid");
       if (said) drawPlace(said, desk, p, PLACES[p.key].j);
-      // What a line can be turned into depends on this answer too; drawn
-      // again unless somebody is in the middle of typing
+      // The line above it, and what a line of the files can be turned into,
+      // depend on this answer too; drawn again unless somebody is typing
       if (!typingNow()) render();
     });
   }
@@ -12334,16 +12452,18 @@ function askPlaceSoon(desk, p) {
 }
 const typingNow = () => !!document.activeElement && ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
 
-// Where a worktree would really be made, and what is worth knowing about it
+// Under the place as written: the folder a worktree would really get, and
+// what is worth knowing about it
 function drawPlace(box, desk, p, j) {
   box.textContent = "";
   if (!j) { box.append(el("div", {class:"hint"}, T["settings.place.asking"])); return; }
-  if (j.ok === false && !j.folder) { box.append(el("div", {class:"hint"}, j.error || T["settings.place.unreachable"])); return; }
-  box.append(el("div", {class:"realcmd"},
-    el("code", {class:"mono"}, j.folder || ""),
+  if (j.folder) box.append(el("div", {class:"realcmd"},
+    el("code", {class:"mono"}, j.folder),
     el("div", {class:"hint"}, fill(T["settings.place.example"], {name: j.branch || ""}))));
   if (j.error) box.append(el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, j.error)));
-  if (j.served) box.append(el("div", {class:"hint"}, fill(T["settings.place.served"], {why: j.served})));
+  // Why the place written is the one it is, when it was offered for that
+  // reason when the project was added
+  if (firstFlow && j.served && j.spec === j.beside) box.append(el("div", {class:"hint"}, fill(T["settings.place.proposed"], {why: j.served})));
   if (j.long) box.append(el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, T["settings.place.long"])));
   if (j.linkable === false) {
     const linked = ((p.entry || {}).bring || []).filter(r => r.how === "link");
@@ -12430,9 +12550,7 @@ function enterRulesFloat(di, p) {
     body: () => {
       const q = project();
       if (!q) return [];
-      const out = [el("div", {class:"hint"}, T["settings.first.say"]), rulesCard(desks[at.di], q)];
-      if ((q.at || "").trim()) out.push(ignoreCard(desks[at.di], q));
-      return out;
+      return [el("div", {class:"hint"}, T["settings.first.say"]), rulesCard(desks[at.di], q)];
     },
     foot: [el("button", {class:"quiet", "data-frame":"cancel", onclick:() => { firstFlow = null; closeSettings(); }}, T["settings.first.later"]), go],
     cancel: () => closeSettings(),
@@ -12442,6 +12560,21 @@ function enterRulesFloat(di, p) {
       if (q) sel = {desk:sel.desk, proj:q.key, grp:null, tab:null, global:false, psection:"rules"};
     },
   });
+  // Where its worktrees go is written in, not left to a default: the place
+  // the project looks like it needs -- beside the checkout, for one a server
+  // reads where it stands -- or the app's own. Written, so it is on screen as
+  // the answer and saved with the way on, and changed like any other
+  if (!(p.entry || {}).placement && (p.at || "").trim()) {
+    settingsApi("/api/project/place", placeAsk(desks[at.di], p)).catch(() => null).then(j => {
+      const q = project();
+      if (!j || !j.proposal || !q || (q.entry || {}).placement) return;
+      const en = ensureProject(desks[at.di], q);
+      en.placement = j.proposal;
+      sel.proj = "p:" + en.name;
+      refreshSave();
+      render();
+    });
+  }
 }
 
 // Saved if anything changed, then on to the project's first worktree: the
@@ -15389,6 +15522,10 @@ load().then(() => {
                    : {desk:cur, grp:gi, tab:null, global:false};
         // A project the board has just added: its rules as a dialog over
         // the board, not the settings coming up around them
+        // A link to one of the rules opens that one for changing
+        const part = {"project-prefix":"prefix", "project-place":"place", "project-inherit":"inherit",
+                      "project-bring":"inherit", "project-extra":"inherit"}[sec];
+        if (home && part) RULES_OPEN[home.key] = Object.assign(RULES_OPEN[home.key] || {}, {[part]: true});
         if (home && sec === "project-first") { enterRulesFloat(cur, home); return; }
         if (sec === "project-first") frameLeave();
         render();
@@ -16160,7 +16297,7 @@ mod tests {
         // What a worktree inherits is on the rules page, what it runs on the
         // setup page -- both pages of the project
         assert!(
-            PAGE.contains(r#"if ((p.at || "").trim()) box.append(ignoreCard(desk, p));"#)
+            PAGE.contains(r#"if (rulesOpen(p, "inherit")) c.append(el("div", {class:"rulesedit"}, inheritPart(desk, p)));"#)
                 && PAGE.contains("extraFilesPart(desk, p)].filter(Boolean));")
                 && PAGE.contains("if (sec.id === \"setup\") {\n    box.append(envCard(desk, p));"),
             "the cards that belong to the repository are not on the project's page"

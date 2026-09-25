@@ -57,7 +57,67 @@ const STEPS: &[Step] = &[
     Step { to: "0.10.0", apply: to_0_10_0 },
     Step { to: "0.16.0", apply: to_0_16_0 },
     Step { to: "0.18.0", apply: to_0_18_0 },
+    Step { to: "0.19.0", apply: to_0_19_0 },
 ];
+
+/// Where a project's worktrees go says what it is measured from.
+///
+/// A placement was a bare path: absolute, or relative to the checkout, with
+/// an empty one meaning the app's own place -- and a project found to be
+/// served where it stands quietly given the checkout's side instead. What a
+/// path is measured from is said in it now (`{worktrees}`, `{origin_folder}`),
+/// and nothing is decided behind it. So a relative one is written as the
+/// checkout's (`..` becomes `{origin_folder}\..`), an empty one goes (absent
+/// is the default, which the settings show as it is written), and one that is
+/// absolute or already begins with a word stays as it is. A machine's place
+/// for its worktrees was `<there>/<checkout>/<branch>` and is written
+/// `<there>/{origin}` now. Whether the project's folder was put in between
+/// was a switch of its own; it is `{project}` in the placement now, and the
+/// switch goes
+fn to_0_19_0(doc: &mut serde_json::Value) -> Result<()> {
+    if let Some(desks) = doc.get_mut("desks").and_then(|d| d.as_array_mut()) {
+        for desk in desks.iter_mut() {
+            let Some(projects) = desk.get_mut("projects").and_then(|p| p.as_array_mut()) else { continue };
+            for project in projects.iter_mut() {
+                said_from_where(project);
+            }
+        }
+    }
+    if let Some(hosts) = doc.get_mut("hosts").and_then(|h| h.as_array_mut()) {
+        for host in hosts.iter_mut() {
+            let Some(obj) = host.as_object_mut() else { continue };
+            let Some(b) = obj.get("branches").and_then(|v| v.as_str()).map(str::trim).map(str::to_string) else { continue };
+            match b.is_empty() {
+                true => {
+                    obj.remove("branches");
+                }
+                false if !b.starts_with('{') && !b.ends_with("{origin}") => {
+                    obj.insert("branches".into(), format!("{}/{{origin}}", b.trim_end_matches('/')).into());
+                }
+                false => {}
+            }
+        }
+    }
+    if let Some(obj) = doc.as_object_mut() {
+        obj.remove("nest_worktrees");
+    }
+    Ok(())
+}
+
+/// One project's placement, saying what it is measured from (see [`to_0_19_0`])
+fn said_from_where(project: &mut serde_json::Value) {
+    let Some(obj) = project.as_object_mut() else { return };
+    let Some(said) = obj.get("placement").and_then(|v| v.as_str()).map(str::trim).map(str::to_string) else { return };
+    let bytes = said.as_bytes();
+    let absolute = (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'\\' | b'/'))
+        || said.starts_with("\\\\")
+        || said.starts_with('/');
+    if said.is_empty() {
+        obj.remove("placement");
+    } else if !said.starts_with('{') && !absolute {
+        obj.insert("placement".into(), format!("{{origin_folder}}\\{said}").into());
+    }
+}
 
 /// What git does -- the protected branches, and the prompts the AI writes a
 /// commit message, a pull request or an issue from, or is handed a stopped
@@ -645,6 +705,29 @@ mod tests {
             let _: crate::config::Config = serde_json::from_value(doc).expect("it cannot be read after migrating");
         }
         assert!(seen >= 1, "there is not a single fixture");
+    }
+
+    /// A placement says what it is measured from once carried: a relative one
+    /// is the checkout's, an empty one goes, one that is absolute or already
+    /// says so stays. A machine's place names the checkout's folder in it,
+    /// and the switch for the project's folder goes
+    #[test]
+    fn a_placement_says_what_it_is_measured_from() {
+        let mut doc: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(crate::repo_root().join("tests").join("fixtures").join("config-0.19.0.json")).unwrap(),
+        )
+        .unwrap();
+        to_0_19_0(&mut doc).unwrap();
+        let projects = doc["desks"][0]["projects"].as_array().unwrap();
+        let placed: Vec<Option<&str>> = projects.iter().map(|p| p.get("placement").and_then(|v| v.as_str())).collect();
+        assert_eq!(placed, vec![Some("{origin_folder}\\.."), None, Some("D:\\trees"), None]);
+        assert_eq!(doc["hosts"][0]["branches"], "/home/pi/trees/{origin}");
+        assert!(doc["hosts"][1].get("branches").is_none());
+        assert!(doc.get("nest_worktrees").is_none());
+        // Once is enough
+        let once = doc.clone();
+        to_0_19_0(&mut doc).unwrap();
+        assert_eq!(doc, once);
     }
 
     /// The rename arrives without anybody losing what they had written.

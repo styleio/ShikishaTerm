@@ -265,7 +265,7 @@ settings screen, so it cannot fall behind.
 **The program's settings**
 
 - **Basic** — Tab width, chaining, language
-- **Worktrees** — Where they go, host-dependent project markers
+- **Worktrees** — Host-dependent project markers
 - **AI agents** — Assistant AI, deciding AI, connections, agreements
 - **Git accounts** — Tokens, and the sign-ins of this PC's git and gh
 - **Update** — Newer versions, and going back

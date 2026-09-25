@@ -15,19 +15,23 @@ once it reaches its first tagged release.
   and Setup. The rules are the three things every worktree of the project is
   made with: the name in front of its branches, **where its folders go**, and
   the **files it inherits from the original** (the card that was "What a new
-  worktree gets").
-- **Worktree Placement.** A project says where its worktrees go: one folder,
-  absolute or relative to its checkout. Beside the checkout (`..`) each is
-  named `<checkout>-<name>` and stands at the checkout's depth, which is what
-  a site served where it stands needs -- the server reads a worktree beside it
-  under a URL of its own, and a path that climbs out to a neighbour still
-  finds it. The page shows where a worktree would really be made as the place
-  is typed, and refuses a place inside the checkout.
+  worktree gets"). Each is one line of what it is now, opened with Change.
+- **Worktree Placement.** A project says where its worktrees go, and what the
+  place is measured from: `{worktrees}` (the app's place), `{origin_folder}`
+  (its checkout), or an absolute path -- with `{project}` and `{origin}` for
+  its name and the checkout's. Nothing written is `{worktrees}\{project}`,
+  shown as it is written. Beside the checkout (`{origin_folder}\..`) each
+  worktree is named `<checkout>-<name>` and stands at the checkout's depth,
+  which is what a site served where it stands needs. The app's place, beside
+  the checkout, or a folder picked are a press each; the page shows where a
+  worktree would really be made, and refuses a place inside the checkout or
+  one that does not say what it is measured from. A machine reached over SSH
+  says where its worktrees go the same way.
 - **Host-dependent projects.** A project a server or another program reads
-  where it stands (an `.htaccess`, a `web.config`, a path through `htdocs`) has
-  its worktrees beside it unless it says otherwise. What counts as a sign is
-  under Settings > Worktrees, beside whether worktrees go in a folder named
-  for their project.
+  where it stands (an `.htaccess`, a `web.config`, a path through `htdocs`) is
+  offered the place beside its checkout when it is added -- written into its
+  rules, to keep or change, and never assumed behind them. What counts as a
+  sign is under Settings > Worktrees.
 - **Set up with AI.** On the files a worktree inherits, the assistant AI reads
   what each ignore line matches -- how large it is, and which files name the
   checkout -- and proposes Copy, Copy and replace, Link or Leave out for each,
@@ -51,7 +55,10 @@ once it reaches its first tagged release.
 - **A worktree's folder is named for its work in one piece**: `feature/login`
   is the folder `feature-login`, no longer `feature` with `login` inside, and
   the project's branch prefix is left off it. Worktrees already made stay
-  where they are.
+  where they are. The same on a machine reached over SSH.
+- **A placement already written says what it is measured from**: a relative
+  one becomes the checkout's (`..` is `{origin_folder}\..`), and a machine's
+  place for worktrees gains `/{origin}`, where the checkout's folder always was.
 - **Everything an ignore line matches is copied unless the project says
   otherwise** -- `.env` and folders such as `node_modules` included. A worktree
   without them is one that does not run; what is large is said beside the line.
