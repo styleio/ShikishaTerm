@@ -33,18 +33,22 @@ pub fn panel_place(s: &Surface) -> Option<hooks::TabPlace> {
             // this machine, or on the one the folder lives on -- and then
             // the folder is the place there, as that machine spells it
             remote: at.clone(),
-            remote_dir: at.as_ref().map(|_| d.display().to_string()).unwrap_or_default(),
+            remote_dir: at.as_ref().map(|_| far_path(d)).unwrap_or_default(),
             protect: protect.clone(),
             git: git.clone(),
         }),
         // The editor works in a folder too, and is named the same way, so
         // reading and writing the file it is showing goes through the same
-        // fence as everything else
-        Surface::Editor { key, dir: Some(d), .. } => Some(hooks::TabPlace {
+        // fence as everything else. A folder on another machine is fenced
+        // there, by its path on that machine
+        Surface::Editor { key, dir: Some(d), at, .. } => Some(hooks::TabPlace {
             key: hooks::TabKey { id: Some(key.clone()) },
             dir: d.clone(),
-            remote: None,
-            remote_dir: String::new(),
+            remote: at.clone(),
+            remote_dir: match at {
+                Some(_) => far_path(d),
+                None => String::new(),
+            },
             protect: Vec::new(),
             git: Default::default(),
         }),
@@ -61,6 +65,13 @@ pub fn panel_place(s: &Surface) -> Option<hooks::TabPlace> {
         }),
         _ => None,
     }
+}
+
+/// A folder on another machine, as that machine writes it. It is carried in a
+/// `PathBuf` because every folder is, and this machine's way of printing one
+/// would turn its slashes round
+pub fn far_path(dir: &std::path::Path) -> String {
+    dir.to_string_lossy().replace('\\', "/")
 }
 
 pub fn build_engine(

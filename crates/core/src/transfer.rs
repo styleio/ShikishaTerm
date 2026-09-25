@@ -44,6 +44,8 @@ pub fn grant_of(job: &FileJob) -> &'static str {
         FileJob::Get { .. } => "sftp_get",
         FileJob::Read { .. } => "sftp_read",
         FileJob::Put { .. } => "sftp_put",
+        // The same act as sending a file there: what arrives is the contents
+        FileJob::Write { .. } => "sftp_put",
         FileJob::MakeDir { .. } => "sftp_mkdir",
         FileJob::Rename { .. } => "sftp_rename",
         FileJob::Remove { .. } => "sftp_rm",
@@ -113,6 +115,7 @@ pub fn inside(job: FileJob, fences: &Fences) -> Result<FileJob> {
         FileJob::Put { from, to, overwrite } => {
             FileJob::Put { from: here(from)?, to: there(&to)?, overwrite }
         }
+        FileJob::Write { to, bytes } => FileJob::Write { to: there(&to)?, bytes },
     })
 }
 

@@ -987,6 +987,10 @@ pub fn files(
             upload(sandbox, &std::fs::read(&from)?, &to, wait_ms)?;
             Ok(FileAnswer::Nothing)
         }
+        FileJob::Write { to, bytes } => {
+            upload(sandbox, &bytes, &to, wait_ms)?;
+            Ok(FileAnswer::Nothing)
+        }
     }
 }
 

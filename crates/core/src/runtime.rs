@@ -792,7 +792,7 @@ fn tree_file_read(dir: &std::path::Path, rel: &str, at: Option<&crate::elsewhere
     match at {
         None => Ok(std::fs::read_to_string(dir.join(rel))?),
         Some(at) => {
-            let path = format!("{}/{rel}", dir.to_string_lossy().replace('\\', "/").trim_end_matches('/'));
+            let path = format!("{}/{rel}", crate::desk::far_path(dir).trim_end_matches('/'));
             match crate::elsewhere::files(at, crate::ssh::FileJob::Read { path }, TREE_FILE_WAIT_MS)? {
                 crate::ssh::FileAnswer::Bytes(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
                 _ => anyhow::bail!(crate::i18n::t("err.files.binary")),
@@ -800,18 +800,14 @@ fn tree_file_read(dir: &std::path::Path, rel: &str, at: Option<&crate::elsewhere
         }
     }
 }
-/// The same file written back, where the tree is. Over there it goes as a
-/// file of its own sent up, since that is the one way a file gets there
+/// The same file written back, where the tree is
 fn tree_file_write(dir: &std::path::Path, rel: &str, at: Option<&crate::elsewhere::Elsewhere>, text: &str) -> anyhow::Result<()> {
     match at {
         None => Ok(std::fs::write(dir.join(rel), text)?),
         Some(at) => {
-            let from = std::env::temp_dir().join(format!("shikisha-resolve-{}-{}", std::process::id(), crate::random_hex(6)));
-            std::fs::write(&from, text)?;
-            let to = format!("{}/{rel}", dir.to_string_lossy().replace('\\', "/").trim_end_matches('/'));
-            let sent = crate::elsewhere::files(at, crate::ssh::FileJob::Put { from: from.clone(), to, overwrite: true }, TREE_FILE_WAIT_MS);
-            let _ = std::fs::remove_file(&from);
-            sent.map(|_| ())
+            let to = format!("{}/{rel}", crate::desk::far_path(dir).trim_end_matches('/'));
+            let job = crate::ssh::FileJob::Write { to, bytes: text.as_bytes().to_vec() };
+            crate::elsewhere::files(at, job, TREE_FILE_WAIT_MS).map(|_| ())
         }
     }
 }
@@ -830,11 +826,7 @@ fn tab_place(t: &Tab) -> hooks::TabPlace {
     hooks::TabPlace {
         key: t.key(),
         dir,
-        remote: match (t.remote(), t.cloud()) {
-            (Some(spec), _) => Some(crate::elsewhere::Elsewhere::Ssh(spec.clone())),
-            (None, Some(host)) => Some(crate::elsewhere::Elsewhere::Cloud(host.clone())),
-            (None, None) => None,
-        },
+        remote: tab_machine(t),
         // The folder over there, for a tab whose folder is there. A terminal
         // tab given only an address has none: a shell starts wherever
         // signing in puts it, so there is nothing on that end for a path to
@@ -843,6 +835,14 @@ fn tab_place(t: &Tab) -> hooks::TabPlace {
         remote_dir: t.remote_cwd().unwrap_or_default().to_string(),
         protect: t.protect().to_vec(),
         git: t.git_use.clone(),
+    }
+}
+/// The machine a tab's terminal is on, when it is not this one
+fn tab_machine(t: &Tab) -> Option<crate::elsewhere::Elsewhere> {
+    match (t.remote(), t.cloud()) {
+        (Some(spec), _) => Some(crate::elsewhere::Elsewhere::Ssh(spec.clone())),
+        (None, Some(host)) => Some(crate::elsewhere::Elsewhere::Cloud(host.clone())),
+        (None, None) => None,
     }
 }
 pub fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'static str>) {
@@ -1329,6 +1329,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Everything the file panel asks of a server, which is all of it: a folder
     // on the far end is a network round trip and the window cannot wait for one
     let (sftp_tx, sftp_rx) = std::sync::mpsc::channel::<String>();
+    // The same, for the column's file list and the editor when their folder is
+    // on another machine
+    let (far_tx, far_rx) = std::sync::mpsc::channel::<FarFiles>();
+    // What each editor showing a file on another machine last heard about it,
+    // and when each last asked. The disk here is asked every pass; a machine
+    // over there is a round trip, so it is asked on a clock of its own
+    let mut far_seen: std::collections::HashMap<String, FarSeen> = std::collections::HashMap::new();
+    let mut far_polls: std::collections::HashMap<String, FarPoll> = std::collections::HashMap::new();
     // 🔍 environment cards: per tab (by id), the captured output of the last
     // survey the person ran. Ride along with every ✨ suggestion so the AI
     // keeps knowing the environment long after the survey scrolled away
@@ -4245,12 +4253,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .iter()
                 .map(|e| {
                     let mut e = e.clone();
-                    e.stamp = match (&e.dir, &e.showing) {
-                        (Some(d), Some(rel)) => local_under(d, rel)
-                            .map(|at| crate::files::stamp_of(&at))
-                            .filter(|s| !s.is_empty()),
+                    e.stamp = match (&e.at, &e.dir, &e.showing) {
+                        // A file on another machine: what it said last time it
+                        // was asked (see `far_stamp_polls`)
+                        (Some(_), _, Some(rel)) => far_seen
+                            .get(&e.key)
+                            .filter(|seen| &seen.path == rel)
+                            .map(|seen| seen.stamp.clone()),
+                        (None, Some(d), Some(rel)) => local_under(d, rel).map(|at| crate::files::stamp_of(&at)),
                         _ => None,
-                    };
+                    }
+                    .filter(|s| !s.is_empty());
                     e
                 })
                 .collect(),
@@ -5774,13 +5787,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // so nothing has to be set up before pressing a file, and pressing ten
         // files leaves one editor rather than ten
         for (panel, path, diff) in shell.mail().take_edits() {
-            let Some(dir) = panel_places(&surfaces)
-                .into_iter()
-                .chain(tab_places(&tabs).into_iter().filter(|p| !p.dir.as_os_str().is_empty()))
-                .find(|p| p.key.matches(&panel))
-                .map(|p| p.dir)
-            else {
-                continue;
+            let Some(place) = files_at(&panel, &surfaces, &tabs) else { continue };
+            let (dir, machine) = match &place {
+                FilesAt::Here(d) => (d.clone(), None),
+                FilesAt::There { at, root } => (std::path::PathBuf::from(root), Some(at.clone())),
             };
             let focused = surfaces
                 .get(pane_layout.focused_surface().wrapping_sub(1))
@@ -5804,9 +5814,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // throwaway editor has nothing left to be, so it goes with it
             let showing = if path.trim().is_empty() {
                 None
+            } else if !place.holds(&path) {
+                continue;
             } else {
-                let Some(full) = local_under(&dir, &path) else { continue };
-                Some((path.clone(), full))
+                Some(path.clone())
             };
             if showing.is_none() && key == EDITOR_SCRATCH {
                 editors.retain(|e| e.key != key);
@@ -5816,10 +5827,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let entry = crate::view::EditorOpen {
                 key: key.clone(),
                 dir: Some(dir.clone()),
-                showing: showing.as_ref().map(|(rel, _)| rel.clone()),
+                showing: showing.clone(),
                 // Filled in when the state is built, from the disk itself
                 stamp: None,
                 scratch: key == EDITOR_SCRATCH,
+                at: machine,
                 // A change is only ever of a file that is being shown
                 diff: showing.as_ref().and_then(|_| (!diff.trim().is_empty()).then(|| diff.trim().to_string())),
             };
@@ -6141,15 +6153,42 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 r.push_state(format!("{{\"issues\":{js}}}"));
             }
         }
-        // The column's file list. Answered on the spot: it is one folder of
-        // this machine, or a search that stops itself
+        // The column's file list, and the editor. Answered on the spot when it
+        // is one folder of this machine or a search that stops itself; a
+        // folder on another machine is asked on a thread and answers below
         for (panel, act, args) in shell.mail().take_files() {
-            let js = files_answer(&panel, &act, &args, &surfaces, &tabs);
-            shell.push_files(&js);
-            if let Some(r) = remote_ui.as_ref() {
-                r.push_state(format!("{{\"files\":{js}}}"));
+            if let Some(js) = files_answer(&panel, &act, &args, &surfaces, &tabs, &caps, &far_tx) {
+                shell.push_files(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"files\":{js}}}"));
+                }
             }
         }
+        while let Ok(far) = far_rx.try_recv() {
+            if far.polled {
+                far_polls.entry(far.key.clone()).and_modify(|p| p.busy = false);
+            }
+            if let Some(stamp) = far.stamp {
+                // A look that set out before the last read or save came back
+                // may have seen the file before that save, and would read as
+                // somebody else's change to a file nobody else touched
+                let stale = far.polled
+                    && far_seen.get(&far.key).is_some_and(|seen| seen.at > far.asked);
+                if !stale {
+                    far_seen.insert(far.key.clone(), FarSeen { path: far.path.clone(), stamp, at: far.asked });
+                }
+            }
+            if let Some(js) = far.js {
+                shell.push_files(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"files\":{js}}}"));
+                }
+            }
+        }
+        // An editor put away takes what was heard about its file with it
+        far_seen.retain(|k, _| editors.iter().any(|e| &e.key == k));
+        far_polls.retain(|k, _| editors.iter().any(|e| &e.key == k));
+        far_stamp_polls(&editors, &tabs, start.elapsed().as_millis() as u64, &mut far_polls, &far_tx);
         // What the transfer panel asked for. Reading this machine is answered
         // on the spot; anything that touches the server goes to a thread,
         // because a folder listing over a network is a wait and this loop
@@ -9819,40 +9858,169 @@ pub fn diff_encodings(there: (&crate::charset::Reading, &[u8]), here: (&crate::c
         _ => unreachable!(),
     }
 }
-/// One thing the file panel asked for.
+/// What the column's file list, or the editor, asked for.
 ///
 /// Returns the answer when there is one to give at once, and `None` when the
-/// far end has been asked and a thread will send it along. Everything that
-/// touches a server asks the same permission table a script does -- the panel
-/// is a screen a person opened, so it reaches exactly what their own
-/// automation would, and not one thing more.
-#[allow(clippy::too_many_arguments)]
-/// What the column's file list asked for.
-///
-/// The folder is named the way the git panel names it -- by the tab standing
-/// in it -- so the column follows whatever is being looked at without anything
-/// being registered anywhere. A panel of its own is looked at first, so a
-/// transfer panel keeps answering for its own folder.
-///
-/// Nothing here reaches outside that folder: every path is put back through
-/// `local_under`, which is the same fence the transfer panel keeps.
+/// folder is on another machine and a thread will send it along (see
+/// [`files_at`] for which folder that is).
 pub fn files_answer(
     panel: &str,
     act: &str,
     args: &serde_json::Value,
     surfaces: &[Surface],
     tabs: &[Tab],
-) -> String {
+    caps: &crate::caps::Capabilities,
+    far: &std::sync::mpsc::Sender<FarFiles>,
+) -> Option<String> {
+    match files_at(panel, surfaces, tabs) {
+        Some(FilesAt::Here(root)) => Some(files_here(panel, act, args, &root)),
+        Some(FilesAt::There { at, root }) => files_there(panel, act, args, at, root, caps, far),
+        None => Some(
+            serde_json::json!({"act": act, "panel": panel, "ok": false, "error": i18n::t("err.files.no_folder")})
+                .to_string(),
+        ),
+    }
+}
+
+/// Where the files a panel asks about are.
+///
+/// The folder is named the way the git panel names it -- by the tab standing
+/// in it -- so the column follows whatever is being looked at without anything
+/// being registered anywhere. A panel of its own is looked at first, so a
+/// transfer panel keeps answering for its own folder here.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilesAt {
+    /// A folder on this machine
+    Here(std::path::PathBuf),
+    /// A folder on another machine, by its path there
+    There { at: crate::elsewhere::Elsewhere, root: String },
+}
+
+impl FilesAt {
+    /// Whether a path the page gave is inside the folder -- the fence every
+    /// read and save goes through, on either machine
+    pub fn holds(&self, rel: &str) -> bool {
+        match self {
+            Self::Here(root) => local_under(root, rel).is_some(),
+            Self::There { root, .. } => crate::transfer::under_remote(root, rel).is_some(),
+        }
+    }
+}
+
+/// The folder `panel` works in, and which machine it is on.
+///
+/// An editor, a git panel and a tab in a folder on another machine work in
+/// that folder over there. A terminal given only an address was given no
+/// folder over there, so what it has is its working folder here
+pub fn files_at(panel: &str, surfaces: &[Surface], tabs: &[Tab]) -> Option<FilesAt> {
+    for s in surfaces {
+        let Some(p) = crate::desk::panel_place(s) else { continue };
+        if !p.key.matches(panel) {
+            continue;
+        }
+        return Some(match (s, p.remote) {
+            // A file panel's column is its folder here: the far side is the
+            // panel's own second list
+            (Surface::Sftp { .. }, _) | (_, None) => FilesAt::Here(p.dir),
+            (_, Some(at)) if !p.remote_dir.is_empty() => FilesAt::There { at, root: p.remote_dir },
+            _ => FilesAt::Here(p.dir),
+        });
+    }
+    let p = tab_place(tabs.iter().find(|t| t.key().matches(panel))?);
+    match p.remote {
+        Some(at) if !p.remote_dir.is_empty() => Some(FilesAt::There { at, root: p.remote_dir }),
+        _ => Some(p.dir).filter(|d| !d.as_os_str().is_empty()).map(FilesAt::Here),
+    }
+}
+
+/// What a thread working on a folder over there brings back: the answer for
+/// the page, and what an open file is now, when the work found out.
+pub struct FarFiles {
+    /// The panel (for an editor, the editor) the work was for
+    pub key: String,
+    /// The file the stamp is of, as the page names it
+    pub path: String,
+    pub js: Option<String>,
+    /// The file's mark ([`crate::files::stamp_from`]), when it was looked at
+    pub stamp: Option<String>,
+    /// When the work set out
+    pub asked: Instant,
+    /// Whether this was the clock's own look rather than something asked for
+    pub polled: bool,
+}
+
+/// What an editor on another machine last heard about its file.
+pub struct FarSeen {
+    pub path: String,
+    pub stamp: String,
+    /// When the work that heard it set out
+    pub at: Instant,
+}
+
+/// When an editor on another machine last looked at its file, and whether a
+/// look is still out.
+pub struct FarPoll {
+    pub at: Instant,
+    pub busy: bool,
+}
+
+/// How often an editor showing a file on another machine asks whether it
+/// changed
+const FAR_STAMP_EVERY: Duration = Duration::from_secs(2);
+/// How recently a terminal on that machine has to have changed for the asking
+/// to happen at all
+const FAR_AWAKE_MS: u64 = 20_000;
+
+/// Ask, for each editor showing a file on another machine, whether that file
+/// has changed -- only while a terminal on the same machine is moving.
+///
+/// Asking starts a paused MicroVM, and one that is kept asked never pauses and
+/// never stops costing. A terminal there that is changing says the machine is
+/// awake and somebody -- the AI in it, as often as not -- is working in it,
+/// which is when a file changes under an open editor. When everything there is
+/// still, nothing is asked, and a save still refuses to land on bytes that
+/// changed since they were read
+fn far_stamp_polls(
+    editors: &[crate::view::EditorOpen],
+    tabs: &[Tab],
+    now_ms: u64,
+    polls: &mut std::collections::HashMap<String, FarPoll>,
+    tx: &std::sync::mpsc::Sender<FarFiles>,
+) {
+    for e in editors {
+        let (Some(at), Some(dir), Some(rel), None) = (&e.at, &e.dir, &e.showing, &e.diff) else { continue };
+        if polls.get(&e.key).is_some_and(|p| p.busy || p.at.elapsed() < FAR_STAMP_EVERY) {
+            continue;
+        }
+        let awake = tabs
+            .iter()
+            .any(|t| tab_machine(t).as_ref() == Some(at) && t.ms_since_change(now_ms) < FAR_AWAKE_MS);
+        if !awake {
+            continue;
+        }
+        let Some(path) = crate::transfer::under_remote(&crate::desk::far_path(dir), rel) else { continue };
+        let asked = Instant::now();
+        polls.insert(e.key.clone(), FarPoll { at: asked, busy: true });
+        let (at, key, rel, tx) = (at.clone(), e.key.clone(), rel.clone(), tx.clone());
+        std::thread::spawn(move || {
+            let stamp = match crate::elsewhere::files(&at, ssh::FileJob::Stat { path }, SFTP_WAIT_MS) {
+                Ok(ssh::FileAnswer::One(e)) => Some(crate::files::stamp_from(e.modified, e.size)),
+                // Gone, or not answering: nothing to follow, and nothing said.
+                // The save is what finds out, and says so
+                _ => None,
+            };
+            let _ = tx.send(FarFiles { key, path: rel, js: None, stamp, asked, polled: true });
+        });
+    }
+}
+
+/// What the column's file list and the editor asked of a folder here.
+///
+/// Nothing here reaches outside that folder: every path is put back through
+/// `local_under`, which is the same fence the transfer panel keeps.
+fn files_here(panel: &str, act: &str, args: &serde_json::Value, root: &std::path::Path) -> String {
     let fail = |e: String| {
         serde_json::json!({"act": act, "panel": panel, "ok": false, "error": e}).to_string()
-    };
-    let Some(root) = panel_places(surfaces)
-        .into_iter()
-        .chain(tab_places(tabs).into_iter().filter(|p| !p.dir.as_os_str().is_empty()))
-        .find(|p| p.key.matches(panel))
-        .map(|p| p.dir)
-    else {
-        return fail(i18n::t("err.files.no_folder"));
     };
     let str_of = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
 
@@ -9860,8 +10028,8 @@ pub fn files_answer(
         // One folder, as its rows. The root itself when nothing is named
         "ls" => {
             let at = match str_of("at").trim() {
-                "" => root.clone(),
-                given => match local_under(&root, given) {
+                "" => root.to_path_buf(),
+                given => match local_under(root, given) {
                     Some(p) => p,
                     None => return fail(i18n::t("err.sftp.outside")),
                 },
@@ -9874,7 +10042,7 @@ pub fn files_answer(
                     "act": "ls",
                     "panel": panel,
                     "ok": true,
-                    "at": rel_of(&root, &at),
+                    "at": rel_of(root, &at),
                     "rows": rows
                         .into_iter()
                         .filter(|r| r.name != ".git")
@@ -9888,7 +10056,7 @@ pub fn files_answer(
         // in one piece is not one somebody is reading here, and saying so is
         // better than a window that stops answering while it loads
         "read" => {
-            let Some(at) = local_under(&root, &str_of("path")) else {
+            let Some(at) = local_under(root, &str_of("path")) else {
                 return fail(i18n::t("err.sftp.outside"));
             };
             let size = std::fs::metadata(&at).map(|m| m.len()).unwrap_or(0);
@@ -9899,36 +10067,7 @@ pub fn files_answer(
                 ));
             }
             match std::fs::read(&at) {
-                // What is not text has no lines to put in an editor, and
-                // guessing at its encoding would write the guess back
-                Ok(bytes) if bytes.contains(&0) => fail(i18n::t("err.files.binary")),
-                Ok(bytes) => {
-                    // In the encoding asked for, else the one it most likely is
-                    let file = match str_of("encoding").trim() {
-                        "" => crate::charset::read(&bytes),
-                        name => match crate::charset::named(name) {
-                            Some(e) => crate::charset::read_as(&bytes, e),
-                            None => return fail(i18n::tp("err.git.unknown_encoding", &[("enc", name)])),
-                        },
-                    };
-                    serde_json::json!({
-                    "act": "read",
-                    "panel": panel,
-                    "ok": true,
-                    "path": str_of("path"),
-                    "text": file.text,
-                    // What it is saved back as, and whether that gives the
-                    // same bytes: a reading that lost characters says so
-                    "encoding": file.encoding.name(),
-                    "exact": file.exact,
-                    "stamp": crate::files::stamp_of(&at),
-                    // What the file was when it was read. A save compares this
-                    // with what is on disk, so a save can tell "nobody touched
-                    // it" from "somebody did"
-                    "mark": crate::files::mark_of(&bytes),
-                    })
-                    .to_string()
-                }
+                Ok(bytes) => read_reply(panel, &str_of("path"), &bytes, args, crate::files::stamp_of(&at)),
                 Err(e) => fail(format!("{e}")),
             }
         }
@@ -9937,7 +10076,7 @@ pub fn files_answer(
         // meantime and this save would throw their work away, so it refuses
         // and says so rather than winning the race
         "write" => {
-            let Some(at) = local_under(&root, &str_of("path")) else {
+            let Some(at) = local_under(root, &str_of("path")) else {
                 return fail(i18n::t("err.sftp.outside"));
             };
             let had = str_of("mark");
@@ -9945,50 +10084,12 @@ pub fn files_answer(
             if !had.is_empty() && had != now {
                 return fail(i18n::t("err.files.moved_on"));
             }
-            let text = str_of("text");
-            let encoding = match str_of("encoding").trim() {
-                "" => encoding_rs::UTF_8,
-                name => match crate::charset::named(name) {
-                    Some(e) => e,
-                    None => return fail(i18n::tp("err.git.unknown_encoding", &[("enc", name)])),
-                },
-            };
-            let replacing = args.get("replace").and_then(|v| v.as_bool()).unwrap_or(false);
-            let how = if replacing { crate::files::Save::Replacing } else { crate::files::Save::Exact };
-            let bytes = match crate::files::save_bytes(&text, encoding, how) {
+            let bytes = match save_bytes_of(panel, args) {
                 Ok(b) => b,
-                // Nothing is written. The characters are named, so the page can
-                // ask which way to go rather than choose for the person
-                Err(chars) => {
-                    return serde_json::json!({
-                        "act": "write",
-                        "panel": panel,
-                        "ok": false,
-                        "why": "unwritable",
-                        "encoding": encoding.name(),
-                        "chars": chars.iter().take(12).map(|c| c.to_string()).collect::<Vec<_>>(),
-                        "more": chars.len().saturating_sub(12),
-                        "error": i18n::tp("err.files.unwritable", &[("enc", encoding.name())]),
-                    })
-                    .to_string();
-                }
+                Err(refused) => return refused,
             };
             match std::fs::write(&at, &bytes) {
-                Ok(()) => serde_json::json!({
-                    "act": "write",
-                    "panel": panel,
-                    "ok": true,
-                    "path": str_of("path"),
-                    "encoding": encoding.name(),
-                    // What is in the file now, when that is not what was typed
-                    "text": replacing.then(|| crate::charset::read_as(&bytes, encoding).text),
-                    "mark": crate::files::mark_of(&bytes),
-                    // Our own write moved the stamp on; hand back the new one
-                    // so the editor does not read its own save as somebody
-                    // else's change
-                    "stamp": crate::files::stamp_of(&at),
-                })
-                .to_string(),
+                Ok(()) => write_reply(panel, &str_of("path"), &bytes, args, crate::files::stamp_of(&at)),
                 Err(e) => fail(format!("{e}")),
             }
         }
@@ -9996,9 +10097,9 @@ pub fn files_answer(
         "find" | "grep" => {
             let q = str_of("q");
             let found = if act == "find" {
-                crate::files::by_name(&root, &q, 300)
+                crate::files::by_name(root, &q, 300)
             } else {
-                crate::files::by_text(&root, &q, 300)
+                crate::files::by_text(root, &q, 300)
             };
             serde_json::json!({
                 "act": act,
@@ -10014,6 +10115,289 @@ pub fn files_answer(
     }
 }
 
+/// The page's answer to a file that was read, from its bytes -- the same
+/// answer whichever machine the bytes came from.
+fn read_reply(panel: &str, path: &str, bytes: &[u8], args: &serde_json::Value, stamp: String) -> String {
+    let fail = |e: String| serde_json::json!({"act": "read", "panel": panel, "ok": false, "error": e}).to_string();
+    // What is not text has no lines to put in an editor, and guessing at its
+    // encoding would write the guess back
+    if bytes.contains(&0) {
+        return fail(i18n::t("err.files.binary"));
+    }
+    // In the encoding asked for, else the one it most likely is
+    let asked = args.get("encoding").and_then(|v| v.as_str()).unwrap_or_default().trim();
+    let file = match asked {
+        "" => crate::charset::read(bytes),
+        name => match crate::charset::named(name) {
+            Some(e) => crate::charset::read_as(bytes, e),
+            None => return fail(i18n::tp("err.git.unknown_encoding", &[("enc", name)])),
+        },
+    };
+    serde_json::json!({
+        "act": "read",
+        "panel": panel,
+        "ok": true,
+        "path": path,
+        "text": file.text,
+        // What it is saved back as, and whether that gives the same bytes: a
+        // reading that lost characters says so
+        "encoding": file.encoding.name(),
+        "exact": file.exact,
+        "stamp": stamp,
+        // What the file was when it was read. A save compares this with what
+        // is there, so a save can tell "nobody touched it" from "somebody did"
+        "mark": crate::files::mark_of(bytes),
+    })
+    .to_string()
+}
+
+/// The bytes a save from the editor writes, or the page's answer saying why
+/// there are none -- the same whichever machine they are going to.
+fn save_bytes_of(panel: &str, args: &serde_json::Value) -> std::result::Result<Vec<u8>, String> {
+    let str_of = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let encoding = match str_of("encoding").trim() {
+        "" => encoding_rs::UTF_8,
+        name => match crate::charset::named(name) {
+            Some(e) => e,
+            None => {
+                return Err(serde_json::json!({"act": "write", "panel": panel, "ok": false,
+                    "error": i18n::tp("err.git.unknown_encoding", &[("enc", name)])})
+                .to_string());
+            }
+        },
+    };
+    let replacing = args.get("replace").and_then(|v| v.as_bool()).unwrap_or(false);
+    let how = if replacing { crate::files::Save::Replacing } else { crate::files::Save::Exact };
+    crate::files::save_bytes(&str_of("text"), encoding, how).map_err(|chars| {
+        // Nothing is written. The characters are named, so the page can ask
+        // which way to go rather than choose for the person
+        serde_json::json!({
+            "act": "write",
+            "panel": panel,
+            "ok": false,
+            "why": "unwritable",
+            "encoding": encoding.name(),
+            "chars": chars.iter().take(12).map(|c| c.to_string()).collect::<Vec<_>>(),
+            "more": chars.len().saturating_sub(12),
+            "error": i18n::tp("err.files.unwritable", &[("enc", encoding.name())]),
+        })
+        .to_string()
+    })
+}
+
+/// The page's answer to a save that was written.
+fn write_reply(panel: &str, path: &str, bytes: &[u8], args: &serde_json::Value, stamp: String) -> String {
+    let encoding = args
+        .get("encoding")
+        .and_then(|v| v.as_str())
+        .and_then(|n| crate::charset::named(n.trim()))
+        .unwrap_or(encoding_rs::UTF_8);
+    let replacing = args.get("replace").and_then(|v| v.as_bool()).unwrap_or(false);
+    serde_json::json!({
+        "act": "write",
+        "panel": panel,
+        "ok": true,
+        "path": path,
+        "encoding": encoding.name(),
+        // What is in the file now, when that is not what was typed
+        "text": replacing.then(|| crate::charset::read_as(bytes, encoding).text),
+        "mark": crate::files::mark_of(bytes),
+        // Our own write moved the stamp on; hand back the new one so the
+        // editor does not read its own save as somebody else's change
+        "stamp": stamp,
+    })
+    .to_string()
+}
+
+/// How long a search on another machine may take. It is that machine walking
+/// its own folder, and a big one takes a while
+const FAR_SEARCH_WAIT_MS: u64 = 30_000;
+
+/// What the column's file list and the editor asked of a folder on another
+/// machine.
+///
+/// Everything is done on a thread, since every one of these is a round trip,
+/// and the answer arrives through `far`. What can be refused without asking
+/// the machine -- a path outside the folder, a permission not given -- is
+/// refused here, at once. Every path goes through the same fence and the same
+/// permissions the transfer panel and a script's `sftp_*` go through: the
+/// folder is the fence, and a person reaches exactly what their own
+/// automation would
+fn files_there(
+    panel: &str,
+    act: &str,
+    args: &serde_json::Value,
+    at: crate::elsewhere::Elsewhere,
+    root: String,
+    caps: &crate::caps::Capabilities,
+    far: &std::sync::mpsc::Sender<FarFiles>,
+) -> Option<String> {
+    let fail = |e: String| {
+        Some(serde_json::json!({"act": act, "panel": panel, "ok": false, "error": e}).to_string())
+    };
+    let str_of = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let fences = crate::transfer::Fences { here: None, there: root.clone() };
+    let ready = |job: ssh::FileJob| crate::transfer::ready(job, &fences, caps, grants::Subject::Human);
+    let path = str_of("path");
+    let asked = Instant::now();
+    let (key, panel, act) = (panel.to_string(), panel.to_string(), act.to_string());
+    let tx = far.clone();
+    // What every answer is sent back in: the page's words, and the file's
+    // stamp when this work learned it
+    let answer = move |js: serde_json::Value, path: String, stamp: Option<String>| {
+        let _ = tx.send(FarFiles { key: key.clone(), path, js: Some(js.to_string()), stamp, asked, polled: false });
+    };
+    let failed = |act: &str, panel: &str, e: String| serde_json::json!({"act": act, "panel": panel, "ok": false, "error": e});
+    let named = |rel: &str| if rel.is_empty() { root.clone() } else { format!("{}/{rel}", root.trim_end_matches('/')) };
+
+    match act.as_str() {
+        // One folder, as its rows. The root itself when nothing is named
+        "ls" => {
+            let rel = str_of("at").replace('\\', "/").trim_matches('/').to_string();
+            let job = match ready(ssh::FileJob::List { path: named(&rel) }) {
+                Ok(j) => j,
+                Err(e) => return fail(format!("{e}")),
+            };
+            let panel = panel.clone();
+            std::thread::spawn(move || {
+                let js = match crate::elsewhere::files(&at, job, SFTP_WAIT_MS) {
+                    Ok(ssh::FileAnswer::Listing(rows)) => serde_json::json!({
+                        "act": "ls",
+                        "panel": panel,
+                        "ok": true,
+                        "at": rel,
+                        "rows": rows.into_iter().filter(|r| r.name != ".git").collect::<Vec<_>>(),
+                    }),
+                    Ok(_) => serde_json::json!({"act": "ls", "panel": panel, "ok": true, "at": rel, "rows": []}),
+                    Err(e) => failed("ls", &panel, format!("{e:#}")),
+                };
+                answer(js, String::new(), None);
+            });
+            None
+        }
+        // One file, as text. Looked at before it is read, so a file too big to
+        // read in one piece is said as that without it crossing the network
+        "read" => {
+            let (look, read) = match (
+                ready(ssh::FileJob::Stat { path: path.clone() }),
+                ready(ssh::FileJob::Read { path: path.clone() }),
+            ) {
+                (Ok(l), Ok(r)) => (l, r),
+                (Err(e), _) | (_, Err(e)) => return fail(format!("{e}")),
+            };
+            let (panel, args) = (panel.clone(), args.clone());
+            std::thread::spawn(move || {
+                let entry = match crate::elsewhere::files(&at, look, SFTP_WAIT_MS) {
+                    Ok(ssh::FileAnswer::One(e)) => e,
+                    Ok(_) => return answer(failed("read", &panel, i18n::t("err.files.binary")), path, None),
+                    Err(e) => return answer(failed("read", &panel, format!("{e:#}")), path, None),
+                };
+                if entry.dir {
+                    return answer(failed("read", &panel, i18n::t("err.files.binary")), path, None);
+                }
+                if entry.size > crate::files::READ_LIMIT {
+                    let mb = (crate::files::READ_LIMIT / (1024 * 1024)).to_string();
+                    return answer(failed("read", &panel, i18n::tp("err.files.too_big", &[("mb", &mb)])), path, None);
+                }
+                let stamp = crate::files::stamp_from(entry.modified, entry.size);
+                match crate::elsewhere::files(&at, read, SFTP_WAIT_MS) {
+                    Ok(ssh::FileAnswer::Bytes(bytes)) => {
+                        let js = read_reply(&panel, &path, &bytes, &args, stamp.clone());
+                        answer(serde_json::from_str(&js).unwrap_or_default(), path, Some(stamp));
+                    }
+                    Ok(_) => answer(failed("read", &panel, i18n::t("err.files.binary")), path, None),
+                    Err(e) => answer(failed("read", &panel, format!("{e:#}")), path, None),
+                }
+            });
+            None
+        }
+        // ...and back again. `mark` is what the page was given when it read:
+        // what is there is read first, and if it no longer matches, somebody
+        // else wrote in the meantime and this save would throw their work
+        // away -- so it refuses and says so rather than winning the race
+        "write" => {
+            let bytes = match save_bytes_of(&panel, args) {
+                Ok(b) => b,
+                Err(refused) => return Some(refused),
+            };
+            let (check, write, look) = match (
+                ready(ssh::FileJob::Read { path: path.clone() }),
+                ready(ssh::FileJob::Write { to: path.clone(), bytes: bytes.clone() }),
+                ready(ssh::FileJob::Stat { path: path.clone() }),
+            ) {
+                (Ok(c), Ok(w), Ok(l)) => (c, w, l),
+                (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return fail(format!("{e}")),
+            };
+            let had = str_of("mark");
+            let (panel, args) = (panel.clone(), args.clone());
+            std::thread::spawn(move || {
+                if !had.is_empty() {
+                    let now = match crate::elsewhere::files(&at, check, SFTP_WAIT_MS) {
+                        Ok(ssh::FileAnswer::Bytes(b)) => crate::files::mark_of(&b),
+                        _ => String::new(),
+                    };
+                    if now != had {
+                        return answer(failed("write", &panel, i18n::t("err.files.moved_on")), path, None);
+                    }
+                }
+                if let Err(e) = crate::elsewhere::files(&at, write, SFTP_WAIT_MS) {
+                    return answer(failed("write", &panel, format!("{e:#}")), path, None);
+                }
+                let stamp = match crate::elsewhere::files(&at, look, SFTP_WAIT_MS) {
+                    Ok(ssh::FileAnswer::One(e)) => crate::files::stamp_from(e.modified, e.size),
+                    _ => String::new(),
+                };
+                let js = write_reply(&panel, &path, &bytes, &args, stamp.clone());
+                answer(serde_json::from_str(&js).unwrap_or_default(), path, Some(stamp).filter(|s| !s.is_empty()));
+            });
+            None
+        }
+        // By name, or by what is inside: the machine walks its own folder
+        "find" | "grep" => {
+            let q = str_of("q");
+            // Reading every file's name and contents is reading, and asked of
+            // the same table a listing and a read are
+            for name in ["sftp_ls", "sftp_read"] {
+                if !caps.allows(name, grants::Subject::Human) {
+                    return fail(i18n::tp(
+                        "err.hooks.not_permitted",
+                        &[("name", name), ("who", &i18n::t("grant.who.human"))],
+                    ));
+                }
+            }
+            if q.trim().is_empty() {
+                return Some(
+                    serde_json::json!({"act": act, "panel": panel, "ok": true, "q": q, "hits": [], "capped": false})
+                        .to_string(),
+                );
+            }
+            const LIMIT: usize = 300;
+            let command = match act.as_str() {
+                "find" => crate::files::far::names_command(&root),
+                _ => crate::files::far::text_command(&root, &q, LIMIT),
+            };
+            let panel = panel.clone();
+            std::thread::spawn(move || {
+                let js = match crate::elsewhere::exec(&at, &command, FAR_SEARCH_WAIT_MS) {
+                    Ok(ran) if ran.ok() => {
+                        let found = match act.as_str() {
+                            "find" => crate::files::far::names(&ran.out, &q, LIMIT),
+                            _ => crate::files::far::text(&ran.out, &q, LIMIT),
+                        };
+                        serde_json::json!({"act": act, "panel": panel, "ok": true, "q": q,
+                            "hits": found.hits, "capped": found.capped})
+                    }
+                    Ok(ran) => failed(&act, &panel, ran.said()),
+                    Err(e) => failed(&act, &panel, format!("{e:#}")),
+                };
+                answer(js, String::new(), None);
+            });
+            None
+        }
+        _ => fail(format!("unknown act: {act}")),
+    }
+}
+
 /// A folder under the root, written the one way the page uses: relative,
 /// forward slashes, empty for the root itself.
 fn rel_of(root: &std::path::Path, at: &std::path::Path) -> String {
@@ -10022,6 +10406,13 @@ fn rel_of(root: &std::path::Path, at: &std::path::Path) -> String {
         .unwrap_or_default()
 }
 
+/// One thing the file panel asked for.
+///
+/// Returns the answer when there is one to give at once, and `None` when the
+/// far end has been asked and a thread will send it along. Everything that
+/// touches a server asks the same permission table a script does -- the panel
+/// is a screen a person opened, so it reaches exactly what their own
+/// automation would, and not one thing more.
 pub fn sftp_answer(
     panel: &str,
     act: &str,
@@ -12815,6 +13206,55 @@ mod tests {
         assert_eq!(under("public/../../../secrets"), None, "a roundabout way out is still outside");
         assert_eq!(under("/etc"), None, "outside the root is outside");
         assert_eq!(under("/work/site-two"), None, "a different folder that only starts with the same name");
+    }
+
+    /// An editor in a folder on a MicroVM reads and saves that machine's
+    /// files, fenced by the folder's path there -- and what can be refused is
+    /// refused at once, without the machine being asked (asking starts one
+    /// that is paused)
+    #[test]
+    fn an_editor_in_a_folder_on_a_microvm_works_there() {
+        crate::i18n::init(Some("en"), &[std::path::PathBuf::from("lang")]);
+        let vm = crate::elsewhere::Elsewhere::Cloud(crate::config::HostSpec {
+            name: "vm".into(),
+            kind: Some("e2b".into()),
+            instance: Some("i-1".into()),
+            ..Default::default()
+        });
+        let editor = |at: Option<crate::elsewhere::Elsewhere>, dir: &str| Surface::Editor {
+            key: "ed".into(),
+            name: "ed".into(),
+            dir: Some(std::path::PathBuf::from(dir)),
+            at,
+        };
+        let far = [editor(Some(vm.clone()), "/home/user/proj")];
+        let place = files_at("ed", &far, &[]).expect("the editor has a folder");
+        assert_eq!(place, FilesAt::There { at: vm.clone(), root: "/home/user/proj".into() });
+        assert!(place.holds("src/main.rs"));
+        assert!(!place.holds("../../etc/passwd"), "a path climbs out of the folder");
+
+        let caps = crate::caps::Capabilities::disabled();
+        let (tx, rx) = std::sync::mpsc::channel();
+        for (act, args) in [
+            ("read", serde_json::json!({"path": "../../../etc/passwd"})),
+            ("write", serde_json::json!({"path": "/etc/passwd", "text": "x"})),
+            ("ls", serde_json::json!({"at": "../.."})),
+        ] {
+            let said = files_answer("ed", act, &args, &far, &[], &caps, &tx)
+                .unwrap_or_else(|| panic!("{act} outside the folder went to the machine"));
+            let said: serde_json::Value = serde_json::from_str(&said).unwrap();
+            assert_eq!(said["ok"], false, "{act}: {said}");
+            assert_eq!(said["panel"], "ed");
+        }
+        // An empty search is answered as nothing without asking anybody
+        let said = files_answer("ed", "find", &serde_json::json!({"q": " "}), &far, &[], &caps, &tx)
+            .expect("an empty search asked the machine");
+        assert!(said.contains("\"hits\":[]"), "{said}");
+        assert!(rx.try_recv().is_err(), "nothing was sent to a thread");
+
+        // The same editor in a folder on this machine stays on this machine
+        let here = [editor(None, "D:/work/site")];
+        assert!(matches!(files_at("ed", &here, &[]), Some(FilesAt::Here(_))));
     }
 
     /// What the phone is told when a tab finishes.

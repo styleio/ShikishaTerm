@@ -9,6 +9,14 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **The editor and the file list work on a MicroVM.** Beside a folder on a
+  MicroVM (or on a server over SSH), the column's file list shows that
+  machine's files, the search by name and by what is inside runs there, and a
+  file opens in the editor and saves back to that machine -- in its own
+  encoding, and refusing to land on a file somebody changed since it was read,
+  as on this PC. While the AI in a terminal on that machine is working, an open
+  file follows what it writes; when everything there is still, nothing is asked
+  of the machine, so a paused MicroVM stays paused.
 - **A project's worktree creation rules, on a page of their own.** The
   project's settings are pages now, chosen the way a desk's are -- a banner
   that lists the projects, and under it Worktree Creation Rules, Basic, git

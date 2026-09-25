@@ -11361,6 +11361,11 @@ function edModeFor(path) {
 }
 // Everything the editor learns comes back through the file list's own door
 function editHeard(d) {
+  // The same for the editor: a file on another machine is read and saved
+  // after a wait, and an answer about a file that is no longer the one on
+  // screen -- or about another editor's -- is not this editor's to show
+  if (d.panel && ED.key && d.panel !== ED.key) return;
+  if (d.path != null && d.path !== ED.path) return;
   if (d.act === "read") {
     ED.loading = false;
     if (!d.ok) { ED.said = d.error || ""; ED.bad = true; drawEdit(); return; }
@@ -11678,6 +11683,10 @@ window.__files = function (d) {
   if (!d || !d.act) return;
   // The editor asks through the same door as the list, and reads its own post
   if (d.act === "read" || d.act === "write") { editHeard(d); return; }
+  // A folder on another machine answers later than it was asked, and by then
+  // the column may be showing another folder: an answer about the last one is
+  // not put into this one
+  if (d.panel && FS.panel && d.panel !== FS.panel) return;
   if (!d.ok) { FS.said = d.error || ""; FS.bad = true; drawFiles(); return; }
   FS.said = ""; FS.bad = false;
   FS.rev++;

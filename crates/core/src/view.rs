@@ -646,7 +646,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     t.mark = at.as_ref().and_then(|m| crate::uistate::MarkState::of_place(m, &ui.server_marks));
                     Some(t)
                 }
-                Surface::Editor { key, name, dir } => {
+                Surface::Editor { key, name, dir, at } => {
                     let showing = ui
                         .editors
                         .iter()
@@ -659,6 +659,10 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                         groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
                     });
                     let mut t = crate::uistate::TabState::editor(i + 1, key, name, group);
+                    // A file on a server wears that server's mark, as the file
+                    // panel beside it does: editing production is the thing
+                    // the mark is there to say
+                    t.mark = at.as_ref().and_then(|m| crate::uistate::MarkState::of_place(m, &ui.server_marks));
                     t.file = showing;
                     t.file_stamp =
                         ui.editors.iter().find(|e| &e.key == key).and_then(|e| e.stamp.clone());
@@ -1251,6 +1255,11 @@ pub struct EditorOpen {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stamp: Option<String>,
     pub scratch: bool,
+    /// The machine `dir` is on, when it is not this one (see
+    /// [`Surface::Editor::at`]). Not sent to the page: which machine is a
+    /// question for the program, and the page is told the file
+    #[serde(skip)]
+    pub at: Option<crate::elsewhere::Elsewhere>,
     /// Which change of the file it is showing instead of the file itself --
     /// `work`, `staged` or `commit:<hash>` -- when a list of changes opened it
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1310,7 +1319,14 @@ pub fn surfaces_written(
                     .or_else(|| ft.cfg.name.clone())
                     .unwrap_or_else(|| "editor".into());
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
-                out.push((Surface::Editor { key, name, dir: desk.cwd_of(ft) }, Some(written)));
+                // Its folder's machine, the way a file panel gets one when
+                // nothing was written on it: an editor has no address of its
+                // own to write
+                let at = desk
+                    .folder_of(ft)
+                    .and_then(|f| f.host.as_ref())
+                    .and_then(|h| crate::elsewhere::Elsewhere::of(h).ok());
+                out.push((Surface::Editor { key, name, dir: desk.cwd_of(ft), at }, Some(written)));
                 continue;
             }
             if config::is_sftp_panel(&argv) {
@@ -1452,6 +1468,7 @@ pub fn surfaces_written(
                         .map(leaf_of)
                         .unwrap_or_else(|| i18n::t("tui.state.editor")),
                     dir: e.dir.clone(),
+                    at: e.at.clone(),
                 },
                 None,
             ));
@@ -1766,6 +1783,11 @@ pub enum Surface {
         key: String,
         name: String,
         dir: Option<std::path::PathBuf>,
+        /// The machine that folder is on, when it is not this one. `dir` is
+        /// then the folder's path over there, written the way that machine
+        /// writes it, and every file the editor reads or saves is that
+        /// machine's
+        at: Option<crate::elsewhere::Elsewhere>,
     },
     /// The file panel: two lists of files, one on this machine and one on a
     /// server, drawn by the board.

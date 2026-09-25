@@ -50,7 +50,13 @@ pub fn stamp_of(path: &Path) -> String {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    format!("{when}-{}", m.len())
+    stamp_from(when, m.len())
+}
+
+/// The same mark, from what another machine said about its file. One way of
+/// writing it, so a file there and a file here are followed by the same page
+pub fn stamp_from(modified: u64, len: u64) -> String {
+    format!("{modified}-{len}")
 }
 
 /// What a file was when it was read, short enough to travel in the state.
@@ -96,14 +102,19 @@ pub fn by_name(root: &Path, query: &str, limit: usize) -> Found {
     if needle.is_empty() {
         return Found { hits: Vec::new(), capped: false };
     }
-    let (files, mut capped) = candidates(root);
+    let (files, capped) = candidates(root);
+    named(files, capped, &needle, limit)
+}
+
+/// The files of a list whose path has the lowercased `needle` in it.
+fn named(files: Vec<String>, mut capped: bool, needle: &str, limit: usize) -> Found {
     let mut hits = Vec::new();
     for rel in files {
         if hits.len() >= limit {
             capped = true;
             break;
         }
-        if rel.to_lowercase().contains(&needle) {
+        if rel.to_lowercase().contains(needle) {
             hits.push(Hit { path: rel, line: None, text: None });
         }
     }
@@ -244,6 +255,103 @@ fn walked(root: &Path) -> (Vec<String>, bool) {
     (out, capped)
 }
 
+/// The same two searches, on a folder that is on another machine.
+///
+/// There is no walking a folder over there from here -- one listing is one
+/// call, and a source tree is thousands of them. So the machine is asked to do
+/// the walking, in one command for its own shell, and what comes back is read
+/// here into the same answer a folder here gets. The set of files is the same
+/// set as well: git's, where there is a repository, and every file but git's
+/// own folder where there is not.
+pub mod far {
+    use super::{Found, Hit, SCAN_CAP, WALK_DEPTH, around, named};
+    use crate::ssh::sh_quote;
+
+    /// How much of the list of files is read back. Enough for `SCAN_CAP` paths
+    /// of any sensible length; a folder with more is one a search says it
+    /// stopped in
+    const LIST_BYTES: usize = 4 * 1024 * 1024;
+
+    /// The files under the folder the command stands in, one after another
+    /// with a zero byte after each. git first, as here; `find` when the folder
+    /// is in no repository, or git is not on that machine
+    fn listing() -> String {
+        format!(
+            "{{ git ls-files --cached --others --exclude-standard -z 2>/dev/null || \
+             find . -maxdepth {} -path ./.git -prune -o -type f -print0; }}",
+            WALK_DEPTH + 1
+        )
+    }
+
+    /// What to run there to find files by name.
+    pub fn names_command(root: &str) -> String {
+        format!("cd {} && {} | head -c {LIST_BYTES}", sh_quote(root), listing())
+    }
+
+    /// What it printed, as the files whose name has the query in it.
+    pub fn names(out: &str, query: &str, limit: usize) -> Found {
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
+            return Found { hits: Vec::new(), capped: false };
+        }
+        let mut files: Vec<String> = out
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .map(|p| p.strip_prefix("./").unwrap_or(p).to_string())
+            .collect();
+        files.sort();
+        files.dedup();
+        // A list that filled what was read back was cut, and its last name
+        // may be half of one
+        let mut capped = out.len() >= LIST_BYTES;
+        if capped {
+            files.pop();
+        }
+        if files.len() > SCAN_CAP {
+            files.truncate(SCAN_CAP);
+            capped = true;
+        }
+        named(files, capped, &needle, limit)
+    }
+
+    /// What to run there to find files with this text inside them: the first
+    /// line of each, as here, and never a file that is not text. One more line
+    /// than `limit` is asked for, which is how a list that went on is told
+    /// from one that ended exactly there
+    pub fn text_command(root: &str, query: &str, limit: usize) -> String {
+        format!(
+            "cd {} && {} | xargs -0 grep -I -i -F -n -m 1 -H --null -e {} -- 2>/dev/null | head -n {}",
+            sh_quote(root),
+            listing(),
+            sh_quote(query.trim()),
+            limit + 1
+        )
+    }
+
+    /// What it printed -- a path, a zero byte, then the line number and the
+    /// line -- as the same hits a folder here gives.
+    pub fn text(out: &str, query: &str, limit: usize) -> Found {
+        let needle = query.trim().to_lowercase();
+        let mut hits = Vec::new();
+        let mut capped = false;
+        for row in out.lines() {
+            let Some((path, rest)) = row.split_once('\0') else { continue };
+            let Some((n, line)) = rest.split_once(':') else { continue };
+            let Ok(n) = n.parse::<u32>() else { continue };
+            if hits.len() >= limit {
+                capped = true;
+                break;
+            }
+            hits.push(Hit {
+                path: path.strip_prefix("./").unwrap_or(path).to_string(),
+                line: Some(n),
+                text: Some(around(line.trim(), &needle)),
+            });
+        }
+        Found { hits, capped }
+    }
+}
+
 /// How a file saved from the editor is written.
 pub enum Save {
     /// In its encoding, exactly. Refused when a character in it cannot be
@@ -382,6 +490,45 @@ mod tests {
         std::fs::write(&at, "one and a half").unwrap();
         assert_ne!(stamp_of(&at), first, "when the length changes the mark changes too");
         assert!(stamp_of(&at.with_file_name("nothing")).is_empty(), "what is not there has no mark");
+    }
+
+    /// What another machine prints for a search by name reads as the same
+    /// answer a folder here gives: the `./` that `find` puts in front is not
+    /// part of the name, and a name git and `find` both gave is one file
+    #[test]
+    fn a_far_listing_is_read_as_the_files_here_are() {
+        let out = "./src/Payments.rs\0readme.md\0src/Payments.rs\0";
+        let found = far::names(out, "payment", 50);
+        assert_eq!(found.hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(), vec!["src/Payments.rs"]);
+        assert!(!found.capped);
+        assert!(far::names(out, "  ", 50).hits.is_empty(), "an empty search is not everything");
+    }
+
+    /// A search by what is inside, from another machine: the path, the line it
+    /// is on and the line, and a list longer than asked for says it went on
+    #[test]
+    fn a_far_search_by_text_comes_back_with_its_lines() {
+        let out = "./a.txt\x002:two NEEDLE: two\nb.txt\x0010:needle\n";
+        let found = far::text(out, "needle", 50);
+        assert_eq!(found.hits.len(), 2);
+        assert_eq!(found.hits[0].path, "a.txt");
+        assert_eq!(found.hits[0].line, Some(2));
+        assert_eq!(found.hits[0].text.as_deref(), Some("two NEEDLE: two"), "a colon in the line stays in it");
+        assert!(!found.capped);
+        let one = far::text(out, "needle", 1);
+        assert_eq!(one.hits.len(), 1);
+        assert!(one.capped, "the second line was there, so the list was cut");
+    }
+
+    /// What a person typed reaches the far shell as text and nothing else: a
+    /// `$( )` or a quote in the search box must not become a command there
+    #[test]
+    fn a_far_search_cannot_be_made_into_a_command() {
+        let line = far::text_command("/home/user/it's", "$(rm -rf ~); 'x'", 300);
+        assert!(line.starts_with("cd '/home/user/it'\\''s' && "), "{line}");
+        assert!(line.contains("-e '$(rm -rf ~); '\\''x'\\''' --"), "{line}");
+        assert!(line.ends_with("| head -n 301"), "{line}");
+        assert!(far::names_command("/srv/p").starts_with("cd '/srv/p' && "));
     }
 
     #[test]
