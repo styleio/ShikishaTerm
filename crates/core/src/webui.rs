@@ -7778,18 +7778,21 @@ function filesCard() {
 // (the sub-input bar's ⚙ opens ?section=actions, for instance).
 function globalSections() {
   return [
+    {id:"update",    label:T["settings.sec.update"],    sub:T["settings.sec.update.sub"],    build:updateCard},
     {id:"basic",     label:T["settings.sec.basic"],     sub:T["settings.sec.basic.sub"],     build:basicCard},
-    // Where every project's worktrees go unless the project says, and what
-    // tells a project that has to keep them beside itself
-    {id:"worktrees", label:T["settings.sec.worktrees"], sub:T["settings.sec.worktrees.sub"], build:worktreesCard},
     // The AIs this app asks, the connections they are reached on, and what
     // each was agreed to receive: one place for the whole app
     {id:"ai",        label:T["settings.sec.ai"],        sub:T["settings.sec.ai.sub"],        build:aiAgentsCard},
     // The git accounts, and beside them the sign-ins this PC's git and GitHub
     // CLI hold: everything a project can sign in as, in one place for the app
     {id:"gitaccounts", label:T["settings.sec.gitaccounts"], sub:T["settings.sec.gitaccounts.sub"], build:() => [gitAccountsCard(), pcSignInsCard(), ghSignInsCard()]},
-    {id:"update",    label:T["settings.sec.update"],    sub:T["settings.sec.update.sub"],    build:updateCard},
+    // Where every project's worktrees go unless the project says, and what
+    // tells a project that has to keep them beside itself
+    {id:"worktrees", label:T["settings.sec.worktrees"], sub:T["settings.sec.worktrees.sub"], build:worktreesCard},
     {id:"remote",    label:T["settings.sec.remote"],    sub:T["settings.sec.remote.sub"],    build:remoteCard},
+    // The phones themselves are this machine's: a phone signs itself up once.
+    // Which desk's messages reach it is that desk's page's question
+    {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],    build:phoneNotifyCard},
     // Two cards: the keys that work from any program, then the keys inside
     {id:"keys",      label:T["settings.sec.keys"],      sub:T["settings.sec.keys.sub"],
      build:() => el("div", {}, hotkeysCard(), keysCard())},
@@ -7803,9 +7806,6 @@ function globalSections() {
     {id:"resume",    label:T["settings.sec.resume"],    sub:T["settings.sec.resume.sub"],    build:resumeCard},
     {id:"files",     label:T["settings.sec.files"],     sub:T["settings.sec.files.sub"],     build:filesCard},
     {id:"results",   label:T["settings.sec.results"],   sub:T["settings.sec.results.sub"],   build:rallyResultCard},
-    // The phones themselves are this machine's: a phone signs itself up once.
-    // Which desk's messages reach it is that desk's page's question
-    {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],    build:phoneNotifyCard},
     // What automation left behind on this machine: kept last, as housekeeping
     {id:"logins",    label:T["settings.sec.logins"],    sub:T["settings.sec.logins.sub"],    build:loginsCard},
     {id:"snapshots", label:T["settings.sec.snapshots"], sub:T["settings.sec.snapshots.sub"], build:snapshotsCard},
