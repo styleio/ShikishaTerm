@@ -191,8 +191,7 @@ await openDialog();
   if (typed !== 'echo hi') bad++;
   console.log(`${typed === 'echo hi' ? 'ok  ' : 'BAD '} keys       the field holds "${typed}" (want "echo hi")`);
 }
-await js(`[...document.getElementById("cfglayer").contentDocument.querySelectorAll("#floatbox .ffoot button")]
-  .find(b => b.getAttribute("onclick") === "floatCancel()").click()`);
+await js(`document.getElementById("cfglayer").contentDocument.querySelector('#floatbox [data-frame="cancel"]').click()`);
 await until('!document.getElementById("cfglayer")', 'the dialog never closed');
 
 // The thing itself: the tab is added from the frame, the frame goes, and the
@@ -209,8 +208,7 @@ console.log(`ok   add        ${was} tab(s) on the board, then ${was + 1}, with n
 // Not adding after all: the frame goes and the board is there, still running --
 // the tab bar it was opened from is drawn and no page had to be loaded again
 await openDialog();
-await js(`[...document.getElementById("cfglayer").contentDocument.querySelectorAll("#floatbox .ffoot button")]
-  .find(b => b.getAttribute("onclick") === "floatCancel()").click()`);
+await js(`document.getElementById("cfglayer").contentDocument.querySelector('#floatbox [data-frame="cancel"]').click()`);
 await until('!document.getElementById("cfglayer")', 'the dialog never closed');
 const back = await js('!!document.querySelector("#strip .snew, .tab.fnew")');
 if (!back) bad++;
@@ -219,8 +217,7 @@ console.log(`${back ? 'ok  ' : 'BAD '} cancel     the frame goes and the board i
 // "More settings" is the whole of the settings, so the frame is given the whole
 // screen -- and keeps the page it has, with what was chosen so far still chosen
 await openDialog();
-await js(`[...document.getElementById("cfglayer").contentDocument.querySelectorAll("#floatbox .ffoot button")]
-  .find(b => b.getAttribute("onclick") === "floatMore()").click()`);
+await js(`document.getElementById("cfglayer").contentDocument.querySelector('#floatbox [data-frame="more"]').click()`);
 await until(
   'document.getElementById("cfgwrap").classList.contains("full") && ' +
   '!document.getElementById("cfglayer").contentDocument.body.classList.contains("float")',

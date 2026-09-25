@@ -4838,24 +4838,20 @@ const PAGE: &str = r##"<!doctype html>
    border-top:1px solid var(--line); }
  #floatbox .ffoot .spacer { flex:1; }
  /* A project's worktree rules as the dialog: two parts, each under its name */
- #floatbox.rules .fbody { display:flex; flex-direction:column; gap:var(--s5); }
- #floatbox.rules .fbody > .card > h2 { display:block; }
- #floatbox.rules .fbody > .card + .card { border-top:1px solid var(--line); border-radius:0; padding-top:var(--s5); }
+ #floatbox[data-kind="rules"] .fbody { display:flex; flex-direction:column; gap:var(--s5); }
+ #floatbox[data-kind="rules"] .fbody > .card > h2 { display:block; }
+ #floatbox[data-kind="rules"] .fbody > .card + .card { border-top:1px solid var(--line); border-radius:0; padding-top:var(--s5); }
 </style></head><body>
 
 <div id="floatbox" role="dialog" aria-modal="true" aria-labelledby="floattitle">
   <div class="fhead">
     <h1 id="floattitle">{{tui.tab.add}}</h1>
     <span class="hint" id="floatwhere"></span>
-    <button class="quiet" onclick="floatCancel()" title="{{common.close}}" aria-label="{{common.close}}">✕</button>
+    <button class="quiet" onclick="frameCancel()" title="{{common.close}}" aria-label="{{common.close}}">✕</button>
   </div>
   <div class="fbody" id="floatbody"></div>
-  <div class="ffoot">
-    <button class="quiet" onclick="floatMore()">{{settings.float.more}}</button>
-    <div class="spacer"></div>
-    <button class="quiet" onclick="floatCancel()">{{common.cancel}}</button>
-    <button class="primary" id="floatadd" onclick="floatAdd()">{{common.add}}</button>
-  </div>
+  <!-- Its presses are the question's own (see frameOpen) -->
+  <div class="ffoot"></div>
 </div>
 
 <header>
@@ -5055,9 +5051,10 @@ let returnOnSave = false;
 let wordsAsked = false;
 // Opened from the board's [Slow]: the reason is shown, at the field
 let wordsSlowAsked = false;
-// The tab being added from the board's +, while the page is only that dialog
-// (?float=1). Null on the settings page proper
-let floating = null;
+// The question the page is standing over the board to ask, while the page is
+// only that dialog (see frameOpen): the tab being added from the board's +,
+// a new project's rules. Null on the settings page proper
+let framed = null;
 // Set when one of the user's files came back unusable (broken JSON, unreadable).
 // While it's held, the screen shows what's wrong and Save is off: the form has
 // nothing in it, and writing it out would put that emptiness where the real
@@ -6480,7 +6477,7 @@ function render() {
   renderDetail();
   renderCrumb();
   placeHeadLinks();
-  if (rulesFloat) drawRulesFloat();
+  if (framed && framed.redraw) frameDraw();
 }
 
 function renderDetail() {
@@ -6488,7 +6485,7 @@ function renderDetail() {
   d.textContent = "";
   // A project's rules standing over the board as a dialog: the page under it
   // is not drawn, so the dialog's parts are the only ones on the page
-  if (rulesFloat) return;
+  if (framed && framed.redraw) return;
   if (sel.global) {
     const secs = globalSections();
     const sec = secs.find(s => s.id === sel.section) || secs[0];
@@ -12392,92 +12389,62 @@ function firstFlowBar(desk, p) {
 }
 
 // A project just added, asked about the way the board's + asks what a tab
-// runs: a dialog over the board, holding its worktree rules and nothing else.
-// The settings do not come up around it -- the person is on the board, adding
-// a project, and the rules are one step of that. "More settings" lets the rest
-// of the page in, on the same rules, with the way on still above them
-let rulesFloat = null;
+// runs: the page as a dialog over the board (frameOpen), holding the
+// project's worktree rules and nothing else. The person is on the board,
+// adding a project, and the rules are one step of that. "More settings" lets
+// the rest of the page in, on the same rules, with the way on above them.
+//
 // Opened for that, the page is the dialog from its first frame: the settings
 // are read and the project worked out before the rules can be drawn, and the
 // whole settings page shown meanwhile is the jump this is here to avoid
 if (new URLSearchParams(location.search).get("section") === "project-first") {
-  document.body.classList.add("float");
-  const box = document.getElementById("floatbox");
-  box.classList.add("rules");
-  document.getElementById("floattitle").textContent = T["settings.first.title"];
-  document.getElementById("floatbody").textContent = "";
-  document.getElementById("floatbody").append(el("div", {class:"hint"}, T["settings.place.asking"]));
-  box.querySelector(".ffoot").textContent = "";
-}
-// Not a project after all (a folder in no repository): the page it is
-function leaveRulesFloat() {
-  rulesFloat = null;
-  document.body.classList.remove("float");
-  document.getElementById("floatbox").classList.remove("rules");
+  frameOpen({kind: "rules", title: T["settings.first.title"], foot: [],
+    body: () => [el("div", {class:"hint"}, T["settings.place.asking"])],
+    cancel: () => closeSettings()});
 }
 function enterRulesFloat(di, p) {
-  rulesFloat = {di, key: p.key};
-  document.body.classList.add("float");
-  const box = document.getElementById("floatbox");
-  box.classList.add("rules");
-  document.getElementById("floattitle").textContent = T["settings.first.title"];
-  document.getElementById("floatwhere").textContent = p.name;
+  const at = {di, key: p.key};
+  // The project the dialog is about, as the desk has it now: saving writes
+  // the project down, which makes the one worked out from git a different
+  // object under a key of its own
+  const project = () => {
+    const {projects} = deskProjects(desks[at.di]);
+    const found = projects.find(x => x.key === at.key)
+      || projects.find(x => x.entry && sel.proj === x.key) || null;
+    if (found) at.key = found.key;
+    return found;
+  };
   const go = el("button", {class:"primary", id:"rulesgo"}, T["settings.first.next"]);
   go.addEventListener("click", async () => {
     go.disabled = true;
-    try { await projectNext(desks[rulesFloat.di], rulesProject()); } finally { go.disabled = false; }
+    try { await projectNext(desks[at.di], project()); } finally { go.disabled = false; }
   });
-  const foot = box.querySelector(".ffoot");
-  foot.textContent = "";
-  foot.append(
-    el("button", {class:"quiet", onclick: rulesMore}, T["settings.float.more"]),
-    el("div", {class:"spacer"}),
-    el("button", {class:"quiet", onclick:() => { firstFlow = null; closeSettings(); }}, T["settings.first.later"]),
-    go);
   // The press says what it will do: save first, once something has changed
   const relabel = setInterval(() => {
-    if (!rulesFloat) { clearInterval(relabel); return; }
+    if (!framed || framed.kind !== "rules") { clearInterval(relabel); return; }
     go.textContent = snapshot() !== savedSnapshot ? T["settings.first.save_next"] : T["settings.first.next"];
   }, 500);
-  render();
-}
-// The project the dialog is about, as the desk has it now: saving writes the
-// project down, which makes the one worked out from git a different object
-function rulesProject() {
-  if (!rulesFloat) return null;
-  const desk = desks[rulesFloat.di];
-  const {projects} = deskProjects(desk);
-  return projects.find(x => x.key === rulesFloat.key)
-    || projects.find(x => x.entry && sel.proj === x.key) || null;
-}
-// The dialog's body, drawn again whenever the page would be
-function drawRulesFloat() {
-  const body = document.getElementById("floatbody");
-  const p = rulesProject();
-  if (!p) return;
-  const desk = desks[rulesFloat.di];
-  // The project may have been written down since, under a key of its own
-  rulesFloat.key = p.key;
-  const keep = body.scrollTop;
-  const typing = document.activeElement && body.contains(document.activeElement) && typingNow();
-  // Not under somebody's caret: a box redrawn while it is being typed in
-  // takes the text and the caret away
-  if (typing) return;
-  body.textContent = "";
-  body.append(el("div", {class:"hint rulessay"}, T["settings.first.say"]), rulesCard(desk, p));
-  if ((p.at || "").trim()) body.append(ignoreCard(desk, p));
-  body.scrollTop = keep;
-}
-// The whole of the settings, from the dialog: the same rules on their page
-function rulesMore() {
-  if (!rulesFloat) return;
-  const p = rulesProject();
-  leaveRulesFloat();
-  if (window.ipc) { try { window.ipc.postMessage(JSON.stringify({kind:"settingsfull"})); } catch (e) {} }
-  else if (EMBED) toBoard("full");
-  if (p) sel = {desk:sel.desk, proj:p.key, grp:null, tab:null, global:false, psection:"rules"};
-  render();
-  showSelected("center");
+  frameOpen({
+    kind: "rules",
+    title: T["settings.first.title"],
+    where: p.name,
+    // Drawn again whenever the page would be: a line chosen, an answer in
+    redraw: true,
+    body: () => {
+      const q = project();
+      if (!q) return [];
+      const out = [el("div", {class:"hint"}, T["settings.first.say"]), rulesCard(desks[at.di], q)];
+      if ((q.at || "").trim()) out.push(ignoreCard(desks[at.di], q));
+      return out;
+    },
+    foot: [el("button", {class:"quiet", "data-frame":"cancel", onclick:() => { firstFlow = null; closeSettings(); }}, T["settings.first.later"]), go],
+    cancel: () => closeSettings(),
+    // The whole of the settings: the same rules on their page
+    more: () => {
+      const q = project();
+      if (q) sel = {desk:sel.desk, proj:q.key, grp:null, tab:null, global:false, psection:"rules"};
+    },
+  });
 }
 
 // Saved if anything changed, then on to the project's first worktree: the
@@ -14951,7 +14918,7 @@ async function doSave() {
   // sent to INDEX, they lost the page they had pressed [Slow] on
   // Nor when what was saved is one step of something still going on this
   // page (a proposal saved, a project's rules on the way to its worktree)
-  if (!floating && !SHEET && !returnOnSave && !stayAfterSave) goIndex();
+  if (!framed && !SHEET && !returnOnSave && !stayAfterSave) goIndex();
   return true;
 }
 
@@ -14989,41 +14956,127 @@ async function closeSettings() {
   else { location.href = "/"; }
 }
 
+// ── The page as one dialog over the board ───────────────────────────────
+// Some questions are asked from the board and are one step of what the person
+// is doing there: what a new tab runs (the board's +), a new project's rules.
+// For those the page is placed over the board as a dialog (style guide 5.2)
+// -- its header and column out of sight, a title, a body and the presses at
+// its foot -- rather than the settings coming up around it. One set of parts
+// for every such question: what differs is the title, what the body holds and
+// what the presses do.
+//
+//   kind    which question, for the look (#floatbox[data-kind]) and for code
+//           that has to know
+//   title, where   the head: what it is about, and the one fact beside it
+//   body    () => the nodes it holds
+//   foot    the presses on the right of the foot; "More settings" is always
+//           on the left
+//   redraw  whether the body is drawn again whenever the page would be. A
+//           question whose answer moves with every choice says yes; one with
+//           a field to type into and nothing else says no
+//   cancel  the way out: Esc and the ✕
+//   more    what "More settings" lands on, set before the page is drawn
+function frameOpen(spec) {
+  framed = spec;
+  document.body.classList.add("float");
+  const box = document.getElementById("floatbox");
+  box.dataset.kind = spec.kind;
+  document.getElementById("floattitle").textContent = spec.title || "";
+  document.getElementById("floatwhere").textContent = spec.where || "";
+  const foot = box.querySelector(".ffoot");
+  foot.textContent = "";
+  foot.append(
+    el("button", {class:"quiet", "data-frame":"more", onclick: frameMore}, T["settings.float.more"]),
+    el("div", {class:"spacer"}),
+    ...(spec.foot || []));
+  // A dialog drawn with the page is the page's only drawing: what was on the
+  // page before it opened goes, so no field is there twice under one name
+  if (spec.redraw) document.getElementById("detail").textContent = "";
+  frameDraw(true);
+}
+// The body, filled from what the question says it holds. Not under somebody's
+// caret: a box redrawn while it is being typed in takes the text and the caret
+// away, so a redraw waits for the next one
+function frameDraw(first) {
+  if (!framed) return;
+  const body = document.getElementById("floatbody");
+  const typing = document.activeElement && body.contains(document.activeElement)
+    && ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
+  if (!first && typing) return;
+  const keep = body.scrollTop;
+  body.textContent = "";
+  body.append(...(framed.body() || []));
+  body.scrollTop = first ? 0 : keep;
+}
+// The page as itself again
+function frameLeave() {
+  framed = null;
+  document.body.classList.remove("float");
+  delete document.getElementById("floatbox").dataset.kind;
+}
+// "More settings": the whole of the page, in the whole of the window, on the
+// place the question was about, with everything chosen so far still chosen.
+// Framed over a board, the board gives the frame the whole screen; the page
+// it holds is this one
+function frameMore() {
+  const was = framed;
+  if (!was) return;
+  frameLeave();
+  if (window.ipc) { try { window.ipc.postMessage(JSON.stringify({kind:"settingsfull"})); } catch (e) {} }
+  else if (EMBED) toBoard("full");
+  if (was.more) was.more();
+  render();
+  showSelected("center");
+}
+function frameCancel() {
+  if (framed && framed.cancel) framed.cancel();
+}
+
 // The board's +, as a dialog: what the new tab runs, and nothing else. The name
 // and the automation name were filled in when the tab was made, so answering
 // this one question is enough to add it
 function enterFloat(wi, i) {
   const desk = desks[wi];
   const t = desk.tabs[i];
-  floating = {wi, i, t};
-  document.body.classList.add("float");
   const gi = t.group || 0;
   const g = (desk.folders || [])[gi];
-  // Where it is going, when there is a where. A group with no folder yet is
-  // asked about below instead, and "adding to no folder chosen" is not a line
-  // anybody should have to read
-  document.getElementById("floatwhere").textContent =
-    g && (g.cwd || "").trim() ? fill(T["settings.float.where"], {folder: folderLabel(g, gi)}) : "";
-  const body = document.getElementById("floatbody");
-  body.textContent = "";
-  body.append(launchCard(t));
-  // A group with no folder of its own has nowhere to run anything, and a tab
-  // added to one waits instead of starting. The question is asked here, while
-  // the tab is being made, rather than left to be discovered on a tab that
-  // sits there saying nothing happened
-  if (g && !(g.cwd || "").trim()) {
-    body.append(card(T["settings.group.folder"],
-      row(T["settings.group.folder"],
-          ...pathField(g, "cwd", T["settings.group.folder.ph"], "dir", T["settings.group.folder.pick"]),
-          el("span", {class:"hint"}, T["settings.group.folder.hint"]))));
-  }
-  const first = body.querySelector("select, input");
+  frameOpen({
+    kind: "addtab",
+    wi, i, t,
+    title: T["tui.tab.add"],
+    // Where it is going, when there is a where. A group with no folder yet is
+    // asked about below instead, and "adding to no folder chosen" is not a
+    // line anybody should have to read
+    where: g && (g.cwd || "").trim() ? fill(T["settings.float.where"], {folder: folderLabel(g, gi)}) : "",
+    body: () => {
+      const out = [launchCard(t)];
+      // A group with no folder of its own has nowhere to run anything, and a
+      // tab added to one waits instead of starting. The question is asked
+      // here, while the tab is being made, rather than left to be discovered
+      // on a tab that sits there saying nothing happened
+      if (g && !(g.cwd || "").trim()) {
+        out.push(card(T["settings.group.folder"],
+          row(T["settings.group.folder"],
+              ...pathField(g, "cwd", T["settings.group.folder.ph"], "dir", T["settings.group.folder.pick"]),
+              el("span", {class:"hint"}, T["settings.group.folder.hint"]))));
+      }
+      return out;
+    },
+    foot: [
+      el("button", {class:"quiet", "data-frame":"cancel", onclick: floatCancel}, T["common.cancel"]),
+      el("button", {class:"primary", id:"floatadd", onclick: floatAdd}, T["common.add"]),
+    ],
+    cancel: floatCancel,
+    // The whole of the new tab's page: the same tab
+    more: () => { sel = {desk:wi, grp:gi, tab:i, global:false}; },
+  });
+  const first = document.getElementById("floatbody").querySelector("select, input");
   if (first) first.focus();
 }
 // Add it. The dialog closes once the file is written; if it could not be, the
 // reason stays on screen with the dialog still there to fix it in
 async function floatAdd() {
-  if (!floating) return;
+  if (!framed || framed.kind !== "addtab") return;
   const btn = document.getElementById("floatadd");
   btn.disabled = true;
   try {
@@ -15035,24 +15088,9 @@ async function floatAdd() {
 // Not adding after all. The tab only ever existed on this page, so there is
 // nothing to ask about losing
 function floatCancel() {
-  if (!floating) return;
+  if (!framed || framed.kind !== "addtab") return;
   savedSnapshot = snapshot();
   closeSettings();
-}
-// The whole of the new tab's page, in the whole of the window: the same tab,
-// with what was chosen so far kept
-function floatMore() {
-  if (!floating) return;
-  const {wi, i, t} = floating;
-  floating = null;
-  document.body.classList.remove("float");
-  if (window.ipc) { try { window.ipc.postMessage(JSON.stringify({kind:"settingsfull"})); } catch (e) {} }
-  // Framed: the board gives the frame the whole screen. The page it holds is
-  // this one, so everything chosen so far is still chosen
-  else if (EMBED) toBoard("full");
-  sel = {desk:wi, grp:t.group || 0, tab:i, global:false};
-  render();
-  showSelected("center");
 }
 // Esc is the dialog's way out (style guide 5.2), and only the dialog's: a
 // confirmation opened over it takes its own Esc first, and a framed dialog
@@ -15064,7 +15102,7 @@ function floatMore() {
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape" || e.defaultPrevented || document.querySelector("dialog[open]")) return;
   // The one question the board's + asks: not adding after all
-  if (floating) { e.preventDefault(); floatCancel(); return; }
+  if (framed) { e.preventDefault(); frameCancel(); return; }
   // A sheet standing over the board: the same way out, and the same guard
   // about work not saved that its Close button goes through
   if (SHEET) { e.preventDefault(); closeSettings(); }
@@ -15355,7 +15393,7 @@ load().then(() => {
         // A project the board has just added: its rules as a dialog over
         // the board, not the settings coming up around them
         if (home && sec === "project-first") { enterRulesFloat(cur, home); return; }
-        if (sec === "project-first") leaveRulesFloat();
+        if (sec === "project-first") frameLeave();
         render();
         showSelected("center");
         if (home) markCard();
@@ -15366,7 +15404,7 @@ load().then(() => {
   }
   // A project the board added that this desk does not list after all: the
   // settings as they are, rather than a dialog waiting for nothing
-  if (sec === "project-first") leaveRulesFloat();
+  if (sec === "project-first") frameLeave();
   // Asked for a project's page with no folder to say which (the ? panel
   // names the screen, not a project): the desk's first project
   if (projectAsk && !want && desks[cur]) {
@@ -16800,7 +16838,11 @@ mod tests {
         // The name follows the kind while nobody has typed their own
         assert!(PAGE.contains("followKind(t, before);"), "changing what a tab runs no longer carries its name along");
         // One card for what a tab runs, on its page and in the dialog alike
-        assert_eq!(PAGE.matches("append(launchCard(t").count(), 2, "what a tab runs is asked in more or fewer places than two");
+        assert!(
+            PAGE.contains("box.append(launchCard(t, () => {") && PAGE.contains("const out = [launchCard(t)];"),
+            "what a tab runs is not asked with the one card on its page and in the dialog"
+        );
+        assert_eq!(PAGE.matches("launchCard(t").count(), 3, "what a tab runs is asked in more or fewer places than two");
     }
 
     /// The board's + asks only what the new tab runs, in a dialog, and a save
@@ -16812,7 +16854,7 @@ mod tests {
         assert!(PAGE.contains("<div id=\"floatbox\""), "there is no dialog to show");
         assert!(PAGE.contains("if (await save()) closeSettings();"), "adding closes the dialog whether or not it was saved");
         assert!(PAGE.contains("ok = await doSave();"), "a save that said why it failed still counts as done");
-        assert!(PAGE.contains("if (!floating && !SHEET && !returnOnSave && !stayAfterSave) goIndex();"),
+        assert!(PAGE.contains("if (!framed && !SHEET && !returnOnSave && !stayAfterSave) goIndex();"),
             "a save sends the person to INDEX from the dialog or the sheet they opened from a tab");
         assert!(PAGE.contains(r#"postMessage(JSON.stringify({kind:"settingsfull"}))"#),
             "More settings does not ask the window for the whole of it");

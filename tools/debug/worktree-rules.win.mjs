@@ -189,7 +189,7 @@ try {
     return !!cfgTarget;
   }, 'the settings page on the new project\'s rules', 30000);
   cfg = await connect(cfgTarget, 'the settings');
-  await until(() => cfg.run('!!rulesFloat && !!document.getElementById("rulesgo")'), 'the rules, as a dialog', 30000);
+  await until(() => cfg.run('!!framed && framed.kind === "rules" && !!document.getElementById("rulesgo")'), 'the rules, as a dialog', 30000);
   // A dialog over the board, not the settings coming up around it
   check(await cfg.run('document.body.classList.contains("float") && getComputedStyle(document.querySelector("body > header")).display === "none"'
     + ' && getComputedStyle(document.querySelector("body > .layout")).display === "none"'), 'the settings page itself is not shown, only the dialog');
