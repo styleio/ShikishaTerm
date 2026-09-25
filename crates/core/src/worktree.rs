@@ -3118,7 +3118,10 @@ mod tests {
         let main = repo("inside");
         let inside = Placement { spec: format!("{{origin_folder}}{}trees", std::path::MAIN_SEPARATOR), ..Default::default() };
         let err = plan_for(&main, &inside, "work", Some("main"), None, None).unwrap_err();
-        assert!(format!("{err:#}").contains(&main.join("trees").display().to_string()), "{err:#}");
+        // Named from the checkout's own folder on: a runner's temp can come in
+        // short (RUNNER~1) and be said back long, so the whole path is no measure
+        let named = Path::new(main.file_name().unwrap()).join("trees");
+        assert!(format!("{err:#}").contains(&named.display().to_string()), "{err:#}");
         assert!(inside_checkout(&main, &main.join("a").join("b")));
         assert!(inside_checkout(&main, &main));
         assert!(!inside_checkout(&main, &main.with_file_name("proj-inside-x")), "a neighbour whose name starts the same is not inside");
