@@ -1746,12 +1746,15 @@ pub fn discard_waiting(folder: &Path) -> Result<()> {
 /// written to a log.
 pub struct Removal {
     pub folder: PathBuf,
+    /// The MicroVM the folder is, when it is one: what a second try deletes,
+    /// and what putting it back lets the program speak to again
+    on: Option<crate::config::HostSpec>,
     outcome: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
 }
 
 impl Removal {
     pub fn start(folder: PathBuf) -> Removal {
-        let removal = Removal { folder: folder.clone(), outcome: Default::default() };
+        let removal = Removal { folder: folder.clone(), on: None, outcome: Default::default() };
         let outcome = removal.outcome.clone();
         std::thread::spawn(move || {
             let said = discard_waiting(&folder).map_err(|e| format!("{e:#}"));
@@ -1766,7 +1769,12 @@ impl Removal {
     /// A folder on a MicroVM, which is its machine: the machine goes, and
     /// with it everything in the folder. Nothing of it is on this PC to remove
     pub fn start_on_microvm(folder: PathBuf, host: crate::config::HostSpec) -> Removal {
-        let removal = Removal { folder: folder.clone(), outcome: Default::default() };
+        // Let go of now, on the loop, rather than when the thread gets to it:
+        // a save pressed in between would otherwise wake the machine going
+        if let Some(id) = host.instance.as_deref() {
+            crate::e2b::let_go(id);
+        }
+        let removal = Removal { folder: folder.clone(), on: Some(host.clone()), outcome: Default::default() };
         let outcome = removal.outcome.clone();
         std::thread::spawn(move || {
             let said = match (host.instance.as_deref(), crate::e2b::key()) {
@@ -1780,6 +1788,37 @@ impl Removal {
             *outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(said);
         });
         removal
+    }
+
+    /// The same removal, tried again: a machine deleted again, a folder
+    /// removed again. A MicroVM's folder is not on this PC, so trying it as
+    /// one found nothing there and said it was gone
+    pub fn again(&self) -> Removal {
+        match &self.on {
+            Some(host) => Removal::start_on_microvm(self.folder.clone(), host.clone()),
+            None => Removal::start(self.folder.clone()),
+        }
+    }
+
+    /// Given up on, and the folder put back in the list: its machine, if it
+    /// has one and it is still there, is one to speak to again
+    pub fn put_back(&self) {
+        if let Some(id) = self.on.as_ref().and_then(|h| h.instance.as_deref()) {
+            crate::e2b::take_back(id);
+        }
+    }
+
+    /// Whether an editor showing this folder, on this machine, is showing
+    /// something that goes with it
+    pub fn takes(&self, dir: &Path, at: Option<&crate::elsewhere::Elsewhere>) -> bool {
+        match (&self.on, at) {
+            // Everything on the machine goes with the machine
+            (Some(h), Some(crate::elsewhere::Elsewhere::Cloud(there))) => {
+                h.instance.is_some() && h.instance == there.instance
+            }
+            (None, None) => inside_checkout(&self.folder, dir),
+            _ => false,
+        }
     }
 
     /// What became of it, once: gone, or why it is still there
@@ -2989,6 +3028,28 @@ pub fn run(argv: &[String]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// What goes with a removal, as the editors left open are asked about it:
+    /// on a MicroVM, everything on that machine; here, the folder and what is
+    /// under it. And tried again, it is the same kind of removal
+    #[test]
+    fn a_removal_says_what_goes_with_it() {
+        let vm = |id: &str| crate::config::HostSpec { name: "vm".into(), instance: Some(id.into()), ..Default::default() };
+        let on_vm = Removal { folder: PathBuf::from("/home/user/site"), on: Some(vm("m1")), outcome: Default::default() };
+        let cloud = |id: &str| crate::elsewhere::Elsewhere::Cloud(vm(id));
+        assert!(on_vm.takes(Path::new("/home/user/site"), Some(&cloud("m1"))));
+        assert!(on_vm.takes(Path::new("/home/user/other"), Some(&cloud("m1"))), "the rest of the machine stays open");
+        assert!(!on_vm.takes(Path::new("/home/user/site"), Some(&cloud("m2"))), "another machine's editor is closed");
+        assert!(!on_vm.takes(Path::new("/home/user/site"), None), "an editor on this PC is closed");
+
+        let here = PathBuf::from(crate::local_path("D:/work/site"));
+        let local = Removal { folder: here.clone(), on: None, outcome: Default::default() };
+        assert!(local.takes(&here, None));
+        assert!(local.takes(&here.join("src"), None));
+        assert!(!local.takes(Path::new(&crate::local_path("D:/work/site-2")), None), "a neighbour whose name starts the same goes too");
+        assert!(!local.takes(&here, Some(&cloud("m1"))));
+        assert!(local.again().on.is_none(), "a folder here is tried again as a MicroVM");
+    }
+
     use super::*;
 
     /// A folder this run of the tests can have to itself.

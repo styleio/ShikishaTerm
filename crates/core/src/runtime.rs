@@ -6755,12 +6755,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 match config::take_folder(&d.name, &at) {
                     Ok(taken) => {
+                        let removal = crate::worktree::Removal::start_on_microvm(at.clone(), h);
+                        // The throwaway editor is in no list the settings
+                        // keep, so the reload that ends the tabs leaves it
+                        editors.retain(|e| !(e.scratch && e.dir.as_deref().is_some_and(|d| removal.takes(d, e.at.as_ref()))));
                         making_seq += 1;
                         leavings.push(Leaving {
                             id: making_seq,
                             family: String::new(),
                             name: at.to_string_lossy().rsplit('/').next().unwrap_or_default().to_string(),
-                            removal: crate::worktree::Removal::start_on_microvm(at, h),
+                            removal,
                             desk: d.name.clone(),
                             main: None,
                             taken,
@@ -6789,10 +6793,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // Said once the folder is really gone, not when it was asked
                 // to go: the row says it is going until then
                 Ok(taken) => {
+                    let removal = crate::worktree::Removal::start(at);
+                    editors.retain(|e| !(e.scratch && e.dir.as_deref().is_some_and(|d| removal.takes(d, e.at.as_ref()))));
                     making_seq += 1;
                     leavings.push(Leaving {
                         id: making_seq,
-                        removal: crate::worktree::Removal::start(at),
+                        removal,
                         desk,
                         family,
                         name,
@@ -7002,11 +7008,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 match act.as_str() {
                     "retry" => {
                         l.error = None;
-                        l.removal = crate::worktree::Removal::start(l.removal.folder.clone());
+                        l.removal = l.removal.again();
                     }
                     "restore" => match &l.taken {
                         Some(taken) => match config::put_folder_back(&l.desk, taken) {
-                            Ok(()) => l.restored = Some(Instant::now()),
+                            Ok(()) => {
+                                l.removal.put_back();
+                                l.restored = Some(Instant::now());
+                            }
                             Err(e) => flash = Some(format!("{e:#}")),
                         },
                         None => l.gone = true,
@@ -10461,6 +10470,10 @@ fn files_there(
                 if !had.is_empty() {
                     let now = match crate::elsewhere::files(&at, check, SFTP_WAIT_MS) {
                         Ok(ssh::FileAnswer::Bytes(b)) => crate::files::mark_of(&b),
+                        // Not reached at all is not "changed": said as it is,
+                        // or the only way on offered is to save over a file
+                        // that cannot be written either
+                        Err(e) => return answer(failed("write", &panel, format!("{e:#}")), path, None),
                         _ => String::new(),
                     };
                     if now != had {

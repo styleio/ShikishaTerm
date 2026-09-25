@@ -1888,6 +1888,7 @@
   "err.e2b.no_key": "No key for the MicroVM service. Enter it in Settings → Where it runs → the MicroVM.",
   "err.e2b.no_machine": "This folder is on {host} but does not say which of its machines. Remove the folder and make it again.",
   "err.e2b.gone": "The machine {id} of {host} could not be reached: {e}. If it was deleted, remove this folder and make it again.",
+  "err.e2b.let_go": "The machine {id} of {host} has been deleted, or is being deleted. Nothing more is sent to it, so it is not started again.",
   "err.microvm.key_account": "{name} signs in with a key file, which is not put on a machine that is not this one. Choose an account that signs in with a token for this project.",
   "err.microvm.pc_many": "Git on this PC holds more than one GitHub account ({names}). Choose which one in the project's git account.",
   "err.microvm.pc_gone": "Git on this PC holds no GitHub sign-in for {login}. Sign in again, or choose another account.",

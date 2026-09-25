@@ -282,15 +282,50 @@ pub fn sign_in_as(key: &str, id: &str, sign_in: Option<&SignIn>) -> Result<()> {
 /// Let it go. A sandbox nobody kills still pauses when its time runs out, so
 /// this is what ends one for good
 pub fn kill(key: &str, id: &str) -> Result<()> {
+    // Let go of before it is asked: from this moment nothing here speaks to
+    // it, so nothing can wake it while the answer is on its way -- or after
+    // one that says it is still there
+    let_go(id);
     let resp = agent()
         .delete(&format!("{API}/sandboxes/{id}"))
         .header("X-API-Key", key)
         .call();
-    forget(id);
     match resp {
         Ok(_) => Ok(()),
+        // Gone already is what was asked for: a second try after an answer
+        // that was lost on the way back finds nothing to kill
+        Err(ureq::Error::StatusCode(404)) => Ok(()),
         Err(e) => bail!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])),
     }
+}
+
+/// The machines being deleted, or that were and would not go.
+///
+/// Every request to a paused machine starts it again -- they are made to wake
+/// on their own -- so a machine whose deletion failed is one request away from
+/// running, and costing, again. What was still holding it (the editor a file
+/// was open in) is what would send that request. Kept for as long as this
+/// program runs; a machine put back in the list is taken off it
+static LET_GO: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+/// Stop speaking to this machine: it is being deleted.
+pub fn let_go(id: &str) {
+    forget(id);
+    if let Ok(mut g) = LET_GO.get_or_init(Default::default).lock() {
+        g.insert(id.to_string());
+    }
+}
+
+/// Speak to it again: the folder on it was put back in the list.
+pub fn take_back(id: &str) {
+    if let Ok(mut g) = LET_GO.get_or_init(Default::default).lock() {
+        g.remove(id);
+    }
+}
+
+fn let_go_of(id: &str) -> bool {
+    LET_GO.get_or_init(Default::default).lock().is_ok_and(|g| g.contains(id))
 }
 
 /// One machine as the list gives it
@@ -364,6 +399,9 @@ pub fn machine(host: &crate::config::HostSpec) -> Result<Sandbox> {
         .instance
         .as_deref()
         .ok_or_else(|| anyhow!(crate::i18n::tp("err.e2b.no_machine", &[("host", &host.name)])))?;
+    if let_go_of(id) {
+        bail!(crate::i18n::tp("err.e2b.let_go", &[("host", &host.name), ("id", id)]));
+    }
     if let Some(s) = KNOWN.get_or_init(Default::default).lock().ok().and_then(|k| k.get(id).cloned()) {
         return Ok(s);
     }
@@ -1161,6 +1199,24 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// A machine being deleted is not spoken to again, so nothing still
+    /// holding it -- an editor with a file open -- can wake it. Refused here,
+    /// before a key is looked for or a request made
+    #[test]
+    fn a_machine_let_go_of_is_not_woken() {
+        let id = "let-go-test-machine";
+        let host = crate::config::HostSpec {
+            name: "vm".into(),
+            instance: Some(id.into()),
+            ..Default::default()
+        };
+        let_go(id);
+        let err = format!("{:#}", machine(&host).unwrap_err());
+        assert!(err.contains(id) && !err.contains("could not be reached"), "{err}");
+        take_back(id);
+        assert!(!let_go_of(id), "a machine put back in the list is still refused");
+    }
+
     use super::*;
 
     /// A read off a socket is a length of bytes, not a message. Proving it at
