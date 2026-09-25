@@ -231,7 +231,7 @@ export const en: LpCopy = {
       },
       {
         q: "Store copy or portable zip?",
-        a: "The Store copy is signed by Microsoft, shows no warning and updates itself. The zip is the same build with nothing installed: unzip it, run it, delete the folder to remove it. Because it is not code-signed, Windows says “Windows protected your PC” the first time. That is expected; More info → Run anyway gets past it.",
+        a: "The Store copy is signed by Microsoft, shows no warning and updates itself. The zip needs no installing: unzip it anywhere you like -- Google Drive, a USB stick -- and run it. Because it is not code-signed, Windows says “Windows protected your PC” the first time. That is expected; More info → Run anyway gets past it.",
       },
     ],
   },
