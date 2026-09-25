@@ -632,7 +632,7 @@ pub fn host_and_owner(url: &str) -> Option<(String, String)> {
 /// How long what was found about a sign-in is taken as still true. A token
 /// changed in the settings is read afresh at once (the key below changes with
 /// it); one changed in git's own store is noticed within this
-const FRESH: Duration = Duration::from_secs(60);
+pub const FRESH: Duration = Duration::from_secs(60);
 
 /// What was found, by the account and the way it is handed over, and which
 /// of them are being asked about right now
@@ -711,6 +711,7 @@ pub fn ai_sign_in_note(
     host: &crate::config::HostSpec,
     home: Option<&crate::config::ProjectHome>,
     ai: Option<&str>,
+    fresh: Duration,
 ) -> Option<crate::uistate::AiSignInNote> {
     let ai = ai.map(str::trim).filter(|a| !a.is_empty() && *a != NO_AI)?;
     let known_ai = crate::profile::machine_ai(ai)?;
@@ -728,7 +729,7 @@ pub fn ai_sign_in_note(
     let key = format!("{sandbox}\u{1f}{}", known_ai.key);
     let Ok(mut notes) = AI_NOTES.get_or_init(Default::default).lock() else { return None };
     let known = notes.found.get(&key).cloned();
-    if known.as_ref().is_none_or(|(at, _)| at.elapsed() > FRESH) && notes.asking.insert(key.clone()) {
+    if known.as_ref().is_none_or(|(at, _)| at.elapsed() > fresh) && notes.asking.insert(key.clone()) {
         let machine = host.with_instance(Some(sandbox));
         let (yes, no, failed) = (note("yes", String::new()), note("no", String::new()), blank.clone());
         let failed = move |error: String| crate::uistate::AiSignInNote { state: "error".into(), error, ..failed };
@@ -821,11 +822,11 @@ mod tests {
             sandbox: None,
             prepared: None,
         };
-        assert_eq!(ai_sign_in_note(&host, Some(&home), None), None);
-        assert_eq!(ai_sign_in_note(&host, Some(&home), Some(NO_AI)), None);
-        assert_eq!(ai_sign_in_note(&host, Some(&home), Some("nobody-ships-this")), None);
-        assert_eq!(ai_sign_in_note(&host, None, Some("claude")), None);
-        assert_eq!(ai_sign_in_note(&host, Some(&home), Some("claude")), None, "a checkout with no machine");
+        assert_eq!(ai_sign_in_note(&host, Some(&home), None, FRESH), None);
+        assert_eq!(ai_sign_in_note(&host, Some(&home), Some(NO_AI), FRESH), None);
+        assert_eq!(ai_sign_in_note(&host, Some(&home), Some("nobody-ships-this"), FRESH), None);
+        assert_eq!(ai_sign_in_note(&host, None, Some("claude"), FRESH), None);
+        assert_eq!(ai_sign_in_note(&host, Some(&home), Some("claude"), FRESH), None, "a checkout with no machine");
     }
 
     /// A folder on a MicroVM opens on the AI its machine was given, and on

@@ -295,6 +295,10 @@ pub enum Ev {
     /// ports something listens on in there, each with its public URL. Asked
     /// once when it is asked, since asking starts a paused machine
     FarPorts { folder: String },
+    /// The sign-in step of a project just cloned onto a MicroVM, answered:
+    /// `next` goes on to the project's rules, `later` puts the step away.
+    /// `folder` is the checkout on the machine
+    Login { folder: String, act: String },
     /// A folder put out of sight until the program is started again. Nothing
     /// is written down and nothing on disk is touched: the settings still hold
     /// it, and the next launch shows it again. `hide` false with an empty
@@ -999,6 +1003,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("farports") => Ev::FarPorts {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
+        Some("login") => Ev::Login {
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("folderhide") => Ev::FolderHide {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

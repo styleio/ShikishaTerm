@@ -570,6 +570,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         ssh_aliases: ui.ssh_aliases.clone(),
         remote_list: ui.remote_list.clone(),
         far_ports: ui.far_ports.clone(),
+        login_step: ui.login_step.clone(),
         machine_ais: ui.machine_ais.clone(),
         git_accounts: ui.git_accounts.clone(),
         project_home: ui.project_home.clone(),
@@ -1678,6 +1679,8 @@ pub struct Ui {
     pub remote_list: Option<crate::uistate::RemoteListState>,
     /// The public addresses of a folder on a MicroVM, last asked for
     pub far_ports: Option<crate::uistate::FarPortsState>,
+    /// The sign-in step of a project just cloned onto a MicroVM, while open
+    pub login_step: Option<crate::uistate::LoginStepState>,
     /// The AIs a MicroVM can be given
     pub machine_ais: Vec<crate::uistate::MachineAiChoice>,
     /// The app's own git accounts, for the dialog that asks which one a

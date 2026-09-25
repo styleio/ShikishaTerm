@@ -252,6 +252,9 @@ pub struct Mailbox {
     pub folder_discards: Vec<(String, bool)>,
     /// Folders on a MicroVM whose public addresses were asked for
     pub far_ports: Vec<String>,
+    /// The sign-in step of a checkout just cloned onto a MicroVM, answered:
+    /// (the checkout, `next` or `later`)
+    pub logins: Vec<(String, String)>,
     /// Folders put out of sight until the next launch: (folder, hide). An
     /// empty folder with `false` brings back every one of them
     pub folder_hides: Vec<(String, bool)>,
@@ -559,6 +562,9 @@ impl Mailbox {
     }
     pub fn take_far_ports(&mut self) -> Vec<String> {
         std::mem::take(&mut self.far_ports)
+    }
+    pub fn take_logins(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.logins)
     }
     pub fn take_folder_hides(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.folder_hides)

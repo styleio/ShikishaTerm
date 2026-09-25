@@ -833,6 +833,29 @@ pub struct MachineAiChoice {
     pub name: String,
 }
 
+/// The sign-in step of a project just cloned onto a MicroVM: the checkout's
+/// machine has the AI, and a worktree is a copy of that machine, so the
+/// sign-in is done here, once, before the first worktree is cut. Shown only
+/// once the machine has said the AI is not signed in yet; a machine that is
+/// (a key given by the machine setup) goes straight on
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct LoginStepState {
+    /// Counts up each time the step is opened, so the board opens it once
+    pub seq: u64,
+    /// The checkout on the machine, whose AI tab the step shows
+    pub folder: String,
+    /// The MicroVM's name in the settings
+    pub host: String,
+    /// The AI, by the command that starts it, and what it is called
+    pub ai: String,
+    pub name: String,
+    /// `asking`, `yes`, `no` or `error` -- what the machine says about the
+    /// sign-in, looked at again every few seconds while the step is open
+    pub state: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+}
+
 /// The public addresses of a folder on a MicroVM, as asked for from its menu
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct FarPortsState {
@@ -1980,6 +2003,10 @@ pub struct UiState {
     /// The public addresses of a folder on a MicroVM, last asked for
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub far_ports: Option<FarPortsState>,
+    /// The sign-in step of a project just cloned onto a MicroVM, while it
+    /// is open
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_step: Option<LoginStepState>,
     /// The AIs a MicroVM can be given, by command and name
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub machine_ais: Vec<MachineAiChoice>,

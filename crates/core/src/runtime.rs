@@ -365,6 +365,23 @@ impl Leaving {
 /// prepared with the AI and the machine setup. Drawn as a row of the same
 /// kind as a worktree being made, under the project, and answered through
 /// the same numbers
+/// The sign-in step of a project just cloned onto a MicroVM, while it is
+/// pending: the checkout, its machine, and the AI to be signed in to there.
+/// `shown` is whether the machine has answered once and the step is on the
+/// board; before that, a machine that says "signed in" is never shown it
+struct LoginPending {
+    seq: u64,
+    folder: String,
+    host: config::HostSpec,
+    home: config::ProjectHome,
+    ai: String,
+    name: String,
+    shown: bool,
+}
+
+/// How often the machine is asked again while the sign-in step is open
+const LOGIN_FRESH: Duration = Duration::from_secs(10);
+
 struct VmJob {
     id: u64,
     desk: String,
@@ -1645,6 +1662,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // machine, looked at again while the dialog is open, so a sign-in done
     // in the checkout's tab meanwhile is seen without closing it
     let mut ai_signin_watch: Option<(config::HostSpec, Option<config::ProjectHome>, Option<String>)> = None;
+    // The sign-in step of a project just cloned onto a MicroVM: the checkout
+    // whose AI is to be signed in to, before its first worktree is cut
+    let mut login_pending: Option<LoginPending> = None;
+    let mut login_view: Option<crate::uistate::LoginStepState> = None;
+    let mut login_seq: u64 = 0;
     // What it would take to have a missing working folder here. Answered when
     // one is opened, and cleared once the folder exists so the dialog closes
     let mut repair_view: Option<crate::uistate::RepairPlan> = None;
@@ -3625,6 +3647,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FarPorts { folder }) => {
                         shell.mail().far_ports.push(folder);
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Login { folder, act }) => {
+                        shell.mail().logins.push((folder, act));
+                    }
                     // The add-a-project dialog, from a phone: the same queues
                     // the window's dialog fills (see `main.rs`)
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::AddProject {
@@ -4021,6 +4046,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             ssh_aliases: ssh_aliases.clone(),
             remote_list: remote_view.clone(),
             far_ports: far_ports_view.clone(),
+            login_step: login_view.clone(),
             machine_ais: machine_ais.clone(),
             project_home: project_home.clone(),
             assistant: assistant_ai.clone(),
@@ -7471,7 +7497,27 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 })
                                 .and_then(|()| config::set_folder_far(&j.desk, std::path::Path::new(&at), &add.host, Some(&add.project), Some(&sandbox)))
                                 .map(|()| {
-                                    crate::webui::ask_branch_next(&at, true);
+                                    // On to the rules -- through the sign-in
+                                    // step first when the machine was given an
+                                    // AI, since every worktree is a copy of
+                                    // this machine, sign-in and all
+                                    match add.ai.as_deref().and_then(crate::profile::machine_ai) {
+                                        Some(known) => {
+                                            login_seq += 1;
+                                            login_pending = Some(LoginPending {
+                                                seq: login_seq,
+                                                folder: at.clone(),
+                                                host: j.host.clone(),
+                                                home: home.clone(),
+                                                ai: known.key,
+                                                name: known.name,
+                                                shown: false,
+                                            });
+                                        }
+                                        None => {
+                                            crate::webui::ask_branch_next(&at, true);
+                                        }
+                                    }
                                     i18n::tp("msg.project.remote_added", &[("name", &add.project), ("host", &add.host)])
                                 })
                         }
@@ -7943,7 +7989,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         if h.is_made() {
                             view.sign_in = crate::microvm::sign_in_note(&far.1, &far.2);
                             signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
-                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), far.0.preparing.ai.as_deref());
+                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), far.0.preparing.ai.as_deref(), crate::microvm::FRESH);
                             ai_signin_watch = Some((h.clone(), far.0.home.clone(), far.0.preparing.ai.clone()));
                         }
                         crate::worktree::plan_on(&far.0.of(), &wanted, &prefix, Some(&ask.base), Some(ask.at.trim()))
@@ -8073,7 +8119,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         if h.is_made() {
                             view.sign_in = crate::microvm::sign_in_note(&far.1, &far.2);
                             signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
-                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), far.0.preparing.ai.as_deref());
+                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), far.0.preparing.ai.as_deref(), crate::microvm::FRESH);
                             ai_signin_watch = Some((h.clone(), far.0.home.clone(), far.0.preparing.ai.clone()));
                         }
                         crate::worktree::fan_on(&far.0.of(), &wanted, &prefix, Some(&ask.base), &ask.ais)
@@ -8160,10 +8206,56 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             match branch_view.as_mut() {
                 None => ai_signin_watch = None,
                 Some(v) => {
-                    let note = crate::microvm::ai_sign_in_note(h, home.as_ref(), ai.as_deref());
+                    let note = crate::microvm::ai_sign_in_note(h, home.as_ref(), ai.as_deref(), crate::microvm::FRESH);
                     if note != v.ai_sign_in {
                         v.ai_sign_in = note;
                     }
+                }
+            }
+        }
+        // The sign-in step of a project just cloned onto a MicroVM. The
+        // machine is asked whether its AI is signed in; one that is (a key
+        // given by the machine setup) goes straight on to the rules, and one
+        // that is not is shown the step, looked at again every few seconds
+        // while it is open so a sign-in done in it is seen
+        if let Some(p) = login_pending.as_mut() {
+            let note = crate::microvm::ai_sign_in_note(&p.host, Some(&p.home), Some(&p.ai), LOGIN_FRESH);
+            let go_on = match note.as_ref().map(|n| n.state.as_str()) {
+                // Nothing to ask about (no such AI), or signed in before
+                // the step was ever shown: nothing to do here
+                None => true,
+                Some("yes") if !p.shown => true,
+                Some("asking") if !p.shown => false,
+                Some(state) => {
+                    p.shown = true;
+                    let v = crate::uistate::LoginStepState {
+                        seq: p.seq,
+                        folder: p.folder.clone(),
+                        host: p.host.name.clone(),
+                        ai: p.ai.clone(),
+                        name: p.name.clone(),
+                        state: state.to_string(),
+                        error: note.as_ref().map(|n| n.error.clone()).unwrap_or_default(),
+                    };
+                    if login_view.as_ref() != Some(&v) {
+                        login_view = Some(v);
+                    }
+                    false
+                }
+            };
+            if go_on {
+                let folder = p.folder.clone();
+                login_pending = None;
+                login_view = None;
+                crate::webui::ask_branch_next(&folder, true);
+            }
+        }
+        for (folder, act) in shell.mail().take_logins() {
+            if login_pending.as_ref().is_some_and(|p| p.folder == folder) {
+                login_pending = None;
+                login_view = None;
+                if act == "next" {
+                    crate::webui::ask_branch_next(&folder, true);
                 }
             }
         }

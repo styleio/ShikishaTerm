@@ -114,6 +114,17 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **A project cloned onto a MicroVM asks for the AI's sign-in before its
+  first worktree.** Every worktree is a copy of the checkout's machine,
+  sign-in and all, so one cut before the sign-in has none -- and the way
+  through went straight from the clone to the worktree dialog, leaving two
+  Claudes signed in to nothing. Now, once the machine is ready, a step over
+  the board asks for the sign-in in so many words, with the checkout's own AI
+  terminal in front and mirrored inside it; a sign-in done there is seen
+  within seconds. Next goes on to the project's rules either way (a key given
+  another way is a sign-in this cannot see), Later puts the step away. A
+  machine that already has the sign-in -- a key put in by the machine setup
+  -- is never shown the step.
 - **"Add a project" works from a phone.** Cloning a project, making a new
   one, cloning onto a MicroVM, listing a server's folders and writing a
   server into the settings were refused from afar without a word, so the

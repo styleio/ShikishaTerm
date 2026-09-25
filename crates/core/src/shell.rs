@@ -329,6 +329,32 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #addproj .shead .vclose { cursor:pointer; color:var(--dim); font-size:16px; padding:2px 6px; }
   #addproj .shead .vclose:hover { color:var(--text); }
   #addproj .ssay { font-size:12px; color:var(--dim); line-height:1.5; }
+  /* The sign-in step of a project just cloned onto a MicroVM: the same box
+     as adding a project, holding the checkout's own terminal (a mirror of
+     the pane behind it) and, above it, the one thing asked for -- said so it
+     cannot be missed, since the step can be gone through without doing it */
+  #login { position:fixed; inset:0; background:#00000099; display:flex; align-items:flex-start;
+    justify-content:center; z-index:52; padding:56px 16px 16px; }
+  #login[hidden] { display:none; }
+  #login .sbox { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
+    width:min(720px,100%); max-height:calc(100vh - 72px); box-shadow:0 8px 24px #0007;
+    display:flex; flex-direction:column; }
+  #login .shead { display:flex; align-items:center; gap:var(--s3); padding:16px 20px; border-bottom:1px solid var(--line); }
+  #login .stitle { flex:1; min-width:0; font-size:13.5px; font-weight:600; color:var(--text); text-transform:uppercase; }
+  #login .shead .vclose { cursor:pointer; color:var(--dim); font-size:16px; padding:2px 6px; }
+  #login .shead .vclose:hover { color:var(--text); }
+  #login .sbody { display:flex; flex-direction:column; gap:var(--s3); padding:20px; overflow:auto; }
+  #login .ssay { font-size:12px; color:var(--dim); line-height:1.5; }
+  #login .lstrong { font-size:14px; font-weight:600; color:var(--text); line-height:1.5; padding:10px 12px;
+    border-left:3px solid var(--brand); background:var(--raise); border-radius:var(--r-ctl); }
+  #login .lmirror { white-space:pre; font-family:var(--mono); font-size:12px; line-height:1.25; overflow:auto;
+    height:min(40vh, 22em); padding:8px; background:#000; color:#ddd; border:1px solid var(--line);
+    border-radius:var(--r-ctl); }
+  #login .lmirror .r { min-height:1.25em; }
+  #login .lstate { font-size:12.5px; color:var(--dim); line-height:1.5; }
+  #login .lstate.yes { color:var(--brand); }
+  #login .sfoot { display:flex; justify-content:flex-end; gap:var(--s2); padding:12px 20px; border-top:1px solid var(--line); }
+  #login .sfoot button.primary { background:var(--brand); color:#fff; font-weight:600; }
   #addproj button.apway { display:flex; align-items:center; gap:var(--s3); width:100%; min-height:52px;
     padding:var(--s2) var(--s3); text-align:left; border-radius:var(--r-card); background:transparent;
     font-weight:normal; }
@@ -3765,6 +3791,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   </div>
   <!-- Adding a project: the ways a project can come to this desk -->
   <div id="addproj" hidden></div>
+  <!-- The sign-in step of a project just cloned onto a MicroVM -->
+  <div id="login" hidden></div>
   <div id="browse" hidden>
     <div class="vbox picker">
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">&#10005;</span></div>
@@ -8575,6 +8603,79 @@ function checkoutAiTab(checkout, ai) {
   return gi < 0 ? null : (((S && S.tabs) || []).find(t => t.group === gi && t.ai === ai) || null);
 }
 
+// ── The sign-in step of a project just cloned onto a MicroVM ─────────────
+// The checkout's machine has the AI, and every worktree is a copy of that
+// machine, sign-in and all -- so the sign-in is done here, once, before the
+// first worktree. The step brings the checkout's own AI tab in front (that
+// is where keys go) and mirrors it inside the box, asks for the sign-in in
+// so many words, and goes on when "next" is pressed -- signed in or not,
+// since a key given another way is a sign-in this cannot see
+let loginSeen = 0;
+let loginSelected = "";
+function drawLogin() {
+  const box = document.getElementById("login");
+  if (!box) return;
+  const st = S && S.login_step;
+  if (!st) {
+    if (!box.hidden) { box.hidden = true; box.textContent = ""; }
+    loginSeen = 0;
+    loginSelected = "";
+    return;
+  }
+  const tab = checkoutAiTab(st.folder, st.ai);
+  const mark = st.folder + "\u001f" + st.seq;
+  if (tab && loginSelected !== mark) {
+    if (tab.index !== S.active) send({kind:"select", tab: tab.index});
+    else loginSelected = mark;
+  }
+  const say = k => (T[k] || "").replace("{ai}", st.name);
+  if (loginSeen !== st.seq) {
+    loginSeen = st.seq;
+    box.textContent = "";
+    const later = () => send({kind:"login", folder: st.folder, act:"later"});
+    box.append(el("div", {class:"sbox", role:"dialog", "aria-modal":"true"},
+      el("div", {class:"shead"},
+        el("span", {class:"stitle"}, say("tui.login.title")),
+        el("span", {class:"vclose", title:T["tui.login.later"] || "", onclick:later}, "✕")),
+      el("div", {class:"sbody"},
+        el("div", {class:"lstrong"}, say("tui.login.say")),
+        el("div", {class:"ssay"}, say("tui.login.how")),
+        el("div", {class:"lmirror", "aria-hidden":"true"}),
+        el("div", {class:"lstate"})),
+      el("div", {class:"sfoot"},
+        el("button", {type:"button", class:"quiet", onclick:later}, T["tui.login.later"] || ""),
+        el("button", {type:"button", class:"primary", id:"loginnext",
+          onclick:() => send({kind:"login", folder: st.folder, act:"next"})}, T["tui.login.next"] || ""))));
+    box.hidden = false;
+    loginMirror();
+    // Keys go to the terminal behind, as they do with nothing open
+    if (!REMOTE) kbd.focus();
+  }
+  const state = box.querySelector(".lstate");
+  if (state) {
+    const text = st.state === "yes" ? say("tui.login.yes")
+      : st.state === "no" ? say("tui.login.no")
+      : st.state === "error" ? say("tui.login.error") + (st.error ? " " + st.error : "")
+      : say("tui.login.asking");
+    if (state.textContent !== text) state.textContent = text;
+    state.classList.toggle("yes", st.state === "yes");
+  }
+}
+// What the pane behind is showing, copied into the step: the same rows,
+// the same markup, each time a frame arrives
+function loginMirror() {
+  const box = document.getElementById("login");
+  if (!box || box.hidden) return;
+  const m = box.querySelector(".lmirror");
+  const s = document.getElementById("screen");
+  if (!m || !s || m.innerHTML === s.innerHTML) return;
+  // The prompt is at the bottom of a terminal, so the mirror stays pinned
+  // there -- unless the reader scrolled up to look at something above
+  const nearBottom = m.children.length === 0 || (m.scrollHeight - m.clientHeight - m.scrollTop) <= 24;
+  m.innerHTML = s.innerHTML;
+  if (nearBottom) m.scrollTop = m.scrollHeight;
+}
+
 // The AI a MicroVM checkout about to be made is given, chosen in the
 // worktree dialog. Empty until chosen: then the app installs what the
 // project says
@@ -10146,6 +10247,7 @@ window.__state = function (json) {
   projectFlow();
   microvmArrived();
   drawFarPorts();
+  drawLogin();
   // The settings were read in again while the worktree dialog is open: what
   // it shows was worked out from the ones before, so it is asked again
   if (before && S && S.settings_gen !== before.settings_gen) {
@@ -11953,10 +12055,12 @@ window.__screen = function (html) {
     for (let i = 0; i < rows.length; i++) {
       if (kids[i].innerHTML !== rows[i]) kids[i].innerHTML = rows[i];
     }
+    loginMirror();
     return;
   }
   s.innerHTML = rowsHtml(html);
   if (REMOTE) s.scrollTop = nearBottom ? s.scrollHeight : prevTop;
+  loginMirror();
 };
 
 // ── Input handling starts here ────────────────────────────

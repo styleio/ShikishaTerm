@@ -246,6 +246,27 @@ try {
   const claudeThere = await on(home.sandbox, 'claude --version 2>&1 | head -1');
   check(/Claude Code/.test(claudeThere), 'Claude Code is installed on the checkout\'s machine: ' + claudeThere);
 
+  console.log('2c. the sign-in step, before anything is copied from the checkout');
+  // The machine says its Claude is not signed in, so the step is shown: the
+  // checkout's own Claude tab in front and mirrored inside, the ask in so
+  // many words, and a way on either way
+  const step = () => board.run('JSON.stringify((S && S.login_step) || null)').then((t) => JSON.parse(t || 'null'));
+  await until(async () => ((await step()) || {}).state === 'no', 'the step to say Claude is not signed in on the checkout', 90000);
+  await until(() => board.run('!document.getElementById("login").hidden'), 'the sign-in step on the board', 30000);
+  check((await step()).name === 'Claude Code' && (await step()).folder === CHECKOUT, 'the step is about the checkout\'s Claude: ' + JSON.stringify(await step()));
+  await until(() => board.run('(() => { const t = (S.tabs || []).find(x => x.index === S.active); return !!t && t.name === "claude" && (S.groups || [])[t.group] && (S.groups || [])[t.group].folder === ' + JSON.stringify(CHECKOUT) + '; })()'),
+    'the checkout\'s Claude tab in front', 30000);
+  await until(() => board.run('(document.querySelector("#login .lmirror") || {children:[]}).children.length > 0'), 'the checkout\'s terminal mirrored in the step', 60000);
+  check(await board.run('document.querySelector("#login .lstrong").textContent.includes("ログインしてください")'), 'the ask is said, and said first');
+  check(await board.run('!document.getElementById("loginnext").disabled'), 'and the way on is open without it');
+  await board.shot('2c-login');
+  await on(home.sandbox, 'mkdir -p ~/.claude && echo "{}" > ~/.claude/.credentials.json');
+  await until(async () => ((await step()) || {}).state === 'yes', 'the sign-in to be seen while the step is open', 40000);
+  check(await board.run('document.querySelector("#login .lstate").textContent.includes("ログインを確認しました")'), 'the step says the sign-in was seen');
+  await on(home.sandbox, 'rm -f ~/.claude/.credentials.json');
+  await board.run('document.getElementById("loginnext").click(); true');
+  await until(() => board.run('document.getElementById("login").hidden'), 'the step put away', 30000);
+
   console.log('3. through its rules, to its first worktree');
   cfg = await connect(await settingsOn(/section=project-first/), 'the settings');
   await until(() => cfg.run('!!framed && framed.kind === "rules" && !!document.getElementById("rulesgo")'), 'the rules, as a dialog', 30000);
