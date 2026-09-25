@@ -251,6 +251,7 @@ not on its page. A name changed is a name changed here too.
 | Card | `card(title, ...kids)` | settings (`webui.rs`) |
 | List (`.fmenu`) | On the settings page `floatMenu(at, items, opts)`; on the board `openList(anchor, rows, tall, point)` (two pages' JavaScript, which cannot be shared) | settings (`webui.rs`), board (`shell.rs`) |
 | Breadcrumb | `pageCrumbs(...parts)` | settings (`webui.rs`) |
+| Fields few people need, folded | `foldMore(label, open, ...kids)` (the label says what is inside; open when a field inside already has a value) | settings (`webui.rs`) |
 | Picking a folder or a file | `choosePath(kind, title, now)` (the system's own dialog on this PC, a walk through the folders on a phone). With a field beside it, `pathField(obj, key, ph, kind, title)` | settings (`webui.rs`) |
 | A question about something that cannot be undone (board) | `askQuestion({title, say, what, label, go})` | board (`shell.rs`) |
 | Dialog (choosing, `.picker`) | `openBrowse(at, handBack)` | board (`shell.rs`) |

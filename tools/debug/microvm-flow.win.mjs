@@ -204,6 +204,11 @@ try {
   await until(() => board.run('!!(S.add_project && S.add_project.sign_in)'), 'what it signs in as', 30000);
   const note = await board.run('S.add_project.sign_in');
   check(note.account === 'check' && note.kind === 'fine', 'it signs in as the account for the owner, a fine-grained token: ' + JSON.stringify(note));
+  // The account is chosen on screen: the one for the address's owner first
+  // and chosen, this PC's git last
+  const acctPick = '[...document.querySelectorAll("#addproj select")].find(s => [...s.options].some(o => o.value === "@pc"))';
+  check(await board.run(`!!${acctPick} && ${acctPick}.value === "check" && [...${acctPick}.options].map(o => o.value).join(",") === "check,@pc"`),
+    'the account is chosen on screen, the one for the owner first: ' + await board.run(`${acctPick} ? [...${acctPick}.options].map(o => o.value).join(",") : "no picker"`));
   check(await board.run('!document.querySelector("#addproj .bsignin .warn")'), 'a fine-grained token is not warned about');
   // The AI its machine is given, chosen here and written in from the start
   const aiPick = '[...document.querySelectorAll("#addproj select")].find(s => [...s.options].some(o => o.value === "claude"))';
@@ -333,6 +338,20 @@ try {
   check(!folderAt(wt.cwd), 'the folder is off the desk');
   check((await ours()).some((s) => s.sandboxID === home.sandbox), 'the checkout\'s machine stays');
   await board.shot('4-after');
+
+  console.log('6. adding a git account asks for what nearly everybody fills in, the rest folded');
+  await board.run('openSettings("gitaccounts", true); true');
+  cfg = await connect(await settingsOn(/section=gitaccounts/), 'the settings');
+  await until(() => cfg.run('!![...document.querySelectorAll("button")].find(b => b.textContent === "＋ git アカウントを追加")'), 'the git accounts card', 30000);
+  await cfg.run('[...document.querySelectorAll("button")].find(b => b.textContent === "＋ git アカウントを追加").click(); true');
+  await until(() => cfg.run('!!document.querySelector(".modal .fold")'), 'the form with its fold');
+  const shown = await cfg.run('[...document.querySelectorAll(".modal .mbody > .field:not([hidden]) > label, .modal .mbody > .fold .foldhead")].map(e => e.textContent.trim())');
+  check(shown[0] === '名前' && shown.includes('トークン') && shown.includes('対象のオーナー') && !shown.includes('表示名') && !shown.includes('サーバー'),
+    'name, token and owners are asked; the rest is under one line: ' + shown.join(' | '));
+  check(await cfg.run('document.querySelector(".modal .foldbody").hidden'), 'the fold starts closed');
+  await cfg.run('document.querySelector(".modal .foldhead").click(); true');
+  check(await cfg.run('!document.querySelector(".modal .foldbody").hidden && [...document.querySelectorAll(".modal .foldbody label")].some(l => l.textContent === "表示名")'), 'opened, the display name and the server are there');
+  await cfg.shot('5-account-form');
 } catch (e) {
   check(false, e.message);
 } finally {

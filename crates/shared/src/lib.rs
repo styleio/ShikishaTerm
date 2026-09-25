@@ -439,7 +439,7 @@ pub enum Ev {
     /// machine is the checkout of, when it was asked for from one.
     /// Window-only: what it makes is a
     /// folder on this PC, chosen with this PC's folder picker
-    AddProject { how: String, text: String, parent: String, ask: u64, host: String, project: String, ai: String },
+    AddProject { how: String, text: String, parent: String, ask: u64, host: String, project: String, ai: String, account: String },
     /// A folder on another machine, listed for the add-a-project dialog.
     /// `host` is the machine's name in the settings; `ask` the dialog's own
     /// number, so an answer to an older listing is not taken for this one.
@@ -1161,6 +1161,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
             project: v.get("project").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
             ai: v.get("ai").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
+            account: v.get("account").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
         },
         Some("remotelist") => Ev::RemoteList {
             host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),

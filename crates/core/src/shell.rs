@@ -5757,6 +5757,25 @@ function apMicrovm(body) {
     vm.append(pickIcon("cloud"), el("span", {class:"nm"}, apVm || T["tui.addproj.microvm.none"] || ""), el("span", {class:"caret"}, "▾"));
   };
   const signin = el("div", {class:"bsignin"});
+  // The account it signs in to the git server as: the app's own, the ones
+  // for the address's owner first and the first of them chosen, and the way
+  // git on this PC signs in. Chosen on screen before anything is made, since
+  // two accounts can be for one owner; a choice made by hand stays as the
+  // address goes on being typed
+  let account = "";
+  let accountByHand = false;
+  const acct = el("select", {class:"apin"});
+  const drawAcct = () => {
+    const owner = ownerOfUrl(url.value);
+    const list = (S && S.git_accounts) || [];
+    const fits = list.filter(a => owner && (a.owners || []).includes(owner));
+    acct.textContent = "";
+    for (const a of [...fits, ...list.filter(a => !fits.includes(a))]) acct.append(el("option", {value:a.name}, a.label));
+    acct.append(el("option", {value:"@pc"}, T["tui.branch.signin.pc"] || ""));
+    if (!accountByHand) account = fits.length ? fits[0].name : "@pc";
+    acct.value = account;
+  };
+  acct.addEventListener("change", () => { account = acct.value; accountByHand = true; look(); });
   // The AI its machine is given, installed once there and in every worktree after
   let ai = defaultMachineAi();
   const aiPick = machineAiPick(ai, v => { ai = v; });
@@ -5765,7 +5784,7 @@ function apMicrovm(body) {
     if (!apVm || !url.value.trim()) { drawSignIn(signin, null, false); return; }
     lookAsk = Date.now();
     apLive.lookAsk = lookAsk;
-    send({kind:"addproject", how:"microvm_look", text:url.value.trim(), parent:"", ask:lookAsk, host:apVm});
+    send({kind:"addproject", how:"microvm_look", text:url.value.trim(), parent:"", ask:lookAsk, host:apVm, account});
     drawSignIn(signin, null, true);
   };
   let lookSoon = null;
@@ -5784,20 +5803,22 @@ function apMicrovm(body) {
       : !apVm ? {at:vm, why:T["tui.addproj.microvm.need_vm"] || ""} : null,
     () => {
       apAsk = Date.now();
-      send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai});
+      send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai, account});
       apLive.running = true;
       drawAddProject();
     });
   body.append(apBack(), el("div", {class:"ssay"}, T["tui.addproj.microvm.say2"] || ""),
     apField(T["tui.addproj.url"] || "", url),
     apField(T["tui.addproj.microvm.vm"] || "", vm),
+    apField(T["tui.addproj.microvm.account"] || "", acct),
     signin,
     el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.microvm.ai"] || ""), aiPick,
       el("div", {class:"shint"}, T["tui.microvm.ai.hint"] || "")),
     el("div", {class:"apfoot"}, go.why, go.btn, prog.bar));
-  url.addEventListener("input", () => { go.check(); lookLater(); });
+  url.addEventListener("input", () => { drawAcct(); go.check(); lookLater(); });
   url.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); go.btn.click(); } });
   drawVm();
+  drawAcct();
   go.check();
   apLive = {kind:"microvm", running:false, go, prog, label:T["tui.addproj.clone.go"] || "",
     busy:T["tui.addproj.microvm.busy"] || "", signin, lookAsk:0,
@@ -8524,6 +8545,17 @@ function drawDest(b, p) {
 // worktree dialog. Empty until chosen: then the app installs what the
 // project says
 let branchMachineAi = "";
+
+// Whose repository an address names, lowercased: `acme` for
+// https://github.com/acme/site.git and for git@github.com:acme/site
+function ownerOfUrl(url) {
+  // Without the scheme and the sign-in; then host:owner/repo (scp-like) and
+  // host:port/owner/repo both read as host/owner/repo
+  let s = String(url || "").trim().replace(/^[a-z+]+:\/\//i, "").replace(/^[^@\/]+@/, "");
+  s = s.replace(/^([^\/:]+):(?!\d+\/)/, "$1/").replace(/^([^\/:]+):\d+\//, "$1/");
+  const parts = s.split("/").filter(Boolean);
+  return parts.length >= 3 ? parts[1].toLowerCase() : "";
+}
 
 // Choosing the AI a MicroVM is given: the ones that can be installed there,
 // and "none". What is chosen is on screen from the start -- the assistant AI
@@ -21506,7 +21538,7 @@ mod tests {
         // MicroVM goes on through its rules to its first worktree, there
         assert!(PAGE.contains("if (!mine.host || mine.microvm) rulesFirst(path);"),
             "a project added over SSH goes on to a worktree, or one onto a MicroVM does not");
-        assert!(PAGE.contains(r#"send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai});"#),
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai, account});"#),
             "a project cannot be cloned onto a MicroVM");
         assert!(PAGE.contains(r#"addMicrovm(name => { apVm = name; drawVm(); go.check(); look(); });"#),
             "a MicroVM cannot be added from where it is chosen");

@@ -3933,6 +3933,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             machine_ais: machine_ais.clone(),
             project_home: project_home.clone(),
             assistant: assistant_ai.clone(),
+            git_accounts: desks
+                .get(desk_index)
+                .map(|d| {
+                    d.git_accounts
+                        .iter()
+                        .map(|a| crate::uistate::GitAccountChoice {
+                            name: a.name.clone(),
+                            label: a.label.as_deref().map(str::trim).filter(|l| !l.is_empty()).unwrap_or(&a.name).to_string(),
+                            owners: a.owners.iter().map(|o| o.trim().to_ascii_lowercase()).collect(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             usage,
             thanks: thanks_show.then(|| thanks_kind.to_string()),
             update: update::ask(),
@@ -7063,7 +7076,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // the address is typed, so it is said before anything is made
                 ("microvm_look", Some(_)) => {
                     let desk = desks.get(desk_index);
-                    let account = account_for_url(desk, &text);
+                    // The account the dialog chose; the one for the address's
+                    // owner when it chose none (an older board)
+                    let account = match a.account.as_str() {
+                        "" => account_for_url(desk, &text),
+                        config::THIS_PC => None,
+                        chosen => Some(chosen.to_string()),
+                    };
                     let git = desk.map(|d| d.git_use(account.as_deref())).unwrap_or_default();
                     let label = account.clone().unwrap_or_else(|| i18n::t("tui.branch.signin.pc"));
                     let far = git.far(&|k| crate::git::secret(k));
@@ -7073,7 +7092,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 ("microvm", Some(h)) => {
                     let desk = desks.get(desk_index);
-                    let account = account_for_url(desk, &text);
+                    // The account the dialog chose; the one for the address's
+                    // owner when it chose none (an older board)
+                    let account = match a.account.as_str() {
+                        "" => account_for_url(desk, &text),
+                        config::THIS_PC => None,
+                        chosen => Some(chosen.to_string()),
+                    };
                     let git = desk.map(|d| d.git_use(account.as_deref())).unwrap_or_default();
                     // Named for its address, and never onto a project of that
                     // name that already has a checkout on this machine

@@ -788,6 +788,17 @@ pub struct SignInNote {
     pub error: String,
 }
 
+/// One of the app's git accounts, as a dialog on the board offers it
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct GitAccountChoice {
+    /// Its name, which is what a choice is written as
+    pub name: String,
+    /// What it is called on screen: its label, else its name
+    pub label: String,
+    /// The owners (users, organisations) it says it is for, lowercased
+    pub owners: Vec<String>,
+}
+
 /// An AI a MicroVM can be given
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct MachineAiChoice {
@@ -1958,6 +1969,10 @@ pub struct UiState {
     /// worktree starts with when this PC has it
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub assistant: String,
+    /// The app's own git accounts, for a dialog that asks which one a
+    /// machine signs in as
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub git_accounts: Vec<GitAccountChoice>,
     /// The thanks card, when it is up: `github` or `store`, which is where
     /// its button leads
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -4969,6 +4969,11 @@ const PAGE: &str = r##"<!doctype html>
  .rulesrow { align-items:flex-start; }
  .row.rulesrow > label:not(.check):not(.beside) { flex:0 0 200px; padding-top:2px; }
  .rulesnow { flex:1; min-width:0; display:flex; flex-direction:column; gap:var(--s1); overflow-wrap:anywhere; }
+ /* Fields few people need, under one line: a caret and what is inside */
+ .fold { margin:var(--s2) 0 0; }
+ .fold .foldhead { display:flex; align-items:center; gap:var(--s1); padding:var(--s1) 0; color:var(--dim); font-size:12px; }
+ .fold .foldhead[aria-expanded="true"] { color:var(--text); }
+ .fold .foldbody { border-left:3px solid var(--line); padding:var(--s1) 0 0 var(--s3); margin-top:var(--s1); }
  .rulesedit { border-left:3px solid var(--line); padding:var(--s1) 0 var(--s2) var(--s4); margin:0 0 var(--s3);
    display:flex; flex-direction:column; gap:var(--s2); }
  @media (max-width: 760px) { .row.rulesrow > label:not(.check):not(.beside) { flex-basis:100%; } }
@@ -9655,6 +9660,23 @@ function freeHostName(base) {
   for (let n = 2; ; n++) if (!taken.has(base + "-" + n)) return base + "-" + n;
 }
 
+// Fields few people need, folded under one line that says what is there:
+// a form that asks for everything at once is one people stop reading. Open
+// when something under it is already written, so nothing written is hidden
+function foldMore(label, open, ...kids) {
+  const body = el("div", {class:"foldbody"}, ...kids);
+  body.hidden = !open;
+  const mark = el("span", {class:"foldmark"}, open ? "▾" : "▸");
+  const head = el("button", {type:"button", class:"quiet foldhead", "aria-expanded": String(open),
+    onclick:() => {
+      const now = body.hidden;
+      body.hidden = !now;
+      head.setAttribute("aria-expanded", String(now));
+      mark.textContent = now ? "▾" : "▸";
+    }}, mark, el("span", {}, label));
+  return el("div", {class:"fold"}, head, body);
+}
+
 // Adding one, or changing one. `at` is null for a new one, and `kind` says
 // which of the two it will be. `done` is told the name of one added and
 // saved, for a dialog asked for from somewhere else (the board's "+ MicroVM"):
@@ -11076,15 +11098,20 @@ function gitAccountDialog(name, redraw) {
     el("div", {class:"mhead"},
       el("h2", {}, editing ? T["settings.gitacct.edit_title"] : T["settings.gitacct.add_title"]),
       el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
+    // What nearly everybody fills in, then what few do -- another server, a
+    // name to show, a commit identity -- folded under one line, open when any
+    // of it is already written so nothing written is out of sight
     el("div", {class:"mbody"},
       field(T["settings.gitacct.name"], nameIn, editing ? T["settings.gitacct.name_fixed"] : T["settings.gitacct.name_hint"]),
-      field(T["settings.gitacct.shown"], labelIn, T["settings.gitacct.shown_hint"]),
-      field(T["settings.gitacct.host"], hostIn, T["settings.gitacct.host_hint"]),
       field(T["settings.gitacct.method"], method, null),
-      ghNote, loginField, keyField, tokenField,
-      field(T["settings.gitacct.user"], userIn, T["settings.gitacct.user_hint"]),
-      field(T["settings.gitacct.mail"], mailIn, null),
-      field(T["settings.gitacct.owners"], ownersIn, T["settings.gitacct.owners_hint"])),
+      ghNote, keyField, tokenField,
+      field(T["settings.gitacct.owners"], ownersIn, T["settings.gitacct.owners_hint"]),
+      foldMore(T["settings.gitacct.more"], !!(a.label || a.host || a.login || a.user_name || a.user_email),
+        field(T["settings.gitacct.shown"], labelIn, T["settings.gitacct.shown_hint"]),
+        field(T["settings.gitacct.host"], hostIn, T["settings.gitacct.host_hint"]),
+        loginField,
+        field(T["settings.gitacct.user"], userIn, T["settings.gitacct.user_hint"]),
+        field(T["settings.gitacct.mail"], mailIn, null))),
     el("div", {class:"mfoot"},
       editing
         ? el("button", {class:"danger", onclick: async () => {

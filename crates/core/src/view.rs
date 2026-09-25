@@ -571,6 +571,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         remote_list: ui.remote_list.clone(),
         far_ports: ui.far_ports.clone(),
         machine_ais: ui.machine_ais.clone(),
+        git_accounts: ui.git_accounts.clone(),
         project_home: ui.project_home.clone(),
         // Held by the settings server, which is where the page says it
         branch_next: crate::webui::branch_next(),
@@ -1655,6 +1656,9 @@ pub struct Ui {
     pub far_ports: Option<crate::uistate::FarPortsState>,
     /// The AIs a MicroVM can be given
     pub machine_ais: Vec<crate::uistate::MachineAiChoice>,
+    /// The app's own git accounts, for the dialog that asks which one a
+    /// MicroVM signs in as
+    pub git_accounts: Vec<crate::uistate::GitAccountChoice>,
     /// Where a cloned or new project goes by default
     pub project_home: String,
     /// The Assistant AI setting, as its command

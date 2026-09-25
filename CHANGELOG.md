@@ -95,6 +95,10 @@ once it reaches its first tagged release.
   what comes next by itself: the project's rules after a clone, the worktree
   dialog after "Save and continue". An install is not run again on a machine
   that has it.
+- **"Clone onto a MicroVM" asks which git account the machine signs in as**,
+  on screen: the app's accounts, the ones for the address's owner first and
+  the first of them chosen, and this PC's git last -- two accounts can be for
+  one owner, and which one is not decided behind the dialog.
 - **A small MicroVM is given a swap file.** The service's plain image has half
   a gigabyte of memory, on which an installer that unpacks in memory was killed
   partway through. A checkout made on a machine with less than a gigabyte gets
@@ -126,6 +130,11 @@ once it reaches its first tagged release.
   everywhere, and its minutes are the minutes before it pauses.
 - **"Where it runs" is asked on every PC**, with the machines the project is
   checked out on, the ones it could be, and a MicroVM to add.
+- **Adding a git account asks for the name, the sign-in and the owners.** The
+  display name, the server, the user name and the commit name and email are
+  under one line, "More", open only when one of them is already written. The
+  name is what the app refers to the account by; the display name is what the
+  screen calls it, and says so.
 - **The tools on a MicroVM trust its own certificates.** The sign-in to the
   git server is carried on a certificate of the service's that the machine's
   store holds; Node and installers with their own lists refused it, so an AI

@@ -279,6 +279,11 @@ pub struct AddAsk {
     /// For a clone onto a MicroVM: the AI installed on its machine, by its
     /// command, or `none`
     pub ai: String,
+    /// For a clone onto a MicroVM: the git account it signs in to the server
+    /// as -- one of the app's by name, or [`crate::config::THIS_PC`] for the
+    /// way git on this PC signs in. Empty is one the app proposes for the
+    /// address's owner, which an older board sends
+    pub account: String,
 }
 
 impl Mailbox {
