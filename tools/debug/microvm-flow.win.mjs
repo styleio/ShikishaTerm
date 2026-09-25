@@ -256,7 +256,7 @@ try {
   check((await step()).name === 'Claude Code' && (await step()).folder === CHECKOUT, 'the step is about the checkout\'s Claude: ' + JSON.stringify(await step()));
   await until(() => board.run('(() => { const t = (S.tabs || []).find(x => x.index === S.active); return !!t && t.name === "claude" && (S.groups || [])[t.group] && (S.groups || [])[t.group].folder === ' + JSON.stringify(CHECKOUT) + '; })()'),
     'the checkout\'s Claude tab in front', 30000);
-  await until(() => board.run('(document.querySelector("#login .lmirror") || {children:[]}).children.length > 0'), 'the checkout\'s terminal mirrored in the step', 60000);
+  await until(() => board.run('/Claude/.test((document.querySelector("#login .lmirror") || {textContent:""}).textContent)'), 'the checkout\'s Claude mirrored in the step', 90000);
   check(await board.run('document.querySelector("#login .lstrong").textContent.includes("ログインしてください")'), 'the ask is said, and said first');
   check(await board.run('!document.getElementById("loginnext").disabled'), 'and the way on is open without it');
   await board.shot('2c-login');

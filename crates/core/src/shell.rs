@@ -8612,6 +8612,10 @@ function checkoutAiTab(checkout, ai) {
 // since a key given another way is a sign-in this cannot see
 let loginSeen = 0;
 let loginSelected = "";
+// Whether the checkout's tab is in front and a frame of it has arrived. The
+// pane keeps the last tab's picture until the new one draws, and a copy of
+// that in the step would be a terminal that is not the one asked about
+let loginLive = false;
 function drawLogin() {
   const box = document.getElementById("login");
   if (!box) return;
@@ -8620,13 +8624,14 @@ function drawLogin() {
     if (!box.hidden) { box.hidden = true; box.textContent = ""; }
     loginSeen = 0;
     loginSelected = "";
+    loginLive = false;
     return;
   }
   const tab = checkoutAiTab(st.folder, st.ai);
   const mark = st.folder + "\u001f" + st.seq;
   if (tab && loginSelected !== mark) {
     if (tab.index !== S.active) send({kind:"select", tab: tab.index});
-    else loginSelected = mark;
+    else { loginSelected = mark; loginLive = false; }
   }
   const say = k => (T[k] || "").replace("{ai}", st.name);
   if (loginSeen !== st.seq) {
@@ -8647,7 +8652,6 @@ function drawLogin() {
         el("button", {type:"button", class:"primary", id:"loginnext",
           onclick:() => send({kind:"login", folder: st.folder, act:"next"})}, T["tui.login.next"] || ""))));
     box.hidden = false;
-    loginMirror();
     // Keys go to the terminal behind, as they do with nothing open
     if (!REMOTE) kbd.focus();
   }
@@ -8662,17 +8666,29 @@ function drawLogin() {
   }
 }
 // What the pane behind is showing, copied into the step: the same rows,
-// the same markup, each time a frame arrives
+// the same markup, each time a frame arrives -- once the frames are the
+// checkout's tab's, which is after it was brought in front
 function loginMirror() {
   const box = document.getElementById("login");
   if (!box || box.hidden) return;
+  if (!loginSelected) return;
+  loginLive = true;
   const m = box.querySelector(".lmirror");
   const s = document.getElementById("screen");
-  if (!m || !s || m.innerHTML === s.innerHTML) return;
-  // The prompt is at the bottom of a terminal, so the mirror stays pinned
-  // there -- unless the reader scrolled up to look at something above
+  if (!m || !s || !loginLive) return;
+  // The rows down to the last one with something on it. A terminal is as
+  // tall as the pane, and an AI's sign-in screen uses the top of it: the
+  // blank rows under it would put the words out of view once the mirror is
+  // pinned to its bottom, which it is, because a prompt is at the bottom of
+  // what is written -- unless the reader scrolled up to look at something
+  const rows = s.children;
+  let last = rows.length - 1;
+  while (last >= 0 && !rows[last].textContent.trim()) last--;
+  let html = "";
+  for (let i = 0; i <= last; i++) html += rows[i].outerHTML;
+  if (m.innerHTML === html) return;
   const nearBottom = m.children.length === 0 || (m.scrollHeight - m.clientHeight - m.scrollTop) <= 24;
-  m.innerHTML = s.innerHTML;
+  m.innerHTML = html;
   if (nearBottom) m.scrollTop = m.scrollHeight;
 }
 
