@@ -1,0 +1,265 @@
+/**
+ * A project on this PC worked on a server over SSH as well, through the
+ * running app's own window and a real server.
+ *
+ * What a person does, in order:
+ *
+ *   1. the worktree dialog lists the server under "Where it runs", saying the
+ *      project has no checkout there yet
+ *   2. choosing it opens the add-a-project dialog on that server's folders,
+ *      for this project; the folder chosen there is written down as the
+ *      project's checkout on that machine
+ *   3. the dialog comes back on that server, and the worktree is made there,
+ *      beside the checkout as the server's default placement says
+ *   4. the project's rules page lists where worktrees go on that server, and
+ *      "beside the checkout" is a press away
+ *
+ * Every step is checked against config/config.json and the server itself.
+ *
+ *     cargo build
+ *     node tools/debug/ssh-flow.win.mjs
+ *
+ * Needs Windows, Node, git, the npm package ssh2 (installed into target/ on
+ * the first run), and in the main checkout's .private/.env: SSH_TEST_HOST,
+ * SSH_TEST_PORT, SSH_TEST_USER, SSH_TEST_PASSWORD (or SSH_TEST_KEY) and
+ * SSH_TEST_REPO -- a git repository on that server kept for this check, with
+ * one commit. The branches and worktrees it makes there are removed on the
+ * way out. Isolated the way worktree-rules.win.mjs is.
+ */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+
+const ROOT = path.resolve(import.meta.dirname, '..', '..');
+const SHOTS = path.join(ROOT, 'target', 'shots');
+const RUN = path.join(os.tmpdir(), 'sk-ssh');
+const APP = path.join(RUN, 'app');
+const LOCAL = path.join(RUN, 'localappdata');
+const CONFIG = path.join(APP, 'config', 'config.json');
+const SECRETS = path.join(APP, 'config', 'secrets.json');
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const die = (why) => { console.error(why); process.exit(2); };
+let failures = 0;
+const check = (ok, what) => { console.log((ok ? '  PASS ' : '  FAIL ') + what); if (!ok) failures += 1; };
+const ps = (...args) => spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', ...args], { encoding: 'utf8' });
+const stopApp = () => ps('-Command',
+  `Get-Process -Name 'SHIKISHA-TERM' -ErrorAction SilentlyContinue | ` +
+  `Where-Object { $_.Path -and $_.Path -like '${RUN}\\*' } | ` +
+  `ForEach-Object { & taskkill.exe /PID $_.Id /T /F 2>&1 | Out-Null }`);
+
+// The private settings live beside the main checkout, whichever worktree runs this
+const MAIN = path.dirname(spawnSync('git', ['-C', ROOT, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' }).stdout.trim());
+const dotenv = Object.fromEntries(fs.readFileSync(path.join(MAIN, '.private', '.env'), 'utf8')
+  .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#') && l.includes('='))
+  .map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim().replace(/^"|"$/g, '')]));
+const HOST = dotenv.SSH_TEST_HOST, PORT = Number(dotenv.SSH_TEST_PORT || 22), USER = dotenv.SSH_TEST_USER;
+const PASSWORD = dotenv.SSH_TEST_PASSWORD, KEY = dotenv.SSH_TEST_KEY, REPO = (dotenv.SSH_TEST_REPO || '').replace(/\/+$/, '');
+if (!HOST || !USER || !REPO || !(PASSWORD || KEY)) die('SSH_TEST_HOST, SSH_TEST_USER, SSH_TEST_REPO and a password or key are needed in .private/.env');
+const NAME = REPO.split('/').pop();
+const BRANCH = 'check/ssh';
+const TREE = `${REPO}.branches/check-ssh`;
+
+// The server, asked directly
+const sdk = path.join(ROOT, 'target', 'ssh2-sdk');
+if (!fs.existsSync(path.join(sdk, 'node_modules', 'ssh2'))) {
+  fs.mkdirSync(sdk, { recursive: true });
+  spawnSync('npm', ['init', '-y'], { cwd: sdk, shell: true });
+  spawnSync('npm', ['i', 'ssh2', '--silent'], { cwd: sdk, shell: true });
+}
+const { Client } = createRequire(path.join(sdk, 'package.json'))('ssh2');
+const there = (cmd) => new Promise((resolve) => {
+  const c = new Client();
+  let out = '';
+  c.on('ready', () => c.exec(cmd, (err, st) => {
+    if (err) { c.end(); resolve('ERR ' + err.message); return; }
+    st.on('data', (d) => { out += d; }).stderr.on('data', (d) => { out += d; });
+    st.on('close', () => { c.end(); resolve(out.trim()); });
+  })).on('error', (e) => resolve('ERR ' + e.message))
+    .connect({ host: HOST, port: PORT, username: USER, password: PASSWORD || undefined,
+      privateKey: KEY ? fs.readFileSync(KEY) : undefined, readyTimeout: 20000 });
+});
+const cleanThere = () => there(`cd ${REPO} && for w in $(git worktree list --porcelain | sed -n 's/^worktree //p' | grep -v "^${REPO}$"); do git worktree remove --force "$w"; done; git worktree prune; git branch -D ${BRANCH} 2>/dev/null; rm -rf ${REPO}.branches ${REPO}-ssh; true`);
+
+const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
+if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
+
+console.log('the server: ' + await there('git --version'));
+await cleanThere();
+console.log('starting this checkout\'s build, isolated');
+stopApp();
+await sleep(800);
+fs.rmSync(RUN, { recursive: true, force: true });
+// The same project on this PC: a checkout of its own, named as the one over there is
+const HERE = path.join(RUN, 'work', NAME);
+for (const d of [APP, LOCAL, SHOTS, HERE]) fs.mkdirSync(d, { recursive: true });
+const git = (...args) => {
+  const r = spawnSync('git', ['-c', 'user.name=check', '-c', 'user.email=check@example.com', ...args], { cwd: HERE, encoding: 'utf8' });
+  if (r.status !== 0) die('git ' + args.join(' ') + ' failed:\n' + r.stderr);
+};
+git('init', '-q', '-b', 'main');
+fs.writeFileSync(path.join(HERE, 'README.md'), 'here\n');
+git('add', '-A');
+git('commit', '-q', '-m', 'start');
+
+const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
+if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n' + staged.stdout + staged.stderr);
+fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
+fs.writeFileSync(CONFIG, JSON.stringify({
+  language: 'ja',
+  remote: { enabled: false },
+  hosts: [{ name: 'srv', at: `ssh://${USER}@${HOST}:${PORT}`, ...(KEY ? { key: KEY } : {}) }],
+  desks: [{ name: 'Check', id: 'check', folders: [{ cwd: HERE, tabs: [{ name: 'shell', id: 'shell', command: 'cmd.exe' }] }] }],
+}, null, 2));
+fs.writeFileSync(SECRETS, JSON.stringify({ tokens: PASSWORD ? { 'ssh/host/srv/password': PASSWORD } : {} }, null, 2));
+
+const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA|E2B)/i.test(k)));
+env.LOCALAPPDATA = LOCAL;
+env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=0';
+spawn(path.join(APP, 'SHIKISHA-TERM.exe'), [], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
+
+const portOf = (envName) => {
+  const f = path.join(LOCAL, 'ShikishaTerm', 'webview2', envName, 'EBWebView', 'DevToolsActivePort');
+  if (!fs.existsSync(f)) return null;
+  const n = Number(fs.readFileSync(f, 'utf8').split(/\r?\n/)[0]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+const targetsOf = async (port) => (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json());
+const until = async (test, what, ms = 20000) => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { if (await Promise.resolve().then(test).catch(() => false)) return true; await sleep(250); }
+  throw new Error('timed out waiting for ' + what);
+};
+async function connect(target, name) {
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
+  let id = 0;
+  const waiting = new Map();
+  ws.addEventListener('message', (e) => {
+    const m = JSON.parse(e.data);
+    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
+  });
+  const send = (method, params = {}) => new Promise((res, rej) => {
+    const n = ++id;
+    waiting.set(n, (m) => (m.error ? rej(new Error(method + ': ' + JSON.stringify(m.error))) : res(m.result)));
+    ws.send(JSON.stringify({ id: n, method, params }));
+  });
+  const run = async (expression) => {
+    const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    if (r.exceptionDetails) throw new Error(name + ': ' + (r.exceptionDetails.exception?.description || r.exceptionDetails.text));
+    return r.result.value;
+  };
+  const shot = async (label) => {
+    const r = await send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(SHOTS, `ssh-${label}.png`), Buffer.from(r.data, 'base64'));
+  };
+  return { ws, run, shot };
+}
+
+let boardTarget;
+try {
+  await until(async () => {
+    const p = portOf('shell');
+    if (!p) return false;
+    boardTarget = (await targetsOf(p)).find((t) => t.type === 'page');
+    return !!boardTarget;
+  }, 'the window\'s page and its DevTools port', 40000);
+} catch (e) { stopApp(); die(e.message); }
+const board = await connect(boardTarget, 'the board');
+const saved = () => JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
+const desk = () => saved().desks[0];
+const project = () => (desk().projects || []).find((p) => p.name === NAME) || null;
+let cfg = null;
+
+try {
+  await until(() => board.run('typeof tellCheckout === "function" && !!(S && S.groups && S.groups.length)'), 'the board');
+  const g = `(S.groups || []).find(x => sameFolder(x.folder, ${JSON.stringify(HERE)}))`;
+  await until(() => board.run(`!!${g}`), 'the project here');
+
+  console.log('1. the server is listed, with no checkout of the project yet');
+  await board.run(`openBranch(${g}); true`);
+  await until(() => board.run('!!(S.branch && (S.branch.hosts || []).length)'), 'the dialog\'s answer');
+  const offer = await board.run('S.branch.hosts.find(h => h.name === "srv")');
+  check(offer && offer.kind === 'ssh' && !offer.at, 'the server is offered, with no checkout there: ' + JSON.stringify(offer));
+  check(await board.run('S.branch.here') === true, 'this PC is offered: the project is here');
+  check(await board.run(`document.getElementById("bdest").textContent`) === "この PC▾", "the box says this PC and nothing else: " + await board.run(`document.getElementById("bdest").textContent`));
+  await board.run('document.getElementById("bdest").click(); true');
+  await until(() => board.run('[...document.querySelectorAll(".fmenu .aphost")].some(r => r.textContent.includes("srv"))'), 'the list of places');
+  check(await board.run('[...document.querySelectorAll(".fmenu .aphost")].find(r => r.textContent.includes("srv")).textContent.includes("プロジェクトの場所を指定する")'),
+    'the row says what choosing it will ask');
+  await board.shot('0-dest');
+
+  console.log('2. choosing it asks where the project is over there, from its folders');
+  await board.run('[...document.querySelectorAll(".fmenu .aphost")].find(r => r.textContent.includes("srv")).click(); true');
+  await until(() => board.run('!document.getElementById("addproj").hidden && apStep === "remote" && apHost === "srv"'), 'the folders of the server');
+  check(await board.run(`apFor === ${JSON.stringify(NAME)}`), 'asked for this project');
+  await board.run(`(() => { const i = document.querySelector("#addproj input.apin"); i.value = ${JSON.stringify(REPO)}; i.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter"})); return true; })()`);
+  await until(() => board.run(`!!(S.remote_list && !S.remote_list.busy && S.remote_list.at === ${JSON.stringify(REPO)})`), 'the listing of the repository over there', 60000);
+  check(await board.run('S.remote_list.git') === true, 'the folder over there is a repository');
+  await board.shot('1-remote');
+  await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
+  await until(() => (project()?.homes || []).some((h) => h.host === 'srv'), 'the checkout over there written down as the project\'s', 30000);
+  check(project().homes[0].at === REPO, 'the checkout there is the folder chosen: ' + JSON.stringify(project().homes));
+  check(project().at && path.resolve(project().at) === path.resolve(HERE), 'and the project keeps its checkout here: ' + project().at);
+  const card = (desk().folders || []).find((f) => f.host === 'srv' && f.cwd === REPO);
+  check(!!card && card.project === NAME, 'the folder over there is on the desk, in the project');
+
+  console.log('3. back in the dialog, on that server, and the worktree made there');
+  await until(() => board.run('!document.getElementById("branch").hidden && branchHost === "srv"'), 'the worktree dialog, back on the server', 30000);
+  await board.run(`branchTab = "name"; drawBranchTabs(document.getElementById("branch")); true`);
+  await board.run(`(() => { const q = document.getElementById("bq"); q.value = ${JSON.stringify(BRANCH)}; q.dispatchEvent(new Event("input")); return true; })()`);
+  await until(() => board.run(`!!(S.branch && S.branch.asked === ${JSON.stringify(BRANCH)} && S.branch.folder && S.branch.host === "srv")`), 'the app\'s answer', 30000);
+  const planned = await board.run('S.branch.folder');
+  check(planned === TREE, 'where the server\'s default placement says: ' + planned);
+  check(await board.run('S.branch.line').then((l) => l.includes(`git -C ${REPO} worktree add`)), 'cut from the checkout over there');
+  await board.shot('2-branch');
+  await board.run('document.querySelector("#branch .bgo .go").click(); true');
+  await until(() => (desk().folders || []).some((f) => f.host === 'srv' && f.cwd === TREE), 'the worktree written down', 60000);
+  const made = await there(`git -C ${TREE} branch --show-current`);
+  check(made === BRANCH, 'git over there is on the branch: ' + made);
+  check((desk().folders || []).find((f) => f.cwd === TREE).project === NAME, 'the worktree is in the project');
+
+  console.log('4. the rules page says where worktrees go on the server');
+  await board.run(`openSettings("project-rules", true, ${JSON.stringify(HERE)}); true`);
+  let cfgTarget;
+  await until(async () => {
+    const p = portOf(path.join('profiles', 'default'));
+    if (!p) return false;
+    cfgTarget = (await targetsOf(p)).find((t) => t.type === 'page' && /section=project-rules/.test(t.url));
+    return !!cfgTarget;
+  }, 'the settings on the project\'s rules', 30000);
+  cfg = await connect(cfgTarget, 'the settings');
+  await until(() => cfg.run('!!document.querySelector("[data-rules=\\"place@srv\\"]")'), 'the server\'s line', 30000);
+  const line = await cfg.run('document.querySelector("[data-rules=\\"place@srv\\"]").closest(".row").textContent');
+  check(line.includes('srv でのワークツリーの配置先') && line.includes('{origin_folder}.branches') && line.includes(REPO), 'the line says where, as written, and from which checkout: ' + line);
+  check(await cfg.run(`(() => { const rows = [...document.querySelectorAll("#project-rules .rulesrow")].map(r => r.id || r.textContent.slice(0, 12)); return rows.indexOf("project-place") < rows.findIndex(t => t.startsWith("srv")); })()`), "this PC's place comes before the server's");
+  await cfg.run('document.querySelector("[data-rules=\\"place@srv\\"]").click(); true');
+  await until(() => cfg.run('!!document.querySelector(".rulesedit .placequick")'), 'the place opened for changing');
+  await cfg.run('[...document.querySelectorAll(".rulesedit .placequick button")].find(b => b.textContent === "元のフォルダの隣").click(); true');
+  await cfg.shot('3-rules');
+  await cfg.run('save(); true');
+  await until(() => project().homes[0].placement === '{origin_folder}/..', 'the placement written for the server', 20000);
+  check(true, 'beside the checkout is a press away, and saved as written');
+  try { cfg.ws.close(); } catch {}
+  cfg = null;
+  // The next worktree on the server goes where the rule now says
+  await board.run(`openBranch(${g}); branchHost = "srv"; drawBranch(); askBranch(); true`);
+  await board.run(`branchTab = "name"; drawBranchTabs(document.getElementById("branch")); true`);
+  await board.run(`(() => { const q = document.getElementById("bq"); q.value = "check/next"; q.dispatchEvent(new Event("input")); return true; })()`);
+  // Asked again once the saved rules are read in, as the dialog does by itself
+  await until(() => board.run(`!!(S.branch && S.branch.asked === "check/next" && S.branch.host === "srv" && S.branch.folder === ${JSON.stringify(REPO + "-check-next")})`), "the answer with the new rule", 30000).catch(() => {});
+  check(await board.run('S.branch.folder') === `${REPO}-check-next`, 'the next goes beside the checkout, named for it: ' + await board.run('S.branch.folder'));
+  await board.run('closeBranch(); true');
+} catch (e) {
+  check(false, e.message);
+} finally {
+  try { board.ws.close(); } catch {}
+  try { cfg && cfg.ws.close(); } catch {}
+  stopApp();
+  await cleanThere();
+  console.log('  what it made on the server is removed: ' + await there(`cd ${REPO} && git worktree list | wc -l && git branch --list 'check/*' | wc -l`).then((s) => s.replace(/\s+/g, ' ')));
+}
+console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');
+process.exit(failures ? 1 : 0);

@@ -117,7 +117,18 @@ fn add_remote_to_desk(desk: Option<&config::Desk>, host: &str, at: &str, project
     });
     let home = config::ProjectHome { host: host.to_string(), at: at.to_string(), ..Default::default() };
     let desk_id = desk.map(|w| w.id.clone()).unwrap_or_default();
-    config::set_project_home(&desk_id, &project, &home, None).map_err(|e| format!("{e:#}"))?;
+    // A project worked out from its checkout here, and not written down yet,
+    // is written down with that checkout -- or its folders here would stop
+    // being its folders
+    let here = desk.and_then(|w| {
+        w.folders
+            .iter()
+            .filter(|f| f.host.is_none())
+            .filter_map(|f| f.cwd.as_deref().and_then(crate::repo::main_checkout))
+            .find(|m| m.file_name().is_some_and(|n| n.to_string_lossy() == project))
+            .map(|m| m.display().to_string().replace('\\', "/"))
+    });
+    config::set_project_home(&desk_id, &project, &home, here.as_deref()).map_err(|e| format!("{e:#}"))?;
     config::set_folder_far(&desk_name, std::path::Path::new(at), host, Some(&project), None).map_err(|e| format!("{e:#}"))?;
     Ok(Added::New(i18n::tp("msg.project.remote_added", &[("name", &name), ("host", host)])))
 }

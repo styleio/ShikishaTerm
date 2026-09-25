@@ -12310,13 +12310,14 @@ function rulesCard(desk, p) {
   c.append(prefixRow);
   if (rulesOpen(p, "prefix")) c.append(prefixEditor(desk, p));
 
-  // Where its worktrees go on each other machine it is checked out on
-  for (const home of e.homes || []) c.append(...farPlaceRows(desk, p, home, change, now, ruled));
+  // Where its worktrees go on each other machine it is checked out on: after
+  // this PC's, where there is a checkout here
+  const farRows = () => (e.homes || []).flatMap(home => farPlaceRows(desk, p, home, change, now, ruled));
 
   // Where its folders go, and what it inherits, are read from its checkout
   // here. A project checked out only on other machines has said all there
-  // is to say above
-  if (!(p.at || "").trim() && (e.homes || []).length) return c;
+  // is to say with where they go over there
+  if (!(p.at || "").trim() && (e.homes || []).length) { c.append(...farRows()); return c; }
   if (!(p.at || "").trim()) {
     c.append(el("div", {class:"hint"}, T["settings.place.no_at"]),
       el("div", {class:"row"}, el("button", {onclick:() => goProjectSection(p.key, "basic")}, T["settings.place.set_at"])));
@@ -12327,6 +12328,7 @@ function rulesCard(desk, p) {
   placeRow.id = "project-place";
   c.append(placeRow);
   if (rulesOpen(p, "place")) c.append(placeEditor(desk, p, j));
+  c.append(...farRows());
 
   const inheritRow = ruled(row(T["settings.bring.title"], now(inheritNow(desk, p)),
     el("button", {class:"quiet", onclick:() => inheritAiDialog(desk, p)}, T["settings.inherit.ai.button"]),
@@ -12346,19 +12348,21 @@ function farPlaceRows(desk, p, home, change, now, ruled) {
   const made = (h.kind || "").trim().toLowerCase() === "e2b";
   const part = "place@" + home.host;
   const spec = made ? FAR_DEFAULTS.beside : (home.placement || FAR_DEFAULTS.placement);
+  const said = made ? el("span", {}, T["settings.place.microvm"]) : el("span", {class:"mono"}, spec);
   const r = ruled(row(fill(T["settings.place.on"], {host: home.host}),
-    now(made ? el("span", {}, T["settings.place.microvm"]) : el("span", {class:"mono"}, spec),
-      el("div", {class:"hint mono"}, fill(T["settings.place.checkout_at"], {at: home.at}))),
+    now(said, el("div", {class:"hint mono"}, fill(T["settings.place.checkout_at"], {at: home.at}))),
     made ? null : change(part)));
   if (made || !rulesOpen(p, part)) return [r];
   const input = el("input", {type:"text", class:"mono grow"});
   input.value = spec;
-  // Written to the project's own entry for that machine, as it is typed
+  // Written to the project's own entry for that machine, as it is typed, and
+  // said on its line as it stands
   const put = v => {
     const en = ensureProject(desk, p);
     const it = (en.homes || []).find(x => x.host === home.host);
     if (!it) return;
     if (v.trim()) it.placement = v.trim(); else delete it.placement;
+    said.textContent = v.trim() || FAR_DEFAULTS.placement;
     sel.proj = "p:" + en.name;
     refreshSave();
   };

@@ -8459,9 +8459,9 @@ function drawDest(b, p) {
   if (box.dataset.said !== said) {
     box.dataset.said = said;
     box.textContent = "";
-    box.append(el("span", {class:"nm"}, said),
+    box.append(...[el("span", {class:"nm"}, said),
       offer && offer.kind === "microvm" ? el("span", {class:"at"}, T["tui.branch.dest.microvm"] || "") : null,
-      el("span", {class:"caret"}, "▾"));
+      el("span", {class:"caret"}, "▾")].filter(Boolean));
   }
   const pick = name => { closeFolderMenu(); branchHost = name; box.dataset.said = ""; drawBranch(); askBranch(); };
   box.onclick = e => {

@@ -58,7 +58,9 @@ const stopApp = () => ps('-Command',
   `Where-Object { $_.Path -and $_.Path -like '${RUN}\\*' } | ` +
   `ForEach-Object { & taskkill.exe /PID $_.Id /T /F 2>&1 | Out-Null }`);
 
-const dotenv = Object.fromEntries(fs.readFileSync(path.join(ROOT, '.private', '.env'), 'utf8')
+// The private settings live beside the main checkout, whichever worktree runs this
+const MAIN = path.dirname(spawnSync('git', ['-C', ROOT, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' }).stdout.trim());
+const dotenv = Object.fromEntries(fs.readFileSync(path.join(MAIN, '.private', '.env'), 'utf8')
   .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#') && l.includes('='))
   .map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim().replace(/^"|"$/g, '')]));
 const KEY = dotenv.E2B_API_TOKEN;
