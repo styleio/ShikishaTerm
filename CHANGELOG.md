@@ -43,7 +43,8 @@ once it reaches its first tagged release.
   offered in its place where one can be made and the project is not served
   where it stands.
 - **A project just added goes through its rules on the way to its first
-  worktree.** Keep and continue is one press; a change made there is saved on
+  worktree**, in a dialog over the board -- the settings do not come up
+  around it. Keep and continue is one press; a change made there is saved on
   the same press, and the worktree dialog opens with it.
 
 ### Changed

@@ -189,14 +189,16 @@ try {
     return !!cfgTarget;
   }, 'the settings page on the new project\'s rules', 30000);
   cfg = await connect(cfgTarget, 'the settings');
-  await until(() => cfg.run('!!document.getElementById("project-first")'), 'the way on, above the rules', 30000);
-  check(await cfg.run('sel.psection') === 'rules', 'the page is the worktree creation rules');
-  check(await cfg.run('document.querySelector(".projbanner .nm").textContent') === 'site', 'the column names the project');
-  const pages = await cfg.run('[...document.querySelectorAll("#nav .navitem")].slice(-4).map(b => b.querySelector("span").textContent)');
-  check(pages.length === 4 && pages[0] === 'ワークツリーの作成ルール', 'the project\'s pages are listed under it: ' + pages.join(' / '));
-  check(await cfg.run('!!document.getElementById("project-prefix") && !!document.getElementById("project-place") && !!document.getElementById("project-bring")'),
-    'prefix, placement and the files to inherit are on the page');
-  check(await cfg.run('document.querySelector("#project-first .primary").textContent') === 'このまま次へ', 'nothing changed yet: the press keeps what is there');
+  await until(() => cfg.run('!!rulesFloat && !!document.getElementById("rulesgo")'), 'the rules, as a dialog', 30000);
+  // A dialog over the board, not the settings coming up around it
+  check(await cfg.run('document.body.classList.contains("float") && getComputedStyle(document.querySelector("body > header")).display === "none"'
+    + ' && getComputedStyle(document.querySelector("body > .layout")).display === "none"'), 'the settings page itself is not shown, only the dialog');
+  check(await cfg.run('document.getElementById("floattitle").textContent') === '新しいプロジェクトの、ワークツリーの作成ルール', 'the dialog says what it is about');
+  check(await cfg.run('document.getElementById("floatwhere").textContent') === 'site', 'and which project');
+  check(await cfg.run('!!document.querySelector("#floatbody #project-prefix") && !!document.querySelector("#floatbody #project-place") && !!document.querySelector("#floatbody #project-bring")'),
+    'prefix, placement and the files to inherit are in the dialog');
+  check(await cfg.run('document.getElementById("rulesgo").textContent') === 'このまま次へ', 'nothing changed yet: the press keeps what is there');
+  check(await cfg.run('document.querySelectorAll("#detail > *").length') === 0, 'nothing is drawn under the dialog');
 
   console.log('2. where a worktree would go, and what the lines hold');
   await until(() => cfg.run('!!document.querySelector("#placesaid code") && !!document.querySelector("#placesaid code").textContent'), 'the place a worktree would go', 30000);
@@ -211,6 +213,9 @@ try {
   check(await cfg.run('!!Array.from(document.querySelectorAll("#project-bring button")).find(b => b.textContent === "AIで設定")'), 'the AI is offered on the card');
   check(await cfg.run('!!document.getElementById("project-extra")'), 'files from elsewhere are part of the same card');
   await cfg.shot('1-rules');
+  // The whole window, so the dialog is seen where it stands: over the board
+  ps('-File', path.join(ROOT, 'tools', 'debug', 'shot-window.win.ps1'), '-Under', RUN,
+    '-Out', path.join(SHOTS, 'worktree-rules-1-window.png'));
 
   console.log('2b. asking the AI starts from what to tell it');
   const modals = () => cfg.run('document.querySelectorAll(".modal").length');

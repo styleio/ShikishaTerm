@@ -4837,6 +4837,10 @@ const PAGE: &str = r##"<!doctype html>
  #floatbox .ffoot { display:flex; align-items:center; gap:var(--s3); padding:12px 20px;
    border-top:1px solid var(--line); }
  #floatbox .ffoot .spacer { flex:1; }
+ /* A project's worktree rules as the dialog: two parts, each under its name */
+ #floatbox.rules .fbody { display:flex; flex-direction:column; gap:var(--s5); }
+ #floatbox.rules .fbody > .card > h2 { display:block; }
+ #floatbox.rules .fbody > .card + .card { border-top:1px solid var(--line); border-radius:0; padding-top:var(--s5); }
 </style></head><body>
 
 <div id="floatbox" role="dialog" aria-modal="true" aria-labelledby="floattitle">
@@ -6476,11 +6480,15 @@ function render() {
   renderDetail();
   renderCrumb();
   placeHeadLinks();
+  if (rulesFloat) drawRulesFloat();
 }
 
 function renderDetail() {
   const d = document.getElementById("detail");
   d.textContent = "";
+  // A project's rules standing over the board as a dialog: the page under it
+  // is not drawn, so the dialog's parts are the only ones on the page
+  if (rulesFloat) return;
   if (sel.global) {
     const secs = globalSections();
     const sec = secs.find(s => s.id === sel.section) || secs[0];
@@ -12383,6 +12391,95 @@ function firstFlowBar(desk, p) {
   return bar;
 }
 
+// A project just added, asked about the way the board's + asks what a tab
+// runs: a dialog over the board, holding its worktree rules and nothing else.
+// The settings do not come up around it -- the person is on the board, adding
+// a project, and the rules are one step of that. "More settings" lets the rest
+// of the page in, on the same rules, with the way on still above them
+let rulesFloat = null;
+// Opened for that, the page is the dialog from its first frame: the settings
+// are read and the project worked out before the rules can be drawn, and the
+// whole settings page shown meanwhile is the jump this is here to avoid
+if (new URLSearchParams(location.search).get("section") === "project-first") {
+  document.body.classList.add("float");
+  const box = document.getElementById("floatbox");
+  box.classList.add("rules");
+  document.getElementById("floattitle").textContent = T["settings.first.title"];
+  document.getElementById("floatbody").textContent = "";
+  document.getElementById("floatbody").append(el("div", {class:"hint"}, T["settings.place.asking"]));
+  box.querySelector(".ffoot").textContent = "";
+}
+// Not a project after all (a folder in no repository): the page it is
+function leaveRulesFloat() {
+  rulesFloat = null;
+  document.body.classList.remove("float");
+  document.getElementById("floatbox").classList.remove("rules");
+}
+function enterRulesFloat(di, p) {
+  rulesFloat = {di, key: p.key};
+  document.body.classList.add("float");
+  const box = document.getElementById("floatbox");
+  box.classList.add("rules");
+  document.getElementById("floattitle").textContent = T["settings.first.title"];
+  document.getElementById("floatwhere").textContent = p.name;
+  const go = el("button", {class:"primary", id:"rulesgo"}, T["settings.first.next"]);
+  go.addEventListener("click", async () => {
+    go.disabled = true;
+    try { await projectNext(desks[rulesFloat.di], rulesProject()); } finally { go.disabled = false; }
+  });
+  const foot = box.querySelector(".ffoot");
+  foot.textContent = "";
+  foot.append(
+    el("button", {class:"quiet", onclick: rulesMore}, T["settings.float.more"]),
+    el("div", {class:"spacer"}),
+    el("button", {class:"quiet", onclick:() => { firstFlow = null; closeSettings(); }}, T["settings.first.later"]),
+    go);
+  // The press says what it will do: save first, once something has changed
+  const relabel = setInterval(() => {
+    if (!rulesFloat) { clearInterval(relabel); return; }
+    go.textContent = snapshot() !== savedSnapshot ? T["settings.first.save_next"] : T["settings.first.next"];
+  }, 500);
+  render();
+}
+// The project the dialog is about, as the desk has it now: saving writes the
+// project down, which makes the one worked out from git a different object
+function rulesProject() {
+  if (!rulesFloat) return null;
+  const desk = desks[rulesFloat.di];
+  const {projects} = deskProjects(desk);
+  return projects.find(x => x.key === rulesFloat.key)
+    || projects.find(x => x.entry && sel.proj === x.key) || null;
+}
+// The dialog's body, drawn again whenever the page would be
+function drawRulesFloat() {
+  const body = document.getElementById("floatbody");
+  const p = rulesProject();
+  if (!p) return;
+  const desk = desks[rulesFloat.di];
+  // The project may have been written down since, under a key of its own
+  rulesFloat.key = p.key;
+  const keep = body.scrollTop;
+  const typing = document.activeElement && body.contains(document.activeElement) && typingNow();
+  // Not under somebody's caret: a box redrawn while it is being typed in
+  // takes the text and the caret away
+  if (typing) return;
+  body.textContent = "";
+  body.append(el("div", {class:"hint rulessay"}, T["settings.first.say"]), rulesCard(desk, p));
+  if ((p.at || "").trim()) body.append(ignoreCard(desk, p));
+  body.scrollTop = keep;
+}
+// The whole of the settings, from the dialog: the same rules on their page
+function rulesMore() {
+  if (!rulesFloat) return;
+  const p = rulesProject();
+  leaveRulesFloat();
+  if (window.ipc) { try { window.ipc.postMessage(JSON.stringify({kind:"settingsfull"})); } catch (e) {} }
+  else if (EMBED) toBoard("full");
+  if (p) sel = {desk:sel.desk, proj:p.key, grp:null, tab:null, global:false, psection:"rules"};
+  render();
+  showSelected("center");
+}
+
 // Saved if anything changed, then on to the project's first worktree: the
 // board is told (it owns that dialog), and this page goes
 let stayAfterSave = false;
@@ -15255,6 +15352,10 @@ load().then(() => {
         const home = deskProjects(desks[cur]).projects.find(p => p.folders.includes(gi));
         sel = home ? {desk:cur, proj:home.key, grp:null, tab:null, global:false, psection:projectSectionOf(sec)}
                    : {desk:cur, grp:gi, tab:null, global:false};
+        // A project the board has just added: its rules as a dialog over
+        // the board, not the settings coming up around them
+        if (home && sec === "project-first") { enterRulesFloat(cur, home); return; }
+        if (sec === "project-first") leaveRulesFloat();
         render();
         showSelected("center");
         if (home) markCard();
@@ -15263,6 +15364,9 @@ load().then(() => {
       return;
     }
   }
+  // A project the board added that this desk does not list after all: the
+  // settings as they are, rather than a dialog waiting for nothing
+  if (sec === "project-first") leaveRulesFloat();
   // Asked for a project's page with no folder to say which (the ? panel
   // names the screen, not a project): the desk's first project
   if (projectAsk && !want && desks[cur]) {
