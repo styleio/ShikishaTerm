@@ -276,6 +276,9 @@ pub struct AddAsk {
     /// The project a folder over there is the checkout of, when it was asked
     /// for from one
     pub project: String,
+    /// For a clone onto a MicroVM: the AI installed on its machine, by its
+    /// command, or `none`
+    pub ai: String,
 }
 
 impl Mailbox {

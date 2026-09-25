@@ -17,16 +17,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How far making a project's checkout on a MicroVM has got, or how it ended
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Outcome {
-    /// Still going: the step it is on, as the dialog names it
-    Running(&'static str),
-    /// There: the machine, and where the project is on it
-    Done { sandbox: String, at: String },
-    Failed(String),
-}
-
 /// A project's checkout being made on a MicroVM.
 #[derive(Clone)]
 pub struct Checkout {
@@ -35,12 +25,19 @@ pub struct Checkout {
 }
 
 impl Checkout {
-    /// Makes a machine from `host`'s entry, marked as `project`'s, and clones
-    /// `url` into it. A machine the project could not be put on is thrown
-    /// away: it would be a machine nobody knows about, billed for nothing
-    pub fn start(host: crate::config::HostSpec, url: &str, project: &str, sign_in: crate::config::FarSignIn) -> Checkout {
+    /// Makes a machine from `host`'s entry, marked as `project`'s, clones
+    /// `url` into it, and prepares it as `preparing` says. A machine the
+    /// project could not be put on is thrown away: it would be a machine
+    /// nobody knows about, billed for nothing
+    pub fn start(
+        host: crate::config::HostSpec,
+        url: &str,
+        project: &str,
+        sign_in: crate::config::FarSignIn,
+        preparing: Preparing,
+    ) -> Checkout {
         let job = Checkout {
-            outcome: Arc::new(Mutex::new(Outcome::Running("microvm.making"))),
+            outcome: Arc::new(Mutex::new(Outcome::Running(PHASE_MAKING))),
             stopping: Default::default(),
         };
         let (outcome, stopping) = (job.outcome.clone(), job.stopping.clone());
@@ -65,25 +62,36 @@ impl Checkout {
                 }
                 set(Outcome::Running("microvm.cloning"));
                 let at = checkout_path(&project);
-                let line = format!("git clone --quiet -- '{}' '{}'", url.replace('\'', "'\\''"), at);
-                let ran = crate::e2b::exec(&box_, &line, None).map_err(|e| format!("{e:#}"));
-                match ran {
-                    Ok(r) if r.ok() && !stop() => Ok((box_.id, at)),
-                    Ok(r) => {
-                        let _ = crate::e2b::kill(&key, &box_.id);
-                        match stop() {
-                            true => Err(String::new()),
-                            false => Err(crate::i18n::tp("err.worktree.failed", &[("said", &r.said()), ("command", &line)])),
-                        }
-                    }
+                let clone = vec!["git".into(), "clone".into(), "--quiet".into(), "--".into(), url.clone(), at.clone()];
+                // The clone, then what the machine is prepared with, each in
+                // turn; the first that fails ends it, and the machine goes
+                let mut steps = vec![(PHASE_CLONING, clone)];
+                match preparing.commands(&at) {
+                    Ok(c) => steps.extend(c.into_iter().map(|a| (PHASE_PREPARING, a))),
                     Err(e) => {
                         let _ = crate::e2b::kill(&key, &box_.id);
-                        Err(e)
+                        return Err(e);
                     }
                 }
+                for (phase, argv) in steps {
+                    set(Outcome::Running(phase));
+                    let line = crate::worktree::for_a_shell(&argv);
+                    let ran = crate::e2b::exec(&box_, &line, None).map_err(|e| format!("{e:#}"));
+                    let failed = match ran {
+                        Ok(r) if r.ok() && !stop() => None,
+                        Ok(r) if !stop() => Some(crate::i18n::tp("err.worktree.failed", &[("said", &r.said()), ("command", &line)])),
+                        Ok(_) => Some(String::new()),
+                        Err(e) => Some(e),
+                    };
+                    if let Some(e) = failed {
+                        let _ = crate::e2b::kill(&key, &box_.id);
+                        return Err(e);
+                    }
+                }
+                Ok((box_.id, at))
             })();
             set(match made {
-                Ok((sandbox, at)) => Outcome::Done { sandbox, at },
+                Ok((sandbox, at)) => Outcome::Done { sandbox, at, prepared: preparing.said() },
                 Err(e) => Outcome::Failed(e),
             });
         });
@@ -143,6 +151,383 @@ fn listening(said: &str) -> Vec<u16> {
     ports.sort_unstable();
     ports.dedup();
     ports
+}
+
+/// What a project's checkout on a MicroVM is prepared with, once: the AI
+/// chosen for it, and the lines of the project's machine setup. Every
+/// worktree is a copy of that machine, so this is the one place anything is
+/// installed for all of them
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Preparing {
+    /// The AI, by its command, when one was chosen
+    pub ai: Option<String>,
+    /// The machine setup, one line each, as written
+    pub lines: Vec<String>,
+}
+
+impl Preparing {
+    /// What a project says: its AI (`none` or nothing is none) and its
+    /// machine setup
+    pub fn of(ai: Option<&str>, setup: Option<&str>) -> Preparing {
+        Preparing {
+            ai: ai.map(str::trim).filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case(NO_AI)).map(str::to_string),
+            lines: setup.unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(),
+        }
+    }
+
+    /// The commands, in the order they run, each on screen before it does:
+    /// the machine's own certificates made the ones its tools trust (see
+    /// [`GROUND`]), the AI's install line as its maker writes it, then each
+    /// setup line in the checkout. An AI with no install line is said as that
+    /// rather than skipped in silence
+    pub fn commands(&self, checkout: &str) -> Result<Vec<Vec<String>>, String> {
+        let mut out = vec![vec!["sh".into(), "-lc".into(), GROUND.into()]];
+        if let Some(ai) = &self.ai {
+            let line = crate::profile::install_on_linux(ai)
+                .ok_or_else(|| crate::i18n::tp("err.microvm.no_install", &[("ai", ai)]))?;
+            // Once: a machine that has it is not made to install it again,
+            // which on a small machine is what runs it out of memory
+            out.push(vec!["sh".into(), "-lc".into(), format!("command -v {ai} >/dev/null 2>&1 || {{ {line}; }}")]);
+        }
+        for line in &self.lines {
+            out.push(vec!["sh".into(), "-lc".into(), format!("cd {checkout} && {line}")]);
+        }
+        Ok(out)
+    }
+
+    /// The same, as one text: what is remembered as run on a checkout
+    /// ([`crate::config::ProjectHome::prepared`]) and compared with what the
+    /// project says now
+    pub fn said(&self) -> String {
+        let mut out = format!("ai: {}\n", self.ai.as_deref().unwrap_or(NO_AI));
+        for l in &self.lines {
+            out.push_str(l);
+            out.push('\n');
+        }
+        out
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ai.is_none() && self.lines.is_empty()
+    }
+}
+
+/// What "no AI" is written as
+pub const NO_AI: &str = "none";
+
+/// The ground every MicroVM checkout stands on, laid once before anything is
+/// installed. Two things:
+///
+/// The machine's own certificate store made the one every tool on it trusts.
+/// The sign-in to the git server is put on the machine's requests by the
+/// service on the way out (see [`crate::e2b::SignIn`]), which it does by
+/// answering for that server with a certificate of its own -- one the
+/// machine's store holds. git, curl and Python read that store; Node and
+/// installers built on uv carry lists of their own and refuse it, so an AI
+/// written in Node could not reach GitHub, and an install that downloads from
+/// there stopped. Told to read the store as well, they reach it as git does.
+/// Written for every shell there, a login one and an interactive one.
+///
+/// A swap file on a small machine. The service's plain image has half a
+/// gigabyte of memory, and an installer that unpacks a package in memory --
+/// npm does -- is killed on it partway through, with "Killed" as the whole of
+/// what is said. A gigabyte of swap on its disk lets such an install finish;
+/// a machine with a gigabyte of memory or more is left as it is
+pub const GROUND: &str = "printf '%s\\n' 'export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt' \
+                          'export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt' 'export UV_NATIVE_TLS=1' \
+                          | sudo tee /etc/profile.d/shikisha-certs.sh >/dev/null \
+                          && { grep -q shikisha-certs /etc/bash.bashrc \
+                          || echo '. /etc/profile.d/shikisha-certs.sh # shikisha-certs' | sudo tee -a /etc/bash.bashrc >/dev/null; } \
+                          && { [ -e /swapfile ] || [ \"$(awk '/MemTotal/ {print $2}' /proc/meminfo)\" -ge 1000000 ] \
+                          || { sudo fallocate -l 1G /swapfile && sudo chmod 600 /swapfile && sudo mkswap -q /swapfile && sudo swapon /swapfile; }; }";
+
+/// Prepares a checkout's machine as `preparing` says: each command in turn,
+/// `at_step` told the phase before each, stopping at the first that fails --
+/// in git's and the installer's own words -- or when `stop` says so. Stopped,
+/// the machine keeps what was done so far: an install half done is finished
+/// by running it again, and nothing of the person's is in it to lose
+pub fn prepare(
+    host: &crate::config::HostSpec,
+    checkout: &str,
+    preparing: &Preparing,
+    at_step: &dyn Fn(&'static str),
+    stop: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    let machine = crate::e2b::machine(host).map_err(|e| format!("{e:#}"))?;
+    for argv in preparing.commands(checkout)? {
+        if stop() {
+            return Err(String::new());
+        }
+        at_step(PHASE_PREPARING);
+        let line = argv.last().cloned().unwrap_or_default();
+        let ran = crate::e2b::exec(&machine, &crate::worktree::for_a_shell(&argv), None).map_err(|e| format!("{e:#}"))?;
+        if !ran.ok() {
+            return Err(crate::i18n::tp("err.worktree.failed", &[("said", &ran.said()), ("command", &line)]));
+        }
+    }
+    Ok(())
+}
+
+/// The phases a machine goes through on the board's row: made, the project
+/// cloned into it, prepared with the AI and the machine setup. Each is a
+/// stage of a row of the making kind (`tui.making.stage.<phase>`)
+pub const PHASE_MAKING: &str = "vm_making";
+pub const PHASE_CLONING: &str = "vm_cloning";
+pub const PHASE_PREPARING: &str = "vm_preparing";
+
+/// How far a job on a machine has got, or how it ended. An empty failure is
+/// a job that was stopped
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// Still going: the phase it is on
+    Running(&'static str),
+    /// There: the machine, where the project is on it, and what it was
+    /// prepared with (see [`Preparing::said`])
+    Done { sandbox: String, at: String, prepared: String },
+    Failed(String),
+}
+
+/// A checkout's machine being prepared, on a thread of its own: an install
+/// takes minutes, and the board shows a row for it meanwhile
+#[derive(Clone)]
+pub struct Prepare {
+    outcome: Arc<Mutex<Outcome>>,
+    stopping: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Prepare {
+    /// Prepares the machine `host` names (its instance) at `checkout`
+    pub fn start(host: crate::config::HostSpec, checkout: &str, preparing: Preparing) -> Prepare {
+        let job = Prepare { outcome: Arc::new(Mutex::new(Outcome::Running(PHASE_PREPARING))), stopping: Default::default() };
+        let (outcome, stopping) = (job.outcome.clone(), job.stopping.clone());
+        let checkout = checkout.to_string();
+        std::thread::spawn(move || {
+            let set = |o: Outcome| *outcome.lock().unwrap_or_else(|e| e.into_inner()) = o;
+            let stop = || stopping.load(std::sync::atomic::Ordering::Relaxed);
+            let sandbox = host.instance.clone().unwrap_or_default();
+            let said = preparing.said();
+            set(match prepare(&host, &checkout, &preparing, &|s| set(Outcome::Running(s)), &stop) {
+                Ok(()) => Outcome::Done { sandbox, at: checkout, prepared: said },
+                Err(e) => Outcome::Failed(e),
+            });
+        });
+        job
+    }
+
+    pub fn outcome(&self) -> Outcome {
+        self.outcome.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Asks it to stop after the command it is on
+    pub fn stop(&self) {
+        self.stopping.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A project's checkouts on MicroVMs, each with the machine it is on, as
+/// the settings say now -- what preparing the project means
+pub struct Targets {
+    pub preparing: Preparing,
+    /// Each checkout: the entry naming its machine, and the checkout itself
+    pub homes: Vec<(crate::config::HostSpec, crate::config::ProjectHome)>,
+}
+
+/// What preparing `project` on desk `desk_id` means, from the saved
+/// settings: the AI and the machine setup as written, and every checkout it
+/// has on a MicroVM. A project with none is said as that
+pub fn prepare_targets(desk_id: &str, project: &str) -> Result<Targets, String> {
+    let cfg = crate::config::load().ok_or_else(|| crate::i18n::t("err.config.unreadable"))?;
+    let (desks, _) = cfg.resolve_desks();
+    let desk = desks.iter().find(|d| d.id == desk_id).ok_or_else(|| crate::i18n::tp("err.desk.missing", &[("name", desk_id)]))?;
+    let p = desk.projects.iter().find(|p| p.name == project).ok_or_else(|| crate::i18n::tp("err.project.missing", &[("name", project)]))?;
+    let homes: Vec<(crate::config::HostSpec, crate::config::ProjectHome)> = p
+        .homes
+        .iter()
+        .filter_map(|home| {
+            let host = cfg.hosts.iter().find(|h| h.name == home.host && h.is_made())?;
+            let id = home.sandbox.as_deref()?;
+            Some((host.with_instance(Some(id)), home.clone()))
+        })
+        .collect();
+    if homes.is_empty() {
+        return Err(crate::i18n::tp("err.microvm.no_checkout", &[("name", project)]));
+    }
+    Ok(Targets { preparing: Preparing::of(p.machine_ai.as_deref(), p.machine_setup.as_deref()), homes })
+}
+
+/// One line of a machine setup the assistant AI proposes, with why
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SetupLine {
+    pub command: String,
+    pub reason: String,
+}
+
+/// How long the assistant AI may take to answer
+const ASK_TIMEOUT: Duration = Duration::from_secs(240);
+
+/// The files a project says what it needs in, looked for at its top and one
+/// folder down
+const MANIFESTS: &[&str] = &[
+    "composer.json", "package.json", "requirements.txt", "pyproject.toml", "Pipfile", "Gemfile", "go.mod",
+    "Cargo.toml", "pom.xml", "build.gradle", "Dockerfile", "docker-compose.yml", "compose.yaml",
+    ".devcontainer/devcontainer.json", ".tool-versions", ".nvmrc", ".python-version", "runtime.txt",
+];
+
+/// Where a project's files are read from: its checkout here, else its
+/// checkout on a MicroVM
+enum Source {
+    Here(std::path::PathBuf),
+    There { host: crate::config::HostSpec, at: String },
+}
+
+impl Source {
+    /// A line run over there. Nothing is run here: this PC is not the
+    /// machine the answer is for
+    fn run(&self, line: &str) -> String {
+        match self {
+            Source::Here(_) => String::new(),
+            Source::There { host, at } => crate::e2b::machine(host)
+                .and_then(|m| crate::e2b::exec(&m, &format!("cd '{at}' && {line}"), None))
+                .map(|r| r.out)
+                .unwrap_or_default(),
+        }
+    }
+
+    fn files(&self) -> Vec<String> {
+        let listed = match self {
+            Source::Here(at) => {
+                let mut c = std::process::Command::new("git");
+                c.arg("-C").arg(at).args(["ls-files"]);
+                crate::detach_console(&mut c)
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_default()
+            }
+            Source::There { .. } => self.run("git ls-files"),
+        };
+        listed.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+    }
+
+    fn read(&self, file: &str) -> String {
+        let text = match self {
+            Source::Here(at) => std::fs::read_to_string(at.join(file)).unwrap_or_default(),
+            Source::There { .. } => self.run(&format!("head -c 4000 '{file}'")),
+        };
+        text.chars().take(4000).collect()
+    }
+}
+
+/// The assistant AI's proposal for a project's machine setup: read from its
+/// files -- here, or on its MicroVM checkout -- and, where there is a
+/// checkout on a MicroVM, from what that machine already has. Only a
+/// proposal: the page shows it, and the person saves it or does not
+pub fn propose_setup(desk_id: &str, project: &str, hint: &str, engine: Option<&str>) -> Result<Vec<SetupLine>, String> {
+    let cfg = crate::config::load().ok_or_else(|| crate::i18n::t("err.config.unreadable"))?;
+    let (desks, _) = cfg.resolve_desks();
+    let desk = desks.iter().find(|d| d.id == desk_id).ok_or_else(|| crate::i18n::tp("err.desk.missing", &[("name", desk_id)]))?;
+    let p = desk.projects.iter().find(|p| p.name == project).ok_or_else(|| crate::i18n::tp("err.project.missing", &[("name", project)]))?;
+    let vm = p.homes.iter().find_map(|h| {
+        let host = cfg.hosts.iter().find(|x| x.name == h.host && x.is_made())?;
+        Some(Source::There { host: host.with_instance(Some(h.sandbox.as_deref()?)), at: h.at.clone() })
+    });
+    let here = p.at.as_deref().map(std::path::PathBuf::from).filter(|a| a.is_dir()).map(Source::Here);
+    let source = here.or(vm).ok_or_else(|| crate::i18n::tp("err.microvm.no_checkout", &[("name", project)]))?;
+    let files = source.files();
+    if files.is_empty() {
+        return Err(crate::i18n::t("err.microvm.no_files"));
+    }
+    let manifests: Vec<String> = files
+        .iter()
+        .filter(|f| {
+            let depth = f.matches('/').count();
+            MANIFESTS.iter().any(|m| f.as_str() == *m || (depth == 1 && f.ends_with(&format!("/{m}"))))
+        })
+        .take(8)
+        .map(|f| format!("### {f}\n{}", source.read(f)))
+        .collect();
+    // What the machine has, asked of the machine when there is one
+    let machine = match &source {
+        Source::There { .. } => source.run(
+            "head -2 /etc/os-release; for c in node npm php python3 ruby go java git curl; do printf '%s: ' $c; (command -v $c >/dev/null && $c --version 2>&1 | head -1) || echo missing; done",
+        ),
+        Source::Here(_) => {
+            let first = p.homes.iter().find_map(|h| {
+                let host = cfg.hosts.iter().find(|x| x.name == h.host && x.is_made())?;
+                h.sandbox.as_deref().map(|id| host.with_instance(Some(id)))
+            });
+            match first {
+                Some(h) => Source::There { host: h, at: "/home/user".into() }.run(
+                    "head -2 /etc/os-release; for c in node npm php python3 ruby go java git curl; do printf '%s: ' $c; (command -v $c >/dev/null && $c --version 2>&1 | head -1) || echo missing; done",
+                ),
+                None => String::new(),
+            }
+        }
+    };
+    let machine = match machine.trim() {
+        "" => "Not measured: no machine has been made for this project yet. It will be made from the MicroVM service's base image.".to_string(),
+        m => m.to_string(),
+    };
+    let shown: Vec<&str> = files.iter().take(400).map(String::as_str).collect();
+    let prompt = crate::i18n::fill(
+        crate::asking::MACHINE_ASK,
+        &[
+            ("machine", &machine),
+            ("files", &format!("{}{}", shown.join("\n"), if files.len() > shown.len() { format!("\n(and {} more)", files.len() - shown.len()) } else { String::new() })),
+            ("manifests", &match manifests.is_empty() {
+                true => "(none of the usual files)".to_string(),
+                false => manifests.join("\n\n"),
+            }),
+            ("hint", match hint.trim() {
+                "" => "(nothing)",
+                said => said,
+            }),
+        ],
+    );
+    let system = format!(
+        "{}\n\n{}\n\n{}",
+        crate::asking::MACHINE_WHO,
+        crate::asking::MACHINE_HOW,
+        crate::asking::answer_in(&crate::i18n::language_name())
+    );
+    let shape = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "lines": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}, "reason": {"type": "string"}},
+                    "required": ["command", "reason"]
+                }
+            }
+        },
+        "required": ["lines"]
+    });
+    let said = crate::webui::ask_local_ai_shaped(&prompt, &system, &shape.to_string(), engine, ASK_TIMEOUT)
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(read_setup(&said))
+}
+
+/// The lines of an answer, each once, kept to what can be run on one line
+fn read_setup(said: &str) -> Vec<SetupLine> {
+    let v: serde_json::Value = serde_json::from_str(said.trim())
+        .or_else(|_| {
+            let from = said.find('{').unwrap_or(0);
+            let to = said.rfind('}').map(|i| i + 1).unwrap_or(said.len());
+            serde_json::from_str(&said[from..to])
+        })
+        .unwrap_or_default();
+    let mut out: Vec<SetupLine> = Vec::new();
+    for l in v.get("lines").and_then(|l| l.as_array()).into_iter().flatten() {
+        let command = l.get("command").and_then(|c| c.as_str()).unwrap_or_default().trim().to_string();
+        if command.is_empty() || command.contains('\n') || out.iter().any(|o| o.command == command) {
+            continue;
+        }
+        let reason = l.get("reason").and_then(|r| r.as_str()).unwrap_or_default().trim().to_string();
+        out.push(SetupLine { command, reason });
+    }
+    out.truncate(30);
+    out
 }
 
 /// Where a project is checked out on a MicroVM made for it
@@ -264,6 +649,43 @@ mod tests {
         assert_eq!(listening(netstat), vec![3000]);
         assert!(listening("").is_empty());
         assert_eq!(crate::e2b::public_url("isb1", 3000), "https://3000-isb1.e2b.app");
+    }
+
+    /// What a checkout is prepared with is the AI's install line, then each
+    /// setup line in the checkout, all on screen; "none" is no AI; what is
+    /// remembered as run is the same text however it was written
+    #[test]
+    fn a_checkout_is_prepared_with_its_ai_then_its_setup() {
+        let p = Preparing::of(Some("claude"), Some("  sudo apt-get install -y php-cli \n\n composer --version"));
+        let cmds = p.commands("/home/user/site").unwrap();
+        // First the ground: the machine's tools told to trust its own
+        // certificates, which the sign-in to the git server is carried on,
+        // and a swap file for a small machine
+        assert_eq!(cmds[0], ["sh", "-lc", GROUND]);
+        assert!(GROUND.contains("NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt") && GROUND.contains("/etc/bash.bashrc"));
+        assert!(GROUND.contains("[ -e /swapfile ] ||") && GROUND.contains("swapon /swapfile"), "no swap for a small machine");
+        // The AI as its maker installs it, and not again on a machine that has it
+        assert_eq!(cmds[1], ["sh", "-lc", "command -v claude >/dev/null 2>&1 || { curl -fsSL https://claude.ai/install.sh | bash; }"]);
+        assert_eq!(cmds[2], ["sh", "-lc", "cd /home/user/site && sudo apt-get install -y php-cli"]);
+        assert_eq!(cmds.len(), 4);
+        assert_eq!(p.said(), "ai: claude\nsudo apt-get install -y php-cli\ncomposer --version\n");
+        let none = Preparing::of(Some("none"), None);
+        assert!(none.is_empty() && none.commands("/x").unwrap() == [vec!["sh".to_string(), "-lc".into(), GROUND.into()]]);
+        assert_eq!(none.said(), "ai: none\n");
+        assert!(Preparing::of(Some("nobody-installs-this"), None).commands("/x").is_err(), "an AI with no install line was taken");
+        // The page works out the same text to say whether it has been run
+        let page = crate::webui::page();
+        assert!(page.contains(r#"return "ai: " + (ai || "none") + "\n" + lines.map(l => l + "\n").join("");"#),
+            "the settings page remembers what was run in another shape");
+    }
+
+    /// An answer is read line by line, each once, and a command that is more
+    /// than one line is not taken for one
+    #[test]
+    fn a_proposed_setup_is_read_one_line_each() {
+        let said = r#"Sure: {"lines":[{"command":"sudo apt-get install -y php-cli","reason":"PHP runs it"},{"command":"sudo apt-get install -y php-cli","reason":"again"},{"command":"a\nb","reason":"two"},{"command":"  ","reason":"empty"}]}"#;
+        let lines = read_setup(said);
+        assert_eq!(lines, vec![SetupLine { command: "sudo apt-get install -y php-cli".into(), reason: "PHP runs it".into() }]);
     }
 
     /// A MicroVM fetches over HTTPS, where the sign-in put on its requests

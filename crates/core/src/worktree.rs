@@ -44,6 +44,8 @@ pub struct Plan {
     /// How a MicroVM made for it signs in to the project's git server. Worked
     /// out by the one pressing the button; asked for on the thread that makes it
     pub sign_in: crate::config::FarSignIn,
+    /// What a MicroVM checkout made for it is prepared with, after the clone
+    pub preparing: crate::microvm::Preparing,
 }
 
 /// The machines a making on a MicroVM made, as soon as it made them: the one
@@ -54,6 +56,9 @@ pub struct Plan {
 pub struct Machines {
     pub checkout: Option<String>,
     pub worktree: Option<String>,
+    /// What the checkout's machine was prepared with, when this making made
+    /// it (see [`crate::microvm::Preparing::said`])
+    pub prepared: Option<String>,
 }
 
 impl Plan {
@@ -97,17 +102,24 @@ impl Plan {
     }
 
     /// On a MicroVM with no checkout of the project yet: the clone that makes
-    /// one, on the machine made for it. Run once for the project, and every
-    /// worktree after is cut from what it made
+    /// one, on the machine made for it, and what that machine is prepared
+    /// with. Run once for the project, and every worktree after is cut from
+    /// what it made
     fn checking_out(&self) -> Vec<Vec<String>> {
         match self.host.as_ref() {
-            Some(h) if h.is_made() && h.instance.is_none() => vec![vec![
-                "git".into(),
-                "clone".into(),
-                "--".into(),
-                self.origin.clone(),
-                self.main.display().to_string(),
-            ]],
+            Some(h) if h.is_made() && h.instance.is_none() => {
+                let mut steps = vec![vec![
+                    "git".into(),
+                    "clone".into(),
+                    "--".into(),
+                    self.origin.clone(),
+                    self.main.display().to_string(),
+                ]];
+                // Checked when it was planned: an AI with no install line is
+                // refused there, in words
+                steps.extend(self.preparing.commands(&self.main.display().to_string()).unwrap_or_default());
+                steps
+            }
             _ => Vec::new(),
         }
     }
@@ -326,6 +338,7 @@ pub fn plan_for(
         env,
         project: String::new(),
         sign_in: Default::default(),
+        preparing: Default::default(),
     })
 }
 
@@ -381,6 +394,11 @@ pub fn plan_on(far: &Far, branch: &str, prefix: &str, base: Option<&str>, at: Op
             &[("host", &host.name), ("project", far.project)]
         )),
     };
+    // A checkout about to be made is prepared as the project says; an AI
+    // that cannot be installed there is said now, not halfway through
+    if host.is_made() && instance.is_none() {
+        far.preparing.commands(&checkout).map_err(|e| anyhow::anyhow!(e))?;
+    }
     let folder = match at.map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => p.to_string(),
         // A worktree on a MicroVM is a machine of its own, standing beside the
@@ -409,6 +427,7 @@ pub fn plan_on(far: &Far, branch: &str, prefix: &str, base: Option<&str>, at: Op
         env: far.env.clone(),
         project: far.project.to_string(),
         sign_in: far.sign_in.clone(),
+        preparing: far.preparing.clone(),
     })
 }
 
@@ -426,6 +445,8 @@ pub struct Far<'a> {
     pub origin: &'a str,
     pub env: Option<crate::devcontainer::Env>,
     pub sign_in: crate::config::FarSignIn,
+    /// What a checkout made for it on a MicroVM is prepared with
+    pub preparing: crate::microvm::Preparing,
 }
 
 /// Where a MicroVM fetches a project from: the project's own remote, spelled
@@ -512,6 +533,9 @@ pub enum Stage {
     SettingUp = 2,
     /// Asked to stop, and taking back what was made so far
     Stopping = 3,
+    /// A MicroVM checkout being made for the project: its machine given the
+    /// AI and the machine setup
+    Installing = 4,
 }
 
 impl Stage {
@@ -522,6 +546,7 @@ impl Stage {
             Stage::Creating => "creating",
             Stage::SettingUp => "setting_up",
             Stage::Stopping => "stopping",
+            Stage::Installing => "installing",
         }
     }
     fn of(n: u8) -> Stage {
@@ -529,6 +554,7 @@ impl Stage {
             1 => Stage::Creating,
             2 => Stage::SettingUp,
             3 => Stage::Stopping,
+            4 => Stage::Installing,
             _ => Stage::Preparing,
         }
     }
@@ -655,7 +681,10 @@ fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> boo
                 };
                 let box_ = crate::e2b::create(&key, &asking)?;
                 let here = Plan { host: Some(host.with_instance(Some(&box_.id))), ..plan.clone() };
-                for argv in plan.checking_out() {
+                // The clone, then what the machine is prepared with: said on
+                // the row as each, since the second takes minutes
+                for (n, argv) in plan.checking_out().into_iter().enumerate() {
+                    at_stage(if n == 0 { Stage::Creating } else { Stage::Installing });
                     if let Err(e) = run_for(&here, &argv) {
                         // A machine the project could not be put on is no checkout
                         let _ = crate::e2b::kill(&key, &box_.id);
@@ -668,6 +697,7 @@ fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> boo
             slot.publish(got.as_ref().map(String::clone).map_err(|e| format!("{e:#}")));
             let id = got?;
             noted.checkout = Some(id.clone());
+            noted.prepared = Some(plan.preparing.said());
             made(&noted);
             id
         }
@@ -2910,7 +2940,7 @@ pub fn run_for(plan: &Plan, argv: &[String]) -> Result<()> {
 /// Not this machine's shell: the far end is a server, and single quotes are
 /// what a server's shell takes literally. Only where they are needed, so an
 /// ordinary path stays readable on screen and in the log
-fn for_a_shell(argv: &[String]) -> String {
+pub fn for_a_shell(argv: &[String]) -> String {
     argv.iter()
         .map(|a| match a.contains(' ') || a.contains('\'') || a.contains('"') {
             // A server's shell, not this one: single quotes, and a single
@@ -3078,7 +3108,7 @@ mod tests {
         project: &'a str,
         origin: &'a str,
     ) -> Far<'a> {
-        Far { host, home, project, origin, env: None, sign_in: Default::default() }
+        Far { host, home, project, origin, env: None, sign_in: Default::default(), preparing: Default::default() }
     }
 
     /// A place that lands inside the checkout is refused before anything is
@@ -3235,6 +3265,9 @@ mod tests {
             steps,
             [
                 vec!["git", "clone", "--", "https://example.test/p.git", "/home/user/Polite-App"],
+                // The machine's tools told to trust its own certificates, as
+                // every checkout made on a MicroVM is
+                vec!["sh", "-lc", crate::microvm::GROUND],
                 vec!["git", "-C", "/home/user/Polite-App", "fetch", "--quiet", "origin"],
                 vec![
                     "git", "-C", "/home/user/Polite-App", "worktree", "add", "--no-track", "-b", "polite-marmot",
@@ -3243,7 +3276,7 @@ mod tests {
             ]
         );
         // All of them are what the person reads
-        assert_eq!(p.line().lines().count(), 3, "not all of them are visible: {}", p.line());
+        assert_eq!(p.line().lines().count(), 4, "not all of them are visible: {}", p.line());
         assert_eq!(p.project, "Polite App", "the machine would not be marked with its project");
 
         // Nowhere to fetch from is a refusal, not a clone of nothing
@@ -3486,6 +3519,7 @@ tools/conpty.ps1"));
             env: None,
             project: String::new(),
             sign_in: Default::default(),
+            preparing: Default::default(),
         };
         assert_eq!(
             plan.argv(),

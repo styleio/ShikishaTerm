@@ -121,9 +121,42 @@ pub struct ProfileFile {
     pub interrupt: Vec<String>,
     /// Where the person reads how to install this CLI, for a tab that could
     /// not start because it is not on this PC. The maker's own page: this app
-    /// does not install anybody's program for them
+    /// does not install anybody's program on this PC for them
     #[serde(default)]
     pub install_url: Option<String>,
+    /// The line that installs this CLI on a fresh Linux machine, as its maker
+    /// says to: what a MicroVM made for a project is given when somebody
+    /// chose this AI for it. A machine this app made for the person, on their
+    /// word, is not their PC -- and a machine with no AI on it is a machine
+    /// nobody works in. Absent is an AI that is not offered there
+    #[serde(default)]
+    pub install_on_linux: Option<String>,
+}
+
+/// An AI that can be installed on a MicroVM: its command, what it is called,
+/// and the line that installs it
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct MachineAi {
+    pub key: String,
+    pub name: String,
+    pub install: String,
+}
+
+/// The AIs a MicroVM can be given, as the profiles say, in their order
+pub fn machine_ais() -> Vec<MachineAi> {
+    files()
+        .into_iter()
+        .filter_map(|pf| {
+            let key = pf.command_match.first()?.trim().to_string();
+            let install = pf.install_on_linux?.trim().to_string();
+            (!key.is_empty() && !install.is_empty()).then_some(MachineAi { key, name: pf.name, install })
+        })
+        .collect()
+}
+
+/// The line that installs the AI a command names, on a MicroVM
+pub fn install_on_linux(key: &str) -> Option<String> {
+    machine_ais().into_iter().find(|a| a.key.eq_ignore_ascii_case(key.trim())).map(|a| a.install)
 }
 
 /// Where to read how to install the program a command starts, when a profile

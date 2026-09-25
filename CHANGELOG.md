@@ -74,6 +74,32 @@ once it reaches its first tagged release.
 - **Public URLs.** A folder on a MicroVM lists, from its menu, the ports a
   server started there listens on, each with the address it answers on from
   anywhere, a press to copy.
+- **A MicroVM comes with the AI, and with what the project needs.** "Clone
+  onto a MicroVM" -- and the worktree dialog, when it makes a project's first
+  checkout on one -- has "AI to install": Claude Code, Codex CLI, Gemini CLI
+  or Aider, installed on the checkout's machine with its maker's own command,
+  the assistant AI chosen from the start. The project's Setup page has
+  "MicroVM setup": the AI, and a machine setup of one command per line (a
+  language, a server, a database), which "Set up with AI" writes from the
+  project's files and what the machine already has, shown before anything
+  is saved. It runs once on the checkout's machine -- when the checkout is
+  made, when the project goes on from its rules, or on "Save and run on the
+  MicroVM" -- and every worktree copied after has it. The page says, for each
+  machine, whether it has what is written now.
+- **Work on a MicroVM is a row on the board, not a page held.** A project
+  being cloned onto one, and a checkout's machine being prepared, each stand
+  as a row under the project -- "Making the MicroVM", "Cloning the repository
+  onto the MicroVM", "Installing the AI and the machine setup" -- with a ✕ to
+  stop and, failed, Try again and Close, the way a worktree being made does.
+  The dialog or the settings close the moment it starts, and the board opens
+  what comes next by itself: the project's rules after a clone, the worktree
+  dialog after "Save and continue". An install is not run again on a machine
+  that has it.
+- **A small MicroVM is given a swap file.** The service's plain image has half
+  a gigabyte of memory, on which an installer that unpacks in memory was killed
+  partway through. A checkout made on a machine with less than a gigabyte gets
+  a gigabyte of swap on its disk, once, before anything is installed. Claude
+  Code is installed with its maker's own installer, which needs no Node.
 - **A project checked out on a server is one project with its checkout
   there**: the folder added over SSH is written as the project's checkout on
   that machine, and where its worktrees go there is on the project's rules
@@ -100,6 +126,13 @@ once it reaches its first tagged release.
   everywhere, and its minutes are the minutes before it pauses.
 - **"Where it runs" is asked on every PC**, with the machines the project is
   checked out on, the ones it could be, and a MicroVM to add.
+- **The tools on a MicroVM trust its own certificates.** The sign-in to the
+  git server is carried on a certificate of the service's that the machine's
+  store holds; Node and installers with their own lists refused it, so an AI
+  written in Node could not reach GitHub and an installer downloading from it
+  stopped. Every checkout made there now points them at the machine's store.
+- A command run on a MicroVM -- a clone, an install -- may take up to twenty
+  minutes rather than one.
 
 ### Removed
 - The warning under a line set to Link. It read as "deleting the worktree

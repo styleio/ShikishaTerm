@@ -69,6 +69,17 @@ fn agent() -> ureq::Agent {
         .new_agent()
 }
 
+/// How long one command run in a machine may take before it is given up
+/// on: a clone of a large project, or a language installed, takes minutes
+const COMMAND_WAIT: Duration = Duration::from_secs(20 * 60);
+
+/// How often, in seconds, the agent in a machine is asked to say it is still
+/// there on a stream that has nothing else to say. A command that prints
+/// nothing for a minute -- an install told to be quiet -- or a terminal left
+/// alone otherwise has its connection dropped on the way, and the end of the
+/// command is never heard. The service's own client asks the same
+const KEEPALIVE: &str = "50";
+
 /// What a new machine is asked for with.
 ///
 /// Every one of them pauses when its time runs out rather than being thrown
@@ -374,8 +385,9 @@ pub fn exec(sandbox: &Sandbox, command: &str, cwd: Option<&str>) -> Result<crate
         "pty": serde_json::Value::Null,
         "stdin": false,
     });
-    let mut req = agent()
+    let mut req = waiting(COMMAND_WAIT.as_millis() as u64)
         .post(&format!("{SANDBOX}/process.Process/Start"))
+        .header("Keepalive-Ping-Interval", KEEPALIVE)
         .header("Connect-Protocol-Version", "1")
         .header("Content-Type", "application/connect+json")
         .header("E2b-Sandbox-Id", &sandbox.id)
@@ -708,6 +720,7 @@ fn listen(
     let sent = serde_json::to_vec(&body).map(|b| frame(&b));
     let resp = match sent {
         Ok(b) => headed(agent.post(&format!("{SANDBOX}/process.Process/Start")), sandbox)
+            .header("Keepalive-Ping-Interval", KEEPALIVE)
             .header("Content-Type", "application/connect+json")
             .send(b),
         Err(e) => {

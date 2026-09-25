@@ -48,6 +48,17 @@ pub struct ProjectSpec {
     /// and this is not asked for
     #[serde(default)]
     pub setup: Option<String>,
+    /// The AI a MicroVM made for this project is given, by its command
+    /// (`claude`), or `none`. Installed on the checkout's machine once, when
+    /// it is made; every worktree copied from it has it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_ai: Option<String>,
+    /// What a MicroVM made for this project needs installed -- a language, a
+    /// server, a tool -- one line each, run on the checkout's machine once,
+    /// when it is made or when somebody says to. Every worktree copied from
+    /// it has it. What each worktree needs of its own (`npm ci`) is `setup`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_setup: Option<String>,
     /// The git account the column beside a folder of this project fetches,
     /// pulls and pushes with, and reads pull request numbers with: one of the
     /// app's `git_accounts` by name, or [`THIS_PC`]. Absent until somebody
@@ -116,6 +127,12 @@ pub struct ProjectHome {
     /// For a MicroVM: which one of its machines holds the checkout
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<String>,
+    /// For a MicroVM: what was last run on the checkout's machine to prepare
+    /// it -- the AI and the machine setup, as they were written then (see
+    /// [`crate::microvm::Preparing::said`]). The settings compare it with
+    /// what is written now, and say when the machine has not had it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared: Option<String>,
 }
 
 impl ProjectSpec {
@@ -3480,6 +3497,12 @@ pub fn drop_project_home(desk_id: &str, project: &str, host: &str) -> Result<()>
 /// Writes the git account a project signs in with, as the project's own: a
 /// project written down by name, with no folder on this PC to find it by
 pub fn set_project_git_account(desk_id: &str, project: &str, account: &str) -> Result<()> {
+    set_project_value(desk_id, project, "git_account", Some(account))
+}
+
+/// Writes one of a project's own settings, by name, onto a project written
+/// down by name: `None` takes it off
+pub fn set_project_value(desk_id: &str, project: &str, key: &str, value: Option<&str>) -> Result<()> {
     let path = config_file_path();
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
     let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))
@@ -3493,7 +3516,14 @@ pub fn set_project_git_account(desk_id: &str, project: &str, account: &str) -> R
     else {
         return Ok(());
     };
-    p.insert("git_account".into(), serde_json::Value::String(account.to_string()));
+    match value {
+        Some(v) => {
+            p.insert(key.into(), serde_json::Value::String(v.to_string()));
+        }
+        None => {
+            p.shift_remove(key);
+        }
+    }
     crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&doc)?)?;
     Ok(())
 }

@@ -231,6 +231,10 @@ pub enum Ev {
         /// The machine to make it on, by the name the settings gave it.
         /// Empty is this one
         host: String,
+        /// On a MicroVM the project has no checkout on yet: the AI installed
+        /// on the checkout's machine, by its command (`claude`), or `none`.
+        /// Empty is what the project says
+        machine_ai: String,
         /// Whether to run what the project says its environment needs. On
         /// unless somebody says otherwise: a folder that skipped it is a
         /// folder the first thing anybody does in is fail to build
@@ -435,7 +439,7 @@ pub enum Ev {
     /// machine is the checkout of, when it was asked for from one.
     /// Window-only: what it makes is a
     /// folder on this PC, chosen with this PC's folder picker
-    AddProject { how: String, text: String, parent: String, ask: u64, host: String, project: String },
+    AddProject { how: String, text: String, parent: String, ask: u64, host: String, project: String, ai: String },
     /// A folder on another machine, listed for the add-a-project dialog.
     /// `host` is the machine's name in the settings; `ask` the dialog's own
     /// number, so an answer to an older listing is not taken for this one.
@@ -801,6 +805,7 @@ pub struct BranchAsk {
     pub ais: Vec<String>,
     pub at: String,
     pub host: String,
+    pub machine_ai: String,
     pub setup: bool,
     pub link: serde_json::Value,
     pub adopt: bool,
@@ -812,8 +817,8 @@ impl BranchAsk {
     /// The ask carried by a branch event, or nothing for any other event.
     pub fn of(ev: Ev) -> Option<Self> {
         match ev {
-            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, setup, link, adopt, auto, seq } => {
-                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, setup, link, adopt, auto, seq })
+            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, machine_ai, setup, link, adopt, auto, seq } => {
+                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, machine_ai, setup, link, adopt, auto, seq })
             }
             _ => None,
         }
@@ -1058,6 +1063,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             start: v.get("start").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             at: v.get("at").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            machine_ai: v.get("machine_ai").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
             // Absent means yes: an older shell that does not send it is not
             // asking for a folder nothing can be built in
             setup: v.get("setup").and_then(|x| x.as_bool()).unwrap_or(true),
@@ -1154,6 +1160,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             ask: v.get("ask").and_then(|x| x.as_u64()).unwrap_or(0),
             host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
             project: v.get("project").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
+            ai: v.get("ai").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
         },
         Some("remotelist") => Ev::RemoteList {
             host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),

@@ -2907,6 +2907,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bprojsay { font-size:11.5px; color:var(--faint); }
   #branch .bprojsay:empty { display:none; }
   #branch .bdestf[hidden], #branch .bstartf[hidden] { display:none; }
+  #branch .bmachineai { display:flex; gap:8px; align-items:center; margin-top:6px; }
+  #branch .bmachineai select { flex:1; min-width:0; height:30px; font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:0 8px; }
+  #branch .bdestsay { font-size:12px; color:var(--dim); margin-top:4px; }
   #branch .blabelrow { display:flex; align-items:center; justify-content:space-between; gap:var(--s2); }
   #branch button.bicon { min-height:22px; width:22px; padding:0; border:0; background:transparent;
     color:var(--dim); display:flex; align-items:center; justify-content:center; }
@@ -5754,6 +5757,9 @@ function apMicrovm(body) {
     vm.append(pickIcon("cloud"), el("span", {class:"nm"}, apVm || T["tui.addproj.microvm.none"] || ""), el("span", {class:"caret"}, "▾"));
   };
   const signin = el("div", {class:"bsignin"});
+  // The AI its machine is given, installed once there and in every worktree after
+  let ai = defaultMachineAi();
+  const aiPick = machineAiPick(ai, v => { ai = v; });
   let lookAsk = 0;
   const look = () => {
     if (!apVm || !url.value.trim()) { drawSignIn(signin, null, false); return; }
@@ -5778,7 +5784,7 @@ function apMicrovm(body) {
       : !apVm ? {at:vm, why:T["tui.addproj.microvm.need_vm"] || ""} : null,
     () => {
       apAsk = Date.now();
-      send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm});
+      send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai});
       apLive.running = true;
       drawAddProject();
     });
@@ -5786,6 +5792,8 @@ function apMicrovm(body) {
     apField(T["tui.addproj.url"] || "", url),
     apField(T["tui.addproj.microvm.vm"] || "", vm),
     signin,
+    el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.microvm.ai"] || ""), aiPick,
+      el("div", {class:"shint"}, T["tui.microvm.ai.hint"] || "")),
     el("div", {class:"apfoot"}, go.why, go.btn, prog.bar));
   url.addEventListener("input", () => { go.check(); lookLater(); });
   url.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); go.btn.click(); } });
@@ -5879,6 +5887,13 @@ function drawAddProject() {
   if (mine && mine.error) {
     go.why.textContent = mine.error;
     go.why.hidden = false;
+  }
+  // The work went to a row on the board, which says the rest
+  if (mine && mine.started) {
+    apAsk = 0;
+    apLive = null;
+    closeAddProject();
+    return;
   }
   if (mine && mine.done) {
     const path = mine.done;
@@ -6168,6 +6183,9 @@ function projectFlow() {
   if (branchNextSeen === null) branchNextSeen = next ? next.seq : 0;
   else if (next && next.seq > branchNextSeen) {
     branchNextSeen = next.seq;
+    // A project the app has just cloned onto a MicroVM goes through its
+    // rules first, as one added from the picker does
+    if (next.rules) { rulesFirst(next.folder); return; }
     branchNextWaiting = {folder: next.folder, at: Date.now()};
     // Looked at again then, whether or not anything else changes by then
     setTimeout(projectFlow, 4100);
@@ -7821,6 +7839,7 @@ function openBranch(g, preset) {
   // the moment its + opened it
   branchDone = (S && S.branch && S.branch.done && S.branch.folder) || "";
   branchHost = "";
+  branchMachineAi = "";
   const dest = document.getElementById("bdest");
   if (dest) { dest.dataset.said = ""; dest.textContent = ""; }
   const q = document.getElementById("bq");
@@ -8220,7 +8239,7 @@ function askBranch() {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:false, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, seq:branchSeq});
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, machine_ai:branchMachineAi, seq:branchSeq});
   }, 180);
 }
 
@@ -8483,10 +8502,46 @@ function drawDest(b, p) {
       T["tui.addproj.microvm.add"] || ""));
     openList(box, rows);
   };
+  // A MicroVM with no checkout yet makes one first: what it says it will
+  // do, and the AI that checkout is given
   const say = b.querySelector(".bdestsay");
-  say.textContent = offer && offer.kind === "microvm" && !offer.at ? (T["tui.branch.dest.first_vm.say"] || "") : "";
+  const first = !!(offer && offer.kind === "microvm" && !offer.at);
+  if (say.dataset.first !== String(first)) {
+    say.dataset.first = String(first);
+    say.textContent = "";
+    if (first) {
+      if (!branchMachineAi) branchMachineAi = (p && p.machine_ai) || defaultMachineAi();
+      say.append(el("div", {}, T["tui.branch.dest.first_vm.say"] || ""),
+        el("div", {class:"bmachineai"}, el("span", {class:"blabel"}, T["tui.microvm.ai"] || ""),
+          machineAiPick(branchMachineAi, v => { branchMachineAi = v; askBranch(); })));
+    }
+  }
   drawSignIn(b.querySelector(".bsignin"), offer && offer.kind === "microvm" ? p.sign_in : null, !!(offer && offer.kind === "microvm"),
     () => { closeBranch(); openSettings("project-gitacct", true, branchFrom); });
+}
+
+// The AI a MicroVM checkout about to be made is given, chosen in the
+// worktree dialog. Empty until chosen: then the app installs what the
+// project says
+let branchMachineAi = "";
+
+// Choosing the AI a MicroVM is given: the ones that can be installed there,
+// and "none". What is chosen is on screen from the start -- the assistant AI
+// when it is one of them, else the first one this PC has, else the first --
+// never left for later to decide
+function defaultMachineAi() {
+  const list = (S && S.machine_ais) || [];
+  const mine = ((S && S.assistant) || "").replace(/^@/, "").trim();
+  const here = ((S && S.ais) || []).map(a => a.key);
+  return (list.find(a => a.key === mine) || list.find(a => here.includes(a.key)) || list[0] || {key: "none"}).key;
+}
+function machineAiPick(value, onChange) {
+  const pick = el("select", {class:"apin"});
+  for (const a of (S && S.machine_ais) || []) pick.append(el("option", {value:a.key}, a.name));
+  pick.append(el("option", {value:"none"}, T["tui.microvm.ai.none"] || ""));
+  pick.value = value;
+  pick.addEventListener("change", () => onChange(pick.value));
+  return pick;
 }
 
 // What the dialog sends for "this PC" from a folder on another machine,
@@ -8791,7 +8846,7 @@ function applyCarryLines(b, lines) {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:true, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, adopt,
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, machine_ai:branchMachineAi, adopt,
           auto:branchAuto(), seq:branchSeq});
   };
   b.querySelector(".bgo .go").onclick = () => makeIt(false);
@@ -21451,7 +21506,7 @@ mod tests {
         // MicroVM goes on through its rules to its first worktree, there
         assert!(PAGE.contains("if (!mine.host || mine.microvm) rulesFirst(path);"),
             "a project added over SSH goes on to a worktree, or one onto a MicroVM does not");
-        assert!(PAGE.contains(r#"send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm});"#),
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai});"#),
             "a project cannot be cloned onto a MicroVM");
         assert!(PAGE.contains(r#"addMicrovm(name => { apVm = name; drawVm(); go.check(); look(); });"#),
             "a MicroVM cannot be added from where it is chosen");

@@ -280,6 +280,12 @@ Each project answers these for itself: a team's rules are its repository's, and 
 
 Worktree creation rules, name and checkout, git account, protected branches, what the AI is told, setup
 
+**Setup command**
+
+- **AI to install** — Installed with the command its maker gives. Sign in to it once in the checkout's terminal; the worktrees made after that are signed in.
+- **Machine setup** — One command per line, run in the checkout as the user “user”, who has sudo without a password. What each worktree installs from the project's own files (npm ci, composer install) goes under “Setup command”.
+- **MicroVM setup**
+
 **Project**
 
 - **Name**

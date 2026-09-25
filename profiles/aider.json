@@ -1,6 +1,7 @@
 {
   "name": "Aider",
   "install_url": "https://aider.chat/docs/install.html",
+  "install_on_linux": "curl -LsSf https://aider.chat/install.sh | sh",
   "command_match": ["aider"],
   "busy_patterns": [],
   "question_patterns": [

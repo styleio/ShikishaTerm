@@ -1470,12 +1470,41 @@ fn linkable_in(dir: &std::path::Path) -> Option<bool> {
 
 /// The last "now make its first worktree" the settings page said, counted
 /// (see `/api/project/next`)
-static BRANCH_NEXT: std::sync::Mutex<(u64, String)> = std::sync::Mutex::new((0, String::new()));
+static BRANCH_NEXT: std::sync::Mutex<(u64, String, bool)> = std::sync::Mutex::new((0, String::new(), false));
 
 /// That ask, for the board's state. None until the page has said it once
 pub fn branch_next() -> Option<crate::uistate::BranchNext> {
     let next = BRANCH_NEXT.lock().unwrap_or_else(|e| e.into_inner());
-    (next.0 > 0).then(|| crate::uistate::BranchNext { seq: next.0, folder: next.1.clone() })
+    (next.0 > 0).then(|| crate::uistate::BranchNext { seq: next.0, folder: next.1.clone(), rules: next.2 })
+}
+
+/// "Now make its first worktree" (or, with `rules`, "now go through its rules
+/// first") said about the project whose checkout is `folder`, by the page or
+/// by the app itself once a machine it was preparing is ready
+pub fn ask_branch_next(folder: &str, rules: bool) -> u64 {
+    let mut next = BRANCH_NEXT.lock().unwrap_or_else(|e| e.into_inner());
+    next.0 += 1;
+    next.1 = folder.to_string();
+    next.2 = rules;
+    next.0
+}
+
+/// A project's MicroVM checkouts asked to be prepared, by the settings page,
+/// for the app to do on the board (see `/api/project/machine-setup`)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrepareAsk {
+    pub desk_id: String,
+    pub project: String,
+    /// The checkout to open the worktree dialog on once it is prepared,
+    /// when the page was on its way there
+    pub follow: Option<String>,
+}
+
+static PREPARE_ASKS: std::sync::Mutex<Vec<PrepareAsk>> = std::sync::Mutex::new(Vec::new());
+
+/// The asks since last taken
+pub fn take_prepare_asks() -> Vec<PrepareAsk> {
+    std::mem::take(&mut *PREPARE_ASKS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 fn json_resp(v: serde_json::Value) -> Response<Cursor<Vec<u8>>> {
@@ -2222,6 +2251,58 @@ fn handle(
                 let _ = req.respond(json_resp(resp));
             });
         }
+        // A project's MicroVM checkouts to be prepared as its saved settings
+        // say: the AI and the machine setup. Handed to the app, which does it
+        // on threads of its own and shows a row on the board for each machine
+        // -- an install takes minutes, and a page held that long looks stuck.
+        // `follow` names the checkout the worktree dialog opens on afterwards
+        ("POST", "/api/project/machine-setup") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let text = |k: &str| p.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+            let resp = match (text("desk"), text("project")) {
+                (Some(desk_id), Some(project)) => match crate::microvm::prepare_targets(&desk_id, &project) {
+                    Ok(t) => {
+                        PREPARE_ASKS.lock().unwrap_or_else(|e| e.into_inner()).push(PrepareAsk { desk_id, project, follow: text("follow") });
+                        serde_json::json!({ "ok": true, "started": true, "machines": t.homes.len() })
+                    }
+                    Err(error) => serde_json::json!({ "ok": false, "error": error }),
+                },
+                _ => serde_json::json!({ "ok": false, "error": crate::i18n::tp("err.project.missing", &[("name", "")]) }),
+            };
+            req.respond(json_resp(resp))?;
+        }
+        // The assistant AI's proposal for a project's machine setup. Only a
+        // proposal, as the one for what a worktree inherits is
+        ("POST", "/api/project/machine-setup-ai") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let desk = p.get("desk").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let project = p.get("project").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let hint = p.get("hint").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            std::thread::spawn(move || {
+                let engine = crate::config::load().and_then(|c| c.ai_engine).filter(|e| !e.trim().is_empty());
+                if assistant_ai(engine.as_deref()).is_none() {
+                    let _ = req.respond(json_resp(serde_json::json!({
+                        "ok": false, "no_ai": true, "error": crate::i18n::t("webui.err.ai_missing"),
+                    })));
+                    return;
+                }
+                let resp = match crate::microvm::propose_setup(&desk, &project, &hint, engine.as_deref()) {
+                    Ok(lines) => serde_json::json!({ "ok": true, "lines": lines }),
+                    Err(error) => serde_json::json!({ "ok": false, "error": error }),
+                };
+                let _ = req.respond(json_resp(resp));
+            });
+        }
         // What a file a replacement is written for says now, and what it would
         // say in a worktree: every line that changes, before and after. Read
         // from the checkout, so what is shown is the file that will be copied
@@ -2293,12 +2374,7 @@ fn handle(
             let folder = p.get("folder").and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
             let resp = match folder.is_empty() {
                 true => serde_json::json!({ "ok": false }),
-                false => {
-                    let mut next = BRANCH_NEXT.lock().unwrap_or_else(|e| e.into_inner());
-                    next.0 += 1;
-                    next.1 = folder;
-                    serde_json::json!({ "ok": true, "seq": next.0 })
-                }
+                false => serde_json::json!({ "ok": true, "seq": ask_branch_next(&folder, false) }),
             };
             req.respond(json_resp(resp))?;
         }
@@ -3981,6 +4057,17 @@ pub(crate) fn themed(html: String) -> String {
         // What a machine that is not this one is given when its entry or its
         // checkout says nothing, written into the forms as it is -- one
         // spelling, the app's own
+        // The AIs a MicroVM can be given, from the profiles that say how
+        .replace(
+            "{{MACHINE_AIS}}",
+            &serde_json::to_string(
+                &crate::profile::machine_ais()
+                    .into_iter()
+                    .map(|a| serde_json::json!({ "key": a.key, "name": a.name }))
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or_else(|_| "[]".into()),
+        )
         .replace(
             "{{FAR_DEFAULTS}}",
             &serde_json::json!({
@@ -11766,6 +11853,140 @@ function plainSetupCard(desk, p, current_setup) {
     box);
 }
 
+// ── What a MicroVM checkout is prepared with ─────────────────────────────
+// A project on a MicroVM has its checkout on a machine of its own, and every
+// worktree is a copy of that machine. So what the work needs installed -- the
+// AI, and a language or a server -- is installed there once, and every
+// worktree after has it. Said on the Setup page as a card, and in the rules
+// a project just added is asked about as one line, from the same parts
+
+// The AIs a MicroVM can be given, from the profiles that say how to install
+// them there
+const MACHINE_AIS = {{MACHINE_AIS}};
+// The project's checkouts on MicroVMs
+function microvmHomes(p) {
+  const e = p.entry || {};
+  return (e.homes || []).filter(h => ((current.hosts || []).find(x => x.name === h.host) || {}).kind === "e2b");
+}
+// What is remembered as run on a checkout, worked out the way the app works
+// it out (microvm::Preparing::said), so the page can say whether the machine
+// has had what is written now
+function preparedSaid(ai, setup) {
+  ai = (ai || "").trim();
+  if (ai === "none") ai = "";
+  const lines = String(setup || "").split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  return "ai: " + (ai || "none") + "\n" + lines.map(l => l + "\n").join("");
+}
+// What it is prepared with, in a few words, and whether each machine has it
+function microvmNow(p) {
+  const e = p.entry || {};
+  const ai = MACHINE_AIS.find(a => a.key === e.machine_ai);
+  const lines = String(e.machine_setup || "").split(/\r?\n/).filter(l => l.trim()).length;
+  const want = preparedSaid(e.machine_ai, e.machine_setup);
+  return [
+    el("span", {}, fill(T["settings.microvm.now"], {ai: ai ? ai.name : T["settings.microvm.ai.none"], n: lines})),
+    ...microvmHomes(p).map(h => el("div", {class: h.prepared === want ? "hint" : "hint caution"},
+      fill(T[h.prepared === want ? "settings.microvm.done" : "settings.microvm.not_done"], {host: h.host}))),
+  ];
+}
+// The parts: the AI, the machine setup with the AI to write it, and the
+// press that runs it on each checkout's machine now
+function microvmParts(desk, p) {
+  const e = p.entry || {};
+  const pick = el("select");
+  pick.append(el("option", {value:"none"}, T["settings.microvm.ai.none"]));
+  for (const a of MACHINE_AIS) pick.append(el("option", {value:a.key}, a.name));
+  pick.value = e.machine_ai && (e.machine_ai === "none" || MACHINE_AIS.some(a => a.key === e.machine_ai)) ? e.machine_ai : "none";
+  pick.addEventListener("change", () => {
+    const en = ensureProject(desk, p);
+    en.machine_ai = pick.value;
+    sel.proj = "p:" + en.name;
+    refreshSave();
+    render();
+  });
+  const lines = el("textarea", {rows:"4", class:"mono", style:"width:100%", placeholder:T["settings.microvm.setup.ph"]});
+  lines.value = e.machine_setup || "";
+  lines.addEventListener("input", () => {
+    const en = ensureProject(desk, p);
+    if (lines.value.trim()) en.machine_setup = lines.value; else delete en.machine_setup;
+    sel.proj = "p:" + en.name;
+    refreshSave();
+  });
+  lines.addEventListener("change", () => render());
+  const ask = el("button", {class:"quiet", onclick:() => machineSetupAiDialog(desk, p, lines)}, T["settings.inherit.ai.button"]);
+  const run = el("button", {onclick: async () => {
+    run.disabled = true;
+    try { await prepareMicrovms(desk, p); } finally { run.disabled = false; }
+  }}, T["settings.microvm.run"]);
+  return [
+    row(T["settings.microvm.ai"], pick),
+    el("div", {class:"hint"}, T["settings.microvm.ai.hint"]),
+    row(T["settings.microvm.setup"], el("div", {style:"flex:1;min-width:0"}, lines), ask),
+    el("div", {class:"hint"}, T["settings.microvm.setup.hint"]),
+    el("div", {class:"row"}, run),
+  ];
+}
+function microvmCard(desk, p) {
+  const c = card(T["settings.microvm.title"], el("div", {class:"hint"}, T["settings.microvm.hint"]),
+    el("div", {class:"rulesnow"}, ...microvmNow(p)), ...microvmParts(desk, p));
+  c.id = "project-microvm";
+  return c;
+}
+// Saved, then each checkout's machine handed to the app to prepare as
+// saved: the app does it on the board, as a row under the project, since an
+// install takes minutes and a page held that long looks stuck. `follow` is
+// the checkout the worktree dialog opens on once the machine is ready
+async function prepareMicrovms(desk, p, follow) {
+  if (snapshot() !== savedSnapshot && !(await save())) return false;
+  const q = deskProjects(desk).projects.find(x => x.key === "p:" + p.name) || p;
+  const body = {desk: desk.id, project: q.name};
+  if (follow) body.follow = follow;
+  const j = await settingsApi("/api/project/machine-setup", body).catch(e => ({ok:false, error: String(e)}));
+  if (!j.ok) { toast(j.error || "", true); return false; }
+  toast(T["settings.microvm.started"]);
+  return true;
+}
+// The assistant AI's proposal for the machine setup: what to tell it, then
+// every line with why, and nothing written until "save" is pressed
+function machineSetupAiDialog(desk, p, into) {
+  const hint = el("textarea", {rows:"4", class:"mono", style:"width:100%", placeholder:T["settings.microvm.ai_hint.ph"]});
+  const said = el("div", {class:"aisaid"});
+  const go = el("button", {class:"primary"}, T["settings.inherit.ai.ask"]);
+  const keep = el("button", {class:"primary", hidden:""}, T["common.save"]);
+  let proposed = [];
+  const shut = () => back.remove();
+  go.addEventListener("click", async () => {
+    if (snapshot() !== savedSnapshot && !(await save())) return;
+    go.disabled = true;
+    said.textContent = T["settings.inherit.ai.thinking"];
+    const j = await settingsApi("/api/project/machine-setup-ai", {desk: desk.id, project: p.name, hint: hint.value})
+      .catch(() => ({ok:false, error: T["settings.bring.unreachable"]}));
+    go.disabled = false;
+    said.textContent = "";
+    if (!j.ok) { said.append(el("div", {class:"warn"}, j.error || "")); return; }
+    proposed = j.lines || [];
+    said.append(el("div", {class:"hint"}, T[proposed.length ? "settings.microvm.ai.sure" : "settings.microvm.ai.nothing"]));
+    for (const l of proposed) said.append(el("div", {class:"airow"}, el("code", {class:"mono"}, l.command), el("div", {class:"hint"}, l.reason)));
+    keep.hidden = !proposed.length;
+  });
+  keep.addEventListener("click", () => {
+    const en = ensureProject(desk, p);
+    en.machine_setup = proposed.map(l => l.command).join("\n");
+    into.value = en.machine_setup;
+    sel.proj = "p:" + en.name;
+    refreshSave();
+    shut();
+    render();
+  });
+  const back = openModal(
+    el("div", {class:"mhead"}, el("h2", {}, T["settings.microvm.ai.title"]),
+      el("button", {class:"quiet icon", title:T["common.close"], onclick: shut}, "✕")),
+    el("div", {class:"mbody"}, el("div", {class:"hint"}, T["settings.microvm.ai.say"]), hint, said),
+    el("div", {class:"mfoot"}, el("span", {class:"grow"}),
+      el("button", {class:"quiet", onclick: shut}, T["common.cancel"]), go, keep));
+  back.firstChild.classList.add("framed");
+}
+
 // ── What a new worktree is given ─────────────────────────────────────────
 // Git gives a new worktree everything it tracks and nothing it ignores. These
 // two cards say what else it gets: for each line of the project's .gitignore,
@@ -12177,8 +12398,10 @@ function projectPane(desk, p) {
     return box;
   }
 
-  // What a new worktree of it runs, read from its own checkout
+  // What a new worktree of it runs, read from its own checkout -- and, for a
+  // project on a MicroVM, what its checkout's machine is prepared with
   if (sec.id === "setup") {
+    if (microvmHomes(p).length) box.append(microvmCard(desk, p));
     box.append(envCard(desk, p));
     return box;
   }
@@ -12312,7 +12535,15 @@ function rulesCard(desk, p) {
 
   // Where its worktrees go on each other machine it is checked out on: after
   // this PC's, where there is a checkout here
-  const farRows = () => (e.homes || []).flatMap(home => farPlaceRows(desk, p, home, change, now, ruled));
+  const farRows = () => (e.homes || []).flatMap(home => farPlaceRows(desk, p, home, change, now, ruled))
+    .concat(vmRows());
+  // What its MicroVM checkout is prepared with: the AI and the machine setup
+  const vmRows = () => {
+    if (!microvmHomes(p).length) return [];
+    const r = ruled(row(T["settings.microvm.title"], now(microvmNow(p)), change("microvm")));
+    r.id = "project-microvm-rule";
+    return rulesOpen(p, "microvm") ? [r, el("div", {class:"rulesedit"}, ...microvmParts(desk, p))] : [r];
+  };
 
   // Where its folders go, and what it inherits, are read from its checkout
   // here. A project checked out only on other machines has said all there
@@ -12658,7 +12889,16 @@ async function projectNext(desk, p) {
     stayAfterSave = false;
   }
   if (!ok) return false;
-  if (folder) await settingsApi("/api/project/next", {folder}).catch(() => null);
+  // A checkout on a MicroVM that has not had what is written now gets it
+  // before the first worktree is copied from it
+  // ...on the board, which opens the worktree dialog itself once it is
+  const q = deskProjects(desk).projects.find(x => x.key === "p:" + p.name) || p;
+  const want = preparedSaid((q.entry || {}).machine_ai, (q.entry || {}).machine_setup);
+  if (microvmHomes(q).some(h => h.prepared !== want)) {
+    if (!(await prepareMicrovms(desk, q, folder))) return false;
+  } else if (folder) {
+    await settingsApi("/api/project/next", {folder}).catch(() => null);
+  }
   firstFlow = null;
   closeSettings();
   return true;
@@ -16374,7 +16614,7 @@ mod tests {
         assert!(
             PAGE.contains(r#"if (rulesOpen(p, "inherit")) c.append(el("div", {class:"rulesedit"}, inheritPart(desk, p)));"#)
                 && PAGE.contains("extraFilesPart(desk, p)].filter(Boolean));")
-                && PAGE.contains("if (sec.id === \"setup\") {\n    box.append(envCard(desk, p));"),
+                && PAGE.contains("if (sec.id === \"setup\") {\n    if (microvmHomes(p).length) box.append(microvmCard(desk, p));\n    box.append(envCard(desk, p));"),
             "the cards that belong to the repository are not on the project's page"
         );
         assert!(

@@ -1,6 +1,7 @@
 {
   "name": "Codex CLI",
   "install_url": "https://github.com/openai/codex",
+  "install_on_linux": "npm install -g @openai/codex",
   "command_match": [
     "codex"
   ],

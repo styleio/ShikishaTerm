@@ -733,6 +733,9 @@ pub struct BranchPlan {
     /// what kind of token that is. Absent while it is being asked for
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sign_in: Option<SignInNote>,
+    /// The AI the project's MicroVM checkouts are given, as it says
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub machine_ai: String,
     /// The file this project's own preparation came from, when it has one
     #[serde(default)]
     pub setup_from: String,
@@ -783,6 +786,14 @@ pub struct SignInNote {
     /// Why there is none to be had, when that is what happened
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error: String,
+}
+
+/// An AI a MicroVM can be given
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct MachineAiChoice {
+    /// Its command, which is what the project writes down
+    pub key: String,
+    pub name: String,
 }
 
 /// The public addresses of a folder on a MicroVM, as asked for from its menu
@@ -1030,6 +1041,10 @@ pub struct AddProjectState {
     /// worktree, cut on that machine
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub microvm: bool,
+    /// Under way on the board, as a row under the project: the dialog closes,
+    /// and the row says how far it has got
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub started: bool,
     /// For a clone onto a MicroVM: what it will sign in to the git server as,
     /// said before it is pressed
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1064,6 +1079,10 @@ pub struct BranchNext {
     pub seq: u64,
     /// The project's checkout, as the board lists the folder
     pub folder: String,
+    /// Through the project's rules first, as a project just added goes: the
+    /// app says it of a project it has just cloned onto a MicroVM
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rules: bool,
 }
 
 /// A folder on another machine, listed for the add-a-project dialog.
@@ -1924,6 +1943,9 @@ pub struct UiState {
     /// The public addresses of a folder on a MicroVM, last asked for
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub far_ports: Option<FarPortsState>,
+    /// The AIs a MicroVM can be given, by command and name
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub machine_ais: Vec<MachineAiChoice>,
     /// Where a cloned or new project goes until somebody picks elsewhere
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_home: String,

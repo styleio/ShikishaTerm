@@ -1,6 +1,7 @@
 {
   "name": "Claude Code",
   "install_url": "https://github.com/anthropics/claude-code",
+  "install_on_linux": "curl -fsSL https://claude.ai/install.sh | bash",
   "command_match": [
     "claude"
   ],

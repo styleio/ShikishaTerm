@@ -46,6 +46,8 @@ const URL = 'https://github.com/octocat/Hello-World.git';
 const PROJECT = 'Hello-World';
 const CHECKOUT = '/home/user/Hello-World';
 const BRANCH = 'check/first';
+// What the checkout's machine is prepared with, besides its AI
+const SETUP = 'sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq php-cli';
 const WORKTREE = '/home/user/Hello-World-first';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -203,24 +205,67 @@ try {
   const note = await board.run('S.add_project.sign_in');
   check(note.account === 'check' && note.kind === 'fine', 'it signs in as the account for the owner, a fine-grained token: ' + JSON.stringify(note));
   check(await board.run('!document.querySelector("#addproj .bsignin .warn")'), 'a fine-grained token is not warned about');
+  // The AI its machine is given, chosen here and written in from the start
+  const aiPick = '[...document.querySelectorAll("#addproj select")].find(s => [...s.options].some(o => o.value === "claude"))';
+  check(await board.run(`!!${aiPick} && ${aiPick}.value === "claude"`), 'the AI to install is chosen from the start: Claude Code');
+  if (!(await board.run(`!!${aiPick}`))) console.log('    (the board has: ' + JSON.stringify(await board.run('({ais: S.machine_ais, assistant: S.assistant, selects: [...document.querySelectorAll("#addproj select")].map(s => s.outerHTML.slice(0, 200))})')) + ')');
   await board.shot('1-clone');
 
-  console.log('2. the checkout, on a machine of its own');
+  console.log('2. the checkout, on a machine of its own, as a row on the board');
   await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
-  await until(() => (project()?.homes || []).some((h) => h.sandbox), 'the checkout written down as the project\'s', 240000);
+  // The dialog closes, and a row says how far the machine has got
+  await until(() => board.run('document.getElementById("addproj").hidden'), 'the dialog to close', 30000);
+  const rowStage = () => board.run('((S.making || []).find(m => m.name === "Hello-World" && /^vm_/.test(m.stage)) || {}).stage || ""');
+  await until(async () => /^vm_/.test(await rowStage()), 'a row for the machine', 30000);
+  check(true, 'the dialog closed and the board has a row for it: ' + await rowStage());
+  const rowText = await board.run('[...document.querySelectorAll(".making")].map(r => r.textContent).join(" | ")');
+  check(/MicroVM/.test(rowText), 'the row says what it is doing: ' + rowText.slice(0, 80));
+  await board.shot('1b-row');
+  await until(async () => (await rowStage()) === 'vm_preparing', 'the row to say the AI is being installed', 240000);
+  check(true, 'the row says the AI and the machine setup are being installed');
+  await until(() => (project()?.homes || []).some((h) => h.sandbox), 'the checkout written down as the project\'s', 240000)
+    .catch(async (e) => { console.log('    (the board says: ' + JSON.stringify(await board.run('S.making')) + ')'); throw e; });
   const home = project().homes[0];
   check(home.host === vm.name && home.at === CHECKOUT, 'the checkout is where it says: ' + JSON.stringify(home));
   check(project().git_account === 'check', 'the account it signed in as is the project\'s own');
   check(!!folderAt(CHECKOUT) && folderAt(CHECKOUT).sandbox === home.sandbox && folderAt(CHECKOUT).project === PROJECT,
     'the checkout has a folder of its own on the desk, on its machine');
+  check(project().machine_ai === 'claude' && home.prepared === 'ai: claude\n', 'the AI is the project\'s, and the machine is written down as having it');
+  // Asked inside a machine, by id
+  const on = async (id, cmd) => {
+    const { Sandbox } = await import(pathToSdk());
+    const box = await Sandbox.connect(id, { apiKey: KEY });
+    const r = await box.commands.run(cmd, { timeoutMs: 120000 }).catch((e) => e.result || { stdout: '', stderr: String(e) });
+    return (r.stdout + r.stderr).trim();
+  };
+  const claudeThere = await on(home.sandbox, 'claude --version 2>&1 | head -1');
+  check(/Claude Code/.test(claudeThere), 'Claude Code is installed on the checkout\'s machine: ' + claudeThere);
 
   console.log('3. through its rules, to its first worktree');
   cfg = await connect(await settingsOn(/section=project-first/), 'the settings');
   await until(() => cfg.run('!!framed && framed.kind === "rules" && !!document.getElementById("rulesgo")'), 'the rules, as a dialog', 30000);
   const far = await cfg.run('document.querySelector("#floatbody").textContent');
   check(far.includes(vm.name + ' でのワークツリーの配置先') && far.includes('元のフォルダの隣（ワークツリーごとに別のマシン）'), 'the rules say where worktrees go on the MicroVM');
+  check(far.includes('MicroVM のセットアップ') && far.includes('Claude Code'), 'the rules say what its MicroVM is prepared with');
+  // The machine setup, written the way the AI would have proposed it
+  await cfg.run('document.querySelector("[data-rules=microvm]").click(); true');
+  await until(() => cfg.run('!!document.querySelector("#floatbody .rulesedit textarea")'), 'the machine setup opened for writing');
+  await cfg.run(`(() => { const t = document.querySelector("#floatbody .rulesedit textarea"); t.value = ${JSON.stringify(SETUP)}; t.dispatchEvent(new Event("input")); t.dispatchEvent(new Event("change")); return true; })()`);
+  await until(() => cfg.run('document.querySelector("#floatbody").textContent.includes("まだ入っていません")'), 'the line to say the machine does not have it yet');
+  check(true, 'written, the line says the checkout\'s machine does not have it yet');
   await cfg.shot('2-rules');
   await cfg.run('document.getElementById("rulesgo").click(); true');
+  // "Next" hands the checkout's machine to the app to prepare, closes, and
+  // the board shows a row under the project until it is
+  await until(() => board.run('!S.settings_open'), 'the settings to close', 30000);
+  const prepStage = () => board.run(`((S.making || []).find(m => m.folder === ${JSON.stringify(CHECKOUT)} && m.name === ${JSON.stringify(vm.name)}) || {}).stage || ""`);
+  await until(async () => (await prepStage()) === 'vm_preparing', 'a row for the machine being prepared', 30000);
+  check(await board.run(`(S.groups || []).some(g => g.family && sameFolder(g.folder, ${JSON.stringify(CHECKOUT)}))`), 'the row stands under the project');
+  await board.shot('2b-preparing');
+  await until(() => (project()?.homes || [])[0]?.prepared === `ai: claude\n${SETUP}\n`, 'the checkout prepared as written', 600000)
+    .catch(async (e) => { console.log('    (the board says: ' + JSON.stringify(await board.run('S.making')) + ')'); throw e; });
+  const phpThere = await on(home.sandbox, 'php --version 2>&1 | head -1');
+  check(/^PHP \d/.test(phpThere), 'the machine setup ran on the checkout\'s machine: ' + phpThere);
   await until(() => board.run('!document.getElementById("branch").hidden'), 'the worktree dialog on the board', 30000);
   await until(() => board.run(`!!(S.branch && S.branch.host === ${JSON.stringify(vm.name)})`), 'the dialog on the MicroVM', 30000);
   await board.run(`branchTab = "name"; drawBranchTabs(document.getElementById("branch")); true`);
@@ -261,9 +306,11 @@ try {
   check(login.includes('"login"'), 'it is signed in to GitHub: ' + login);
   const seen = await inside(`(env; cat /proc/*/environ 2>/dev/null | strings; grep -rs '${PAT.slice(-8)}' /etc /home /root /tmp 2>/dev/null) | grep -c '${PAT.slice(-8)}' || true`);
   check(seen.trim() === '0', 'and the token is nowhere inside it: ' + seen);
+  const has = await inside('claude --version 2>&1 | head -1; php --version 2>&1 | head -1');
+  check(/Claude Code/.test(has) && /PHP \d/.test(has), 'the worktree has what its checkout was prepared with: ' + has.replace(/\n/g, ' | '));
 
   console.log('4b. what it serves answers from anywhere, at the address the menu lists');
-  await inside(`cd ${wt.cwd} && echo served-from-the-worktree > index.html && (nohup python3 -m http.server 8000 >/dev/null 2>&1 &) ; sleep 1; echo ok`);
+  await inside(`cd ${wt.cwd} && printf '<?php echo "served-from-the-" . "worktree";' > index.php && (nohup php -S 0.0.0.0:8000 >/dev/null 2>&1 &) ; sleep 1; echo ok`);
   const g = `(S.groups || []).find(x => x.folder === ${JSON.stringify(wt.cwd)})`;
   await until(() => board.run(`!!${g}`), 'the worktree\'s card', 30000);
   check(await board.run(`onMicrovm(${g})`), 'the card knows it is on a MicroVM');

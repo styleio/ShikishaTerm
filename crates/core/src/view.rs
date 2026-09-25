@@ -570,6 +570,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         ssh_aliases: ui.ssh_aliases.clone(),
         remote_list: ui.remote_list.clone(),
         far_ports: ui.far_ports.clone(),
+        machine_ais: ui.machine_ais.clone(),
         project_home: ui.project_home.clone(),
         // Held by the settings server, which is where the page says it
         branch_next: crate::webui::branch_next(),
@@ -1652,6 +1653,8 @@ pub struct Ui {
     pub remote_list: Option<crate::uistate::RemoteListState>,
     /// The public addresses of a folder on a MicroVM, last asked for
     pub far_ports: Option<crate::uistate::FarPortsState>,
+    /// The AIs a MicroVM can be given
+    pub machine_ais: Vec<crate::uistate::MachineAiChoice>,
     /// Where a cloned or new project goes by default
     pub project_home: String,
     /// The Assistant AI setting, as its command

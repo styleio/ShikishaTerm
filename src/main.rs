@@ -788,8 +788,8 @@ impl WinSurface {
                 Ev::InstallHelp { prog: Some(prog) } => self.mail.install_pages.push(prog),
                 Ev::Setup { ai, yolo } => self.mail.setup = Some((ai, yolo)),
                 Ev::SetupRefresh { step } => self.mail.setup_refresh = Some(step),
-                Ev::AddProject { how, text, parent, ask, host, project } => {
-                    self.mail.add_projects.push(shikisha_core::mailbox::AddAsk { how, text, parent, ask, host, project })
+                Ev::AddProject { how, text, parent, ask, host, project, ai } => {
+                    self.mail.add_projects.push(shikisha_core::mailbox::AddAsk { how, text, parent, ask, host, project, ai })
                 }
                 Ev::RemoteList { host, path, ask } => self.mail.remote_lists.push((host, path, ask)),
                 Ev::AddHost { name, at, key, ask } => self.mail.add_hosts.push((name, at, key, ask)),

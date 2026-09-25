@@ -446,6 +446,7 @@ mod tests {
             resume: None,
             interrupt: vec![],
             install_url: None,
+            install_on_linux: None,
             name: "test".into(),
             command_match: vec![],
             script_match: vec![],

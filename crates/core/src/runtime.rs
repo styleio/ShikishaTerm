@@ -242,11 +242,25 @@ impl Pending {
         let (Some(host), Some(id)) = (plan.host.as_ref(), self.making.machines().checkout) else { return Ok(()) };
         self.checkout_noted = true;
         let at = plan.main.to_string_lossy().to_string();
-        let home = config::ProjectHome { host: host.name.clone(), at: at.clone(), placement: None, sandbox: Some(id.clone()) };
+        let home = config::ProjectHome {
+            host: host.name.clone(),
+            at: at.clone(),
+            placement: None,
+            sandbox: Some(id.clone()),
+            prepared: self.making.machines().prepared,
+        };
         // A project nobody had written down is written down with its checkout
         // here, so the folders here stay in it
         let here = crate::repo::main_checkout(&self.from).map(|m| m.display().to_string().replace('\\', "/"));
         config::set_project_home(&self.desk_id, &plan.project, &home, here.as_deref())?;
+        // The AI it was made with is the project's from now on, said in its
+        // settings rather than left to be asked again
+        config::set_project_value(
+            &self.desk_id,
+            &plan.project,
+            "machine_ai",
+            Some(plan.preparing.ai.as_deref().unwrap_or(crate::microvm::NO_AI)),
+        )?;
         config::append_folder_starting(&self.desk, None, &plan.main, None, &config::Start::Same, Some(&host.name))?;
         config::set_folder_far(&self.desk, &plan.main, &host.name, Some(&plan.project), Some(&id))?;
         Ok(())
@@ -325,6 +339,78 @@ impl Leaving {
             stage: match self.error {
                 Some(_) => "unremoved".into(),
                 None => "removing".into(),
+            },
+            error: self.error.clone().unwrap_or_default(),
+            ..Default::default()
+        }
+    }
+}
+
+/// Work on a MicroVM under way, from the press until what it made is written
+/// down: a project being cloned onto one, or a checkout's machine being
+/// prepared with the AI and the machine setup. Drawn as a row of the same
+/// kind as a worktree being made, under the project, and answered through
+/// the same numbers
+struct VmJob {
+    id: u64,
+    desk: String,
+    desk_id: String,
+    project: String,
+    /// The entry, naming the machine once there is one
+    host: config::HostSpec,
+    /// The checkout on it
+    at: String,
+    work: VmWork,
+    /// Why it failed, once it has
+    error: Option<String>,
+    /// Asked to stop: the row says so until it has
+    stopping: bool,
+    gone: bool,
+}
+
+enum VmWork {
+    Clone {
+        job: crate::microvm::Checkout,
+        add: MicrovmAdd,
+        /// What it is made from, kept to try again
+        url: String,
+        sign_in: config::FarSignIn,
+        preparing: crate::microvm::Preparing,
+    },
+    Prepare {
+        job: crate::microvm::Prepare,
+        home: config::ProjectHome,
+        preparing: crate::microvm::Preparing,
+        /// The checkout to open the worktree dialog on once it is prepared
+        follow: Option<String>,
+    },
+}
+
+impl VmJob {
+    fn state(&self) -> crate::uistate::MakingState {
+        let phase = match &self.work {
+            VmWork::Clone { job, .. } => job.outcome(),
+            VmWork::Prepare { job, .. } => job.outcome(),
+        };
+        crate::uistate::MakingState {
+            id: self.id,
+            // Under the project's heading once its checkout there is on the
+            // desk; a project being cloned has no heading yet, and its row
+            // stands on its own
+            family: match &self.work {
+                VmWork::Clone { .. } => String::new(),
+                VmWork::Prepare { .. } => crate::uistate::far_family(&self.host.name, &self.at),
+            },
+            name: match &self.work {
+                VmWork::Clone { .. } => self.project.clone(),
+                VmWork::Prepare { .. } => self.host.name.clone(),
+            },
+            folder: self.at.clone(),
+            stage: match (&self.error, self.stopping, phase) {
+                (Some(_), _, _) => "failed".into(),
+                (None, true, _) => "stopping".into(),
+                (None, false, crate::microvm::Outcome::Running(p)) => p.into(),
+                (None, false, _) => crate::microvm::PHASE_PREPARING.into(),
             },
             error: self.error.clone().unwrap_or_default(),
             ..Default::default()
@@ -447,6 +533,8 @@ struct MicrovmAdd {
     /// own when it is one the person set up -- so every worktree after signs
     /// in the same way, and the settings say so
     account: Option<String>,
+    /// The AI its machine is given, written as the project's own
+    ai: Option<String>,
 }
 
 /// The account a project from `url` signs in to its git server as, before
@@ -484,6 +572,7 @@ struct FarProject {
     origin: String,
     env: Option<crate::devcontainer::Env>,
     sign_in: config::FarSignIn,
+    preparing: crate::microvm::Preparing,
 }
 
 impl FarProject {
@@ -495,6 +584,7 @@ impl FarProject {
             origin: &self.origin,
             env: self.env.clone(),
             sign_in: self.sign_in.clone(),
+            preparing: self.preparing.clone(),
         }
     }
 }
@@ -503,7 +593,9 @@ impl FarProject {
 /// its checkout there, what it is called, where it is fetched from, and --
 /// on a MicroVM -- what it signs in to its git server as, with the account's
 /// name as the dialog says it. A project nobody has written down is called
-/// what its checkout here is called, the way the settings would name it
+/// what its checkout here is called, the way the settings would name it.
+/// `machine_ai` is the AI the dialog chose for a checkout made on a MicroVM
+/// (empty: what the project says)
 fn far_of(
     desk: Option<&config::Desk>,
     project: Option<&config::ProjectSpec>,
@@ -511,6 +603,7 @@ fn far_of(
     from: &std::path::Path,
     checkout: &Option<std::path::PathBuf>,
     env: Option<crate::devcontainer::Env>,
+    machine_ai: &str,
 ) -> (FarProject, String, Result<config::FarSignIn, String>) {
     let name = project
         .map(|p| p.name.clone())
@@ -543,6 +636,13 @@ fn far_of(
         // One that cannot be had is said in the dialog, and the machine signs
         // in to nothing: a public repository still clones
         sign_in: sign_in.clone().unwrap_or_default(),
+        preparing: crate::microvm::Preparing::of(
+            match machine_ai.trim() {
+                "" => project.and_then(|p| p.machine_ai.as_deref()),
+                chosen => Some(chosen),
+            },
+            project.and_then(|p| p.machine_setup.as_deref()),
+        ),
     };
     (far, account, sign_in)
 }
@@ -1414,9 +1514,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // is asked once
     // With the machine it runs on, empty for this PC
     let mut add_job: Option<(u64, crate::addproject::Job, String)> = None;
-    // A project being cloned onto a MicroVM from the same dialog: the ask, the
-    // job, and what it will be written down as once it is there
-    let mut microvm_job: Option<(u64, crate::microvm::Checkout, MicrovmAdd)> = None;
+    // The work on MicroVMs under way -- a project being cloned onto one, a
+    // checkout's machine being prepared -- each a row on the board under its
+    // project, like a worktree being made
+    let mut vm_jobs: Vec<VmJob> = Vec::new();
     let mut add_view: Option<crate::uistate::AddProjectState> = None;
     // A folder on another machine, walked from the same dialog. Listed on a
     // thread: a machine that does not answer takes as long as its timeout
@@ -1424,6 +1525,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The public addresses of a folder on a MicroVM, and the answers on their
     // way from the thread that asks the machine
     let mut far_ports_view: Option<crate::uistate::FarPortsState> = None;
+    // The AIs a MicroVM can be given, as the profiles say: read once
+    let machine_ais: Vec<crate::uistate::MachineAiChoice> = crate::profile::machine_ais()
+        .into_iter()
+        .map(|a| crate::uistate::MachineAiChoice { key: a.key, name: a.name })
+        .collect();
     let (far_ports_tx, far_ports_rx) = std::sync::mpsc::channel::<crate::uistate::FarPortsState>();
     let (listing_tx, listing_rx) = std::sync::mpsc::channel::<crate::uistate::RemoteListState>();
     // The aliases a new machine can be filled in from, read again with the settings
@@ -3796,7 +3902,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             add_project: add_view.clone(),
             worktrees_kept: worktrees_kept.clone(),
             folders_hidden: folders_hidden.clone(),
-            making: makings.iter().map(Pending::state).chain(leavings.iter().map(Leaving::state)).collect(),
+            making: makings
+                .iter()
+                .map(Pending::state)
+                .chain(leavings.iter().map(Leaving::state))
+                .chain(vm_jobs.iter().map(VmJob::state))
+                .collect(),
             hosts: cfg
                 .as_ref()
                 .map(|c| {
@@ -3819,6 +3930,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             ssh_aliases: ssh_aliases.clone(),
             remote_list: remote_view.clone(),
             far_ports: far_ports_view.clone(),
+            machine_ais: machine_ais.clone(),
             project_home: project_home.clone(),
             assistant: assistant_ai.clone(),
             usage,
@@ -6674,6 +6786,42 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         // The rows of worktrees being made: stopped, tried again, put away
         for (id, act) in shell.mail().take_makings() {
+            // A job on a machine: stopped after the command it is on (a clone
+            // stopped throws its machine away; a preparation keeps what was
+            // done), tried again from the start, or put away
+            if let Some(j) = vm_jobs.iter_mut().find(|j| j.id == id) {
+                match act.as_str() {
+                    "stop" if j.error.is_none() => {
+                        j.stopping = true;
+                        match &j.work {
+                            VmWork::Clone { job, .. } => job.stop(),
+                            VmWork::Prepare { job, .. } => job.stop(),
+                        }
+                    }
+                    "retry" if j.error.is_some() => {
+                        j.error = None;
+                        j.stopping = false;
+                        j.work = match &j.work {
+                            VmWork::Clone { add, url, sign_in, preparing, .. } => VmWork::Clone {
+                                job: crate::microvm::Checkout::start(j.host.clone(), url, &j.project, sign_in.clone(), preparing.clone()),
+                                add: add.clone(),
+                                url: url.clone(),
+                                sign_in: sign_in.clone(),
+                                preparing: preparing.clone(),
+                            },
+                            VmWork::Prepare { home, preparing, follow, .. } => VmWork::Prepare {
+                                job: crate::microvm::Prepare::start(j.host.clone(), &home.at, preparing.clone()),
+                                home: home.clone(),
+                                preparing: preparing.clone(),
+                                follow: follow.clone(),
+                            },
+                        };
+                    }
+                    "dismiss" if j.error.is_some() => j.gone = true,
+                    _ => {}
+                }
+                continue;
+            }
             // A worktree on its way out answers through the same row. Its
             // folder would not go, and what is left of it is kept on disk, put
             // back in the list, or tried again
@@ -6910,9 +7058,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     if let Some((_, job, _)) = &add_job {
                         job.stop();
                     }
-                    if let Some((_, job, _)) = &microvm_job {
-                        job.stop();
-                    }
                 }
                 // What a clone onto a MicroVM would sign in as, asked while
                 // the address is typed, so it is said before anything is made
@@ -6926,7 +7071,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     signin_waiting = note.is_none().then(|| (label.clone(), far.clone()));
                     add_view = Some(crate::uistate::AddProjectState { ask, sign_in: note, microvm: true, ..Default::default() });
                 }
-                ("microvm", Some(h)) if microvm_job.is_none() => {
+                ("microvm", Some(h)) => {
                     let desk = desks.get(desk_index);
                     let account = account_for_url(desk, &text);
                     let git = desk.map(|d| d.git_use(account.as_deref())).unwrap_or_default();
@@ -6938,9 +7083,31 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         false => base.clone(),
                         true => (2..).map(|i| format!("{base} {i}")).find(|n| !taken(n)).expect("endless"),
                     };
-                    let job = crate::microvm::Checkout::start(h.clone(), &text, &project, git.far(&|k| crate::git::secret(k)).unwrap_or_default());
-                    add_view = Some(crate::uistate::AddProjectState { ask, running: true, microvm: true, phase: "microvm.making".into(), ..Default::default() });
-                    microvm_job = Some((ask, job, MicrovmAdd { host: h.name.clone(), project, account }));
+                    // Prepared with the AI the dialog chose, and -- for a
+                    // project already written down -- its machine setup
+                    let written = desk.and_then(|w| w.projects.iter().find(|p| p.name == project));
+                    let preparing = crate::microvm::Preparing::of(Some(&a.ai), written.and_then(|p| p.machine_setup.as_deref()));
+                    if let Err(e) = preparing.commands(crate::worktree::MICROVM_HOME) {
+                        add_view = failed(e);
+                        continue;
+                    }
+                    let sign_in = git.far(&|k| crate::git::secret(k)).unwrap_or_default();
+                    let job = crate::microvm::Checkout::start(h.clone(), &text, &project, sign_in.clone(), preparing.clone());
+                    making_seq += 1;
+                    vm_jobs.push(VmJob {
+                        id: making_seq,
+                        desk: desk.map(|d| d.name.clone()).unwrap_or_default(),
+                        desk_id: desk.map(|d| d.id.clone()).unwrap_or_default(),
+                        project: project.clone(),
+                        host: h.clone(),
+                        at: crate::microvm::checkout_path(&project),
+                        work: VmWork::Clone { job, add: MicrovmAdd { host: h.name.clone(), project, account, ai: preparing.ai.clone() }, url: text.clone(), sign_in, preparing },
+                        error: None,
+                        stopping: false,
+                        gone: false,
+                    });
+                    // The dialog closes on this: the row says the rest
+                    add_view = Some(crate::uistate::AddProjectState { ask, started: true, microvm: true, ..Default::default() });
                 }
                 ("clone", on) if add_job.is_none() => {
                     let started = match &on {
@@ -7060,46 +7227,110 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             }
         }
-        // A project on its way onto a MicroVM. Once its checkout is there it is
-        // the project's, with a folder of its own on the desk, and the dialog
-        // goes on to its first worktree
-        if let Some((ask, job, add)) = microvm_job.clone() {
-            match job.outcome() {
-                crate::microvm::Outcome::Running(phase) => {
-                    add_view = Some(crate::uistate::AddProjectState { ask, running: true, microvm: true, phase: phase.into(), ..Default::default() });
+        // A project's checkouts on MicroVMs, asked by the settings page to be
+        // prepared as its saved settings say: one row per machine
+        for ask in crate::webui::take_prepare_asks() {
+            let targets = match crate::microvm::prepare_targets(&ask.desk_id, &ask.project) {
+                Ok(t) => t,
+                Err(e) => {
+                    flash = Some(e);
+                    continue;
                 }
-                crate::microvm::Outcome::Done { sandbox, at } => {
-                    microvm_job = None;
-                    let desk = desks.get(desk_index);
-                    let (desk_name, desk_id) = desk.map(|d| (d.name.clone(), d.id.clone())).unwrap_or_default();
-                    let home = config::ProjectHome { host: add.host.clone(), at: at.clone(), placement: None, sandbox: Some(sandbox.clone()) };
-                    let written = config::set_project_home(&desk_id, &add.project, &home, None)
-                        .and_then(|()| match &add.account {
-                            Some(a) => config::set_project_git_account(&desk_id, &add.project, a),
-                            None => Ok(()),
-                        })
-                        .and_then(|()| config::append_folder_starting(&desk_name, None, std::path::Path::new(&at), None, &config::Start::Same, Some(&add.host)))
-                        .and_then(|()| config::set_folder_far(&desk_name, std::path::Path::new(&at), &add.host, Some(&add.project), Some(&sandbox)));
-                    add_view = Some(match written {
-                        Ok(()) => {
-                            let said = i18n::tp("msg.project.remote_added", &[("name", &add.project), ("host", &add.host)]);
+            };
+            let desk_name = desks.iter().find(|d| d.id == ask.desk_id).map(|d| d.name.clone()).unwrap_or_default();
+            for (host, home) in targets.homes {
+                // One at a time per machine: a second ask while the first is
+                // still on it would run the same install twice at once
+                if vm_jobs.iter().any(|j| !j.gone && j.error.is_none() && j.host.instance == host.instance) {
+                    continue;
+                }
+                making_seq += 1;
+                vm_jobs.push(VmJob {
+                    id: making_seq,
+                    desk: desk_name.clone(),
+                    desk_id: ask.desk_id.clone(),
+                    project: ask.project.clone(),
+                    at: home.at.clone(),
+                    work: VmWork::Prepare {
+                        job: crate::microvm::Prepare::start(host.clone(), &home.at, targets.preparing.clone()),
+                        home,
+                        preparing: targets.preparing.clone(),
+                        follow: ask.follow.clone(),
+                    },
+                    host,
+                    error: None,
+                    stopping: false,
+                    gone: false,
+                });
+            }
+        }
+        // How each job on a machine is getting on. Done, what it made is
+        // written down and the board is told what comes next; failed, the
+        // row says so and waits to be tried again or put away
+        for j in vm_jobs.iter_mut().filter(|j| j.error.is_none() && !j.gone) {
+            let outcome = match &j.work {
+                VmWork::Clone { job, .. } => job.outcome(),
+                VmWork::Prepare { job, .. } => job.outcome(),
+            };
+            match outcome {
+                crate::microvm::Outcome::Running(_) => {}
+                crate::microvm::Outcome::Failed(e) if e.is_empty() => j.gone = true,
+                crate::microvm::Outcome::Failed(e) => {
+                    append_hook_log(&format!("could not prepare {} on {}: {e}", j.project, j.host.name));
+                    j.error = Some(e);
+                }
+                crate::microvm::Outcome::Done { sandbox, at, prepared } => {
+                    let written = match &j.work {
+                        // The checkout is the project's, with a folder of its own
+                        // on the desk; the project goes on through its rules
+                        VmWork::Clone { add, .. } => {
+                            let home = config::ProjectHome {
+                                host: add.host.clone(),
+                                at: at.clone(),
+                                placement: None,
+                                sandbox: Some(sandbox.clone()),
+                                prepared: Some(prepared),
+                            };
+                            config::set_project_home(&j.desk_id, &add.project, &home, None)
+                                .and_then(|()| match &add.account {
+                                    Some(a) => config::set_project_git_account(&j.desk_id, &add.project, a),
+                                    None => Ok(()),
+                                })
+                                .and_then(|()| {
+                                    let ai = add.ai.as_deref().unwrap_or(crate::microvm::NO_AI);
+                                    config::set_project_value(&j.desk_id, &add.project, "machine_ai", Some(ai))
+                                })
+                                .and_then(|()| config::append_folder_starting(&j.desk, None, std::path::Path::new(&at), None, &config::Start::Same, Some(&add.host)))
+                                .and_then(|()| config::set_folder_far(&j.desk, std::path::Path::new(&at), &add.host, Some(&add.project), Some(&sandbox)))
+                                .map(|()| {
+                                    crate::webui::ask_branch_next(&at, true);
+                                    i18n::tp("msg.project.remote_added", &[("name", &add.project), ("host", &add.host)])
+                                })
+                        }
+                        // The checkout's machine has what the project says now,
+                        // and the worktree dialog opens where the page was going
+                        VmWork::Prepare { home, follow, .. } => {
+                            let done = config::ProjectHome { prepared: Some(prepared), ..home.clone() };
+                            config::set_project_home(&j.desk_id, &j.project, &done, None).map(|()| {
+                                if let Some(f) = follow {
+                                    crate::webui::ask_branch_next(f, false);
+                                }
+                                i18n::tp("msg.microvm.prepared", &[("name", &j.project), ("host", &j.host.name)])
+                            })
+                        }
+                    };
+                    match written {
+                        Ok(said) => {
                             said_before_reload = Some((Instant::now(), said.clone()));
                             flash = Some(said);
-                            crate::uistate::AddProjectState { ask, done: Some(at), host: add.host.clone(), microvm: true, ..Default::default() }
+                            j.gone = true;
                         }
-                        Err(e) => crate::uistate::AddProjectState { ask, error: Some(format!("{e:#}")), microvm: true, ..Default::default() },
-                    });
-                }
-                crate::microvm::Outcome::Failed(e) => {
-                    microvm_job = None;
-                    add_view = Some(match e.is_empty() {
-                        // Stopped: the dialog was closed, and nobody is waiting
-                        true => crate::uistate::AddProjectState { ask, ..Default::default() },
-                        false => crate::uistate::AddProjectState { ask, error: Some(e), microvm: true, ..Default::default() },
-                    });
+                        Err(e) => j.error = Some(format!("{e:#}")),
+                    }
                 }
             }
         }
+        vm_jobs.retain(|j| !j.gone);
         // A colour chosen for a project. Written against the folder git shares
         // between its branches, so all of them change at once
         for (folder, color) in shell.mail().take_folder_colors() {
@@ -7526,6 +7757,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .then(|| repo.as_deref().and_then(crate::devcontainer::propose))
                     .flatten(),
                 project_name: project.map(|p| p.name.clone()).unwrap_or_default(),
+                machine_ai: project.and_then(|p| p.machine_ai.clone()).unwrap_or_default(),
                 ..Default::default()
             };
             if ask.ais.is_empty() {
@@ -7539,7 +7771,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // can be done about a machine we would have to ask
                 let planned = match on {
                     Some(h) => {
-                        let far = far_of(desks.get(desk_index), project, h, &from, &checkout, env.clone());
+                        let far = far_of(desks.get(desk_index), project, h, &from, &checkout, env.clone(), &ask.machine_ai);
                         if h.is_made() {
                             view.sign_in = crate::microvm::sign_in_note(&far.1, &far.2);
                             signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
@@ -7667,7 +7899,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let fanned = match on {
                     Some(h) => {
                         let env = ask.setup.then(|| told.clone()).flatten();
-                        let far = far_of(desks.get(desk_index), project, h, &from, &checkout, env);
+                        let far = far_of(desks.get(desk_index), project, h, &from, &checkout, env, &ask.machine_ai);
                         if h.is_made() {
                             view.sign_in = crate::microvm::sign_in_note(&far.1, &far.2);
                             signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
