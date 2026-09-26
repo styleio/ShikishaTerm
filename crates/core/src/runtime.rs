@@ -382,6 +382,35 @@ struct LoginPending {
 /// How often the machine is asked again while the sign-in step is open
 const LOGIN_FRESH: Duration = Duration::from_secs(10);
 
+/// A terminal's rows as one text, each row with whether the terminal itself
+/// wrapped it into the next, joined where a line went on: a row the
+/// terminal wrapped, and a row written out to its last column -- a program
+/// that draws its own screen breaks a long line at the width itself, and
+/// the terminal never knows those two rows were one
+pub fn join_rows(rows: &[(String, bool)], cols: u16) -> String {
+    let mut text = String::new();
+    for (row, wrapped) in rows {
+        let full = row.chars().count() >= usize::from(cols);
+        text.push_str(row);
+        if !(*wrapped || full) {
+            text.push('\n');
+        }
+    }
+    text
+}
+
+/// The first web address in a terminal's text: from `https://` to the
+/// first blank or quote. Empty when there is none
+pub fn web_address_in(text: &str) -> String {
+    let Some(at) = text.find("https://") else { return String::new() };
+    text[at..]
+        .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'))
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(['.', ',', ')', ']'])
+        .to_string()
+}
+
 struct VmJob {
     id: u64,
     desk: String,
@@ -8242,12 +8271,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     p.shown = true;
                     // The checkout's AI terminal, as the tab standing in that
                     // folder on that machine draws it now
-                    let screen = tabs
+                    let (screen, url) = tabs
                         .iter()
                         .find(|t| t.remote_cwd() == Some(p.folder.as_str()) && t.title == p.ai)
                         .map(|t| {
                             let parser = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-                            crate::shell::screen_html(parser.screen())
+                            let s = parser.screen();
+                            let (_, cols) = s.size();
+                            // The text with rows joined where a line went on
+                            // into the next row, which is where a long
+                            // address is whole again
+                            let rows: Vec<(String, bool)> =
+                                s.rows(0, cols).enumerate().map(|(i, r)| (r, s.row_wrapped(i as u16))).collect();
+                            let url = web_address_in(&join_rows(&rows, cols));
+                            (crate::shell::screen_html(s), url)
                         })
                         .unwrap_or_default();
                     let v = crate::uistate::LoginStepState {
@@ -8259,6 +8296,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         state: state.to_string(),
                         error: note.as_ref().map(|n| n.error.clone()).unwrap_or_default(),
                         screen,
+                        url,
                     };
                     if login_view.as_ref() != Some(&v) {
                         login_view = Some(v);
@@ -13171,6 +13209,27 @@ mod survey_tests {
 
 #[cfg(test)]
 mod tests {
+    /// The sign-in address an AI prints is whole again out of the rows it
+    /// was broken into: by the terminal (a wrapped row) or by the program
+    /// drawing its own screen (a row written to its last column). A row
+    /// that ends short is a line's end, and the address stops at a blank
+    #[test]
+    fn a_sign_in_address_is_whole_again_out_of_the_rows_it_was_broken_into() {
+        let cols: u16 = 20;
+        let rows = vec![
+            ("Use the url below:".to_string(), false),
+            ("https://example.test".to_string(), false), // written to the last column
+            ("/a?b=1&c=2".to_string(), true),           // wrapped by the terminal
+            ("&d=3 Paste code".to_string(), false),
+            ("here >".to_string(), false),
+        ];
+        let text = super::join_rows(&rows, cols);
+        assert_eq!(text, "Use the url below:\nhttps://example.test/a?b=1&c=2&d=3 Paste code\nhere >\n");
+        assert_eq!(super::web_address_in(&text), "https://example.test/a?b=1&c=2&d=3");
+        assert_eq!(super::web_address_in("nothing here"), "");
+        assert_eq!(super::web_address_in("see \"https://a.test/x\"."), "https://a.test/x");
+    }
+
     use super::*;
 
     /// The whole of the renaming, from the AI's answer to the settings, against

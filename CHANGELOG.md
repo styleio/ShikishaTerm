@@ -122,7 +122,12 @@ once it reaches its first tagged release.
   the board -- as big as a project's settings page -- asks for the sign-in in
   so many words, with the checkout's own AI terminal drawn inside it (from
   that tab itself, so it is the same on a phone) and brought in front behind
-  it, where keys go; a sign-in done there is seen within seconds. Next goes on to the project's rules either way (a key given
+  it, where keys go; a sign-in done there is seen within seconds. The
+  terminal in the step takes a paste (Ctrl+V, a right press, or a paste
+  anywhere in the step) and, beside it, a help for a sign-in done in a
+  browser: the address the AI printed, to copy or open, and a field for the
+  code that comes back, sent to the terminal with Enter -- a help only, and
+  the terminal stays the way when an AI prints something else. Next goes on to the project's rules either way (a key given
   another way is a sign-in this cannot see), Later puts the step away. A
   machine that already has the sign-in -- a key put in by the machine setup
   -- is never shown the step.

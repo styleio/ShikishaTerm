@@ -859,6 +859,12 @@ pub struct LoginStepState {
     /// wherever the board is and whatever the pane behind it is showing
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub screen: String,
+    /// The first web address on that terminal, wrapped rows joined: the one
+    /// an AI prints for a sign-in done in a browser. A help beside the
+    /// terminal, never the way -- an AI that stops printing one leaves the
+    /// terminal itself, which is the way
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
 }
 
 /// The public addresses of a folder on a MicroVM, as asked for from its menu

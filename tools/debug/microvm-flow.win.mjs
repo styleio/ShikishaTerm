@@ -259,6 +259,30 @@ try {
   await until(() => board.run('/Claude/.test((document.querySelector("#login .lmirror") || {textContent:""}).textContent)'), 'the checkout\'s Claude mirrored in the step', 90000);
   check(await board.run('document.querySelector("#login .lstrong").textContent.includes("ログインしてください")'), 'the ask is said, and said first');
   check(await board.run('!document.getElementById("loginnext").disabled'), 'and the way on is open without it');
+  // Claude's own sign-in, walked to the address it prints: keys sent to the
+  // terminal in the step, and the address picked up beside it for the help
+  const screenText = () => board.run('(document.querySelector("#login .lmirror") || {textContent:""}).textContent');
+  for (let i = 0; i < 4 && !/^https:\/\//.test(((await step()) || {}).url || ''); i++) {
+    await board.run('send({kind:"key", named:"enter"}); true');
+    await sleep(5000);
+    console.log('    (after Enter ' + (i + 1) + ': ' + (await screenText()).replace(/\s+/g, ' ').trim().slice(-200) + ')');
+  }
+  // The whole of it: the address is longer than a row, and ends at the
+  // blank before "Paste code here"
+  await until(async () => /^https:\/\/claude\.(ai|com)\/.*[?&]state=[A-Za-z0-9_-]+$/.test(((await step()) || {}).url || ''), 'the sign-in address Claude printed, picked up whole for the help', 30000)
+    .catch(async (e) => {
+      const s = await step();
+      const text = (await screenText());
+      fs.writeFileSync(path.join(SHOTS, 'microvm-2c-screen.txt'), text);
+      console.log('    (the step says url=' + JSON.stringify((s || {}).url || '') + '; the terminal text has https at ' + text.indexOf('https') + ', ' + text.length + ' chars, saved beside the shots)');
+      throw e;
+    });
+  check(await board.run('!document.querySelector("#login .lurl").hidden && /^https:\\/\\/claude\\.(ai|com)\\//.test(document.querySelector("#login .lurl").getAttribute("href"))'),
+    'the address is beside the terminal, to copy or open: ' + (await step()).url.slice(0, 60) + '…');
+  check(/Paste code here/i.test(await screenText()), 'Claude asks for the code in the terminal');
+  await board.run(`(() => { const c = document.getElementById("logincode"); c.value = "not-a-real-code"; document.getElementById("logincodesend").click(); return true; })()`);
+  await until(async () => /not-a-real-code|invalid|error|failed/i.test(await screenText()), 'the code typed into the terminal from the help', 30000);
+  check(true, 'the help sends the code to the terminal');
   await board.shot('2c-login');
   await on(home.sandbox, 'mkdir -p ~/.claude && echo "{}" > ~/.claude/.credentials.json');
   await until(async () => ((await step()) || {}).state === 'yes', 'the sign-in to be seen while the step is open', 40000);

@@ -353,6 +353,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     line-height:1.25; overflow:auto; padding:8px; background:#000; color:#ddd; border:1px solid var(--line);
     border-radius:var(--r-ctl); }
   #login .lmirror .r { min-height:1.25em; }
+  #login .lhelp { display:flex; flex-direction:column; gap:6px; padding:10px 12px; border:1px dashed var(--line);
+    border-radius:var(--r-ctl); }
+  #login .lhelpsay { font-size:12px; color:var(--dim); line-height:1.5; }
+  #login .lurlrow, #login .lcoderow { display:flex; align-items:center; gap:var(--s2); min-width:0; }
+  #login .lurl { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono);
+    font-size:12px; color:var(--brand); }
+  #login .lurlnone { flex:1; font-size:12px; color:var(--dim); }
+  #login .lcode { flex:1; min-width:0; font-family:var(--mono); font-size:13px; padding:6px 8px; background:var(--raise);
+    color:var(--text); border:1px solid var(--line); border-radius:var(--r-ctl); }
   #login .lstate { font-size:12.5px; color:var(--dim); line-height:1.5; }
   #login .lstate.yes { color:var(--brand); }
   #login .sfoot { display:flex; justify-content:flex-end; gap:var(--s2); padding:12px 20px; border-top:1px solid var(--line); }
@@ -8644,12 +8653,23 @@ function drawLogin() {
       el("div", {class:"sbody"},
         el("div", {class:"lstrong"}, say("tui.login.say")),
         el("div", {class:"ssay"}, say("tui.login.how")),
-        el("div", {class:"lmirror", "aria-hidden":"true"}),
+        loginTerminal(),
+        loginHelp(st),
         el("div", {class:"lstate"})),
       el("div", {class:"sfoot"},
         el("button", {type:"button", class:"quiet", onclick:later}, T["tui.login.later"] || ""),
         el("button", {type:"button", class:"primary", id:"loginnext",
           onclick:() => send({kind:"login", folder: st.folder, act:"next"})}, T["tui.login.next"] || ""))));
+    // A paste anywhere in the step that is not in the code field goes to
+    // the terminal, whatever has the focus: Ctrl+V after a press on a
+    // button must not be lost
+    box.addEventListener("paste", e => {
+      if (e.target && e.target.closest && e.target.closest("input, textarea")) return;
+      const t = e.clipboardData ? e.clipboardData.getData("text") : "";
+      if (!t) return;
+      e.preventDefault();
+      send({kind:"key", text:t});
+    });
     box.hidden = false;
     // Keys go to the terminal behind, as they do with nothing open
     if (!REMOTE) kbd.focus();
@@ -8664,6 +8684,96 @@ function drawLogin() {
     state.classList.toggle("yes", st.state === "yes");
   }
   loginMirror(box, st.screen || "");
+  loginHelpDraw(box, st);
+}
+// The terminal in the step is a terminal: a press puts the keyboard on it
+// (the hidden field the board types through, so Ctrl+V pastes as it does
+// in a pane), a right press pastes, and a paste anywhere in the step that
+// is not in a field of the step's own goes to it. On a phone the sub-input
+// bar remains the way in, and a tap is not asked to open a keyboard
+function loginTerminal() {
+  const m = el("div", {class:"lmirror", "aria-hidden":"true"});
+  m.addEventListener("pointerdown", e => {
+    if (REMOTE && e.pointerType !== "mouse" && !typingDirect()) return;
+    e.preventDefault();
+    kbd.focus();
+  });
+  m.addEventListener("contextmenu", e => {
+    // The window's own right press pastes from this machine's clipboard
+    // (the document's handler). From afar, that clipboard is not here:
+    // the browser's is read when it lets a page read it
+    if (!REMOTE) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then(t => { if (t) send({kind:"key", text:t}); }).catch(() => {});
+    }
+  });
+  return m;
+}
+// Beside the terminal, a help for a sign-in done in a browser: the address
+// the AI printed, to copy or open, and a field for the code that comes back,
+// sent to the terminal with Enter. A help and nothing more: an AI that
+// changes what it prints leaves the terminal above, which is the way
+function loginHelp(st) {
+  const url = el("a", {class:"lurl", target:"_blank", rel:"noopener"});
+  const copy = el("button", {type:"button", class:"quiet", onclick:() => {
+    const at = url.getAttribute("href") || "";
+    if (!at) return;
+    copyToClipboard(at);
+    copy.textContent = T["tui.login.copied"] || "";
+    setTimeout(() => { copy.textContent = T["tui.login.url.copy"] || ""; }, 2000);
+  }}, T["tui.login.url.copy"] || "");
+  const code = el("input", {type:"text", id:"logincode", class:"lcode", placeholder:T["tui.login.code.ph"] || "",
+    autocomplete:"off", spellcheck:"false"});
+  const sendCode = () => {
+    const v = code.value.trim();
+    if (!v) return;
+    send({kind:"key", text:v});
+    send({kind:"key", named:"enter"});
+    code.value = "";
+  };
+  code.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); sendCode(); } e.stopPropagation(); });
+  code.addEventListener("keyup", e => e.stopPropagation());
+  code.addEventListener("keypress", e => e.stopPropagation());
+  return el("div", {class:"lhelp"},
+    el("div", {class:"lhelpsay"}, T["tui.login.help"] || ""),
+    el("div", {class:"lurlrow"}, el("span", {class:"lurlnone"}, T["tui.login.url.none"] || ""), url, copy),
+    el("div", {class:"lcoderow"}, code, el("button", {type:"button", class:"quiet", id:"logincodesend", onclick:sendCode}, T["tui.login.code.send"] || "")));
+}
+function loginHelpDraw(box, st) {
+  const url = box.querySelector(".lurl");
+  const none = box.querySelector(".lurlnone");
+  const copy = box.querySelector(".lurlrow button");
+  if (!url || !none || !copy) return;
+  const at = st.url || "";
+  if (url.getAttribute("href") !== at) {
+    url.setAttribute("href", at);
+    url.textContent = at.length > 72 ? at.slice(0, 69) + "…" : at;
+    url.title = at;
+  }
+  url.hidden = !at;
+  copy.hidden = !at;
+  none.hidden = !!at;
+}
+// Text into the clipboard of whoever is looking: this machine's at the
+// window (the runtime does it), the browser's from afar -- by the older
+// command, because a board reached over plain http is not a secure context
+// and there the newer API does not exist
+function copyToClipboard(text) {
+  if (!REMOTE) { send({kind:"copy", text}); return; }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(() => {});
+    return;
+  }
+  const t = document.createElement("textarea");
+  t.value = text;
+  t.setAttribute("readonly", "");
+  t.style.position = "fixed"; t.style.left = "-9999px";
+  document.body.append(t);
+  t.select();
+  try { document.execCommand("copy"); } catch (err) {}
+  t.remove();
 }
 // The checkout's AI terminal, drawn in the step from what the app sends
 // of that tab itself -- not copied from the pane behind, which is whatever
