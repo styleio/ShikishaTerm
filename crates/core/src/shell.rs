@@ -353,6 +353,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     line-height:1.25; overflow:auto; padding:8px; background:#000; color:#ddd; border:1px solid var(--line);
     border-radius:var(--r-ctl); }
   #login .lmirror .r { min-height:1.25em; }
+  #login .lcmds { display:flex; flex-direction:column; gap:6px; }
+  #login .lcmd { display:flex; align-items:flex-start; gap:var(--s2); min-width:0; }
+  #login .lcmdn { flex:none; width:20px; font-size:12px; color:var(--dim); padding-top:6px; text-align:right; }
+  #login .lcmdc { flex:1; min-width:0; font-size:12px; padding:6px 8px; background:var(--raise); color:var(--text);
+    border:1px solid var(--line); border-radius:var(--r-ctl); white-space:pre-wrap; word-break:break-all; }
   #login .lhelp { display:flex; flex-direction:column; gap:6px; padding:10px 12px; border:1px dashed var(--line);
     border-radius:var(--r-ctl); }
   #login .lhelpsay { font-size:12px; color:var(--dim); line-height:1.5; }
@@ -8728,10 +8733,11 @@ function drawAiSignIn(box, note) {
   box.append(el("div", {class:"warn"}, say("tui.aisignin.error") + (note.error ? " " + note.error : "")));
 }
 // The checkout's tab running this AI, on the board: in the folder that is
-// the checkout, the tab whose AI this is
+// the checkout, the tab whose AI this is -- or, asked with no AI, the
+// folder's terminal (a server's, put there for its git sign-in)
 function checkoutAiTab(checkout, ai) {
   const gi = ((S && S.groups) || []).findIndex(g => g.folder === checkout);
-  return gi < 0 ? null : (((S && S.tabs) || []).find(t => t.group === gi && t.ai === ai) || null);
+  return gi < 0 ? null : (((S && S.tabs) || []).find(t => t.group === gi && (ai ? t.ai === ai : t.kind === "pty")) || null);
 }
 
 // ── The sign-in step of a project just cloned onto a MicroVM ─────────────
@@ -8761,7 +8767,10 @@ function drawLogin() {
     if (tab.index !== S.active) send({kind:"select", tab: tab.index});
     else loginSelected = mark;
   }
-  const say = k => (T[k] || "").replace("{ai}", st.name);
+  // The words of the step: an AI's sign-in, or a server git's (`git`)
+  const git = st.kind === "git";
+  const key = k => git ? k.replace("tui.login.", "tui.gitsignin.") : k;
+  const say = k => (T[key(k)] || "").replace("{ai}", st.name).replace("{host}", st.host);
   if (loginSeen !== st.seq) {
     loginSeen = st.seq;
     box.textContent = "";
@@ -8773,13 +8782,16 @@ function drawLogin() {
       el("div", {class:"sbody"},
         el("div", {class:"lstrong"}, say("tui.login.say")),
         el("div", {class:"ssay"}, say("tui.login.how")),
+        // A server's git: the commands drafted for it, to copy and run in
+        // the terminal below -- nothing runs from here, the person does
+        ...(git ? [loginCommands(st.commands || [])] : []),
         loginTerminal(),
-        loginHelp(st),
+        ...(git ? [] : [loginHelp(st)]),
         el("div", {class:"lstate"})),
       el("div", {class:"sfoot"},
         el("button", {type:"button", class:"quiet", onclick:later}, T["tui.login.later"] || ""),
         el("button", {type:"button", class:"primary", id:"loginnext",
-          onclick:() => send({kind:"login", folder: st.folder, act:"next"})}, T["tui.login.next"] || ""))));
+          onclick:() => send({kind:"login", folder: st.folder, act:"next"})}, say("tui.login.next")))));
     // A paste anywhere in the step that is not in the code field goes to
     // the terminal, whatever has the focus: Ctrl+V after a press on a
     // button must not be lost
@@ -8804,7 +8816,25 @@ function drawLogin() {
     state.classList.toggle("yes", st.state === "yes");
   }
   loginMirror(box, st.screen || "");
-  loginHelpDraw(box, st);
+  if (!git) loginHelpDraw(box, st);
+}
+// The commands drafted for a server, one to a row, each with a button that
+// copies it and nothing that runs it: the person pastes it into the
+// terminal and presses Enter, having read it
+function loginCommands(commands) {
+  const list = el("div", {class:"lcmds"});
+  commands.forEach((c, i) => {
+    const copy = el("button", {type:"button", class:"quiet", onclick:() => {
+      copyToClipboard(c);
+      copy.textContent = T["tui.login.copied"] || "";
+      setTimeout(() => { copy.textContent = T["tui.gitsignin.copy"] || ""; }, 2000);
+    }}, T["tui.gitsignin.copy"] || "");
+    list.append(el("div", {class:"lcmd"},
+      el("span", {class:"lcmdn"}, String(i + 1)),
+      el("code", {class:"lcmdc mono"}, c),
+      copy));
+  });
+  return list;
 }
 // The terminal in the step is a terminal: a press puts the keyboard on it
 // (the hidden field the board types through, so Ctrl+V pastes as it does

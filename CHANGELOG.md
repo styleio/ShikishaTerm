@@ -114,6 +114,18 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **A server whose git cannot sign in to GitHub is walked through it.**
+  When a clone onto a server stops for want of a sign-in to GitHub, a step
+  opens as the MicroVM's AI sign-in does: the server is looked at, and the
+  commands that give its git a sign-in are drafted for what it runs -- GitHub
+  CLI installed its makers' way for that system (left out when it is
+  there), `gh auth login`, `gh auth setup-git` -- each with a copy button
+  and nothing that runs it: the person reads it, pastes it into the
+  server's terminal shown in the step, and presses Enter. The step asks the
+  server every few seconds whether the repository can be read yet, and
+  "Clone again" tries the clone's row again. The terminal is put on the
+  desk for the step, in the folder the clone was to go in, and taken off
+  when the step closes.
 - **A clone onto a server that cannot sign in says what to set up there.**
   A private repository on a server whose git has no sign-in failed with
   git's bare "could not read Username"; the row now says the server's git

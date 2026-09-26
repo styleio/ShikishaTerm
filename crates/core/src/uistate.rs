@@ -865,6 +865,14 @@ pub struct LoginStepState {
     /// terminal itself, which is the way
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
+    /// What is being signed in to: empty for an AI on a MicroVM, `git` for a
+    /// server's git to GitHub, which a clone there could not read without
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// For `git`: the commands drafted for that server, in order -- shown
+    /// with a copy button each, and run by the person in the terminal
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<String>,
 }
 
 /// The public addresses of a folder on a MicroVM, as asked for from its menu

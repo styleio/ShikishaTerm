@@ -332,10 +332,7 @@ try {
   await until(async () => !(await row()) && (await board.run('document.getElementById("addproj").hidden')), 'the second clone to finish', 60000);
   check((await there(`cat ${CLONES}/Hello-World/mine.txt`)) === 'mine', 'a checkout of the same repository already there is taken in as it is');
   // Another repository of that name, and a folder that is no repository: said, and nothing touched
-  for (const [url, what, word] of [['https://github.com/someone-else/Hello-World.git', 'another repository', '別のリポジトリ'], ['https://github.com/octocat/plain.git', 'a folder that is not one', 'git のリポジトリではありません'],
-    // A private repository, and a server whose git has no sign-in for it:
-    // what to set up there is said, not only git's own line
-    [PRIVATE, 'a private repository the server cannot sign in to', 'サーバー側でサインインを設定してください']]) {
+  for (const [url, what, word] of [['https://github.com/someone-else/Hello-World.git', 'another repository', '別のリポジトリ'], ['https://github.com/octocat/plain.git', 'a folder that is not one', 'git のリポジトリではありません']]) {
     await openClone(url);
     await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
     // Said on the row, as a MicroVM's failure is, with Try again and Close
@@ -348,6 +345,45 @@ try {
     await until(async () => !(await failedRow()), 'the failed row put away', 20000);
   }
   check((await there(`ls ${CLONES}/plain`)) === 'file', 'and what was there is left as it was');
+
+  console.log('5b. a private repository, and a server whose git cannot sign in to it');
+  // The step opens: the commands drafted for this server, to copy -- nothing
+  // runs from the page -- and a terminal there, in the clone's folder
+  await openClone(PRIVATE);
+  await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
+  const step = () => board.run('JSON.stringify((S && S.login_step) || null)').then((t) => JSON.parse(t || 'null'));
+  await until(async () => ((await step()) || {}).kind === 'git', 'the sign-in step for the server\x27s git', 90000);
+  const st = await step();
+  check(st.host === 'srv' && st.folder === CLONES && st.url === PRIVATE, 'the step is for this server, its folder and this repository: ' + JSON.stringify({ host: st.host, folder: st.folder }));
+  check(st.commands.length === 3 && /apt install gh/.test(st.commands[0]) && st.commands[1].startsWith('gh auth login') && st.commands[2] === 'gh auth setup-git',
+    'the commands are drafted for an Ubuntu server with no gh: ' + st.commands.map((c) => c.slice(0, 30)).join(' | '));
+  await until(() => board.run('!document.getElementById("login").hidden'), 'the step on the board', 20000);
+  check(await board.run('document.querySelectorAll("#login .lcmd button").length === 3 && !document.querySelector("#login .lcmd [onclick*=key]")'),
+    'each command has a copy button, and nothing that runs it');
+  await until(() => board.run('/\$\s*$/.test((document.querySelector("#login .lmirror") || {textContent:""}).textContent.trim() + " ") || /shikisha-test\.clones/.test((document.querySelector("#login .lmirror") || {textContent:""}).textContent)'), 'the server\x27s terminal in the step', 60000);
+  check(/shikisha-test.clones/.test(await board.run('document.querySelector("#login .lmirror").textContent')), 'the terminal stands in the clone\x27s folder on the server');
+  if (!/shikisha-test.clones/.test(await board.run('document.querySelector("#login .lmirror").textContent'))) {
+    console.log('    (the board: ' + await board.run('JSON.stringify({groups:(S.groups||[]).map((g,i)=>i+":"+g.folder), tabs:(S.tabs||[]).map(t=>t.index+":"+t.name+"@"+t.group+"/"+t.kind+"/"+t.state)})') + ')');
+    console.log('    (the settings: ' + JSON.stringify((desk().folders||[]).filter((f)=>f.host).map((f)=>({cwd:f.cwd,host:f.host,tabs:f.tabs}))) + ')');
+  }
+  await until(async () => ((await step()) || {}).state === 'no', 'the step to say the repository cannot be read yet', 60000);
+  await board.shot('5b-git-signin');
+  // Standing in for gh auth login, which a person does in a browser: a
+  // sign-in given to the server's git for a moment, taken away after
+  const PAT = dotenv.GITHUB_HELLO_WORLD_PAT;
+  check(!!PAT, 'a token for the private repository is in .private/.env (GITHUB_HELLO_WORLD_PAT)');
+  await there(`git config --global credential.https://github.com.helper '!f() { echo username=x-access-token; echo password=${PAT}; }; f'`);
+  try {
+    await until(async () => ((await step()) || {}).state === 'yes', 'the step to see the sign-in', 60000);
+    check(true, 'the sign-in is seen while the step is open');
+    await board.run('document.getElementById("loginnext").click(); true');
+    await until(() => board.run('document.getElementById("login").hidden'), 'the step closed', 20000);
+    await until(() => !!(desk().folders || []).find((f) => f.host === 'srv' && f.cwd === `${CLONES}/helloworld`), 'the private clone, made after the sign-in', 180000);
+    check(true, '"Clone again" clones it now');
+    check(!(desk().folders || []).some((f) => f.host === 'srv' && f.cwd === CLONES), 'and the terminal put there for the step is off the desk');
+  } finally {
+    await there('git config --global --unset-all credential.https://github.com.helper; true');
+  }
 
   console.log('6. a server added from the page, signing in the way it does');
   // From the clone page's own list, as a MicroVM is added from its list: the

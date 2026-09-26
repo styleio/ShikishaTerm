@@ -309,6 +309,85 @@ pub fn remote_join(parent: &str, name: &str) -> String {
 /// Start cloning `url` into a new folder under `parent` on another machine.
 /// Git there cannot say how far it has got through one command, so it runs
 /// until it is done; a stop takes back whatever it made once it ends
+/// What a server is, for drafting how its git signs in to GitHub
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ServerLook {
+    /// The folder the clone was to go in, as the server spells it in full
+    /// (`~` said out): where the terminal for the sign-in stands
+    pub parent: String,
+    /// `/etc/os-release`'s ID and ID_LIKE, lowercased, space-separated
+    pub os: String,
+    /// Whether GitHub CLI is on it already
+    pub has_gh: bool,
+}
+
+/// Look at a server once: the clone's folder in full, what it runs, and
+/// whether GitHub CLI is there. The folder is made if it is not, as the
+/// clone would have made it
+pub fn look_at_server(spec: &crate::ssh::Spec, parent: &str) -> Result<ServerLook, String> {
+    let line = format!(
+        "mkdir -p {p} && cd {p} && pwd && (. /etc/os-release 2>/dev/null; echo \"OS=$ID $ID_LIKE\") && (command -v gh >/dev/null 2>&1 && echo HAS_GH || true)",
+        p = remote_quote(parent)
+    );
+    let ran = crate::ssh::exec(spec, &line, 60_000).map_err(|e| format!("{e:#}"))?;
+    if !ran.ok() {
+        return Err(ran.said());
+    }
+    let lines: Vec<&str> = ran.out.lines().map(str::trim).collect();
+    Ok(ServerLook {
+        parent: lines.iter().find(|l| l.starts_with('/')).map(|l| l.to_string()).unwrap_or_default(),
+        os: lines.iter().find_map(|l| l.strip_prefix("OS=")).unwrap_or_default().trim().to_ascii_lowercase(),
+        has_gh: lines.contains(&"HAS_GH"),
+    })
+}
+
+/// Whether the server's git can read `url` now -- the one question a sign-in
+/// is set up to answer, asked the way the clone asks it
+pub fn can_read(spec: &crate::ssh::Spec, url: &str) -> bool {
+    let line = format!("GIT_TERMINAL_PROMPT=0 git ls-remote --heads -- '{}' >/dev/null 2>&1", url.replace('\'', "'\\''"));
+    crate::ssh::exec(spec, &line, 60_000).is_ok_and(|r| r.ok())
+}
+
+/// Whether an address is GitHub's, which is what the drafted sign-in is for
+pub fn is_github(url: &str) -> bool {
+    let s = url.trim().to_ascii_lowercase();
+    s.contains("github.com/") || s.contains("github.com:")
+}
+
+/// The commands that give a server's git a sign-in to GitHub, drafted for
+/// what the server is: GitHub CLI installed the way its makers say for that
+/// system (left out when it is there), then signed in in a browser, then
+/// set as git's way of signing in. Drafts for a person to read, copy and
+/// run -- nothing here runs them
+pub fn github_sign_in_commands(look: &ServerLook) -> Vec<String> {
+    let os = &look.os;
+    let has = |w: &str| os.split_whitespace().any(|x| x == w);
+    let mut out = Vec::new();
+    if !look.has_gh {
+        out.push(if has("debian") || has("ubuntu") {
+            "(type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) && sudo mkdir -p -m 755 /etc/apt/keyrings && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && sudo apt update && sudo apt install gh -y".to_string()
+        // The RHEL family before Fedora: its ID_LIKE names Fedora as well,
+        // and Fedora's own packages are not in its repositories
+        } else if has("rhel") || has("centos") || has("rocky") || has("almalinux") {
+            "sudo dnf install 'dnf-command(config-manager)' -y && sudo dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo && sudo dnf install gh --repo gh-cli -y".to_string()
+        } else if has("fedora") {
+            "sudo dnf install gh -y".to_string()
+        } else if has("arch") {
+            "sudo pacman -S --noconfirm github-cli".to_string()
+        } else if has("alpine") {
+            "sudo apk add github-cli".to_string()
+        } else if has("opensuse") || has("suse") {
+            "sudo zypper --non-interactive install gh".to_string()
+        } else {
+            // Said as a comment: pasted and run, it does nothing
+            "# https://github.com/cli/cli#installation".to_string()
+        });
+    }
+    out.push("gh auth login --hostname github.com --git-protocol https --web".to_string());
+    out.push("gh auth setup-git".to_string());
+    out
+}
+
 /// What the line run over there prints in front of the origin of a checkout
 /// that was already where the clone was to go
 const EXISTING: &str = "SHIKISHA-EXISTING\t";
@@ -439,6 +518,26 @@ fn bail_str(e: &anyhow::Error) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sign-in drafted for a server is what that server is: GitHub CLI
+    /// installed its makers' way for the system (not when it is there), then
+    /// the sign-in and git told to use it. A system nobody drafted for gets
+    /// the page to read, as a comment that does nothing when run
+    #[test]
+    fn a_servers_sign_in_is_drafted_for_what_the_server_is() {
+        let look = |os: &str, has_gh: bool| ServerLook { parent: "/home/u".into(), os: os.into(), has_gh };
+        let ubuntu = github_sign_in_commands(&look("ubuntu debian", false));
+        assert_eq!(ubuntu.len(), 3);
+        assert!(ubuntu[0].contains("apt install gh") && ubuntu[0].contains("cli.github.com/packages"));
+        assert_eq!(ubuntu[1], "gh auth login --hostname github.com --git-protocol https --web");
+        assert_eq!(ubuntu[2], "gh auth setup-git");
+        assert_eq!(github_sign_in_commands(&look("ubuntu debian", true)).len(), 2, "installed already");
+        assert!(github_sign_in_commands(&look("rocky rhel centos fedora", false))[0].contains("--repo gh-cli"));
+        assert_eq!(github_sign_in_commands(&look("fedora", false))[0], "sudo dnf install gh -y");
+        assert!(github_sign_in_commands(&look("gentoo", false))[0].starts_with('#'));
+        assert!(is_github("https://github.com/acme/site.git") && is_github("git@github.com:acme/site"));
+        assert!(!is_github("https://gitlab.com/acme/site.git"));
+    }
 
     /// A checkout already where a clone was to go is the same repository
     /// when the addresses differ only in how they are written

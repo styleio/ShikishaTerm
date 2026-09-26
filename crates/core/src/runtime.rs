@@ -401,6 +401,30 @@ struct LoginPending {
 /// How often the machine is asked again while the sign-in step is open
 const LOGIN_FRESH: Duration = Duration::from_secs(10);
 
+/// The sign-in step for a server's git: a clone onto the server could not
+/// read the repository, and the server's git is to be given a sign-in to
+/// GitHub by the person, in a terminal on the server, with the commands the
+/// step drafts. The terminal stands in the folder the clone was to go in,
+/// put on the desk for the step when it was not there, and taken off again
+/// when the step closes. "Clone again" tries the clone's row again
+struct GitSignIn {
+    seq: u64,
+    /// The clone's row, tried again from the step
+    row: u64,
+    desk: String,
+    host: config::HostSpec,
+    spec: crate::ssh::Spec,
+    url: String,
+    /// What the server is, once it has been looked at
+    probe: std::sync::Arc<std::sync::Mutex<Option<Result<crate::addproject::ServerLook, String>>>>,
+    look: Option<crate::addproject::ServerLook>,
+    /// Whether the terminal's folder was put on the desk for the step
+    added: bool,
+    /// Whether the server's git can read the repository now: when it was
+    /// last asked, what it said, and whether an asking is on its way
+    access: std::sync::Arc<std::sync::Mutex<(Option<Instant>, Option<bool>, bool)>>,
+}
+
 /// A terminal's rows as one text, each row with whether the terminal itself
 /// wrapped it into the next, joined where a line went on: a row the
 /// terminal wrapped, and a row written out to its last column -- a program
@@ -1795,6 +1819,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The sign-in step of a project just cloned onto a MicroVM: the checkout
     // whose AI is to be signed in to, before its first worktree is cut
     let mut login_pending: Option<LoginPending> = None;
+    let mut git_signin: Option<GitSignIn> = None;
     let mut login_view: Option<crate::uistate::LoginStepState> = None;
     let mut login_seq: u64 = 0;
     // What it would take to have a missing working folder here. Answered when
@@ -7927,12 +7952,41 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // A server's clone: the folder there written on the desk, and the
             // project on through its rules, as a MicroVM's goes. A stopped
             // one has taken back what it made and goes with its row
-            if let VmWork::SshClone { job, .. } = &j.work {
+            if let VmWork::SshClone { job, spec, url, parent } = &j.work {
                 match job.outcome() {
                     crate::addproject::Outcome::Running(_) => {}
                     crate::addproject::Outcome::Failed(_) if j.stopping => j.gone = true,
                     crate::addproject::Outcome::Failed(e) => {
                         append_hook_log(&format!("could not clone {} on {}: {e}", j.project, j.host.name));
+                        // The server's git could not sign in to GitHub: the
+                        // step that walks the person through giving it one
+                        // opens, the server looked at first to draft for it.
+                        // The row keeps what git said either way
+                        if crate::git::refused_sign_in(&e).is_some()
+                            && crate::addproject::is_github(url)
+                            && git_signin.is_none()
+                            && login_pending.is_none()
+                        {
+                            let probe = std::sync::Arc::new(std::sync::Mutex::new(None));
+                            let (slot, spec2, parent2) = (probe.clone(), spec.clone(), parent.clone());
+                            std::thread::spawn(move || {
+                                let look = crate::addproject::look_at_server(&spec2, &parent2);
+                                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(look);
+                            });
+                            login_seq += 1;
+                            git_signin = Some(GitSignIn {
+                                seq: login_seq,
+                                row: j.id,
+                                desk: j.desk.clone(),
+                                host: j.host.clone(),
+                                spec: spec.clone(),
+                                url: url.clone(),
+                                probe,
+                                look: None,
+                                added: false,
+                                access: Default::default(),
+                            });
+                        }
                         j.error = Some(e);
                     }
                     crate::addproject::Outcome::Done(at) => {
@@ -8800,6 +8854,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         error: note.as_ref().map(|n| n.error.clone()).unwrap_or_default(),
                         screen,
                         url,
+                        ..Default::default()
                     };
                     if login_view.as_ref() != Some(&v) {
                         login_view = Some(v);
@@ -8814,7 +8869,105 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 crate::webui::ask_branch_next(&folder, true);
             }
         }
+        // The sign-in step for a server's git. Drawn once the server has been
+        // looked at: the commands drafted for it, its terminal, and whether
+        // the server's git can read the repository yet
+        let mut git_signin_gone = false;
+        if let Some(g) = git_signin.as_mut() {
+            if g.look.is_none() {
+                let arrived = g.probe.lock().unwrap_or_else(|e| e.into_inner()).take();
+                match arrived {
+                    None => {}
+                    // Not looked at: the row says what git said, as before
+                    Some(Err(e)) => {
+                        append_hook_log(&format!("could not look at {} for its git sign-in: {e}", g.host.name));
+                        git_signin_gone = true;
+                    }
+                    Some(Ok(look)) => {
+                        // A terminal there, standing in the clone's folder:
+                        // put on the desk for the step unless it is there
+                        let here = desks.iter().find(|d| d.name == g.desk).is_some_and(|d| {
+                            d.folders.iter().any(|f| {
+                                f.host.as_ref().is_some_and(|h| h.name == g.host.name)
+                                    && f.cwd.as_ref().is_some_and(|c| c.to_string_lossy().trim_end_matches('/') == look.parent)
+                            })
+                        });
+                        if !here {
+                            match config::append_folder_starting(&g.desk, None, std::path::Path::new(&look.parent), None, &config::Start::Same, Some(&g.host.name)) {
+                                // Read in again now, so its terminal starts
+                                // while the step is up rather than whenever
+                                // the settings are next looked at
+                                Ok(()) => {
+                                    g.added = true;
+                                    watcher.poke();
+                                }
+                                Err(e) => append_hook_log(&format!("could not put a terminal on {} for its git sign-in: {e:#}", g.host.name)),
+                            }
+                        }
+                        g.look = Some(look);
+                    }
+                }
+            }
+            if let Some(look) = g.look.clone() {
+                // Asked again every few seconds while the step is open
+                {
+                    let mut a = g.access.lock().unwrap_or_else(|e| e.into_inner());
+                    if !a.2 && a.0.is_none_or(|at| at.elapsed() >= LOGIN_FRESH) {
+                        a.2 = true;
+                        let (slot, spec, url) = (g.access.clone(), g.spec.clone(), g.url.clone());
+                        std::thread::spawn(move || {
+                            let can = crate::addproject::can_read(&spec, &url);
+                            let mut a = slot.lock().unwrap_or_else(|e| e.into_inner());
+                            *a = (Some(Instant::now()), Some(can), false);
+                        });
+                    }
+                }
+                let can = g.access.lock().unwrap_or_else(|e| e.into_inner()).1;
+                let screen = tabs
+                    .iter()
+                    .find(|t| t.remote_cwd() == Some(look.parent.as_str()) && t.title == g.host.name)
+                    .map(|t| crate::shell::screen_html(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen()))
+                    .unwrap_or_default();
+                let v = crate::uistate::LoginStepState {
+                    seq: g.seq,
+                    folder: look.parent.clone(),
+                    host: g.host.name.clone(),
+                    name: g.host.name.clone(),
+                    state: match can {
+                        None => "asking",
+                        Some(true) => "yes",
+                        Some(false) => "no",
+                    }
+                    .into(),
+                    screen,
+                    url: g.url.clone(),
+                    kind: "git".into(),
+                    commands: crate::addproject::github_sign_in_commands(&look),
+                    ..Default::default()
+                };
+                if login_view.as_ref() != Some(&v) {
+                    login_view = Some(v);
+                }
+            }
+        }
+        if git_signin_gone {
+            git_signin = None;
+        }
         for (folder, act) in shell.mail().take_logins() {
+            // The server's git step: "next" tries the clone again, and either
+            // way the terminal put there for it comes off the desk
+            if git_signin.as_ref().is_some_and(|g| g.look.as_ref().is_some_and(|l| l.parent == folder)) {
+                if let Some(g) = git_signin.take() {
+                    if g.added && config::remove_folder(&g.desk, std::path::Path::new(&folder)).is_ok() {
+                        watcher.poke();
+                    }
+                    if act == "next" {
+                        shell.mail().makings.push((g.row, "retry".to_string()));
+                    }
+                }
+                login_view = None;
+                continue;
+            }
             if login_pending.as_ref().is_some_and(|p| p.folder == folder) {
                 login_pending = None;
                 login_view = None;
