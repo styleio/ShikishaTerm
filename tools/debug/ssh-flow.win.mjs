@@ -267,6 +267,17 @@ try {
       u.value = ${JSON.stringify(url)}; u.dispatchEvent(new Event("input"));
       p.value = ${JSON.stringify(CLONES)}; p.dispatchEvent(new Event("input")); return true; })()`);
   };
+  // With no server yet, the picker says so, and nothing else
+  const had = saved();
+  fs.writeFileSync(CONFIG, JSON.stringify({ ...had, hosts: [] }, null, 2));
+  await until(() => board.run('!(S.hosts || []).length'), 'the settings read in with no server', 20000);
+  await board.run(`apHost = ""; openAddProject(); apShow("sshclone"); true`);
+  await until(() => board.run('!!document.querySelector("#addproj .bpick")'), 'the clone page', 10000);
+  check((await board.run('document.querySelector("#addproj .bpick").textContent')) === 'SSH ホストがまだありません▾',
+    'with no server the picker says so and nothing else: ' + await board.run('document.querySelector("#addproj .bpick").textContent'));
+  await board.run('closeAddProject(); true');
+  fs.writeFileSync(CONFIG, JSON.stringify(had, null, 2));
+  await until(() => board.run('(S.hosts || []).some(h => h.name === "srv")'), 'the server back in the settings', 20000);
   await openClone(HELLO);
   check(await board.run('apHost') === 'srv', 'the server is chosen, as a MicroVM is');
   check(await board.run('[...document.querySelectorAll("#addproj .aphostadd")].length === 0'), 'the list is closed until it is pressed');
@@ -319,6 +330,42 @@ try {
     await until(async () => !(await failedRow()), 'the failed row put away', 20000);
   }
   check((await there(`ls ${CLONES}/plain`)) === 'file', 'and what was there is left as it was');
+
+  console.log('6. a server added from the page, signing in the way it does');
+  // From the clone page's own list, as a MicroVM is added from its list: the
+  // form, the way it signs in -- a password when the server takes one --
+  // and back on the clone page with it chosen, its folders walked with it
+  await board.run(`openAddProject(); apShow("sshclone"); true`);
+  await until(() => board.run('!!document.querySelector("#addproj .bpick")'), 'the clone page', 10000);
+  await board.run('document.querySelectorAll("#addproj .bpick")[0].click(); true');
+  await until(() => board.run('!!document.querySelector(".aphostadd")'), 'the list with its last line', 10000);
+  await board.run('document.querySelector(".aphostadd").click(); true');
+  await until(() => board.run('!!document.querySelector("#addproj select.apin")'), 'the host form', 10000);
+  const byPassword = !!PASSWORD;
+  await board.run(`(() => {
+    const inputs = [...document.querySelectorAll("#addproj input.apin")];
+    const set = (i, v) => { i.value = v; i.dispatchEvent(new Event("input")); };
+    set(inputs[0], "srv2"); set(inputs[1], ${JSON.stringify(HOST)}); set(inputs[2], ${JSON.stringify(USER)}); set(inputs[3], ${JSON.stringify(String(PORT))});
+    const auth = document.querySelector("#addproj select.apin");
+    auth.value = ${JSON.stringify(byPassword ? 'password' : 'key')}; auth.dispatchEvent(new Event("change"));
+    set(inputs[${byPassword ? 5 : 4}], ${JSON.stringify(byPassword ? PASSWORD : KEY || '')});
+    return true; })()`);
+  // What is on screen, not what is marked: a field is shown when it takes room
+  const shownField = (word) => board.run(`[...document.querySelectorAll("#addproj .sfield")].some(f => f.offsetHeight > 0 && f.querySelector("label") && f.querySelector("label").textContent === ${JSON.stringify(word)} && f.querySelector("input"))`);
+  check(await shownField(byPassword ? 'パスワード' : '鍵ファイル') && !(await shownField(byPassword ? '鍵ファイル' : 'パスワード')),
+    `the ${byPassword ? 'password' : 'key file'} field is the one shown, and the other is not`);
+  await board.shot('6-host-form');
+  await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
+  await until(() => board.run('apHost === "srv2" && !!document.querySelector("#addproj .aprow")'), 'back on the clone page with the new server chosen', 30000);
+  const written = (saved().hosts || []).find((h) => h.name === 'srv2');
+  check(!!written && !JSON.stringify(written).includes(PASSWORD || '\u0000never'), 'the server is in the settings, and no password is written there: ' + JSON.stringify(written));
+  if (byPassword) {
+    check(fs.readFileSync(SECRETS, 'utf8').includes('ssh/host/srv2/password'), 'the password is in the secret store, under the name the connection reads');
+  }
+  await board.run(`document.querySelector('#addproj button[title="サーバーのフォルダをたどる"]').click(); true`);
+  await until(() => board.run('(document.querySelectorAll("#addproj .aprrow") || []).length > 0'), 'the new server\'s folders, reached with what the form was given', 30000);
+  check(true, 'the new server is reached with what the form was given');
+  await board.run('closeAddProject(); true');
 } catch (e) {
   check(false, e.message);
 } finally {

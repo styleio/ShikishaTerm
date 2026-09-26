@@ -3880,8 +3880,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::RemoteList { host, path, ask }) => {
                         shell.mail().remote_lists.push((host, path, ask));
                     }
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::AddHost { name, at, key, ask }) => {
-                        shell.mail().add_hosts.push((name, at, key, ask));
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::AddHost { name, at, key, password, ask }) => {
+                        shell.mail().add_hosts.push(crate::mailbox::HostAsk { name, at, key, password, ask });
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderColor { folder, color }) => {
                         shell.mail().folder_colors.push((folder, color));
@@ -7817,8 +7817,33 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         // A machine written into the settings from the dialog. The dialog goes
         // on with it chosen once the settings are read back
-        for (name, at, key, ask) in shell.mail().take_add_hosts() {
-            let spec = config::HostSpec { name: name.trim().to_string(), at, key: Some(key), ..Default::default() };
+        for h in shell.mail().take_add_hosts() {
+            let ask = h.ask;
+            let key = Some(h.key.trim().to_string()).filter(|k| !k.is_empty());
+            let spec = config::HostSpec { name: h.name.trim().to_string(), at: h.at, key, ..Default::default() };
+            // A password goes to the secret store, under the name the
+            // connection reads it by, before the host is written: the settings
+            // read in again after the host is written are read with it there
+            let kept = match h.password.is_empty() {
+                true => Ok(()),
+                false => cfg
+                    .as_ref()
+                    .and_then(|c| c.secrets_path())
+                    .ok_or_else(|| anyhow::anyhow!(i18n::t("err.host.no_store")))
+                    .and_then(|path| {
+                        let meta = config::SecretMeta {
+                            human: true,
+                            ai: false,
+                            urls: Vec::new(),
+                            desc: format!("SSH {}", spec.name),
+                        };
+                        config::upsert_secret(&path, password.as_deref(), &format!("ssh/host/{}/password", spec.name), &meta, &h.password)
+                    }),
+            };
+            if let Err(e) = kept {
+                add_view = Some(crate::uistate::AddProjectState { ask, error: Some(format!("{e:#}")), ..Default::default() });
+                continue;
+            }
             add_view = Some(match config::add_host(&spec) {
                 Ok(()) => {
                     let said = i18n::tp("msg.host.added", &[("name", &spec.name)]);

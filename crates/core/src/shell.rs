@@ -417,7 +417,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     cursor:not-allowed; filter:none; }
   #addproj button.go.busy { cursor:progress; }
   #addproj .apwhy { font-size:11.5px; color:var(--warn); line-height:1.5; white-space:pre-wrap; }
-  #addproj .apwhy[hidden], #addproj .approg[hidden], #addproj .apmore[hidden] { display:none; }
+  #addproj .apwhy[hidden], #addproj .approg[hidden], #addproj .apmore[hidden], #addproj .sfield[hidden] { display:none; }
   #addproj .approg { display:flex; flex-direction:column; gap:var(--s1); }
   #addproj .apsay { font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
   #addproj .approg .track { height:3px; border-radius:3px; background:var(--line); overflow:hidden; }
@@ -5797,13 +5797,16 @@ function apClone(body) {
 function apSshClone(body) {
   const url = apInput("", "https://github.com/user/repo.git", true);
   const hosts = () => ((S && S.hosts) || []).filter(h => h.kind === "ssh");
-  if (!hosts().some(h => h.name === apHost)) apHost = (hosts()[0] || {}).name || "";
+  // A server chosen stays chosen -- one added a moment ago is not in the
+  // settings the board has read yet, and is drawn by its name until it is
+  if (!apHost) apHost = (hosts()[0] || {}).name || "";
   const hostBtn = el("button", {class:"bpick", type:"button"});
   const drawHost = () => {
     const h = apHostOf(apHost);
     hostBtn.textContent = "";
+    // append() writes a null as the word "null": what is not there is left out
     hostBtn.append(pickIcon("server"), el("span", {class:"nm"}, apHost || T["tui.addproj.sshclone.none"] || ""),
-      h ? el("span", {class:"at"}, apAt(h.at)) : null, el("span", {class:"caret"}, "▾"));
+      ...(h ? [el("span", {class:"at"}, apAt(h.at))] : []), el("span", {class:"caret"}, "▾"));
   };
   const parent = apInput(apRemoteParent(apHostOf(apHost)), "~", true);
   const into = el("div", {class:"shint mono"});
@@ -6247,6 +6250,24 @@ function apHostAdd(body) {
   const user = apInput("", "ubuntu", true);
   const port = apInput("22", "22", true);
   const key = apInput("", "~/.ssh/id_ed25519", true);
+  // How it signs in: a key file on this PC, or a password -- which goes to
+  // the secret store, never the settings file. The field for the one chosen
+  // is the one shown
+  const pass = apInput("", "", true);
+  pass.type = "password";
+  pass.autocomplete = "new-password";
+  const auth = el("select", {class:"apin"},
+    el("option", {value:"key"}, T["tui.addproj.host.auth.key"] || ""),
+    el("option", {value:"password"}, T["tui.addproj.host.auth.password"] || ""));
+  const keyField = el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.addproj.host.key"] || ""), key,
+    el("div", {class:"shint"}, T["tui.addproj.host.key.hint"] || ""));
+  const passField = el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.addproj.host.password"] || ""), pass,
+    el("div", {class:"shint"}, T["tui.addproj.host.password.hint"] || ""));
+  const drawAuth = () => {
+    keyField.hidden = auth.value !== "key";
+    passField.hidden = auth.value !== "password";
+  };
+  auth.addEventListener("change", () => { drawAuth(); go.check(); });
   const split = () => {
     const m = addr.value.trim().match(/^(?:ssh:\/\/)?(?:([^@\s]+)@)?([^\s:@\/]+)(?::(\d+))?$/);
     if (!m || !(m[1] || m[3] || addr.value.includes("ssh://"))) return;
@@ -6262,13 +6283,18 @@ function apHostAdd(body) {
         : taken(n) ? {at:name, why:(T["err.host.taken"] || "{name}").replace("{name}", n)}
         : !a || /[\s\/]/.test(a) ? {at:addr, why:T["tui.addproj.host.need_addr"] || ""}
         : !user.value.trim() && !/@/.test(a) ? {at:user, why:T["tui.addproj.host.need_user"] || ""}
-        : !/^\d{1,5}$/.test(p) || +p < 1 || +p > 65535 ? {at:port, why:T["tui.addproj.host.bad_port"] || ""} : null;
+        : !/^\d{1,5}$/.test(p) || +p < 1 || +p > 65535 ? {at:port, why:T["tui.addproj.host.bad_port"] || ""}
+        : auth.value === "key" && !key.value.trim() ? {at:key, why:T["tui.addproj.host.need_key"] || ""}
+        : auth.value === "password" && !pass.value ? {at:pass, why:T["tui.addproj.host.need_password"] || ""} : null;
     },
     () => {
       split();
       apAsk = Date.now();
-      send({kind:"addhost", name:name.value.trim(), ask:apAsk, key:key.value.trim(),
+      const byKey = auth.value === "key";
+      send({kind:"addhost", name:name.value.trim(), ask:apAsk, key:byKey ? key.value.trim() : "",
+        password:byKey ? "" : pass.value,
         at:"ssh://" + user.value.trim() + "@" + addr.value.trim() + ":" + port.value.trim()});
+      pass.value = "";
       if (apLive) apLive.running = true;
       drawAddProject();
     });
@@ -6281,7 +6307,11 @@ function apHostAdd(body) {
           addr.value = a.host;
           if (a.user) user.value = a.user;
           port.value = String(a.port || 22);
+          // An alias with a key file signs in with it; one without is
+          // most likely a password
           if (a.key) key.value = a.key;
+          auth.value = a.key ? "key" : "password";
+          drawAuth();
           go.check();
         }}, el("span", {class:"nm"}, a.name), a.host !== a.name ? el("span", {class:"at"}, a.host) : null)), aliases.length > 8);
     }}, pickIcon("server"), el("span", {class:"nm"}, T["tui.addproj.host.fill"] || ""), el("span", {class:"caret"}, "▾")) : null;
@@ -6291,11 +6321,12 @@ function apHostAdd(body) {
     apField(T["tui.addproj.host.name"] || "", name),
     apField(T["tui.addproj.host.addr"] || "", addr),
     el("div", {class:"aprow2"}, apField(T["tui.addproj.host.user"] || "", user), apField(T["tui.addproj.host.port"] || "", port)),
-    el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.addproj.host.key"] || ""), key,
-      el("div", {class:"shint"}, T["tui.addproj.host.key.hint"] || "")),
+    apField(T["tui.addproj.host.auth"] || "", auth),
+    keyField, passField,
     el("div", {class:"apfoot"}, go.why, go.btn));
+  drawAuth();
   addr.addEventListener("blur", () => { split(); go.check(); });
-  for (const i of [name, addr, user, port, key]) {
+  for (const i of [name, addr, user, port, key, pass]) {
     i.addEventListener("input", go.check);
     i.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); go.btn.click(); } });
   }
@@ -8209,8 +8240,8 @@ function drawBranchChip(chip, picked) {
   } else {
     chip.append(el("span", {class:"ico"}, pickIcon(picked.kind === "pr" ? "pr" : "issue")),
       el("span", {class:"nm"}, el("b", {}, "#" + picked.number), " " + (picked.title || "")),
-      picked.url ? el("button", {type:"button", class:"bicon", title:T["tui.branch.gh.open"] || "",
-        onclick:e => { e.stopPropagation(); send({kind:"issues", act:"link", args:{url: picked.url}}); }}, pickIcon("open")) : null);
+      ...(picked.url ? [el("button", {type:"button", class:"bicon", title:T["tui.branch.gh.open"] || "",
+        onclick:e => { e.stopPropagation(); send({kind:"issues", act:"link", args:{url: picked.url}}); }}, pickIcon("open"))] : []));
   }
   chip.append(el("button", {type:"button", class:"bicon", title:T["tui.branch.gh.clear"] || "",
     onclick:e => { e.stopPropagation(); clearBranchPick(); }}, "✕"));
@@ -21946,7 +21977,11 @@ mod tests {
         assert!(PAGE.contains(r#"send({kind:"addproject", how:"remote", text:st.at, parent:"", ask:apAsk, host:apHost, project:apFor});"#),
             "a folder over there is never added");
         assert!(PAGE.contains("if (st.git) { add(); return; }"), "a folder that is not a repository is added without asking");
-        assert!(PAGE.contains(r#"send({kind:"addhost", name:name.value.trim(), ask:apAsk, key:key.value.trim(),"#), "a host cannot be added");
+        assert!(PAGE.contains(r#"send({kind:"addhost", name:name.value.trim(), ask:apAsk, key:byKey ? key.value.trim() : "","#), "a host cannot be added");
+        // By a key file or by a password, chosen on the page; the password
+        // goes with the ask and is not left in the field
+        assert!(PAGE.contains(r#"password:byKey ? "" : pass.value,"#) && PAGE.contains(r#"pass.type = "password";"#),
+            "a server that takes a password cannot be added with one");
         assert!(PAGE.contains(r#"if (kind === "host") { apHost = mine.host; apShow(apHostBack || "start"); return; }"#),
             "a host added does not become where the dialog adds");
         // A folder opened over SSH ends the dialog; a project cloned onto a

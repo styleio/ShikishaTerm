@@ -134,7 +134,7 @@ pub struct Mailbox {
     /// Folders on another machine to list: (host, path, the dialog's number)
     pub remote_lists: Vec<(String, String, u64)>,
     /// Machines to write into the settings: (name, address, key file, number)
-    pub add_hosts: Vec<(String, String, String, u64)>,
+    pub add_hosts: Vec<HostAsk>,
     /// Answers about a project's found worktrees: (its shared git folder, act)
     pub found: Vec<(String, String)>,
     /// Answers from the row of a worktree being made: (its number, act)
@@ -262,6 +262,21 @@ pub struct Mailbox {
     pub folder_hides: Vec<(String, bool)>,
     /// Folders told to work somewhere else: (folder, where)
     pub folder_moves: Vec<(String, String)>,
+}
+
+/// A server reached over SSH, written into the settings from the dialog
+/// (see `shikisha_shared::Ev::AddHost`). Deliberately not `Debug`: a
+/// password is in here, and a value that can be printed ends up in a log
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct HostAsk {
+    pub name: String,
+    /// `ssh://user@host:port`
+    pub at: String,
+    /// The key file it signs in with, or empty
+    pub key: String,
+    /// The password it signs in with, or empty
+    pub password: String,
+    pub ask: u64,
 }
 
 /// A project asked for from the add-a-project dialog (see
@@ -413,7 +428,7 @@ impl Mailbox {
     pub fn take_remote_lists(&mut self) -> Vec<(String, String, u64)> {
         std::mem::take(&mut self.remote_lists)
     }
-    pub fn take_add_hosts(&mut self) -> Vec<(String, String, String, u64)> {
+    pub fn take_add_hosts(&mut self) -> Vec<HostAsk> {
         std::mem::take(&mut self.add_hosts)
     }
     pub fn take_setup_refresh(&mut self) -> Option<u8> {

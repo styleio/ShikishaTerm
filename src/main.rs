@@ -794,7 +794,9 @@ impl WinSurface {
                     self.mail.add_projects.push(shikisha_core::mailbox::AddAsk { how, text, parent, ask, host, project, ai, account })
                 }
                 Ev::RemoteList { host, path, ask } => self.mail.remote_lists.push((host, path, ask)),
-                Ev::AddHost { name, at, key, ask } => self.mail.add_hosts.push((name, at, key, ask)),
+                Ev::AddHost { name, at, key, password, ask } => {
+                    self.mail.add_hosts.push(shikisha_core::mailbox::HostAsk { name, at, key, password, ask })
+                }
                 Ev::Found { family, act } => self.mail.found.push((family, act)),
                 Ev::Making { id, act } => self.mail.makings.push((id, act)),
                 // A tool from the left bar. The window thread owns the screen

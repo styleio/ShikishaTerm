@@ -455,8 +455,10 @@ pub enum Ev {
     RemoteList { host: String, path: String, ask: u64 },
     /// A machine reached over SSH, written into the settings from the
     /// add-a-project dialog: its name, its address (`ssh://user@host:port`)
-    /// and the key file it signs in with. Allowed from a phone, as `AddProject` is
-    AddHost { name: String, at: String, key: String, ask: u64 },
+    /// and how it signs in there -- a key file, or a password, kept in the
+    /// secret store under the name the connection reads it by, never in the
+    /// settings. Allowed from a phone, as `AddProject` is
+    AddHost { name: String, at: String, key: String, password: String, ask: u64 },
     /// What to do about a project's worktrees that git knows and the desk does
     /// not list. `family` names the project by its shared git folder; `act` is
     /// `show` (put them on the desk), `keep` (keep them hidden, the row goes)
@@ -1188,6 +1190,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             at: v.get("at").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             key: v.get("key").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            password: v.get("password").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             ask: v.get("ask").and_then(|x| x.as_u64()).unwrap_or(0),
         },
         Some("found") => Ev::Found {

@@ -114,6 +114,15 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **An SSH host added from the board can sign in with a password.** The
+  form had only a key file, and a server that takes a password could not be
+  added there. "How it signs in" now chooses a key file or a password; the
+  password goes to the secret store under the name the connection reads it
+  by, never into the settings file. The button that fills the form from
+  `~/.ssh/config` says so ("Read from ~/.ssh/config"), and an alias with no
+  key file there is taken as one signed in to with a password. A server
+  added a moment ago stays chosen on the clone page while the settings the
+  board has catch up.
 - **"Clone onto an SSH host" is a page of its own, laid out as the MicroVM
   one is.** The address; the server chosen from the ones in the settings,
   with "+ Add an SSH host" last; and where on the server, which is the

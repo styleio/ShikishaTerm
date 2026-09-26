@@ -3008,7 +3008,7 @@ mod tests {
                 account: String::new(),
             },
             Ev::RemoteList { host: "srv".into(), path: "/srv".into(), ask: 1 },
-            Ev::AddHost { name: "srv".into(), at: "ssh://me@example.test:22".into(), key: String::new(), ask: 1 },
+            Ev::AddHost { name: "srv".into(), at: "ssh://me@example.test:22".into(), key: String::new(), password: String::new(), ask: 1 },
         ] {
             assert!(
                 super::allowed_from_afar(&arranging),
