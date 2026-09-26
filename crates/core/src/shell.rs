@@ -15719,6 +15719,12 @@ window.addEventListener("message", e => {
   if (!f || e.source !== f.contentWindow || e.origin !== location.origin || !e.data) return;
   // Done with, either way: added, or not adding after all
   if (e.data.cfg === "close") closeCfgLayer();
+  // A folder on another machine to delete, asked for on the settings: the
+  // board does it, as its own menu does, and says what came of it
+  if (e.data.cfg && typeof e.data.cfg.discard === "string") {
+    closeCfgLayer();
+    send({kind:"folderdiscard", folder: e.data.cfg.discard, unasked:false});
+  }
   // "More settings": the whole of the settings, so the frame is given the whole
   // screen -- the window answers the same press by growing the page it placed.
   // The frame keeps the page it has, so what was chosen so far is still there

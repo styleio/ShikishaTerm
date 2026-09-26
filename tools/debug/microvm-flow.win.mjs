@@ -292,7 +292,17 @@ try {
     .catch(async (e) => { console.log('    (the terminal says: ' + (await screenText()).replace(/\s+/g, ' ').trim().slice(-300) + ')'); throw e; });
   check(true, 'the help sends the code and the Enter that sends it');
   await board.shot('2c-login');
-  await on(home.sandbox, 'mkdir -p ~/.claude && echo "{}" > ~/.claude/.credentials.json');
+  // Signed in from outside, as a key given by the machine setup would be:
+  // the credentials, and Claude's own word that its first run is over --
+  // what the app asks before it calls Claude signed in there
+  const signInFromOutside = () => on(home.sandbox, [
+    `mkdir -p ~/.claude && echo '{}' > ~/.claude/.credentials.json;`,
+    `f=~/.claude.json;`,
+    `if [ ! -s "$f" ]; then echo '{"hasCompletedOnboarding": true}' > "$f";`,
+    `elif grep -q hasCompletedOnboarding "$f"; then sed -i 's/"hasCompletedOnboarding" *: *false/"hasCompletedOnboarding": true/' "$f";`,
+    `else sed -i '0,/{/s//{"hasCompletedOnboarding": true,/' "$f"; fi`,
+  ].join(' '));
+  await signInFromOutside();
   await until(async () => ((await step()) || {}).state === 'yes', 'the sign-in to be seen while the step is open', 40000);
   check(await board.run('document.querySelector("#login .lstate").textContent.includes("ログインを確認しました")'), 'the step says the sign-in was seen');
   await on(home.sandbox, 'rm -f ~/.claude/.credentials.json');
@@ -347,7 +357,7 @@ try {
   check((await aiNote()).name === 'Claude Code' && (await aiNote()).checkout === CHECKOUT, 'not signed in yet, said for the checkout: ' + JSON.stringify(await aiNote()));
   check(await board.run('!!document.querySelector("#branch .baisignin button")'), 'the checkout\'s tab is one press away');
   await board.shot('3-branch');
-  await on(home.sandbox, 'mkdir -p ~/.claude && echo "{}" > ~/.claude/.credentials.json');
+  await signInFromOutside();
   await until(async () => ((await aiNote()) || {}).state === 'yes', 'the sign-in to be seen while the dialog stays open', 120000);
   check(true, 'signed in on the checkout, the dialog says so without being closed');
   await on(home.sandbox, 'rm -f ~/.claude/.credentials.json');
@@ -355,7 +365,11 @@ try {
   const wt = await (async () => {
     let f = null;
     await until(() => { f = (desk().folders || []).find((x) => x.host === vm.name && x.cwd !== CHECKOUT && x.sandbox); return !!f; },
-      'the worktree written down, on its own machine', 240000);
+      'the worktree written down, on its own machine', 240000)
+      .catch(async (e) => {
+        console.log('    (the board has: ' + await board.run('JSON.stringify({flash: S.flash, making: S.making, branch: S.branch && {asked: S.branch.asked, folder: S.branch.folder, error: S.branch.error, in_use: S.branch.in_use}})') + ')');
+        throw e;
+      });
     return f;
   })();
   check(wt.sandbox !== home.sandbox && wt.project === PROJECT, 'on a machine of its own, in the project: ' + JSON.stringify(wt));
@@ -481,6 +495,34 @@ try {
   const bases = await board.run('I.pr.bases');
   check(bases.includes('master') && !bases.includes(BRANCH), 'where it goes is offered, from what the machine knows the server has: ' + JSON.stringify(bases));
   await inside(`cd ${wt.cwd} && git branch -q --unset-upstream && git update-ref -d refs/remotes/origin/${BRANCH}`);
+
+  console.log('4f. a worktree asked for from a worktree: grown from the checkout\'s machine, and one already made is in use');
+  // A new worktree is a copy of the checkout's machine, whichever folder the
+  // dialog opens from: what it offers to grow from is what that machine has,
+  // and not the branch only this worktree's machine has
+  const wg = `(S.groups || []).find(x => x.folder === ${JSON.stringify(wt.cwd)})`;
+  await board.run(`openBranch(${wg}); true`);
+  await until(() => board.run('!!(S.branch && Array.isArray(S.branch.bases) && S.branch.bases.includes("origin/master"))'), 'what it can grow from', 60000)
+    .catch(async (e) => { console.log('    (the dialog has: ' + await board.run('JSON.stringify(S.branch && S.branch.bases)') + ')'); throw e; });
+  const wbases = await board.run('S.branch.bases');
+  check(!wbases.includes(BRANCH), 'grown from what the checkout\'s machine has, not from the branch only this worktree has: ' + JSON.stringify(wbases));
+  // The same branch again: git on a new copy cannot see it, the board can
+  await board.run(`branchTab = "name"; drawBranchTabs(document.getElementById("branch")); true`);
+  await board.run(`(() => { const q = document.getElementById("bq"); q.value = ${JSON.stringify(BRANCH)}; q.dispatchEvent(new Event("input")); return true; })()`);
+  await until(() => board.run(`!!(S.branch && S.branch.in_use)`), 'the branch to be said in use', 60000)
+    .catch(async (e) => { console.log('    (the dialog has: ' + await board.run('JSON.stringify({asked: S.branch && S.branch.asked, folder: S.branch && S.branch.folder, error: S.branch && S.branch.error})') + ')'); throw e; });
+  check(await board.run('S.branch.in_use.folder') === wt.cwd, 'a branch already on a MicroVM is in use, in that folder: ' + await board.run('JSON.stringify(S.branch.in_use)'));
+  await board.run('closeBranch(); true');
+  // The settings tell the worktree from the checkout, and say it is one
+  await board.run('openSettings("gitaccounts", true); true');
+  cfg = await connect(await settingsOn(/section=gitaccounts/), 'the settings');
+  const familyOf = (p) => cfg.run(`fetch("/api/family?path=" + encodeURIComponent(${JSON.stringify(p)}), {headers:{"X-Token":TOKEN}}).then(r => r.json())`);
+  const wfam = await familyOf(wt.cwd);
+  const hfam = await familyOf(CHECKOUT);
+  check(wfam.cut === true && !!wfam.host && hfam.cut === false, 'the settings call the worktree a worktree and the checkout the checkout: ' + JSON.stringify({ worktree: wfam.cut, checkout: hfam.cut }));
+  try { cfg.ws.close(); } catch {}
+  cfg = null;
+  await board.run('send({kind:"closesettings"}); true');
 
   console.log('4b. what it serves answers from anywhere, at the address the menu lists');
   await inside(`cd ${wt.cwd} && printf '<?php echo "served-from-the-" . "worktree";' > index.php && (nohup php -S 0.0.0.0:8000 >/dev/null 2>&1 &) ; sleep 1; echo ok`);

@@ -6509,7 +6509,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let Some(dir) = crate::github::far_head_folder(&far, &head) else {
                             return say(match act.as_str() {
                                 "pr_place" => serde_json::json!({"ok": true, "data": {"folder": null}}),
-                                _ => serde_json::json!({"ok": false, "error": i18n::tp("err.github.pr.no_folder", &[("branch", &head)])}),
+                                // Said of the project's machines, not of this PC
+                                _ => serde_json::json!({"ok": false, "error": i18n::tp("err.github.pr.no_folder_far", &[("branch", &head)])}),
                             });
                         };
                         let conflicted = crate::git::conflicts(&dir).unwrap_or_default();
@@ -8789,9 +8790,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let far_bases = match (&repo, &from_far) {
                 (None, Some(h)) => {
                     let opening = branch_view.as_ref().is_none_or(|v| v.seq != ask.seq);
-                    let at = from.to_string_lossy().replace('\\', "/");
+                    // On a MicroVM a new worktree is a copy of the checkout's
+                    // machine, whichever folder the dialog was opened from: what
+                    // it can grow from is what that machine has. A branch only
+                    // the folder asked from has is not on the copy
+                    let checkout = h
+                        .is_made()
+                        .then(|| project.and_then(|p| p.home_on(&h.name)))
+                        .flatten()
+                        .filter(|home| home.sandbox.is_some() && !home.at.trim().is_empty())
+                        .map(|home| (h.with_instance(home.sandbox.as_deref()), home.at.trim().to_string()));
+                    let (h, at) = checkout.unwrap_or_else(|| (h.clone(), from.to_string_lossy().replace('\\', "/")));
                     bases_watch = Some((h.clone(), at.clone()));
-                    crate::worktree::far_bases(h, &at, opening && ask.branch.trim().is_empty() && ask.base.trim().is_empty())
+                    crate::worktree::far_bases(&h, &at, opening && ask.branch.trim().is_empty() && ask.base.trim().is_empty())
                 }
                 _ => None,
             };
@@ -8970,6 +8981,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         env,
                     ),
                 };
+                let planned = planned.and_then(|plan| far_in_use(desks.get(desk_index), plan));
                 match planned {
                     // Open in another folder already: not a dead end but a
                     // question -- that folder, or this one under another name
@@ -9109,6 +9121,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     None => crate::worktree::fan(&from, &placement, &wanted, Some(&ask.base), &ask.ais),
                 };
+                let fanned: Vec<_> = fanned
+                    .into_iter()
+                    .map(|(ai, p)| (ai, p.and_then(|plan| far_in_use(desks.get(desk_index), plan))))
+                    .collect();
                 view.branch = wanted.clone();
                 view.lines = fanned.iter().filter_map(|(_, p)| p.as_ref().ok().map(|p| p.line())).collect();
                 view.folder = fanned
@@ -12988,6 +13004,35 @@ pub fn server_ai_of(
     })
 }
 
+/// A worktree about to be made on another machine, refused as in use when a
+/// folder on the desk already is it: the same place on the same kind of
+/// machine, or -- on a MicroVM -- the same branch. Git refuses a branch open
+/// in another worktree of its repository, but every worktree on a MicroVM is
+/// a machine of its own with a repository of its own, and git on the next
+/// copy has never heard of the branch the last one is on; the board has. The
+/// same question as git's, so the answer is the one the dialog already asks:
+/// that folder, or this one under another name
+fn far_in_use(desk: Option<&config::Desk>, plan: crate::worktree::Plan) -> anyhow::Result<crate::worktree::Plan> {
+    let (Some(desk), Some(host)) = (desk, plan.host.as_ref()) else { return Ok(plan) };
+    let taken = desk.folders.iter().find_map(|f| {
+        let (cwd, there) = (f.cwd.as_deref()?, f.host.as_ref()?);
+        if there.name != host.name {
+            return None;
+        }
+        let same_place = crate::uistate::same_folder(cwd, &plan.folder);
+        let same_branch = host.is_made()
+            && crate::elsewhere::Elsewhere::of(there)
+                .ok()
+                .and_then(|at| crate::git::far_place(&at, cwd, false).0)
+                .is_some_and(|b| b == plan.branch);
+        (same_place || same_branch).then(|| cwd.to_path_buf())
+    });
+    match taken {
+        Some(folder) => Err(anyhow::Error::new(crate::worktree::InUse { branch: plan.branch.clone(), folder })),
+        None => Ok(plan),
+    }
+}
+
 /// The AIs a server has, as choices, once it has said: what a worktree there
 /// can run. `None` until the server has answered
 fn server_ai_choices(host: &config::HostSpec) -> Option<Vec<crate::uistate::AiChoice>> {
@@ -14931,6 +14976,40 @@ mod tests {
             quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, Some(&far), Some(&desk)),
             QuickGo::Open { cwd: far.clone(), command: String::new(), program: "vm".into() }
         );
+    }
+
+    /// A worktree on a MicroVM the desk already has is in use, as git says of
+    /// one here: git on a copied machine cannot see the others, the board can.
+    /// The same path on another machine is another folder
+    #[test]
+    fn a_worktree_on_a_microvm_the_desk_already_has_is_in_use() {
+        let vm = |id: &str| config::HostSpec { name: "vm".into(), kind: Some("e2b".into()), instance: Some(id.into()), ..Default::default() };
+        let desk = config::Desk {
+            folders: vec![
+                config::Folder { cwd: Some("/home/user/site".into()), host: Some(vm("m0")), ..Default::default() },
+                config::Folder { cwd: Some("/home/user/site-fix".into()), host: Some(vm("m1")), ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        let plan = |folder: &str, host: config::HostSpec| crate::worktree::Plan {
+            main: "/home/user/site".into(),
+            branch: "fix".into(),
+            folder: folder.into(),
+            base: "origin/HEAD".into(),
+            fresh: true,
+            host: Some(host),
+            origin: String::new(),
+            env: None,
+            project: "site".into(),
+            sign_in: Default::default(),
+            preparing: Default::default(),
+        };
+        let taken = far_in_use(Some(&desk), plan("/home/user/site-fix", vm("m0"))).unwrap_err();
+        let taken = taken.downcast_ref::<crate::worktree::InUse>().expect("a second machine on the same place was made");
+        assert_eq!(taken.folder, std::path::PathBuf::from("/home/user/site-fix"));
+        assert!(far_in_use(Some(&desk), plan("/home/user/site-other", vm("m0"))).is_ok(), "a new place is refused");
+        let elsewhere = config::HostSpec { name: "srv".into(), at: "ssh://me@srv:22".into(), ..Default::default() };
+        assert!(far_in_use(Some(&desk), plan("/home/user/site-fix", elsewhere)).is_ok(), "the same path on another machine is taken");
     }
 
     /// A folder on a server hands its work to an AI the server has: the one

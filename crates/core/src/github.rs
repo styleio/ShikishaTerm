@@ -85,6 +85,17 @@ pub fn target(
     git: &crate::config::GitUse,
     look: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(Repo, String)> {
+    target_with(None, dir, git, look)
+}
+
+/// The same, with the repository already known (`owner/name`) when it is:
+/// nothing is asked of the folder then
+fn target_with(
+    known: Option<String>,
+    dir: &Path,
+    git: &crate::config::GitUse,
+    look: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Repo, String)> {
     use crate::config::GitUse;
     // A folder on another machine (noted on this thread, see `git::there`):
     // its remote is asked of git there, since there is nothing here to read
@@ -94,7 +105,7 @@ pub fn target(
             .flatten()
             .and_then(|u| crate::repo::github_path(u.trim()))
     };
-    let slug = crate::repo::origin_of(dir).or_else(far).ok_or_else(|| {
+    let slug = known.or_else(|| crate::repo::origin_of(dir)).or_else(far).ok_or_else(|| {
         anyhow!(crate::i18n::tp(
             "err.github.not_github",
             &[("p", &dir.display().to_string())]
@@ -864,13 +875,20 @@ impl Source {
 
 /// The GitHub repository a project is, and a token for it.
 ///
-/// A project on another machine is asked through its first folder there
+/// A project on another machine: the repository as git there last said it
+/// (`far_origin`, asked once and kept). Asked through its first folder only
+/// until that answer is in -- every folder on a MicroVM is a machine of its
+/// own, and asking the first on every call to GitHub woke the checkout's
+/// machine for work done in another, and kept it from ever pausing
 pub fn target_of(
     s: &Source,
     look: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(Repo, String)> {
-    s.note_far(&s.dir);
-    target(&s.dir, &s.git, look)
+    let known = s.repo.clone().filter(|_| !s.far.is_empty());
+    if known.is_none() {
+        s.note_far(&s.dir);
+    }
+    target_with(known, &s.dir, &s.git, look)
 }
 
 /// The desk's repositories, one each: every folder on this machine, gathered
@@ -988,13 +1006,21 @@ pub fn project_folder(sources: &[Source], project: &str, folder: &str) -> Option
 /// The folder of a project on another machine that is on `head`, asked of git
 /// in each of its folders there in turn. Waits on those machines, so it is for
 /// a thread. On the thread that asked, git about the folder found runs there
-/// from here on (see `git::there`)
+/// from here on (see `git::there`).
+///
+/// The folder the board last heard is on that branch is asked first, and
+/// alone when it still is: every folder on a MicroVM is a machine of its own,
+/// and asking each in turn started every paused one to find the one wanted
 pub fn far_head_folder(s: &Source, head: &str) -> Option<std::path::PathBuf> {
     let head = head.trim();
     if head.is_empty() {
         return None;
     }
-    for (dir, at) in &s.far {
+    let heard = |dir: &std::path::Path, at: &crate::elsewhere::Elsewhere| {
+        crate::git::far_place(at, dir, false).0.as_deref() == Some(head)
+    };
+    let (first, rest): (Vec<_>, Vec<_>) = s.far.iter().partition(|(dir, at)| heard(dir, at));
+    for (dir, at) in first.into_iter().chain(rest) {
         crate::git::there(dir, Some(at));
         let on = crate::git::run(dir, &["branch", "--show-current"]).ok();
         if on.as_deref().map(str::trim) == Some(head) {
@@ -1491,6 +1517,29 @@ fn encode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A project on MicroVMs whose repository is known is not asked it again:
+    /// asking went to the checkout's machine on every call to GitHub. Here the
+    /// machine cannot be reached at all, and the answer still gets as far as
+    /// the account -- the repository was never asked of it
+    #[test]
+    fn a_known_repository_is_not_asked_of_the_checkouts_machine() {
+        let host = crate::config::HostSpec { name: "vm".into(), kind: Some("e2b".into()), ..Default::default() };
+        let at = crate::elsewhere::Elsewhere::of(&host).unwrap();
+        let s = super::Source {
+            name: "site".into(),
+            repo: Some("octocat/site".into()),
+            dir: "/home/user/site".into(),
+            at: "/home/user/site".into(),
+            git: crate::config::GitUse::Missing("gone".into()),
+            far: vec![("/home/user/site".into(), at)],
+        };
+        let err = super::target_of(&s, &|_| None).unwrap_err();
+        assert!(err.downcast_ref::<super::AccountTrouble>().is_some(), "the repository was asked of the machine: {err:#}");
+        let unknown = super::Source { repo: None, ..s };
+        let err = super::target_of(&unknown, &|_| None).unwrap_err();
+        assert!(err.downcast_ref::<super::AccountTrouble>().is_none(), "an unknown repository was not asked for: {err:#}");
+    }
+
     /// What an AI is given of a failed job's log: the lines up to its last
     /// error, without GitHub's time stamps, and not the clean-up after it
     #[test]

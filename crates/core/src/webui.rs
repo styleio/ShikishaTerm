@@ -1507,6 +1507,37 @@ pub fn take_prepare_asks() -> Vec<PrepareAsk> {
     std::mem::take(&mut *PREPARE_ASKS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
+/// The machine a folder on the desks is on, when it is not this one
+fn far_host_of(at: &std::path::Path) -> Option<crate::config::HostSpec> {
+    crate::config::load().and_then(|c| {
+        let (desks, _) = c.resolve_desks();
+        desks.into_iter().flat_map(|d| d.folders).find_map(|f| {
+            let host = f.host.clone()?;
+            f.cwd.as_deref().filter(|c| crate::uistate::same_folder(c, at)).map(|_| host)
+        })
+    })
+}
+
+/// Where the project a folder on another machine belongs to is checked out
+/// there
+fn far_home_of(at: &std::path::Path, host: &crate::config::HostSpec) -> Option<String> {
+    let c = crate::config::load()?;
+    let (desks, _) = c.resolve_desks();
+    let project = desks
+        .iter()
+        .flat_map(|d| d.folders.iter())
+        .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, at)))?
+        .project
+        .clone()?;
+    desks.into_iter().flat_map(|d| d.projects).find(|p| p.name == project)?.home_on(&host.name).map(|h| h.at.clone())
+}
+
+/// Whether a folder on another machine is a branch's folder: one that is not
+/// the project's checkout there, the way the board tells them apart
+fn far_cut(at: &std::path::Path, home: Option<&str>) -> bool {
+    home.is_some_and(|h| h.trim_end_matches('/') != at.to_string_lossy().replace('\\', "/").trim_end_matches('/'))
+}
+
 fn json_resp(v: serde_json::Value) -> Response<Cursor<Vec<u8>>> {
     secure(Response::from_string(v.to_string()).with_header(
         Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap(),
@@ -2009,17 +2040,12 @@ fn handle(
                 .and_then(|c| c.project_of(desk.as_deref(), at).map(|p| (p.name.clone(), p.at.clone())));
             // A folder on another machine: nothing of it is on this disk. Its
             // project is the settings' answer, its branch what git there last
-            // said (asked on a thread, see `git::far_place`), and it is never
-            // offered as a folder to delete from here -- a MicroVM's goes with
-            // its machine, from the board
-            let far = crate::config::load().and_then(|c| {
-                let (desks, _) = c.resolve_desks();
-                desks.into_iter().flat_map(|d| d.folders).find_map(|f| {
-                    let host = f.host.clone()?;
-                    f.cwd.as_deref().filter(|c| crate::uistate::same_folder(c, at)).map(|_| host)
-                })
-            });
-            if let Some(host) = far.filter(|_| !at.as_os_str().is_empty()) {
+            // said (asked on a thread, see `git::far_place`), and it is a
+            // branch's folder when it is not the project's checkout there --
+            // on a MicroVM every folder is a machine of its own, so git's own
+            // word for a worktree says nothing. Deleting one is the board's,
+            // which asks the machine first (see `farFolderDiscard`)
+            if let Some(host) = far_host_of(at).filter(|_| !at.as_os_str().is_empty()) {
                 let branch = crate::elsewhere::Elsewhere::of(&host)
                     .ok()
                     .and_then(|m| crate::git::far_place(&m, at, true).0);
@@ -2036,7 +2062,7 @@ fn handle(
                 let checkout = home_at.clone().unwrap_or_else(|| at.to_string_lossy().to_string());
                 req.respond(json_resp(serde_json::json!({
                     "family": crate::uistate::far_family(&host.name, &checkout),
-                    "cut": false,
+                    "cut": far_cut(at, home_at.as_deref()),
                     "branch": branch,
                     "project": named.as_ref().map(|(n, _)| n.clone()),
                     "project_at": home_at,
@@ -2542,13 +2568,22 @@ fn handle(
             );
             let to = p.get("name").and_then(|v| v.as_str()).unwrap_or_default();
             let go = p.get("go").and_then(serde_json::Value::as_bool).unwrap_or(false);
-            let resp = match crate::worktree::rename_plan(&at, to) {
+            // A folder on another machine is renamed by git there
+            let far = far_host_of(&at);
+            let planned = match &far {
+                Some(host) => {
+                    let cut = far_cut(&at, far_home_of(&at, host).as_deref());
+                    crate::worktree::rename_plan_far(host, &at.to_string_lossy(), cut, to)
+                }
+                None => crate::worktree::rename_plan(&at, to),
+            };
+            let resp = match planned {
                 Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
                 Ok(plan) => match go {
                     false => serde_json::json!({
                         "ok": true, "line": plan.line(), "sent": plan.sent_as,
                     }),
-                    true => match crate::worktree::rename(&plan) {
+                    true => match far.as_ref().map_or_else(|| crate::worktree::rename(&plan), |h| crate::worktree::rename_far(h, &plan)) {
                         Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
                         Ok(()) => serde_json::json!({
                             "ok": true, "done": true, "from": plan.from, "to": plan.to,
@@ -12074,6 +12109,8 @@ function folderPane(desk, g, gi) {
     buttons.append(el("button", {class:"danger", onclick: async () => {
       if (!guard()) return;
       if (!await confirmAction(fill(T["settings.group.discard.sure"], {name: folderLabel(g, gi)}), T["settings.group.discard"])) return;
+      // On another machine: the board deletes it, as its own menu does
+      if (where.host) { farFolderDiscard(g.cwd); return; }
       toast(T["tui.making.stage.removing"]);
       const r = await fetch("/api/folder/discard",
         {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: g.cwd})})
@@ -15747,6 +15784,17 @@ function goIndex() {
 
 // Closes settings. Returns to the operating board (INDEX), folding the settings tab away and removing it from the list on the left too.
 // If there are unsaved changes, warns first that they'll be lost
+// A folder on another machine is deleted by the board, the way its own menu
+// deletes it: the machine is asked first whether anything there would be
+// lost, and the board says what came of it -- so the settings step aside
+function farFolderDiscard(folder) {
+  const ask = {kind:"folderdiscard", folder, unasked:false};
+  if (window.ipc) {
+    try { window.ipc.postMessage(JSON.stringify(ask)); closeSettings(); return; } catch (e) {}
+  }
+  if (EMBED) { toBoard({discard: folder}); return; }
+  toast(T["settings.group.discard.board"], true);
+}
 async function closeSettings() {
   // Nothing was loaded, so there is nothing to lose — don't ask.
   if (!loadFailure && snapshot() !== savedSnapshot &&
@@ -16751,6 +16799,16 @@ fn picker() -> Option<&'static dyn shikisha_shared::FilePicker> {
 
 #[cfg(test)]
 mod tests {
+    /// A folder on another machine is a branch's folder when it is not the
+    /// project's checkout there -- on a MicroVM every folder is a checkout of
+    /// its own, so git cannot say it
+    #[test]
+    fn a_far_folder_is_a_worktree_when_it_is_not_the_checkout() {
+        let at = std::path::Path::new("/home/user/site-fix");
+        assert!(super::far_cut(at, Some("/home/user/site")));
+        assert!(!super::far_cut(std::path::Path::new("/home/user/site/"), Some("/home/user/site")), "the checkout is called a worktree");
+        assert!(!super::far_cut(at, None), "a folder of no known project is called a worktree");
+    }
 
     /// The light way of asking stays light when the small model is turned
     /// off: only the model goes.

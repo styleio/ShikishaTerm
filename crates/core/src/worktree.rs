@@ -1947,6 +1947,51 @@ pub fn rename_plan(folder: &Path, to: &str) -> Result<Rename> {
     Ok(Rename { folder: folder.to_path_buf(), from, to, sent_as: upstream_of(folder) })
 }
 
+/// The same question about a folder on another machine, asked of git there:
+/// the branch it is on, and whether that has been sent somewhere. Whether it
+/// is a branch's folder at all is the caller's to know -- on a MicroVM every
+/// folder is a checkout of its own -- and is said by `cut`
+pub fn rename_plan_far(host: &crate::config::HostSpec, folder: &str, cut: bool, to: &str) -> Result<Rename> {
+    let to = to.trim().to_string();
+    if to.is_empty() {
+        bail!(crate::i18n::t("err.worktree.no_branch"));
+    }
+    let Some(to) = tidy(&to) else {
+        bail!(crate::i18n::tp("err.worktree.bad_branch", &[("name", &to)]));
+    };
+    if !cut {
+        bail!(crate::i18n::t("err.worktree.not_a_branch"));
+    }
+    let at = crate::elsewhere::Elsewhere::of(host)?;
+    let ask = |args: &[&str]| -> Option<String> {
+        let mut argv: Vec<String> = vec!["git".into(), "-C".into(), folder.to_string()];
+        argv.extend(args.iter().map(|a| a.to_string()));
+        crate::elsewhere::exec(&at, &for_a_shell(&argv), 30_000)
+            .ok()
+            .filter(|r| r.ok())
+            .map(|r| r.out.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let from = ask(&["branch", "--show-current"])
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.not_a_branch")))?;
+    Ok(Rename { folder: PathBuf::from(folder), from, to, sent_as: ask(&["rev-parse", "--abbrev-ref", "@{upstream}"]) })
+}
+
+/// `rename`, done by git on the machine the folder is on
+pub fn rename_far(host: &crate::config::HostSpec, r: &Rename) -> Result<()> {
+    let at = crate::elsewhere::Elsewhere::of(host)?;
+    let line = for_a_shell(&r.argv());
+    let ran = crate::elsewhere::exec(&at, &line, 30_000)?;
+    if !ran.ok() {
+        bail!(crate::i18n::tp("err.worktree.failed", &[("said", &ran.said()), ("command", &r.line())]));
+    }
+    if r.sent_as.is_some() {
+        let unset: Vec<String> = vec!["git".into(), "-C".into(), r.folder.display().to_string(), "branch".into(), "--unset-upstream".into()];
+        let _ = crate::elsewhere::exec(&at, &for_a_shell(&unset), 30_000);
+    }
+    Ok(())
+}
+
 /// What a name in front of every branch of a project makes of one name.
 ///
 /// Written `yourname/` or `yourname` alike, because a person typing a prefix

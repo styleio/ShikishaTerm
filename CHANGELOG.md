@@ -320,6 +320,27 @@ once it reaches its first tagged release.
   deletes the original", which never happens: the links are taken out first.
 
 ### Fixed
+- **Worktrees on MicroVMs are treated as the separate machines they are.**
+  Each is a copy of the checkout's machine with a repository of its own, and
+  several things assumed the one repository worktrees here share:
+  - The worktree dialog opened from a worktree offered to grow from branches
+    only that worktree's machine had, while the new one is copied from the
+    checkout's machine. It now offers what the checkout's machine has.
+  - The same branch could be made on two machines, since git on a new copy
+    cannot see the others. A branch or place a folder on the desk already has
+    is now in use, and the dialog asks the same question it asks here: that
+    folder, or this one under another name.
+  - Every call to GitHub -- the Issue tab, a branch's pull requests and CI,
+    every few seconds while CI runs -- asked the checkout's machine for the
+    repository, waking it for work done in another and keeping it from
+    pausing. The repository, asked once and kept, is used instead.
+  - Finding the folder a pull request's branch is on started every machine
+    in turn; the one the board last heard is on it is asked first.
+  - The settings called every folder on a MicroVM or a server "the original
+    checkout", with no rename or delete. A worktree there is a worktree: its
+    branch is renamed by git on its machine, and deleting it goes to the
+    board, which asks the machine first.
+  - With no folder on a pull request's branch, the message spoke of "this PC".
 - **A pull request from a folder on a MicroVM offers where it can go.** The
   git panel's pull request form had nothing under "into": the list is read
   from git on that machine, and the line asking it carried
