@@ -392,6 +392,18 @@ try {
   check(/Claude Code/.test(has) && /PHP \d/.test(has), 'the worktree has what its checkout was prepared with: ' + has.replace(/\n/g, ' | '));
 
   console.log('4a. the machine paused under the terminal wakes when it is typed into');
+  const appLog = () => fs.readFileSync(path.join(APP, 'logs', 'hooks.log'), 'utf8');
+  const awakeCount = () => (appLog().match(new RegExp('e2b: ' + wt.sandbox + ' is awake', 'g')) || []).length;
+  // A terminal on a MicroVM opens when its tab is first in front: until then
+  // there is no link to end, and nothing of the machine is started. So the
+  // worktree's Claude is put in front first, and its terminal opened
+  const aiFirst = await aiTab();
+  await board.run(`send({kind:"select", tab: ${aiFirst.index}}); true`);
+  await until(() => board.run(`S.active === ${aiFirst.index}`), 'the worktree\'s Claude tab in front to open it', 30000);
+  await until(async () => awakeCount() > 0, 'the worktree\'s terminal to open as its tab is shown', 90000);
+  await until(async () => /claude/i.test(await board.run('document.getElementById("screen").textContent')),
+    'Claude to start in the worktree\'s terminal', 90000);
+  const openedTimes = awakeCount();
   // Paused from outside, as it is after its minutes; the terminal says so.
   // A key typed into it wakes the machine, and Claude in it goes on
   const paused = await e2b('POST', `/sandboxes/${wt.sandbox}/pause`);
@@ -409,8 +421,8 @@ try {
   // the moment it is back) and Claude, still there, takes the key -- the
   // theme is chosen, and its next screen asks how to sign in
   await board.run('send({kind:"key", named:"enter"}); true');
-  const appLog = () => fs.readFileSync(path.join(APP, 'logs', 'hooks.log'), 'utf8');
-  await until(async () => new RegExp('e2b: ' + wt.sandbox + ' is awake').test(appLog()), 'the app to wake the machine for the key', 90000)
+  // Once more than when it was first opened: this one is the key's
+  await until(async () => awakeCount() > openedTimes, 'the app to wake the machine for the key', 90000)
     .catch((e) => { console.log('    (the app says: ' + appLog().split(/\r?\n/).filter((l) => /e2b/.test(l)).slice(-4).join(' | ') + ')'); throw e; });
   check(!/could not wake/.test(appLog()), 'the same shell is taken up again, not refused');
   await until(async () => /login method/i.test(await screen()), 'Claude, still there, to take the key and go on', 90000)
