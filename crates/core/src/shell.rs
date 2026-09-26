@@ -5637,7 +5637,7 @@ function apShow(step) {
   apLive = null;
   box.textContent = "";
   const title = {start:"tui.addproj.title", clone:"tui.addproj.clone", create:"tui.addproj.create",
-    remote:"tui.addproj.remote", host:"tui.addproj.host", microvm:"tui.addproj.microvm"}[step];
+    remote:"tui.addproj.remote", host:"tui.addproj.host", microvm:"tui.addproj.microvm", sshclone:"tui.addproj.ssh"}[step];
   const body = el("div", {class:"sbody"});
   box.append(el("div", {class:"sbox", role:"dialog", "aria-modal":"true"},
     el("div", {class:"shead"},
@@ -5649,6 +5649,7 @@ function apShow(step) {
   else if (step === "remote") apRemote(body);
   else if (step === "host") apHostAdd(body);
   else if (step === "microvm") apMicrovm(body);
+  else if (step === "sshclone") apSshClone(body);
   else apCreate(body);
 }
 
@@ -5689,13 +5690,13 @@ function apStart(body) {
     el("div", {class:"sfield"},
       el("div", {class:"apgroup"}, T["tui.addproj.other"] || ""),
       el("div", {class:"aplist"},
-        way("clone", "globe", T["tui.addproj.clone"] || "", T["tui.addproj.clone.say"] || "", () => apShow("clone")),
+        // A clone asked for with a server chosen above is a clone onto it
+        way("clone", "globe", T["tui.addproj.clone"] || "", T["tui.addproj.clone.say"] || "", () => apShow(apHost ? "sshclone" : "clone")),
         create,
         way("microvm", "cloud", T["tui.addproj.microvm"] || "", T["tui.addproj.microvm.say"] || "", () => apShow("microvm")),
-        // With no host yet, the door to adding one; after that it is at the
-        // end of the "where" list above
-        ...[where ? null : way("ssh", "server", T["tui.addproj.ssh"] || "", T["tui.addproj.ssh.say"] || "",
-          () => { apHostBack = "start"; apShow("host"); })].filter(Boolean)),
+        // A server is chosen on the page, the way a MicroVM is, with a way to
+        // add one at the end of the list
+        way("ssh", "server", T["tui.addproj.ssh"] || "", T["tui.addproj.ssh.say"] || "", () => apShow("sshclone"))),
       why));
   setTimeout(() => browse.focus(), 0);
 }
@@ -5756,26 +5757,25 @@ function apProgress() {
   return {bar, fill, said};
 }
 
+// A clone onto this PC. One onto a server is its own page (apSshClone): the
+// "where" above hands over to it the moment a server is chosen
 function apClone(body) {
   const url = apInput("", "https://github.com/user/repo.git", true);
-  const onHost = !!apHost;
-  const parent = apInput(onHost ? apRemoteParent(apHostOf(apHost)) : (S && S.project_home) || "", "", true);
+  const parent = apInput((S && S.project_home) || "", "", true);
   const prog = apProgress();
   const go = apGo(T["tui.addproj.clone.go"] || "", () =>
       !url.value.trim() ? {at:url, why:T["tui.addproj.clone.need_url"] || ""}
       : !parent.value.trim() ? {at:parent, why:T["tui.addproj.need_parent"] || ""} : null,
     () => {
       apAsk = Date.now();
-      send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost});
+      send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:""});
       apLive.running = true;
       drawAddProject();
     });
-  body.append(apBack(), el("div", {class:"ssay"}, onHost
-      ? (T["tui.addproj.clone.say_on"] || "{host}").replace("{host}", apHost) : T["tui.addproj.clone.say2"] || ""),
-    ...[apWhere(() => apShow("clone"))].filter(Boolean),
+  body.append(apBack(), el("div", {class:"ssay"}, T["tui.addproj.clone.say2"] || ""),
+    ...[apWhere(() => apShow(apHost ? "sshclone" : "clone"))].filter(Boolean),
     apField(T["tui.addproj.url"] || "", url),
-    // This PC's folder picker cannot look over there: the path is typed
-    onHost ? apField(T["tui.addproj.parent"] || "", parent) : apField(T["tui.addproj.parent"] || "", parent, apParent(parent)),
+    apField(T["tui.addproj.parent"] || "", parent, apParent(parent)),
     el("div", {class:"apfoot"}, go.why, go.btn, prog.bar));
   for (const i of [url, parent]) {
     i.addEventListener("input", go.check);
@@ -5783,8 +5783,97 @@ function apClone(body) {
   }
   go.check();
   apLive = {kind:"clone", running:false, go, prog, label:T["tui.addproj.clone.go"] || "",
-    busy:onHost ? (T["tui.addproj.clone.busy_on"] || "{host}").replace("{host}", apHost) : T["tui.addproj.clone.busy"] || ""};
+    busy:T["tui.addproj.clone.busy"] || ""};
   setTimeout(() => url.focus(), 0);
+}
+
+// A project cloned onto a server reached over SSH -- the MicroVM page with
+// the server's own choices in it. The address first; the server chosen the
+// way a MicroVM is, the ones there are and last a way to add one; then where
+// on the server, which is the server's owner's to say -- typed, or walked to
+// with the same walker the "open a folder there" page uses. The server's own
+// git clones, and nothing is installed there: a server is somebody's, set up
+// by them before it is joined to this app
+function apSshClone(body) {
+  const url = apInput("", "https://github.com/user/repo.git", true);
+  const hosts = () => ((S && S.hosts) || []).filter(h => h.kind === "ssh");
+  if (!hosts().some(h => h.name === apHost)) apHost = (hosts()[0] || {}).name || "";
+  const hostBtn = el("button", {class:"bpick", type:"button"});
+  const drawHost = () => {
+    const h = apHostOf(apHost);
+    hostBtn.textContent = "";
+    hostBtn.append(pickIcon("server"), el("span", {class:"nm"}, apHost || T["tui.addproj.sshclone.none"] || ""),
+      h ? el("span", {class:"at"}, apAt(h.at)) : null, el("span", {class:"caret"}, "▾"));
+  };
+  const parent = apInput(apRemoteParent(apHostOf(apHost)), "~", true);
+  const into = el("div", {class:"shint mono"});
+  const sayInto = () => {
+    const name = repoNameOf(url.value);
+    const p = parent.value.trim();
+    into.textContent = name && p ? (T["tui.addproj.sshclone.into"] || "{path}").replace("{path}", p.replace(/\/+$/, "") + "/" + name) : "";
+  };
+  // The walker, under the folder field, opened by the button beside it. A
+  // folder looked at is the folder the clone goes in: walking is choosing
+  const walker = apWalker(parent);
+  walker.box.hidden = true;
+  const walk = el("button", {class:"apicon", type:"button", title:T["tui.addproj.remote.walk"] || "",
+    onclick:() => {
+      walker.box.hidden = !walker.box.hidden;
+      if (!walker.box.hidden) walker.look(parent.value.trim() || "~");
+    }}, pickIcon("folderOpen"));
+  walker.onLooked = at => { parent.value = at; sayInto(); go.check(); };
+  const choose = name => {
+    apHost = name;
+    parent.value = apRemoteParent(apHostOf(apHost));
+    drawHost();
+    sayInto();
+    go.check();
+    if (!walker.box.hidden) walker.look(parent.value.trim() || "~");
+  };
+  hostBtn.onclick = e => {
+    e.stopPropagation();
+    const row = h => el("div", {class:"aphost", onclick:() => { closeFolderMenu(); choose(h.name); }},
+      el("span", {class:"ck"}, h.name === apHost ? "✓" : ""), el("span", {class:"nm"}, h.name), el("span", {class:"at"}, apAt(h.at)));
+    openList(hostBtn, [...hosts().map(row),
+      el("div", {class:"aphostadd", onclick:() => { closeFolderMenu(); apHostBack = "sshclone"; apShow("host"); }},
+        T["tui.addproj.sshclone.add"] || "")]);
+  };
+  const prog = apProgress();
+  const go = apGo(T["tui.addproj.clone.go"] || "", () =>
+      !url.value.trim() ? {at:url, why:T["tui.addproj.clone.need_url"] || ""}
+      : !apHost ? {at:hostBtn, why:T["tui.addproj.sshclone.need_host"] || ""}
+      : !parent.value.trim() ? {at:parent, why:T["tui.addproj.need_parent"] || ""} : null,
+    () => {
+      apAsk = Date.now();
+      send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost});
+      apLive.running = true;
+      drawAddProject();
+    });
+  body.append(apBack(), el("div", {class:"ssay"}, T["tui.addproj.sshclone.say2"] || ""),
+    apField(T["tui.addproj.url"] || "", url),
+    apField(T["tui.addproj.sshclone.host"] || "", hostBtn),
+    el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.addproj.microvm.account"] || ""),
+      el("div", {class:"shint"}, T["tui.addproj.sshclone.account_say"] || "")),
+    el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.addproj.parent"] || ""),
+      el("div", {class:"aprow"}, parent, walk), walker.box, into),
+    el("div", {class:"apfoot"}, go.why, go.btn, prog.bar));
+  for (const i of [url, parent]) {
+    i.addEventListener("input", () => { sayInto(); go.check(); });
+    i.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); go.btn.click(); } });
+  }
+  drawHost();
+  sayInto();
+  go.check();
+  apLive = {kind:"clone", running:false, go, prog, label:T["tui.addproj.clone.go"] || "",
+    busy:(T["tui.addproj.clone.busy_on"] || "{host}").replace("{host}", apHost), walker};
+  setTimeout(() => url.focus(), 0);
+}
+// The folder a clone makes, named as git names it: the address's last part
+// without its .git
+function repoNameOf(url) {
+  const s = String(url || "").trim().replace(/[\/\\]+$/, "").replace(/\.git$/i, "");
+  const m = s.match(/[\/:]([^\/:]+)$/);
+  return m ? m[1] : "";
 }
 
 // A project put straight onto a MicroVM: its address, the MicroVM, and what
@@ -5973,9 +6062,9 @@ function drawAddProject() {
     // it, on that server
     if (back) { reopenBranchOn(back.folder, back.host); return; }
     // A project goes on through its worktree rules to its first worktree --
-    // one onto a MicroVM as well, cut on that machine. A folder added over
-    // SSH is added, and that is the end of it
-    if (!mine.host || mine.microvm) rulesFirst(path);
+    // one cloned onto a MicroVM or a server as well, cut on that machine. A
+    // folder opened on a server is added, and that is the end of it
+    if (!mine.host || mine.microvm || kind === "clone") rulesFirst(path);
   }
 }
 // The worktree dialog opened again on a folder, on a machine chosen for it
@@ -6042,14 +6131,8 @@ function apWhere(redraw) {
 // when git says it is one, and after asking when it is not
 function apRemote(body) {
   const path = apInput(((apHostOf(apHost) || {}).project) || "~", "~", true);
-  const here = el("div", {class:"aprhere"});
-  const list = el("div", {class:"aprlist"});
-  const look = p => {
-    apListAsk = Date.now();
-    send({kind:"remotelist", host:apHost, path:p, ask:apListAsk});
-    if (apLive) apLive.drawn = "";
-    drawRemoteList();
-  };
+  const walker = apWalker(path);
+  const look = p => walker.look(p);
   const go = apGo(T["tui.addproj.remote.go"] || "", () => {
       const st = apListing();
       return !st || st.busy ? {at:path, why:T["tui.addproj.remote.wait"] || ""}
@@ -6078,60 +6161,81 @@ function apRemote(body) {
     apField(T["tui.addproj.remote.folder"] || "", path,
       el("button", {class:"apicon", type:"button", title:T["tui.addproj.remote.look"] || "",
         onclick:() => look(path.value.trim() || "~")}, pickIcon("refresh"))),
-    el("div", {class:"sfield"}, here, list),
+    walker.box,
     el("div", {class:"apfoot"}, go.why, go.btn));
   path.addEventListener("keydown", e => {
     if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); look(path.value.trim() || "~"); }
   });
   apLive = {kind:"remote", running:false, go, prog:null, label:T["tui.addproj.remote.go"] || "",
-    busy:T["tui.addproj.remote.busy"] || "", path, here, list, look, drawn:"",
-    // A host added a moment ago is not in the settings the app has read yet:
-    // the listing waits for it rather than being told there is no such host
-    waiting: !apHostOf(apHost)};
-  if (!apLive.waiting) look(path.value.trim() || "~");
+    busy:T["tui.addproj.remote.busy"] || "", walker};
+  if (!walker.waiting) look(path.value.trim() || "~");
   setTimeout(() => path.focus(), 0);
 }
 function apListing() {
   const st = S && S.remote_list;
   return st && apListAsk && st.ask === apListAsk ? st : null;
 }
+// Walking the folders of the server the dialog is on (apHost): the folder
+// being looked at, and what is in it, a press on one going into it. One
+// walker for every page that needs a folder over there -- the page that adds
+// a folder there, and the page that clones onto a server -- drawn from the
+// same listing the app answers. `path` is the field the folder is said in;
+// `onLooked`, when set, is told each folder the walk arrives at
+function apWalker(path) {
+  const here = el("div", {class:"aprhere"});
+  const list = el("div", {class:"aprlist"});
+  const w = {path, here, list, box: el("div", {class:"sfield"}, here, list), drawn:"", onLooked:null,
+    // A host added a moment ago is not in the settings the app has read yet:
+    // the listing waits for it rather than being told there is no such host
+    waiting: !apHostOf(apHost),
+    look(p) {
+      if (!apHostOf(apHost)) { w.waiting = true; w.drawn = ""; drawRemoteList(); return; }
+      apListAsk = Date.now();
+      send({kind:"remotelist", host:apHost, path:p, ask:apListAsk});
+      w.drawn = "";
+      drawRemoteList();
+    }};
+  return w;
+}
 function drawRemoteList() {
   const L = apLive;
-  if (!L || L.kind !== "remote") return;
-  if (L.waiting && apHostOf(apHost)) {
-    L.waiting = false;
-    L.look(L.path.value.trim() || "~");
+  const w = L && L.walker;
+  if (!w || w.box.hidden) return;
+  if (w.waiting && apHostOf(apHost)) {
+    w.waiting = false;
+    w.look(w.path.value.trim() || "~");
     return;
   }
   const st = apListing();
-  const sig = JSON.stringify([L.waiting, st]);
-  if (L.drawn === sig) return;
-  L.drawn = sig;
+  const sig = JSON.stringify([w.waiting, st]);
+  if (w.drawn === sig) return;
+  w.drawn = sig;
   L.go.check();
-  L.list.textContent = "";
-  L.here.textContent = "";
-  if (L.waiting || !st || st.busy) {
-    L.list.append(el("div", {class:"aprsay"}, (T["tui.addproj.remote.listing"] || "{host}").replace("{host}", apHost)));
+  w.list.textContent = "";
+  w.here.textContent = "";
+  if (w.waiting || !st || st.busy) {
+    w.list.append(el("div", {class:"aprsay"}, (T["tui.addproj.remote.listing"] || "{host}").replace("{host}", apHost)));
     return;
   }
   if (st.error) {
-    L.list.append(el("div", {class:"aprerr"},
+    w.list.append(el("div", {class:"aprerr"},
       el("div", {}, (T["tui.addproj.remote.unreached"] || "{host}").replace("{host}", apHost)),
       el("div", {class:"mono"}, st.error),
-      el("button", {type:"button", onclick:() => L.look(L.path.value.trim() || "~")}, T["tui.making.retry"] || "")));
+      el("button", {type:"button", onclick:() => w.look(w.path.value.trim() || "~")}, T["tui.making.retry"] || "")));
     return;
   }
-  if (document.activeElement !== L.path) L.path.value = st.at;
-  L.here.append(el("span", {class:"mono"}, st.at),
-    st.git ? el("span", {class:"apgit"}, pickIcon("branch"), T["tui.addproj.remote.git"] || "") : null);
+  if (document.activeElement !== w.path) w.path.value = st.at;
+  if (w.onLooked) w.onLooked(st.at);
+  w.here.append(el("span", {class:"mono"}, st.at),
+    ...(st.git ? [el("span", {class:"apgit"}, pickIcon("branch"), T["tui.addproj.remote.git"] || "")] : []));
   const rows = [];
   if (st.at !== "/") rows.push(["..", st.at.replace(/\/[^/]+\/?$/, "") || "/", "up"]);
   for (const d of st.dirs) rows.push([d, (st.at === "/" ? "" : st.at) + "/" + d, "folder"]);
   for (const [label, to, icon] of rows) {
-    L.list.append(el("div", {class:"aprrow", title:to, onclick:() => { L.path.value = to; L.look(to); }},
+    w.list.append(el("div", {class:"aprrow", title:to, onclick:() => { w.path.value = to; w.look(to); }},
       pickIcon(icon), el("span", {class:"nm"}, label)));
   }
-  if (!st.dirs.length) L.list.append(el("div", {class:"aprsay"}, T["tui.addproj.remote.empty"] || ""));
+  if (!st.dirs.length) w.list.append(el("div", {class:"aprsay"}, T["tui.addproj.remote.empty"] || ""));
 }
 
 // A machine reached over SSH, written into the settings. Filled in from
@@ -21845,10 +21949,17 @@ mod tests {
         assert!(PAGE.contains(r#"send({kind:"addhost", name:name.value.trim(), ask:apAsk, key:key.value.trim(),"#), "a host cannot be added");
         assert!(PAGE.contains(r#"if (kind === "host") { apHost = mine.host; apShow(apHostBack || "start"); return; }"#),
             "a host added does not become where the dialog adds");
-        // A folder added over SSH ends the dialog; a project cloned onto a
-        // MicroVM goes on through its rules to its first worktree, there
-        assert!(PAGE.contains("if (!mine.host || mine.microvm) rulesFirst(path);"),
-            "a project added over SSH goes on to a worktree, or one onto a MicroVM does not");
+        // A folder opened over SSH ends the dialog; a project cloned onto a
+        // MicroVM or a server goes on through its rules to its first worktree
+        assert!(PAGE.contains(r#"if (!mine.host || mine.microvm || kind === "clone") rulesFirst(path);"#),
+            "a folder opened over SSH goes on to a worktree, or a clone onto a machine does not");
+        // A clone onto a server: the server chosen as a MicroVM is, with a
+        // way to add one; where on it walked with the one walker there is
+        assert!(PAGE.contains(r#"apHostBack = "sshclone"; apShow("host");"#), "a server cannot be added from where it is chosen");
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost});"#),
+            "a project cannot be cloned onto a server");
+        assert!(PAGE.contains("const walker = apWalker(parent);") && PAGE.contains("const walker = apWalker(path);"),
+            "the two pages that walk a server do not share the walker");
         assert!(PAGE.contains(r#"send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai, account});"#),
             "a project cannot be cloned onto a MicroVM");
         assert!(PAGE.contains(r#"addMicrovm(name => { apVm = name; drawVm(); go.check(); look(); });"#),

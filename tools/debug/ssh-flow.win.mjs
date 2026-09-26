@@ -61,6 +61,9 @@ if (!HOST || !USER || !REPO || !(PASSWORD || KEY)) die('SSH_TEST_HOST, SSH_TEST_
 const NAME = REPO.split('/').pop();
 const BRANCH = 'check/ssh';
 const TREE = `${REPO}.branches/check-ssh`;
+// Where clones made from the clone page go on the server, and what is cloned
+const CLONES = `${REPO}.clones`;
+const HELLO = "https://github.com/octocat/Hello-World.git";
 
 // The server, asked directly
 const sdk = path.join(ROOT, 'target', 'ssh2-sdk');
@@ -81,7 +84,7 @@ const there = (cmd) => new Promise((resolve) => {
     .connect({ host: HOST, port: PORT, username: USER, password: PASSWORD || undefined,
       privateKey: KEY ? fs.readFileSync(KEY) : undefined, readyTimeout: 20000 });
 });
-const cleanThere = () => there(`cd ${REPO} && for w in $(git worktree list --porcelain | sed -n 's/^worktree //p' | grep -v "^${REPO}$"); do git worktree remove --force "$w"; done; git worktree prune; git branch -D ${BRANCH} 2>/dev/null; rm -rf ${REPO}.branches ${REPO}-ssh; true`);
+const cleanThere = () => there(`cd ${REPO} && for w in $(git worktree list --porcelain | sed -n 's/^worktree //p' | grep -v "^${REPO}$"); do git worktree remove --force "$w"; done; git worktree prune; git branch -D ${BRANCH} 2>/dev/null; rm -rf ${REPO}.branches ${REPO}-ssh ${REPO}.clones; true`);
 
 const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
@@ -252,6 +255,49 @@ try {
   await until(() => board.run(`!!(S.branch && S.branch.asked === "check/next" && S.branch.host === "srv" && S.branch.folder === ${JSON.stringify(REPO + "-check-next")})`), "the answer with the new rule", 30000).catch(() => {});
   check(await board.run('S.branch.folder') === `${REPO}-check-next`, 'the next goes beside the checkout, named for it: ' + await board.run('S.branch.folder'));
   await board.run('closeBranch(); true');
+
+  console.log('5. a project cloned onto the server, from a page of its own');
+  // The page: the address, the server chosen as a MicroVM is, where on it
+  // typed or walked to. The server's own git clones; nothing is installed
+  await there(`mkdir -p ${CLONES}/plain && touch ${CLONES}/plain/file`);
+  const openClone = async (url) => {
+    await board.run(`openAddProject(); apShow("sshclone"); true`);
+    await until(() => board.run('!!document.querySelector("#addproj .bpick")'), 'the clone page', 10000);
+    await board.run(`(() => { const [u, p] = document.querySelectorAll("#addproj input.apin");
+      u.value = ${JSON.stringify(url)}; u.dispatchEvent(new Event("input"));
+      p.value = ${JSON.stringify(CLONES)}; p.dispatchEvent(new Event("input")); return true; })()`);
+  };
+  await openClone(HELLO);
+  check(await board.run('apHost') === 'srv', 'the server is chosen, as a MicroVM is');
+  check(await board.run('[...document.querySelectorAll("#addproj .aphostadd")].length === 0'), 'the list is closed until it is pressed');
+  // The walker: the same one the "open a folder there" page walks with
+  await board.run(`document.querySelector('#addproj button[title="${'サーバーのフォルダをたどる'}"]').click(); true`);
+  await until(() => board.run('(document.querySelectorAll("#addproj .aprrow") || []).length > 0'), 'the server\'s folders, walked', 30000);
+  check(await board.run('[...document.querySelectorAll("#addproj .aprrow .nm")].some(n => n.textContent === "plain")'), 'the folders there are listed, to walk into');
+  check(!/null/.test(await board.run('document.querySelector("#addproj .aprhere").textContent')), 'the folder being looked at is said, and nothing else');
+  check((await board.run('document.querySelector("#addproj .shint.mono").textContent')).includes(`${CLONES}/Hello-World`), 'it says where the clone goes');
+  await board.shot('5-sshclone');
+  await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
+  const cloned = () => (desk().folders || []).find((f) => f.host === 'srv' && f.cwd === `${CLONES}/Hello-World`);
+  await until(() => !!cloned(), 'the clone, added as a folder on the server', 180000);
+  check(/octocat\/Hello-World/.test(await there(`git -C ${CLONES}/Hello-World remote get-url origin`)), 'cloned on the server, by the server\'s git');
+  await until(() => board.run('document.getElementById("addproj").hidden'), 'the dialog closed', 20000);
+  // The same again: the checkout there is taken in, not cloned over
+  await there(`echo mine > ${CLONES}/Hello-World/mine.txt`);
+  await openClone(HELLO.replace('.git', ''));
+  await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
+  await until(() => board.run('document.getElementById("addproj").hidden || !document.querySelector("#addproj .apwhy").hidden'), 'the second answer', 60000);
+  check(await board.run('document.getElementById("addproj").hidden') && (await there(`cat ${CLONES}/Hello-World/mine.txt`)) === 'mine',
+    'a checkout of the same repository already there is taken in as it is');
+  // Another repository of that name, and a folder that is no repository: said, and nothing touched
+  for (const [url, what, word] of [['https://github.com/someone-else/Hello-World.git', 'another repository', '別のリポジトリ'], ['https://github.com/octocat/plain.git', 'a folder that is not one', 'git のリポジトリではありません']]) {
+    await openClone(url);
+    await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
+    await until(() => board.run('!document.querySelector("#addproj .apwhy").hidden && document.querySelector("#addproj .apwhy").textContent.length > 0'), 'the refusal', 60000);
+    check((await board.run('document.querySelector("#addproj .apwhy").textContent')).includes(word), `${what} there is said, not cloned over: ` + await board.run('document.querySelector("#addproj .apwhy").textContent'));
+    await board.run('closeAddProject(); true');
+  }
+  check((await there(`ls ${CLONES}/plain`)) === 'file', 'and what was there is left as it was');
 } catch (e) {
   check(false, e.message);
 } finally {

@@ -114,6 +114,16 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **"Clone onto an SSH host" is a page of its own, laid out as the MicroVM
+  one is.** The address; the server chosen from the ones in the settings,
+  with "+ Add an SSH host" last; and where on the server, which is the
+  server owner's to say -- typed, or walked to with the same folder walker the
+  "open a folder there" page uses. The server's own git clones and nothing
+  is installed there: a server is set up by its owner before it is joined.
+  A checkout of the same repository already where the clone would go is
+  taken in as it is; another repository or a folder that is not one there
+  is said, and nothing is touched. A project cloned onto a server goes on
+  through its rules to its first worktree, as a MicroVM one does.
 - **A terminal on a MicroVM whose link died without a word takes itself up
   again.** The stream carrying a terminal can be dropped on the way with no
   word to this end: typing still reached the shell over there, and what it

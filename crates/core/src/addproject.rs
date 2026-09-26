@@ -309,6 +309,45 @@ pub fn remote_join(parent: &str, name: &str) -> String {
 /// Start cloning `url` into a new folder under `parent` on another machine.
 /// Git there cannot say how far it has got through one command, so it runs
 /// until it is done; a stop takes back whatever it made once it ends
+/// What the line run over there prints in front of the origin of a checkout
+/// that was already where the clone was to go
+const EXISTING: &str = "SHIKISHA-EXISTING\t";
+/// The exit code of that line when the folder is there and is not a checkout
+const NOT_GIT: i32 = 73;
+
+/// Whether two addresses name the same repository: the scheme, the sign-in,
+/// a `.git` at the end and the case of the server set aside, and the
+/// scp-like `git@host:owner/name` read as `host/owner/name`
+pub fn same_repository(a: &str, b: &str) -> bool {
+    fn key(u: &str) -> String {
+        let mut s = u.trim().to_string();
+        if let Some(i) = s.find("://") {
+            s = s[i + 3..].to_string();
+        }
+        if let Some(i) = s.find('@').filter(|i| !s[..*i].contains('/')) {
+            s = s[i + 1..].to_string();
+        }
+        // host:owner/name (scp-like), not host:port/owner/name
+        if let Some(i) = s.find(':')
+            && !s[..i].contains('/')
+        {
+            let rest = &s[i + 1..];
+            let port = rest.split('/').next().is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+            s = match port {
+                true => format!("{}/{}", &s[..i], rest.split_once('/').map(|x| x.1).unwrap_or_default()),
+                false => format!("{}/{rest}", &s[..i]),
+            };
+        }
+        let s = s.trim_end_matches('/');
+        let s = s.strip_suffix(".git").unwrap_or(s);
+        match s.split_once('/') {
+            Some((host, path)) => format!("{}/{path}", host.to_ascii_lowercase()),
+            None => s.to_ascii_lowercase(),
+        }
+    }
+    !a.trim().is_empty() && key(a) == key(b)
+}
+
 pub fn start_clone_on(spec: crate::ssh::Spec, url: &str, parent: &str) -> Result<Job, String> {
     let url = url.trim().to_string();
     if url.is_empty() {
@@ -328,25 +367,48 @@ pub fn start_clone_on(spec: crate::ssh::Spec, url: &str, parent: &str) -> Result
     let stopped = job.stopped.clone();
     std::thread::spawn(move || {
         let quoted_url = format!("'{}'", url.replace('\'', "'\\''"));
-        // Resolved over there first, so the folder added is the one made
+        let target = remote_join(&parent, &name);
+        // Resolved over there first, so the folder added is the one made.
+        // A folder already there is looked at rather than cloned over: a
+        // checkout of this repository is taken in as it is (it is somebody's
+        // work, set up by them), anything else stops the clone and is said
         let line = format!(
-            "mkdir -p {p} && cd {p} && test ! -e {n} && GIT_TERMINAL_PROMPT=0 git clone -q -- {quoted_url} {n} && cd {n} && pwd",
+            "mkdir -p {p} && cd {p} && if [ -e {n} ]; then \
+               if git -C {n} rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
+                 printf '{EXISTING}%s\\n' \"$(git -C {n} remote get-url origin 2>/dev/null)\"; cd {n} && pwd; \
+               else exit {NOT_GIT}; fi; \
+             else GIT_TERMINAL_PROMPT=0 git clone -q -- {quoted_url} {n} && cd {n} && pwd; fi",
             p = remote_quote(&parent),
             n = format!("'{}'", name.replace('\'', "'\\''")),
         );
         let end = match crate::ssh::exec(&spec, &line, 30 * 60_000) {
-            Ok(ran) if ran.ok() && !stopped.load(std::sync::atomic::Ordering::Relaxed) => {
-                match ran.out.lines().last().map(str::trim).filter(|l| l.starts_with('/')) {
-                    Some(at) => Outcome::Done(PathBuf::from(at)),
-                    None => Outcome::Failed(crate::i18n::t("err.addproj.clone_stopped")),
+            Ok(ran) if ran.ok() => {
+                let at = ran.out.lines().last().map(str::trim).filter(|l| l.starts_with('/')).map(PathBuf::from);
+                let existing = ran.out.lines().find_map(|l| l.strip_prefix(EXISTING)).map(|o| o.trim().to_string());
+                let stop = stopped.load(std::sync::atomic::Ordering::Relaxed);
+                match (at, existing) {
+                    (None, _) => Outcome::Failed(crate::i18n::t("err.addproj.clone_stopped")),
+                    // Taken in, never removed: it was there before
+                    (Some(at), Some(origin)) => match same_repository(&origin, &url) {
+                        true => Outcome::Done(at),
+                        false => Outcome::Failed(crate::i18n::tp(
+                            "err.addproj.exists_other",
+                            &[("path", &target), ("origin", if origin.is_empty() { "-" } else { &origin })],
+                        )),
+                    },
+                    // Made by this clone and stopped at the end: taken back
+                    (Some(_), None) if stop => {
+                        let _ = crate::ssh::exec(&spec, &format!("rm -rf {}", remote_quote(&target)), 60_000);
+                        Outcome::Failed(crate::i18n::t("err.addproj.clone_stopped"))
+                    }
+                    (Some(at), None) => Outcome::Done(at),
                 }
             }
-            Ok(ran) if ran.ok() => {
-                let _ = crate::ssh::exec(&spec, &format!("rm -rf {}", remote_quote(&remote_join(&parent, &name))), 60_000);
-                Outcome::Failed(crate::i18n::t("err.addproj.clone_stopped"))
+            Ok(ran) if ran.code == NOT_GIT => {
+                Outcome::Failed(crate::i18n::tp("err.addproj.exists_not_git", &[("path", &target)]))
             }
             Ok(ran) => Outcome::Failed(match ran.said().trim() {
-                "" => crate::i18n::tp("err.addproj.exists", &[("path", &remote_join(&parent, &name))]),
+                "" => crate::i18n::tp("err.addproj.exists", &[("path", &target)]),
                 said => said.trim_start_matches("fatal:").trim().to_string(),
             }),
             Err(e) => Outcome::Failed(format!("{e:#}")),
@@ -369,6 +431,26 @@ fn bail_str(e: &anyhow::Error) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A checkout already where a clone was to go is the same repository
+    /// when the addresses differ only in how they are written
+    #[test]
+    fn two_ways_of_writing_one_repository_are_one_repository() {
+        let u = "https://github.com/Acme/site.git";
+        for same in [
+            "https://github.com/Acme/site",
+            "https://GitHub.com/Acme/site/",
+            "https://x-access-token@github.com/Acme/site.git",
+            "git@github.com:Acme/site.git",
+            "ssh://git@github.com/Acme/site",
+            "ssh://git@github.com:22/Acme/site.git",
+        ] {
+            assert!(same_repository(same, u), "{same} is {u}");
+        }
+        assert!(!same_repository("https://github.com/Acme/other.git", u));
+        assert!(!same_repository("https://github.com/acme2/site.git", u));
+        assert!(!same_repository("", u), "a checkout with no origin is not this one");
+    }
 
     #[test]
     fn a_clone_is_named_after_the_end_of_its_url() {
