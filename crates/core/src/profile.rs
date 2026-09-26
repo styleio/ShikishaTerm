@@ -138,6 +138,14 @@ pub struct ProfileFile {
     /// sign-in has none. Absent is a CLI whose sign-in cannot be looked for
     #[serde(default)]
     pub signed_in_on_linux: Option<String>,
+    /// A shell line that succeeds once the CLI has been through its first-run
+    /// questions there, sign-in included. A CLI can hold its credentials
+    /// before it has written down that it is set up -- Claude Code says "Login
+    /// successful" and then asks about security and trust -- and a machine
+    /// copied in between starts the copy's CLI on its first run again, sign-in
+    /// and all. Absent is a CLI with nothing more than its sign-in to wait for
+    #[serde(default)]
+    pub set_up_on_linux: Option<String>,
 }
 
 /// An AI that can be installed on a MicroVM: its command, what it is called,
@@ -150,6 +158,9 @@ pub struct MachineAi {
     /// The line that says whether it is signed in there, when the profile
     /// knows one (`ProfileFile::signed_in_on_linux`)
     pub signed_in: Option<String>,
+    /// The line that says whether it has been through its first run there
+    /// (`ProfileFile::set_up_on_linux`)
+    pub set_up: Option<String>,
 }
 
 /// The AIs a MicroVM can be given, as the profiles say, in their order
@@ -160,7 +171,8 @@ pub fn machine_ais() -> Vec<MachineAi> {
             let key = pf.command_match.first()?.trim().to_string();
             let install = pf.install_on_linux?.trim().to_string();
             let signed_in = pf.signed_in_on_linux.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-            (!key.is_empty() && !install.is_empty()).then_some(MachineAi { key, name: pf.name, install, signed_in })
+            let set_up = pf.set_up_on_linux.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+            (!key.is_empty() && !install.is_empty()).then_some(MachineAi { key, name: pf.name, install, signed_in, set_up })
         })
         .collect()
 }

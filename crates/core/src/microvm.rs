@@ -825,6 +825,7 @@ pub fn ai_sign_in_note(
     let ai = ai.map(str::trim).filter(|a| !a.is_empty() && *a != NO_AI)?;
     let known_ai = crate::profile::machine_ai(ai)?;
     let line = known_ai.signed_in.clone()?;
+    let set_up = known_ai.set_up.clone();
     let home = home?;
     // A MicroVM is asked by its machine; a server by its entry
     let sandbox = match host.is_made() {
@@ -848,20 +849,33 @@ pub fn ai_sign_in_note(
     let known = notes.found.get(&key).cloned();
     if known.as_ref().is_none_or(|(at, _)| at.elapsed() > fresh) && notes.asking.insert(key.clone()) {
         let machine = host.with_instance(sandbox.as_deref());
-        let (yes, no, failed) = (note("yes", String::new()), note("no", String::new()), blank.clone());
+        let (yes, no, finishing, failed) =
+            (note("yes", String::new()), note("no", String::new()), note("finishing", String::new()), blank.clone());
         let failed = move |error: String| crate::uistate::AiSignInNote { state: "error".into(), error, ..failed };
         std::thread::spawn(move || {
             // A login shell, because a key set in the machine's profile is
             // what the AI would read, and a plain sh reads none of it
-            let argv = ["bash".to_string(), "-lc".to_string(), line];
-            let ran = match machine.is_made() {
-                true => crate::e2b::machine(&machine)
-                    .and_then(|m| crate::e2b::exec(&m, &crate::worktree::for_a_shell(&argv), None)),
-                false => crate::elsewhere::Elsewhere::of(&machine)
-                    .and_then(|at| crate::elsewhere::exec(&at, &crate::worktree::for_a_shell(&argv), 30_000)),
+            let ask = |line: String| {
+                let argv = ["bash".to_string(), "-lc".to_string(), line];
+                match machine.is_made() {
+                    true => crate::e2b::machine(&machine)
+                        .and_then(|m| crate::e2b::exec(&m, &crate::worktree::for_a_shell(&argv), None)),
+                    false => crate::elsewhere::Elsewhere::of(&machine)
+                        .and_then(|at| crate::elsewhere::exec(&at, &crate::worktree::for_a_shell(&argv), 30_000)),
+                }
             };
-            let found = match ran {
-                Ok(r) if r.ok() => yes,
+            let found = match ask(line) {
+                // Signed in; and through its first run as well, where the CLI
+                // says so -- until then a copy of the machine would start it
+                // over from the beginning, sign-in included
+                Ok(r) if r.ok() => match set_up {
+                    None => yes,
+                    Some(line) => match ask(line) {
+                        Ok(r) if r.ok() => yes,
+                        Ok(_) => finishing,
+                        Err(e) => failed(format!("{e:#}")),
+                    },
+                },
                 Ok(_) => no,
                 Err(e) => failed(format!("{e:#}")),
             };

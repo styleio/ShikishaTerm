@@ -8770,6 +8770,15 @@ function drawAiSignIn(box, note) {
   const say = k => (T[note.on === "server" && T[k.replace("tui.aisignin.", "tui.aisignin.server.")] ? k.replace("tui.aisignin.", "tui.aisignin.server.") : k] || "").split("{ai}").join(note.name);
   if (note.state === "asking") { box.append(el("div", {class:"say"}, say("tui.aisignin.asking"))); return; }
   if (note.state === "yes") { box.append(el("div", {class:"say"}, say("tui.aisignin.yes"))); return; }
+  // Signed in, and the AI's first-run questions not finished yet: a copy made
+  // now starts the AI over, sign-in included
+  if (note.state === "finishing") {
+    box.append(el("div", {class:"warn"}, say("tui.aisignin.finishing")));
+    const tab = checkoutAiTab(note.checkout, note.ai);
+    if (tab) box.append(el("div", {class:"row"},
+      el("button", {type:"button", class:"quiet", onclick:() => { closeBranch(); send({kind:"select", tab: tab.index}); }}, say("tui.aisignin.open"))));
+    return;
+  }
   if (note.state === "no") {
     box.append(el("div", {class:"warn"}, say("tui.aisignin.no")));
     const tab = checkoutAiTab(note.checkout, note.ai);
@@ -8859,6 +8868,7 @@ function drawLogin() {
   const state = box.querySelector(".lstate");
   if (state) {
     const text = st.state === "yes" ? say("tui.login.yes")
+      : st.state === "finishing" ? say("tui.login.finishing")
       : st.state === "no" ? say("tui.login.no")
       : st.state === "error" ? say("tui.login.error") + (st.error ? " " + st.error : "")
       : say("tui.login.asking");
