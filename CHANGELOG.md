@@ -114,6 +114,11 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **A file attached from the input bar reaches a folder on a MicroVM or a
+  server.** It was saved beside the folder on this PC -- under a `C:\home\…`
+  that exists nowhere -- and the AI over there was handed that path. Now it
+  is checked here as before, sent up into the folder there (`.SHIKISHA/tmp/`,
+  with its own ignore beside it), and the path typed is the machine's own.
 - **A terminal on a MicroVM wakes the machine when it is typed into.** A
   machine untouched for its minutes pauses, and the stream carrying the
   terminal ended with it: the screen stayed, and typing went nowhere, with

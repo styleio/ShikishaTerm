@@ -415,6 +415,16 @@ try {
   check(true, 'Claude in the terminal went on after the pause, as it was');
   await until(async () => ((await ours()).find((s) => s.sandboxID === wt.sandbox) || {}).state === 'running', 'the service to say it is running again', 60000);
 
+  console.log('4d. a file attached from the input bar lands on the machine, in the folder there');
+  // A one-pixel picture, attached the way the bar attaches: the path handed
+  // back is the machine's, and the file is there under it
+  const pixel = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const attached = await board.run(`attachViaIpc("pixel.png", ${JSON.stringify(pixel)})`);
+  check(attached && attached.ok && attached.path && attached.path.startsWith(wt.cwd + '/.SHIKISHA/tmp/') && attached.path.endsWith('.png'),
+    'the path is the machine\'s own: ' + JSON.stringify(attached));
+  const there = await inside(`test -f ${JSON.stringify(attached.path)} && wc -c < ${JSON.stringify(attached.path)}; cat ${wt.cwd}/.SHIKISHA/.gitignore`);
+  check(/^\s*70\s*\*\s*$/.test(there.replace(/\r/g, '')), 'the file is on the machine, beside an ignore of its own: ' + JSON.stringify(there));
+
   console.log('4c. the git panel reports on the worktree, with git run over there');
   // Asked the way the column beside the tab asks -- the tab named, the act,
   // its arguments -- and answered from the machine's own git in that folder

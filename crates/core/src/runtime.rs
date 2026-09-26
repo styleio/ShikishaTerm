@@ -3274,6 +3274,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 200,
                             ),
                             cwd: tab_cwd_abs(t),
+                            machine: match (t.remote(), t.cloud()) {
+                                (Some(spec), _) => Some(crate::elsewhere::Elsewhere::Ssh(spec.clone())),
+                                (None, Some(host)) => Some(crate::elsewhere::Elsewhere::Cloud(host.clone())),
+                                (None, None) => None,
+                            },
+                            remote_cwd: t.remote_cwd().unwrap_or_default().to_string(),
                             // Two strings, no filesystem: this runs every tick,
                             // and finding the record means walking a folder.
                             // The reader resolves the path when it is asked

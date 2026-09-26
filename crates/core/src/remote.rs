@@ -35,6 +35,14 @@ pub struct RemoteTab {
     /// so the AI running here can reach it. Empty if the tab has no folder set.
     #[serde(default)]
     pub cwd: String,
+    /// The machine the tab is on, when it is not this one, and its folder
+    /// there: an attached file goes up to that machine, into that folder,
+    /// since the AI reading it runs there. Never sent to the phone: a server's
+    /// entry carries how it is signed in to
+    #[serde(skip)]
+    pub machine: Option<crate::elsewhere::Elsewhere>,
+    #[serde(skip)]
+    pub remote_cwd: String,
     /// Which conversation, and the pattern that finds its record. Never sent:
     /// an id names a conversation, and the phone has no use for one — it asks
     /// by tab number and the path is resolved on this side. Kept here because
@@ -2625,16 +2633,22 @@ fn handle(
             let tab = v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
             let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("file");
             let data = v.get("data").and_then(|x| x.as_str()).unwrap_or("");
-            // The target tab's working folder, as it stands in the current snapshot.
-            let cwd = snapshot
+            // The target tab's working folder, as it stands in the current
+            // snapshot -- and its machine, when the folder is on another one
+            let (cwd, far) = snapshot
                 .lock()
                 .unwrap()
                 .tabs
                 .iter()
                 .find(|t| t.index == tab)
-                .map(|t| t.cwd.clone())
+                .map(|t| (t.cwd.clone(), t.machine.clone().map(|m| (m, t.remote_cwd.clone()))))
                 .unwrap_or_default();
-            req.respond(json_response(attach_save(&cwd, name, data)))?;
+            // Sending a file up to a machine takes as long as the link takes,
+            // which is not the request thread's to wait on for everyone
+            let (name, data) = (name.to_string(), data.to_string());
+            std::thread::spawn(move || {
+                let _ = req.respond(json_response(attach_save_at(&cwd, far.as_ref().map(|(m, at)| (m, at.as_str())), &name, &data)));
+            });
         }
         _ => {
             req.respond(Response::from_string("not found").with_status_code(404))?;
@@ -2648,7 +2662,37 @@ fn handle(
 /// extensions come from config; nothing here runs the file (see `attach`). Shared
 /// by the phone's HTTP route and the desktop composer's ipc path.
 pub fn attach_save(cwd: &str, name: &str, data_b64: &str) -> serde_json::Value {
+    attach_save_at(cwd, None, name, data_b64)
+}
+
+/// The same, for a tab whose folder is on another machine: the file is
+/// checked and written here as it would be beside a folder of this PC, then
+/// sent up into `<folder there>/.SHIKISHA/tmp/`, and the path handed back is
+/// the one the AI running there can read. The copy here is not kept
+pub fn attach_save_at(
+    cwd: &str,
+    far: Option<(&crate::elsewhere::Elsewhere, &str)>,
+    name: &str,
+    data_b64: &str,
+) -> serde_json::Value {
     use base64::Engine as _;
+    if let Some((at, there)) = far.filter(|(_, there)| !there.trim().is_empty()) {
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(data_b64.as_bytes()) {
+            Ok(b) => b,
+            Err(_) => {
+                return serde_json::json!({ "ok": false, "error": crate::i18n::t("attach.err.empty") })
+            }
+        };
+        let cfg = crate::config::load().unwrap_or_default();
+        let limits = crate::attach::Limits {
+            max_bytes: (cfg.attach.max_mb as usize).saturating_mul(1024 * 1024),
+            allowed_ext: cfg.attach.extensions,
+        };
+        return match crate::attach::send_up(at, there, name, &bytes, &limits) {
+            Ok(path) => serde_json::json!({ "ok": true, "path": path }),
+            Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+        };
+    }
     if cwd.is_empty() {
         return serde_json::json!({ "ok": false, "error": crate::i18n::t("attach.err.no_folder") });
     }

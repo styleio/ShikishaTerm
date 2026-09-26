@@ -860,7 +860,22 @@ impl WinSurface {
                 // the page. Same saver the phone's /api/attach route uses.
                 Ev::Attach { id, name, data } => {
                     let cwd = active_tab.map(tab_cwd_abs).unwrap_or_default();
-                    let result = shikisha_core::remote::attach_save(&cwd, &name, &data);
+                    // A tab on another machine gets the file there, in its
+                    // folder there: the AI reading it runs on that machine
+                    let far = active_tab.and_then(|t| {
+                        let machine = match (t.remote(), t.cloud()) {
+                            (Some(spec), _) => shikisha_core::elsewhere::Elsewhere::Ssh(spec.clone()),
+                            (None, Some(host)) => shikisha_core::elsewhere::Elsewhere::Cloud(host.clone()),
+                            (None, None) => return None,
+                        };
+                        Some((machine, t.remote_cwd().unwrap_or_default().to_string()))
+                    });
+                    let result = shikisha_core::remote::attach_save_at(
+                        &cwd,
+                        far.as_ref().map(|(m, at)| (m, at.as_str())),
+                        &name,
+                        &data,
+                    );
                     let _ = self
                         .win
                         .eval(&format!("window.__attachDone({id}, {result});"));

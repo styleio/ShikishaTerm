@@ -129,6 +129,55 @@ pub fn save(cwd: &Path, declared_name: &str, bytes: &[u8], limits: &Limits) -> R
     Ok(path)
 }
 
+/// How long sending one attachment up to a machine may take
+const SEND_UP_MS: u64 = 60_000;
+
+/// Save an attachment for a tab whose folder is on another machine.
+///
+/// The same checks and the same random name as [`save`], written into a
+/// scratch folder of this PC first -- so nothing goes up that would not have
+/// been saved here -- then sent into `<there>/.SHIKISHA/tmp/` on that
+/// machine, with the folder's own `.gitignore` beside it so the repository
+/// there never sees it. What comes back is the path over there, as the AI
+/// running there reads it. The copy here is removed either way
+pub fn send_up(
+    at: &crate::elsewhere::Elsewhere,
+    there: &str,
+    declared_name: &str,
+    bytes: &[u8],
+    limits: &Limits,
+) -> Result<String> {
+    let scratch = std::env::temp_dir().join(format!("shikisha-attach-{}", std::process::id()));
+    let here = save(&scratch, declared_name, bytes, limits)?;
+    let sent = (|| -> Result<String> {
+        let base = format!("{}/.SHIKISHA", there.trim_end_matches('/'));
+        let dir = format!("{base}/tmp");
+        // Made a step at a time: a server's file service makes one folder
+        // per ask, and one that is there already is not a failure
+        for folder in [&base, &dir] {
+            let _ = crate::elsewhere::files(at, crate::ssh::FileJob::MakeDir { path: folder.clone() }, SEND_UP_MS);
+        }
+        let ignore = scratch.join(".SHIKISHA").join(".gitignore");
+        if crate::elsewhere::files(at, crate::ssh::FileJob::Stat { path: format!("{base}/.gitignore") }, SEND_UP_MS).is_err()
+            && ignore.is_file()
+        {
+            // Absent there: put ours, which says "everything". One that is
+            // there is somebody's, and is not written over
+            let _ = crate::elsewhere::files(
+                at,
+                crate::ssh::FileJob::Put { from: ignore, to: format!("{base}/.gitignore"), overwrite: false },
+                SEND_UP_MS,
+            );
+        }
+        let leaf = here.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let to = format!("{dir}/{leaf}");
+        crate::elsewhere::files(at, crate::ssh::FileJob::Put { from: here.clone(), to: to.clone(), overwrite: true }, SEND_UP_MS)?;
+        Ok(to)
+    })();
+    let _ = std::fs::remove_file(&here);
+    sent
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
