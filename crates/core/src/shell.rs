@@ -334,21 +334,23 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the pane behind it) and, above it, the one thing asked for -- said so it
      cannot be missed, since the step can be gone through without doing it */
   #login { position:fixed; inset:0; background:#00000099; display:flex; align-items:flex-start;
-    justify-content:center; z-index:52; padding:56px 16px 16px; }
+    justify-content:center; z-index:52; padding:16px; }
   #login[hidden] { display:none; }
+  /* As big as a project's settings page: the terminal in it is the whole
+     point, and a terminal wants room */
   #login .sbox { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
-    width:min(720px,100%); max-height:calc(100vh - 72px); box-shadow:0 8px 24px #0007;
+    width:min(1100px,100%); height:calc(100vh - 32px); box-shadow:0 8px 24px #0007;
     display:flex; flex-direction:column; }
   #login .shead { display:flex; align-items:center; gap:var(--s3); padding:16px 20px; border-bottom:1px solid var(--line); }
   #login .stitle { flex:1; min-width:0; font-size:13.5px; font-weight:600; color:var(--text); text-transform:uppercase; }
   #login .shead .vclose { cursor:pointer; color:var(--dim); font-size:16px; padding:2px 6px; }
   #login .shead .vclose:hover { color:var(--text); }
-  #login .sbody { display:flex; flex-direction:column; gap:var(--s3); padding:20px; overflow:auto; }
+  #login .sbody { flex:1; min-height:0; display:flex; flex-direction:column; gap:var(--s3); padding:20px; overflow:auto; }
   #login .ssay { font-size:12px; color:var(--dim); line-height:1.5; }
   #login .lstrong { font-size:14px; font-weight:600; color:var(--text); line-height:1.5; padding:10px 12px;
     border-left:3px solid var(--brand); background:var(--raise); border-radius:var(--r-ctl); }
-  #login .lmirror { white-space:pre; font-family:var(--mono); font-size:12px; line-height:1.25; overflow:auto;
-    height:min(40vh, 22em); padding:8px; background:#000; color:#ddd; border:1px solid var(--line);
+  #login .lmirror { flex:1; min-height:12em; white-space:pre; font-family:var(--mono); font-size:13px;
+    line-height:1.25; overflow:auto; padding:8px; background:#000; color:#ddd; border:1px solid var(--line);
     border-radius:var(--r-ctl); }
   #login .lmirror .r { min-height:1.25em; }
   #login .lstate { font-size:12.5px; color:var(--dim); line-height:1.5; }
@@ -8612,10 +8614,6 @@ function checkoutAiTab(checkout, ai) {
 // since a key given another way is a sign-in this cannot see
 let loginSeen = 0;
 let loginSelected = "";
-// Whether the checkout's tab is in front and a frame of it has arrived. The
-// pane keeps the last tab's picture until the new one draws, and a copy of
-// that in the step would be a terminal that is not the one asked about
-let loginLive = false;
 function drawLogin() {
   const box = document.getElementById("login");
   if (!box) return;
@@ -8624,14 +8622,15 @@ function drawLogin() {
     if (!box.hidden) { box.hidden = true; box.textContent = ""; }
     loginSeen = 0;
     loginSelected = "";
-    loginLive = false;
     return;
   }
+  // The checkout's AI tab is brought in front once it is there: that is
+  // where keys typed here go (the pane behind, or a phone's input bar)
   const tab = checkoutAiTab(st.folder, st.ai);
   const mark = st.folder + "\u001f" + st.seq;
   if (tab && loginSelected !== mark) {
     if (tab.index !== S.active) send({kind:"select", tab: tab.index});
-    else { loginSelected = mark; loginLive = false; }
+    else loginSelected = mark;
   }
   const say = k => (T[k] || "").replace("{ai}", st.name);
   if (loginSeen !== st.seq) {
@@ -8664,28 +8663,24 @@ function drawLogin() {
     if (state.textContent !== text) state.textContent = text;
     state.classList.toggle("yes", st.state === "yes");
   }
+  loginMirror(box, st.screen || "");
 }
-// What the pane behind is showing, copied into the step: the same rows,
-// the same markup, each time a frame arrives -- once the frames are the
-// checkout's tab's, which is after it was brought in front
-function loginMirror() {
-  const box = document.getElementById("login");
-  if (!box || box.hidden) return;
-  if (!loginSelected) return;
-  loginLive = true;
+// The checkout's AI terminal, drawn in the step from what the app sends
+// of that tab itself -- not copied from the pane behind, which is whatever
+// happens to be in front on this board or another. The rows down to the
+// last one with something on it: a terminal is as tall as the pane, and an
+// AI's sign-in screen uses the top of it, so the blank rows under it would
+// put the words out of view once the mirror is pinned to its bottom -- which
+// it is, because a prompt is at the bottom of what is written, unless the
+// reader scrolled up to look at something
+function loginMirror(box, screen) {
   const m = box.querySelector(".lmirror");
-  const s = document.getElementById("screen");
-  if (!m || !s || !loginLive) return;
-  // The rows down to the last one with something on it. A terminal is as
-  // tall as the pane, and an AI's sign-in screen uses the top of it: the
-  // blank rows under it would put the words out of view once the mirror is
-  // pinned to its bottom, which it is, because a prompt is at the bottom of
-  // what is written -- unless the reader scrolled up to look at something
-  const rows = s.children;
+  if (!m) return;
+  const rows = screen.split("\n");
   let last = rows.length - 1;
-  while (last >= 0 && !rows[last].textContent.trim()) last--;
+  while (last >= 0 && !rows[last].replace(/<[^>]*>/g, "").trim()) last--;
   let html = "";
-  for (let i = 0; i <= last; i++) html += rows[i].outerHTML;
+  for (let i = 0; i <= last; i++) html += '<div class="r">' + rows[i] + '</div>';
   if (m.innerHTML === html) return;
   const nearBottom = m.children.length === 0 || (m.scrollHeight - m.clientHeight - m.scrollTop) <= 24;
   m.innerHTML = html;
@@ -12071,12 +12066,10 @@ window.__screen = function (html) {
     for (let i = 0; i < rows.length; i++) {
       if (kids[i].innerHTML !== rows[i]) kids[i].innerHTML = rows[i];
     }
-    loginMirror();
     return;
   }
   s.innerHTML = rowsHtml(html);
   if (REMOTE) s.scrollTop = nearBottom ? s.scrollHeight : prevTop;
-  loginMirror();
 };
 
 // ── Input handling starts here ────────────────────────────

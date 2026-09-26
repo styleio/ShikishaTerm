@@ -8240,6 +8240,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Some("asking") if !p.shown => false,
                 Some(state) => {
                     p.shown = true;
+                    // The checkout's AI terminal, as the tab standing in that
+                    // folder on that machine draws it now
+                    let screen = tabs
+                        .iter()
+                        .find(|t| t.remote_cwd() == Some(p.folder.as_str()) && t.title == p.ai)
+                        .map(|t| {
+                            let parser = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+                            crate::shell::screen_html(parser.screen())
+                        })
+                        .unwrap_or_default();
                     let v = crate::uistate::LoginStepState {
                         seq: p.seq,
                         folder: p.folder.clone(),
@@ -8248,6 +8258,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         name: p.name.clone(),
                         state: state.to_string(),
                         error: note.as_ref().map(|n| n.error.clone()).unwrap_or_default(),
+                        screen,
                     };
                     if login_view.as_ref() != Some(&v) {
                         login_view = Some(v);

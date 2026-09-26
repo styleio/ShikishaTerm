@@ -854,6 +854,11 @@ pub struct LoginStepState {
     pub state: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error: String,
+    /// The checkout's AI terminal as it is now, one row per line (the same
+    /// markup a pane is drawn from), so the step shows that terminal itself
+    /// wherever the board is and whatever the pane behind it is showing
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub screen: String,
 }
 
 /// The public addresses of a folder on a MicroVM, as asked for from its menu

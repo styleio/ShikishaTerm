@@ -119,9 +119,10 @@ once it reaches its first tagged release.
   sign-in and all, so one cut before the sign-in has none -- and the way
   through went straight from the clone to the worktree dialog, leaving two
   Claudes signed in to nothing. Now, once the machine is ready, a step over
-  the board asks for the sign-in in so many words, with the checkout's own AI
-  terminal in front and mirrored inside it; a sign-in done there is seen
-  within seconds. Next goes on to the project's rules either way (a key given
+  the board -- as big as a project's settings page -- asks for the sign-in in
+  so many words, with the checkout's own AI terminal drawn inside it (from
+  that tab itself, so it is the same on a phone) and brought in front behind
+  it, where keys go; a sign-in done there is seen within seconds. Next goes on to the project's rules either way (a key given
   another way is a sign-in this cannot see), Later puts the step away. A
   machine that already has the sign-in -- a key put in by the machine setup
   -- is never shown the step.
