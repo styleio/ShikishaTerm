@@ -8730,11 +8730,14 @@ function loginHelp(st) {
   }}, T["tui.login.url.copy"] || "");
   const code = el("input", {type:"text", id:"logincode", class:"lcode", placeholder:T["tui.login.code.ph"] || "",
     autocomplete:"off", spellcheck:"false"});
+  // The code, then Enter -- a moment later, as a hand would press it. An
+  // AI's input reads a burst of characters as one paste, and an Enter
+  // inside the same burst is a line break in the paste, not the send
   const sendCode = () => {
     const v = code.value.trim();
     if (!v) return;
     send({kind:"key", text:v});
-    send({kind:"key", named:"enter"});
+    setTimeout(() => send({kind:"key", named:"enter"}), 400);
     code.value = "";
   };
   code.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); sendCode(); } e.stopPropagation(); });

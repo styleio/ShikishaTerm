@@ -280,9 +280,14 @@ try {
   check(await board.run('!document.querySelector("#login .lurl").hidden && /^https:\\/\\/claude\\.(ai|com)\\//.test(document.querySelector("#login .lurl").getAttribute("href"))'),
     'the address is beside the terminal, to copy or open: ' + (await step()).url.slice(0, 60) + '…');
   check(/Paste code here/i.test(await screenText()), 'Claude asks for the code in the terminal');
-  await board.run(`(() => { const c = document.getElementById("logincode"); c.value = "not-a-real-code"; document.getElementById("logincodesend").click(); return true; })()`);
-  await until(async () => /not-a-real-code|invalid|error|failed/i.test(await screenText()), 'the code typed into the terminal from the help', 30000);
-  check(true, 'the help sends the code to the terminal');
+  // A code the length and shape of a real one, so the send is judged as a
+  // real one is: not by the text landing in the terminal, but by Claude
+  // taking it as sent -- which it says by refusing it
+  const fakeCode = 'x'.repeat(64) + '#' + 'y'.repeat(32);
+  await board.run(`(() => { const c = document.getElementById("logincode"); c.value = ${JSON.stringify(fakeCode)}; document.getElementById("logincodesend").click(); return true; })()`);
+  await until(async () => /OAuth error|invalid code/i.test(await screenText()), 'Claude to take the code as sent (and refuse it)', 45000)
+    .catch(async (e) => { console.log('    (the terminal says: ' + (await screenText()).replace(/\s+/g, ' ').trim().slice(-300) + ')'); throw e; });
+  check(true, 'the help sends the code and the Enter that sends it');
   await board.shot('2c-login');
   await on(home.sandbox, 'mkdir -p ~/.claude && echo "{}" > ~/.claude/.credentials.json');
   await until(async () => ((await step()) || {}).state === 'yes', 'the sign-in to be seen while the step is open', 40000);
