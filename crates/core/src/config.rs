@@ -4435,10 +4435,20 @@ pub fn command_value(command: &str) -> serde_json::Value {
 pub enum Start {
     /// The same tabs as the folder it was cut from: same faces, new branch
     Same,
+    /// The same tabs as the folder at this path on the machine the new one is
+    /// on. What a worktree on a server takes from the server's checkout: the
+    /// folder the ask came from is here, and its tabs are this PC's
+    SameAs(std::path::PathBuf),
     /// Nothing. The folder is there, with a + to press
     Nothing,
     /// One tab, running this. `name` is what the tab is called
     One { name: String, command: String },
+}
+
+/// A path on another machine written the one way: its slashes, no slash at
+/// the end. Compared as text, since this machine cannot ask that one
+fn far_spelling(p: &str) -> String {
+    p.trim().replace('\\', "/").trim_end_matches('/').to_string()
 }
 
 /// The same, told which settings file to edit. Split out so it can be checked
@@ -4467,8 +4477,25 @@ pub fn append_folder_at(
             (Some(_), Start::One { name, command }) => {
                 serde_json::json!([{ "name": name, "command": command_value(command) }])
             }
+            // The tabs of the checkout on that machine it was cut from, the way
+            // a worktree here takes its checkout's -- they are already that
+            // machine's terminals
+            (Some(h), Start::SameAs(at)) => folders
+                .iter()
+                .find(|g| {
+                    g.get("host").and_then(|x| x.as_str()).map(str::trim) == Some(h)
+                        && g.get("cwd").and_then(|c| c.as_str()).map(far_spelling) == Some(far_spelling(&at.to_string_lossy()))
+                })
+                .and_then(|g| g.get("tabs").cloned())
+                .filter(|t| t.as_array().is_some_and(|a| !a.is_empty()))
+                .unwrap_or_else(|| serde_json::json!([{ "name": h, "command": FAR_SHELL }])),
             // Or, when nothing was named, a terminal named for the machine
-            (Some(h), Start::Same) => serde_json::json!([{ "name": h, "command": "sh" }]),
+            (Some(h), Start::Same) => serde_json::json!([{ "name": h, "command": FAR_SHELL }]),
+            (None, Start::SameAs(at)) => folders
+                .iter()
+                .find(|g| g.get("cwd").and_then(|c| c.as_str()).map(resolve_folder_cwd).is_some_and(|c| c == *at))
+                .and_then(|g| g.get("tabs").cloned())
+                .unwrap_or_else(|| serde_json::json!([])),
             (None, Start::Same) => like
                 .and_then(|want| {
                     folders.iter().find(|g| {
@@ -7971,6 +7998,35 @@ mod tests {
         assert_eq!(ai[0].cfg.command.argv(), vec!["claude".to_string()], "{text}");
         let opts = crate::desk::tab_options(&ai[0].cfg, Some(&desk.folders[3]));
         assert_eq!(opts.remote_run.as_deref(), Some("claude"), "the AI is not typed into the far terminal");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A worktree on a server takes the tabs of the server's checkout it is
+    /// cut from -- its AI and its terminals there -- the way a worktree here
+    /// takes its checkout's. With no such folder on the desk, a shell there
+    #[test]
+    fn a_worktree_on_a_server_takes_the_tabs_of_the_checkout_there() {
+        let dir = crate::test_temp("same-as-far");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        std::fs::write(&file, r#"{"hosts": [{"name": "bench", "at": "ssh://me@bench"}],
+          "desks": [{"name": "Demo", "folders": [
+            {"cwd": "/srv/proj/", "host": "bench",
+             "tabs": [{"name": "claude", "id": "ai", "command": "claude"}, {"name": "sh", "id": "sh", "command": "sh"}]}]}]}"#).unwrap();
+        let start = Start::SameAs(std::path::PathBuf::from("/srv/proj"));
+        append_folder_at(&file, "Demo", None, Path::new("/srv/proj-work"), Some("work"), &start, Some("bench")).unwrap();
+        let start = Start::SameAs(std::path::PathBuf::from("/srv/other"));
+        append_folder_at(&file, "Demo", None, Path::new("/srv/other-work"), Some("other"), &start, Some("bench")).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        let cfg: Config = serde_json::from_str(&text).unwrap();
+        let desk = &cfg.resolve_desks().0[0];
+        let in_folder = |g: usize| desk.tabs.iter().filter(|t| t.folder == g).map(|t| t.cfg.command.argv().join(" ")).collect::<Vec<_>>();
+        assert_eq!(in_folder(1), vec!["claude", "sh"], "the checkout's tabs were not taken: {text}");
+        assert_eq!(in_folder(2), vec![FAR_SHELL], "with no checkout on the desk, not a shell there: {text}");
+        let ids: Vec<_> = desk.tabs.iter().filter_map(|t| t.cfg.id.clone()).collect();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "the copies share the checkout's ids: {ids:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

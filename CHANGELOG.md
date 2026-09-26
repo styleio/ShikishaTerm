@@ -230,6 +230,12 @@ once it reaches its first tagged release.
   deletes the original", which never happens: the links are taken out first.
 
 ### Fixed
+- **A worktree on a server opens on what the server's checkout runs.** Asked
+  to run "the same" as its original, a worktree cut on a server over SSH got
+  one plain terminal, while a worktree here takes its checkout's tabs and one
+  on a MicroVM opens on the AI its machine was given. It now takes the tabs of
+  the checkout on that server -- its AI and its terminals there -- and a plain
+  terminal only when that checkout has no folder on the desk.
 - **A command tab added to a folder on a MicroVM appears.** The dialog says
   that a command left empty opens the machine's shell, and the tab was
   written down with nothing to run -- which the app counts as no tab at all,

@@ -280,9 +280,13 @@ impl Pending {
         // On a MicroVM the dialog's choice is what the machine was given: the
         // AI it was prepared with, or its shell. What this PC runs is not on
         // that machine
-        let start = match plan.host.as_ref().filter(|h| h.is_made()) {
-            Some(_) => crate::microvm::start_with(plan.preparing.ai.as_deref()),
-            None => self.start.clone(),
+        let start = match (plan.host.as_ref(), &self.start) {
+            (Some(h), _) if h.is_made() => crate::microvm::start_with(plan.preparing.ai.as_deref()),
+            // On a server, "the same" is the same as the server's checkout it
+            // is cut from -- its AI and terminals there -- as a worktree here
+            // takes its checkout's. The folder the ask came from is this PC's
+            (Some(_), config::Start::Same) => config::Start::SameAs(plan.main.clone()),
+            _ => self.start.clone(),
         };
         config::append_folder_starting(
             &self.desk,
