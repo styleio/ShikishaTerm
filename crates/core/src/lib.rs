@@ -88,6 +88,7 @@ pub mod session_log;
 pub mod runtime;
 pub mod send;
 pub mod serve;
+pub mod serverai;
 pub mod sessionfind;
 pub mod shell;
 pub mod hotkeys;

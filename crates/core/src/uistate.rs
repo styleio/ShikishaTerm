@@ -759,6 +759,11 @@ pub struct BranchPlan {
     /// The AI the project's MicroVM checkouts are given, as it says
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub machine_ai: String,
+    /// On a server reached over SSH: the AIs it has, which are what a
+    /// worktree there can run -- this PC's are not there. Absent until the
+    /// server has answered, and on any other machine
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_ais: Option<Vec<AiChoice>>,
     /// The file this project's own preparation came from, when it has one
     #[serde(default)]
     pub setup_from: String,
@@ -811,6 +816,10 @@ pub struct AiSignInNote {
     /// Why the machine could not be asked, when that is what happened
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error: String,
+    /// `server` for a server reached over SSH, whose worktrees share its
+    /// sign-in; empty for a MicroVM, whose worktrees are copies of it
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub on: String,
 }
 
 /// What a MicroVM will sign in to the project's git server as.

@@ -9,6 +9,30 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **A worktree on a server is deleted there.** The red "Delete" on a
+  worktree's menu, and the git panel's clean-up after its pull request, work
+  on a folder on a server reached over SSH: git there removes the worktree,
+  and its branch stays in the project's repository on the server, as one here
+  does. Something not committed stops it and is said first, before anything
+  is closed; the project's own folder there is never removed.
+- **A terminal on a server whose connection goes is opened again.** A
+  server's entry has a connection check (every 30 seconds unless it says
+  otherwise, shown as a value in its form, 0 for none). Three checks with no
+  answer are a connection that is gone -- a router that forgot it, this PC
+  asleep -- and the terminal says so; once the server answers again, the tab
+  is opened again on its conversation. A shell ended with `exit` ends its tab
+  as before.
+- **Work in a folder on a server goes to an AI the server has.** The server
+  is asked which AIs a login shell there finds (again every 10 minutes), and
+  merging, fixing CI, a pull request's conflicts, the quick buttons, a tab
+  added in the settings and the worktree dialog's "AI" choose from those --
+  the one chosen in the settings when the server has it, else the first it
+  has. A server with none says so rather than typing a command that is not
+  there.
+- **The worktree dialog says whether a server's AI is signed in.** Every
+  worktree on a server shares its sign-in, so signing in once in the
+  checkout's tab is enough; the dialog says whether that has been done, with
+  the tab a press away.
 - **The editor and the file list work on a MicroVM.** Beside a folder on a
   MicroVM (or on a server over SSH), the column's file list shows that
   machine's files, the search by name and by what is inside runs there, and a

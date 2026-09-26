@@ -93,6 +93,11 @@ if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first
 
 console.log('the server: ' + await there('git --version'));
 await cleanThere();
+// The server has no AI of its own: one stands in for Codex, where an
+// installer puts it, found by a login shell there (steps 3 and 7). It goes
+// again on the way out, with the folder when this made it
+const madeBin = (await there('test -d ~/.local/bin && echo had || echo new')) === 'new';
+await there('mkdir -p ~/.local/bin && printf "#!/bin/sh\necho stand-in\n" > ~/.local/bin/codex && chmod +x ~/.local/bin/codex');
 console.log('starting this checkout\'s build, isolated');
 stopApp();
 await sleep(800);
@@ -111,14 +116,34 @@ git('commit', '-q', '-m', 'start');
 
 const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
 if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n' + staged.stdout + staged.stderr);
+// A relay on this PC in front of the server, which can be told to pass
+// nothing on without closing anything: a router that forgot the connection,
+// a PC that slept. New connections through it still pass. A server entry of
+// its own reaches the server through it, with its password there from the
+// start, as the app reads the secrets once (step 7)
+const net = await import('node:net');
+const pipes = [];
+const relay = net.createServer((near) => {
+  const far = net.connect(PORT, HOST);
+  const p = { silent: false };
+  pipes.push(p);
+  near.on('data', (d) => { if (!p.silent) far.write(d); });
+  far.on('data', (d) => { if (!p.silent) near.write(d); });
+  for (const e of [near, far]) e.on('error', () => {});
+  near.on('close', () => far.destroy());
+  far.on('close', () => near.destroy());
+});
+await new Promise((r) => relay.listen(0, '127.0.0.1', r));
+
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(CONFIG, JSON.stringify({
   language: 'ja',
   remote: { enabled: false },
-  hosts: [{ name: 'srv', at: `ssh://${USER}@${HOST}:${PORT}`, ...(KEY ? { key: KEY } : {}) }],
+  hosts: [{ name: 'srv', at: `ssh://${USER}@${HOST}:${PORT}`, ...(KEY ? { key: KEY } : {}) },
+    { name: 'relay', at: `ssh://${USER}@127.0.0.1:${relay.address().port}`, keepalive: 3, ...(KEY ? { key: KEY } : {}) }],
   desks: [{ name: 'Check', id: 'check', folders: [{ cwd: HERE, tabs: [{ name: 'shell', id: 'shell', command: 'cmd.exe' }] }] }],
 }, null, 2));
-fs.writeFileSync(SECRETS, JSON.stringify({ tokens: PASSWORD ? { 'ssh/host/srv/password': PASSWORD } : {} }, null, 2));
+fs.writeFileSync(SECRETS, JSON.stringify({ tokens: PASSWORD ? { 'ssh/host/srv/password': PASSWORD, 'ssh/host/relay/password': PASSWORD } : {} }, null, 2));
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA|E2B)/i.test(k)));
 env.LOCALAPPDATA = LOCAL;
@@ -219,6 +244,18 @@ try {
   const planned = await board.run('S.branch.folder');
   check(planned === TREE, 'where the server\'s default placement says: ' + planned);
   check(await board.run('S.branch.line').then((l) => l.includes(`git -C ${REPO} worktree add`)), 'cut from the checkout over there');
+  // The AI the server has, and whether it is signed in there: every worktree
+  // on the server shares that sign-in, so it is said before one is made
+  await until(() => board.run('!!(S.branch.ai_sign_in && S.branch.ai_sign_in.state === "no")'), 'the server\'s AI said to be signed out', 60000)
+    .catch(async (e) => { console.log('    (the dialog has: ' + await board.run('JSON.stringify(S.branch.ai_sign_in || null)') + ')'); throw e; });
+  check(await board.run('S.branch.ai_sign_in.ai') === 'codex', 'the AI asked about is the one the server has, not this PC\'s');
+  // What the worktree runs is chosen from the server's AIs too
+  await until(() => board.run('/Codex/.test(document.getElementById("bstart").textContent)'), 'the worktree to run the AI the server has', 10000)
+    .catch(async (e) => { console.log('    (the picker says: ' + await board.run('document.getElementById("bstart").textContent') + ')'); throw e; });
+  check(await board.run('branchStart') === 'codex', 'the worktree runs the AI the server has, not this PC\'s');
+  await until(() => board.run('/サーバーでまだログインしていません/.test(document.querySelector("#branch .baisignin").textContent)'), 'the dialog saying so', 10000);
+  check(await board.run('!/元のフォルダのマシン/.test(document.querySelector("#branch .baisignin").textContent)'),
+    'said in the words for a server, not for a MicroVM: ' + await board.run('document.querySelector("#branch .baisignin").textContent'));
   await board.shot('2-branch');
   await board.run('document.querySelector("#branch .bgo .go").click(); true');
   await until(() => (desk().folders || []).some((f) => f.host === 'srv' && f.cwd === TREE), 'the worktree written down', 60000);
@@ -257,6 +294,34 @@ try {
   await until(() => board.run(`!!(S.branch && S.branch.asked === "check/next" && S.branch.host === "srv" && S.branch.folder === ${JSON.stringify(REPO + "-check-next")})`), "the answer with the new rule", 30000).catch(() => {});
   check(await board.run('S.branch.folder') === `${REPO}-check-next`, 'the next goes beside the checkout, named for it: ' + await board.run('S.branch.folder'));
   await board.run('closeBranch(); true');
+
+  console.log('4b. a worktree on the server is deleted there, by git there');
+  // The red entry is on the worktree's menu, and not on the project's own folder
+  const menuOf = (folder) => board.run(`(() => { const g = (S.groups || []).find(x => x.folder === ${JSON.stringify(folder)}); if (!g) return "no group"; folderMenu({currentTarget: document.body, preventDefault(){}}, g); const said = [...document.querySelectorAll(".fmenu .warn")].map(w => w.textContent).join(","); closeFolderMenu(); return said; })()`);
+  check(await menuOf(TREE) === '完全削除', 'the worktree on the server can be deleted from its menu');
+  check(await menuOf(REPO) === '', 'the project\'s own folder there cannot');
+  const flashSaid = (re, what) => until(() => board.run('S.flash || ""').then((t) => re.test(t)), what, 60000).then(() => board.run('S.flash'));
+  const discard = (folder) => board.run(`send({kind:"folderdiscard", folder:${JSON.stringify(folder)}, unasked:false}); true`);
+  // Something not committed there: refused, said why, and nothing is closed
+  await there(`echo draft > ${TREE}/draft.txt`);
+  await discard(TREE);
+  const refused = await flashSaid(/削除していません/, 'the refusal');
+  check(/コミットしていないものが 1 件/.test(refused) && !/プッシュしてから/.test(refused), 'what is not committed stops it, and pushing is not asked for: ' + refused);
+  check((desk().folders || []).some((f) => f.cwd === TREE) && (await there(`test -e ${TREE}/draft.txt && echo there`)) === 'there', 'the folder stays, on the list and on the server');
+  // The project's own folder there is refused the same way
+  await discard(REPO);
+  check(/ワークツリーではありません/.test(await flashSaid(/削除していません.*ワークツリーではありません/, 'the refusal of the project\'s folder')), 'the project\'s own folder is never removed');
+  // Committed, and not pushed: removed, and the branch stays on the server
+  await there(`cd ${TREE} && git add draft.txt && git -c user.name=check -c user.email=check@example.invalid commit -qm draft`);
+  await discard(TREE);
+  // Said the moment git there is done, and gone again soon after
+  const saidGone = flashSaid(/を削除しました/, 'the row saying it is gone');
+  await until(() => !(desk().folders || []).some((f) => f.cwd === TREE), 'the folder off the list', 60000);
+  await until(async () => (await there(`test -e ${TREE} && echo there || echo gone`)) === 'gone', 'the folder gone from the server', 60000);
+  check(true, 'the worktree is removed on the server');
+  check(!(await there(`git -C ${REPO} worktree list --porcelain`)).includes(TREE), 'git there no longer lists it');
+  check((await there(`git -C ${REPO} log -1 --format=%s ${BRANCH}`)) === 'draft', 'its branch stays in the repository there, with the commit not pushed');
+  check(/check-ssh を削除しました/.test(await saidGone), 'and it is said to be gone once it is');
 
   console.log('5. a project cloned onto the server, from a page of its own');
   // The page: the address, the server chosen as a MicroVM is, where on it
@@ -443,14 +508,62 @@ try {
   await board.run(`document.querySelector('#addproj button[title="サーバーのフォルダをたどる"]').click(); true`);
   await until(() => board.run('(document.querySelectorAll("#addproj .aprrow") || []).length > 0'), 'the new server\'s folders, reached with what the form was given', 30000);
   check(true, 'the new server is reached with what the form was given');
+  check(written.keepalive === 30, 'its connection check is written down as a value, not left to a default nobody sees: ' + written.keepalive);
   await board.run('closeAddProject(); true');
+
+  console.log('7. a terminal whose connection goes silent is opened again once the server answers');
+  // A terminal on the server through the relay (made before the app, above)
+  {
+    const withRelay = saved();
+    withRelay.desks[0].folders.push({ cwd: `/home/${USER}`, host: 'relay', tabs: [{ name: 'far', id: 'far', command: 'bash' }] });
+    // A button that hands a request to Claude, as this PC would start it
+    withRelay.quick_commands = { items: [{ id: 'ask', label: 'ask', kind: 'ai', body: 'hello', ai: 'claude' }] };
+    fs.writeFileSync(CONFIG, JSON.stringify(withRelay, null, 2));
+    const farTab = () => board.run('JSON.stringify((S.tabs || []).find(t => t.name === "far") || null)').then((t) => JSON.parse(t || 'null'));
+    await until(async () => !!(await farTab()), 'the terminal on the server, through the relay', 60000);
+    await board.run(`send({kind:"select", tab: ${(await farTab()).index}}); true`);
+    const screen = () => board.run('document.getElementById("screen").textContent');
+    const typed = async (line) => {
+      await board.run(`send({kind:"key", text:${JSON.stringify(line)}}); true`);
+      await board.run('send({kind:"key", named:"enter"}); true');
+    };
+    await until(async () => /\$\s*$/.test((await screen()).trimEnd()) || /\$/.test(await screen()), 'the server\'s prompt', 60000);
+    await typed('echo SHK$((6*7))');
+    await until(async () => /SHK42/.test(await screen()), 'the terminal answering', 30000);
+    check(true, 'the terminal on the server answers through the relay');
+    // A button that hands work to an AI goes to the one the server has, not
+    // this PC's
+    const dests = () => board.run('JSON.stringify(Object.values(S.quick_to || {}).filter(d => d.how === "open").map(d => d.name))');
+    await until(async () => /Codex/.test(await dests()), 'a button handing work to the AI the server has', 60000)
+      .catch(async (e) => { console.log('    (the buttons say: ' + await dests() + ')'); throw e; });
+    check(!/Claude/.test(await dests()), 'a button hands the work in a server folder to the AI the server has: ' + await dests());
+    // Silent from here: nothing is closed, nothing more arrives
+    for (const p of pipes) p.silent = true;
+    const saidBack = until(() => board.run('S.flash || ""').then((t) => /接続が切れたので、開き直しました/.test(t)), 'the tab said to be opened again', 120000);
+    await until(async () => /サーバーとの接続が切れました/.test(await screen()), 'the terminal to say its connection went', 90000)
+      .catch(async (e) => { console.log('    (the terminal says: ' + (await screen()).replace(/\s+/g, ' ').trim().slice(-200) + ')'); throw e; });
+    check(true, 'the connection going silent is found by the checks nobody answered, and said on the screen');
+    await saidBack;
+    check(true, 'the tab is opened again once the server answers');
+    await until(async () => (await farTab())?.state !== 'EXIT', 'the tab running again', 30000);
+    await typed('echo SHK$((7*7))');
+    await until(async () => /SHK49/.test(await screen()), 'the new terminal answering', 30000);
+    check(true, 'and it answers what is typed into it');
+    // A shell ended by its person is ended: said so, and not opened again
+    await typed('exit');
+    await until(async () => (await farTab())?.state === 'EXIT', 'the tab ended by exit', 30000);
+    await sleep(8000);
+    check((await farTab())?.state === 'EXIT' && !/接続が切れました/.test((await screen()).split('SHK49').pop()), 'a shell ended with exit ends its tab, and is not opened again');
+  }
 } catch (e) {
   check(false, e.message);
 } finally {
+  relay.close();
   try { board.ws.close(); } catch {}
   try { cfg && cfg.ws.close(); } catch {}
   stopApp();
   await cleanThere();
+  await there('rm -f ~/.local/bin/codex' + (madeBin ? '; rmdir ~/.local/bin 2>/dev/null; true' : ''));
   console.log('  what it made on the server is removed: ' + await there(`cd ${REPO} && git worktree list | wc -l && git branch --list 'check/*' | wc -l`).then((s) => s.replace(/\s+/g, ' ')));
 }
 console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');

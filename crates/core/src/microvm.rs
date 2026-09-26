@@ -810,7 +810,12 @@ static AI_NOTES: std::sync::OnceLock<Mutex<AiNotes>> = std::sync::OnceLock::new(
 /// login shell there (a key put in the profile is only there). Nothing for a
 /// project with no AI, no checkout on that machine yet, or an AI whose
 /// profile has no line. From what was last found, with a fresh look on its
-/// way when that is old; "asking" until the first look comes back
+/// way when that is old; "asking" until the first look comes back.
+///
+/// A server reached over SSH is asked the same question about its AI (the
+/// one [`crate::serverai`] chose there). Its worktrees share the server and
+/// its sign-in, so the answer is the same for all of them, and signing in
+/// once in the checkout's tab is signing in for every one
 pub fn ai_sign_in_note(
     host: &crate::config::HostSpec,
     home: Option<&crate::config::ProjectHome>,
@@ -821,28 +826,40 @@ pub fn ai_sign_in_note(
     let known_ai = crate::profile::machine_ai(ai)?;
     let line = known_ai.signed_in.clone()?;
     let home = home?;
-    let sandbox = home.sandbox.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    // A MicroVM is asked by its machine; a server by its entry
+    let sandbox = match host.is_made() {
+        true => Some(home.sandbox.as_deref().map(str::trim).filter(|s| !s.is_empty())?.to_string()),
+        false => None,
+    };
     let blank = crate::uistate::AiSignInNote {
         ai: known_ai.key.clone(),
         name: known_ai.name.clone(),
         checkout: home.at.clone(),
         state: String::new(),
         error: String::new(),
+        on: if host.is_made() { String::new() } else { "server".into() },
     };
     let note = |state: &str, error: String| crate::uistate::AiSignInNote { state: state.into(), error, ..blank.clone() };
-    let key = format!("{sandbox}\u{1f}{}", known_ai.key);
+    let key = match &sandbox {
+        Some(sandbox) => format!("{sandbox}\u{1f}{}", known_ai.key),
+        None => format!("{}\u{1f}{}\u{1f}{}", host.name.trim(), host.at.trim(), known_ai.key),
+    };
     let Ok(mut notes) = AI_NOTES.get_or_init(Default::default).lock() else { return None };
     let known = notes.found.get(&key).cloned();
     if known.as_ref().is_none_or(|(at, _)| at.elapsed() > fresh) && notes.asking.insert(key.clone()) {
-        let machine = host.with_instance(Some(sandbox));
+        let machine = host.with_instance(sandbox.as_deref());
         let (yes, no, failed) = (note("yes", String::new()), note("no", String::new()), blank.clone());
         let failed = move |error: String| crate::uistate::AiSignInNote { state: "error".into(), error, ..failed };
         std::thread::spawn(move || {
             // A login shell, because a key set in the machine's profile is
             // what the AI would read, and a plain sh reads none of it
             let argv = ["bash".to_string(), "-lc".to_string(), line];
-            let ran = crate::e2b::machine(&machine)
-                .and_then(|m| crate::e2b::exec(&m, &crate::worktree::for_a_shell(&argv), None));
+            let ran = match machine.is_made() {
+                true => crate::e2b::machine(&machine)
+                    .and_then(|m| crate::e2b::exec(&m, &crate::worktree::for_a_shell(&argv), None)),
+                false => crate::elsewhere::Elsewhere::of(&machine)
+                    .and_then(|at| crate::elsewhere::exec(&at, &crate::worktree::for_a_shell(&argv), 30_000)),
+            };
             let found = match ran {
                 Ok(r) if r.ok() => yes,
                 Ok(_) => no,

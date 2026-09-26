@@ -1142,6 +1142,31 @@ pub fn restart_surface(
         },
     )
 }
+/// A server whose connection went under a terminal, asked until it answers.
+///
+/// Soon at first -- a router that dropped one connection usually takes the
+/// next -- and then less often, up to once a minute, for as long as a tab is
+/// waiting for it (`wanted`). Its route is sent back once a command runs
+/// there, and the tabs waiting on it are opened again on the loop
+fn server_answers(
+    route: String,
+    spec: crate::ssh::Spec,
+    wanted: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    tx: std::sync::mpsc::Sender<String>,
+) {
+    const WAITS: [u64; 5] = [3, 10, 20, 30, 60];
+    for n in 0.. {
+        if !wanted.lock().unwrap_or_else(|e| e.into_inner()).contains(&route) {
+            return;
+        }
+        if crate::ssh::exec(&spec, "true", 20_000).is_ok_and(|r| r.ok()) {
+            let _ = tx.send(route);
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(WAITS[n.min(WAITS.len() - 1)]));
+    }
+}
+
 /// Whether this tab is the only one that could have left "the newest
 /// conversation in this folder" — same program, same folder.
 ///
@@ -1838,6 +1863,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Worktrees being made, each a row under its project's heading
     let mut makings: Vec<Pending> = Vec::new();
     let mut leavings: Vec<Leaving> = Vec::new();
+    // Servers whose connection went under a terminal, by route, each asked on
+    // a thread of its own until it answers (see `server_answers`)
+    let far_wanted: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>> = Default::default();
+    let (far_back_tx, far_back_rx) = std::sync::mpsc::channel::<String>();
     let mut making_seq: u64 = 0;
     let mut thanks_show = false;
     // Where thanks would go: the Store's review page for the Store's copy, the
@@ -3586,6 +3615,51 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
                 *r.snapshot.lock().unwrap() = snap;
+            }
+
+            // The AIs of the servers this desk has folders on, asked ahead of
+            // the press that needs them (and again once the answer is old),
+            // so a button hands its work to one the server has
+            if let Some(d) = desks.get(desk_index) {
+                for h in d.folders.iter().filter_map(|f| f.host.as_ref()).filter(|h| !h.is_made()) {
+                    let _ = crate::serverai::known(h);
+                }
+            }
+            // A terminal on a server whose connection went -- not its shell --
+            // is opened again, carrying its conversation, once the server
+            // answers. The server is asked on a thread, one per server, and
+            // no longer once nothing is waiting for it
+            let lost: std::collections::HashMap<String, crate::ssh::Spec> = tabs
+                .iter()
+                .filter(|t| t.state == TabState::Exited && t.connection_lost())
+                .filter_map(|t| t.server().map(|s| (s.route(), s.clone())))
+                .collect();
+            {
+                let mut wanted = far_wanted.lock().unwrap_or_else(|e| e.into_inner());
+                wanted.retain(|route| lost.contains_key(route));
+                for (route, spec) in lost {
+                    if wanted.insert(route.clone()) {
+                        let (wanted, tx) = (far_wanted.clone(), far_back_tx.clone());
+                        std::thread::spawn(move || server_answers(route, spec, wanted, tx));
+                    }
+                }
+            }
+            while let Ok(route) = far_back_rx.try_recv() {
+                far_wanted.lock().unwrap_or_else(|e| e.into_inner()).remove(&route);
+                let alone: Vec<bool> = (0..tabs.len()).map(|i| only_one_here(&tabs, i)).collect();
+                for (i, t) in tabs.iter_mut().enumerate() {
+                    if !(t.state == TabState::Exited && t.connection_lost() && t.server().is_some_and(|s| s.route() == route)) {
+                        continue;
+                    }
+                    let (plan, _) = resume_plan(t, alone.get(i).copied().unwrap_or(false), true);
+                    match t.restart_as(rows, cols, plan) {
+                        Ok(()) => {
+                            append_hook_log(&format!("reconnected tab{} to {route}", i + 1));
+                            flash = Some(i18n::tp("msg.ssh.reconnected", &[("name", &t.title)]));
+                        }
+                        Err(e) => flash = Some(i18n::tp("msg.restart_failed", &[("error", &t.launch_hint(&e.to_string()))])),
+                    }
+                }
             }
 
             // auto_restart: automatically bring exited tabs back
@@ -7252,7 +7326,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Then the tabs are ended by taking the folder out of the settings --
         // git will not remove a folder something is still standing in -- and
         // the removal itself waits for them to actually be gone
-        // A MicroVM folder checked on its machine: nothing unsaved there, and
+        // A folder on a MicroVM or a server checked there: nothing unsaved, and
         // the deleting goes on as it would have; something there, and nothing
         // happens but being told what
         while let Ok((folder, said)) = far_discard_rx.try_recv() {
@@ -7261,7 +7335,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     far_discard_checked.insert(folder.clone());
                     shell.mail().folder_discards.push((folder, false));
                 }
-                Err(why) => flash = Some(i18n::tp("msg.folder.not_discarded", &[("path", &folder), ("why", &why)])),
+                Err(why) => {
+                    // A MicroVM's folder loses what is not pushed too; a
+                    // server's keeps its branch, and says only why
+                    let on_server = desks.get(desk_index).is_some_and(|d| {
+                        d.folders.iter().any(|f| {
+                            f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, std::path::Path::new(&folder)))
+                                && f.host.as_ref().is_some_and(|h| !h.is_made())
+                        })
+                    });
+                    let said = if on_server { "msg.folder.not_discarded_server" } else { "msg.folder.not_discarded" };
+                    flash = Some(i18n::tp(said, &[("path", &folder), ("why", &why)]));
+                }
             }
         }
         for (folder, unasked) in shell.mail().take_folder_discards() {
@@ -7341,6 +7426,57 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             main: None,
                             taken,
                             checkout: dropped,
+                            error: None,
+                            restored: None,
+                            gone: false,
+                        });
+                    }
+                    Err(e) => flash = Some(format!("{e:#}")),
+                }
+                continue;
+            }
+            // A worktree on a server: asked of git there first, on a thread,
+            // as a MicroVM's is -- what is not committed there, and whether it
+            // is a worktree at all -- and then removed by git there. Its branch
+            // stays in the project's repository on the server, as one here does
+            let on_server = desks.get(desk_index).and_then(|d| {
+                d.folders
+                    .iter()
+                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &at)))
+                    .and_then(|f| f.host.clone().filter(|h| !h.is_made()).map(|h| (h, f.project.clone())))
+            });
+            if let Some((h, project)) = on_server {
+                if !far_discard_checked.remove(&folder) {
+                    let (tx, folder, host) = (far_discard_tx.clone(), folder.clone(), h.clone());
+                    flash = Some(i18n::tp("msg.folder.checking", &[("path", &folder)]));
+                    std::thread::spawn(move || {
+                        let said = crate::worktree::far_ready_to_discard(&host, &folder).map_err(|e| format!("{e:#}"));
+                        let _ = tx.send((folder, said));
+                    });
+                    continue;
+                }
+                let Some(d) = desks.get(desk_index) else { continue };
+                // Its row stands under the project's heading, as the folder did
+                let family = project
+                    .as_deref()
+                    .and_then(|n| d.projects.iter().find(|p| p.name == n))
+                    .and_then(|p| p.home_on(&h.name))
+                    .map(|home| crate::uistate::far_family(&h.name, &home.at))
+                    .unwrap_or_default();
+                match config::take_folder(&d.name, &at) {
+                    Ok(taken) => {
+                        let removal = crate::worktree::Removal::start_on_server(at.clone(), h);
+                        editors.retain(|e| !(e.scratch && e.dir.as_deref().is_some_and(|d| removal.takes(d, e.at.as_ref()))));
+                        making_seq += 1;
+                        leavings.push(Leaving {
+                            id: making_seq,
+                            family,
+                            name: at.to_string_lossy().rsplit('/').next().unwrap_or_default().to_string(),
+                            removal,
+                            desk: d.name.clone(),
+                            main: None,
+                            taken,
+                            checkout: None,
                             error: None,
                             restored: None,
                             gone: false,
@@ -8067,7 +8203,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for h in shell.mail().take_add_hosts() {
             let ask = h.ask;
             let key = Some(h.key.trim().to_string()).filter(|k| !k.is_empty());
-            let spec = config::HostSpec { name: h.name.trim().to_string(), at: h.at, key, ..Default::default() };
+            let spec = config::HostSpec {
+                name: h.name.trim().to_string(),
+                at: h.at,
+                key,
+                keepalive: Some(config::SSH_KEEPALIVE),
+                ..Default::default()
+            };
             // A password goes to the secret store, under the name the
             // connection reads it by, before the host is written: the settings
             // read in again after the host is written are read with it there
@@ -8716,8 +8858,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .get(desk_index)
                 .map(|w| w.name.clone())
                 .unwrap_or_default();
-            // What the new folder runs, chosen from what this machine has
-            let start = start_of(&ask.start, &ai_choices);
+            // What the new folder runs, chosen from what the machine it goes
+            // on has: a server's own AIs (see crate::serverai), this PC's
+            // anywhere else. An AI the server lacks runs nothing rather than
+            // a command that is not there
+            let server_ais = on.filter(|h| !h.is_made()).and_then(server_ai_choices);
+            let start_ais = server_ais.as_deref().unwrap_or(&ai_choices);
+            let start = start_of(&ask.start, start_ais);
             // Which project this is cut from. Worked out the same way the
             // making itself works it out, so the row cannot say one thing while
             // git is handed another
@@ -8791,6 +8938,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
                             view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), far.0.preparing.ai.as_deref(), crate::microvm::FRESH);
                             ai_signin_watch = Some((h.clone(), far.0.home.clone(), far.0.preparing.ai.clone()));
+                        } else {
+                            // A server: the AIs it has, to choose what the
+                            // worktree runs from, and whether the one chosen
+                            // is signed in there -- which every worktree on
+                            // it shares
+                            view.server_ais = server_ais.clone();
+                            let chosen = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
+                            let asked = ask.ais.first().map(String::as_str).unwrap_or(ask.start.as_str());
+                            let ai = server_ais.as_ref().and_then(|found| {
+                                let keys: Vec<String> = found.iter().map(|a| a.key.clone()).collect();
+                                keys.iter().find(|k| k.eq_ignore_ascii_case(asked.trim())).cloned()
+                                    .or_else(|| crate::serverai::choose(&keys, &chosen, QUICK_AI_ORDER))
+                            });
+                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), ai.as_deref(), crate::microvm::FRESH);
+                            ai_signin_watch = Some((h.clone(), far.0.home.clone(), ai));
                         }
                         crate::worktree::plan_on(&far.0.of(), &wanted, &prefix, Some(&ask.base), Some(ask.at.trim()))
                     }
@@ -8922,6 +9084,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
                             view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), far.0.preparing.ai.as_deref(), crate::microvm::FRESH);
                             ai_signin_watch = Some((h.clone(), far.0.home.clone(), far.0.preparing.ai.clone()));
+                        } else {
+                            // A server: the AIs it has, to choose what the
+                            // worktree runs from, and whether the one chosen
+                            // is signed in there -- which every worktree on
+                            // it shares
+                            view.server_ais = server_ais.clone();
+                            let chosen = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
+                            let asked = ask.ais.first().map(String::as_str).unwrap_or(ask.start.as_str());
+                            let ai = server_ais.as_ref().and_then(|found| {
+                                let keys: Vec<String> = found.iter().map(|a| a.key.clone()).collect();
+                                keys.iter().find(|k| k.eq_ignore_ascii_case(asked.trim())).cloned()
+                                    .or_else(|| crate::serverai::choose(&keys, &chosen, QUICK_AI_ORDER))
+                            });
+                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), ai.as_deref(), crate::microvm::FRESH);
+                            ai_signin_watch = Some((h.clone(), far.0.home.clone(), ai));
                         }
                         crate::worktree::fan_on(&far.0.of(), &wanted, &prefix, Some(&ask.base), &ask.ais)
                     }
@@ -8961,7 +9138,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // The AI on the end, the same way its branch has
                             // it, so a card and its branch read as one pair
                             label: format!("{label}-{ai}"),
-                            start: start_of(&ai, &ai_choices),
+                            start: start_of(&ai, start_ais),
                             link: ask.link.clone(),
                             auto: ask.auto,
                             drawn: drawn.as_ref().map(|_| branch.clone()),
@@ -12661,7 +12838,7 @@ pub fn quick_go(
             // asking: starting one from a button is not the person choosing
             // that, which is a box they tick themselves in the settings
             // On a MicroVM, the AI its machine was given
-            if let Some(given) = machine_ai_of(desk, f) {
+            if let Some(given) = machine_ai_of(desk, f).or_else(|| server_ai_of(desk, f, ai)) {
                 return match given {
                     Ok(a) => QuickGo::Open { cwd: f.to_path_buf(), command: a.key, program: a.name },
                     Err(why) => QuickGo::Refuse(why),
@@ -12773,15 +12950,62 @@ pub fn machine_ai_of(
     })
 }
 
-/// The AI to hand work in `dir` to: its machine's on a MicroVM, else the one
-/// the settings chose among this PC's
+/// The AI a folder's work goes to when the folder is on a server reached over
+/// SSH: one the server has (see [`crate::serverai`]) -- the one the settings
+/// chose when it has that, else the first it has. A server with none is
+/// refused with the words that say so. `None` for a folder that is not on a
+/// server, and for one whose server has not answered yet
+pub fn server_ai_of(
+    desk: Option<&config::Desk>,
+    dir: &std::path::Path,
+    ai: &str,
+) -> Option<Result<crate::uistate::AiChoice, &'static str>> {
+    let host = desk?
+        .folders
+        .iter()
+        .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, dir)))?
+        .host
+        .as_ref()
+        .filter(|h| !h.is_made())?;
+    let found = crate::serverai::known(host)?;
+    Some(match crate::serverai::choose(&found, ai, QUICK_AI_ORDER) {
+        Some(key) => {
+            let name = crate::serverai::known_commands()
+                .into_iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(&key))
+                .map(|(_, n)| n)
+                .unwrap_or_else(|| key.clone());
+            Ok(crate::uistate::AiChoice { key: key.clone(), name, command: key })
+        }
+        None => Err("msg.quick.no_server_ai"),
+    })
+}
+
+/// The AIs a server has, as choices, once it has said: what a worktree there
+/// can run. `None` until the server has answered
+fn server_ai_choices(host: &config::HostSpec) -> Option<Vec<crate::uistate::AiChoice>> {
+    let names = crate::serverai::known_commands();
+    let found = crate::serverai::known(host)?;
+    Some(
+        found
+            .into_iter()
+            .map(|key| {
+                let name = names.iter().find(|(k, _)| k.eq_ignore_ascii_case(&key)).map(|(_, n)| n.clone()).unwrap_or_else(|| key.clone());
+                crate::uistate::AiChoice { name, command: key.clone(), key }
+            })
+            .collect(),
+    )
+}
+
+/// The AI to hand work in `dir` to: its machine's on a MicroVM, one its
+/// server has on a server, else the one the settings chose among this PC's
 fn ai_for_folder(
     desk: Option<&config::Desk>,
     dir: &std::path::Path,
     ai: &str,
     ais: &[crate::uistate::AiChoice],
 ) -> Result<crate::uistate::AiChoice, String> {
-    match machine_ai_of(desk, dir) {
+    match machine_ai_of(desk, dir).or_else(|| server_ai_of(desk, dir, ai)) {
         Some(r) => r.map_err(i18n::t),
         None => quick_ai_choice(ai, ais).cloned().ok_or_else(|| i18n::t("msg.quick.no_ai")),
     }
@@ -14692,6 +14916,26 @@ mod tests {
             quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, Some(&far), Some(&desk)),
             QuickGo::Open { cwd: far.clone(), command: String::new(), program: "vm".into() }
         );
+    }
+
+    /// A folder on a server hands its work to an AI the server has: the one
+    /// the settings chose when the server has it, else the first it has. A
+    /// server with none says so; one not heard from yet is this PC's choice
+    #[test]
+    fn a_server_folder_runs_an_ai_the_server_has() {
+        let far = std::path::PathBuf::from("/home/me/site");
+        let srv = |name: &str| config::HostSpec { name: name.into(), at: format!("ssh://me@{name}.example:22"), ..Default::default() };
+        let desk = |host: &str| config::Desk {
+            folders: vec![config::Folder { cwd: Some(far.clone()), host: Some(srv(host)), ..Default::default() }],
+            ..Default::default()
+        };
+        crate::serverai::set_known(&srv("has-codex"), vec!["codex".into()]);
+        crate::serverai::set_known(&srv("has-none"), vec![]);
+        let ais = vec![crate::uistate::AiChoice { key: "claude".into(), name: "Claude Code".into(), command: "claude".into() }];
+        assert_eq!(ai_for_folder(Some(&desk("has-codex")), &far, "claude", &ais).map(|a| a.key), Ok("codex".to_string()),
+            "this PC's Claude was typed on a server that has only Codex");
+        assert_eq!(ai_for_folder(Some(&desk("has-none")), &far, "claude", &ais), Err(i18n::t("msg.quick.no_server_ai")));
+        assert_eq!(server_ai_of(Some(&desk("never-asked")), &far, "claude"), None, "a server not heard from is refused");
     }
 
     /// Where a button goes with nothing open: a command opens in the home

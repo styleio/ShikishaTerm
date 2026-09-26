@@ -7475,10 +7475,11 @@ function folderMenu(e, g) {
     onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, e.currentTarget)) : null,
     item(T["tui.menu.forget"] || "", () => forgetHere(g)),
     // Last and in red, the one entry that cannot be taken back. Only a
-    // worktree: a project's own checkout is the repository itself. On a
-    // MicroVM the folder is its machine, and the checkout's machine is one
-    // more machine to be rid of -- the next worktree makes a new one
-    (g.linked && !g.host) || onMicrovm(g)
+    // worktree, here or on a server, where git there removes it: a project's
+    // own checkout is the repository itself. On a MicroVM the folder is its
+    // machine, and the checkout's machine is one more machine to be rid of
+    // -- the next worktree makes a new one
+    g.linked || onMicrovm(g)
       ? el("div", {class:"warn", onclick:() => { closeFolderMenu(); discardFolder(g); }}, T["tui.menu.discard"] || "")
       : null,
   ], false, e);
@@ -8139,8 +8140,8 @@ function openNewWorktree() {
 function branchProjects() {
   return ((S && S.groups) || []).filter(g => g.color && !g.linked && g.folder);
 }
-function firstStart() {
-  const ais = (S && S.ais) || [];
+function firstStart(list) {
+  const ais = list || (S && S.ais) || [];
   const want = (S && S.assistant) || "";
   return (ais.find(a => a.key === want) || ais[0] || {key:""}).key;
 }
@@ -8472,10 +8473,23 @@ function fanning() {
   const b = document.getElementById("branch");
   return Array.from(b.querySelectorAll(".bais input:checked")).map(i => i.value);
 }
+// The AIs a worktree can run where it is going: a server's own, once it has
+// said them, since this PC's are not there; this PC's anywhere else
+function startAis() {
+  const p = S && S.branch;
+  const offer = p && ((p.hosts || []).find(h => h.name === p.host));
+  return offer && offer.kind === "ssh" && Array.isArray(p.server_ais) ? p.server_ais : ((S && S.ais) || []);
+}
 // The picker for what runs, and the tick for one-per-AI. Only where this
 // machine has an AI to offer: without one the dialog is what it always was
 function drawStart(b) {
-  const ais = (S && S.ais) || [];
+  const ais = startAis();
+  // An AI the machine does not have is not what the worktree runs: the one
+  // it has that the settings prefer, asked about again
+  if (branchStart && branchStart !== "none" && ais.length && !ais.some(a => a.key === branchStart)) {
+    branchStart = firstStart(ais);
+    askBranch();
+  }
   const row = b.querySelector(".bstartf");
   const fan = b.querySelector(".bfan");
   const list = b.querySelector(".bais");
@@ -8736,7 +8750,7 @@ function drawDest(b, p) {
   }
   drawSignIn(b.querySelector(".bsignin"), offer && offer.kind === "microvm" ? p.sign_in : null, !!(offer && offer.kind === "microvm"),
     () => { closeBranch(); openSettings("project-gitacct", true, branchFrom); });
-  drawAiSignIn(b.querySelector(".baisignin"), offer && offer.kind === "microvm" ? p.ai_sign_in : null);
+  drawAiSignIn(b.querySelector(".baisignin"), offer && (offer.kind === "microvm" || offer.kind === "ssh") ? p.ai_sign_in : null);
 }
 
 // Whether the AI on the checkout's machine is signed in, since the worktree
@@ -8752,7 +8766,8 @@ function drawAiSignIn(box, note) {
   if (box.dataset.sig === sig) return;
   box.dataset.sig = sig;
   box.textContent = "";
-  const say = k => (T[k] || "").replace("{ai}", note.name);
+  // A server's worktrees share its sign-in; a MicroVM's are copies of it
+  const say = k => (T[note.on === "server" && T[k.replace("tui.aisignin.", "tui.aisignin.server.")] ? k.replace("tui.aisignin.", "tui.aisignin.server.") : k] || "").split("{ai}").join(note.name);
   if (note.state === "asking") { box.append(el("div", {class:"say"}, say("tui.aisignin.asking"))); return; }
   if (note.state === "yes") { box.append(el("div", {class:"say"}, say("tui.aisignin.yes"))); return; }
   if (note.state === "no") {
@@ -17112,7 +17127,7 @@ function gitNext() {
   if (ready) return Object.assign({icon:"check", pr: ready.number}, gitPrAction(ready),
     G.armed === ready.number ? {} : {label: (T["git.prs.merge"] || "").replace("{base}", ready.base || "")});
   const g = gitGroup();
-  if (gitPrsDone() && g && g.linked && !g.host) {
+  if (gitPrsDone() && g && g.linked && !onMicrovm(g)) {
     return {icon:"folder", label: T["git.cleanup"] || "", run:() => discardFolder(g)};
   }
   return {icon:"refresh", label: T["git.fetch"] || "", run:() => gitAsk("fetch")};
@@ -21921,9 +21936,9 @@ mod tests {
     /// and the answer is kept in the settings (Basic) rather than in this page
     #[test]
     fn a_worktree_is_deleted_from_its_right_click_asking_first_unless_told_not_to() {
-        // A worktree here, never a project's own checkout here; on a MicroVM
+        // A worktree here or on a server, never a project's own checkout; on a MicroVM
         // every folder is a machine of its own, and each can be let go
-        assert!(PAGE.contains(r#"(g.linked && !g.host) || onMicrovm(g)
+        assert!(PAGE.contains(r#"g.linked || onMicrovm(g)
       ? el("div", {class:"warn", onclick:() => { closeFolderMenu(); discardFolder(g); }}, T["tui.menu.discard"] || "")"#),
             "the menu has no red delete, or offers it on a project's own checkout");
         assert!(PAGE.contains(r#"onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, e.currentTarget)) : null,"#),

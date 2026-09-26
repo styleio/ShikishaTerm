@@ -264,6 +264,9 @@ enum Job {
         /// What to run once it stands there, typed the same way: the tab's
         /// command when it is a program (`claude`), nothing for a terminal
         then: Option<String>,
+        /// Raised when the connection went without the far end ending the
+        /// shell -- no exit, no close, the line simply gone
+        lost: Arc<AtomicBool>,
         out: Sender<Vec<u8>>,
         reply: Sender<Result<u64>>,
     },
@@ -401,8 +404,8 @@ async fn close_idle(live: &mut Live) {
 
 async fn handle(live: &mut Live, job: Job) {
     match job {
-        Job::Shell { spec, rows, cols, cwd, then, out, reply } => {
-            let r = open_shell(live, &spec, rows, cols, out).await;
+        Job::Shell { spec, rows, cols, cwd, then, out, lost, reply } => {
+            let r = open_shell(live, &spec, rows, cols, out, lost).await;
             // Typed, so it is on screen like anything else typed, and so that
             // nothing else has to know it happened. The folder first, and the
             // program in it only if the folder is there: a program started
@@ -602,6 +605,7 @@ async fn open_shell(
     rows: u16,
     cols: u16,
     out: Sender<Vec<u8>>,
+    lost: Arc<AtomicBool>,
 ) -> Result<u64> {
     let route = session(live, spec).await?;
     let handle = live
@@ -619,6 +623,10 @@ async fn open_shell(
     // Everything the far end says goes straight to the tab's queue, from a task
     // of its own, so one quiet connection never holds up a busy one
     tokio::spawn(async move {
+        // Whether the far end said the shell is over. A stream that stops
+        // without that is a connection that went -- a keepalive nobody
+        // answered, a router that forgot it -- and the shell with it
+        let mut ended = false;
         while let Some(msg) = reading.wait().await {
             let chunk = match msg {
                 // A terminal has one screen. What a program writes to its
@@ -627,12 +635,27 @@ async fn open_shell(
                 // two halves of a compiler's opinion in different places
                 russh::ChannelMsg::Data { data } => data.to_vec(),
                 russh::ChannelMsg::ExtendedData { data, .. } => data.to_vec(),
-                russh::ChannelMsg::Eof | russh::ChannelMsg::Close => break,
+                russh::ChannelMsg::ExitStatus { .. } | russh::ChannelMsg::ExitSignal { .. } => {
+                    ended = true;
+                    continue;
+                }
+                russh::ChannelMsg::Eof | russh::ChannelMsg::Close => {
+                    ended = true;
+                    break;
+                }
                 _ => continue,
             };
             if out.send(chunk).is_err() {
+                ended = true;
                 break;
             }
+        }
+        // Said on the screen, where the person is looking, before the tab
+        // is seen to end; the tab is opened again once the server answers
+        if !ended {
+            lost.store(true, Ordering::SeqCst);
+            let said = format!("\r\n\x1b[33m{}\x1b[0m\r\n", crate::i18n::t("msg.ssh.lost"));
+            let _ = out.send(said.into_bytes());
         }
     });
     Ok(id)
@@ -997,10 +1020,11 @@ pub fn shell(
     cols: u16,
     cwd: Option<&str>,
     then: Option<&str>,
-) -> Result<(Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>)>
+) -> Result<(Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>, Arc<AtomicBool>)>
 {
     let (out_tx, out_rx) = channel::<Vec<u8>>();
     let (reply_tx, reply_rx) = channel::<Result<u64>>();
+    let lost = Arc::new(AtomicBool::new(false));
     hub()
         .send(Job::Shell {
             spec: spec.clone(),
@@ -1009,6 +1033,7 @@ pub fn shell(
             cwd: cwd.map(str::to_string),
             then: then.map(str::to_string),
             out: out_tx,
+            lost: lost.clone(),
             reply: reply_tx,
         })
         .map_err(|_| anyhow!(crate::i18n::t("err.ssh.no_thread")))?;
@@ -1021,7 +1046,7 @@ pub fn shell(
         reader: Mutex::new(Some(ShellReader { rx: out_rx, rest: Vec::new(), at: 0 })),
         writer_taken: AtomicBool::new(false),
     };
-    Ok((Box::new(pty), Box::new(SshKiller { id })))
+    Ok((Box::new(pty), Box::new(SshKiller { id }), lost))
 }
 
 /// The first line typed into a shell that just opened over there: the folder
@@ -1269,7 +1294,7 @@ mod tests {
         };
         // A first meeting: nothing is remembered about this server, and the
         // test must not write into the real settings folder either
-        let (pty, mut killer) = shell(&spec, 24, 80, None, None).expect("the terminal did not open");
+        let (pty, mut killer, _) = shell(&spec, 24, 80, None, None).expect("the terminal did not open");
         let mut reader = pty.try_clone_reader().expect("reader");
         let mut writer = pty.take_writer().expect("writer");
 

@@ -1908,6 +1908,15 @@ fn handle(
                 .and_then(|(_, v)| v.as_str().map(str::to_string));
             req.respond(json_resp(serde_json::json!({ "failed": failed })))?;
         }
+        // The AIs a server reached over SSH has, as last heard (see
+        // crate::serverai): what a new tab in a folder there starts as.
+        // Null until the server has answered once
+        ("GET", "/api/server-ais") => {
+            let name = query_param(req.url(), "host").map(|c| percent_decode(&c)).unwrap_or_default();
+            let host = crate::config::load().and_then(|c| c.hosts.into_iter().find(|h| h.name.trim() == name.trim()));
+            let ais = host.as_ref().and_then(crate::serverai::known);
+            req.respond(json_resp(serde_json::json!({ "ais": ais })))?;
+        }
         // Every MicroVM machine the key has, and what in the settings each is.
         // The only place a machine nothing points at any more can be seen
         // from here: one left by a making that never finished, a folder taken
@@ -4199,6 +4208,8 @@ pub(crate) fn themed(html: String) -> String {
                 "beside": crate::worktree::MICROVM_PLACEMENT,
                 "minutes": crate::config::MICROVM_MINUTES,
                 "template": crate::config::MICROVM_TEMPLATE,
+                "keepalive": crate::config::SSH_KEEPALIVE,
+                "ai_order": crate::runtime::QUICK_AI_ORDER,
             })
             .to_string(),
         )
@@ -5994,13 +6005,39 @@ const defaultAiCommand = () => {
   const flag = current.yolo ? cliFlagOf(head) : "";
   return flag ? head + " " + flag : head;
 };
+// The AIs each server reached over SSH has, by the entry's name, as the
+// app last heard them: asked once the settings are read (serverAisAsk)
+const SERVER_AIS = {};
+function serverAisAsk() {
+  for (const h of current.hosts || []) {
+    if ((h.kind || "").trim().toLowerCase() === "e2b" || !(h.name || "").trim()) continue;
+    const name = h.name.trim();
+    // The app asks the server on a thread; the first answer can take a
+    // moment, so it is asked again until it comes
+    const ask = (left) => fetch("/api/server-ais?host=" + encodeURIComponent(name), {headers:{"X-Token":TOKEN}})
+      .then(r => r.json())
+      .then(j => { if (Array.isArray(j.ais)) SERVER_AIS[name] = j.ais; else if (left > 0) setTimeout(() => ask(left - 1), 2000); })
+      .catch(() => {});
+    ask(15);
+  }
+}
 // What a new tab in a folder on a MicroVM runs: the AI its machine was given
 // (the project's machine_ai), since this PC's AIs are not there; the machine's
-// own shell when it was given none. Null for any other folder
+// own shell when it was given none. On a server reached over SSH, an AI the
+// server has -- the one chosen under Basic when it has that, else the first
+// it has -- and its shell when it has none. Null for any other folder, and
+// for a server not heard from yet
 const machineStart = (desk, group) => {
   const g = (desk.folders || [])[group] || {};
   const h = (current.hosts || []).find(x => (x.name || "").trim() === (g.host || "").trim());
-  if (!h || (h.kind || "").trim().toLowerCase() !== "e2b") return null;
+  if (!h) return null;
+  if ((h.kind || "").trim().toLowerCase() !== "e2b") {
+    const found = SERVER_AIS[(h.name || "").trim()];
+    if (!Array.isArray(found)) return null;
+    const chosen = ((current.ai_engine || "").trim().split(/\s+/)[0] || "");
+    return (chosen && found.includes(chosen) ? chosen : null)
+      || FAR_DEFAULTS.ai_order.find(k => found.includes(k)) || found[0] || "";
+  }
   const p = (desk.projects || []).find(x => x.name === g.project);
   const ai = p && p.machine_ai;
   return ai && ai !== "none" && MACHINE_AIS.some(a => a.key === ai) ? ai : "";
@@ -9945,6 +9982,8 @@ function hostDialog(at, redraw, kind, done) {
   templateIn.value = h.template || FAR_DEFAULTS.template;
   const minutesIn = el("input", {type:"number", min:"1", class:"mono narrow"});
   minutesIn.value = String(h.minutes != null ? h.minutes : FAR_DEFAULTS.minutes);
+  const keepaliveIn = el("input", {type:"number", min:"0", class:"mono narrow"});
+  keepaliveIn.value = String(h.keepalive != null ? h.keepalive : FAR_DEFAULTS.keepalive);
   // One service today. A picker with one entry rather than none, because the
   // next one is a row in this list and not a new screen
   const serviceIn = el("select");
@@ -9996,7 +10035,7 @@ function hostDialog(at, redraw, kind, done) {
     held.at.classList.add("lookhere");
     held.at.focus();
   }
-  for (const i of [nameIn, atIn, templateIn, minutesIn]) i.addEventListener("input", recheck);
+  for (const i of [nameIn, atIn, templateIn, minutesIn, keepaliveIn]) i.addEventListener("input", recheck);
 
   const field = (label, control, hint) => el("div", {class:"field"},
     el("label", {}, label), el("div", {class:"fieldctl"}, control),
@@ -10045,6 +10084,7 @@ function hostDialog(at, redraw, kind, done) {
         : [field(T["settings.hosts.at"], atIn, ""),
            mark.box,
            credential,
+           field(T["settings.hosts.keepalive"], keepaliveIn, T["settings.hosts.keepalive.hint"]),
            el("div", {class:"hint"}, T["settings.hosts.projects.hint"])])),
     el("div", {class:"mfoot"},
       editing
@@ -10104,9 +10144,12 @@ function hostDialog(at, redraw, kind, done) {
       it.minutes = Number.isFinite(m) && m > 0 ? m : FAR_DEFAULTS.minutes;
       // The leftovers of the other kind go, so a machine is only ever one kind
       it.at = "";
+      delete it.keepalive;
     } else {
       delete it.kind; delete it.template; delete it.minutes;
       it.at = atIn.value.trim();
+      const k = parseInt(keepaliveIn.value, 10);
+      it.keepalive = Number.isFinite(k) && k >= 0 ? k : FAR_DEFAULTS.keepalive;
     }
     if (!editing) (current.hosts = current.hosts || []).push(it);
     if (mark) mark.commit();
@@ -15340,6 +15383,7 @@ async function load() {
   const cfg = await readUserJson(await api("GET"));
   if (cfg.failure) return showLoadFailure(cfg.failure);
   current = cfg.value;
+  serverAisAsk();
   // Show the built-in starter actions as editable rows when none are configured,
   // matching what the sub-input bar displays out of the box. They're dropped again
   // on save unless the user changes them (see payload), so config stays tidy.

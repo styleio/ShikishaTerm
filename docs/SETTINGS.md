@@ -129,6 +129,7 @@ Servers over SSH, and MicroVMs, to cut worktrees on besides this PC
 - **Image** — The service's image a project's MicroVM is made from
 - **Minutes before it pauses** — Running untouched this long, a MicroVM pauses. Paused, it keeps everything; a request to one of its addresses, or opening it again, starts it where it stopped.
 - **Address** — ssh://you@machine:22
+- **Connection check every (seconds)** — A small check is sent to the server this often, so a quiet connection is not cut by something on the way. Three with no answer are a connection that is gone, and its terminals are opened again as soon as the server can be reached. 0 sends none.
 - **Colour** — A small square in front of the name. The name is always shown with it.
 - **Ask for this name to be typed before anything that cannot be undone** — Deleting, renaming or replacing files on this server waits until the name is typed.
 - **Name for this server** — Shown beside every tab that reaches this server, and in every question about something that cannot be undone there:

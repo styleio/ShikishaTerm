@@ -1754,8 +1754,9 @@ pub fn discard_waiting(folder: &Path) -> Result<()> {
 /// written to a log.
 pub struct Removal {
     pub folder: PathBuf,
-    /// The MicroVM the folder is, when it is one: what a second try deletes,
-    /// and what putting it back lets the program speak to again
+    /// The machine the folder is on, when it is not this PC: a MicroVM, which
+    /// the folder is -- what a second try deletes, and what putting it back
+    /// lets the program speak to again -- or a server, where git removes it
     on: Option<crate::config::HostSpec>,
     outcome: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
 }
@@ -1798,19 +1799,38 @@ impl Removal {
         removal
     }
 
+    /// A worktree on a server reached over SSH: git there removes it, as git
+    /// here removes one here, and its branch stays in the project's
+    /// repository on that server, as a worktree's here does. Only a worktree
+    /// is removed, and git refuses one with work in it whatever was asked
+    /// before
+    pub fn start_on_server(folder: PathBuf, host: crate::config::HostSpec) -> Removal {
+        let removal = Removal { folder: folder.clone(), on: Some(host.clone()), outcome: Default::default() };
+        let outcome = removal.outcome.clone();
+        std::thread::spawn(move || {
+            let said = discard_on_server(&host, &folder.to_string_lossy()).map_err(|e| format!("{e:#}"));
+            if let Err(why) = &said {
+                crate::append_hook_log(&format!("could not remove {} on {}: {why}", folder.display(), host.name));
+            }
+            *outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(said);
+        });
+        removal
+    }
+
     /// The same removal, tried again: a machine deleted again, a folder
-    /// removed again. A MicroVM's folder is not on this PC, so trying it as
-    /// one found nothing there and said it was gone
+    /// removed again. A folder on another machine is not on this PC, so
+    /// trying it as one found nothing there and said it was gone
     pub fn again(&self) -> Removal {
         match &self.on {
-            Some(host) => Removal::start_on_microvm(self.folder.clone(), host.clone()),
+            Some(host) if host.is_made() => Removal::start_on_microvm(self.folder.clone(), host.clone()),
+            Some(host) => Removal::start_on_server(self.folder.clone(), host.clone()),
             None => Removal::start(self.folder.clone()),
         }
     }
 
     /// Whether it is a MicroVM's machine being deleted
     pub fn on_microvm(&self) -> bool {
-        self.on.is_some()
+        self.on.as_ref().is_some_and(|h| h.is_made())
     }
 
     /// Given up on, and the folder put back in the list: its machine, if it
@@ -1827,7 +1847,15 @@ impl Removal {
         match (&self.on, at) {
             // Everything on the machine goes with the machine
             (Some(h), Some(crate::elsewhere::Elsewhere::Cloud(there))) => {
-                h.instance.is_some() && h.instance == there.instance
+                h.is_made() && h.instance.is_some() && h.instance == there.instance
+            }
+            // On a server, the folder and what is under it, as here
+            (Some(h), Some(there @ crate::elsewhere::Elsewhere::Ssh(_))) if !h.is_made() => {
+                crate::elsewhere::Elsewhere::of(h).is_ok_and(|at| at == *there) && {
+                    let (dir, folder) = (dir.to_string_lossy(), self.folder.to_string_lossy());
+                    let folder = folder.trim_end_matches('/');
+                    dir == folder || dir.strip_prefix(folder).is_some_and(|rest| rest.starts_with('/'))
+                }
             }
             (None, None) => inside_checkout(&self.folder, dir),
             _ => false,
@@ -2054,23 +2082,47 @@ pub fn ready_to_discard(folder: &Path) -> Result<()> {
 /// branch goes with it. So a commit that was never pushed is work that
 /// exists only there, as much as a change never committed is.
 ///
+/// On a server reached over SSH the folder is a worktree like one here: its
+/// branch stays in the project's repository there when the folder goes, so
+/// only what is not committed is lost -- and only a worktree is one to
+/// remove, never the project's own folder there.
+///
 /// Waits on the machine: for a thread
 pub fn far_ready_to_discard(host: &crate::config::HostSpec, folder: &str) -> Result<()> {
     const SPLIT: &str = "__SHIKISHA_SPLIT__";
     let dir = for_a_shell(&[folder.to_string()]);
-    // What is not committed; then what is committed and nowhere else -- ahead
-    // of the branch it pushes to, or, with none, of every remote branch
-    let line = format!(
-        "cd {dir} && git status --porcelain=v1 -z --untracked-files=all; echo; echo {SPLIT}; \
+    let line = match host.is_made() {
+        // What is not committed; then what is committed and nowhere else --
+        // ahead of the branch it pushes to, or, with none, of every remote
+        // branch
+        true => format!(
+            "cd {dir} && git status --porcelain=v1 -z --untracked-files=all; echo; echo {SPLIT}; \
 (git rev-list --count @{{u}}..HEAD 2>/dev/null || git rev-list --count HEAD --not --remotes)"
-    );
+        ),
+        // Gone already, and nothing to lose; else what is not committed, then
+        // whether it is a worktree -- its own git folder is not the
+        // repository's shared one
+        false => format!(
+            "[ -e {dir} ] || {{ echo {GONE}; exit 0; }}; cd {dir} && git status --porcelain=v1 -z --untracked-files=all; echo; echo {SPLIT}; \
+[ \"$(cd \"$(git rev-parse --git-dir)\" && pwd -P)\" != \"$(cd \"$(git rev-parse --git-common-dir)\" && pwd -P)\" ] && echo {LINKED}; true"
+        ),
+    };
     let at = crate::elsewhere::Elsewhere::of(host)?;
     let ran = crate::elsewhere::exec(&at, &line, 60_000)?;
     if !ran.ok() {
         bail!(crate::i18n::tp("err.worktree.failed", &[("said", &ran.said()), ("command", &line)]));
     }
-    far_unsaved(&ran.out, SPLIT)
+    match host.is_made() {
+        true => far_unsaved(&ran.out, SPLIT),
+        false => server_unsaved(&ran.out, SPLIT),
+    }
 }
+
+/// What a folder on a server that is a worktree says to the questions asked
+/// of it before it is removed
+const LINKED: &str = "__SHIKISHA_LINKED__";
+/// What one already gone from the server says
+const GONE: &str = "__SHIKISHA_GONE__";
 
 /// What `far_ready_to_discard` asked, read back: the status, then the count
 /// of commits nowhere else
@@ -2086,6 +2138,59 @@ fn far_unsaved(out: &str, split: &str) -> Result<()> {
     }
     Ok(())
 }
+
+/// The same, asked of a folder on a server: the status, then whether it is a
+/// worktree. The project's own folder is refused before anything is closed,
+/// as it is here
+fn server_unsaved(out: &str, split: &str) -> Result<()> {
+    if out.trim() == GONE {
+        return Ok(());
+    }
+    let (status, linked) = out.split_once(split).unwrap_or((out, ""));
+    if !linked.contains(LINKED) {
+        bail!(crate::i18n::t("err.worktree.not_a_branch"));
+    }
+    let dirty = unsaved_work(status.trim_end_matches(['\n', '\r']), &|_| false);
+    if dirty > 0 {
+        bail!(crate::i18n::tp("err.worktree.dirty_server", &[("count", &dirty.to_string())]));
+    }
+    Ok(())
+}
+
+/// A worktree on a server removed by git there, from the repository it
+/// belongs to, and then forgotten by it.
+///
+/// A folder already gone is gone. One that is not a worktree is never
+/// touched -- except an empty one, which holds nothing to lose, as here. Git
+/// refuses a worktree with changes in it, so something written after the
+/// check is not lost either; what git says is the answer
+fn discard_on_server(host: &crate::config::HostSpec, folder: &str) -> Result<()> {
+    let at = crate::elsewhere::Elsewhere::of(host)?;
+    let f = for_a_shell(&[folder.to_string()]);
+    let line = format!(
+        "f={f}; [ -e \"$f\" ] || exit 0; cd \"$f\" || exit 1; \
+own=$(cd \"$(git rev-parse --git-dir 2>/dev/null || echo .)\" && pwd -P); \
+common=$(cd \"$(git rev-parse --git-common-dir 2>/dev/null || echo .)\" && pwd -P); \
+cd /; \
+if [ \"$own\" != \"$common\" ]; then git --git-dir=\"$common\" worktree remove \"$f\" || exit 1; \
+git --git-dir=\"$common\" worktree prune; if [ -e \"$f\" ]; then rm -rf -- \"$f\"; fi; exit 0; fi; \
+rmdir -- \"$f\" 2>/dev/null && exit 0; exit {NOT_A_WORKTREE}"
+    );
+    let ran = crate::elsewhere::exec(&at, &line, 120_000)?;
+    if ran.ok() {
+        return Ok(());
+    }
+    if ran.code == NOT_A_WORKTREE {
+        bail!(crate::i18n::t("err.worktree.not_a_branch"));
+    }
+    bail!(crate::i18n::tp(
+        "err.worktree.failed",
+        &[("said", &ran.said()), ("command", &format!("git worktree remove {f}"))]
+    ))
+}
+
+/// The exit `discard_on_server` gives for a folder that is not a worktree
+const NOT_A_WORKTREE: i32 = 73;
 
 /// How many of the changes `git status -z` lists are work that exists only in
 /// this folder.
@@ -3211,7 +3316,12 @@ origin/master
     /// under it. And tried again, it is the same kind of removal
     #[test]
     fn a_removal_says_what_goes_with_it() {
-        let vm = |id: &str| crate::config::HostSpec { name: "vm".into(), instance: Some(id.into()), ..Default::default() };
+        let vm = |id: &str| crate::config::HostSpec {
+            name: "vm".into(),
+            kind: Some("e2b".into()),
+            instance: Some(id.into()),
+            ..Default::default()
+        };
         let on_vm = Removal { folder: PathBuf::from("/home/user/site"), on: Some(vm("m1")), outcome: Default::default() };
         let cloud = |id: &str| crate::elsewhere::Elsewhere::Cloud(vm(id));
         assert!(on_vm.takes(Path::new("/home/user/site"), Some(&cloud("m1"))));
@@ -3226,6 +3336,35 @@ origin/master
         assert!(!local.takes(Path::new(&crate::local_path("D:/work/site-2")), None), "a neighbour whose name starts the same goes too");
         assert!(!local.takes(&here, Some(&cloud("m1"))));
         assert!(local.again().on.is_none(), "a folder here is tried again as a MicroVM");
+
+        // On a server: the folder and what is under it, on that server
+        let server = |at: &str| crate::config::HostSpec { name: "srv".into(), at: at.into(), ..Default::default() };
+        let srv = server("ssh://ubuntu@203.0.113.5:22");
+        let there = crate::elsewhere::Elsewhere::of(&srv).unwrap();
+        let other = crate::elsewhere::Elsewhere::of(&server("ssh://ubuntu@203.0.113.6:22")).unwrap();
+        let on_server = Removal { folder: PathBuf::from("/home/ubuntu/site-x"), on: Some(srv.clone()), outcome: Default::default() };
+        assert!(on_server.takes(Path::new("/home/ubuntu/site-x"), Some(&there)));
+        assert!(on_server.takes(Path::new("/home/ubuntu/site-x/src"), Some(&there)));
+        assert!(!on_server.takes(Path::new("/home/ubuntu/site-x2"), Some(&there)), "a neighbour whose name starts the same goes too");
+        assert!(!on_server.takes(Path::new("/home/ubuntu/site-x"), Some(&other)), "the same path on another server goes too");
+        assert!(!on_server.takes(Path::new("/home/ubuntu/site-x"), None), "an editor on this PC goes too");
+        assert!(!on_server.on_microvm(), "a server's folder is said as a MicroVM being deleted");
+        assert!(on_vm.on_microvm());
+    }
+
+    /// A worktree on a server is refused while something in it is not
+    /// committed, and the project's own folder there is never one to remove.
+    /// A commit not pushed is not refused: the branch stays on the server, as
+    /// one here stays in the repository. One already gone has nothing to lose
+    #[test]
+    fn a_server_folder_is_removed_only_as_a_clean_worktree() {
+        let s = "__S__";
+        assert!(server_unsaved(&format!("\n{s}\n{LINKED}\n"), s).is_ok(), "a clean worktree is refused");
+        let dirty = server_unsaved(&format!(" M src/a.rs\0\n{s}\n{LINKED}\n"), s).unwrap_err();
+        assert_eq!(format!("{dirty:#}"), crate::i18n::tp("err.worktree.dirty_server", &[("count", "1")]));
+        let own = server_unsaved(&format!("\n{s}\n"), s).unwrap_err();
+        assert_eq!(format!("{own:#}"), crate::i18n::t("err.worktree.not_a_branch"));
+        assert!(server_unsaved(&format!("{GONE}\n"), s).is_ok(), "a folder already gone is refused");
     }
 
     use super::*;

@@ -2975,6 +2975,10 @@ pub struct Tab {
     child_exited: Arc<AtomicBool>,
     /// For a terminal on a MicroVM: whether it is open. `None` for any other
     far_live: Option<Arc<AtomicBool>>,
+    /// A terminal on a server whose connection went without its shell ending
+    /// (see [`crate::ssh::shell`]): the tab is opened again once the server
+    /// answers. None for anything else
+    far_lost: Option<Arc<AtomicBool>>,
     bell_count: Arc<AtomicU64>,
     /// Cumulative bytes read from the PTY (incremented by the reader thread)
     bytes_out: Arc<AtomicU64>,
@@ -3390,6 +3394,7 @@ impl Tab {
         let far_live: Option<Arc<AtomicBool>> = opts.cloud.as_ref().map(|_| Arc::new(AtomicBool::new(false)));
         // The terminal itself, and whatever ends it
         #[allow(clippy::type_complexity)]
+        let mut far_lost = None;
         let (master, killer, pid, child): (
             Box<dyn MasterPty + Send>,
             Box<dyn ChildKiller + Send + Sync>,
@@ -3406,8 +3411,9 @@ impl Tab {
             // own, started by the far end, and there is no local process id to
             // put in a job object
             (None, Some(spec), _) => {
-                let (m, k) =
+                let (m, k, lost) =
                     crate::ssh::shell(spec, rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?;
+                far_lost = Some(lost);
                 (m, k, None, None)
             }
             // The same, except the far end does not exist yet. Asking for it
@@ -3496,6 +3502,9 @@ impl Tab {
                 .log
                 .then(|| crate::session_log::SessionLog::open(&crate::config::logs_dir(), &title));
             log_path = log.as_ref().and_then(|l| l.path().map(|p| p.to_path_buf()));
+            // A terminal on a server has no process here to wait on: its end
+            // is the stream stopping, said once everything before it is read
+            let ended = far_lost.as_ref().map(|_| Arc::clone(&child_exited));
             std::thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 let mut decoder = enc.map(|e| e.new_decoder());
@@ -3505,7 +3514,12 @@ impl Tab {
                 let mut watch = enc.is_none().then(Utf8Watch::default);
                 loop {
                     match reader.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
+                        Ok(0) | Err(_) => {
+                            if let Some(e) = &ended {
+                                e.store(true, Ordering::SeqCst);
+                            }
+                            break;
+                        }
                         Ok(n) => {
                             counter.fetch_add(n as u64, Ordering::Relaxed);
                             // Asked once, and never again after the answer is
@@ -3643,6 +3657,7 @@ impl Tab {
             killer,
             child_exited,
             far_live,
+            far_lost,
             bell_count,
             bytes_out,
             job,
@@ -3858,6 +3873,17 @@ impl Tab {
 
     pub fn exited(&self) -> bool {
         self.child_exited.load(Ordering::SeqCst)
+    }
+
+    /// Whether this is a terminal on a server that ended because its
+    /// connection went, not because its shell did
+    pub fn connection_lost(&self) -> bool {
+        self.far_lost.as_ref().is_some_and(|l| l.load(Ordering::SeqCst))
+    }
+
+    /// The server this tab's terminal is on, when it is on one
+    pub fn server(&self) -> Option<&crate::ssh::Spec> {
+        self.opts.remote.as_ref()
     }
 
     pub fn kill(&mut self) {

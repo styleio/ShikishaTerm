@@ -724,6 +724,13 @@ pub struct HostSpec {
     /// password stored under the machine's name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// For a server: seconds between the packets that keep a quiet connection
+    /// from being cut on the way, and that find one cut without a word -- a
+    /// router that forgot it, this PC asleep -- so its terminals are started
+    /// again rather than left frozen. 0 sends none. Absent is
+    /// [`SSH_KEEPALIVE`], written into the entry's form as it is
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive: Option<u64>,
     /// For a MicroVM: which one of its machines this is -- the one a folder
     /// is on, filled in from that folder (`FolderConfig::sandbox`) or from a
     /// project's checkout (`ProjectHome::sandbox`). Never written: the entry
@@ -739,6 +746,11 @@ pub const MICROVM_MINUTES: u32 = 30;
 /// What a MicroVM is made from when its entry does not say: the service's own
 /// plain image, written into the entry's form as it is
 pub const MICROVM_TEMPLATE: &str = "base";
+
+/// Seconds between a server's keepalive packets when its entry does not say:
+/// written into the entry's form as it is, and into an entry added from the
+/// board. Three unanswered ones are a connection that is gone
+pub const SSH_KEEPALIVE: u64 = 30;
 
 /// What a person calls a server, so that production can be told from staging
 /// without reading an address.
@@ -3376,6 +3388,7 @@ pub fn host_spec(host: &HostSpec) -> anyhow::Result<crate::ssh::Spec> {
         password_key: Some(format!("ssh/host/{}/password", host.name)),
         key: host.key.as_deref().map(str::trim).filter(|k| !k.is_empty()).map(home_path),
         passphrase_key: Some(format!("ssh/host/{}/passphrase", host.name)),
+        keepalive: Some(host.keepalive.unwrap_or(SSH_KEEPALIVE)).filter(|n| *n > 0),
         ..Default::default()
     })
 }
