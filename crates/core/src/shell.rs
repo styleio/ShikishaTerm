@@ -5844,31 +5844,15 @@ function apSshClone(body) {
       if (!walker.box.hidden) walker.look(parent.value.trim() || "~");
     }}, pickIcon("folderOpen"));
   walker.onLooked = at => { parent.value = at; sayInto(); go.check(); };
-  // The GitHub account the project signs in as on the server: one GitHub
-  // CLI there holds, another one to be signed in to, or what the server's
-  // git has in front. Each project keeps its own, so projects of different
-  // accounts share one server; the accounts are asked of the server
-  const acct = el("select", {class:"apin"});
-  const other = apInput("", "octocat", true);
-  other.hidden = true;
-  let served = null;
-  let acctByHand = false;
-  const drawAcct = () => {
-    const owner = ownerOfUrl(url.value);
-    const was = acct.value;
-    acct.textContent = "";
-    if (served === null) acct.append(el("option", {value:"@asking", disabled:""}, T["tui.addproj.sshclone.asking"] || ""));
-    for (const a of served || []) acct.append(el("option", {value:a}, a));
-    acct.append(el("option", {value:"@new"}, T["tui.addproj.sshclone.account_new"] || ""),
-      el("option", {value:""}, T["tui.addproj.sshclone.account_any"] || ""));
-    // The owner's account when the server holds it, else nothing chosen
-    // for the person: what the server's git has in front, said as such
-    const fit = (served || []).find(a => a.toLowerCase() === owner);
-    acct.value = acctByHand ? was : (fit || "");
-    other.hidden = acct.value !== "@new";
-  };
-  acct.addEventListener("change", () => { acctByHand = true; other.hidden = acct.value !== "@new"; if (!other.hidden) other.focus(); go.check(); });
-  const account = () => acct.value === "@new" ? other.value.trim() : acct.value === "@asking" ? "" : acct.value;
+  // The GitHub account the project signs in as on the server, only for a
+  // server whose projects belong to different accounts; empty is the
+  // server's git as it is. Each project keeps its own, so such projects
+  // share one server. The accounts gh there holds come in as suggestions,
+  // asked of the server behind the page
+  const acct = apInput("", "octocat", true);
+  const acctList = el("datalist", {id:"apacctlist"});
+  acct.setAttribute("list", "apacctlist");
+  const account = () => acct.value.trim();
   let acctAsk = 0;
   if (apHost) {
     acctAsk = Date.now() + 1;
@@ -5878,7 +5862,7 @@ function apSshClone(body) {
   const go = apGo(T["tui.addproj.clone.go"] || "", () =>
       !url.value.trim() ? {at:url, why:T["tui.addproj.clone.need_url"] || ""}
       : !apHost ? {at:hostBtn, why:T["tui.addproj.sshclone.need_host"] || ""}
-      : acct.value === "@new" && !/^[A-Za-z0-9-]+$/.test(other.value.trim()) ? {at:other, why:T["tui.addproj.sshclone.need_account"] || ""}
+      : account() && !/^[A-Za-z0-9-]+$/.test(account()) ? {at:acct, why:T["tui.addproj.sshclone.need_account"] || ""}
       : !parent.value.trim() ? {at:parent, why:T["tui.addproj.need_parent"] || ""} : null,
     () => {
       apAsk = Date.now();
@@ -5888,15 +5872,13 @@ function apSshClone(body) {
     });
   body.append(el("div", {class:"ssay"}, T["tui.addproj.sshclone.say2"] || ""),
     apField(T["tui.addproj.url"] || "", url),
-    el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.addproj.sshclone.account"] || ""), acct, other,
+    el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.addproj.sshclone.account"] || ""), acct, acctList,
       el("div", {class:"shint"}, T["tui.addproj.sshclone.account_say"] || "")),
     el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.addproj.parent"] || ""),
       el("div", {class:"aprow"}, parent, walk), walker.box, into),
     el("div", {class:"apfoot"}, go.why, go.btn, prog.bar));
-  url.addEventListener("input", () => { apSshUrl = url.value; drawAcct(); });
-  other.addEventListener("input", go.check);
-  drawAcct();
-  for (const i of [url, parent]) {
+  url.addEventListener("input", () => { apSshUrl = url.value; });
+  for (const i of [url, acct, parent]) {
     i.addEventListener("input", () => { sayInto(); go.check(); });
     i.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); go.btn.click(); } });
   }
@@ -5905,7 +5887,7 @@ function apSshClone(body) {
   apLive = {kind:"clone", running:false, go, prog, label:T["tui.addproj.clone.go"] || "",
     busy:(T["tui.addproj.clone.busy_on"] || "{host}").replace("{host}", apHost), walker,
     // The server's accounts, once it has said them
-    accountsAsk: acctAsk, accounts: list => { served = list; drawAcct(); go.check(); }};
+    accountsAsk: acctAsk, accounts: list => { acctList.replaceChildren(...list.map(a => el("option", {value:a}))); }};
   setTimeout(() => url.focus(), 0);
 }
 // The folder a clone makes, named as git names it: the address's last part

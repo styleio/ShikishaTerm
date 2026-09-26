@@ -290,7 +290,7 @@ try {
   await board.run('document.querySelectorAll("#addproj .aptabs button")[1].click(); true');
   await until(() => board.run('(document.querySelectorAll("#addproj .aprrow") || []).length > 0'), 'the server\'s folders on the add tab', 30000);
   const addTab = await board.run('document.querySelector("#addproj .sbody").textContent');
-  check(!/Git の URL/.test(addTab) && !/git サーバーに使うアカウント/.test(addTab) && /srv/.test(addTab),
+  check(!/Git の URL/.test(addTab) && !/GitHub アカウント/.test(addTab) && /srv/.test(addTab),
     'the add tab asks for the server and a folder, and for no address or account');
   await board.shot('5-sshadd');
   await board.run('closeAddProject(); true');
@@ -351,12 +351,20 @@ try {
   // The step opens: the commands drafted for this server, to copy -- nothing
   // runs from the page -- and a terminal there, in the clone's folder
   await openClone(PRIVATE);
-  // The server holds no GitHub account: the list says so -- another account
-  // by its login, or none -- and styleio is named for this project
-  await until(() => board.run('![...document.querySelectorAll("#addproj select.apin option")].some(o => o.value === "@asking")'), 'the server to say which accounts it holds', 30000);
-  check(await board.run('[...document.querySelectorAll("#addproj select.apin option")].map(o => o.value).join(",")') === '@new,',
-    'with no account on the server, the choices are another account or none');
-  await board.run('(() => { const s = document.querySelector("#addproj select.apin"); s.value = "@new"; s.dispatchEvent(new Event("change")); const i = s.nextElementSibling; i.value = "styleio"; i.dispatchEvent(new Event("input")); return true; })()');
+  // The account is optional and starts empty -- the server's git as it
+  // is. The server holds no GitHub account, so nothing is suggested; styleio
+  // is typed for this project
+  const acctIn = 'document.querySelector("#addproj input.apin[list=apacctlist]")';
+  check(await board.run(acctIn + ".value") === "" && /GitHub アカウント（任意）/.test(await board.run('document.querySelector("#addproj .sbody").textContent')),
+    'the account is an optional field, empty to begin with');
+  await until(() => board.run("apLive && apLive.accountsAsk === 0"), 'the server to say which accounts it holds', 30000);
+  check(await board.run('document.querySelectorAll("#apacctlist option").length') === 0,
+    'with no account on the server, nothing is suggested');
+  await board.run('(() => { const i = ' + acctIn + '; i.value = "bad name"; i.dispatchEvent(new Event("input")); return true; })()');
+  await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
+  check(/アカウント名を、英数字とハイフンで/.test(await board.run('document.querySelector("#addproj .apfoot").textContent')),
+    'a name GitHub cannot have is stopped before the clone');
+  await board.run('(() => { const i = ' + acctIn + '; i.value = "styleio"; i.dispatchEvent(new Event("input")); return true; })()');
   await board.shot('5b-account');
   await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
   const step = () => board.run('JSON.stringify((S && S.login_step) || null)').then((t) => JSON.parse(t || 'null'));
