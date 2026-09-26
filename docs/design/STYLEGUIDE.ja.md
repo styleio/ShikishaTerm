@@ -249,7 +249,7 @@ AI の名前。ほかは太くしない。字間 `.02em` は 11〜12px の見出
 | 線画の印 | `pickIcon(name)` | 盤面（`shell.rs`） |
 | MicroVM を選ぶ一覧の「＋ MicroVM を追加」 | `addMicrovm(chosen)`（設定の登録フォームを盤面の上に立て、登録されたら、渡した関数に新しい MicroVM の名前を渡して一覧を続ける） | 盤面（`shell.rs`） |
 | MicroVM に入れる AI を選ぶ | `machineAiPick(value, onChange)`（最初の値は `defaultMachineAi()`：アシスタント AI、なければこの PC にある AI） | 盤面（`shell.rs`） |
-| MicroVM の git サーバーへのサインインの案内 | `drawSignIn(box, note, shown, change)`（アカウント・トークンの種類・fine-grained PAT 以外の注意を1か所で描く） | 盤面（`shell.rs`） |
+| MicroVM の git サーバーへのサインインの案内 | `drawSignIn(box, note, shown, change)`（アカウント・トークンの種類・fine-grained PAT 以外の注意を1か所で描く）。AI のログインは `drawAiSignIn(box, note)`。事実は欄の下の1行（11.5px `--dim`）、人がすることは §5.1 の `--warn` の箱に直す手段の並ボタンを入れて `signInWarn(text, ...acts)` で描く | 盤面（`shell.rs`） |
 | トースト | `toast(text, warn)`（`toast.rs` が両方のページに入れる） | 両方（`toast.rs`） |
 <!-- /code-entries -->
 

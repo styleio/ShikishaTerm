@@ -2958,6 +2958,23 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bmachineai { display:flex; gap:8px; align-items:center; margin-top:6px; }
   #branch .bmachineai select { flex:1; min-width:0; height:30px; font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:0 8px; }
   #branch .bdestsay { font-size:12px; color:var(--dim); margin-top:4px; }
+  /* What a machine signs in as, and whether its AI is signed in (drawSignIn,
+     drawAiSignIn), in both dialogs that make something on a MicroVM. A fact
+     is a line under the control; something a person has to do is the 5.1
+     warn box, with what fixes it inside the same box as a plain button */
+  .bsignin { display:flex; flex-direction:column; gap:var(--s2); }
+  .bsignin[hidden] { display:none; }
+  .bsignin .say { font-size:11.5px; line-height:1.5; color:var(--dim); }
+  .bsignin .bwarn { display:flex; flex-direction:column; gap:var(--s2); padding:var(--s2) var(--s3);
+    border-radius:var(--r-ctl); font-size:11.5px; line-height:1.5; color:var(--text);
+    background:color-mix(in srgb, var(--warn) 9%, transparent);
+    border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+  .bsignin .bwarn .row { display:flex; flex-wrap:wrap; gap:var(--s2); }
+  .bsignin .bwarn .row button, .bsignin .bwarn .row a { display:inline-flex; align-items:center;
+    font:inherit; font-size:12.5px; min-height:32px; padding:0 var(--s3); box-sizing:border-box;
+    border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--panel2);
+    color:var(--text); text-decoration:none; cursor:pointer; }
+  .bsignin .bwarn .row button:hover, .bsignin .bwarn .row a:hover { border-color:var(--edge-hi); }
   #branch .blabelrow { display:flex; align-items:center; justify-content:space-between; gap:var(--s2); }
   #branch button.bicon { min-height:22px; width:22px; padding:0; border:0; background:transparent;
     color:var(--dim); display:flex; align-items:center; justify-content:center; }
@@ -8772,21 +8789,19 @@ function drawAiSignIn(box, note) {
   if (note.state === "yes") { box.append(el("div", {class:"say"}, say("tui.aisignin.yes"))); return; }
   // Signed in, and the AI's first-run questions not finished yet: a copy made
   // now starts the AI over, sign-in included
-  if (note.state === "finishing") {
-    box.append(el("div", {class:"warn"}, say("tui.aisignin.finishing")));
+  if (note.state === "finishing" || note.state === "no") {
     const tab = checkoutAiTab(note.checkout, note.ai);
-    if (tab) box.append(el("div", {class:"row"},
-      el("button", {type:"button", class:"quiet", onclick:() => { closeBranch(); send({kind:"select", tab: tab.index}); }}, say("tui.aisignin.open"))));
+    box.append(signInWarn(say("tui.aisignin." + note.state),
+      tab ? el("button", {type:"button", onclick:() => { closeBranch(); send({kind:"select", tab: tab.index}); }}, say("tui.aisignin.open")) : null));
     return;
   }
-  if (note.state === "no") {
-    box.append(el("div", {class:"warn"}, say("tui.aisignin.no")));
-    const tab = checkoutAiTab(note.checkout, note.ai);
-    if (tab) box.append(el("div", {class:"row"},
-      el("button", {type:"button", class:"quiet", onclick:() => { closeBranch(); send({kind:"select", tab: tab.index}); }}, say("tui.aisignin.open"))));
-    return;
-  }
-  box.append(el("div", {class:"warn"}, say("tui.aisignin.error") + (note.error ? " " + note.error : "")));
+  box.append(signInWarn(say("tui.aisignin.error") + (note.error ? " " + note.error : "")));
+}
+// Something a person has to do before a MicroVM is made, and what does it:
+// one box, so the problem and its fix read as one thing (5.1's warn box)
+function signInWarn(text, ...acts) {
+  const fixes = acts.filter(Boolean);
+  return el("div", {class:"bwarn"}, el("div", {}, text), fixes.length ? el("div", {class:"row"}, ...fixes) : null);
 }
 // The checkout's tab running this AI, on the board: in the folder that is
 // the checkout, the tab whose AI this is -- or, asked with no AI, the
@@ -9068,16 +9083,15 @@ function drawSignIn(box, note, shown, change) {
   const kind = T["tui.signin.kind." + note.kind] || "";
   box.append(el("div", {class:"say"},
     (T["tui.signin.as"] || "{account}").replace("{account}", note.account) + (kind ? " · " + kind : "")));
-  if (note.error) box.append(el("div", {class:"warn"}, note.error));
-  else if (note.kind === "none") box.append(el("div", {class:"say"}, T["tui.signin.none"] || ""));
+  const other = change ? el("button", {type:"button", onclick:change}, T["tui.signin.change"] || "") : null;
+  if (note.error) { box.append(signInWarn(note.error, other)); return; }
+  if (note.kind === "none") box.append(el("div", {class:"say"}, T["tui.signin.none"] || ""));
   // A token that never ends and may reach every repository: said, with what
   // to use instead. A token that does not say what it is: what it allows
-  const broad = note.kind === "classic" || note.kind === "oauth";
-  if (broad) box.append(el("div", {class:"warn"}, T["tui.signin.broad"] || ""));
+  if (note.kind === "classic" || note.kind === "oauth") box.append(signInWarn(T["tui.signin.broad"] || "",
+    el("a", {href:"https://github.com/settings/personal-access-tokens/new", target:"_blank", rel:"noopener"}, T["tui.signin.make_fine"] || ""),
+    other));
   if (note.kind === "unknown") box.append(el("div", {class:"say"}, T["tui.signin.unknown"] || ""));
-  if (broad || note.error) box.append(el("div", {class:"row"},
-    broad ? el("a", {href:"https://github.com/settings/personal-access-tokens/new", target:"_blank", rel:"noopener"}, T["tui.signin.make_fine"] || "") : null,
-    change ? el("button", {type:"button", class:"quiet", onclick:change}, T["tui.signin.change"] || "") : null));
 }
 
 // A MicroVM added from a picker: the settings' own form, over the board.
