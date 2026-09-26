@@ -192,6 +192,46 @@ fn sign_in_print(s: Option<&crate::e2b::SignIn>) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A new worktree's folder, trusted by the AIs there as the checkout's is.
+///
+/// A worktree is the same repository in another folder, and an AI asks
+/// whether to trust each folder it is started in -- so every worktree asked
+/// again what the checkout had been answered. Carried only where the answer
+/// there was yes: a checkout never trusted leaves its worktrees to be asked.
+/// Each AI keeps the answer its own way (`trusted_as`); one that cannot be
+/// read or written is left as it is, and the question comes up as before
+pub fn trust_as_checkout(at: &crate::elsewhere::Elsewhere, checkout: &str, worktree: &str) {
+    const CLAUDE: &str = "/home/user/.claude.json";
+    let read = crate::elsewhere::files(at, crate::ssh::FileJob::Read { path: CLAUDE.into() }, 30_000);
+    let Ok(crate::ssh::FileAnswer::Bytes(bytes)) = read else { return };
+    let Some(text) = trusted_as(&String::from_utf8_lossy(&bytes), checkout, worktree) else { return };
+    match crate::elsewhere::files(at, crate::ssh::FileJob::Write { to: CLAUDE.into(), bytes: text.into_bytes() }, 30_000) {
+        Ok(_) => crate::append_hook_log(&format!("{worktree} is trusted by Claude Code as {checkout} is")),
+        Err(e) => crate::append_hook_log(&format!("could not carry the trust of {checkout} to {worktree}: {e:#}")),
+    }
+}
+
+/// Claude Code's settings with `worktree` trusted, when `checkout` is; `None`
+/// when there is nothing to carry or the file is not JSON this can read
+fn trusted_as(text: &str, checkout: &str, worktree: &str) -> Option<String> {
+    let mut doc: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+    let trusted = doc
+        .pointer(&format!("/projects/{}", checkout.replace('~', "~0").replace('/', "~1")))
+        .and_then(|p| p.get("hasTrustDialogAccepted"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !trusted {
+        return None;
+    }
+    let projects = doc.get_mut("projects")?.as_object_mut()?;
+    let entry = projects.entry(worktree.to_string()).or_insert_with(|| serde_json::json!({}));
+    if entry.get("hasTrustDialogAccepted").and_then(|v| v.as_bool()) == Some(true) {
+        return None;
+    }
+    entry.as_object_mut()?.insert("hasTrustDialogAccepted".into(), serde_json::json!(true));
+    serde_json::to_string_pretty(&doc).ok()
+}
+
 /// What is cleared from a worktree's machine the moment it is copied from the
 /// checkout's (the project-hosts plan, §6.4).
 ///
@@ -1099,6 +1139,24 @@ mod tests {
         assert!(!format!("{note:?}").contains("0123456789"), "the token is in what is said");
         let failed = sign_in_note("gone", &Err("no such account".into())).unwrap();
         assert_eq!((failed.kind.as_str(), failed.error.as_str()), ("none", "no such account"));
+    }
+}
+
+#[cfg(test)]
+mod trust_tests {
+    /// A worktree is trusted when its checkout is, and only then; everything
+    /// else in the file is kept, and a second pass changes nothing
+    #[test]
+    fn a_worktree_is_trusted_as_its_checkout_is() {
+        let text = r#"{"numStartups":3,"projects":{"/home/user/site":{"hasTrustDialogAccepted":true,"allowedTools":[]}}}"#;
+        let out = super::trusted_as(text, "/home/user/site", "/home/user/site-feature").expect("nothing carried");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["projects"]["/home/user/site-feature"]["hasTrustDialogAccepted"], true);
+        assert_eq!(v["numStartups"], 3, "the rest of the file is lost");
+        assert_eq!(super::trusted_as(&out, "/home/user/site", "/home/user/site-feature"), None, "written again");
+        let untrusted = r#"{"projects":{"/home/user/site":{"hasTrustDialogAccepted":false}}}"#;
+        assert_eq!(super::trusted_as(untrusted, "/home/user/site", "/home/user/x"), None, "trust made up");
+        assert_eq!(super::trusted_as("{ not json", "/a", "/b"), None);
     }
 }
 

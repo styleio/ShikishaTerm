@@ -745,6 +745,14 @@ fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> boo
             here.base.clone(),
         ],
     );
+    // The AIs there trust this folder as they trust the checkout it is cut from
+    if let Some(h) = here.host.as_ref() {
+        crate::microvm::trust_as_checkout(
+            &crate::elsewhere::Elsewhere::Cloud(h.clone()),
+            &plan.main.to_string_lossy().replace('\\', "/"),
+            &here.folder.to_string_lossy().replace('\\', "/"),
+        );
+    }
     Ok(())
 }
 
