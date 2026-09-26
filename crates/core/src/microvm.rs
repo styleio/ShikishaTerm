@@ -113,6 +113,71 @@ impl Checkout {
     }
 }
 
+/// The git sign-in each MicroVM folder's machine has, kept current as the
+/// settings change (the project-hosts plan, §6.4).
+///
+/// A machine is given its sign-in when it is made, and a copy carries the
+/// one it was copied with. A token replaced later -- one that ran out, an
+/// account chosen instead -- reached only the machines made after it, and
+/// every worktree already open went on pushing with the old one until it
+/// failed. Told to each machine here, on a thread, when what it would be
+/// given changes.
+///
+/// A machine seen for the first time is only noted: it has what it was made
+/// with, and telling it again would start every paused machine each time the
+/// app opens. `folders` is (machine, what it signs in as)
+pub fn keep_sign_ins_current(folders: Vec<(String, crate::config::FarSignIn)>) {
+    static TOLD: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    if folders.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let told = TOLD.get_or_init(Default::default);
+        for (id, far) in folders {
+            // Only a sign-in that could be worked out: one that cannot says
+            // nothing about what the machine should now be given
+            let Ok(sign_in) = far.resolve() else { continue };
+            let print = sign_in_print(sign_in.as_ref());
+            let before = told.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), print.clone());
+            match before {
+                None => {}
+                Some(was) if was == print => {}
+                Some(_) => {
+                    let Some(key) = crate::e2b::key() else { continue };
+                    if let Err(e) = crate::e2b::sign_in_as(&key, &id, sign_in.as_ref()) {
+                        crate::append_hook_log(&format!("could not give machine {id} its new sign-in: {e:#}"));
+                        // Tried again at the next change of the settings
+                        told.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// What a sign-in is, reduced to something that can be compared and kept in
+/// memory without keeping the token itself
+fn sign_in_print(s: Option<&crate::e2b::SignIn>) -> String {
+    use sha2::Digest as _;
+    let Some(s) = s else { return "nobody".into() };
+    let mut h = sha2::Sha256::new();
+    h.update(format!("{}\u{1f}{}\u{1f}{}", s.host, s.login, s.token).as_bytes());
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// What is cleared from a worktree's machine the moment it is copied from the
+/// checkout's (the project-hosts plan, §6.4).
+///
+/// A copy is the machine as it was that instant, what was running in it
+/// included: a server somebody tried in the checkout, the AI that was open
+/// there, the shell's history of what was typed. None of that is the new
+/// worktree's. Everything this account runs is ended -- save the shell running
+/// this and the service's own agent, which the machine is reached through --
+/// and the histories go. What was installed and signed in to stays: that is
+/// what every worktree is copied to have
+pub const AFTER_FORK: &str = "me=$(id -un); for p in $(ps -u \"$me\" -o pid= 2>/dev/null); do case \"$p\" in $$|$PPID) continue;; esac; case \"$(ps -o comm= -p \"$p\" 2>/dev/null)\" in envd*) continue;; esac; kill -TERM \"$p\" 2>/dev/null; done; rm -f ~/.bash_history ~/.zsh_history ~/.python_history ~/.node_repl_history ~/.lesshst ~/.viminfo; true";
+
 /// The addresses a folder's MicroVM answers on from anywhere: each port
 /// something listens on in there, with the public URL the service gives it.
 /// Asked of the machine itself, which starts it if it was paused -- so this

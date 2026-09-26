@@ -708,6 +708,14 @@ fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> boo
     let copy = crate::e2b::fork(&key, &checkout, minutes)?;
     noted.worktree = Some(copy.id.clone());
     made(&noted);
+    // What the checkout's machine was doing and had typed is not the new
+    // worktree's. Not a reason to stop when it cannot be done: the worktree
+    // works all the same, and the log says what was left
+    match crate::e2b::exec(&copy, crate::microvm::AFTER_FORK, None) {
+        Ok(r) if r.ok() => {}
+        Ok(r) => crate::append_hook_log(&format!("could not clear the copy {}: {}", copy.id, r.said())),
+        Err(e) => crate::append_hook_log(&format!("could not clear the copy {}: {e:#}", copy.id)),
+    }
     let here = Plan { host: Some(host.with_instance(Some(&copy.id))), ..plan.clone() };
     let steps = here.cutting().into_iter().map(|a| (Stage::Creating, a))
         .chain(here.getting_ready().into_iter().map(|a| (Stage::SettingUp, a)));
@@ -2641,6 +2649,82 @@ pub fn default_base(main: &Path) -> String {
     crate::repo::branch_of(main).unwrap_or_else(|| "HEAD".into())
 }
 
+/// The branches a folder on another machine could grow a new one from, best
+/// first, and which of them is the one to start on: asked of git there.
+///
+/// Asked on a thread and kept, because the worktree dialog asks on every
+/// keystroke and the machine may be paused -- `None` is "being asked", and the
+/// dialog is given the answer when it comes (see `runtime`). Asked afresh when
+/// `again` is set, which the dialog does each time it is opened, so a branch
+/// pushed since is there
+pub fn far_bases(at: &crate::config::HostSpec, folder: &str, again: bool) -> Option<(Vec<String>, String)> {
+    type Known = std::collections::HashMap<String, Option<(Vec<String>, String)>>;
+    static KNOWN: std::sync::OnceLock<std::sync::Mutex<Known>> = std::sync::OnceLock::new();
+    let key = format!("{}\u{1f}{}\u{1f}{folder}", at.name, at.instance.as_deref().unwrap_or_default());
+    let known = KNOWN.get_or_init(Default::default);
+    {
+        let mut k = known.lock().unwrap_or_else(|e| e.into_inner());
+        match k.get(&key) {
+            Some(Some(found)) if !again => return Some(found.clone()),
+            Some(None) => return None,
+            _ => {}
+        }
+        k.insert(key.clone(), None);
+    }
+    let (host, folder) = (at.clone(), folder.to_string());
+    std::thread::spawn(move || {
+        let found = far_bases_now(&host, &folder);
+        known.lock().unwrap_or_else(|e| e.into_inner()).insert(key, Some(found));
+    });
+    None
+}
+
+/// The same, asked and waited for: for a thread that can wait on the machine
+pub fn far_bases_now(host: &crate::config::HostSpec, folder: &str) -> (Vec<String>, String) {
+    let git = |args: &[&str]| {
+        let mut argv: Vec<String> = vec!["git".into(), "-C".into(), folder.to_string()];
+        argv.extend(args.iter().map(|a| a.to_string()));
+        for_a_shell(&argv)
+    };
+    let line = format!(
+        "{}; echo {SPLIT}; {}; echo {SPLIT}; {}",
+        git(&["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]),
+        git(&["branch", "--show-current"]),
+        git(&["for-each-ref", "--format=%(refname:short)", "refs/remotes", "refs/heads"]),
+    );
+    crate::elsewhere::Elsewhere::of(host)
+        .and_then(|at| crate::elsewhere::exec(&at, &line, 30_000))
+        .map(|ran| bases_said(&ran.out))
+        .unwrap_or_else(|e| {
+            crate::append_hook_log(&format!("could not list the branches of {folder} on {}: {e:#}", host.name));
+            (vec!["HEAD".into()], "HEAD".into())
+        })
+}
+
+/// What separates the three answers `far_bases` asks for in one command
+const SPLIT: &str = "__SHIKISHA_SPLIT__";
+
+/// The three answers read back: the remote's default, the branch the folder
+/// is on, and every branch there. In the order `bases` gives them here
+fn bases_said(out: &str) -> (Vec<String>, String) {
+    let mut parts = out.split(SPLIT).map(|p| p.lines().map(str::trim).filter(|l| !l.is_empty()));
+    let origin_head = parts.next().and_then(|mut p| p.next()).map(str::to_string);
+    let current = parts.next().and_then(|mut p| p.next()).map(str::to_string);
+    let all: Vec<String> = parts.next().map(|p| p.map(str::to_string).collect()).unwrap_or_default();
+    let chosen = origin_head
+        .or_else(|| ["origin/main", "origin/master"].iter().find(|n| all.iter().any(|a| a == *n)).map(|n| n.to_string()))
+        .or(current)
+        .unwrap_or_else(|| "HEAD".into());
+    let mut out = vec![chosen.clone()];
+    for name in all {
+        // `origin/HEAD` points at another of these; nobody starts from it
+        if !name.ends_with("/HEAD") && name != "origin" && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    (out, chosen)
+}
+
 /// The branches a new one could grow from, best first.
 ///
 /// What the remote calls its default, then the rest of what the remote has,
@@ -3033,6 +3117,44 @@ pub fn run(argv: &[String]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The branches of a folder on another machine, read back from git there:
+    /// the remote's default first and chosen, then the rest, `origin/HEAD` and
+    /// repeats left out. With no remote default, the folder's own branch
+    #[test]
+    fn a_far_folders_branches_are_read_back() {
+        let said = format!("origin/main
+{SPLIT}
+feature/x
+{SPLIT}
+origin/HEAD
+origin/main
+origin/dev
+feature/x
+main
+");
+        let (bases, chosen) = bases_said(&said);
+        assert_eq!(chosen, "origin/main");
+        assert_eq!(bases, vec!["origin/main", "origin/dev", "feature/x", "main"]);
+
+        let (bases, chosen) = bases_said(&format!("
+{SPLIT}
+work
+{SPLIT}
+work
+"));
+        assert_eq!(chosen, "work", "with nothing on a remote, the folder's own branch is not where it starts");
+        assert_eq!(bases, vec!["work"]);
+
+        let (_, chosen) = bases_said(&format!("
+{SPLIT}
+
+{SPLIT}
+origin/master
+"));
+        assert_eq!(chosen, "origin/master");
+        assert_eq!(bases_said("").1, "HEAD", "nothing said at all is not HEAD");
+    }
+
     /// What goes with a removal, as the editors left open are asked about it:
     /// on a MicroVM, everything on that machine; here, the folder and what is
     /// under it. And tried again, it is the same kind of removal

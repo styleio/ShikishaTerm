@@ -108,7 +108,7 @@ pub fn remote_url_of(cwd: &Path) -> Option<String> {
 }
 
 /// `owner/name` out of any of the ways a GitHub remote is written.
-fn github_path(url: &str) -> Option<String> {
+pub fn github_path(url: &str) -> Option<String> {
     let rest = ["https://github.com/", "http://github.com/", "ssh://git@github.com/",
                 "git@github.com:", "github.com/", "git://github.com/"]
         .into_iter()

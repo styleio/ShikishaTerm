@@ -389,6 +389,50 @@ pub fn there(dir: &Path, at: Option<&crate::elsewhere::Elsewhere>) {
     FAR.with(|f| *f.borrow_mut() = at.map(|a| (dir.to_path_buf(), a.clone())));
 }
 
+/// The branch a folder on another machine is on, and the GitHub repository
+/// it pushes to, as last found out: what the row of a tab there shows.
+///
+/// Asked of git there on a thread and kept, since the rows are drawn on the
+/// board's own loop. Asked again at most every half minute, and only when
+/// `awake` says the machine is up anyway (its terminal is moving): every
+/// request to a paused MicroVM starts it, and a row that asked on a timer
+/// would keep a machine nobody is using running, and paid for
+pub fn far_place(at: &crate::elsewhere::Elsewhere, dir: &Path, awake: bool) -> (Option<String>, Option<String>) {
+    struct Kept {
+        asked: std::time::Instant,
+        busy: bool,
+        found: (Option<String>, Option<String>),
+    }
+    static KEPT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Kept>>> =
+        std::sync::OnceLock::new();
+    let key = format!("{}\u{1f}{}", at.address(), dir.to_string_lossy());
+    let kept = KEPT.get_or_init(Default::default);
+    let mut k = kept.lock().unwrap_or_else(|e| e.into_inner());
+    let due = match k.get(&key) {
+        None => true,
+        Some(p) => !p.busy && awake && p.asked.elapsed() >= std::time::Duration::from_secs(30),
+    };
+    let found = k.get(&key).map(|p| p.found.clone()).unwrap_or_default();
+    if due {
+        k.insert(key.clone(), Kept { asked: std::time::Instant::now(), busy: true, found: found.clone() });
+        let (at, dir) = (at.clone(), dir.to_path_buf());
+        std::thread::spawn(move || {
+            there(&dir, Some(&at));
+            let branch = run(&dir, &["branch", "--show-current"]).ok().map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
+            let repo = run(&dir, &["remote", "get-url", "origin"]).ok().and_then(|u| crate::repo::github_path(u.trim()));
+            there(&dir, None);
+            let mut k = kept.lock().unwrap_or_else(|e| e.into_inner());
+            k.insert(key, Kept { asked: std::time::Instant::now(), busy: false, found: (branch, repo) });
+        });
+    }
+    found
+}
+
+/// Whether git about `dir` runs on another machine, as noted on this thread
+pub fn is_far(dir: &Path) -> bool {
+    far_of(dir).is_some()
+}
+
 /// The machine `dir` is on, when `dir` is the folder noted, one inside it,
 /// or one above it -- `root` answers the top of the tree, and everything
 /// after asks about the top

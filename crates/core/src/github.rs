@@ -86,7 +86,15 @@ pub fn target(
     look: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(Repo, String)> {
     use crate::config::GitUse;
-    let slug = crate::repo::origin_of(dir).ok_or_else(|| {
+    // A folder on another machine (noted on this thread, see `git::there`):
+    // its remote is asked of git there, since there is nothing here to read
+    let far = || {
+        crate::git::is_far(dir)
+            .then(|| crate::git::run(dir, &["remote", "get-url", "origin"]).ok())
+            .flatten()
+            .and_then(|u| crate::repo::github_path(u.trim()))
+    };
+    let slug = crate::repo::origin_of(dir).or_else(far).ok_or_else(|| {
         anyhow!(crate::i18n::tp(
             "err.github.not_github",
             &[("p", &dir.display().to_string())]
@@ -835,10 +843,39 @@ pub struct Source {
     /// `owner/name` on GitHub, when that is where it lives
     pub repo: Option<String>,
     pub git: crate::config::GitUse,
+    /// For a project that is on another machine and not here: its folders
+    /// there, each with its own machine (every worktree on a MicroVM is a
+    /// machine of its own). Git about any of them runs there
+    pub far: Vec<(std::path::PathBuf, crate::elsewhere::Elsewhere)>,
+}
+
+impl Source {
+    /// Note, on this thread, which machine the project's folder `dir` is on,
+    /// so the git asked about it next runs there. Nothing for a project here
+    pub fn note_far(&self, dir: &std::path::Path) {
+        let at = self
+            .far
+            .iter()
+            .find(|(f, _)| crate::uistate::same_folder(f, dir))
+            .map(|(_, at)| at);
+        crate::git::there(dir, at);
+    }
+}
+
+/// The GitHub repository a project is, and a token for it.
+///
+/// A project on another machine is asked through its first folder there
+pub fn target_of(
+    s: &Source,
+    look: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Repo, String)> {
+    s.note_far(&s.dir);
+    target(&s.dir, &s.git, look)
 }
 
 /// The desk's repositories, one each: every folder on this machine, gathered
-/// by the checkout it belongs to, named the way the settings name its project
+/// by the checkout it belongs to, named the way the settings name its project,
+/// and every project whose folders are only on another machine
 pub fn desk_sources(desk: &crate::config::Desk) -> Vec<Source> {
     let mut out: Vec<Source> = Vec::new();
     let mut seen: Vec<std::path::PathBuf> = Vec::new();
@@ -867,9 +904,64 @@ pub fn desk_sources(desk: &crate::config::Desk) -> Vec<Source> {
             dir: main,
             at: cwd.to_path_buf(),
             git,
+            far: Vec::new(),
+        });
+    }
+    // Projects on another machine, by the project their folders name. One
+    // that is also here is already in the list, found through its checkout
+    for f in desk.folders.iter() {
+        let (Some(host), Some(cwd), Some(project)) = (f.host.as_ref(), f.cwd.as_deref(), f.project.as_deref()) else {
+            continue;
+        };
+        let Ok(at) = crate::elsewhere::Elsewhere::of(host) else { continue };
+        if let Some(s) = out.iter_mut().find(|s| s.name == project) {
+            if !s.far.is_empty() {
+                s.far.push((cwd.to_path_buf(), at));
+            }
+            continue;
+        }
+        let spec = desk.projects.iter().find(|p| p.name == project);
+        out.push(Source {
+            name: project.to_string(),
+            repo: far_origin(host, cwd),
+            dir: cwd.to_path_buf(),
+            at: cwd.to_path_buf(),
+            git: desk.git_use(spec.and_then(|p| p.git_account.as_deref())),
+            far: vec![(cwd.to_path_buf(), at)],
         });
     }
     out
+}
+
+/// A folder on another machine's GitHub repository, as `owner/name`: asked of
+/// git there on a thread and kept, since the list this goes into is asked for
+/// on the board's own loop. `None` until it has been answered
+pub fn far_origin(host: &crate::config::HostSpec, dir: &std::path::Path) -> Option<String> {
+    type Known = std::collections::HashMap<String, Option<Option<String>>>;
+    static KNOWN: std::sync::OnceLock<std::sync::Mutex<Known>> = std::sync::OnceLock::new();
+    let key = format!("{}\u{1f}{}", host.name, dir.to_string_lossy());
+    let known = KNOWN.get_or_init(Default::default);
+    {
+        let mut k = known.lock().unwrap_or_else(|e| e.into_inner());
+        match k.get(&key) {
+            Some(Some(found)) => return found.clone(),
+            Some(None) => return None,
+            None => {
+                k.insert(key.clone(), None);
+            }
+        }
+    }
+    let (host, dir) = (host.clone(), dir.to_path_buf());
+    std::thread::spawn(move || {
+        let found = crate::elsewhere::Elsewhere::of(&host).ok().and_then(|at| {
+            crate::git::there(&dir, Some(&at));
+            let url = crate::git::run(&dir, &["remote", "get-url", "origin"]).ok();
+            crate::git::there(&dir, None);
+            url.and_then(|u| crate::repo::github_path(u.trim()))
+        });
+        known.lock().unwrap_or_else(|e| e.into_inner()).insert(key, Some(found));
+    });
+    None
 }
 
 /// The folder the page named, when it is a folder of the project it named: the
@@ -877,6 +969,15 @@ pub fn desk_sources(desk: &crate::config::Desk) -> Vec<Source> {
 /// for a request from the page
 pub fn project_folder(sources: &[Source], project: &str, folder: &str) -> Option<std::path::PathBuf> {
     let dir = std::path::PathBuf::from(folder);
+    // On another machine: one of the project's folders there, and git about
+    // it runs there from here on this thread
+    if let Some(s) = sources.iter().find(|s| s.name == project && !s.far.is_empty()) {
+        let found = s.far.iter().any(|(f, _)| crate::uistate::same_folder(f, &dir));
+        if found {
+            s.note_far(&dir);
+        }
+        return found.then_some(dir);
+    }
     let fam = crate::repo::family_of(&dir)?;
     sources
         .iter()
@@ -986,7 +1087,7 @@ pub fn answer(
         v
     };
     let hub_for = |s: &Source| -> Result<(Repo, Hub)> {
-        let (repo, token) = target(&s.dir, &s.git, look)?;
+        let (repo, token) = target_of(s, look)?;
         Ok((repo, Hub::new(token)))
     };
     if act == "list" {
@@ -1056,7 +1157,20 @@ pub fn answer(
     // has, the one its server calls the default first
     if act == "pr_bases" {
         let mut bases: Vec<String> = Vec::new();
-        for b in crate::worktree::bases(&source.dir) {
+        let found = match source.far.first() {
+            // On another machine: what git there knows the server has
+            Some((dir, crate::elsewhere::Elsewhere::Cloud(host))) => {
+                crate::worktree::far_bases_now(host, &dir.to_string_lossy().replace('\\', "/")).0
+            }
+            Some(_) => {
+                source.note_far(&source.dir);
+                crate::git::run(&source.dir, &["for-each-ref", "--format=%(refname:short)", "refs/remotes"])
+                    .map(|t| t.lines().map(|l| l.trim().to_string()).collect())
+                    .unwrap_or_default()
+            }
+            None => crate::worktree::bases(&source.dir),
+        };
+        for b in found {
             if let Some(name) = b.strip_prefix("origin/")
                 && name != "HEAD"
                 && !bases.iter().any(|x| x == name)

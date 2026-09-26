@@ -752,6 +752,26 @@ fn far_of(
     (far, account, sign_in)
 }
 
+/// Every MicroVM folder's machine, with what it should sign in to git as: its
+/// project's account, the way a worktree of it is made with it
+fn microvm_sign_ins(desks: &[config::Desk]) -> Vec<(String, config::FarSignIn)> {
+    let mut out = Vec::new();
+    for d in desks {
+        for f in &d.folders {
+            let Some(id) = f.host.as_ref().filter(|h| h.is_made()).and_then(|h| h.instance.clone()) else { continue };
+            let chosen = f
+                .project
+                .as_deref()
+                .and_then(|n| d.projects.iter().find(|p| p.name == n))
+                .and_then(|p| p.git_account.as_deref());
+            if let Ok(far) = d.git_use(chosen).far(&|k| crate::git::secret(k)) {
+                out.push((id, far));
+            }
+        }
+    }
+    out
+}
+
 /// What a new folder should run, from the word the dialog sent.
 ///
 /// Empty is "the same as the folder it is cut from", `none` is nothing, and
@@ -1167,6 +1187,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         desks = desk;
         startup_errors.extend(errs);
     }
+    crate::microvm::keep_sign_ins_current(microvm_sign_ins(&desks));
 
     // The external control API. Opened before the first tab, because a tab's
     // process is handed the way in as it is launched — one started earlier
@@ -1415,6 +1436,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let (git_tx, git_rx) = std::sync::mpsc::channel::<String>();
     // Answers to the Issue tab, from the threads that waited for GitHub
     let (issues_tx, issues_rx) = std::sync::mpsc::channel::<String>();
+    // A pull request's draft prompt for a folder on another machine, whose
+    // commits and change are read there on a thread: (prompt, shape)
+    let (pr_draft_tx, pr_draft_rx) = std::sync::mpsc::channel::<(String, String)>();
     // A pull request's base brought into its folder: the merge on a thread, and
     // a conflict handed to an AI tab back here, where the tabs are
     let (pr_tx, pr_rx) = std::sync::mpsc::channel::<PrCatchUp>();
@@ -1636,6 +1660,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // When to look again at where the tabs are. Starts now so the first frame
     // already knows, rather than showing a sidebar that fills in a beat later
     let mut place_at = std::time::Instant::now();
+    let mut sign_ins_at = std::time::Instant::now() + std::time::Duration::from_secs(600);
     // Where each git tab's folder pushes to, on the same beat: read off the
     // disk, so not every frame
     let mut git_repos: Vec<(std::path::PathBuf, String)> = Vec::new();
@@ -1742,6 +1767,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // machine, looked at again while the dialog is open, so a sign-in done
     // in the checkout's tab meanwhile is seen without closing it
     let mut ai_signin_watch: Option<(config::HostSpec, Option<config::ProjectHome>, Option<String>)> = None;
+    // The folder on another machine whose branches the open worktree dialog is
+    // waiting for, asked of git there on a thread
+    let mut bases_watch: Option<(config::HostSpec, String)> = None;
     // The sign-in step of a project just cloned onto a MicroVM: the checkout
     // whose AI is to be signed in to, before its first worktree is cut
     let mut login_pending: Option<LoginPending> = None;
@@ -2413,6 +2441,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // is rebuilt on demand on the next switch (the active one is rebuilt below).
                 engines = (0..new_ws.len().max(1)).map(|_| None).collect();
                 desks = new_ws;
+                // A token replaced in the settings reaches the machines
+                // already made, not only the ones made after it
+                crate::microvm::keep_sign_ins_current(microvm_sign_ins(&desks));
                 // A project's git account is part of each tab's place, so the
                 // places are looked at again against the settings just read
                 place_at = std::time::Instant::now();
@@ -2727,6 +2758,33 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             }
 
+            // What the AI in a tab on another machine reported through its
+            // hook, said to the terminal (see `agenthook::far_line`): taken as
+            // a hook here is taken. Only from a tab that is on another machine
+            // -- a program here has its own pipe, and has no business speaking
+            // for itself through the screen
+            for t in tabs.iter_mut() {
+                let heard = t.take_far_hooks();
+                if heard.is_empty() || tab_machine(t).is_none() {
+                    continue;
+                }
+                for (kind, sent, v) in heard {
+                    let report = crate::agenthook::report_of(&kind, &v);
+                    if let Some(id) = report.id {
+                        let s = tab::Session { id, source: tab::SessionSource::Hook };
+                        append_hook_log(&format!("\"{}\" (on another machine) is running {}", t.title, s.short()));
+                        t.session = Some(s);
+                    }
+                    if let Some(prompt) = report.prompt {
+                        t.heard(&prompt);
+                    }
+                    if let Some(known) = report.state.as_deref().and_then(TabState::from_label) {
+                        let sent = if sent == 0 { crate::hooks::epoch_ms() } else { sent };
+                        t.hook_says(known, sent);
+                    }
+                }
+            }
+
             let mut fired_notes: Vec<(usize, String)> = Vec::new();
             for i in 0..tabs.len() {
                 let showing = session_at(&surfaces, active) == Some(i);
@@ -2806,6 +2864,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // paying several times over for the same reply, and doing it every
             // frame would be paying it sixty times a second for an answer that
             // changes when someone starts a server
+            // A token can change without the settings file changing -- the
+            // secrets are written apart, and this PC's git keeps its own --
+            // so what the MicroVMs sign in as is looked at again now and then.
+            // Nothing is sent to a machine unless it changed
+            if std::time::Instant::now() >= sign_ins_at {
+                sign_ins_at = std::time::Instant::now() + std::time::Duration::from_secs(600);
+                crate::microvm::keep_sign_ins_current(microvm_sign_ins(&desks));
+            }
             if std::time::Instant::now() >= place_at {
                 place_at = std::time::Instant::now() + std::time::Duration::from_secs(2);
                 let mut roots: Vec<(usize, u32)> = tabs
@@ -2830,16 +2896,43 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         _ => None,
                     })
                     .collect();
+                let now_ms = start.elapsed().as_millis() as u64;
+                // The AI in a tab on another machine reports through a hook
+                // written there, once per machine and AI in this run
+                for t in tabs.iter().filter(|t| t.is_ai() && t.had_output()) {
+                    let Some(at) = tab_machine(t) else { continue };
+                    let machine = match &at {
+                        crate::elsewhere::Elsewhere::Cloud(h) => h.instance.clone().unwrap_or_else(|| h.name.clone()),
+                        other => other.address(),
+                    };
+                    crate::agenthook::ensure_far(at, machine, t.profile_name().to_string());
+                }
                 for (i, t) in tabs.iter_mut().enumerate() {
                     t.usage = cost.get(&i).copied().unwrap_or_default();
-                    let branch = t.cwd().and_then(crate::repo::branch_of);
+                    // A folder on another machine: what git there last said,
+                    // asked again only while its terminal shows the machine
+                    // is up (see `git::far_place`)
+                    let far = match (tab_machine(t), t.cwd()) {
+                        (Some(at), Some(c)) => {
+                            let awake = t.ms_since_change(now_ms) < 120_000;
+                            Some(crate::git::far_place(&at, c, awake))
+                        }
+                        _ => None,
+                    };
+                    let branch = match &far {
+                        Some((b, _)) => b.clone(),
+                        None => t.cwd().and_then(crate::repo::branch_of),
+                    };
                     // Where it pushes to is only worth working out when there
                     // is a branch to ask about, and only worth asking about
                     // when GitHub is where it lives
-                    let repo = branch
-                        .as_ref()
-                        .and_then(|_| t.cwd())
-                        .and_then(crate::repo::origin_of);
+                    let repo = match &far {
+                        Some((_, r)) => branch.as_ref().and(r.clone()),
+                        None => branch
+                            .as_ref()
+                            .and_then(|_| t.cwd())
+                            .and_then(crate::repo::origin_of),
+                    };
                     // What is known right now, and a nudge to find out. The
                     // asking happens elsewhere; a row that waited on GitHub
                     // would be a window that stops drawing
@@ -6069,29 +6162,50 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         continue;
                     };
                     let (head, into) = (text("head"), text("base"));
-                    let against = format!("origin/{into}");
-                    let commits = crate::git::run(&dir, &["log", "--no-color", "--format=- %s", &format!("{against}..HEAD")])
-                        .unwrap_or_default();
-                    let mut change = crate::git::run(&dir, &["diff", "--no-color", &format!("{against}...HEAD")]).unwrap_or_default();
-                    // A change can be a megabyte. The shape of it is in the first pages
-                    if change.len() > 12000 {
-                        let cut = (0..=12000).rev().find(|&i| change.is_char_boundary(i)).unwrap_or(0);
-                        change.truncate(cut);
-                        change.push_str("\n...\n");
+                    let template = desk.git_of(&dir).pr_prompt();
+                    let label = label.to_string();
+                    let read = move |dir: &std::path::Path| {
+                        let against = format!("origin/{into}");
+                        let commits = crate::git::run(dir, &["log", "--no-color", "--format=- %s", &format!("{against}..HEAD")])
+                            .unwrap_or_default();
+                        let mut change = crate::git::run(dir, &["diff", "--no-color", &format!("{against}...HEAD")]).unwrap_or_default();
+                        // A change can be a megabyte. The shape of it is in the first pages
+                        if change.len() > 12000 {
+                            let cut = (0..=12000).rev().find(|&i| change.is_char_boundary(i)).unwrap_or(0);
+                            change.truncate(cut);
+                            change.push_str("\n...\n");
+                        }
+                        fill_or_append(
+                            &template,
+                            &[
+                                ("ai", &label),
+                                ("branch", &head),
+                                ("base", &into),
+                                ("commits", commits.trim()),
+                                ("language", &i18n::t("lang.self")),
+                            ],
+                            "diff",
+                            &change,
+                        )
+                    };
+                    // On another machine git answers over the network, and the
+                    // board does not wait on a network: read there on a
+                    // thread, and the draft starts when it is back
+                    if crate::git::is_far(&dir) {
+                        let at = crate::github::desk_sources(desk)
+                            .into_iter()
+                            .flat_map(|s| s.far)
+                            .find(|(f, _)| crate::uistate::same_folder(f, &dir))
+                            .map(|(_, at)| at);
+                        crate::git::there(&dir, None);
+                        let tx = pr_draft_tx.clone();
+                        std::thread::spawn(move || {
+                            crate::git::there(&dir, at.as_ref());
+                            let _ = tx.send((read(&dir), i18n::t("ai.pr.shape")));
+                        });
+                        continue;
                     }
-                    let prompt = fill_or_append(
-                        &desk.git_of(&dir).pr_prompt(),
-                        &[
-                            ("ai", label),
-                            ("branch", &head),
-                            ("base", &into),
-                            ("commits", commits.trim()),
-                            ("language", &i18n::t("lang.self")),
-                        ],
-                        "diff",
-                        &change,
-                    );
-                    (prompt, i18n::t("ai.pr.shape"), DRAFT_PR_TAG)
+                    (read(&dir), i18n::t("ai.pr.shape"), DRAFT_PR_TAG)
                 };
                 if engine.is_none() {
                     engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
@@ -6296,6 +6410,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if let Some(r) = remote_ui.as_ref() {
                 r.push_state(format!("{{\"ideas\":{js}}}"));
             }
+        }
+        // A pull request's draft read on another machine, back: started the
+        // way one read here is
+        while let Ok((prompt, shape)) = pr_draft_rx.try_recv() {
+            if engine.is_none() {
+                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+            }
+            let Some(eng) = engine.as_mut() else { continue };
+            for (name, value) in [("draft_prompt", prompt), ("draft_shape", shape)] {
+                let _ = eng.call_primitive_as(
+                    None,
+                    grants::Subject::Human,
+                    "set_var",
+                    &[serde_json::json!(name), serde_json::json!(value)],
+                );
+            }
+            eng.start_snippet(DRAFT_PR_TAG, crate::hooks::DRAFT_LUA);
         }
         while let Ok(js) = issues_rx.try_recv() {
             shell.push_issues(&js);
@@ -7991,9 +8122,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // Asked of the desk on screen: the same repository may be a project
             // with another setup in another desk
             let project = desks.get(desk_index).and_then(|d| d.project_of(&from));
-            let told = repo.as_deref().and_then(|r| {
-                crate::devcontainer::told(r, project.and_then(|p| p.setup.as_deref()))
-            });
+            let told = match repo.as_deref() {
+                Some(r) => crate::devcontainer::told(r, project.and_then(|p| p.setup.as_deref())),
+                // A folder on another machine: what the project's settings say
+                None => crate::devcontainer::told_plainly(project.and_then(|p| p.setup.as_deref())),
+            };
             // What comes along is the project's answer for each ignore line and
             // for each file it brings from elsewhere, with whatever the dialog
             // changed for this one folder laid over it
@@ -8011,7 +8144,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 (crate::worktree::bases(main), carry, lines)
             });
-            let (bases, carryable, carry_lines) = offers.unwrap_or_default();
+            let (mut bases, carryable, carry_lines) = offers.unwrap_or_default();
+            // A folder on another machine: its branches are git's there, asked
+            // on a thread and put on the dialog when they come
+            let far_bases = match (&repo, &from_far) {
+                (None, Some(h)) => {
+                    let opening = branch_view.as_ref().is_none_or(|v| v.seq != ask.seq);
+                    let at = from.to_string_lossy().replace('\\', "/");
+                    bases_watch = Some((h.clone(), at.clone()));
+                    crate::worktree::far_bases(h, &at, opening && ask.branch.trim().is_empty() && ask.base.trim().is_empty())
+                }
+                _ => None,
+            };
+            if let Some((found, _)) = &far_bases {
+                bases = found.clone();
+            }
             // What it would grow from, even when there is no name yet to grow.
             // Echoing back the empty answer would leave the picker with nothing
             // to show until somebody typed
@@ -8019,6 +8166,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 true => repo
                     .as_deref()
                     .map(crate::worktree::default_base)
+                    .or_else(|| far_bases.as_ref().map(|(_, c)| c.clone()))
                     .unwrap_or_default(),
                 false => ask.base.clone(),
             };
@@ -8082,6 +8230,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // making itself works it out, so the row cannot say one thing while
             // git is handed another
             let checkout = crate::repo::main_checkout(&from);
+            // On another machine the project's checkout there is what the
+            // project says it is
+            let far_checkout = checkout.is_none().then(|| {
+                from_far.as_ref().and_then(|h| project.and_then(|p| p.home_on(&h.name)).map(|home| home.at.clone()))
+            }).flatten();
             let mut view = crate::uistate::BranchPlan {
                 seq: ask.seq,
                 from: from.display().to_string(),
@@ -8095,10 +8248,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .as_deref()
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().to_string())
+                    .or_else(|| project.map(|p| p.name.clone()))
                     .unwrap_or_default(),
                 project_at: checkout
                     .as_deref()
                     .map(|p| p.display().to_string())
+                    .or(far_checkout)
                     .unwrap_or_default(),
                 hosts: machines
                     .iter()
@@ -8353,6 +8508,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 v.sign_in = Some(note);
             }
             signin_waiting = None;
+        }
+        // The branches of a folder on another machine, once git there has
+        // answered: put on the dialog that asked, with the one to start from
+        if let Some((h, at)) = bases_watch.as_ref() {
+            match branch_view.as_mut() {
+                None => bases_watch = None,
+                Some(v) => {
+                    if let Some((found, chosen)) = crate::worktree::far_bases(h, at, false) {
+                        if v.bases != found {
+                            if v.base.trim().is_empty() {
+                                v.base = chosen;
+                            }
+                            v.bases = found;
+                        }
+                        bases_watch = None;
+                    }
+                }
+            }
         }
         // Whether the checkout's AI is signed in, kept current while the
         // dialog is open: the answer arrives from a thread, and a sign-in

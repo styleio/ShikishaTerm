@@ -429,9 +429,247 @@ fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
     Ok(())
 }
 
+/// What one hook event is worth keeping, once the CLI's JSON has been read.
+///
+/// Pure, so it can be tested: this is the only place on the hook path that
+/// makes a judgment, and it runs inside a child process of the agent that is
+/// not allowed to fail loudly.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Report {
+    /// The conversation this is, when the event says
+    pub id: Option<String>,
+    /// What to tell the tab it is doing, in this app's own vocabulary
+    pub state: Option<String>,
+    /// What a person just asked, when the event is the one carrying it
+    pub prompt: Option<String>,
+}
+
+/// `kind` is what the hook entry asked for: `session`, or `state:<STATE>`.
+pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
+    // The same fact goes by several names across the CLIs that report it, and a
+    // CLI is free to rename it in its next release. Read every spelling anyone
+    // is known to use rather than one and a shrug
+    let id = ["session_id", "sessionId", "conversation_id", "conversationId"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let Some(state) = kind.strip_prefix("state:") else {
+        return Report { id: id.filter(|_| kind == "session"), ..Default::default() };
+    };
+    // A subagent's events carry its parent's session id, so its "finished"
+    // would put the whole tab back to rest while the real turn runs on. The
+    // one thing a subagent has to say that cannot wait is that it is asking
+    // for permission — that dialog is in front of the person either way.
+    //
+    // The id is left to the event that exists to carry it: reporting it from
+    // every event would write the same line into the log all day
+    let sub = ["agent_id", "agent_type"]
+        .iter()
+        .any(|k| v.get(*k).is_some_and(|x| !x.is_null()));
+    let keep = !sub || state.eq_ignore_ascii_case("QUESTION");
+    // The request itself rides on the event that says one was sent. A
+    // subagent's prompt is the main agent talking to it, not a person
+    let prompt = (!sub)
+        .then(|| v.get("prompt").and_then(|p| p.as_str()))
+        .flatten()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string);
+    Report { id: None, state: keep.then(|| state.to_string()), prompt }
+}
+
+// ── On another machine ───────────────────────────────────────────────────
+// An AI in a folder on a MicroVM or a server has no pipe back to this app:
+// the program it would run to report (`--hook`) is on this PC, not there. So
+// the hook written there says it to the terminal the AI is running in --
+// an escape of this app's own, written to /dev/tty -- and the terminal here,
+// which reads everything that terminal shows, takes it off the stream
+// (`tab::QueryResponder::unhandled_osc`). Nothing is asked of the machine to
+// hear it, so a report costs no request, and wakes nothing.
+
+/// The escape a hook on another machine reports with:
+/// `ESC ] 7727 ; shikisha-hook ; <kind> ; <sent ms> ; <base64 of the event> BEL`
+pub const FAR_OSC: &str = "7727";
+pub const FAR_OSC_TAG: &str = "shikisha-hook";
+
+/// The line a hook on another machine runs: the event's JSON, as the CLI hands
+/// it over, said to the terminal. `: shikisha --hook <arg>` in front is how it
+/// is known again as this app's (see `is_ours`), and does nothing
+pub fn far_line(arg: &str) -> String {
+    format!(
+        ": shikisha {MARK} {arg}; b=$(base64 | tr -d '\\n'); \
+printf '\\033]{FAR_OSC};{FAR_OSC_TAG};%s;%s;%s\\007' '{arg}' \"$(date +%s%3N)\" \"$b\" > /dev/tty 2>/dev/null; true"
+    )
+}
+
+fn far_handler(format: HookFormat, timeout: u32, arg: &str) -> serde_json::Value {
+    let line = far_line(arg);
+    match format {
+        HookFormat::Args => serde_json::json!({
+            "type": "command",
+            "command": "sh",
+            "args": ["-c", line],
+            "timeout": timeout,
+            "async": true,
+        }),
+        HookFormat::Bare | HookFormat::Shell => serde_json::json!({
+            "type": "command",
+            "command": line,
+            "timeout": timeout,
+            "async": true,
+        }),
+    }
+}
+
+/// A CLI's hook file on another machine: where it is there, from the
+/// profile's `{home}` -- a MicroVM's home is fixed, a server's is where its
+/// file commands start
+pub fn far_file(t: &Target, profile_file: &str, on_microvm: bool) -> Option<String> {
+    let _ = t;
+    let rest = profile_file.strip_prefix("{home}")?.trim_start_matches(['/', '\\']);
+    let rest = rest.replace('\\', "/");
+    Some(match on_microvm {
+        true => format!("/home/user/{rest}"),
+        false => rest,
+    })
+}
+
+/// The hook file's text with this app's entries for another machine in it,
+/// everything else in it as it was. `None` when there is nothing to change,
+/// or when the file is not JSON this can read -- a file that does not parse
+/// is left exactly as it is, there as here
+pub fn far_edited(t: &Target, existing: Option<&str>) -> Option<String> {
+    let mut doc: serde_json::Value = match existing {
+        Some(text) if !text.trim().is_empty() => serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?,
+        _ => serde_json::json!({}),
+    };
+    if !doc.is_object() {
+        return None;
+    }
+    let before = doc.clone();
+    let mut wanted: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
+    for entry in &t.entries {
+        let h = far_handler(t.format, t.timeout, &entry.arg);
+        match wanted.iter_mut().find(|(event, _)| *event == entry.event) {
+            Some((_, list)) => list.push(h),
+            None => wanted.push((entry.event.clone(), vec![h])),
+        }
+    }
+    for (event, hs) in wanted {
+        let Some(slot) = doc
+            .as_object_mut()
+            .and_then(|o| o.entry("hooks").or_insert_with(|| serde_json::json!({})).as_object_mut())
+            .map(|h| h.entry(event).or_insert_with(|| serde_json::json!([])))
+        else {
+            continue;
+        };
+        if !slot.is_array() {
+            *slot = serde_json::json!([]);
+        }
+        let groups = slot.as_array_mut().expect("just made an array");
+        // Already exactly what would be written: left alone
+        let ours: Vec<&serde_json::Value> = groups
+            .iter()
+            .filter_map(|g| g.pointer("/hooks").and_then(|h| h.as_array()))
+            .flatten()
+            .filter(|h| is_ours(h))
+            .collect();
+        if ours.len() == hs.len() && ours.iter().all(|h| hs.contains(h)) {
+            continue;
+        }
+        for group in groups.iter_mut() {
+            if let Some(list) = group.pointer_mut("/hooks").and_then(|h| h.as_array_mut()) {
+                list.retain(|h| !is_ours(h));
+            }
+        }
+        groups.retain(|g| g.pointer("/hooks").and_then(|h| h.as_array()).is_none_or(|h| !h.is_empty()));
+        groups.push(serde_json::json!({ "hooks": hs }));
+    }
+    (doc != before).then(|| serde_json::to_string_pretty(&doc).unwrap_or_default())
+}
+
+/// The profiles' hook targets, with the file each names as the profile wrote
+/// it (`{home}/...`), for placing on another machine
+pub fn far_targets() -> Vec<(Target, String)> {
+    crate::profile::all()
+        .into_iter()
+        .filter_map(|p| {
+            let file = p.resume.as_ref()?.hook.as_ref()?.file.clone();
+            let t = targets().into_iter().find(|t| t.name == p.name)?;
+            Some((t, file))
+        })
+        .collect()
+}
+
+/// Put this app's hooks for the CLI `profile` into its file on another
+/// machine, once per machine and CLI in this run. On a thread; what it could
+/// not do goes to the log. The AI reads the file when it starts, so a
+/// conversation already running reports from its next start on
+pub fn ensure_far(at: crate::elsewhere::Elsewhere, machine: String, profile: String) {
+    static DONE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let key = format!("{machine}\u{1f}{profile}");
+    if !DONE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).insert(key) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let on_microvm = matches!(at, crate::elsewhere::Elsewhere::Cloud(_));
+        for (t, file) in far_targets().into_iter().filter(|(t, _)| t.name == profile) {
+            let Some(path) = far_file(&t, &file, on_microvm) else { continue };
+            let existing = match crate::elsewhere::files(&at, crate::ssh::FileJob::Read { path: path.clone() }, 30_000) {
+                Ok(crate::ssh::FileAnswer::Bytes(b)) => Some(String::from_utf8_lossy(&b).to_string()),
+                _ => None,
+            };
+            let Some(text) = far_edited(&t, existing.as_deref()) else { continue };
+            let written = crate::elsewhere::files(
+                &at,
+                crate::ssh::FileJob::Write { to: path.clone(), bytes: text.into_bytes() },
+                30_000,
+            );
+            match written {
+                Ok(_) => crate::append_hook_log(&format!("{} hook written in {path} on {}", t.name, at.address())),
+                Err(e) => crate::append_hook_log(&format!("could not write the {} hook in {path} on {}: {e:#}", t.name, at.address())),
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hook on another machine says to its terminal what the terminal here
+    /// takes off the stream, and nothing else of the file is touched to put
+    /// it there; a second pass changes nothing
+    #[test]
+    fn a_far_hook_is_written_beside_the_persons_own_and_only_once() {
+        let line = far_line("state:BUSY");
+        if let Ok(to) = std::env::var("SHIKISHA_FAR_LINE_OUT") {
+            std::fs::write(to, &line).unwrap();
+        }
+        assert!(line.contains("/dev/tty") && line.contains(FAR_OSC) && line.contains(FAR_OSC_TAG));
+        assert!(is_ours(&serde_json::json!({"type": "command", "command": line})), "our own line is not known again");
+
+        let t = Target {
+            name: "Test CLI".into(),
+            file: PathBuf::from("unused"),
+            format: HookFormat::Shell,
+            timeout: TIMEOUT_S,
+            entries: vec![
+                Entry { event: "SessionStart".into(), arg: "session".into() },
+                Entry { event: "Stop".into(), arg: "state:DONE".into() },
+            ],
+        };
+        let theirs = r#"{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}"#;
+        let once = far_edited(&t, Some(theirs)).expect("nothing was written");
+        let v: serde_json::Value = serde_json::from_str(&once).unwrap();
+        assert_eq!(v["model"], "opus", "the person's own setting is gone");
+        assert!(once.contains("say done"), "the person's own hook is gone");
+        assert!(once.contains("state:DONE") && once.contains("SessionStart"));
+        assert_eq!(far_edited(&t, Some(&once)), None, "a second pass writes again");
+        assert_eq!(far_edited(&t, Some("{ not json")), None, "a file that does not parse is written over");
+    }
 
     fn target(dir: &std::path::Path, format: HookFormat) -> Target {
         Target {

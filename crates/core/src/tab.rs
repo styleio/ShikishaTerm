@@ -312,7 +312,14 @@ pub struct QueryResponder {
     /// Where the shell says it is now. Empty until one says so, which most
     /// never do -- announcing it takes shell integration nobody has set up
     cwd: ReportedCwd,
+    /// What an AI's hook on another machine said to this terminal (see
+    /// `agenthook::far_line`), waiting for the loop
+    far_hooks: FarHooks,
 }
+
+/// Hook reports taken off a terminal's stream: (kind, when it was said in ms,
+/// the event's JSON)
+pub type FarHooks = Arc<Mutex<Vec<(String, u64, serde_json::Value)>>>;
 
 /// (title, body) pairs waiting to be shown
 pub type Notes = Arc<Mutex<Vec<(String, String)>>>;
@@ -520,6 +527,25 @@ fn cwd_of(params: &[&[u8]]) -> Option<String> {
 /// Worth taking all three: this is how a CLI that has never heard of this app
 /// still gets to say "I need you" — no profile to write, no hook to install.
 /// The parts are simply named differently by each.
+/// A hook report written by `agenthook::far_line`:
+/// `7727 ; shikisha-hook ; <kind> ; <sent ms> ; <base64 JSON>`. The kind is
+/// one this app writes (`session`, `state:<STATE>`) and nothing else
+fn far_hook_of(params: &[&[u8]]) -> Option<(String, u64, serde_json::Value)> {
+    use base64::Engine as _;
+    let [code, tag, kind, sent, body] = params else { return None };
+    if *code != crate::agenthook::FAR_OSC.as_bytes() || *tag != crate::agenthook::FAR_OSC_TAG.as_bytes() {
+        return None;
+    }
+    let kind = std::str::from_utf8(kind).ok()?.trim().to_string();
+    if kind != "session" && !kind.starts_with("state:") {
+        return None;
+    }
+    let sent = std::str::from_utf8(sent).ok()?.trim().parse::<u64>().unwrap_or(0);
+    let json = base64::engine::general_purpose::STANDARD.decode(body.trim_ascii()).ok()?;
+    let v = serde_json::from_slice(&json).unwrap_or_default();
+    Some((kind, sent, v))
+}
+
 fn note_of(params: &[&[u8]]) -> Option<(String, String)> {
     let text = |b: &[u8]| String::from_utf8_lossy(b).trim().to_string();
     let joined = |from: usize| {
@@ -637,6 +663,16 @@ impl vt100::Callbacks for QueryResponder {
             if let Ok(mut c) = self.cwd.lock() {
                 *c = cwd;
             }
+            return;
+        }
+        // A hook on another machine reporting what its AI is doing. Kept
+        // bounded, as the notes are: a program printing these in a loop must
+        // not fill memory
+        if let Some(report) = far_hook_of(params) {
+            if let Ok(mut h) = self.far_hooks.lock()
+                && h.len() < 64 {
+                    h.push(report);
+                }
             return;
         }
         let Some(note) = note_of(params) else { return };
@@ -1572,6 +1608,7 @@ mod tests {
             80,
             0,
             super::QueryResponder {
+                far_hooks: Default::default(),
                 writer: Arc::clone(&replies),
                 bell: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 notes: Arc::new(Mutex::new(Vec::new())),
@@ -1634,6 +1671,7 @@ mod tests {
             80,
             0,
             super::QueryResponder {
+                far_hooks: Default::default(),
                 writer: sink,
                 bell: Arc::clone(&bell),
                 notes: Arc::clone(&notes),
@@ -1675,6 +1713,7 @@ mod tests {
             80,
             0,
             super::QueryResponder {
+                far_hooks: Default::default(),
                 writer: sink,
                 bell: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 notes: Arc::clone(&notes),
@@ -2813,6 +2852,8 @@ pub struct Tab {
     /// Notifications the program asked for through the standard escapes,
     /// waiting for the loop to pick them up
     notes: Notes,
+    /// Hook reports from an AI on another machine, said to this terminal
+    far_hooks: FarHooks,
     /// The window title the program last set. Not shown: read on every tick as
     /// one of the things that says whether a turn is running
     window_title: WindowTitle,
@@ -3381,6 +3422,7 @@ impl Tab {
         let bytes_out = Arc::new(AtomicU64::new(0));
         let not_utf8 = Arc::new(AtomicBool::new(false));
         let notes: Notes = Arc::new(Mutex::new(Vec::new()));
+        let far_hooks: FarHooks = Arc::new(Mutex::new(Vec::new()));
         let window_title: WindowTitle = Arc::new(Mutex::new(String::new()));
         let reported_cwd: ReportedCwd = Arc::new(Mutex::new(String::new()));
         // A fresh process starts with the keyboard every terminal has always
@@ -3391,6 +3433,7 @@ impl Tab {
             cols,
             opts.scrollback,
             QueryResponder {
+                far_hooks: Arc::clone(&far_hooks),
                 writer: Arc::clone(&writer),
                 bell: Arc::clone(&bell_count),
                 notes: Arc::clone(&notes),
@@ -3519,6 +3562,7 @@ impl Tab {
 
         Ok(Self {
             notes,
+            far_hooks,
             window_title,
             last_screen: String::new(),
             limit_note: None,
@@ -3945,6 +3989,11 @@ impl Tab {
     /// This is the one way in that needs nothing set up: a CLI that has never
     /// heard of this app, run over ssh or inside a container, still knows how
     /// to ring a terminal
+    /// What a hook on another machine said to this terminal since last asked
+    pub fn take_far_hooks(&self) -> Vec<(String, u64, serde_json::Value)> {
+        self.far_hooks.lock().map(|mut h| std::mem::take(&mut *h)).unwrap_or_default()
+    }
+
     pub fn take_notes(&self) -> Vec<(String, String)> {
         self.notes
             .lock()
@@ -6085,5 +6134,55 @@ mod far_launch_tests {
         let (line, session) = far_launch(None, &argv("htop"), Resume::Fresh);
         assert_eq!(line, "htop");
         assert!(session.is_none());
+    }
+}
+
+#[cfg(test)]
+mod far_hook_tests {
+    use std::sync::{Arc, Mutex};
+
+    /// What an AI's hook on another machine says to its terminal is taken off
+    /// the stream as a report, and nothing of it is drawn on the screen
+    #[test]
+    fn a_far_hook_is_taken_off_the_terminal_stream() {
+        use base64::Engine as _;
+        struct Sink;
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let far: super::FarHooks = Arc::new(Mutex::new(Vec::new()));
+        let mut p = vt100::Parser::new_with_callbacks(
+            4,
+            40,
+            0,
+            super::QueryResponder {
+                far_hooks: Arc::clone(&far),
+                writer: Arc::new(Mutex::new(Box::new(Sink))),
+                bell: Default::default(),
+                notes: Default::default(),
+                cwd: Default::default(),
+                window_title: Default::default(),
+                clipboard_writes: false,
+                keyboard: Default::default(),
+            },
+        );
+        let body = base64::engine::general_purpose::STANDARD.encode(br#"{"session_id":"abc"}"#);
+        let said = format!("before\x1b]7727;shikisha-hook;session;1700000000123;{body}\x07after");
+        p.process(said.as_bytes());
+        let got = far.lock().unwrap().clone();
+        assert_eq!(got.len(), 1, "the report was not taken");
+        assert_eq!(got[0].0, "session");
+        assert_eq!(got[0].1, 1_700_000_000_123);
+        assert_eq!(got[0].2["session_id"], "abc");
+        assert!(p.screen().contents().contains("beforeafter"), "the report was drawn on the screen");
+
+        // A kind this app never writes is not a report
+        p.process(format!("\x1b]7727;shikisha-hook;rm -rf;0;{body}\x07").as_bytes());
+        assert_eq!(far.lock().unwrap().len(), 1);
     }
 }

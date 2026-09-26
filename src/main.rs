@@ -1188,55 +1188,9 @@ fn run_in_window() -> Result<()> {
 /// being split — so splitting twice walks down the tab bar instead of asking
 /// the same question twice. With nothing spare it falls back to the dashboard,
 /// which is never wrong and never a duplicate.
-/// What one hook event is worth keeping, once the CLI's JSON has been read.
-///
-/// Pure, so it can be tested: this is the only place on the hook path that
-/// makes a judgment, and it runs inside a child process of the agent that is
-/// not allowed to fail loudly.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Report {
-    /// The conversation this is, when the event says
-    id: Option<String>,
-    /// What to tell the tab it is doing, in this app's own vocabulary
-    state: Option<String>,
-    /// What a person just asked, when the event is the one carrying it
-    prompt: Option<String>,
-}
-
-/// `kind` is what the hook entry asked for: `session`, or `state:<STATE>`.
-fn hook_report(kind: &str, v: &serde_json::Value) -> Report {
-    // The same fact goes by several names across the CLIs that report it, and a
-    // CLI is free to rename it in its next release. Read every spelling anyone
-    // is known to use rather than one and a shrug
-    let id = ["session_id", "sessionId", "conversation_id", "conversationId"]
-        .iter()
-        .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-    let Some(state) = kind.strip_prefix("state:") else {
-        return Report { id: id.filter(|_| kind == "session"), ..Default::default() };
-    };
-    // A subagent's events carry its parent's session id, so its "finished"
-    // would put the whole tab back to rest while the real turn runs on. The
-    // one thing a subagent has to say that cannot wait is that it is asking
-    // for permission — that dialog is in front of the person either way.
-    //
-    // The id is left to the event that exists to carry it: reporting it from
-    // every event would write the same line into the log all day
-    let sub = ["agent_id", "agent_type"]
-        .iter()
-        .any(|k| v.get(*k).is_some_and(|x| !x.is_null()));
-    let keep = !sub || state.eq_ignore_ascii_case("QUESTION");
-    // The request itself rides on the event that says one was sent. A
-    // subagent's prompt is the main agent talking to it, not a person
-    let prompt = (!sub)
-        .then(|| v.get("prompt").and_then(|p| p.as_str()))
-        .flatten()
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .map(str::to_string);
-    Report { id: None, state: keep.then(|| state.to_string()), prompt }
-}
+use shikisha_core::agenthook::report_of as hook_report;
+#[cfg(test)]
+use shikisha_core::agenthook::Report;
 
 /// Carry one hook event from an AI CLI back to the app.
 ///

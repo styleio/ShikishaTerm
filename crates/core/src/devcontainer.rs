@@ -261,6 +261,13 @@ pub fn told(root: &Path, plain_setup: Option<&str>) -> Option<Env> {
     if let Some(env) = of(root) {
         return Some(env);
     }
+    told_plainly(plain_setup)
+}
+
+/// What the project's own setup line says, where there is no checkout here to
+/// read a file from: a project on another machine is set up by what its
+/// settings say, the same setup a checkout here would run
+pub fn told_plainly(plain_setup: Option<&str>) -> Option<Env> {
     let line = plain_setup.map(str::trim).filter(|l| !l.is_empty())?;
     Some(Env {
         from: crate::i18n::t("settings.project.setup.from"),
