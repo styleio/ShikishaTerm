@@ -61,7 +61,16 @@ foreach ($s in $sections) {
         $hits = @(Get-ChildItem $src -File -ErrorAction SilentlyContinue)
         if ($hits.Count -eq 0) { Write-Host "  (nothing matched, skipped) $pattern"; continue }
         New-Item -ItemType Directory -Force $to | Out-Null
-        $hits | ForEach-Object { Copy-Item $_.FullName (Join-Path $to $_.Name) -Force }
+        # A file already there with the same bytes is left alone. The running
+        # app holds some of these open (conpty.dll, OpenConsole.exe), and
+        # writing the same bytes over a file in use fails the whole staging
+        # for nothing -- the version in place is the version wanted
+        $hits | ForEach-Object {
+            $dst = Join-Path $to $_.Name
+            $same = (Test-Path $dst) -and ((Get-Item $dst).Length -eq $_.Length) -and
+                ((Get-FileHash $dst).Hash -eq (Get-FileHash $_.FullName).Hash)
+            if (-not $same) { Copy-Item $_.FullName $dst -Force }
+        }
         $staged += $hits.Count
     }
 }
