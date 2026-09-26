@@ -1988,6 +1988,43 @@ fn handle(
             // which is the half that was missing
             let named = crate::config::load()
                 .and_then(|c| c.project_of(desk.as_deref(), at).map(|p| (p.name.clone(), p.at.clone())));
+            // A folder on another machine: nothing of it is on this disk. Its
+            // project is the settings' answer, its branch what git there last
+            // said (asked on a thread, see `git::far_place`), and it is never
+            // offered as a folder to delete from here -- a MicroVM's goes with
+            // its machine, from the board
+            let far = crate::config::load().and_then(|c| {
+                let (desks, _) = c.resolve_desks();
+                desks.into_iter().flat_map(|d| d.folders).find_map(|f| {
+                    let host = f.host.clone()?;
+                    f.cwd.as_deref().filter(|c| crate::uistate::same_folder(c, at)).map(|_| host)
+                })
+            });
+            if let Some(host) = far.filter(|_| !at.as_os_str().is_empty()) {
+                let branch = crate::elsewhere::Elsewhere::of(&host)
+                    .ok()
+                    .and_then(|m| crate::git::far_place(&m, at, true).0);
+                let home_at = named.as_ref().and_then(|(n, _)| {
+                    crate::config::load()?
+                        .resolve_desks()
+                        .0
+                        .into_iter()
+                        .flat_map(|d| d.projects)
+                        .find(|p| &p.name == n)?
+                        .home_on(&host.name)
+                        .map(|h| h.at.clone())
+                });
+                let checkout = home_at.clone().unwrap_or_else(|| at.to_string_lossy().to_string());
+                req.respond(json_resp(serde_json::json!({
+                    "family": crate::uistate::far_family(&host.name, &checkout),
+                    "cut": false,
+                    "branch": branch,
+                    "project": named.as_ref().map(|(n, _)| n.clone()),
+                    "project_at": home_at,
+                    "host": host.name,
+                })))?;
+                return Ok(());
+            }
             let resp = match at.as_os_str().is_empty() {
                 true => serde_json::json!({
                     "family": null, "cut": false, "branch": null,
@@ -9953,12 +9990,15 @@ function hostDialog(at, redraw, kind, done) {
         () => "SSH " + hostName(), T["settings.hosts.name_required"]);
   nameIn.addEventListener("change", () => credential.refresh());
   // A machine reached over SSH is a server like any a tab reaches, and can be
-  // given its name here as well. A sandbox is made and thrown away, and has no
-  // lasting server for a name to belong to
-  const mark = made ? null : markFields({ask: () => {
-    const a = atIn.value.trim();
-    return a ? {command: a, server: null} : null;
-  }}, false);
+  // given its name here as well. A MicroVM's machines come and go, one per
+  // worktree, but the entry they are all made from lasts: the name and the
+  // colour are the entry's, once it has a name to file them under
+  const mark = made
+    ? (editing && (h.name || "").trim() ? markFields({machine: "microvm:" + h.name.trim()}, false) : null)
+    : markFields({ask: () => {
+        const a = atIn.value.trim();
+        return a ? {command: a, server: null} : null;
+      }}, false);
   if (mark) atIn.addEventListener("input", () => mark.schedule());
 
   const shut = () => { back.remove(); if (done && !closedBy) done(null); };
@@ -9973,7 +10013,8 @@ function hostDialog(at, redraw, kind, done) {
         ? [field(T["settings.hosts.provider"], serviceIn, ""),
            credential,
            field(T["settings.hosts.template"], templateIn, T["settings.hosts.template.hint"]),
-           field(T["settings.hosts.minutes"], minutesIn, T["settings.hosts.minutes.hint"])]
+           field(T["settings.hosts.minutes"], minutesIn, T["settings.hosts.minutes.hint"]),
+           mark ? mark.box : null]
         : [field(T["settings.hosts.at"], atIn, ""),
            mark.box,
            credential,

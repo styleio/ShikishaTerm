@@ -295,6 +295,10 @@ pub enum Ev {
     /// ports something listens on in there, each with its public URL. Asked
     /// once when it is asked, since asking starts a paused machine
     FarPorts { folder: String },
+    /// One of those addresses, opened in a browser tab of this app. Named by
+    /// its port; which address that is, is the app's own answer to `FarPorts`
+    /// and not something a page gets to say
+    FarPage { folder: String, port: u16 },
     /// The sign-in step of a project just cloned onto a MicroVM, answered:
     /// `next` goes on to the project's rules, `later` puts the step away.
     /// `folder` is the checkout on the machine
@@ -1003,6 +1007,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("farports") => Ev::FarPorts {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
+        Some("farpage") => Ev::FarPage {
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            port: v.get("port").and_then(|x| x.as_u64()).and_then(|p| u16::try_from(p).ok()).unwrap_or(0),
         },
         Some("login") => Ev::Login {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

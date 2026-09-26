@@ -1632,8 +1632,8 @@ pub struct Ui {
     /// read a git folder over there, so the settings say it
     pub folder_far: Vec<(std::path::PathBuf, String, bool)>,
     /// And each with the server that machine is, for the name a person gave it
-    /// ([`crate::ssh::Spec::machine`]). Absent for a sandbox, which is no
-    /// lasting machine to name
+    /// ([`crate::ssh::Spec::machine`]), or for a MicroVM the entry its
+    /// machines are made from (`microvm:<entry>`), which is what lasts
     pub folder_machines: Vec<(std::path::PathBuf, String)>,
     /// What each server is called, as the settings have it
     pub server_marks: std::collections::HashMap<String, crate::config::ServerMark>,

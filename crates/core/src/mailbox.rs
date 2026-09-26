@@ -252,6 +252,8 @@ pub struct Mailbox {
     pub folder_discards: Vec<(String, bool)>,
     /// Folders on a MicroVM whose public addresses were asked for
     pub far_ports: Vec<String>,
+    /// One of those addresses, to be opened in a browser tab here
+    pub far_pages: Vec<(String, u16)>,
     /// The sign-in step of a checkout just cloned onto a MicroVM, answered:
     /// (the checkout, `next` or `later`)
     pub logins: Vec<(String, String)>,
@@ -562,6 +564,9 @@ impl Mailbox {
     }
     pub fn take_far_ports(&mut self) -> Vec<String> {
         std::mem::take(&mut self.far_ports)
+    }
+    pub fn take_far_pages(&mut self) -> Vec<(String, u16)> {
+        std::mem::take(&mut self.far_pages)
     }
     pub fn take_logins(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.logins)

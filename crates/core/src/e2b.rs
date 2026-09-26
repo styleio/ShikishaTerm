@@ -178,12 +178,22 @@ pub fn public_url(id: &str, port: u16) -> String {
 
 /// One call to the service, and what it answered
 fn answered(resp: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<serde_json::Value> {
-    let mut resp = resp.map_err(|e| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])))?;
+    let mut resp = resp.map_err(|e| anyhow!(call_failed(&e)))?;
     let said = resp.body_mut().read_to_string()?;
     if said.trim().is_empty() {
         return Ok(serde_json::Value::Null);
     }
     serde_json::from_str(&said).map_err(|_| anyhow!(crate::i18n::tp("err.e2b.said", &[("said", &said)])))
+}
+
+/// What a call the service refused says, in words a person can act on. A key
+/// that is wrong or no longer valid is said as that -- "could not be reached"
+/// sent people looking at their network for a problem in the settings
+fn call_failed(e: &ureq::Error) -> String {
+    match e {
+        ureq::Error::StatusCode(401 | 403) => crate::i18n::t("err.e2b.bad_key"),
+        other => crate::i18n::tp("err.e2b.call", &[("e", &format!("{other}"))]),
+    }
 }
 
 /// A machine, as the service describes one it has just made or started
@@ -329,7 +339,7 @@ pub fn kill(key: &str, id: &str) -> Result<()> {
         // Gone already is what was asked for: a second try after an answer
         // that was lost on the way back finds nothing to kill
         Err(ureq::Error::StatusCode(404)) => Ok(()),
-        Err(e) => bail!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])),
+        Err(e) => bail!(call_failed(&e)),
     }
 }
 
@@ -1592,6 +1602,14 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// A key the service turns away is said as a key to fix in the settings
+    #[test]
+    fn a_refused_key_is_said_as_the_key() {
+        assert_eq!(call_failed(&ureq::Error::StatusCode(401)), crate::i18n::t("err.e2b.bad_key"));
+        assert_eq!(call_failed(&ureq::Error::StatusCode(403)), crate::i18n::t("err.e2b.bad_key"));
+        assert_ne!(call_failed(&ureq::Error::StatusCode(500)), crate::i18n::t("err.e2b.bad_key"));
+    }
+
     /// Only a machine carrying this app's mark is called this app's: the
     /// key can be another program's too, and its machines are its own
     #[test]

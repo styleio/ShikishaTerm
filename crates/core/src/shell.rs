@@ -7361,6 +7361,9 @@ function drawFarPorts() {
   for (const p of st.ports || []) {
     rows.push(el("div", {class:"aphost", title:p.url, onclick:() => { copyText(p.url).then(() => toast(T["tui.urls.copied"] || "")); }},
       el("span", {class:"nm"}, ":" + p.port), el("span", {class:"at"}, p.url)));
+    // The same address, opened here in a browser tab of the app
+    rows.push(el("div", {class:"aphostadd", onclick:() => send({kind:"farpage", folder:o.folder, port:p.port})},
+      (T["tui.urls.open"] || "").replace("{port}", p.port)));
   }
   if (!st.busy) rows.push(el("div", {class:"aphostadd", onclick:() => { o.drawn = ""; send({kind:"farports", folder:o.folder}); }},
     T["tui.urls.again"] || ""));

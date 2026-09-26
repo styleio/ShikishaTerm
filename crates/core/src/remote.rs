@@ -328,6 +328,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // whoever asked -- a phone is where a webhook is tried from as often
         // as the window is
         Ev::FarPorts { .. } => true,
+        // Opening one of them in a browser tab here: a tab like any other the
+        // phone adds, on an address this app worked out itself
+        Ev::FarPage { .. } => true,
         // The sign-in step of a project just cloned onto a MicroVM: "next"
         // opens the project's rules, "later" puts the step away. The clone
         // itself is allowed from here, so the step that follows it is
@@ -2987,6 +2990,7 @@ mod tests {
             Ev::FolderClose { folder: "a".into() },
             Ev::FolderDiscard { folder: "a".into(), unasked: false },
             Ev::FarPorts { folder: "a".into() },
+            Ev::FarPage { folder: "a".into(), port: 3000 },
             Ev::Login { folder: "/home/user/a".into(), act: "next".into() },
             Ev::FolderColor { folder: "a".into(), color: "blue".into() },
             Ev::FontSize { px: 14 },

@@ -3826,6 +3826,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FarPorts { folder }) => {
                         shell.mail().far_ports.push(folder);
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FarPage { folder, port }) => {
+                        shell.mail().far_pages.push((folder, port));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Login { folder, act }) => {
                         shell.mail().logins.push((folder, act));
                     }
@@ -4405,9 +4408,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     w.folders
                         .iter()
                         .filter_map(|f| {
-                            let at = crate::elsewhere::Elsewhere::of(f.host.as_ref()?).ok()?;
-                            let crate::elsewhere::Elsewhere::Ssh(spec) = at else { return None };
-                            f.cwd.clone().zip(Some(spec.machine()))
+                            // A server by who and where; a MicroVM by the
+                            // entry's name, which is what its folders share --
+                            // each worktree is a machine of its own, and a mark
+                            // is for the place they all are
+                            let machine = match crate::elsewhere::Elsewhere::of(f.host.as_ref()?).ok()? {
+                                crate::elsewhere::Elsewhere::Ssh(spec) => spec.machine(),
+                                crate::elsewhere::Elsewhere::Cloud(h) => format!("microvm:{}", h.name),
+                            };
+                            f.cwd.clone().zip(Some(machine))
                         })
                         .collect()
                 })
@@ -7071,6 +7080,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     Err(error) => crate::uistate::FarPortsState { folder, busy: false, ports: Vec::new(), error },
                 });
             });
+        }
+        // One of a MicroVM's public addresses, opened in a browser tab here.
+        // Only an address this app found for that folder: the page names the
+        // port, and the address is looked up rather than taken from it
+        for (folder, port) in shell.mail().take_far_pages() {
+            let found = far_ports_view
+                .as_ref()
+                .filter(|v| crate::uistate::same_folder(std::path::Path::new(&v.folder), std::path::Path::new(&folder)))
+                .and_then(|v| v.ports.iter().find(|p| p.port == port))
+                .map(|p| p.url.clone());
+            let Some(url) = found else {
+                flash = Some(i18n::t("tui.urls.gone"));
+                continue;
+            };
+            let short = folder.trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_string();
+            let name = format!("{short}:{port}");
+            match caps.browser_open(&name, &url, shikisha_shared::BrowserProfile::shared_default()) {
+                Ok(()) => reveal = Some((name, Instant::now() + Duration::from_secs(10))),
+                Err(e) => flash = Some(format!("{e:#}")),
+            }
         }
         while let Ok(answer) = far_ports_rx.try_recv() {
             // Only the folder last asked about
