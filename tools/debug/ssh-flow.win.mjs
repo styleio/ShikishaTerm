@@ -365,6 +365,8 @@ try {
   check(/アカウント名を、英数字とハイフンで/.test(await board.run('document.querySelector("#addproj .apfoot").textContent')),
     'a name GitHub cannot have is stopped before the clone');
   await board.run('(() => { const i = ' + acctIn + '; i.value = "styleio"; i.dispatchEvent(new Event("input")); return true; })()');
+  check(await board.run('document.querySelector("#addproj .apwhy").hidden'),
+    'the reason goes as soon as the name is one GitHub can have');
   await board.shot('5b-account');
   await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
   const step = () => board.run('JSON.stringify((S && S.login_step) || null)').then((t) => JSON.parse(t || 'null'));

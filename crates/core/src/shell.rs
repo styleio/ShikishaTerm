@@ -5725,7 +5725,16 @@ function apParent(input) {
 function apGo(label, blocker, go) {
   const why = el("div", {class:"apwhy", hidden:""});
   const btn = el("button", {class:"go wide", type:"button"}, label);
-  const check = () => btn.classList.toggle("held", !!blocker());
+  // A reason said on a press follows the fields as they change: another
+  // reason when another one holds the button, gone when none does
+  const check = () => {
+    const stop = blocker();
+    btn.classList.toggle("held", !!stop);
+    if (!why.hidden) {
+      if (stop) why.textContent = stop.why;
+      else why.hidden = true;
+    }
+  };
   btn.onclick = () => {
     if (apLive && apLive.running) return;
     const stop = blocker();
