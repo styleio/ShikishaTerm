@@ -139,6 +139,11 @@ pub const CATALOG: &[Entry] = &[
     e("wait_state", Group::Tabs, true, true, false),
     // Restarting a tab throws away the conversation running in it
     e("restart", Group::Tabs, true, false, false),
+    // A tab runs whatever its line names, so opening one is starting a
+    // program -- for an AI, a shell of its own outside every other row here
+    e("open_tab", Group::Tabs, true, false, false),
+    // Closing a tab ends the program in it
+    e("close_tab", Group::Tabs, true, false, false),
     // -- Reporting, and telling a person ------------------------------------
     e("note", Group::Report, true, true, false),
     e("words_note", Group::Report, true, true, false),
@@ -447,6 +452,10 @@ mod tests {
             closed,
             vec![
                 "restart",
+                // Opening a tab starts whatever program its line names, and
+                // closing one ends the program in it
+                "open_tab",
+                "close_tab",
                 "reply_url",
                 "close_pane",
                 // Rearranging and deleting files on another machine. Reading

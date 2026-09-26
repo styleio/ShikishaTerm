@@ -934,6 +934,18 @@ fn panel_place_dir(surfaces: &[Surface], tabs: &[Tab], panel: &str) -> Option<st
 /// So: one row per screen, in screen order, always. A screen that works in no
 /// folder still gets a row, under the name automation knows it by, because
 /// what has to hold is that row *n* is screen *n*.
+/// Tell an engine where it stands before it is entered: every tab's state,
+/// every screen's folder in screen order, and the desk it is running for.
+///
+/// One function for every door into the engine, because a door that told it
+/// only some of this left a primitive answering from the last tick's desk --
+/// or, for `open_tab`, from no desk at all
+fn brief_engine(eng: &HookEngine, desk: Option<&config::Desk>, surfaces: &[Surface], tabs: &[Tab]) {
+    eng.set_states(tab_states(tabs));
+    eng.set_places(places_by_surface(surfaces, tabs));
+    eng.set_desk_name(desk.map(|d| d.name.clone()));
+}
+
 pub fn places_by_surface(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabPlace> {
     surfaces
         .iter()
@@ -997,6 +1009,7 @@ fn tab_place(t: &Tab) -> hooks::TabPlace {
         // be outside of, and the fence that does hold is this tab's own
         // working folder. A file panel is the one given both (`desk::panel_place`)
         remote_dir: t.remote_cwd().unwrap_or_default().to_string(),
+        host: t.host().map(str::to_string),
         protect: t.protect().to_vec(),
         git: t.git_use.clone(),
     }
@@ -1703,10 +1716,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // A folder was pressed that had nothing running in it yet, so something
     // was started there and the press is waiting for it to arrive
     let mut going_to: Option<(std::path::PathBuf, Instant)> = None;
-    // What automation asked of the panes, waiting for the loop's next turn to
-    // be carried out where dividing and closing are written once
-    let mut lua_splits: Vec<(crate::layout::PaneId, bool)> = Vec::new();
-    let mut lua_shuts: Vec<crate::layout::PaneId> = Vec::new();
+    // What automation asked of the panes and the tabs, waiting for the loop's
+    // next turn to be carried out where dividing and closing are written once
+    let mut lua_asks = LuaAsks::default();
+    // Tabs `open_tab` wrote that are not on screen yet, and until when work
+    // sent to them is held rather than refused
+    let mut opening: Vec<(String, u64)> = Vec::new();
     // What was last written down for the row in front, and a division waiting
     // to be written. Dragging a divider changes the arrangement on every frame
     // of the drag, and each one of those is not a setting somebody made
@@ -2947,8 +2962,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             &mut pending_send,
                             &mut waiting,
                             &mut active,
-                            &mut lua_splits,
-                            &mut lua_shuts,
+                            &mut lua_asks,
+                            &mut opening,
                             ViewMove { allowed: auto_switch, touched_ms: view_touched_ms, settings_open },
                         );
                     }
@@ -3213,11 +3228,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if let Some(eng) = engine.as_mut() {
                 // Let the loop read the current state (shikisha.state)
                 eng.set_ai_engine(cfg.as_ref().and_then(|c| c.ai_engine.clone()).filter(|s| !s.is_empty()));
-                eng.set_states(tab_states(&tabs));
                 // Every screen, in screen order: naming any one of them names
                 // the folder it is looking at, and its position is the number
                 // its own calls arrive under
-                eng.set_places(places_by_surface(&surfaces, &tabs));
+                brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
                 // ...and each tab's latest reply, so an operator can read the AI
                 // tab it's driving (shikisha.tab_output).
                 eng.set_outputs(
@@ -3484,8 +3498,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         &mut pending_send,
                         &mut waiting,
                         &mut active,
-                        &mut lua_splits,
-                        &mut lua_shuts,
+                        &mut lua_asks,
+                        &mut opening,
                         ViewMove { allowed: auto_switch, touched_ms: view_touched_ms, settings_open },
                     );
                 }
@@ -3621,8 +3635,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // The screens, not the tabs: a caller is credited the
                         // number its report is then carried out under, and the
                         // two lists are not the same one (`places_by_surface`)
-                        eng.set_states(tab_states(&tabs));
-                        eng.set_places(places_by_surface(&surfaces, &tabs));
+                        brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
                         let who = subject_of(call.caller.as_deref(), &tabs);
                         eng.call_primitive_as(
                             call.caller.as_deref(),
@@ -4085,16 +4098,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let mut ready: Vec<Command> = Vec::new();
             let mut keep: Vec<Waiting> = Vec::new();
             for w in std::mem::take(&mut waiting) {
-                let can = target_of(&w.cmd)
-                    .and_then(|r| r.resolve(&keys))
-                    .and_then(|p| session_at(&surfaces, p))
-                    .and_then(|i| tabs.get(i))
-                    .map(|t| ready_to_receive(t, now_ms))
-                    .unwrap_or(false);
+                // Released once its tab is there -- and, for something handed
+                // over, once that tab can take it in
+                let can = match addressee(&w.cmd).and_then(|r| r.resolve(&keys)) {
+                    None => false,
+                    Some(p) if can_wait(&w.cmd) => session_at(&surfaces, p)
+                        .and_then(|i| tabs.get(i))
+                        .map(|t| ready_to_receive(t, now_ms))
+                        .unwrap_or(false),
+                    Some(_) => true,
+                };
                 if can {
                     ready.push(w.cmd);
                 } else if now_ms >= w.give_up_ms {
-                    let to = target_of(&w.cmd);
+                    let to = addressee(&w.cmd);
                     append_hook_log(&format!("Timed out never becoming ready to receive: {to:?}"));
                     flash = Some(i18n::tp(
                         "msg.handoff_timeout",
@@ -4122,8 +4139,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     &mut pending_send,
                     &mut waiting,
                     &mut active,
-                    &mut lua_splits,
-                    &mut lua_shuts,
+                    &mut lua_asks,
+                    &mut opening,
                     ViewMove { allowed: auto_switch, touched_ms: view_touched_ms, settings_open },
                 );
             }
@@ -4903,11 +4920,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
 
         // ⊞ / ⊟ in a pane's caption. Divides that pane, not whichever one had
         // focus: the button is attached to a pane, so it must mean that one
-        for (id, down) in std::mem::take(&mut lua_splits) {
+        let asks = std::mem::take(&mut lua_asks);
+        for (id, down) in asks.splits {
             shell.mail().pane_splits.push((id, down));
         }
-        for id in std::mem::take(&mut lua_shuts) {
+        for id in asks.shuts {
             shell.mail().close_panes.push(id);
+        }
+        // Automation's close goes in at the ✕'s door, unsure: a tab whose AI
+        // is working or asking puts the question to the person instead
+        for (at, key) in asks.closes {
+            shell.mail().close_tabs.push((at, key, false));
+        }
+        // A tab written into the settings starts when they are read again
+        if asks.reread {
+            watcher.poke();
         }
         for (id, down) in shell.mail().take_pane_splits() {
             if !pane_layout.focus_pane(id) {
@@ -5406,8 +5433,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
                 }
                 let Some(eng) = engine.as_mut() else { continue };
-                eng.set_states(tab_states(&tabs));
-                eng.set_places(places_by_surface(&surfaces, &tabs));
+                brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
                 // The project's, for the folder this panel reports on: a
                 // team's rules are its repository's (see Desk::git_of). A
                 // panel standing in no folder is told the app's own
@@ -6733,8 +6759,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
                 let Some(eng) = engine.as_mut() else { continue };
-                eng.set_states(tab_states(&tabs));
-                eng.set_places(places_by_surface(&surfaces, &tabs));
+                brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
                 let mut job = args.clone();
                 job["tab"] = serde_json::json!(panel);
                 eng.fire_template(crate::hooks::FOLDER_MOVE_LUA, &panel_ctx(at + 1, &panel), &job);
@@ -13468,6 +13493,39 @@ pub struct Waiting {
     /// Give up once this time passes. Holding onto it any longer wouldn't help — eventually nobody remembers it anyway.
     give_up_ms: u64,
 }
+/// What automation asked for that the loop carries out on its next turn,
+/// rather than `exec_commands` doing it on the spot.
+#[derive(Default)]
+pub struct LuaAsks {
+    /// Divisions: which pane, and whether below. Not done on the spot because
+    /// what dividing means depends on whether a split row is in front, which
+    /// the loop knows and `exec_commands` does not
+    pub splits: Vec<(crate::layout::PaneId, bool)>,
+    /// Panes to close, for the same reason -- the last pane of a split is the
+    /// split, and taking that row away is the loop's business
+    pub shuts: Vec<crate::layout::PaneId>,
+    /// Tabs to close: the screen number and what stands there now, the two
+    /// things the ✕'s door checks before it closes anything
+    pub closes: Vec<(usize, String)>,
+    /// The settings were written to (`open_tab`) and have to be read again
+    pub reread: bool,
+}
+
+/// How long work sent to a tab `open_tab` just wrote is held while the tab
+/// comes up. The settings are read again on the loop's next turn, so the tab
+/// is normally there within a second; this is the ceiling for a slow start
+pub const OPENING_MS: u64 = WAIT_FOR_TAB_MS;
+
+/// Whether work sent to a name nothing answers to yet should wait: the name
+/// is one `open_tab` has just written, and its tab has not had time to appear.
+/// Anything else sent to a name nobody has is a mistake to say, not to wait on
+pub fn awaits_opening(opening: &[(String, u64)], target: &hooks::TabRef, now_ms: u64) -> bool {
+    match target {
+        hooks::TabRef::Name(name) => opening.iter().any(|(id, until)| id == name && now_ms < *until),
+        hooks::TabRef::Index(_) => false,
+    }
+}
+
 /// Whether this hand-off is one that can wait for the recipient to become ready.
 ///
 /// Only "delivering something" can wait. Restarts and notifications have
@@ -13482,6 +13540,21 @@ pub fn can_wait(cmd: &Command) -> bool {
 pub fn target_of(cmd: &Command) -> Option<&hooks::TabRef> {
     match cmd {
         Command::SendPrompt { target, .. } | Command::DraftPrompt { target, .. } => Some(target),
+        _ => None,
+    }
+}
+/// The tab a command is addressed to, whatever it asks of it. A command about
+/// the caller's own tab (`None` in `SetStatus`) or about no tab has none
+pub fn addressee(cmd: &Command) -> Option<&hooks::TabRef> {
+    match cmd {
+        Command::SendPrompt { target, .. }
+        | Command::SendKeys { target, .. }
+        | Command::DraftPrompt { target, .. }
+        | Command::ShowTab { target }
+        | Command::Note { target, .. }
+        | Command::Restart { target, .. }
+        | Command::CloseTab { target } => Some(target),
+        Command::SetStatus { target, .. } | Command::SetProgress { target, .. } => target.as_ref(),
         _ => None,
     }
 }
@@ -13537,13 +13610,11 @@ pub fn exec_commands(
     pending_send: &mut Vec<PendingSend>,
     waiting: &mut Vec<Waiting>,
     active: &mut usize,
-    // `asked`: divisions automation wants, for the loop to carry out on its
-    // next turn. Not done here because what dividing means depends on whether
-    // a split row is in front, which the loop knows and this does not.
-    // `shut`: panes it wants closed, for the same reason -- the last pane of a
-    // split is the split, and taking that row away is the loop's business
-    asked: &mut Vec<(crate::layout::PaneId, bool)>,
-    shut: &mut Vec<crate::layout::PaneId>,
+    // What automation asked of the panes and the tabs, for the loop to carry
+    // out on its next turn (see `LuaAsks`)
+    asks: &mut LuaAsks,
+    // Tabs `open_tab` wrote that are not on screen yet (see `awaits_opening`)
+    opening: &mut Vec<(String, u64)>,
     // Whether automation may move the view right now (see ViewMove)
     view: ViewMove,
 ) {
@@ -13552,6 +13623,17 @@ pub fn exec_commands(
     // From a screen number to its location in the tabs array. None for a browser.
     let session_of = |surface: usize| session_at(surfaces, surface);
     for cmd in cmds {
+        // A tab `open_tab` has just written is not on screen until the
+        // settings have been read again. Anything addressed to it by name in
+        // the meantime waits for it, instead of being told it does not exist
+        if let Some(r) = addressee(&cmd)
+            && index_of(r).is_none()
+            && awaits_opening(opening, r, now_ms)
+        {
+            append_hook_log(&format!("Waiting for a tab still opening: {r:?}"));
+            waiting.push(Waiting { cmd, give_up_ms: now_ms + WAIT_FOR_TAB_MS });
+            continue;
+        }
         // If the recipient can't accept input yet, hold onto it and deliver it later.
         // Sending it now would be silently dropped, invisible to whoever wrote it.
         if can_wait(&cmd) {
@@ -13633,6 +13715,23 @@ pub fn exec_commands(
                     *flash = Some(restart_tab(t, alone, !fresh, rows, cols));
                 }
             }
+            // The line is already in the settings; reading them again is what
+            // starts the tab. Until it is up, work sent to it waits
+            Command::OpenedTab { id } => {
+                opening.retain(|(name, until)| *name != id && now_ms < *until);
+                append_hook_log(&format!("tab {id} added to the settings (lua)"));
+                opening.push((id, now_ms + OPENING_MS));
+                asks.reread = true;
+            }
+            Command::CloseTab { target } => {
+                let Some(at) = index_of(&target) else {
+                    *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
+                    continue;
+                };
+                let Some(surface) = surfaces.get(at - 1) else { continue };
+                append_hook_log(&format!("close tab{at} (lua)"));
+                asks.closes.push((at, surface_key(surface, tabs)));
+            }
             // The division of the screen. Carried out at once: whoever asked
             // said so in as many words, unlike ShowTab, which is a side effect
             // of automation running elsewhere and so has to ask first
@@ -13646,11 +13745,11 @@ pub fn exec_commands(
                     // it is depends on what is in front, and that is the
                     // loop's to know
                     PaneOp::Split(dir) => {
-                        asked.push((panes.focus(), matches!(dir, crate::layout::Dir::Col)));
+                        asks.splits.push((panes.focus(), matches!(dir, crate::layout::Dir::Col)));
                         append_hook_log(&format!("pane split {dir:?} (lua)"));
                     }
                     PaneOp::Close => {
-                        shut.push(panes.focus());
+                        asks.shuts.push(panes.focus());
                         append_hook_log("pane closed (lua)");
                     }
                     PaneOp::Focus(dir) => {
@@ -14414,6 +14513,35 @@ mod tests {
     }
 
     use super::*;
+
+    /// Work sent to a tab `open_tab` has just written waits for it, for as
+    /// long as it is given and no longer. A name nothing opened is not waited
+    /// on: that is a mistake to say, not a tab on its way
+    #[test]
+    fn work_for_a_tab_still_opening_waits_and_nothing_else_does() {
+        use crate::hooks::TabRef;
+        let opening = vec![("research".to_string(), 1_000u64)];
+        assert!(awaits_opening(&opening, &TabRef::Name("research".into()), 999));
+        assert!(!awaits_opening(&opening, &TabRef::Name("research".into()), 1_000), "held past its time");
+        assert!(!awaits_opening(&opening, &TabRef::Name("typo".into()), 10), "a name nothing opened");
+        assert!(!awaits_opening(&opening, &TabRef::Index(3), 10), "a number names a place, not a tab on its way");
+        // What waits is anything addressed to the tab, not only work handed
+        // to it: "open it, then show it" is the pair the manual teaches
+        let named = |c: &Command| addressee(c).map(|t| format!("{t:?}"));
+        let research = Some(r#"Name("research")"#.to_string());
+        assert_eq!(named(&Command::ShowTab { target: TabRef::Name("research".into()) }), research);
+        assert_eq!(named(&Command::CloseTab { target: TabRef::Name("research".into()) }), research);
+        assert_eq!(
+            named(&Command::Note { target: TabRef::Name("research".into()), text: "x".into() }),
+            research
+        );
+        assert_eq!(named(&Command::Log("x".into())), None);
+        assert_eq!(
+            named(&Command::SetStatus { key: "k".into(), value: "v".into(), target: None, origin: 1 }),
+            None,
+            "the caller's own tab is no tab on its way"
+        );
+    }
 
     /// The whole of the renaming, from the AI's answer to the settings, against
     /// a real repository and a settings file of its own.

@@ -34,6 +34,8 @@ pub fn panel_place(s: &Surface) -> Option<hooks::TabPlace> {
             // the folder is the place there, as that machine spells it
             remote: at.clone(),
             remote_dir: at.as_ref().map(|_| far_path(d)).unwrap_or_default(),
+            // A panel is never the caller a tab is added beside
+            host: None,
             protect: protect.clone(),
             git: git.clone(),
         }),
@@ -49,6 +51,7 @@ pub fn panel_place(s: &Surface) -> Option<hooks::TabPlace> {
                 Some(_) => far_path(d),
                 None => String::new(),
             },
+            host: None,
             protect: Vec::new(),
             git: Default::default(),
         }),
@@ -60,6 +63,7 @@ pub fn panel_place(s: &Surface) -> Option<hooks::TabPlace> {
             dir: dir.clone().unwrap_or_default(),
             remote: at.clone(),
             remote_dir: remote_dir.clone(),
+            host: None,
             protect: Vec::new(),
             git: Default::default(),
         }),
@@ -996,6 +1000,7 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
         // A machine that has to be made has no address to put above, so it
         // travels as itself and is asked for when a tab actually starts
         cloud: elsewhere.filter(|h| h.is_made()).cloned(),
+        host: elsewhere.map(|h| h.name.clone()),
         // Where on that machine. Sent once the shell is up, because a shell
         // over there starts where the far end puts it and there is nowhere to
         // pass a folder in the asking

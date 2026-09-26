@@ -1146,6 +1146,11 @@ pub struct TabPlace {
     /// The folder on that machine this tab was given. Empty means it was given
     /// none, and then there is nothing for a path to be outside of
     pub remote_dir: String,
+    /// The machine the folder is on, by the name the settings give it: `None`
+    /// for this one, and for a panel, which never makes a call of its own.
+    /// What `open_tab` adds beside a tab by: the path alone can be a folder
+    /// on two machines
+    pub host: Option<String>,
     /// The branches this folder guards, already settled by the settings
     pub protect: Vec<String>,
     /// The git account chosen for it: on a git tab, the tab's own; beside a
@@ -1209,6 +1214,14 @@ pub enum Command {
     /// Restart a tab (recovery from an SSH disconnect or a CLI self-update).
     /// The conversation is carried over unless `fresh` asks for a clean one
     Restart { target: TabRef, fresh: bool },
+    /// A tab `open_tab` has just written into the settings, by the automation
+    /// name it went in under. The line is already written; this asks the loop
+    /// to read the settings again, which is what starts the tab, and to hold
+    /// work sent to that name until the tab is there to take it
+    OpenedTab { id: String },
+    /// Close a tab through the same door as its ✕: a tab whose AI is working
+    /// or asking is not closed without the person being asked
+    CloseTab { target: TabRef },
     /// Rearrange the panes. One request, because they are one subject: the
     /// division of the screen belongs to the main loop, which owns the tree
     Pane(PaneOp),
@@ -1836,6 +1849,9 @@ pub struct HookEngine {
     /// Each tab's working folder and what that folder guards, same order as
     /// `states`. The repository a git command runs in is found through here
     places: Rc<RefCell<Vec<TabPlace>>>,
+    /// The desk this engine runs for, by the name its settings are written
+    /// under. What `open_tab` adds a tab to; `None` until the loop says
+    desk: Rc<RefCell<Option<String>>>,
     pending: Vec<Pending>,
     scripts: Vec<Script>,
     attach: Attach,
@@ -1969,6 +1985,7 @@ impl HookEngine {
         let remote_url: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let replies: Rc<RefCell<Option<crate::reply::Where>>> = Rc::new(RefCell::new(None));
         let ai_engine: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let desk: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
         let shikisha = lua.create_table().map_err(lerr)?;
         {
@@ -2758,6 +2775,112 @@ impl HookEngine {
                             target: tab_ref_of(&tab)?,
                             fresh: how.as_deref() == Some("fresh"),
                         });
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // A new tab, written the way the settings write one.
+            //
+            // One command for every kind of tab: what a tab is -- an AI, a
+            // shell, a server, a page -- is already said by its `command`, so
+            // a kind added later is a new way of writing that, and not a new
+            // command here. It goes in through the same door the tab bar's +
+            // and the Vault use (`config::add_tab_at`), and the answer is the
+            // name it went in under, to hand straight to `send_to_tab`.
+            //
+            // It does one thing. Waiting for the program, putting the tab on
+            // screen and telling it what to do are `wait_state`, `show` and
+            // `send_to_tab`, in whatever order the caller wants them
+            let c = Rc::clone(&commands);
+            let o = Rc::clone(&current_origin);
+            let pl = Rc::clone(&places);
+            let dk = Rc::clone(&desk);
+            shikisha
+                .set(
+                    "open_tab",
+                    lua.create_function(move |lua, spec: Value| {
+                        let fail = |key: &str, vars: &[(&str, &str)]| {
+                            mlua::Error::runtime(crate::i18n::tp(key, vars))
+                        };
+                        let serde_json::Value::Object(mut line) = lua_to_json(&spec) else {
+                            return Err(fail("err.tab_add.not_a_table", &[]));
+                        };
+                        // Where it works is said beside the line, not in it: the
+                        // settings file says it by which folder the line is in,
+                        // and by which machine that folder is on
+                        let text = |v: Option<serde_json::Value>, key: &str| match v {
+                            None | Some(serde_json::Value::Null) => Ok(None),
+                            Some(serde_json::Value::String(f)) if !f.trim().is_empty() => {
+                                Ok(Some(f.trim().to_string()))
+                            }
+                            Some(_) => Err(fail(key, &[])),
+                        };
+                        let folder = text(line.shift_remove("folder"), "err.tab_add.folder_type")?
+                            .map(|f| crate::config::resolve_folder_cwd(&f));
+                        let host = text(line.shift_remove("host"), "err.tab_add.host_type")?;
+                        let line = serde_json::Value::Object(line);
+                        let cfg = serde_json::from_value::<crate::config::TabConfig>(line.clone())
+                            .map_err(|e| fail("err.tab_add.bad_line", &[("why", &e.to_string())]))?;
+                        if cfg.command.argv().is_empty() {
+                            return Err(fail("err.tab_add.no_command", &[]));
+                        }
+                        // Left unsaid, it is the caller's own folder -- and the
+                        // answer says which that was, so nothing is decided
+                        // out of sight. A caller in no folder has to say one
+                        let (folder, host) = match folder {
+                            Some(f) => (f, host),
+                            None => o
+                                .get()
+                                .checked_sub(1)
+                                .and_then(|i| pl.borrow().get(i).map(|p| (p.dir.clone(), p.host.clone())))
+                                .filter(|(d, _)| !d.as_os_str().is_empty())
+                                .ok_or_else(|| fail("err.tab_add.which_folder", &[]))?,
+                        };
+                        let desk = dk.borrow().clone().ok_or_else(|| fail("err.tab_add.no_desk_yet", &[]))?;
+                        let id = crate::config::add_tab_at(
+                            &crate::config::config_file_path(),
+                            &desk,
+                            line,
+                            Some(&folder),
+                            host.as_deref(),
+                            crate::config::NewFolder::Refused,
+                        )
+                        .map_err(mlua::Error::runtime)?;
+                        c.borrow_mut().push(Command::OpenedTab { id: id.clone() });
+                        let out = lua.create_table()?;
+                        out.set("id", id)?;
+                        out.set("folder", folder.display().to_string())?;
+                        out.set("host", host)?;
+                        Ok(out)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            // Checked here, while the caller is still waiting for an answer: a
+            // name nothing answers to said only on the screen is a close that
+            // an AI driving this from elsewhere is told went fine
+            let c = Rc::clone(&commands);
+            let pl = Rc::clone(&places);
+            shikisha
+                .set(
+                    "close_tab",
+                    lua.create_function(move |_, tab: Value| {
+                        let target = tab_ref_of(&tab)?;
+                        let keys: Vec<TabKey> = pl.borrow().iter().map(|p| p.key.clone()).collect();
+                        if target.resolve(&keys).is_none() {
+                            let named = match &target {
+                                TabRef::Index(i) => i.to_string(),
+                                TabRef::Name(s) => s.clone(),
+                            };
+                            return Err(mlua::Error::runtime(crate::i18n::tp(
+                                "err.tab_close.not_found",
+                                &[("tab", &named)],
+                            )));
+                        }
+                        c.borrow_mut().push(Command::CloseTab { target });
                         Ok(())
                     })
                     .map_err(lerr)?,
@@ -3698,6 +3821,7 @@ impl HookEngine {
             screens,
             logs,
             places,
+            desk,
             pending: Vec::new(),
             scripts: Vec::new(),
             attach: Attach::default(),
@@ -3963,6 +4087,13 @@ impl HookEngine {
     /// is what the loop carries the call's reports out under
     pub fn set_places(&self, places: Vec<TabPlace>) {
         *self.places.borrow_mut() = places;
+    }
+
+    /// Which desk this engine is running for, by the name its settings are
+    /// written under. Pushed in with the places, so a rename is picked up on
+    /// the next tick like everything else about the desk
+    pub fn set_desk_name(&self, name: Option<String>) {
+        *self.desk.borrow_mut() = name;
     }
 
     /// The phone board's URL (token included), or None while remote is off.
@@ -7743,6 +7874,44 @@ mod tests {
         );
     }
 
+    /// Every way `open_tab` can be asked wrongly is said before the settings
+    /// are touched: the shape of the line, and where it would go
+    #[test]
+    fn open_tab_says_what_is_wrong_before_it_writes_anything() {
+        let mut e = HookEngine::new().unwrap();
+        let said = |spec: serde_json::Value| e.call_primitive("open_tab", &[spec]).unwrap_err();
+        assert!(said(serde_json::json!("codex")).contains("table"), "a bare string");
+        assert!(said(serde_json::json!({"name": "x"})).contains("command"), "no command");
+        assert!(said(serde_json::json!({"command": []})).contains("command"), "an empty command");
+        assert!(said(serde_json::json!({"command": "codex", "folder": 3})).contains("folder"), "a folder that is not a path");
+        // Nobody's folder to go into, and none named
+        let err = said(serde_json::json!({"command": "codex"}));
+        assert!(err.contains("which folder"), "{err}");
+        // A folder, but no desk to write it into yet
+        e.set_places(vec![TabPlace {
+            key: TabKey { id: Some("coder".into()) },
+            dir: crate::local_path("D:/work/proj").into(),
+            ..Default::default()
+        }]);
+        let err = said(serde_json::json!({"command": "codex"}));
+        assert!(err.contains("no desk"), "{err}");
+        assert!(e.drain_commands().is_empty(), "a refused call still asked for something");
+    }
+
+    #[test]
+    fn close_tab_goes_to_the_loop_by_the_name_it_was_given() {
+        let mut e = HookEngine::new().unwrap();
+        // A name nothing answers to is said to the caller, not left for the
+        // loop to find out later where the caller cannot hear it
+        let err = e.call_primitive("close_tab", &[serde_json::json!("research")]).unwrap_err();
+        assert!(err.contains("research"), "{err}");
+        assert!(e.drain_commands().is_empty());
+        e.set_places(vec![TabPlace { key: TabKey { id: Some("research".into()) }, ..Default::default() }]);
+        e.call_primitive("close_tab", &[serde_json::json!("research")]).unwrap();
+        let got: Vec<String> = e.drain_commands().into_iter().map(|c| format!("{c:?}")).collect();
+        assert_eq!(got, vec![r#"CloseTab { target: Name("research") }"#.to_string()]);
+    }
+
     #[test]
     fn a_direction_nobody_recognises_is_refused_out_loud() {
         let e = HookEngine::new().unwrap();
@@ -8107,6 +8276,7 @@ mod tests {
             dir: dir.clone(),
             remote: Some(crate::elsewhere::Elsewhere::Ssh(Default::default())),
             remote_dir: String::new(),
+            host: None,
             protect: Vec::new(),
             git: Default::default(),
         }]);
@@ -9157,6 +9327,7 @@ mod live_sftp {
             dir: here.to_path_buf(),
             remote: Some(crate::elsewhere::Elsewhere::Ssh(l.spec.clone())),
             remote_dir: site(l),
+            host: None,
             protect: Vec::new(),
             git: Default::default(),
         }]);

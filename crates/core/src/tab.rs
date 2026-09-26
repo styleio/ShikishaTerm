@@ -64,6 +64,11 @@ pub struct TabOptions {
     /// address to connect to until one exists: what is held here is the
     /// settings entry, and the sandbox is asked for at the moment of starting
     pub cloud: Option<crate::config::HostSpec>,
+    /// The machine its folder is on, by the name the settings give it (the
+    /// folder's `host`), or `None` for this one. Two machines can each have a
+    /// folder at the same path, and this is what tells them apart when a tab
+    /// is added beside this one
+    pub host: Option<String>,
     /// What automation calls this tab, when somebody gave it a name of its
     /// own. The API key is minted under it, because that is the name every
     /// call is looked up by -- see [`TabOptions::called`]
@@ -244,6 +249,7 @@ impl Default for TabOptions {
             remote_cwd: None,
             remote_run: None,
             cloud: None,
+            host: None,
             id: None,
             // The guarded ones, for anything built without an answer: a tab
             // that lost the setting on the way here must refuse a commit to
@@ -3150,6 +3156,11 @@ impl Tab {
     /// not sftp
     pub fn cloud(&self) -> Option<&crate::config::HostSpec> {
         self.opts.cloud.as_ref()
+    }
+
+    /// The machine its folder is on, by the name the settings give it
+    pub fn host(&self) -> Option<&str> {
+        self.opts.host.as_deref()
     }
 
     /// The folder on that machine this tab stands in, when its folder is

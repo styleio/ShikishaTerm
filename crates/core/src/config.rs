@@ -5957,32 +5957,96 @@ fn append_tab_at_on(
     cwd: Option<&Path>,
     host: Option<&str>,
 ) -> bool {
+    match add_tab_at(path, desk, tab, cwd, host, NewFolder::Allowed) {
+        Ok(_) => true,
+        Err(e) => {
+            crate::append_hook_log(&format!("could not add a tab: {e}"));
+            false
+        }
+    }
+}
+
+/// Whether adding a tab may also start a folder the desk does not have yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewFolder {
+    /// The Vault's reopen: a conversation had somewhere this desk has never
+    /// worked comes back as a new folder there
+    Allowed,
+    /// Automation's `open_tab`: a folder is somewhere the person chose to
+    /// work, and a script naming a path is not that choice
+    Refused,
+}
+
+/// Add a tab to one desk, into the folder at `cwd` on the machine `host`
+/// names (see `folder_tabs_on`), and answer the automation name it went in
+/// under.
+///
+/// Every road that adds a tab to the settings comes through here, so this is
+/// the one place that settles its name: one written on the line is kept, and
+/// one left out is drawn (`name_new_tabs`). A written one already taken on
+/// this desk is refused rather than written. Reading the file back would
+/// otherwise move it aside to `-2` (`settle_tab_ids`), and whoever asked for
+/// it would go on sending work to the tab that had the name first.
+pub fn add_tab_at(
+    path: &Path,
+    desk: &str,
+    tab: serde_json::Value,
+    cwd: Option<&Path>,
+    host: Option<&str>,
+    new_folder: NewFolder,
+) -> std::result::Result<String, String> {
+    use crate::i18n::{t, tp};
     let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
-    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
-    else {
-        crate::append_hook_log("could not reopen into a tab: settings are not readable");
-        return false;
-    };
-    let Some(list) = doc.get_mut("desks").and_then(|w| w.as_array_mut()) else {
-        return false;
-    };
-    let Some(desk) = list
-        .iter_mut()
-        .find(|w| w.get("name").and_then(|n| n.as_str()) == Some(desk))
-    else {
-        return false;
-    };
-    // Named before it is put in, and against everything this desk already
-    // holds. Every road that adds a tab to the settings comes through here, so
-    // this is the one place that has to remember it
-    let mut used = tab_ids_in(desk);
+    let mut doc = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
+        .map_err(|_| t("err.tab_add.unreadable"))?;
+    let holder = doc
+        .get_mut("desks")
+        .and_then(|w| w.as_array_mut())
+        .and_then(|list| list.iter_mut().find(|w| w.get("name").and_then(|n| n.as_str()) == Some(desk)))
+        .ok_or_else(|| tp("err.tab_add.no_desk", &[("desk", desk)]))?;
+    // The folder as the desk already spells it -- on the machine asked for,
+    // when one was -- so the line lands in that folder's list and not in a
+    // second one spelled another way
+    let spelled = cwd.and_then(|want| {
+        let on = |g: &serde_json::Value| {
+            host.is_none() || g.get("host").and_then(|h| h.as_str()).map(str::trim) == host
+        };
+        holder.get("folders").and_then(|f| f.as_array()).and_then(|fs| {
+            fs.iter()
+                .filter(|g| on(g))
+                .filter_map(|g| g.get("cwd").and_then(|c| c.as_str()))
+                .map(resolve_folder_cwd)
+                .find(|c| crate::uistate::same_folder(c, want))
+        })
+    });
+    if new_folder == NewFolder::Refused && spelled.is_none() {
+        let at = cwd.map(|c| c.display().to_string()).unwrap_or_default();
+        return Err(tp("err.tab_add.no_folder", &[("folder", &at)]));
+    }
+    let mut used = tab_ids_in(holder);
+    let written = tab
+        .get("id")
+        .and_then(|i| i.as_str())
+        .map(str::trim)
+        .filter(|i| !i.is_empty())
+        .map(str::to_string);
+    if let Some(id) = &written
+        && used.contains(id)
+    {
+        return Err(tp("err.tab_add.taken", &[("id", id)]));
+    }
     let mut tab = tab;
     name_new_tabs(&mut tab, &mut used);
-    folder_tabs_on(desk, cwd, host).push(tab);
-    match serde_json::to_string_pretty(&doc) {
-        Ok(out) => crate::crypto::write_atomic(path, &out).is_ok(),
-        Err(_) => false,
-    }
+    let id = tab
+        .get("id")
+        .and_then(|i| i.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| t("err.tab_add.no_command"))?;
+    let at = spelled.or_else(|| cwd.map(Path::to_path_buf));
+    folder_tabs_on(holder, at.as_deref(), host).push(tab);
+    let out = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    crate::crypto::write_atomic(path, &out).map_err(|e| e.to_string())?;
+    Ok(id)
 }
 
 /// Record which tab an operator is aimed at (🎯), or clear it.
@@ -7702,6 +7766,118 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A settings file with one desk, one folder and one tab called `coder`,
+    /// and the folder as this machine spells it
+    fn one_desk() -> (std::path::PathBuf, std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("shikisha-addtab-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        let proj = crate::local_path("D:/work/proj");
+        std::fs::write(
+            &file,
+            serde_json::json!({"desks": [{"name": "Demo", "folders": [
+                {"cwd": proj, "tabs": [{"name": "claude", "id": "coder", "command": "claude"}]}]}]})
+            .to_string(),
+        )
+        .unwrap();
+        (dir, file, proj)
+    }
+
+    /// Automation's road in: the answer is the name the tab went in under,
+    /// drawn when none was written and kept when one was
+    #[test]
+    fn a_tab_added_answers_the_name_it_went_in_under() {
+        let (dir, file, proj) = one_desk();
+        let drawn = add_tab_at(&file, "Demo", serde_json::json!({"command": "codex"}), Some(Path::new(&proj)), None, NewFolder::Refused)
+            .expect("added");
+        assert!(pet_nouns().contains(&drawn.as_str()), "{drawn} is not a name this app hands out");
+        let kept = add_tab_at(&file, "Demo", serde_json::json!({"command": "codex", "id": "research"}), Some(Path::new(&proj)), None, NewFolder::Refused)
+            .expect("added");
+        assert_eq!(kept, "research");
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let ids: Vec<&str> = doc["desks"][0]["folders"][0]["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(ids, vec!["coder", drawn.as_str(), "research"], "both went into the one folder, in order");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name another tab has is refused, and nothing is written: read back,
+    /// it would have been moved aside to `-2`, and the caller would go on
+    /// sending work to the tab that had it first
+    #[test]
+    fn a_name_already_taken_is_refused_and_nothing_is_written() {
+        let (dir, file, proj) = one_desk();
+        let before = std::fs::read_to_string(&file).unwrap();
+        let said = add_tab_at(&file, "Demo", serde_json::json!({"command": "codex", "id": "coder"}), Some(Path::new(&proj)), None, NewFolder::Refused)
+            .expect_err("a second coder");
+        assert!(said.contains("coder"), "{said}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before, "the file was changed anyway");
+        // The Vault's road is held to the same promise
+        assert!(!append_tab_at(&file, "Demo", serde_json::json!({"command": "codex", "id": "coder"}), Some(Path::new(&proj))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Automation adds only to a folder the desk has. The same folder spelled
+    /// another way is that folder, and the line lands in its list rather than
+    /// in a second one
+    #[test]
+    fn automation_adds_only_to_a_folder_the_desk_has() {
+        let (dir, file, proj) = one_desk();
+        let elsewhere = crate::local_path("D:/somewhere/else");
+        let said = add_tab_at(&file, "Demo", serde_json::json!({"command": "codex"}), Some(Path::new(&elsewhere)), None, NewFolder::Refused)
+            .expect_err("a folder the desk does not have");
+        assert!(said.contains("else"), "{said}");
+        let respelled = format!("{}{}", proj.to_uppercase(), std::path::MAIN_SEPARATOR);
+        add_tab_at(&file, "Demo", serde_json::json!({"command": "codex"}), Some(Path::new(&respelled)), None, NewFolder::Refused)
+            .expect("the same folder, spelled another way");
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let folders = doc["desks"][0]["folders"].as_array().unwrap();
+        if cfg!(windows) {
+            assert_eq!(folders.len(), 1, "a second folder was made: {folders:?}");
+            assert_eq!(folders[0]["tabs"].as_array().unwrap().len(), 2);
+        }
+        // The Vault's road may still start a folder
+        assert!(append_tab_at(&file, "Demo", serde_json::json!({"command": "claude"}), Some(Path::new(&elsewhere))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two machines can each have a folder at the same path. Named, the
+    /// machine decides which one the tab goes into; a machine with no such
+    /// folder is refused rather than given a new one
+    #[test]
+    fn the_machine_named_decides_between_two_folders_at_one_path() {
+        let dir = std::env::temp_dir().join(format!("shikisha-addtab-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        std::fs::write(
+            &file,
+            serde_json::json!({"desks": [{"name": "Demo", "folders": [
+                {"cwd": "/home/user/proj", "host": "vm-a", "tabs": []},
+                {"cwd": "/home/user/proj", "host": "vm-b", "tabs": []}]}]})
+            .to_string(),
+        )
+        .unwrap();
+        let far = Path::new("/home/user/proj");
+        add_tab_at(&file, "Demo", serde_json::json!({"command": "codex"}), Some(far), Some("vm-b"), NewFolder::Refused)
+            .expect("added on vm-b");
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let counts: Vec<usize> = doc["desks"][0]["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["tabs"].as_array().unwrap().len())
+            .collect();
+        assert_eq!(counts, vec![0, 1], "it went into the folder on the other machine");
+        let said = add_tab_at(&file, "Demo", serde_json::json!({"command": "codex"}), Some(far), Some("vm-c"), NewFolder::Refused)
+            .expect_err("a machine with no such folder");
+        assert!(said.contains("/home/user/proj"), "{said}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A drawn name is never one something else on the desk answers to, even
     /// when nearly every word is taken -- the draw gives up and walks instead
     #[test]
@@ -9211,7 +9387,7 @@ mod append_on_host_tests {
         ]}]});
         std::fs::write(&path, doc.to_string()).unwrap();
         let at = std::path::Path::new("/home/user/site");
-        assert!(super::append_tab_at_on(&path, "D", serde_json::json!({"name": "t1"}), Some(at), Some("beta")));
+        assert!(super::append_tab_at_on(&path, "D", serde_json::json!({"name": "t1", "command": "sh"}), Some(at), Some("beta")));
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let tabs = |i: usize| v["desks"][0]["folders"][i]["tabs"].as_array().map(|a| a.len()).unwrap_or(0);
         assert_eq!((tabs(0), tabs(1)), (0, 1), "the tab went to the other machine's folder");

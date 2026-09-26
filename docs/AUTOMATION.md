@@ -829,16 +829,21 @@ card lists every command with two boxes: one for a person, one for an AI.
 > stop that AI** — it is calling with the tab's own key, and the tab is a
 > terminal. To have it counted as an AI, **make the tab's own command the AI**.
 
-Nearly everything is ticked in both columns to begin with. **Six commands start out
-closed to an AI**, and each one either steps outside this table or destroys
-something you own:
+Nearly everything is ticked in both columns to begin with. **These start out closed
+to an AI**, and each one either steps outside this table, destroys something you own,
+or speaks for you:
 
 | Command | Why it starts closed to an AI |
 |---|---|
 | `lua` | Runs code with nothing walled off. Open it and the table means nothing |
-| `read_path` / `write_path` / `http_raw` | Raw paths and raw URLs, past the gateways. Allowed folders and hosts are the escape hatch you opened for your own scripts |
-| `close_pane` | Takes away a place you were looking at |
+| `read_path` / `list_path` / `write_path` / `http_raw` | Raw paths and raw URLs, past the gateways. Allowed folders and hosts are the escape hatch you opened for your own scripts |
+| `open_tab` | A tab runs whatever its line names, so opening one is starting a program -- a shell of its own, outside every other row here |
+| `close_tab` / `close_pane` | Ends the program in a tab / takes away a place you were looking at |
 | `restart` | Throws away the conversation running in a tab |
+| `sftp_mkdir` / `sftp_rename` / `sftp_rm` | Changes files on another machine, where there is no undo and no second copy |
+| Every `git_` and `github_` command | Works as the git account or GitHub account you chose, and what it writes is said in that account's name |
+| `reply_url` | Hands out a link that can type into the tab, to whoever can reach it |
+| `ai_ask` | Costs money and time, and an AI that can ask an AI can do it in a loop |
 
 A command that is switched off answers with a sentence saying so, and the refusal
 is written to `logs/hooks.log`. Nothing ever fails in silence. `shikisha.list()`
@@ -871,6 +876,23 @@ written at all.
 | `shikisha.tab_screen(tab)` | What is on that tab's screen right now. The reply is what a turn produced; this is the glass -- for a pager, a menu or any full-screen program it is the only output there is |
 | `shikisha.tab_read(tab, mark)` | That tab's recorded output from `mark` onward. Returns the text and the next mark, so a long run is followed in pieces without reading the same piece twice. Starts at `0`; a tab that is not being recorded reads as `""` and gives the mark back |
 | `shikisha.restart(tab)` | Restart that tab, carrying its conversation over. `shikisha.restart(tab, "fresh")` starts a new one |
+| `shikisha.open_tab({ command = "codex", name = "Research" })` | **Add a tab**, written the way the settings write one: `command` is what runs in it, and `name`, `id` and the rest are the settings' own keys. It goes into the caller's folder, or into `folder` when one is given (a folder the desk already has; `host`, the machine's name in the settings, says which one when two machines have a folder at that path). Returns `{ id = ..., folder = ..., host = ... }`: the automation name it went in under, drawn when `id` is left out, and where it went. An `id` another tab on the desk already has is refused. Anything addressed to the new id before the tab is up -- `send_to_tab`, `show`, `close_tab` -- waits for it |
+| `shikisha.close_tab(tab)` | Close a tab, the way its ✕ does. A tab whose AI is working or asking a question is not closed on the spot: the person is asked |
+
+**Hand a question to another AI** -- the commands in the order you would say them:
+
+```lua
+local t = shikisha.open_tab({ command = "codex", name = "Research" })
+shikisha.send_to_tab(t.id, "Find out why the build is slow")  -- waits for the tab to come up
+shikisha.wait_state(t.id, "BUSY", 30000)
+shikisha.wait_state(t.id, "DONE", 600000)
+local answer = shikisha.tab_output(t.id)
+shikisha.close_tab(t.id)
+```
+
+There is no one command that opens a tab and says something to it, for the same reason
+there is none that splits the screen and puts a browser there: every kind of tab is one
+`command`, and every way of using it is some order of these.
 
 ### The screen
 
