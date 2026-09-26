@@ -123,7 +123,10 @@ once it reaches its first tagged release.
   A checkout of the same repository already where the clone would go is
   taken in as it is; another repository or a folder that is not one there
   is said, and nothing is touched. A project cloned onto a server goes on
-  through its rules to its first worktree, as a MicroVM one does.
+  through its rules to its first worktree, as a MicroVM one does. The
+  clone itself is a row on the board, as a MicroVM's is: the dialog closes
+  on the press, the row says "Cloning the repository onto the server", and
+  a refusal stands on the row with Try again and Close.
 - **A terminal on a MicroVM whose link died without a word takes itself up
   again.** The stream carrying a terminal can be dropped on the way with no
   word to this end: typing still reached the shell over there, and what it

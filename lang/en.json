@@ -219,6 +219,7 @@
   "tui.making.stage.installing": "Installing the AI and the machine setup on the MicroVM…",
   "tui.making.stage.vm_making": "Making the MicroVM…",
   "tui.making.stage.vm_cloning": "Cloning the repository onto the MicroVM…",
+  "tui.making.stage.ssh_cloning": "Cloning the repository onto the server…",
   "tui.making.stage.vm_preparing": "Installing the AI and the machine setup on the MicroVM…",
   "tui.making.stage.removing": "Deleting the worktree…",
   "worktree.left.title": "The folder could not be deleted",

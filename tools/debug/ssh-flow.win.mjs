@@ -278,24 +278,45 @@ try {
   check((await board.run('document.querySelector("#addproj .shint.mono").textContent')).includes(`${CLONES}/Hello-World`), 'it says where the clone goes');
   await board.shot('5-sshclone');
   await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
+  // The dialog closes and the clone stands as a row on the board, as a
+  // MicroVM's does, saying what it is doing
+  await until(() => board.run('document.getElementById("addproj").hidden'), 'the dialog closed on the press', 20000);
+  const row = () => board.run('JSON.stringify((S.making || []).find(m => m.name === "Hello-World") || null)').then((t) => JSON.parse(t || 'null'));
+  await until(async () => ((await row()) || {}).stage === 'ssh_cloning', 'a row for the clone on the board', 20000);
+  check(/サーバーにリポジトリをクローンしています/.test(await board.run('[...document.querySelectorAll(".making")].map(r => r.textContent).join(" | ")')),
+    'the row says it is cloning onto the server');
   const cloned = () => (desk().folders || []).find((f) => f.host === 'srv' && f.cwd === `${CLONES}/Hello-World`);
   await until(() => !!cloned(), 'the clone, added as a folder on the server', 180000);
   check(/octocat\/Hello-World/.test(await there(`git -C ${CLONES}/Hello-World remote get-url origin`)), 'cloned on the server, by the server\'s git');
-  await until(() => board.run('document.getElementById("addproj").hidden'), 'the dialog closed', 20000);
+  await until(async () => !(await row()), 'the row gone once it is on the desk', 20000);
+  // On through its rules, as a MicroVM's clone goes
+  let rules = null;
+  await until(async () => {
+    const p = portOf(path.join('profiles', 'default'));
+    if (!p) return false;
+    rules = (await targetsOf(p)).find((t) => t.type === 'page' && /section=project-first/.test(t.url) && t.url.includes(encodeURIComponent(`${CLONES}/Hello-World`).replace(/%2F/g, '/')) || (t.type === 'page' && /section=project-first/.test(t.url)));
+    return !!rules;
+  }, 'the project\'s worktree creation rules', 30000).catch(() => {});
+  check(!!rules, 'the project goes on to its worktree creation rules, as a MicroVM\'s does');
+  if (rules) { const c = await connect(rules, 'the rules'); await c.run('closeSettings(); true').catch(() => {}); try { c.ws.close(); } catch {} }
   // The same again: the checkout there is taken in, not cloned over
   await there(`echo mine > ${CLONES}/Hello-World/mine.txt`);
   await openClone(HELLO.replace('.git', ''));
   await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
-  await until(() => board.run('document.getElementById("addproj").hidden || !document.querySelector("#addproj .apwhy").hidden'), 'the second answer', 60000);
-  check(await board.run('document.getElementById("addproj").hidden') && (await there(`cat ${CLONES}/Hello-World/mine.txt`)) === 'mine',
-    'a checkout of the same repository already there is taken in as it is');
+  await until(async () => !(await row()) && (await board.run('document.getElementById("addproj").hidden')), 'the second clone to finish', 60000);
+  check((await there(`cat ${CLONES}/Hello-World/mine.txt`)) === 'mine', 'a checkout of the same repository already there is taken in as it is');
   // Another repository of that name, and a folder that is no repository: said, and nothing touched
   for (const [url, what, word] of [['https://github.com/someone-else/Hello-World.git', 'another repository', '別のリポジトリ'], ['https://github.com/octocat/plain.git', 'a folder that is not one', 'git のリポジトリではありません']]) {
     await openClone(url);
     await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
-    await until(() => board.run('!document.querySelector("#addproj .apwhy").hidden && document.querySelector("#addproj .apwhy").textContent.length > 0'), 'the refusal', 60000);
-    check((await board.run('document.querySelector("#addproj .apwhy").textContent')).includes(word), `${what} there is said, not cloned over: ` + await board.run('document.querySelector("#addproj .apwhy").textContent'));
-    await board.run('closeAddProject(); true');
+    // Said on the row, as a MicroVM's failure is, with Try again and Close
+    const name = url.split('/').pop().replace('.git', '');
+    const failedRow = () => board.run(`JSON.stringify((S.making || []).find(m => m.name === ${JSON.stringify(name)} && m.stage === "failed") || null)`).then((t) => JSON.parse(t || 'null'));
+    await until(async () => !!(await failedRow()), 'the refusal on the row', 60000);
+    const f = await failedRow();
+    check(f.error.includes(word), `${what} there is said on the row, not cloned over: ` + f.error);
+    await board.run(`send({kind:"making", id:${f.id}, act:"dismiss"}); true`);
+    await until(async () => !(await failedRow()), 'the failed row put away', 20000);
   }
   check((await there(`ls ${CLONES}/plain`)) === 'file', 'and what was there is left as it was');
 } catch (e) {

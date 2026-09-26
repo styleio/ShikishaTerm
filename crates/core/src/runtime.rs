@@ -444,6 +444,9 @@ fn let_go_if_nobodys(id: String) {
     });
 }
 
+/// The phase of a row cloning onto a server over SSH
+const PHASE_SSH_CLONING: &str = "ssh_cloning";
+
 struct VmJob {
     id: u64,
     desk: String,
@@ -477,14 +480,31 @@ enum VmWork {
         /// The checkout to open the worktree dialog on once it is prepared
         follow: Option<String>,
     },
+    /// A project cloned onto a server reached over SSH, by the server's own
+    /// git. The same row as a MicroVM's clone: the dialog closes, and the
+    /// row says how it is going, stops it, and tries it again
+    SshClone {
+        job: crate::addproject::Job,
+        spec: crate::ssh::Spec,
+        /// What it is cloned from and where, kept to try again
+        url: String,
+        parent: String,
+    },
 }
 
 impl VmJob {
-    /// The machine it made, once it has finished making it
+    /// What it made, once it has finished making it: the machine of a
+    /// MicroVM's clone or preparation, the folder of a server's clone
     fn finished(&self) -> Option<String> {
         let done = match &self.work {
             VmWork::Clone { job, .. } => job.outcome(),
             VmWork::Prepare { job, .. } => job.outcome(),
+            VmWork::SshClone { job, .. } => {
+                return match job.outcome() {
+                    crate::addproject::Outcome::Done(at) => Some(at.to_string_lossy().to_string()),
+                    _ => None,
+                };
+            }
         };
         match done {
             crate::microvm::Outcome::Done { sandbox, .. } => Some(sandbox),
@@ -496,6 +516,8 @@ impl VmJob {
         let phase = match &self.work {
             VmWork::Clone { job, .. } => job.outcome(),
             VmWork::Prepare { job, .. } => job.outcome(),
+            // Said in the words a MicroVM's phases are, so the row reads the same
+            VmWork::SshClone { .. } => crate::microvm::Outcome::Running(PHASE_SSH_CLONING),
         };
         crate::uistate::MakingState {
             id: self.id,
@@ -503,11 +525,11 @@ impl VmJob {
             // desk; a project being cloned has no heading yet, and its row
             // stands on its own
             family: match &self.work {
-                VmWork::Clone { .. } => String::new(),
+                VmWork::Clone { .. } | VmWork::SshClone { .. } => String::new(),
                 VmWork::Prepare { .. } => crate::uistate::far_family(&self.host.name, &self.at),
             },
             name: match &self.work {
-                VmWork::Clone { .. } => self.project.clone(),
+                VmWork::Clone { .. } | VmWork::SshClone { .. } => self.project.clone(),
                 VmWork::Prepare { .. } => self.host.name.clone(),
             },
             folder: self.at.clone(),
@@ -1692,8 +1714,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // A project being cloned, with the dialog's number for the attempt, and
     // what the dialog is told about it. Where such a project goes by default
     // is asked once
-    // With the machine it runs on, empty for this PC
-    let mut add_job: Option<(u64, crate::addproject::Job, String)> = None;
+    // A clone onto this PC; one onto a server is a row on the board (VmWork::SshClone)
+    let mut add_job: Option<(u64, crate::addproject::Job)> = None;
     // The work on MicroVMs under way -- a project being cloned onto one, a
     // checkout's machine being prepared -- each a row on the board under its
     // project, like a worktree being made
@@ -7337,6 +7359,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         match &j.work {
                             VmWork::Clone { job, .. } => job.stop(),
                             VmWork::Prepare { job, .. } => job.stop(),
+                            VmWork::SshClone { job, .. } => job.stop(),
                         }
                     }
                     // Finished, and only writing it down failed: that is what
@@ -7344,23 +7367,31 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // machine and leave the first one nobody's
                     "retry" if j.error.is_some() && j.finished().is_some() => j.error = None,
                     "retry" if j.error.is_some() => {
-                        j.error = None;
                         j.stopping = false;
-                        j.work = match &j.work {
-                            VmWork::Clone { add, url, sign_in, preparing, .. } => VmWork::Clone {
+                        let again = match &j.work {
+                            VmWork::Clone { add, url, sign_in, preparing, .. } => Ok(VmWork::Clone {
                                 job: crate::microvm::Checkout::start(j.host.clone(), url, &j.project, sign_in.clone(), preparing.clone()),
                                 add: add.clone(),
                                 url: url.clone(),
                                 sign_in: sign_in.clone(),
                                 preparing: preparing.clone(),
-                            },
-                            VmWork::Prepare { home, preparing, follow, .. } => VmWork::Prepare {
+                            }),
+                            VmWork::Prepare { home, preparing, follow, .. } => Ok(VmWork::Prepare {
                                 job: crate::microvm::Prepare::start(j.host.clone(), &home.at, preparing.clone()),
                                 home: home.clone(),
                                 preparing: preparing.clone(),
                                 follow: follow.clone(),
-                            },
+                            }),
+                            VmWork::SshClone { spec, url, parent, .. } => crate::addproject::start_clone_on(spec.clone(), url, parent)
+                                .map(|job| VmWork::SshClone { job, spec: spec.clone(), url: url.clone(), parent: parent.clone() }),
                         };
+                        match again {
+                            Ok(work) => {
+                                j.work = work;
+                                j.error = None;
+                            }
+                            Err(e) => j.error = Some(e),
+                        }
                     }
                     "dismiss" if j.error.is_some() => {
                         // A clone that finished and was never written down is a
@@ -7624,7 +7655,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             };
             match (how.as_str(), on) {
                 ("stop", _) => {
-                    if let Some((_, job, _)) = &add_job {
+                    if let Some((_, job)) = &add_job {
                         job.stop();
                     }
                 }
@@ -7690,17 +7721,39 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // The dialog closes on this: the row says the rest
                     add_view = Some(crate::uistate::AddProjectState { ask, started: true, microvm: true, ..Default::default() });
                 }
-                ("clone", on) if add_job.is_none() => {
-                    let started = match &on {
-                        None => crate::addproject::start_clone(&text, &parent),
-                        Some(h) => config::host_spec(h)
-                            .map_err(|e| format!("{e:#}"))
-                            .and_then(|spec| crate::addproject::start_clone_on(spec, &text, &parent)),
-                    };
+                // Onto a server: a row on the board, as a MicroVM's clone is,
+                // and the dialog closes on it
+                ("clone", Some(h)) => {
+                    let started = config::host_spec(&h).map_err(|e| format!("{e:#}")).and_then(|spec| {
+                        crate::addproject::start_clone_on(spec.clone(), &text, &parent).map(|job| (job, spec))
+                    });
                     match started {
+                        Ok((job, spec)) => {
+                            let desk = desks.get(desk_index);
+                            let project = crate::addproject::repo_name_of(&text).unwrap_or_default();
+                            making_seq += 1;
+                            vm_jobs.push(VmJob {
+                                id: making_seq,
+                                desk: desk.map(|d| d.name.clone()).unwrap_or_default(),
+                                desk_id: desk.map(|d| d.id.clone()).unwrap_or_default(),
+                                at: crate::addproject::remote_join(&parent, &project),
+                                project,
+                                host: h.clone(),
+                                work: VmWork::SshClone { job, spec, url: text.clone(), parent: parent.clone() },
+                                error: None,
+                                stopping: false,
+                                gone: false,
+                            });
+                            add_view = Some(crate::uistate::AddProjectState { ask, started: true, ..Default::default() });
+                        }
+                        Err(e) => add_view = failed(e),
+                    }
+                }
+                ("clone", None) if add_job.is_none() => {
+                    match crate::addproject::start_clone(&text, &parent) {
                         Ok(job) => {
                             add_view = Some(crate::uistate::AddProjectState { ask, running: true, ..Default::default() });
-                            add_job = Some((ask, job, host.clone()));
+                            add_job = Some((ask, job));
                         }
                         Err(e) => add_view = failed(e),
                     }
@@ -7776,7 +7829,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Err(e) => crate::uistate::AddProjectState { ask, error: Some(format!("{e:#}")), ..Default::default() },
             });
         }
-        if let Some((ask, job, on)) = add_job.clone() {
+        if let Some((ask, job)) = add_job.clone() {
             match job.outcome() {
                 crate::addproject::Outcome::Running(p) => {
                     add_view = Some(crate::uistate::AddProjectState {
@@ -7789,15 +7842,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 crate::addproject::Outcome::Done(at) => {
                     add_job = None;
-                    let added = match on.is_empty() {
-                        true => add_to_desk(desks.get(desk_index), &at, &config::default_shell_start(cfg.as_ref().and_then(|c| c.default_shell.as_deref()))),
-                        false => add_remote_to_desk(desks.get(desk_index), &on, &at.to_string_lossy(), None),
-                    };
+                    let added = add_to_desk(desks.get(desk_index), &at, &config::default_shell_start(cfg.as_ref().and_then(|c| c.default_shell.as_deref())));
                     add_view = Some(match added {
                         Ok(Added::New(said)) | Ok(Added::Already(said)) => {
                             said_before_reload = Some((Instant::now(), said.clone()));
                             flash = Some(said);
-                            crate::uistate::AddProjectState { ask, done: Some(at.display().to_string()), host: on.clone(), ..Default::default() }
+                            crate::uistate::AddProjectState { ask, done: Some(at.display().to_string()), ..Default::default() }
                         }
                         Err(e) => crate::uistate::AddProjectState { ask, error: Some(e), ..Default::default() },
                     });
@@ -7849,9 +7899,36 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // written down and the board is told what comes next; failed, the
         // row says so and waits to be tried again or put away
         for j in vm_jobs.iter_mut().filter(|j| j.error.is_none() && !j.gone) {
+            // A server's clone: the folder there written on the desk, and the
+            // project on through its rules, as a MicroVM's goes. A stopped
+            // one has taken back what it made and goes with its row
+            if let VmWork::SshClone { job, .. } = &j.work {
+                match job.outcome() {
+                    crate::addproject::Outcome::Running(_) => {}
+                    crate::addproject::Outcome::Failed(_) if j.stopping => j.gone = true,
+                    crate::addproject::Outcome::Failed(e) => {
+                        append_hook_log(&format!("could not clone {} on {}: {e}", j.project, j.host.name));
+                        j.error = Some(e);
+                    }
+                    crate::addproject::Outcome::Done(at) => {
+                        let at = at.to_string_lossy().to_string();
+                        match add_remote_to_desk(desks.iter().find(|d| d.name == j.desk), &j.host.name, &at, None) {
+                            Ok(Added::New(said)) | Ok(Added::Already(said)) => {
+                                said_before_reload = Some((Instant::now(), said.clone()));
+                                flash = Some(said);
+                                crate::webui::ask_branch_next(&at, true);
+                                j.gone = true;
+                            }
+                            Err(e) => j.error = Some(e),
+                        }
+                    }
+                }
+                continue;
+            }
             let outcome = match &j.work {
                 VmWork::Clone { job, .. } => job.outcome(),
                 VmWork::Prepare { job, .. } => job.outcome(),
+                VmWork::SshClone { .. } => continue,
             };
             match outcome {
                 crate::microvm::Outcome::Running(_) => {}
@@ -7919,6 +7996,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                         // The checkout's machine has what the project says now,
                         // and the worktree dialog opens where the page was going
+                        // Written down above, before a MicroVM's outcome is read
+                        VmWork::SshClone { .. } => continue,
                         VmWork::Prepare { home, follow, .. } => {
                             let done = config::ProjectHome { prepared: Some(prepared), ..home.clone() };
                             config::set_project_home(&j.desk_id, &j.project, &done, None).map(|()| {

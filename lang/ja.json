@@ -219,6 +219,7 @@
   "tui.making.stage.installing": "MicroVM に AI とマシンのセットアップを入れています…",
   "tui.making.stage.vm_making": "MicroVM を作っています…",
   "tui.making.stage.vm_cloning": "MicroVM にリポジトリをクローンしています…",
+  "tui.making.stage.ssh_cloning": "サーバーにリポジトリをクローンしています…",
   "tui.making.stage.vm_preparing": "MicroVM に AI とマシンのセットアップを入れています…",
   "tui.making.stage.removing": "ワークツリーを削除しています…",
   "worktree.left.title": "フォルダを削除できませんでした",
