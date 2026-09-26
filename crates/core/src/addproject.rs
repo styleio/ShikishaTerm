@@ -409,6 +409,14 @@ pub fn start_clone_on(spec: crate::ssh::Spec, url: &str, parent: &str) -> Result
             }
             Ok(ran) => Outcome::Failed(match ran.said().trim() {
                 "" => crate::i18n::tp("err.addproj.exists", &[("path", &target)]),
+                // The server's git could not sign in to the git server: what
+                // to set up there is said, with git's own line under it. A
+                // server is its owner's to set up; nothing is put there from
+                // here
+                said if crate::git::refused_sign_in(said).is_some() => crate::i18n::tp(
+                    "err.addproj.ssh_signin",
+                    &[("host", &spec.host), ("said", said.trim_start_matches("fatal:").trim())],
+                ),
                 said => said.trim_start_matches("fatal:").trim().to_string(),
             }),
             Err(e) => Outcome::Failed(format!("{e:#}")),

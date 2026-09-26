@@ -64,6 +64,8 @@ const TREE = `${REPO}.branches/check-ssh`;
 // Where clones made from the clone page go on the server, and what is cloned
 const CLONES = `${REPO}.clones`;
 const HELLO = "https://github.com/octocat/Hello-World.git";
+// A repository nobody can read without signing in
+const PRIVATE = "https://github.com/styleio/helloworld.git";
 
 // The server, asked directly
 const sdk = path.join(ROOT, 'target', 'ssh2-sdk');
@@ -330,7 +332,10 @@ try {
   await until(async () => !(await row()) && (await board.run('document.getElementById("addproj").hidden')), 'the second clone to finish', 60000);
   check((await there(`cat ${CLONES}/Hello-World/mine.txt`)) === 'mine', 'a checkout of the same repository already there is taken in as it is');
   // Another repository of that name, and a folder that is no repository: said, and nothing touched
-  for (const [url, what, word] of [['https://github.com/someone-else/Hello-World.git', 'another repository', '別のリポジトリ'], ['https://github.com/octocat/plain.git', 'a folder that is not one', 'git のリポジトリではありません']]) {
+  for (const [url, what, word] of [['https://github.com/someone-else/Hello-World.git', 'another repository', '別のリポジトリ'], ['https://github.com/octocat/plain.git', 'a folder that is not one', 'git のリポジトリではありません'],
+    // A private repository, and a server whose git has no sign-in for it:
+    // what to set up there is said, not only git's own line
+    [PRIVATE, 'a private repository the server cannot sign in to', 'サーバー側でサインインを設定してください']]) {
     await openClone(url);
     await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
     // Said on the row, as a MicroVM's failure is, with Try again and Close

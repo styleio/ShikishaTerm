@@ -114,6 +114,12 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **A clone onto a server that cannot sign in says what to set up there.**
+  A private repository on a server whose git has no sign-in failed with
+  git's bare "could not read Username"; the row now says the server's git
+  could not sign in and how to set it up there (gh auth login, or the
+  server's SSH key with a git@ address), with git's own line under it. The
+  clone page says the same before anything is pressed.
 - **One page for an SSH host, with cloning and adding a folder as tabs.**
   "Add a project" has one way in for a server, "SSH host": the server is
   chosen at the top -- with "+ Add an SSH host" last -- and under it the

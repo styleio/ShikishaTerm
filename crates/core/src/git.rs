@@ -707,7 +707,7 @@ pub fn is_sign_in_trouble(e: &anyhow::Error) -> bool {
 /// a key the server does not know, or a credential git could not get at all.
 /// Matched on git's own words, which it says in English whatever language the
 /// PC speaks about everything else. None for any other failure
-fn refused_sign_in(said: &str) -> Option<&str> {
+pub fn refused_sign_in(said: &str) -> Option<&str> {
     const SIGNS: &[&str] = &[
         "user interactivity has been disabled",
         "could not read username",
