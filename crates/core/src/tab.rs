@@ -2967,6 +2967,8 @@ pub struct Tab {
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     child_exited: Arc<AtomicBool>,
+    /// For a terminal on a MicroVM: whether it is open. `None` for any other
+    far_live: Option<Arc<AtomicBool>>,
     bell_count: Arc<AtomicU64>,
     /// Cumulative bytes read from the PTY (incremented by the reader thread)
     bytes_out: Arc<AtomicU64>,
@@ -3371,6 +3373,10 @@ impl Tab {
             (None, true) => std::env::current_dir()?,
         };
         cmd.cwd(cwd);
+        // Whether the terminal on a MicroVM is open yet: it opens when the tab
+        // is first looked at (see `e2b::shown`), and until then the line it
+        // shows is this app's, not the program's
+        let far_live: Option<Arc<AtomicBool>> = opts.cloud.as_ref().map(|_| Arc::new(AtomicBool::new(false)));
         // The terminal itself, and whatever ends it
         #[allow(clippy::type_complexity)]
         let (master, killer, pid, child): (
@@ -3397,8 +3403,14 @@ impl Tab {
             // here rather than earlier is what keeps a machine from being
             // rented by a desk that is only being read
             (None, None, Some(host)) => {
-                let (m, k) =
-                    crate::e2b::shell(host, rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?;
+                let (m, k) = crate::e2b::shell(
+                    host,
+                    rows,
+                    cols,
+                    opts.remote_cwd.as_deref(),
+                    far_typed.as_deref(),
+                    far_live.clone().unwrap_or_default(),
+                )?;
                 (m, k, None, None)
             }
             (None, None, None) => anyhow::bail!("a tab with no terminal of any kind"),
@@ -3619,6 +3631,7 @@ impl Tab {
             master,
             killer,
             child_exited,
+            far_live,
             bell_count,
             bytes_out,
             job,
@@ -4770,11 +4783,23 @@ impl Tab {
     /// seen the boot output; on the very first ticks of a tab's life it still
     /// holds its birth value, and taking that for calm sent the persona into a
     /// CLI that was mid-launch. `now_ms` comes from the same clock `tick` uses.
+    /// Whether this tab's terminal is open: always, but for one on a MicroVM
+    /// still waiting to be looked at, or found asleep
+    pub fn far_open(&self) -> bool {
+        self.far_live.as_ref().is_none_or(|l| l.load(Ordering::SeqCst))
+    }
+
     pub fn ready_for_startup_hook(&self, now_ms: u64) -> bool {
         const GIVE_UP_MS: u64 = 15_000;
         /// How long the screen must hold still before we call the launch finished
         const SETTLE_MS: u64 = 700;
-        if self.age_ms() > GIVE_UP_MS {
+        // A terminal on a MicroVM not opened yet is not ready, however long it
+        // has waited: what it shows is this app's line, and typing into it
+        // would start its machine, which is what waiting to be looked at saves
+        if !self.far_open() {
+            return false;
+        }
+        if self.far_live.is_none() && self.age_ms() > GIVE_UP_MS {
             return true;
         }
         self.had_output()

@@ -607,32 +607,93 @@ pub fn far_targets() -> Vec<(Target, String)> {
 /// not do goes to the log. The AI reads the file when it starts, so a
 /// conversation already running reports from its next start on
 pub fn ensure_far(at: crate::elsewhere::Elsewhere, machine: String, profile: String) {
-    static DONE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-        std::sync::OnceLock::new();
-    let key = format!("{machine}\u{1f}{profile}");
-    if !DONE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).insert(key) {
+    if far_done(&machine, &profile) {
         return;
     }
     std::thread::spawn(move || {
-        let on_microvm = matches!(at, crate::elsewhere::Elsewhere::Cloud(_));
-        for (t, file) in far_targets().into_iter().filter(|(t, _)| t.name == profile) {
-            let Some(path) = far_file(&t, &file, on_microvm) else { continue };
-            let existing = match crate::elsewhere::files(&at, crate::ssh::FileJob::Read { path: path.clone() }, 30_000) {
-                Ok(crate::ssh::FileAnswer::Bytes(b)) => Some(String::from_utf8_lossy(&b).to_string()),
-                _ => None,
-            };
-            let Some(text) = far_edited(&t, existing.as_deref()) else { continue };
-            let written = crate::elsewhere::files(
-                &at,
-                crate::ssh::FileJob::Write { to: path.clone(), bytes: text.into_bytes() },
-                30_000,
-            );
-            match written {
-                Ok(_) => crate::append_hook_log(&format!("{} hook written in {path} on {}", t.name, at.address())),
-                Err(e) => crate::append_hook_log(&format!("could not write the {} hook in {path} on {}: {e:#}", t.name, at.address())),
-            }
+        if write_far(&at, &profile).is_ok() {
+            far_done_now(&machine, &profile);
         }
     });
+}
+
+/// The same, before the AI is started, and waited for: the AI reads its hooks
+/// when it starts, so hooks written after the line that starts it reach only
+/// its next start -- and the first conversation on a new machine reported
+/// nothing. `line` is what is about to be typed; the CLI is its first word
+pub fn ensure_far_before(at: &crate::elsewhere::Elsewhere, machine: &str, line: &str) {
+    let head = line.split_whitespace().next().unwrap_or_default().to_ascii_lowercase();
+    if head.is_empty() {
+        return;
+    }
+    let Some(profile) = crate::profile::files()
+        .into_iter()
+        .find(|p| p.command_match.iter().any(|m| m.trim().eq_ignore_ascii_case(&head)))
+        .map(|p| p.name)
+    else {
+        return;
+    };
+    if far_done(machine, &profile) {
+        return;
+    }
+    if write_far(at, &profile).is_ok() {
+        far_done_now(machine, &profile);
+    }
+}
+
+/// The machines and CLIs whose hooks are in place in this run. Written down
+/// once the write is done, not before: one that failed is tried again the
+/// next time the machine is opened
+static FAR_DONE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn far_done(machine: &str, profile: &str) -> bool {
+    FAR_DONE
+        .get_or_init(Default::default)
+        .lock()
+        .is_ok_and(|d| d.contains(&format!("{machine}\u{1f}{profile}")))
+}
+
+fn far_done_now(machine: &str, profile: &str) {
+    if let Ok(mut d) = FAR_DONE.get_or_init(Default::default).lock() {
+        d.insert(format!("{machine}\u{1f}{profile}"));
+    }
+}
+
+/// Put this app's hooks for the CLI `profile` into its file on the machine.
+/// A file that could not be read is left alone unless it is known not to be
+/// there: a read that failed on the way is not an empty file, and writing
+/// over it would take the person's own settings with it
+fn write_far(at: &crate::elsewhere::Elsewhere, profile: &str) -> Result<(), String> {
+    let on_microvm = matches!(at, crate::elsewhere::Elsewhere::Cloud(_));
+    for (t, file) in far_targets().into_iter().filter(|(t, _)| t.name == profile) {
+        let Some(path) = far_file(&t, &file, on_microvm) else { continue };
+        let existing = match crate::elsewhere::files(at, crate::ssh::FileJob::Read { path: path.clone() }, 30_000) {
+            Ok(crate::ssh::FileAnswer::Bytes(b)) => Some(String::from_utf8_lossy(&b).to_string()),
+            _ => {
+                let quoted = crate::worktree::for_a_shell(&[path.clone()]);
+                match crate::elsewhere::exec(at, &format!("test -e {quoted}"), 30_000) {
+                    Ok(r) if !r.ok() => None,
+                    _ => {
+                        let why = format!("could not read the {} hook file {path} on {}; left alone", t.name, at.address());
+                        crate::append_hook_log(&why);
+                        return Err(why);
+                    }
+                }
+            }
+        };
+        let Some(text) = far_edited(&t, existing.as_deref()) else { continue };
+        let written = crate::elsewhere::files(at, crate::ssh::FileJob::Write { to: path.clone(), bytes: text.into_bytes() }, 30_000);
+        match written {
+            Ok(_) => crate::append_hook_log(&format!("{} hook written in {path} on {}", t.name, at.address())),
+            Err(e) => {
+                let why = format!("could not write the {} hook in {path} on {}: {e:#}", t.name, at.address());
+                crate::append_hook_log(&why);
+                return Err(why);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

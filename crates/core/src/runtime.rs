@@ -2993,7 +2993,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .iter()
                     .filter_map(|s| match s {
                         Surface::Git { dir: Some(d), .. } => {
-                            crate::repo::origin_of(d).map(|r| (d.clone(), r))
+                            // A folder on another machine: its remote as git
+                            // there last said (asked on a thread, see
+                            // `github::far_origin`); nothing here to read
+                            let far = desks.get(desk_index).and_then(|w| {
+                                w.folders
+                                    .iter()
+                                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, d)))
+                                    .and_then(|f| f.host.clone())
+                            });
+                            match far {
+                                Some(host) => crate::github::far_origin(&host, d).map(|r| (d.clone(), r)),
+                                None => crate::repo::origin_of(d).map(|r| (d.clone(), r)),
+                            }
                         }
                         _ => None,
                     })
@@ -13115,7 +13127,10 @@ pub fn opened_for(label: &str, dir: &std::path::Path, tabs: &[Tab], pending: &[P
 }
 
 pub fn quick_ready(t: &Tab, now_ms: u64) -> bool {
-    t.had_output()
+    // An unopened terminal on a MicroVM shows this app's own line: output,
+    // but not the program's, and typing into it would start the machine
+    t.far_open()
+        && t.had_output()
         && !matches!(t.state, crate::detect::TabState::Busy | crate::detect::TabState::Question)
         && t.ms_since_change(now_ms) >= QUICK_SETTLE_MS
 }

@@ -624,6 +624,9 @@ enum Note {
     Ended,
     /// The tab is on a screen: a terminal that has not been opened yet opens
     Shown,
+    /// The line that starts the program, typed once the AI's hooks are in
+    /// place there (see `agenthook::ensure_far_before`)
+    Launch(String),
 }
 
 /// The terminals waiting to be looked at before they open, by machine.
@@ -844,6 +847,9 @@ struct Link {
     /// Which stream is the current one. A stream superseded by a fresh one
     /// may still be blocked in a read; anything it says afterwards is stale
     generation: std::sync::atomic::AtomicU64,
+    /// The same "open", shared with the tab: what it looks at before it
+    /// types into this terminal on its own (a quick command, a start hook)
+    live: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// How long a stream may say nothing before it is taken for dead. The far
@@ -857,18 +863,17 @@ impl Link {
         self.open.load(std::sync::atomic::Ordering::Relaxed)
     }
     fn set_open(&self, open: bool) {
-        self.open.store(open, std::sync::atomic::Ordering::Relaxed);
-        let id = self.sandbox().id;
-        awake_as(&id, open);
-        // Speaking again: whatever it slept through, it is awake now
-        if open {
-            asleep_as(&id, false);
+        let was = self.open.swap(open, std::sync::atomic::Ordering::SeqCst);
+        self.live.store(open, std::sync::atomic::Ordering::SeqCst);
+        // Counted once each way, so a machine is awake for as long as any
+        // one of its terminals is open, whatever the others are doing
+        if was != open {
+            count_open(&self.sandbox().id, open);
         }
     }
-    /// The stream went with the machine under it: said on screen, and the
-    /// machine written down as asleep, so nothing here wakes it but a person
+    /// The stream went with the machine under it: said on screen. The machine
+    /// is asleep as far as this terminal goes (it is not open)
     fn slept(&self) {
-        asleep_as(&self.sandbox().id, true);
         self.say(&crate::i18n::t("msg.microvm.slept"));
     }
     fn is_ended(&self) -> bool {
@@ -904,51 +909,36 @@ impl Link {
     }
 }
 
-/// The machines whose terminal found them paused, until one of their
-/// terminals is speaking again.
-///
-/// What this program asks of a machine on its own -- the branch a row shows,
-/// whether a file under an open editor changed, more minutes -- is not asked of
-/// one of these: every request to a paused machine starts it, and the line
-/// that says it paused is itself a change on the screen, which is what those
-/// askings took to mean somebody was at work there. So a machine that paused
-/// was started again a moment later, and paid for another stretch, for nothing
-static ASLEEP: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+/// How many of this program's terminals are open and speaking on each
+/// machine. One or more: the machine is running, and asking something of it
+/// starts nothing. None: it may be paused, and what this program asks of a
+/// machine on its own -- the branch a row shows, whether a file under an open
+/// editor changed, more minutes, a new token -- waits, since every request to
+/// a paused machine starts it. Counted per terminal: a machine with an AI at
+/// work in one tab is running whatever another tab on it is doing -- waiting
+/// to be looked at, ended, or found asleep
+static OPEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
     std::sync::OnceLock::new();
 
-fn asleep_as(id: &str, yes: bool) {
-    if let Ok(mut a) = ASLEEP.get_or_init(Default::default).lock() {
-        if yes {
-            a.insert(id.to_string());
-        } else {
-            a.remove(id);
-        }
-    }
-}
-
-/// The machines a terminal of this program is open and speaking on: known to
-/// be running, so asking something of one starts nothing
-static AWAKE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    std::sync::OnceLock::new();
-
-fn awake_as(id: &str, yes: bool) {
-    if let Ok(mut a) = AWAKE.get_or_init(Default::default).lock() {
-        if yes {
-            a.insert(id.to_string());
-        } else {
-            a.remove(id);
+fn count_open(id: &str, one_more: bool) {
+    if let Ok(mut o) = OPEN.get_or_init(Default::default).lock() {
+        let n = o.entry(id.to_string()).or_insert(0);
+        *n = if one_more { *n + 1 } else { n.saturating_sub(1) };
+        if *n == 0 {
+            o.remove(id);
         }
     }
 }
 
 /// Whether a terminal of this program is open on this machine now
 pub fn awake(id: &str) -> bool {
-    AWAKE.get_or_init(Default::default).lock().is_ok_and(|a| a.contains(id))
+    OPEN.get_or_init(Default::default).lock().is_ok_and(|o| o.get(id).is_some_and(|n| *n > 0))
 }
 
-/// Whether this machine's terminal found it paused and nothing has woken it
+/// Whether nothing of this program is open on this machine: it may be paused,
+/// and nothing is asked of it on this program's own account
 pub fn asleep(id: &str) -> bool {
-    ASLEEP.get_or_init(Default::default).lock().is_ok_and(|a| a.contains(id))
+    !awake(id)
 }
 
 /// How a stream is asked for: a new shell, or the one already there
@@ -970,6 +960,7 @@ pub fn shell(
     cols: u16,
     cwd: Option<&str>,
     then: Option<&str>,
+    live: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>)>
 {
     // Not opened until it is looked at (see `WAITING`): nothing is asked of
@@ -994,15 +985,14 @@ pub fn shell(
         ended: std::sync::atomic::AtomicBool::new(false),
         last_frame: std::sync::Mutex::new(std::time::Instant::now()),
         generation: std::sync::atomic::AtomicU64::new(0),
+        live,
     });
 
     // The listening thread. It holds the streaming response open for as long
     // as the shell lives, which is why it cannot be the thread anything else
     // is waiting on
     if waits {
-        // Asleep as far as everything here is concerned until it opens: the
-        // row's branch, more minutes, a file's stamp are not asked of it
-        asleep_as(&link.sandbox().id, true);
+        // Not open until it is looked at: nothing here counts it as running
         link.say(&crate::i18n::t("msg.microvm.waiting"));
         let _ = up_tx.send(Ok(0));
     } else {
@@ -1100,6 +1090,14 @@ pub fn shell(
                         }
                     }
                 }
+                Note::Launch(line) => {
+                    crate::agenthook::ensure_far_before(&crate::elsewhere::Elsewhere::Cloud(l.host.clone()), &l.sandbox().id, &line);
+                    if let Some(at) = l.at()
+                        && let Err(e) = send_input(&l.sandbox(), &at, line.as_bytes())
+                    {
+                        crate::append_hook_log(&format!("e2b: typing the start line into shell {at} failed: {e:#}"));
+                    }
+                }
                 Note::Size { rows, cols } => {
                     size = (rows, cols);
                     if l.is_open()
@@ -1116,6 +1114,8 @@ pub fn shell(
                     {
                         crate::append_hook_log(&format!("e2b: ending shell {at} failed: {e:#}"));
                     }
+                    // Not open any more, whatever its stream is still doing
+                    l.set_open(false);
                     ENDING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
@@ -1136,7 +1136,7 @@ pub fn shell(
             w.entry(link.sandbox().id).or_default().push(note_tx.clone());
         }
     } else if let Some(line) = crate::ssh::typed_first(None, then) {
-        let _ = note_tx.send(Note::Typed(line.into_bytes()));
+        let _ = note_tx.send(Note::Launch(line));
     }
 
     let pty = SandboxPty {
@@ -1162,6 +1162,8 @@ fn wake(link: &std::sync::Arc<Link>, size: (u16, u16)) -> Result<()> {
         bail!(crate::i18n::tp("err.e2b.let_go", &[("host", &link.host.name), ("id", &id)]));
     }
     let key = key().ok_or_else(|| anyhow!(crate::i18n::t("err.e2b.no_key")))?;
+    // Never opened before: a terminal waiting to be looked at, opening now
+    let first = link.generation() == 0;
     let woken = connect(&key, &id, link.host.minutes_or_default())?;
     *link.sandbox.lock().unwrap_or_else(|e| e.into_inner()) = woken.clone();
     // Whether the shell is still there: asked by sizing it, which is a
@@ -1189,10 +1191,14 @@ fn wake(link: &std::sync::Arc<Link>, size: (u16, u16)) -> Result<()> {
     match same {
         true => link.say(&crate::i18n::t("msg.microvm.woke")),
         false => {
-            link.say(&crate::i18n::t("msg.microvm.new_shell"));
+            // Said only when a shell was there before and is gone
+            if !first {
+                link.say(&crate::i18n::t("msg.microvm.new_shell"));
+            }
             if let Some(line) = crate::ssh::typed_first(None, link.then.as_deref())
                 && let Some(at) = link.at()
             {
+                crate::agenthook::ensure_far_before(&crate::elsewhere::Elsewhere::Cloud(link.host.clone()), &id, &line);
                 let _ = send_input(&link.sandbox(), &at, line.as_bytes());
             }
         }
@@ -1751,17 +1757,16 @@ mod tests {
         shown("wait-test");
         assert!(rx.try_recv().is_err(), "opened twice");
 
-        asleep_as("sleep-test", true);
-        assert!(asleep("sleep-test"));
-        asleep_as("sleep-test", false);
-        assert!(!asleep("sleep-test"));
-
-        // Awake only while a terminal of it is open and speaking
-        assert!(!awake("awake-test"), "a machine nothing is open on is taken for running");
-        awake_as("awake-test", true);
-        assert!(awake("awake-test"));
-        awake_as("awake-test", false);
-        assert!(!awake("awake-test"));
+        // Awake while any one of its terminals is open, whatever the others do
+        assert!(!awake("awake-test") && asleep("awake-test"), "a machine nothing is open on is taken for running");
+        count_open("awake-test", true);
+        count_open("awake-test", true);
+        count_open("awake-test", false);
+        assert!(awake("awake-test"), "one terminal closing put a machine to sleep under another");
+        count_open("awake-test", false);
+        assert!(asleep("awake-test"));
+        count_open("awake-test", false);
+        assert!(asleep("awake-test"), "closing more than was open went below nothing");
     }
 
     /// A key the service turns away is said as a key to fix in the settings

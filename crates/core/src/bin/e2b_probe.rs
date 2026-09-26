@@ -159,7 +159,7 @@ fn run_on(sandbox: &shikisha_core::e2b::Sandbox) -> anyhow::Result<()> {
         ..Default::default()
     }
     .with_instance(Some(&sandbox.id));
-    let (pty, mut killer) = shikisha_core::e2b::shell(&host, 24, 80, Some("/home/user"), None)?;
+    let (pty, mut killer) = shikisha_core::e2b::shell(&host, 24, 80, Some("/home/user"), None, Default::default())?;
     let mut reader = pty.try_clone_reader()?;
     let mut writer = pty.take_writer()?;
 
