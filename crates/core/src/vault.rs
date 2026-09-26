@@ -148,6 +148,88 @@ pub fn search(query: &str, limit: usize) -> Found {
     Found { capped: capped && hits.len() < limit, hits }
 }
 
+/// The same search over the records on another machine: every CLI's, newest
+/// first, at most `limit` matches. Waits on the machine, so it is for a
+/// thread; asking starts a paused MicroVM, which is why the board asks only
+/// the machines already awake unless somebody says to wake the rest.
+///
+/// One command there per search. What is looked for goes over as base64 and
+/// is matched by grep as plain text -- never as a pattern and never as words
+/// for the shell. Each match comes back with the start of its record (where
+/// the folder and the id are) and the line it matched on (for the context
+/// shown), and `machine` is put in front of each hit's name, so a row says
+/// where the conversation is
+pub fn search_far(at: &crate::elsewhere::Elsewhere, machine: &str, query: &str, limit: usize) -> Vec<Hit> {
+    let needle = query.trim().to_lowercase();
+    let sources = sources();
+    let script = far_search_script(&sources, query);
+    let out = match crate::elsewhere::exec(at, &script, 120_000) {
+        Ok(r) => r.out,
+        Err(e) => {
+            crate::append_hook_log(&format!("could not search the records on {}: {e:#}", at.address()));
+            return Vec::new();
+        }
+    };
+    far_search_hits(&out, &sources, &needle, machine, limit)
+}
+
+/// The one command `search_far` runs: every CLI's records there, newest first,
+/// each that holds `query` printed as `@@F <which> <mtime> <path>`, then the
+/// start of it and the line it matched on, both in base64
+fn far_search_script(sources: &[Source], query: &str) -> String {
+    use base64::Engine as _;
+    let q = base64::engine::general_purpose::STANDARD.encode(query.trim());
+    let mut script = format!("cd \"$HOME\" 2>/dev/null || exit 0; q=$(printf %s '{q}' | base64 -d); n=0; ");
+    for (i, src) in sources.iter().enumerate() {
+        let Some(rest) = src.verify.strip_prefix("{home}/").map(|r| r.replace("{id}", "*")) else { continue };
+        if !rest.chars().all(|c| c.is_ascii_alphanumeric() || "/*._-".contains(c)) {
+            continue;
+        }
+        script.push_str(&format!(
+            "ls -t {rest} 2>/dev/null | head -n {SCAN_CAP} | while IFS= read -r f; do \
+if [ -z \"$q\" ]; then m=''; else m=$(grep -i -F -m1 -e \"$q\" \"$f\" 2>/dev/null | head -c 65536); [ -z \"$m\" ] && continue; fi; \
+printf '@@F {i} %s %s\\n' \"$(stat -c %Y \"$f\" 2>/dev/null || echo 0)\" \"$f\"; \
+head -c {FOLDER_CAP} \"$f\" | base64 -w0; echo; printf %s \"$m\" | base64 -w0; echo; done; "
+        ));
+    }
+    script
+}
+
+/// What `far_search_script` printed, read into hits
+fn far_search_hits(out: &str, sources: &[Source], needle: &str, machine: &str, limit: usize) -> Vec<Hit> {
+    use base64::Engine as _;
+    let decode = |b: &str| base64::engine::general_purpose::STANDARD.decode(b.trim()).unwrap_or_default();
+    let mut hits: Vec<Hit> = Vec::new();
+    let mut lines = out.lines();
+    while let Some(head_line) = lines.next() {
+        let Some(rest) = head_line.strip_prefix("@@F ") else { continue };
+        let mut parts = rest.splitn(3, ' ');
+        let (Some(which), Some(when), Some(path)) = (parts.next(), parts.next(), parts.next()) else { continue };
+        let head = String::from_utf8_lossy(&decode(lines.next().unwrap_or_default())).into_owned();
+        let matched = String::from_utf8_lossy(&decode(lines.next().unwrap_or_default())).into_owned();
+        let Some(src) = which.parse::<usize>().ok().and_then(|i| sources.get(i)) else { continue };
+        let Some(id) = id_of(Path::new(path), &head, src) else { continue };
+        let cwd = cwd_of(&head, src);
+        let snippet = match needle.is_empty() {
+            true => String::new(),
+            false => matched.to_lowercase().find(&needle).map(|at| snippet(&matched, at, needle.len())).unwrap_or_default(),
+        };
+        hits.push(Hit {
+            program: src.program.clone(),
+            id,
+            title: format!("{machine}: {}", title_of(cwd.as_deref(), &src.program)),
+            snippet,
+            cwd,
+            when: when.trim().parse().unwrap_or(0),
+            tab: None,
+        });
+    }
+    // Newest first across every CLI there, as the search here orders them
+    hits.sort_by_key(|h| std::cmp::Reverse(h.when));
+    hits.truncate(limit);
+    hits
+}
+
 /// The arguments that reopen one hit, resuming its conversation.
 ///
 /// The program is the tab's; these are only the resume flags, `{id}` filled
@@ -821,5 +903,50 @@ eyJ0eXBlIjoidXNlciIsImN3ZCI6Ii9ob21lL3VzZXIvc2l0ZSIsInNlc3Npb25JZCI6ImFhYSIsIm1l
         assert!(line.contains("ls -t .claude/projects/*/*.jsonl"), "{line}");
         assert_eq!(far_listing("/etc/{id}"), None, "a pattern outside the home folder is listed");
         assert_eq!(far_listing("{home}/$(reboot)/{id}"), None, "a pattern with shell words in it is run");
+    }
+}
+
+#[cfg(test)]
+mod far_search_tests {
+    use super::*;
+
+    fn claude() -> Source {
+        Source {
+            program: "claude".into(),
+            with_id: vec!["--resume".into(), "{id}".into()],
+            verify: "{home}/.claude/projects/*/{id}.jsonl".into(),
+            id_path: None,
+            cwd_path: None,
+            asks: None,
+        }
+    }
+
+    /// The search on another machine: what is looked for goes over as base64
+    /// and never as words for the shell, and what comes back is read into
+    /// hits named after the machine they are on
+    #[test]
+    fn a_search_on_another_machine_is_read_back_named_after_it() {
+        let script = far_search_script(&[claude()], "login bug'; rm -rf ~");
+        if let Ok(to) = std::env::var("SHIKISHA_FAR_SEARCH_OUT") {
+            std::fs::write(to, &script).unwrap();
+        }
+        assert!(!script.contains("rm -rf"), "the words looked for reach the shell as words");
+        assert!(script.contains("grep -i -F -m1"), "{script}");
+
+        use base64::Engine as _;
+        let b = |t: &str| base64::engine::general_purpose::STANDARD.encode(t);
+        let head = r#"{"type":"user","cwd":"/home/user/site","sessionId":"aaa"}"#;
+        let line = r#"{"message":{"content":"please fix the login bug in auth.rs"}}"#;
+        let out = format!(
+            "@@F 0 1790430222 .claude/projects/-home-user-site/aaa.jsonl\n{}\n{}\n",
+            b(head),
+            b(line)
+        );
+        let hits = far_search_hits(&out, &[claude()], "login bug", "vm", 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "aaa");
+        assert!(hits[0].title.starts_with("vm: "), "{}", hits[0].title);
+        assert!(hits[0].snippet.contains("login bug"), "{}", hits[0].snippet);
+        assert_eq!(hits[0].cwd.as_deref(), Some("/home/user/site"));
     }
 }

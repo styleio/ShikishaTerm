@@ -602,7 +602,7 @@ impl WinSurface {
     /// window-origin one uses, so both are drained in one place
     fn queue_ui(&mut self, ev: shikisha_shared::Ev) {
         match ev {
-            shikisha_shared::Ev::VaultSearch { query } => self.mail.vault_queries.push(query),
+            shikisha_shared::Ev::VaultSearch { query, wake } => self.mail.vault_queries.push((query, wake)),
             ev @ shikisha_shared::Ev::VaultOpen { .. } => self.mail.vault_opens.push(ev),
             shikisha_shared::Ev::PastList { tab } => self.mail.past_lists.push(tab),
             shikisha_shared::Ev::PastResume { tab, id } => self.mail.past_resumes.push((tab, id)),
@@ -756,7 +756,7 @@ impl WinSurface {
                         sheet,
                     })
                 }
-                Ev::VaultSearch { query } => self.mail.vault_queries.push(query),
+                Ev::VaultSearch { query, wake } => self.mail.vault_queries.push((query, wake)),
                 ev @ Ev::VaultOpen { .. } => self.mail.vault_opens.push(ev),
                 Ev::PastList { tab } => self.mail.past_lists.push(tab),
                 Ev::PastResume { tab, id } => self.mail.past_resumes.push((tab, id)),

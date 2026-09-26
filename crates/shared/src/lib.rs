@@ -368,7 +368,12 @@ pub enum Ev {
     /// Search past conversations (the Vault). `query` is what to look for; a
     /// blank one lists the recent ones. The window answers by putting the hits
     /// into the next state
-    VaultSearch { query: String },
+    VaultSearch {
+        query: String,
+        /// Search the paused MicroVMs too, which starts them. Without it only
+        /// the machines already awake are asked
+        wake: bool,
+    },
     /// Reopen one past conversation as a tab, resuming it. Named by the values
     /// a hit carries, so the window can build the tab without holding the last
     /// search
@@ -1137,6 +1142,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("vaultsearch") => Ev::VaultSearch {
             query: v.get("query").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            wake: v.get("wake").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         Some("pastlist") => Ev::PastList {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as u32,

@@ -281,6 +281,20 @@ pub struct VaultState {
     /// True when the search stopped before the end -- so the overlay can say
     /// "more than these" rather than implying it is the whole of the past
     pub capped: bool,
+    /// Machines elsewhere still being searched: their hits join as they come
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub asking: usize,
+    /// Paused MicroVMs left out, since searching one starts it: the overlay
+    /// offers to search them too
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sleeping: usize,
+    /// Which search this is, so an answer from an earlier one is not added
+    #[serde(skip)]
+    pub seq: u64,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// A message on its way into a tab, as the screen says it.

@@ -14527,13 +14527,23 @@ function renderVault() {
   const vs = S && S.vault;
   list.textContent = "";
   const hits = (vs && vs.hits) || [];
+  // Other machines: still being searched, and the paused ones left out,
+  // with the press that searches them too (and starts them)
+  const far = [];
+  if (vs && vs.asking) far.push(el("div", {class:"vhint"}, (T["vault.asking"] || "").replace("{n}", vs.asking)));
+  if (vs && vs.sleeping) {
+    far.push(el("button", {class:"quiet", onclick:() => send({kind:"vaultsearch", query: vs.query || "", wake:true})},
+      (T["vault.wake"] || "").replace("{n}", vs.sleeping)));
+  }
   if (!hits.length) {
-    hint.textContent = T["vault.none"] || "Nothing found.";
+    hint.textContent = vs && vs.asking ? "" : (T["vault.none"] || "Nothing found.");
+    for (const f of far) list.append(f);
     return;
   }
   hint.textContent = vs.capped
     ? (T["vault.more"] || "Showing the most recent matches — narrow the search for older ones.")
     : "";
+  for (const f of far) list.append(f);
   for (const h of hits) {
     // A live hit is a line in an open tab: selecting it goes to that tab. A
     // past hit is a record: selecting it reopens the conversation

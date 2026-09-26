@@ -102,6 +102,23 @@ pub struct Page {
 pub fn read_back(path: &Path, before: u64, want: usize) -> std::io::Result<Page> {
     let mut file = File::open(path)?;
     let len = file.metadata()?.len();
+    read_back_by(len, before, want, &mut |start, n| {
+        let mut buf = vec![0u8; n];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut buf)?;
+        Ok(buf)
+    })
+}
+
+/// The same walk over a record read a piece at a time by `read_at` (from, how
+/// many bytes): a file here, or one on the machine a folder is on, fetched a
+/// piece at a time as the walk needs it
+pub fn read_back_by(
+    len: u64,
+    before: u64,
+    want: usize,
+    read_at: &mut dyn FnMut(u64, usize) -> std::io::Result<Vec<u8>>,
+) -> std::io::Result<Page> {
     let mut end = before.min(len);
     let mut from = end;
     // The back half of a line whose start lies further back than we have read.
@@ -122,9 +139,10 @@ pub fn read_back(path: &Path, before: u64, want: usize) -> std::io::Result<Page>
 
     while end > 0 && read < BUDGET && !enough {
         let start = end.saturating_sub(CHUNK as u64);
-        let mut buf = vec![0u8; (end - start) as usize];
-        file.seek(SeekFrom::Start(start))?;
-        file.read_exact(&mut buf)?;
+        let mut buf = read_at(start, (end - start) as usize)?;
+        if buf.len() != (end - start) as usize {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "the record changed while it was read"));
+        }
         read += buf.len();
         buf.extend_from_slice(&carried);
 
@@ -194,6 +212,48 @@ pub fn read_back(path: &Path, before: u64, want: usize) -> std::io::Result<Page>
         turns: found,
         from,
         more: from > 0,
+    })
+}
+
+/// A CLI's record of one conversation on another machine: where it is there,
+/// found from the profile's pattern (`{home}/.../{id}.jsonl`) with the id the
+/// app handed the CLI. Waits on the machine
+pub fn locate_far(at: &crate::elsewhere::Elsewhere, glob: &str, id: &str) -> Option<String> {
+    // Only what a glob and an id are made of: both go into a shell there
+    let safe = |s: &str| s.chars().all(|c| c.is_ascii_alphanumeric() || "/*._-".contains(c));
+    if !safe(id) {
+        return None;
+    }
+    let rest = glob.strip_prefix("{home}/")?.replace("{id}", id);
+    if !safe(&rest) {
+        return None;
+    }
+    let ran = crate::elsewhere::exec(at, &format!("cd \"$HOME\" && ls -1d {rest} 2>/dev/null | head -n 1 | sed \"s#^#$HOME/#\""), 30_000).ok()?;
+    let path = ran.out.lines().next()?.trim().to_string();
+    (!path.is_empty()).then_some(path)
+}
+
+/// `read_back` for a record on another machine, fetched a piece at a time
+pub fn read_back_far(at: &crate::elsewhere::Elsewhere, path: &str, before: u64, want: usize) -> std::io::Result<Page> {
+    use base64::Engine as _;
+    let err = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
+    let quoted = crate::worktree::for_a_shell(&[path.to_string()]);
+    let len: u64 = crate::elsewhere::exec(at, &format!("stat -c %s -- {quoted}"), 30_000)
+        .map_err(err)?
+        .out
+        .trim()
+        .parse()
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::NotFound, "no such record"))?;
+    read_back_by(len, before, want, &mut |start, n| {
+        let ran = crate::elsewhere::exec(
+            at,
+            &format!("tail -c +{} -- {quoted} | head -c {n} | base64 -w0", start + 1),
+            60_000,
+        )
+        .map_err(err)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(ran.out.trim())
+            .map_err(|e| std::io::Error::other(e.to_string()))
     })
 }
 

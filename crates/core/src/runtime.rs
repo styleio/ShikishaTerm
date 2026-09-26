@@ -1507,6 +1507,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut git_lines = GitLines::new();
     // Answers to the Issue tab, from the threads that waited for GitHub
     let (issues_tx, issues_rx) = std::sync::mpsc::channel::<String>();
+    // A search of past conversations, answered from another machine
+    let (vault_far_tx, vault_far_rx) = std::sync::mpsc::channel::<(u64, Vec<crate::vault::Hit>)>();
+    let mut vault_seq: u64 = 0;
     // What was said before in a tab's folder on another machine, read there
     let (past_tx, past_rx) = std::sync::mpsc::channel::<(usize, Vec<crate::vault::Hit>)>();
     // A MicroVM folder asked to be deleted, checked on its machine for work
@@ -7042,7 +7045,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             past_view = None;
         }
-        for query in shell.mail().take_vault_queries() {
+        for (query, wake) in shell.mail().take_vault_queries() {
             // The present, then the past. What is on screen right now across
             // every open tab comes first -- a live match is more likely the
             // thing being looked for than an old conversation -- then the
@@ -7068,11 +7071,56 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             let found = crate::vault::search(&query, 40);
             hits.extend(found.hits);
+            // Then every other machine a folder of any desk is on, each on a
+            // thread of its own, its hits joining as they come. A paused
+            // MicroVM is left out unless asked for: searching it starts it
+            vault_seq += 1;
+            let mut asking = 0;
+            let mut sleeping = 0;
+            let mut seen: Vec<String> = Vec::new();
+            for d in &desks {
+                for f in &d.folders {
+                    let Some(host) = f.host.as_ref() else { continue };
+                    let Ok(at) = crate::elsewhere::Elsewhere::of(host) else { continue };
+                    let key = format!("{}\u{1f}{}", at.address(), host.instance.as_deref().unwrap_or_default());
+                    if seen.contains(&key) {
+                        continue;
+                    }
+                    seen.push(key);
+                    if let Some(id) = host.instance.as_deref().filter(|_| host.is_made())
+                        && !wake
+                        && !crate::e2b::awake(id)
+                    {
+                        sleeping += 1;
+                        continue;
+                    }
+                    asking += 1;
+                    let (tx, q, seq, name) = (vault_far_tx.clone(), query.clone(), vault_seq, host.name.clone());
+                    std::thread::spawn(move || {
+                        let _ = tx.send((seq, crate::vault::search_far(&at, &name, &q, 40)));
+                    });
+                }
+            }
             vault_view = Some(crate::uistate::VaultState {
                 query,
                 hits,
                 capped: found.capped,
+                asking,
+                sleeping,
+                seq: vault_seq,
             });
+        }
+        // Hits from another machine, joining the search that asked for them.
+        // A conversation a copied machine carries from the one it was copied
+        // from is listed once
+        while let Ok((seq, far)) = vault_far_rx.try_recv() {
+            let Some(v) = vault_view.as_mut().filter(|v| v.seq == seq) else { continue };
+            v.asking = v.asking.saturating_sub(1);
+            for h in far {
+                if !v.hits.iter().any(|x| x.tab.is_none() && x.program == h.program && x.id == h.id) {
+                    v.hits.push(h);
+                }
+            }
         }
         // A folder renamed in the list, or taken out of it. Both are changes
         // to the settings, so the reload that follows is what actually shows
@@ -9116,6 +9164,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // comes back into -- one already working there, or a new one
                 let folder = cwd.as_deref().map(std::path::Path::new);
                 let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
+                // A conversation had on another machine opens in its folder
+                // there, which has to be on this desk: written down as a
+                // folder here, a path of that machine would be a folder that
+                // exists nowhere
+                let far_path = cwd.as_deref().is_some_and(|c| cfg!(windows) && c.starts_with('/'));
+                let on_desk = folder.is_some_and(|p| {
+                    desks.get(desk_index).is_some_and(|d| {
+                        d.folders.iter().any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, p)))
+                    })
+                });
+                if far_path && !on_desk {
+                    flash = Some(i18n::tp("msg.vault.far_not_here", &[("title", &title)]));
+                    continue;
+                }
                 if config::append_tab(&desk, tab, folder) {
                     flash = Some(i18n::tp("msg.vault.reopened", &[("title", &title)]));
                 } else {

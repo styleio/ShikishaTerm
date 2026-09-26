@@ -210,7 +210,7 @@ pub struct Mailbox {
     pub surveys: usize,
     /// Vault searches awaiting an answer -- what to look for in past
     /// conversations. The loop runs the search and puts the hits into state
-    pub vault_queries: Vec<String>,
+    pub vault_queries: Vec<(String, bool)>,
     /// Past conversations asked to be reopened as resuming tabs
     pub vault_opens: Vec<shikisha_shared::Ev>,
     /// Tabs asked what was said in their folder before, by the number a person
@@ -528,7 +528,7 @@ impl Mailbox {
     pub fn take_recorded(&mut self) -> Vec<RecordedStep> {
         std::mem::take(&mut self.recorded)
     }
-    pub fn take_vault_queries(&mut self) -> Vec<String> {
+    pub fn take_vault_queries(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.vault_queries)
     }
     pub fn take_vault_opens(&mut self) -> Vec<shikisha_shared::Ev> {
