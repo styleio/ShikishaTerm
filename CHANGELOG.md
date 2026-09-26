@@ -114,6 +114,15 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **Projects of different GitHub accounts share one server.** The SSH clone
+  page asks which GitHub account the project signs in as -- the accounts
+  GitHub CLI on the server holds, asked of it, another one by its login, or
+  none -- and the clone's address carries that login
+  (`https://login@github.com/…`, never a token). GitHub CLI, asked by git
+  with a name, hands over that account's token and no other's, so each
+  project signs in as its own account whichever one is in front; signing a
+  second account in adds it rather than taking the first one's place. The
+  sign-in step names the account to sign in as in the browser.
 - **A server whose git cannot sign in to GitHub is walked through it.**
   When a clone onto a server stops for want of a sign-in to GitHub, a step
   opens as the MicroVM's AI sign-in does: the server is looked at, and the

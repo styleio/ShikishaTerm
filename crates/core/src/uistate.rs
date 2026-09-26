@@ -873,6 +873,10 @@ pub struct LoginStepState {
     /// with a copy button each, and run by the person in the terminal
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
+    /// For `git`: the GitHub account the clone signs in as, when one was
+    /// chosen -- the one to sign in as in the browser
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub account: String,
 }
 
 /// The public addresses of a folder on a MicroVM, as asked for from its menu
@@ -1128,6 +1132,11 @@ pub struct AddProjectState {
     /// said before it is pressed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sign_in: Option<SignInNote>,
+    /// The GitHub accounts GitHub CLI on a server is signed in to, answered
+    /// to the SSH clone page for the server chosen there. Present once the
+    /// server has answered, empty when it holds none
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accounts: Option<Vec<String>>,
 }
 
 /// A machine a project can be on, besides this PC: one reached over SSH.

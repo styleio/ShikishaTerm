@@ -5844,25 +5844,58 @@ function apSshClone(body) {
       if (!walker.box.hidden) walker.look(parent.value.trim() || "~");
     }}, pickIcon("folderOpen"));
   walker.onLooked = at => { parent.value = at; sayInto(); go.check(); };
+  // The GitHub account the project signs in as on the server: one GitHub
+  // CLI there holds, another one to be signed in to, or what the server's
+  // git has in front. Each project keeps its own, so projects of different
+  // accounts share one server; the accounts are asked of the server
+  const acct = el("select", {class:"apin"});
+  const other = apInput("", "octocat", true);
+  other.hidden = true;
+  let served = null;
+  let acctByHand = false;
+  const drawAcct = () => {
+    const owner = ownerOfUrl(url.value);
+    const was = acct.value;
+    acct.textContent = "";
+    if (served === null) acct.append(el("option", {value:"@asking", disabled:""}, T["tui.addproj.sshclone.asking"] || ""));
+    for (const a of served || []) acct.append(el("option", {value:a}, a));
+    acct.append(el("option", {value:"@new"}, T["tui.addproj.sshclone.account_new"] || ""),
+      el("option", {value:""}, T["tui.addproj.sshclone.account_any"] || ""));
+    // The owner's account when the server holds it, else nothing chosen
+    // for the person: what the server's git has in front, said as such
+    const fit = (served || []).find(a => a.toLowerCase() === owner);
+    acct.value = acctByHand ? was : (fit || "");
+    other.hidden = acct.value !== "@new";
+  };
+  acct.addEventListener("change", () => { acctByHand = true; other.hidden = acct.value !== "@new"; if (!other.hidden) other.focus(); go.check(); });
+  const account = () => acct.value === "@new" ? other.value.trim() : acct.value === "@asking" ? "" : acct.value;
+  let acctAsk = 0;
+  if (apHost) {
+    acctAsk = Date.now() + 1;
+    send({kind:"addproject", how:"ssh_accounts", text:"", parent:"", ask:acctAsk, host:apHost});
+  }
   const prog = apProgress();
   const go = apGo(T["tui.addproj.clone.go"] || "", () =>
       !url.value.trim() ? {at:url, why:T["tui.addproj.clone.need_url"] || ""}
       : !apHost ? {at:hostBtn, why:T["tui.addproj.sshclone.need_host"] || ""}
+      : acct.value === "@new" && !/^[A-Za-z0-9-]+$/.test(other.value.trim()) ? {at:other, why:T["tui.addproj.sshclone.need_account"] || ""}
       : !parent.value.trim() ? {at:parent, why:T["tui.addproj.need_parent"] || ""} : null,
     () => {
       apAsk = Date.now();
-      send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost});
+      send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost, account:account()});
       apLive.running = true;
       drawAddProject();
     });
   body.append(el("div", {class:"ssay"}, T["tui.addproj.sshclone.say2"] || ""),
     apField(T["tui.addproj.url"] || "", url),
-    el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.addproj.microvm.account"] || ""),
+    el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.addproj.sshclone.account"] || ""), acct, other,
       el("div", {class:"shint"}, T["tui.addproj.sshclone.account_say"] || "")),
     el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.addproj.parent"] || ""),
       el("div", {class:"aprow"}, parent, walk), walker.box, into),
     el("div", {class:"apfoot"}, go.why, go.btn, prog.bar));
-  url.addEventListener("input", () => { apSshUrl = url.value; });
+  url.addEventListener("input", () => { apSshUrl = url.value; drawAcct(); });
+  other.addEventListener("input", go.check);
+  drawAcct();
   for (const i of [url, parent]) {
     i.addEventListener("input", () => { sayInto(); go.check(); });
     i.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); go.btn.click(); } });
@@ -5870,7 +5903,9 @@ function apSshClone(body) {
   sayInto();
   go.check();
   apLive = {kind:"clone", running:false, go, prog, label:T["tui.addproj.clone.go"] || "",
-    busy:(T["tui.addproj.clone.busy_on"] || "{host}").replace("{host}", apHost), walker};
+    busy:(T["tui.addproj.clone.busy_on"] || "{host}").replace("{host}", apHost), walker,
+    // The server's accounts, once it has said them
+    accountsAsk: acctAsk, accounts: list => { served = list; drawAcct(); go.check(); }};
   setTimeout(() => url.focus(), 0);
 }
 // The folder a clone makes, named as git names it: the address's last part
@@ -6029,6 +6064,12 @@ function drawAddProject() {
   // as it was last typed
   if (apLive.kind === "microvm" && st && st.ask && st.ask === apLive.lookAsk && st.sign_in) {
     drawSignIn(apLive.signin, st.sign_in, true, apLive.change);
+  }
+  // The GitHub accounts a server holds, answered to the clone page that asked
+  if (apLive.accountsAsk && st && st.ask === apLive.accountsAsk && st.accounts) {
+    const list = st.accounts;
+    apLive.accountsAsk = 0;
+    apLive.accounts(list);
   }
   const mine = st && st.ask === apAsk && apAsk ? st : null;
   const running = !!(mine ? mine.running : apLive.running) && !(mine && (mine.error || mine.done));
@@ -8782,6 +8823,9 @@ function drawLogin() {
       el("div", {class:"sbody"},
         el("div", {class:"lstrong"}, say("tui.login.say")),
         el("div", {class:"ssay"}, say("tui.login.how")),
+        // The account the clone signs in as, when one was chosen: the one to
+        // sign in as in the browser
+        ...(git && st.account ? [el("div", {class:"lstrong"}, (T["tui.gitsignin.as"] || "{account}").split("{account}").join(st.account))] : []),
         // A server's git: the commands drafted for it, to copy and run in
         // the terminal below -- nothing runs from here, the person does
         ...(git ? [loginCommands(st.commands || [])] : []),
@@ -21709,7 +21753,7 @@ mod tests {
         assert!(PAGE.contains(r#"() => { closeAddProject(); openBrowse(""); }, true);"#), "the browse card does not open the picker");
         // The other ways: a clone and a new project, each finished in the same
         // dialog and each ending, as the picker does, at the first worktree
-        assert!(PAGE.contains(r#"send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost});"#),
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:""});"#),
             "a clone is never asked for");
         assert!(PAGE.contains(r#"send({kind:"addproject", how:"create", text:name.value.trim(), parent:parent.value.trim(), ask:apAsk, host:""});"#),
             "a new project is never asked for");
@@ -22003,8 +22047,11 @@ mod tests {
         // folder there as its two tabs, with the same head on both
         assert!(PAGE.contains(r#"const hostBtn = apSshHead(body, "sshclone");"#) && PAGE.contains(r#"const hostBtn = apSshHead(body, "remote");"#),
             "the two things to do on a server are not tabs under one server");
-        assert!(PAGE.contains(r#"send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost});"#),
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost, account:account()});"#),
             "a project cannot be cloned onto a server");
+        // As the GitHub account chosen for it, from the ones the server holds
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"ssh_accounts", text:"", parent:"", ask:acctAsk, host:apHost});"#),
+            "the server is not asked which GitHub accounts it holds");
         assert!(PAGE.contains("const walker = apWalker(parent);") && PAGE.contains("const walker = apWalker(path);"),
             "the two pages that walk a server do not share the walker");
         assert!(PAGE.contains(r#"send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai, account});"#),

@@ -265,7 +265,8 @@ try {
   const openClone = async (url) => {
     await board.run(`openAddProject(); apShow("sshclone"); true`);
     await until(() => board.run('!!document.querySelector("#addproj .bpick")'), 'the clone page', 10000);
-    await board.run(`(() => { const [u, p] = document.querySelectorAll("#addproj input.apin");
+    // The address is the first field; the folder is the one beside the walker
+    await board.run(`(() => { const u = document.querySelector("#addproj input.apin"), p = document.querySelector("#addproj .aprow input.apin");
       u.value = ${JSON.stringify(url)}; u.dispatchEvent(new Event("input"));
       p.value = ${JSON.stringify(CLONES)}; p.dispatchEvent(new Event("input")); return true; })()`);
   };
@@ -350,11 +351,19 @@ try {
   // The step opens: the commands drafted for this server, to copy -- nothing
   // runs from the page -- and a terminal there, in the clone's folder
   await openClone(PRIVATE);
+  // The server holds no GitHub account: the list says so -- another account
+  // by its login, or none -- and styleio is named for this project
+  await until(() => board.run('![...document.querySelectorAll("#addproj select.apin option")].some(o => o.value === "@asking")'), 'the server to say which accounts it holds', 30000);
+  check(await board.run('[...document.querySelectorAll("#addproj select.apin option")].map(o => o.value).join(",")') === '@new,',
+    'with no account on the server, the choices are another account or none');
+  await board.run('(() => { const s = document.querySelector("#addproj select.apin"); s.value = "@new"; s.dispatchEvent(new Event("change")); const i = s.nextElementSibling; i.value = "styleio"; i.dispatchEvent(new Event("input")); return true; })()');
+  await board.shot('5b-account');
   await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
   const step = () => board.run('JSON.stringify((S && S.login_step) || null)').then((t) => JSON.parse(t || 'null'));
   await until(async () => ((await step()) || {}).kind === 'git', 'the sign-in step for the server\x27s git', 90000);
   const st = await step();
-  check(st.host === 'srv' && st.folder === CLONES && st.url === PRIVATE, 'the step is for this server, its folder and this repository: ' + JSON.stringify({ host: st.host, folder: st.folder }));
+  check(st.account === 'styleio' && /styleio としてサインイン/.test(await board.run('document.getElementById("login").textContent')), 'the step names the account to sign in as: ' + st.account);
+  check(st.host === 'srv' && st.folder === CLONES && st.url === PRIVATE.replace('https://', 'https://styleio@'), 'the step is for this server, its folder and this repository: ' + JSON.stringify({ host: st.host, folder: st.folder }));
   check(st.commands.length === 3 && /apt install gh/.test(st.commands[0]) && st.commands[1].startsWith('gh auth login') && st.commands[2] === 'gh auth setup-git',
     'the commands are drafted for an Ubuntu server with no gh: ' + st.commands.map((c) => c.slice(0, 30)).join(' | '));
   await until(() => board.run('!document.getElementById("login").hidden'), 'the step on the board', 20000);
@@ -372,7 +381,8 @@ try {
   // sign-in given to the server's git for a moment, taken away after
   const PAT = dotenv.GITHUB_HELLO_WORLD_PAT;
   check(!!PAT, 'a token for the private repository is in .private/.env (GITHUB_HELLO_WORLD_PAT)');
-  await there(`git config --global credential.https://github.com.helper '!f() { echo username=x-access-token; echo password=${PAT}; }; f'`);
+  // As gh does: a token for the account git names, and nothing for any other
+  await there(`git config --global credential.https://github.com.helper '!f() { [ "$1" = get ] || exit 0; ok=; while read l && [ -n "$l" ]; do [ "$l" = username=styleio ] && ok=1; done; [ -n "$ok" ] && echo username=styleio && echo password=${PAT}; true; }; f'`);
   try {
     await until(async () => ((await step()) || {}).state === 'yes', 'the step to see the sign-in', 60000);
     check(true, 'the sign-in is seen while the step is open');
@@ -380,6 +390,10 @@ try {
     await until(() => board.run('document.getElementById("login").hidden'), 'the step closed', 20000);
     await until(() => !!(desk().folders || []).find((f) => f.host === 'srv' && f.cwd === `${CLONES}/helloworld`), 'the private clone, made after the sign-in', 180000);
     check(true, '"Clone again" clones it now');
+    check((await there(`git -C ${CLONES}/helloworld remote get-url origin`)) === 'https://styleio@github.com/styleio/helloworld.git',
+      'the project signs in as its own account: its address names styleio, and no token is in it');
+    check(!(await there(`GIT_TERMINAL_PROMPT=0 git ls-remote https://someone-else@github.com/styleio/helloworld.git >/dev/null 2>&1 && echo read || echo refused`)).includes('read'),
+      'the same repository asked as another account is not read with styleio\x27s sign-in');
     check(!(desk().folders || []).some((f) => f.host === 'srv' && f.cwd === CLONES), 'and the terminal put there for the step is off the desk');
   } finally {
     await there('git config --global --unset-all credential.https://github.com.helper; true');

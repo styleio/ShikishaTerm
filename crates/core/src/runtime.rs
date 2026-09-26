@@ -1820,6 +1820,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // whose AI is to be signed in to, before its first worktree is cut
     let mut login_pending: Option<LoginPending> = None;
     let mut git_signin: Option<GitSignIn> = None;
+    // The SSH clone page's question, which GitHub accounts GitHub CLI on the
+    // chosen server holds: (the page's number, the answer), filled in by a
+    // thread since asking a server takes a moment
+    let ssh_accounts_answer: std::sync::Arc<std::sync::Mutex<Option<(u64, Result<Vec<String>, String>)>>> = Default::default();
     let mut login_view: Option<crate::uistate::LoginStepState> = None;
     let mut login_seq: u64 = 0;
     // What it would take to have a missing working folder here. Answered when
@@ -7664,6 +7668,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         let host_named = |name: &str, made: bool| {
             cfg.as_ref().and_then(|c| c.hosts.iter().find(|h| h.name == name && h.is_made() == made).cloned())
         };
+        // A server's GitHub accounts, answered to the page that asked. A
+        // server that could not be asked has none to offer: the page still
+        // offers to name one, and to use what the server's git has in front
+        if let Some((ask, said)) = ssh_accounts_answer.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            if let Err(e) = &said {
+                append_hook_log(&format!("could not ask a server for its GitHub accounts: {e}"));
+            }
+            add_view = Some(crate::uistate::AddProjectState { ask, accounts: Some(said.unwrap_or_default()), ..Default::default() });
+        }
         for a in shell.mail().take_add_projects() {
             let (how, text, parent, ask, host) = (a.how.clone(), a.text.clone(), a.parent.clone(), a.ask, a.host.clone());
             let failed = |e: String| Some(crate::uistate::AddProjectState { ask, error: Some(e), ..Default::default() });
@@ -7746,9 +7759,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // The dialog closes on this: the row says the rest
                     add_view = Some(crate::uistate::AddProjectState { ask, started: true, microvm: true, ..Default::default() });
                 }
+                // Which GitHub accounts GitHub CLI on the server holds, for
+                // the clone page to offer
+                ("ssh_accounts", Some(h)) => match config::host_spec(&h) {
+                    Ok(spec) => {
+                        let slot = ssh_accounts_answer.clone();
+                        std::thread::spawn(move || {
+                            let said = crate::addproject::server_github_accounts(&spec);
+                            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some((ask, said));
+                        });
+                    }
+                    Err(e) => add_view = failed(format!("{e:#}")),
+                },
                 // Onto a server: a row on the board, as a MicroVM's clone is,
-                // and the dialog closes on it
+                // and the dialog closes on it. With a GitHub account chosen,
+                // the address carries its login, so the clone -- and the
+                // project after it -- signs in as that account whichever one
+                // GitHub CLI there has in front
                 ("clone", Some(h)) => {
+                    let text = crate::addproject::address_as(&text, &a.account);
                     let started = config::host_spec(&h).map_err(|e| format!("{e:#}")).and_then(|spec| {
                         crate::addproject::start_clone_on(spec.clone(), &text, &parent).map(|job| (job, spec))
                     });
@@ -8943,6 +8972,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     url: g.url.clone(),
                     kind: "git".into(),
                     commands: crate::addproject::github_sign_in_commands(&look),
+                    account: crate::addproject::login_of(&g.url),
                     ..Default::default()
                 };
                 if login_view.as_ref() != Some(&v) {

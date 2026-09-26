@@ -348,6 +348,63 @@ pub fn can_read(spec: &crate::ssh::Spec, url: &str) -> bool {
     crate::ssh::exec(spec, &line, 60_000).is_ok_and(|r| r.ok())
 }
 
+/// The GitHub accounts GitHub CLI on a server is signed in to, as `gh auth
+/// status` names them. Empty when gh is not there or holds none
+pub fn server_github_accounts(spec: &crate::ssh::Spec) -> Result<Vec<String>, String> {
+    let ran = crate::ssh::exec(spec, "command -v gh >/dev/null 2>&1 && gh auth status --hostname github.com 2>&1; true", 30_000)
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(github_accounts_in(&ran.out))
+}
+
+/// The accounts in what `gh auth status` says, in its order, each once
+pub fn github_accounts_in(said: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in said.lines() {
+        let Some(rest) = line.split("github.com account ").nth(1) else { continue };
+        let login = rest.split_whitespace().next().unwrap_or_default().trim_matches(|c| c == '(' || c == ')');
+        if !login.is_empty() && !out.iter().any(|o| o == login) {
+            out.push(login.to_string());
+        }
+    }
+    out
+}
+
+/// The address a clone onto a server is made with when it is to sign in as
+/// `login`: an https GitHub address with the login in it
+/// (`https://login@github.com/owner/name.git`). GitHub CLI, asked by git
+/// with that name, hands git the token of that account and no other, so a
+/// project cloned this way signs in as its own account whichever one gh has
+/// in front. Only the login goes in -- never a token. Any other address, or
+/// no login, is given back as it is
+pub fn address_as(url: &str, login: &str) -> String {
+    let login = login.trim();
+    let u = url.trim();
+    if login.is_empty() || !is_github(u) {
+        return u.to_string();
+    }
+    match u.strip_prefix("https://") {
+        Some(rest) => {
+            let rest = match rest.split_once('@') {
+                Some((user, host)) if !user.contains('/') => host,
+                _ => rest,
+            };
+            format!("https://{login}@{rest}")
+        }
+        None => u.to_string(),
+    }
+}
+
+/// The login an https address carries (`alice` of `https://alice@github.com/…`),
+/// or empty
+pub fn login_of(url: &str) -> String {
+    url.trim()
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split_once('@'))
+        .filter(|(user, _)| !user.contains('/') && !user.contains(':'))
+        .map(|(user, _)| user.to_string())
+        .unwrap_or_default()
+}
+
 /// Whether an address is GitHub's, which is what the drafted sign-in is for
 pub fn is_github(url: &str) -> bool {
     let s = url.trim().to_ascii_lowercase();
@@ -537,6 +594,24 @@ mod tests {
         assert!(github_sign_in_commands(&look("gentoo", false))[0].starts_with('#'));
         assert!(is_github("https://github.com/acme/site.git") && is_github("git@github.com:acme/site"));
         assert!(!is_github("https://gitlab.com/acme/site.git"));
+    }
+
+    /// A project on a server signs in as its own account: the login goes in
+    /// the https address and nothing else does; other addresses are left
+    /// alone. And the accounts gh on a server holds are read off what it says
+    #[test]
+    fn a_project_on_a_server_signs_in_as_its_own_account() {
+        assert_eq!(address_as("https://github.com/acme/site.git", "alice"), "https://alice@github.com/acme/site.git");
+        assert_eq!(address_as("https://bob@github.com/acme/site.git", "alice"), "https://alice@github.com/acme/site.git");
+        assert_eq!(address_as("https://github.com/acme/site.git", ""), "https://github.com/acme/site.git");
+        assert_eq!(address_as("git@github.com:acme/site.git", "alice"), "git@github.com:acme/site.git", "an ssh address signs in with a key");
+        assert_eq!(address_as("https://gitlab.com/acme/site.git", "alice"), "https://gitlab.com/acme/site.git");
+        assert!(same_repository(&address_as("https://github.com/acme/site.git", "alice"), "https://github.com/acme/site"));
+        let said = "github.com\n  ✓ Logged in to github.com account alice (keyring)\n  - Active account: true\n\n  ✓ Logged in to github.com account bob (/home/u/.config/gh/hosts.yml)\n  - Active account: false\n";
+        assert_eq!(github_accounts_in(said), vec!["alice".to_string(), "bob".to_string()]);
+        assert!(github_accounts_in("You are not logged into any GitHub hosts.").is_empty());
+        assert_eq!(login_of("https://alice@github.com/acme/site.git"), "alice");
+        assert_eq!(login_of("https://github.com/acme/site.git"), "");
     }
 
     /// A checkout already where a clone was to go is the same repository
