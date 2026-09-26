@@ -251,6 +251,7 @@ pub fn connect(key: &str, id: &str, minutes: u32) -> Result<Sandbox> {
     )?;
     let found = sandbox_of(&v)?;
     remember(&found);
+    end_left(&found);
     Ok(found)
 }
 
@@ -930,6 +931,59 @@ fn count_open(id: &str, one_more: bool) {
     }
 }
 
+/// Shells to end on a machine the next time it is reached, by machine: kept in
+/// a file, since the app being quit is one of the times they are left, and
+/// ended in `connect`, which everything reaching a machine goes through
+const ENDS: &str = "microvm-ends.json";
+
+fn ends() -> std::collections::BTreeMap<String, Vec<u32>> {
+    std::fs::read_to_string(crate::config::state_path(ENDS))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn write_ends(all: &std::collections::BTreeMap<String, Vec<u32>>) {
+    let _ = crate::crypto::write_atomic(
+        &crate::config::state_path(ENDS),
+        &serde_json::to_string_pretty(all).unwrap_or_default(),
+    );
+}
+
+/// One lock for the file: a tab closing and a machine being reached can be on
+/// two threads at once
+static ENDS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn end_later(id: &str, pid: u32) {
+    let _held = ENDS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = ends();
+    let list = all.entry(id.to_string()).or_default();
+    if !list.contains(&pid) {
+        list.push(pid);
+    }
+    write_ends(&all);
+    crate::append_hook_log(&format!("e2b: shell {pid} on {id} is ended when the machine is next reached"));
+}
+
+/// End the shells left on a machine just reached. A pid is the same process
+/// across a pause -- the machine is the same memory, stopped and started --
+/// and one that has already gone is nothing to end
+fn end_left(s: &Sandbox) {
+    let pids = {
+        let _held = ENDS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut all = ends();
+        let Some(pids) = all.remove(&s.id) else { return };
+        write_ends(&all);
+        pids
+    };
+    for pid in pids {
+        match signal(s, &serde_json::json!({ "pid": pid }), "SIGNAL_SIGKILL") {
+            Ok(()) => crate::append_hook_log(&format!("e2b: ended shell {pid} left on {}", s.id)),
+            Err(e) => crate::append_hook_log(&format!("e2b: shell {pid} left on {} was already gone: {e:#}", s.id)),
+        }
+    }
+}
+
 /// Whether a terminal of this program is open on this machine now
 pub fn awake(id: &str) -> bool {
     OPEN.get_or_init(Default::default).lock().is_ok_and(|o| o.get(id).is_some_and(|n| *n > 0))
@@ -1108,11 +1162,25 @@ pub fn shell(
                 }
                 Note::Ended => {
                     l.ended.store(true, std::sync::atomic::Ordering::Relaxed);
-                    if l.is_open()
-                        && let Some(at) = l.at()
-                        && let Err(e) = signal(&l.sandbox(), &at, "SIGNAL_SIGKILL")
-                    {
-                        crate::append_hook_log(&format!("e2b: ending shell {at} failed: {e:#}"));
+                    // Told to end now when its link is open. When it is not --
+                    // the machine paused under it, which is how most tabs are
+                    // closed and how the app is quit -- asking would start the
+                    // machine only to end a shell in it; the shell is written
+                    // down instead, and ended the next time the machine is
+                    // reached for anything. Left, it would wake with the
+                    // machine beside the new tab's AI, on the same conversation
+                    if let Some(pid) = l.pid() {
+                        let told = l.is_open()
+                            && match signal(&l.sandbox(), &serde_json::json!({ "pid": pid }), "SIGNAL_SIGKILL") {
+                                Ok(()) => true,
+                                Err(e) => {
+                                    crate::append_hook_log(&format!("e2b: ending shell {pid} failed: {e:#}"));
+                                    false
+                                }
+                            };
+                        if !told {
+                            end_later(&l.sandbox().id, pid);
+                        }
                     }
                     // Not open any more, whatever its stream is still doing
                     l.set_open(false);
@@ -1275,6 +1343,11 @@ fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32
         }
     };
     let mut opened = matches!(how, Stream::Connect);
+    // Ended from here while this stream was being asked for: it is not opened
+    // again, or it would be counted open for as long as the app runs
+    if link.is_ended() {
+        return;
+    }
     if opened {
         link.heard();
         link.set_open(true);
@@ -1304,6 +1377,10 @@ fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32
                 match start.get("pid").and_then(|p| p.as_u64()).map(|p| p as u32) {
                     Some(pid) => {
                         *link.pid.lock().unwrap_or_else(|e| e.into_inner()) = Some(pid);
+                        if link.is_ended() {
+                            end_later(&sandbox.id, pid);
+                            return;
+                        }
                         link.set_open(true);
                         tell_up(Ok(pid));
                     }
@@ -1317,7 +1394,7 @@ fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32
                 }
             }
             if let Some(s) = event.and_then(|e| e.get("data")).and_then(|d| d.get("pty"))
-                && let Some(bytes) = unwrap_bytes(s)
+                && let Some(bytes) = unwrap_bytes(s).filter(|b| !b.is_empty())
                 // Nobody is listening any more: the tab has gone
                 && link.out.send(bytes).is_err()
             {
@@ -1331,11 +1408,14 @@ fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32
                         &[("e", "the shell ended before it started")]
                     ))));
                 }
-                // The shell itself ended: what a person typing `exit` gets,
-                // and a tab reads it as the program ending
+                // The shell itself ended: what a person typing `exit` gets.
+                // The tab is told the way a program here tells it, by the
+                // end of what it reads (an empty piece is that end), and the
+                // tab is then an ended one: restarted if it is set to be
                 crate::append_hook_log(&format!("e2b: the shell {} on {} ended", link.tag, sandbox.id));
                 link.set_open(false);
                 link.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = link.out.send(Vec::new());
                 return;
             }
         }
@@ -1744,6 +1824,22 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// The shell there ending reaches the tab as the end of what it reads, the
+    /// way a program here ending does: an empty piece is that end, and what
+    /// came before it is read first
+    #[test]
+    fn the_far_shell_ending_is_the_end_of_what_the_tab_reads() {
+        use std::io::Read as _;
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let mut r = PtyReader { rx, rest: Vec::new(), at: 0 };
+        tx.send(b"bye".to_vec()).unwrap();
+        tx.send(Vec::new()).unwrap();
+        let mut buf = [0u8; 16];
+        assert_eq!(r.read(&mut buf).unwrap(), 3);
+        assert_eq!(&buf[..3], b"bye");
+        assert_eq!(r.read(&mut buf).unwrap(), 0, "the shell ending is not the end of the tab's reading");
+    }
+
     /// A terminal waiting to be looked at opens when a tab on its machine is
     /// shown, once; and a machine found asleep is asleep until it speaks
     #[test]

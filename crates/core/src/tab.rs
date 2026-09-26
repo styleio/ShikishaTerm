@@ -3504,7 +3504,8 @@ impl Tab {
             log_path = log.as_ref().and_then(|l| l.path().map(|p| p.to_path_buf()));
             // A terminal on a server has no process here to wait on: its end
             // is the stream stopping, said once everything before it is read
-            let ended = far_lost.as_ref().map(|_| Arc::clone(&child_exited));
+            // (and one on a MicroVM, whose shell ending is told the same way)
+            let ended = (far_lost.is_some() || opts.cloud.is_some()).then(|| Arc::clone(&child_exited));
             std::thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 let mut decoder = enc.map(|e| e.new_decoder());

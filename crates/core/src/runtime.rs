@@ -2917,7 +2917,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // A tab on a MicroVM on a screen -- in any pane; a phone looks at
             // what the window shows -- opens its terminal, which starts its
             // machine. One nobody is looking at leaves its machine alone
-            for (_, s) in pane_layout.leaves() {
+            // Not while the board or the whole-window settings stand over them
+            for (_, s) in pane_layout.leaves().into_iter().filter(|_| !(board_open || settings_open)) {
                 if let Some(t) = session_at(&surfaces, s).and_then(|i| tabs.get(i))
                     && let Some(id) = t.cloud().and_then(|h| h.instance.as_deref())
                 {
@@ -6793,7 +6794,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         far_seen.retain(|k, _| editors.iter().any(|e| &e.key == k));
         far_polls.retain(|k, _| editors.iter().any(|e| &e.key == k));
         far_stamp_polls(&editors, &tabs, start.elapsed().as_millis() as u64, &mut far_polls, &far_tx);
-        keep_machines_up(&tabs, start.elapsed().as_millis() as u64, &mut kept_up);
+        // Every desk's: an AI at work on a desk not in front is at work all the same
+        {
+            let every: Vec<&Tab> = tabs.iter().chain(desk_tabs.iter().flatten()).collect();
+            keep_machines_up(&every, start.elapsed().as_millis() as u64, &mut kept_up);
+        }
         // What the transfer panel asked for. Reading this machine is answered
         // on the spot; anything that touches the server goes to a thread,
         // because a folder listing over a network is a wait and this loop
@@ -10653,7 +10658,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         last_session.remember(desk, &tabs, Some(&pane_layout));
         last_session.write();
     }
-    for t in tabs.iter_mut() {
+    // Every desk's: a desk not in front keeps its tabs running, and a shell
+    // on a MicroVM of one of them outlives this program unless it is told to end
+    for t in tabs.iter_mut().chain(desk_tabs.iter_mut().flatten()) {
         t.kill();
     }
     // A shell on a MicroVM outlives this program unless it is told to end, and
@@ -11242,7 +11249,7 @@ const MACHINE_KEPT_EVERY: Duration = Duration::from_secs(30);
 /// still is left alone, and pauses its minutes after it was last in use --
 /// which is what the setting says. Each ask is a thread of its own: it is a
 /// round trip, and this loop draws the window
-fn keep_machines_up(tabs: &[Tab], now_ms: u64, kept: &mut std::collections::HashMap<String, Instant>) {
+fn keep_machines_up(tabs: &[&Tab], now_ms: u64, kept: &mut std::collections::HashMap<String, Instant>) {
     for t in tabs {
         let Some(host) = t.cloud() else { continue };
         let Some(id) = host.instance.clone() else { continue };
@@ -13786,6 +13793,14 @@ pub fn addressee(cmd: &Command) -> Option<&hooks::TabRef> {
 /// `now_ms` is the main loop's clock — the same one the readiness gate measures
 /// "the screen has held still" against
 pub fn ready_to_receive(t: &Tab, now_ms: u64) -> bool {
+    // Something is being handed to a tab on a MicroVM that is not open yet:
+    // that is an ask to open it, as being looked at is (the terminal opens,
+    // and what is handed over follows once the program in it is ready)
+    if !t.far_open()
+        && let Some(id) = t.cloud().and_then(|h| h.instance.as_deref())
+    {
+        crate::e2b::shown(id);
+    }
     t.ready_for_startup_hook(now_ms)
 }
 /// How long to hold before giving up. Whoever wrote it isn't watching anymore by the time this long has passed.
