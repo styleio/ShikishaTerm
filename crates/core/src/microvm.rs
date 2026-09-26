@@ -201,14 +201,43 @@ fn sign_in_print(s: Option<&crate::e2b::SignIn>) -> String {
 /// Each AI keeps the answer its own way (`trusted_as`); one that cannot be
 /// read or written is left as it is, and the question comes up as before
 pub fn trust_as_checkout(at: &crate::elsewhere::Elsewhere, checkout: &str, worktree: &str) {
-    const CLAUDE: &str = "/home/user/.claude.json";
-    let read = crate::elsewhere::files(at, crate::ssh::FileJob::Read { path: CLAUDE.into() }, 30_000);
-    let Ok(crate::ssh::FileAnswer::Bytes(bytes)) = read else { return };
-    let Some(text) = trusted_as(&String::from_utf8_lossy(&bytes), checkout, worktree) else { return };
-    match crate::elsewhere::files(at, crate::ssh::FileJob::Write { to: CLAUDE.into(), bytes: text.into_bytes() }, 30_000) {
-        Ok(_) => crate::append_hook_log(&format!("{worktree} is trusted by Claude Code as {checkout} is")),
-        Err(e) => crate::append_hook_log(&format!("could not carry the trust of {checkout} to {worktree}: {e:#}")),
+    // Each AI's file, and how it is read and written. Claude Code keeps a
+    // JSON of projects; Codex CLI a TOML table per folder (seen on 0.157)
+    let ais: [(&str, &str, fn(&str, &str, &str) -> Option<String>); 2] = [
+        ("Claude Code", "/home/user/.claude.json", trusted_as),
+        ("Codex CLI", "/home/user/.codex/config.toml", codex_trusted_as),
+    ];
+    for (name, file, carry) in ais {
+        let read = crate::elsewhere::files(at, crate::ssh::FileJob::Read { path: file.into() }, 30_000);
+        let Ok(crate::ssh::FileAnswer::Bytes(bytes)) = read else { continue };
+        let Some(text) = carry(&String::from_utf8_lossy(&bytes), checkout, worktree) else { continue };
+        match crate::elsewhere::files(at, crate::ssh::FileJob::Write { to: file.into(), bytes: text.into_bytes() }, 30_000) {
+            Ok(_) => crate::append_hook_log(&format!("{worktree} is trusted by {name} as {checkout} is")),
+            Err(e) => crate::append_hook_log(&format!("could not carry {name}'s trust of {checkout} to {worktree}: {e:#}")),
+        }
     }
+}
+
+/// Codex CLI's settings with `worktree` trusted, when `checkout` is. Codex
+/// writes a table per folder -- `[projects."/path"]` with
+/// `trust_level = "trusted"` under it -- and that is what is read and added,
+/// as text: nothing else in the file is touched
+fn codex_trusted_as(text: &str, checkout: &str, worktree: &str) -> Option<String> {
+    let header = |p: &str| format!("[projects.\"{}\"]", p.replace('\\', "\\\\").replace('"', "\\\""));
+    let trusted = |p: &str| {
+        let h = header(p);
+        let mut lines = text.lines().map(str::trim);
+        lines.any(|l| l == h)
+            && lines
+                .take_while(|l| !l.starts_with('['))
+                .any(|l| l.replace(' ', "") == "trust_level=\"trusted\"")
+    };
+    if !trusted(checkout) || text.lines().any(|l| l.trim() == header(worktree)) {
+        return None;
+    }
+    let mut out = text.trim_end_matches('\n').to_string();
+    out.push_str(&format!("\n\n{}\ntrust_level = \"trusted\"\n", header(worktree)));
+    Some(out)
 }
 
 /// Claude Code's settings with `worktree` trusted, when `checkout` is; `None`
@@ -1157,6 +1186,19 @@ mod trust_tests {
         let untrusted = r#"{"projects":{"/home/user/site":{"hasTrustDialogAccepted":false}}}"#;
         assert_eq!(super::trusted_as(untrusted, "/home/user/site", "/home/user/x"), None, "trust made up");
         assert_eq!(super::trusted_as("{ not json", "/a", "/b"), None);
+    }
+
+    /// The same for Codex CLI's table per folder, in the shape it writes
+    #[test]
+    fn a_worktree_is_trusted_by_codex_as_its_checkout_is() {
+        let text = "[tui]\nscreen_reader_detection_done = true\n\n[projects.\"/home/user/site\"]\ntrust_level = \"trusted\"\n";
+        let out = super::codex_trusted_as(text, "/home/user/site", "/home/user/site-x").expect("nothing carried");
+        assert!(out.contains("[projects.\"/home/user/site-x\"]\ntrust_level = \"trusted\""), "{out}");
+        assert!(out.starts_with("[tui]\nscreen_reader_detection_done = true"), "the rest is lost: {out}");
+        assert_eq!(super::codex_trusted_as(&out, "/home/user/site", "/home/user/site-x"), None, "written twice");
+        let untrusted = "[projects.\"/home/user/site\"]\ntrust_level = \"untrusted\"\n";
+        assert_eq!(super::codex_trusted_as(untrusted, "/home/user/site", "/home/user/x"), None, "trust made up");
+        assert_eq!(super::codex_trusted_as("[tui]\n", "/home/user/site", "/home/user/x"), None);
     }
 }
 
