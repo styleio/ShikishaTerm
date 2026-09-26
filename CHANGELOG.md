@@ -215,6 +215,13 @@ once it reaches its first tagged release.
 - The warning under a line set to Link. It read as "deleting the worktree
   deletes the original", which never happens: the links are taken out first.
 
+### Fixed
+- **A tab added to a folder on a MicroVM offers that machine's shell.** The
+  kind "Command" read "PowerShell / cmd" and offered both, and the line shown
+  as what would run was this PC's -- a MicroVM is Linux. It says it opens the
+  shell there, the line shown is what is typed into that shell, WSL is not
+  offered, and an AI is not marked as missing because this PC lacks it.
+
 ## [0.19.0] - 2026-09-25
 
 ### Added

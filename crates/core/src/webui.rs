@@ -2700,6 +2700,20 @@ fn handle(
                     .filter(|s| !s.trim().is_empty())
             };
             let argv = crate::config::CommandSpec::Line(str_of("command").unwrap_or_default()).argv();
+            // A tab in a folder on another machine starts nothing here: the
+            // shell that opens there is typed the folder and then the command,
+            // by the same two functions the launch uses, and that line is what
+            // is shown. Nothing is added to it, so there is no conversation to
+            // carry, and nothing is looked for on this PC
+            if let Some(far) = v.get("far").filter(|f| f.is_object()) {
+                let cwd = far.get("cwd").and_then(|c| c.as_str()).unwrap_or_default();
+                let typed = crate::ssh::typed_first(Some(cwd), crate::desk::far_run(&argv).as_deref());
+                req.respond(json_resp(serde_json::json!({
+                    "argv": typed.map(|l| vec![l.trim_end().to_string()]).unwrap_or_default(),
+                    "added": 0, "carry": "unsupported", "missing": null, "install_url": null,
+                })))?;
+                return Ok(());
+            }
             let line = crate::tab::launch_line(
                 &argv,
                 &str_of("profile"),
@@ -5017,6 +5031,7 @@ const PAGE: &str = r##"<!doctype html>
 {{TOAST_HTML}}
 
 <datalist id="cmdlist"></datalist>
+<datalist id="cmdlistfar"></datalist>
 
 <div id="autobox" class="modal" style="display:none">
   <div class="modal-inner">
@@ -5433,8 +5448,10 @@ function launchLine(t) {
   // tab is being made, rather than found out when it does not start
   const missing = el("div", {class:"site-warn"});
   missing.hidden = true;
+  const far = farPlaceOf(t);
   const box = el("div", {class:"realcmd"},
-    el("div", {class:"hint"}, T["settings.tab.command.real"]), line, note, missing);
+    el("div", {class:"hint"}, far ? fill(T["settings.tab.command.real_far"], {host: far.host}) : T["settings.tab.command.real"]),
+    line, note, missing);
   let seq = 0, timer = null;
   // The same answer says whether the conversation switch above decides
   // anything, and the AI panel is redrawn on its own -- so the last answer is
@@ -5449,7 +5466,7 @@ function launchLine(t) {
       r = await fetch("/api/launch-line", {method:"POST",
         headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
         body: JSON.stringify({command: t.command || "", resume: t.resume || "",
-                              profile: t.profile || ""})}).then(x => x.json());
+                              profile: t.profile || "", far: farPlaceOf(t)})}).then(x => x.json());
     } catch (e) { r = null; }
     // A later keystroke has already asked; its answer is the current one
     if (mine !== seq) return;
@@ -5838,6 +5855,16 @@ function isDiscussable(t) {
   return DISCUSS_HEADS.includes(head);
 }
 const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
+// The machine a tab's folder is on, when it is not this PC, and the folder as
+// that machine spells it. Null for a folder here. A tab there is a terminal on
+// that machine: what it runs is typed into the shell that opens there, so this
+// PC's shells, its WSL and what is installed on it say nothing about it
+function farPlaceOf(t) {
+  const desk = desks[sel.desk] || {};
+  const f = (desk.folders || [])[t.group || 0] || {};
+  const host = (f.host || "").trim();
+  return host ? {host, cwd: (f.cwd || "").trim()} : null;
+}
 
 // Top-level category for the tab-kind selector. The coarse "cmd" kind splits
 // into an AI CLI (grouped under AI) vs a plain shell; a model tab is AI (API).
@@ -5877,6 +5904,12 @@ const CAT_LIST = [
   ["editor",  T["settings.tab.kind.editor"]],
   ["sftp",    T["settings.template.sftp"]],
 ];
+
+// The kinds for a folder on another machine, named for what they are there:
+// its shell rather than PowerShell or the command prompt, the ssh on it rather
+// than this PC's ssh.exe, and no WSL, which is this PC's
+const farKinds = () => CAT_LIST.filter(([v]) => v !== "wsl").map(([v, label]) =>
+  [v, ({cmd: T["settings.tab.cat.cmd.far"], ssh: "SSH"})[v] || label]);
 
 // What a tab is called when nobody has named it: the thing it runs, in the
 // words the Kind and AI pickers use. For a kind with a choice inside it -- which
@@ -13645,18 +13678,19 @@ function launchCard(t, renamed) {
   const cmdRow = el("div", {class:"row"});
   const real = launchLine(t);
   let before = cmdToText(t.command);
-  const cmdInput = field(t, "command", T["settings.tab.command.ph"],
+  const cmdInput = field(t, "command", T[farPlaceOf(t) ? "settings.tab.command.ph.far" : "settings.tab.command.ph"],
     {mono:true, onInput:() => {
       followKind(t, before);
       before = cmdToText(t.command);
       if (renamed) renamed();
       renderNav(); real.schedule();
     }});
-  cmdInput.setAttribute("list", "cmdlist");
+  const far = farPlaceOf(t);
+  cmdInput.setAttribute("list", far ? "cmdlistfar" : "cmdlist");
   const detailBox = el("div");
   const rebuild = () => { detailBox.textContent = ""; detailBox.append(kindPanel(t, cmdInput, rebuild, real)); };
   cmdRow.append(el("label", {}, T["settings.tab.kind"]),
-    choose({k:catOf(t.command)}, "k", CAT_LIST, v => {
+    choose({k:catOf(t.command)}, "k", far ? farKinds() : CAT_LIST, v => {
       setCommand(t, cmdInput, catStart(v));
       // A tab made a browser starts with every control over its page on;
       // taking some away is the choice, not putting them there
@@ -13939,8 +13973,9 @@ async function showCliHelp(head) {
 function aiPanel(t, cmdInput, rebuild, real) {
   const box = el("div");
   const picker = el("select");
+  const far = farPlaceOf(t);
   for (const c of AI_CLIS) {
-    const ok = c.check ? aiEngines.some(e => e.id === c.check) : true;
+    const ok = far || (c.check ? aiEngines.some(e => e.id === c.check) : true);
     picker.append(el("option", {value:"cli:" + c.cmd}, c.label + (!ok ? T["settings.tab.common.missing"] : "")));
   }
   const provs = Object.keys(appProviders()).sort();
@@ -14729,6 +14764,8 @@ function kindPanel(t, cmdInput, rebuild, real) {
     return box;
   } else if (isEditorPanel(t.command)) {
     return el("div", {class:"hint"}, T["settings.tab.kind.editor.hint"]);
+  } else if (farPlaceOf(t)) {
+    box.append(el("div", {class:"hint"}, fill(T["settings.tab.far_shell.hint"], {host: farPlaceOf(t).host})));
   } else {
     const s = el("select");
     s.append(el("option", {value:""}, T["settings.tab.common.pick"]));
@@ -15049,6 +15086,10 @@ async function loadAi() {
   const dl = document.getElementById("cmdlist");
   dl.textContent = "";
   for (const c of COMMON_COMMANDS) dl.append(el("option", {value:c.cmd}, c.label));
+  // On another machine this PC's shells are not there: the AIs only
+  const far = document.getElementById("cmdlistfar");
+  far.textContent = "";
+  for (const c of AI_CLIS) far.append(el("option", {value:c.cmd}, c.label));
 }
 
 async function load() {
