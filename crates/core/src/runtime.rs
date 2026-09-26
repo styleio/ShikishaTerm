@@ -3688,6 +3688,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderMove { folder, to }) => {
                         shell.mail().folder_moves.push((folder, to));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::KeepEnv { from }) => {
+                        shell.mail().keep_envs.push(from);
+                    }
                     // How big the text is, and how wide the tab bar is, as the
                     // person looking wants them
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FontSize { px }) => {

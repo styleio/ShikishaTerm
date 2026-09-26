@@ -163,6 +163,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // the page's own on_press, both of which the phone could have caused
         // by typing the same instruction
         Ev::Button { from: Some(_) } => true,
+        // A press that names no page: the bar is always under a named one, so
+        // there is nothing for it to answer
+        Ev::Button { from: None } => false,
         // Firing one of the user's own quick actions (its Lua runs sandboxed).
         // No different in reach than typing the same instruction from the phone.
         Ev::RunAction { .. } => true,
@@ -341,8 +344,63 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // looking person's own comfort, and both are already whatever the last
         // side to change them said
         Ev::FontSize { .. } | Ev::TabWidth { .. } => true,
+        // Putting the environment file the project was offered into it. It
+        // writes one file into the repository, which is no further than the
+        // ignore lines the worktree dialog already keeps from here
+        // (`Ev::BringLines`), and the offer is worked out again on this side
+        Ev::KeepEnv { .. } => true,
+
+        // ── Refused, each for a reason written beside it ─────────────────
+        //
+        // There is no catch-all arm, and there must never be one: a phone can do
+        // what the window can (the app is built that way), so an intent added
+        // later does not compile until somebody decides here, out loud,
+        // whether a phone may send it. A catch-all refusal is how buttons came
+        // to work on the window and do nothing on a phone. The names refused
+        // are also listed in `the_phone_is_refused_only_what_is_written_down`
+
         // Paste stays local — one long-press would flow straight into the AI's input box
-        _ => false,
+        Ev::Paste { .. } => false,
+        // The master password. Answered in the window, where the prompt holds
+        // the whole app until the person at it replies -- and a password that
+        // never travels is one no network can carry off
+        Ev::Password { .. } => false,
+        // Reports, not asks: what this PC's own engine and the pages placed in
+        // its window say about themselves. A phone draws those pages as a
+        // picture and has none of its own to report from
+        Ev::Ready { .. }
+        | Ev::Result { .. }
+        | Ev::Where { .. }
+        | Ev::Frame { .. }
+        | Ev::Loading { .. }
+        | Ev::JsError { .. }
+        | Ev::Recorded { .. }
+        | Ev::Touched { .. }
+        | Ev::Compose { .. }
+        | Ev::Pen { .. } => false,
+        // This PC's window and its notification-area icon, and the keys that
+        // work from any program on this PC. None of them is a thing a phone has
+        Ev::CloseRequested | Ev::Closed | Ev::TrayOpen | Ev::TrayQuit | Ev::Summon { .. } => false,
+        // Done on the phone through a door of its own, so the same button
+        // works there without this: the settings are the proxied /cfg, the
+        // manual and a program's install page are plain links, a file is sent
+        // to /api/attach, and the replay is downloaded from /api/replay. These
+        // intents would open those on this PC, in front of nobody
+        Ev::OpenSettings { .. }
+        | Ev::CloseSettings
+        | Ev::SettingsFull
+        | Ev::Help
+        | Ev::InstallHelp { .. }
+        | Ev::Attach { .. }
+        | Ev::ReplaySave => false,
+        // The star card opens this PC's browser, and the phone does not draw it
+        Ev::Thanks { .. } => false,
+        // Cutting every remote session is the window's own switch; from a
+        // phone it would cut the line it was pressed on
+        Ev::RemoteCut => false,
+        // The first-start setup stands in front of everything, remote access
+        // included: it is answered before any phone can be looking
+        Ev::Setup { .. } | Ev::SetupRefresh { .. } => false,
     }
 }
 
@@ -2963,7 +3021,7 @@ mod tests {
         // the match still parses, still fills the list, and stops meaning
         // anything at all
         assert!(
-            gate.len() < gate_src.len() / 4 && gate.contains("_ => false,"),
+            gate.len() < gate_src.len() / 4 && gate.contains("Ev::Paste { .. } => false,"),
             "the gate's range was not read ({} characters)",
             gate.len()
         );
@@ -3021,6 +3079,63 @@ mod tests {
             "paste has somewhere to go (the gate should stay closed)"
         );
         assert!(allowed.iter().all(|n| n != "Paste"), "paste gets through");
+    }
+
+    /// A phone can do what the window can. What it cannot is written down,
+    /// one intent at a time, beside the reason -- never left to a catch-all.
+    ///
+    /// The gate has no `_ =>` arm, so a new intent does not compile until it
+    /// is decided on; this is the other half, so a new refusal is a line
+    /// somebody changes here on purpose rather than a `false` slipped into the
+    /// gate. Every refused name below has its reason in `allowed_from_afar`
+    #[test]
+    fn the_phone_is_refused_only_what_is_written_down() {
+        let src = include_str!("remote.rs").replace("\r\n", "\n");
+        let a = src.find("fn allowed_from_afar").expect("the gate is missing");
+        let gate = &src[a..a + src[a..].find("\n}\n").expect("the gate has no end")];
+        assert!(!gate.contains("_ =>"), "the gate refuses by default again: a phone loses whatever is added next");
+
+        let mut refused: Vec<String> = Vec::new();
+        let mut rest = gate;
+        while let Some(at) = rest.find("=>") {
+            let (before, after) = (&rest[..at], rest[at + 2..].trim_start());
+            if after.starts_with("false") {
+                // What stands between the arm before and this one: the reason,
+                // then the patterns. Its last line that is not a pattern is
+                // the reason, and it has to be one
+                let names = before.rsplit("=>").next().unwrap_or(before);
+                let above = names
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty() && !l.starts_with("Ev::") && !l.starts_with('|'))
+                    .last()
+                    .unwrap_or_default();
+                assert!(above.starts_with("//"), "{} is refused with no reason beside it", names.trim());
+                refused.extend(names.match_indices("Ev::").map(|(i, _)| {
+                    names[i + 4..].chars().take_while(char::is_ascii_alphanumeric).collect::<String>()
+                }));
+            }
+            rest = &rest[at + 2..];
+        }
+        refused.sort();
+        let mut written = vec![
+            // Kept on this machine on purpose
+            "Paste", "Password",
+            // What this PC's own pages report
+            "Ready", "Result", "Where", "Frame", "Loading", "JsError", "Recorded", "Touched", "Compose", "Pen",
+            // This PC's window, tray and keys
+            "CloseRequested", "Closed", "TrayOpen", "TrayQuit", "Summon",
+            // The phone has a door of its own
+            "OpenSettings", "CloseSettings", "SettingsFull", "Help", "InstallHelp", "Attach", "ReplaySave",
+            // Meaningless on a phone
+            "Thanks", "RemoteCut", "Setup", "SetupRefresh",
+            // Refused before this list was kept, each with its reason beside it
+            "Copy", "Covered", "PageToast", "Window", "Snip", "SnipAsk",
+            // A page's bar pressed with no page named
+            "Button",
+        ];
+        written.sort();
+        assert_eq!(refused, written, "what a phone may not do changed: say why beside it in the gate, and here");
     }
 
     #[test]
