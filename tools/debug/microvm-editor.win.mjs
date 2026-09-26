@@ -29,7 +29,9 @@ import { spawn, spawnSync } from 'node:child_process';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const SHOTS = path.join(ROOT, 'target', 'shots');
-const RUN = path.join(os.tmpdir(), 'sk-microvm-editor');
+// A folder of this run's own: two sessions running this at once must not
+// stage over each other or stop each other's app (it is found by this path)
+const RUN = path.join(os.tmpdir(), 'sk-microvm-editor-' + process.pid);
 const APP = path.join(RUN, 'app');
 const LOCAL = path.join(RUN, 'localappdata');
 const CONFIG = path.join(APP, 'config', 'config.json');
@@ -232,6 +234,8 @@ try {
 } finally {
   stopApp();
   await box.kill().catch(() => {});
+  await sleep(500);
+  fs.rmSync(RUN, { recursive: true, force: true });
   console.log('machine deleted');
 }
 console.log(failures ? `${failures} failed` : 'all passed');

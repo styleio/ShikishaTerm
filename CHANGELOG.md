@@ -225,6 +225,12 @@ once it reaches its first tagged release.
   deletes the original", which never happens: the links are taken out first.
 
 ### Fixed
+- **A MicroVM pauses when nobody has touched it, not while its AI is at
+  work.** A MicroVM was given its minutes once, when the app first reached
+  it, so it paused half an hour later whatever was running in it -- an AI in
+  the middle of a long piece of work stopped with it. While a terminal on it
+  is moving it is given its minutes again, so it pauses the set time after it
+  was last in use, as the setting says.
 - **An AI on a MicroVM comes back on its conversation when the app restarts.**
   A tab in a folder on a MicroVM started its AI without the conversation's
   arguments, so the app remembered a conversation the AI never had, and after

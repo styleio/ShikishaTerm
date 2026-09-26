@@ -279,6 +279,32 @@ pub fn sign_in_as(key: &str, id: &str, sign_in: Option<&SignIn>) -> Result<()> {
     .map(|_| ())
 }
 
+/// Give a machine its full time again, from now.
+///
+/// A MicroVM pauses when its minutes run out, counted from when it was last
+/// given them -- not from when it was last used. Given them only when this
+/// program first spoke to it, a machine paused half an hour later whatever was
+/// running in it, and an AI in the middle of a long piece of work stopped with
+/// it. Asked while something on the machine is at work (see
+/// `runtime::keep_machines_up`), so the minutes the settings name are minutes
+/// untouched, as they say. Unlike `connect`, which only ever lengthens them,
+/// this sets them from now
+pub fn keep_up(host: &crate::config::HostSpec) -> Result<()> {
+    let id = host
+        .instance
+        .as_deref()
+        .ok_or_else(|| anyhow!(crate::i18n::tp("err.e2b.no_machine", &[("host", &host.name)])))?;
+    let key = key().ok_or_else(|| anyhow!(crate::i18n::t("err.e2b.no_key")))?;
+    answered(
+        agent()
+            .post(&format!("{API}/sandboxes/{id}/timeout"))
+            .header("X-API-Key", &key)
+            .header("Content-Type", "application/json")
+            .send(serde_json::json!({ "timeout": host.minutes_or_default() * 60 }).to_string()),
+    )
+    .map(|_| ())
+}
+
 /// Let it go. A sandbox nobody kills still pauses when its time runs out, so
 /// this is what ends one for good
 pub fn kill(key: &str, id: &str) -> Result<()> {

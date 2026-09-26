@@ -1387,6 +1387,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // over there is a round trip, so it is asked on a clock of its own
     let mut far_seen: std::collections::HashMap<String, FarSeen> = std::collections::HashMap::new();
     let mut far_polls: std::collections::HashMap<String, FarPoll> = std::collections::HashMap::new();
+    // When each MicroVM was last given its minutes again (see `keep_machines_up`)
+    let mut kept_up: std::collections::HashMap<String, Instant> = std::collections::HashMap::new();
     // 🔍 environment cards: per tab (by id), the captured output of the last
     // survey the person ran. Ride along with every ✨ suggestion so the AI
     // keeps knowing the environment long after the survey scrolled away
@@ -6286,6 +6288,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         far_seen.retain(|k, _| editors.iter().any(|e| &e.key == k));
         far_polls.retain(|k, _| editors.iter().any(|e| &e.key == k));
         far_stamp_polls(&editors, &tabs, start.elapsed().as_millis() as u64, &mut far_polls, &far_tx);
+        keep_machines_up(&tabs, start.elapsed().as_millis() as u64, &mut kept_up);
         // What the transfer panel asked for. Reading this machine is answered
         // on the spot; anything that touches the server goes to a thread,
         // because a folder listing over a network is a wait and this loop
@@ -10157,6 +10160,39 @@ pub struct FarSeen {
 pub struct FarPoll {
     pub at: Instant,
     pub busy: bool,
+}
+
+/// How recently a terminal on a MicroVM has to have changed for its machine to
+/// count as in use
+const MACHINE_IN_USE_MS: u64 = 60_000;
+/// How often a MicroVM in use is given its minutes again. Well inside a minute,
+/// the shortest time a machine can be set to, so it never runs out while in use
+const MACHINE_KEPT_EVERY: Duration = Duration::from_secs(30);
+
+/// Give every MicroVM something is at work on its minutes again.
+///
+/// "At work" is a terminal of it whose screen changed in the last minute: an
+/// AI working, a build running, a person typing. A machine where everything is
+/// still is left alone, and pauses its minutes after it was last in use --
+/// which is what the setting says. Each ask is a thread of its own: it is a
+/// round trip, and this loop draws the window
+fn keep_machines_up(tabs: &[Tab], now_ms: u64, kept: &mut std::collections::HashMap<String, Instant>) {
+    for t in tabs {
+        let Some(host) = t.cloud() else { continue };
+        let Some(id) = host.instance.clone() else { continue };
+        if t.ms_since_change(now_ms) >= MACHINE_IN_USE_MS
+            || kept.get(&id).is_some_and(|at| at.elapsed() < MACHINE_KEPT_EVERY)
+        {
+            continue;
+        }
+        kept.insert(id, Instant::now());
+        let host = host.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = crate::e2b::keep_up(&host) {
+                append_hook_log(&format!("e2b: keeping {} up failed: {e:#}", host.name));
+            }
+        });
+    }
 }
 
 /// How often an editor showing a file on another machine asks whether it
