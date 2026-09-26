@@ -478,8 +478,33 @@ try {
   await board.run('closeFolderMenu(); true');
 
   console.log('5. deleting the worktree deletes its machine, and only that');
+  // The page 4b served is not committed: work that exists only on that
+  // machine, so the machine is not deleted, and the board says why
   await board.run(`discardFolder(${g}); true`);
-  await until(async () => !(await ours()).some((s) => s.sandboxID === wt.sandbox), 'the worktree\'s machine to go', 60000);
+  await until(() => board.run('S.flash || ""').then((t) => /削除していません/.test(t)), 'the refusal of a machine with work on it', 60000);
+  check(/コミットしていないものが 1 件/.test(await board.run('S.flash')) && !!folderAt(wt.cwd) && (await ours()).some((s) => s.sandboxID === wt.sandbox),
+    'what is not committed on the machine stops it, and the folder and its machine stay: ' + await board.run('S.flash'));
+  // Put away, and asked again: the commit 4c made is on no server either --
+  // the machine is all there is of it -- so that stops it too
+  await inside(`cd ${wt.cwd} && rm -f index.php`);
+  await board.run('S.flash = ""; true');
+  await board.run(`discardFolder(${g}); true`);
+  await until(() => board.run('S.flash || ""').then((t) => /プッシュしていないコミット/.test(t)), 'the refusal of a commit that is nowhere else', 60000);
+  check(!!folderAt(wt.cwd) && (await ours()).some((s) => s.sandboxID === wt.sandbox), 'a commit not pushed stops it as well, and nothing goes');
+  // Taken back to where the branch was cut, and asked once more
+  await inside(`cd ${wt.cwd} && git reset -q --hard "$(git rev-list HEAD --not --remotes | tail -n 1)~1"`);
+  await board.run(`discardFolder(${g}); true`);
+  // What the board says on the way, kept to be shown when it does not go
+  const said = new Set();
+  await until(async () => {
+    said.add(await board.run('S.flash || ""'));
+    return !(await ours()).some((s) => s.sandboxID === wt.sandbox);
+  }, 'the worktree\'s machine to go', 60000)
+    .catch(async (e) => {
+      console.log('    (the board said: ' + [...said].filter(Boolean).join(' | ') + ')');
+      console.log('    (git there says: ' + JSON.stringify(await inside(`cd ${wt.cwd} && git status --porcelain --untracked-files=all`).catch((x) => String(x))) + ')');
+      throw e;
+    });
   check(!folderAt(wt.cwd), 'the folder is off the desk');
   check((await ours()).some((s) => s.sandboxID === home.sandbox), 'the checkout\'s machine stays');
   await board.shot('4-after');
