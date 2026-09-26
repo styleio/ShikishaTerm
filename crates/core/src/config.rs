@@ -4102,6 +4102,11 @@ fn settle_tab_ids(tabs: &mut [FlatTab]) -> Vec<String> {
     moved
 }
 
+/// What a tab of a folder on another machine runs when nothing is written:
+/// the shell that opens there, which nothing is typed into
+/// ([`crate::desk::far_run`])
+pub const FAR_SHELL: &str = "sh";
+
 /// Flatten children depth-first (keeps display order matching tab numbers)
 fn flatten(tabs: &[TabConfig], depth: u16, folder: usize, out: &mut Vec<FlatTab>) {
     for t in tabs {
@@ -4208,7 +4213,21 @@ fn resolve_folders(
                 .filter(|d| !d.is_empty())
                 .map(str::to_string),
         });
+        let from = tabs.len();
         flatten(&def.tabs, 0, at, &mut tabs);
+        // A tab of a folder on another machine with nothing written runs that
+        // machine's shell. What such a tab is told is what is typed into the
+        // shell that opens there, and nothing to type is the shell itself --
+        // which is what the settings say of it. Settled here, where the desk
+        // is read, because everything after counts a tab with no command as
+        // no tab at all: two added that way were written down and never shown
+        if folders.last().is_some_and(|f| f.host.is_some()) {
+            for t in &mut tabs[from..] {
+                if t.cfg.command.argv().is_empty() {
+                    t.cfg.command = CommandSpec::Line(FAR_SHELL.to_string());
+                }
+            }
+        }
     }
     // Every tab in the desk at once: automation reaches across folders,
     // so two folders holding a "reviewer" each is the same collision as two in one
@@ -7953,6 +7972,31 @@ mod tests {
         let opts = crate::desk::tab_options(&ai[0].cfg, Some(&desk.folders[3]));
         assert_eq!(opts.remote_run.as_deref(), Some("claude"), "the AI is not typed into the far terminal");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tab added to a folder on another machine with its command left
+    /// empty is that machine's shell, as the settings say -- it was written
+    /// down and never shown. On this PC an empty command is still nothing
+    #[test]
+    fn an_empty_command_on_another_machine_is_its_shell() {
+        let text = r#"{
+          "hosts": [{"name": "vm", "kind": "e2b"}],
+          "desks": [{"name": "D", "folders": [
+            {"cwd": "/home/user/p", "host": "vm", "sandbox": "i-1",
+             "tabs": [{"name": "コマンド", "id": "hare", "command": ""},
+                      {"name": "claude", "id": "ai", "command": "claude"}]},
+            {"cwd": "D:/work/p", "tabs": [{"name": "empty", "command": ""}]}
+          ]}]
+        }"#;
+        let cfg: Config = serde_json::from_str(text).unwrap();
+        let desk = &cfg.resolve_desks().0[0];
+        let far: Vec<_> = desk.tabs.iter().filter(|t| t.folder == 0).collect();
+        assert_eq!(far[0].cfg.command.argv(), vec![FAR_SHELL.to_string()], "the empty tab is not the shell there");
+        assert_eq!(far[1].cfg.command.argv(), vec!["claude".to_string()], "a written command was changed");
+        let opts = crate::desk::tab_options(&far[0].cfg, Some(&desk.folders[0]));
+        assert_eq!(opts.remote_run, None, "something is typed into the shell it is");
+        let here: Vec<_> = desk.tabs.iter().filter(|t| t.folder == 1).collect();
+        assert!(here[0].cfg.command.argv().is_empty(), "an empty tab on this PC was given something to run");
     }
 
     /// A tab waiting for somewhere to work is given a folder, and that is

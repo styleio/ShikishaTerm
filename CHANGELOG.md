@@ -230,6 +230,11 @@ once it reaches its first tagged release.
   deletes the original", which never happens: the links are taken out first.
 
 ### Fixed
+- **A command tab added to a folder on a MicroVM appears.** The dialog says
+  that a command left empty opens the machine's shell, and the tab was
+  written down with nothing to run -- which the app counts as no tab at all,
+  so it never showed. A tab of a folder on another machine with nothing
+  written is now that machine's shell, so the ones already added appear too.
 - **A MicroVM pauses when nobody has touched it, not while its AI is at
   work.** A MicroVM was given its minutes once, when the app first reached
   it, so it paused half an hour later whatever was running in it -- an AI in
