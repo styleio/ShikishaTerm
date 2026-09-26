@@ -16218,6 +16218,13 @@ function gitPicked(where) {
 // Everything the panel learns comes back through here
 window.__git = function (d) {
   if (!d || !d.act) return;
+  // Answered on the folder's own line, off the board's thread: one that was
+  // asked about another tab's folder, before the column moved on, is not
+  // about what the column shows now
+  if (d.panel != null) {
+    const t = gitTab();
+    if (!t || (t.id || t.name || "") !== d.panel) return;
+  }
   // A fetch the column makes by itself, after a merge, says nothing over what the
   // merge said
   const quiet = d.act === "fetch" && G.quietFetch;

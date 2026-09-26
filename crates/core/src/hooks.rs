@@ -427,28 +427,6 @@ fn lua_to_json(v: &Value) -> serde_json::Value {
     }
 }
 
-/// Run AI-authored Lua in the browser sandbox. Returns `(err, out)`:
-/// `err` is the error text (nil on success), `out` is what the code returned,
-/// rendered as text (nil when it returned nothing).
-///
-/// A bare expression is worth its value — `browser_text(BR, "body")` on its
-/// own line should answer, not vanish — so the chunk is first compiled
-/// REPL-style with `return` prepended, falling back to the plain statement
-/// form when that isn't valid Lua
-/// The `encoding` a git call was given: `None` when it was not, or was left
-/// empty, which means "work out what each file is written in". A name nobody
-/// knows is an error rather than a quiet UTF-8 -- the caller asked for
-/// something in particular
-fn encoding_opt(opts: &Option<Table>) -> mlua::Result<Option<&'static encoding_rs::Encoding>> {
-    let Some(t) = opts else { return Ok(None) };
-    let Some(name) = t.get::<Option<String>>("encoding")?.filter(|n| !n.trim().is_empty()) else {
-        return Ok(None);
-    };
-    crate::charset::named(&name)
-        .map(Some)
-        .ok_or_else(|| mlua::Error::runtime(crate::i18n::tp("err.git.unknown_encoding", &[("enc", &name)])))
-}
-
 /// The repository a git command runs in.
 ///
 /// `nil` means the tab that called, which is the same rule `set_status` uses.
@@ -561,22 +539,6 @@ fn git_place(
     crate::git::there(&place.dir, place.remote.as_ref());
     let root = crate::git::root(&place.dir).map_err(|e| mlua::Error::runtime(e.to_string()))?;
     Ok((root, place.protect.clone(), place.git.clone()))
-}
-
-/// One path, or several. Writing `git_stage(tab, "src/main.rs")` for a single
-/// file is what everyone tries first, and a list is what a loop produces
-fn paths_of(v: &Value) -> mlua::Result<Vec<String>> {
-    match v {
-        Value::String(s) => Ok(vec![s.to_string_lossy().to_string()]),
-        Value::Table(t) => {
-            let mut out = Vec::new();
-            for p in t.clone().sequence_values::<String>() {
-                out.push(p?);
-            }
-            Ok(out)
-        }
-        _ => Err(mlua::Error::runtime(crate::i18n::t("err.git.paths"))),
-    }
 }
 
 /// One sentence out of what Lua said, for a screen rather than a log.
@@ -3390,120 +3352,39 @@ impl HookEngine {
         // command hands the work over and waits, the way asking the AI waits.
         // What each one means is `transfer`, reached from `parse_yield`
         {
-            // What has changed, one row per file, in git's own two letters
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_status",
-                    lua.create_function(move |lua, tab: Value| {
-                        let dir = git_folder(&c, &o, &tab)?;
-                        let changes = crate::git::status(&dir)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-                        let out = lua.create_table()?;
-                        for ch in changes {
-                            let row = lua.create_table()?;
-                            row.set("path", ch.path)?;
-                            row.set("index", ch.index.to_string())?;
-                            row.set("work", ch.work.to_string())?;
-                            // The booleans every caller works out anyway. They
-                            // are not opposites: a file can be both at once, and
-                            // that is the ordinary result of staging one hunk of
-                            // it. Saying only "staged" about `MM` loses the half
-                            // that is still waiting
-                            row.set("staged", !matches!(ch.index, ' ' | '?'))?;
-                            row.set("unstaged", ch.work != ' ')?;
-                            row.set(
-                                "conflict",
-                                ch.index == 'U'
-                                    || ch.work == 'U'
-                                    || (ch.index == 'A' && ch.work == 'A')
-                                    || (ch.index == 'D' && ch.work == 'D'),
-                            )?;
-                            // Marked by git, and still holding both sides
-                            row.set("tangled", ch.tangled)?;
-                            if let Some(f) = ch.from {
-                                row.set("from", f)?;
-                            }
-                            out.push(row)?;
-                        }
-                        Ok(out)
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
+            // The git panel's calls (see `crate::gitops`): the one answer a
+            // script and the panel both get. Each finds the repository of the
+            // tab it names -- nil is the caller -- and hands what came after
+            // the tab over as it is
+            for name in crate::gitops::PANEL {
+                let c = Rc::clone(&places);
+                let o = Rc::clone(&current_origin);
+                let k = Caps::clone(&caps);
+                let method = *name;
+                shikisha
+                    .set(
+                        method,
+                        lua.create_function(move |lua, args: mlua::Variadic<Value>| {
+                            let tab = args.first().cloned().unwrap_or(Value::Nil);
+                            let (dir, protect, git) = git_place(&c, &o, &tab)?;
+                            let who = match crate::gitops::signs_in(method) {
+                                Some(to_server) => Some(
+                                    git.to_git(to_server, &|key| k.secret_value(key).ok())
+                                        .map_err(mlua::Error::runtime)?,
+                                ),
+                                None => None,
+                            };
+                            let rest: Vec<serde_json::Value> = args.iter().skip(1).map(lua_to_json).collect();
+                            let answer = crate::gitops::call(method, &dir, &protect, who.as_ref(), &rest)
+                                .map_err(mlua::Error::runtime)?;
+                            json_to_lua(lua, &answer)
+                        })
+                        .map_err(lerr)?,
+                    )
+                    .map_err(lerr)?;
+            }
         }
         {
-            // The diff, cut into the pieces a person says yes or no to. Each
-            // one carries a patch that stands on its own, which is what makes
-            // "this bit, not that bit" possible at all
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_hunks",
-                    lua.create_function(move |lua, (tab, opts): (Value, Option<Table>)| {
-                        let dir = git_folder(&c, &o, &tab)?;
-                        let path: Option<String> = match &opts {
-                            Some(t) => t.get("path")?,
-                            None => None,
-                        };
-                        let staged = match &opts {
-                            Some(t) => t.get::<Option<bool>>("staged")?.unwrap_or(false),
-                            None => false,
-                        };
-                        let commit: Option<String> = match &opts {
-                            Some(t) => t.get("commit")?,
-                            None => None,
-                        };
-                        let encoding = encoding_opt(&opts)?;
-                        // A commit's own change is cut the same way the working
-                        // tree's is -- which is what lets one piece of a commit
-                        // be walked back without touching the rest
-                        let raw = match commit.as_deref().filter(|c| !c.is_empty()) {
-                            Some(c) => crate::git::show_bytes(&dir, c, path.as_deref().unwrap_or_default()),
-                            None => crate::git::diff_bytes(&dir, path.as_deref(), staged),
-                        }
-                        .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-                        let out = lua.create_table()?;
-                        for h in crate::git::split_hunks_bytes(&raw, encoding) {
-                            let row = lua.create_table()?;
-                            row.set("file", h.file)?;
-                            row.set("header", h.header)?;
-                            row.set("start", h.start)?;
-                            row.set("end", h.end)?;
-                            row.set("patch", h.patch)?;
-                            row.set("encoding", h.encoding.name())?;
-                            row.set("exact", h.exact)?;
-                            out.push(row)?;
-                        }
-                        Ok(out)
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
-            // ...and putting one back: staged, unstaged, or undone, which are
-            // the same call with the two switches saying which
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_apply",
-                    lua.create_function(move |_, (tab, patch, opts): (Value, String, Option<Table>)| {
-                        let dir = git_folder(&c, &o, &tab)?;
-                        let flag = |name: &str| -> mlua::Result<bool> {
-                            Ok(match &opts {
-                                Some(t) => t.get::<Option<bool>>(name)?.unwrap_or(false),
-                                None => false,
-                            })
-                        };
-                        let encoding = encoding_opt(&opts)?.unwrap_or(encoding_rs::UTF_8);
-                        crate::git::apply(&dir, &patch, encoding, flag("cached")?, flag("reverse")?)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
         }
         {
             // Only the files with a conflict. The first thing an AI asked to
@@ -3524,31 +3405,6 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // The diff as text. `{ staged = true }` reads the staged side,
-            // `{ path = "..." }` narrows it to one file
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_diff",
-                    lua.create_function(move |_, (tab, opts): (Value, Option<Table>)| {
-                        let dir = git_folder(&c, &o, &tab)?;
-                        let path: Option<String> = match &opts {
-                            Some(t) => t.get("path")?,
-                            None => None,
-                        };
-                        let staged = match &opts {
-                            Some(t) => t.get::<Option<bool>>("staged")?.unwrap_or(false),
-                            None => false,
-                        };
-                        let encoding = encoding_opt(&opts)?;
-                        crate::git::diff_bytes(&dir, path.as_deref(), staged)
-                            .map(|raw| crate::git::diff_text(&raw, encoding))
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
         }
         {
             let c = Rc::clone(&places);
@@ -3577,270 +3433,14 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // The branch checked out, and whether committing straight onto it
-            // is the kind of thing to ask about first. `nil` when the head is
-            // detached -- there is no branch to name
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_branch",
-                    lua.create_function(move |lua, tab: Value| {
-                        let (dir, protect, _) = git_place(&c, &o, &tab)?;
-                        let name = crate::git::branch(&dir)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-                        match name {
-                            Some(n) => {
-                                let row = lua.create_table()?;
-                                row.set("protected", crate::git::is_protected(&n, &protect))?;
-                                row.set("name", n)?;
-                                // Only when there is a branch on the server to
-                                // count against: a count against nothing is not
-                                // zero, it is no answer
-                                if let Some(up) = crate::git::upstream(&dir)
-                                    .map_err(|e| mlua::Error::runtime(e.to_string()))?
-                                {
-                                    row.set("upstream", up.name)?;
-                                    row.set("ahead", up.ahead)?;
-                                    row.set("behind", up.behind)?;
-                                    // Said only when it is the branch's own
-                                    // name that found it, so a screen can say
-                                    // which of the two it is comparing with
-                                    if !up.tracked {
-                                        row.set("by_name", true)?;
-                                    }
-                                    // The commit the server has, which is the
-                                    // one CI ran on
-                                    if !up.sha.is_empty() {
-                                        row.set("upstream_sha", up.sha)?;
-                                    }
-                                }
-                                // What it was cut from, when that was written down,
-                                // and the commands bringing its latest in would run
-                                if let Some(base) = crate::git::recorded_base(&dir, &row.get::<String>("name")?) {
-                                    let steps = crate::git::catch_up_steps(&dir, &base);
-                                    // Commits on the base this branch does not have yet,
-                                    // as of the last fetch. Absent when that cannot be told
-                                    if let Some(theirs) = steps.last().and_then(|s| s.last())
-                                        && let Ok(n) = crate::git::run(&dir, &["rev-list", "--count", &format!("HEAD..{theirs}")])
-                                        && let Ok(n) = n.trim().parse::<u64>()
-                                    {
-                                        row.set("base_behind", n)?;
-                                    }
-                                    // A merge of that base stopped half done here
-                                    if let Some(theirs) = steps.last().and_then(|s| s.last())
-                                        && crate::git::merging_in(&dir, theirs)
-                                    {
-                                        row.set("catching_up", theirs.as_str())?;
-                                    }
-                                    row.set("catch_up", crate::git::said(&steps))?;
-                                    row.set("base", base)?;
-                                }
-                                Ok(Value::Table(row))
-                            }
-                            None => Ok(Value::Nil),
-                        }
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
         }
         {
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_stage",
-                    lua.create_function(move |_, (tab, paths): (Value, Value)| {
-                        let dir = git_folder(&c, &o, &tab)?;
-                        crate::git::stage(&dir, &paths_of(&paths)?)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_unstage",
-                    lua.create_function(move |_, (tab, paths): (Value, Value)| {
-                        let dir = git_folder(&c, &o, &tab)?;
-                        crate::git::unstage(&dir, &paths_of(&paths)?)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
-            // ...and throwing one away, which is the one thing here git cannot
-            // undo afterwards. `staged = true` takes the file back to the last
-            // commit; without it, back to the way it is staged. `plan = true`
-            // answers with the commands and runs none of them, so whoever asks
-            // can show them before asking a person. Both answer the same way --
-            // `{ plan = …, said = { "git …" } }` -- because the list shown and
-            // the list run are built by this one call
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_discard",
-                    lua.create_function(
-                        move |lua, (tab, paths, opts): (Value, Value, Option<Table>)| {
-                            let dir = git_folder(&c, &o, &tab)?;
-                            let flag = |name: &str| -> mlua::Result<bool> {
-                                Ok(match &opts {
-                                    Some(t) => t.get::<Option<bool>>(name)?.unwrap_or(false),
-                                    None => false,
-                                })
-                            };
-                            let staged = flag("staged")?;
-                            let plan = flag("plan")?;
-                            let paths = paths_of(&paths)?;
-                            let said = match plan {
-                                true => crate::git::said(&crate::git::discard_steps(
-                                    &dir, &paths, staged,
-                                )),
-                                false => crate::git::discard(&dir, &paths, staged)
-                                    .map_err(|e| mlua::Error::runtime(e.to_string()))?,
-                            };
-                            let out = lua.create_table()?;
-                            out.set("plan", plan)?;
-                            out.set("said", lua.create_sequence_from(said)?)?;
-                            Ok(out)
-                        },
-                    )
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
         }
         {
-            // Commit what is staged. A shared branch refuses unless the caller
-            // says it meant it, so whoever catches the refusal can offer to
-            // make a branch instead -- a better answer than either a wall or a
-            // commit nobody meant to make
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            let k = Caps::clone(&caps);
-            shikisha
-                .set(
-                    "git_commit",
-                    lua.create_function(
-                        move |_, (tab, message, opts): (Value, String, Option<Table>)| {
-                            let (dir, protect, who) = git_as(&c, &o, &tab, &k, false)?;
-                            let allow = match &opts {
-                                Some(t) => {
-                                    t.get::<Option<bool>>("allow_protected")?.unwrap_or(false)
-                                }
-                                None => false,
-                            };
-                            let amend = match &opts {
-                                Some(t) => t.get::<Option<bool>>("amend")?.unwrap_or(false),
-                                None => false,
-                            };
-                            crate::git::commit(&dir, &message, &protect, allow, amend, &who)
-                                .map_err(|e| mlua::Error::runtime(e.to_string()))
-                        },
-                    )
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
         }
         {
-            // The history, with git drawing the graph, and one commit in full
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_graph",
-                    lua.create_function(move |lua, (tab, opts): (Value, Option<Table>)| {
-                        let dir = git_folder(&c, &o, &tab)?;
-                        let flag = |name: &str| -> mlua::Result<bool> {
-                            Ok(match &opts {
-                                Some(t) => t.get::<Option<bool>>(name)?.unwrap_or(false),
-                                None => false,
-                            })
-                        };
-                        let count = match &opts {
-                            Some(t) => t.get::<Option<u32>>("count")?.unwrap_or(200),
-                            None => 200,
-                        };
-                        let only: Option<String> = match &opts {
-                            Some(t) => t.get("branch")?,
-                            None => None,
-                        };
-                        let rows = crate::git::graph(
-                            &dir,
-                            flag("all")?,
-                            flag("remotes")?,
-                            count,
-                            only.as_deref(),
-                        )
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-                        let out = lua.create_table()?;
-                        for r in rows {
-                            let row = lua.create_table()?;
-                            row.set("graph", r.graph)?;
-                            row.set("hash", r.hash)?;
-                            row.set("short", r.short)?;
-                            row.set("author", r.author)?;
-                            row.set("date", r.date)?;
-                            row.set("subject", r.subject)?;
-                            out.push(row)?;
-                        }
-                        Ok(out)
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_detail",
-                    lua.create_function(move |lua, (tab, hash): (Value, String)| {
-                        let dir = git_folder(&c, &o, &tab)?;
-                        let d = crate::git::detail(&dir, &hash)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-                        let row = lua.create_table()?;
-                        row.set("hash", d.hash)?;
-                        row.set("parents", lua.create_sequence_from(d.parents)?)?;
-                        row.set("author", d.author)?;
-                        row.set("author_date", d.author_date)?;
-                        row.set("committer", d.committer)?;
-                        row.set("commit_date", d.commit_date)?;
-                        row.set("subject", d.subject)?;
-                        row.set("body", d.body)?;
-                        row.set("files", lua.create_sequence_from(d.files)?)?;
-                        Ok(row)
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
         }
         {
-            // The branches the servers have, each with the commands bringing its
-            // latest in would run -- the list a base is chosen from
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_remote_branches",
-                    lua.create_function(move |lua, tab: Value| {
-                        let dir = git_folder(&c, &o, &tab)?;
-                        let list = crate::git::remote_branches(&dir)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-                        let out = lua.create_table()?;
-                        for name in list {
-                            let row = lua.create_table()?;
-                            row.set("catch_up", crate::git::said(&crate::git::catch_up_steps(&dir, &name)))?;
-                            row.set("name", name)?;
-                            out.push(row)?;
-                        }
-                        Ok(out)
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
             // Write down what the branch in front was cut from
             let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
@@ -3859,56 +3459,6 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // Every local branch, with a mark on the one checked out
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_branches",
-                    lua.create_function(move |lua, tab: Value| {
-                        let (dir, protect, _) = git_place(&c, &o, &tab)?;
-                        let list = crate::git::branches(&dir)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-                        let out = lua.create_table()?;
-                        for (name, here) in list {
-                            let row = lua.create_table()?;
-                            row.set("current", here)?;
-                            row.set("protected", crate::git::is_protected(&name, &protect))?;
-                            row.set("name", name)?;
-                            out.push(row)?;
-                        }
-                        Ok(out)
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_checkout",
-                    lua.create_function(move |_, (tab, name): (Value, String)| {
-                        let dir = git_folder(&c, &o, &tab)?;
-                        crate::git::checkout(&dir, &name)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            let k = Caps::clone(&caps);
-            shikisha
-                .set(
-                    "git_merge",
-                    lua.create_function(move |_, (tab, name): (Value, String)| {
-                        let (dir, _, who) = git_as(&c, &o, &tab, &k, false)?;
-                        crate::git::merge(&dir, &name, &who)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
         }
         {
             // The three that talk to a server. A script calling one of these
@@ -3960,21 +3510,6 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // Make a branch and move onto it. What a refused commit is offered
-            // instead of, so that the refusal is a door rather than a wall
-            let c = Rc::clone(&places);
-            let o = Rc::clone(&current_origin);
-            shikisha
-                .set(
-                    "git_branch_create",
-                    lua.create_function(move |_, (tab, name): (Value, String)| {
-                        let dir = git_folder(&c, &o, &tab)?;
-                        crate::git::branch_create(&dir, &name)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))
-                    })
-                    .map_err(lerr)?,
-                )
-                .map_err(lerr)?;
         }
         {
             // The floor everything else is sugar over. Whatever git can do,

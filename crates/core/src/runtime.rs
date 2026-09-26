@@ -1487,6 +1487,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let (suggest_tx, suggest_rx) = std::sync::mpsc::channel::<String>();
     // The git panel's slow half: fetch, pull and push answer from a thread
     let (git_tx, git_rx) = std::sync::mpsc::channel::<String>();
+    // The git panel's questions, one line per folder (see `GitLine`)
+    let mut git_lines = GitLines::new();
     // Answers to the Issue tab, from the threads that waited for GitHub
     let (issues_tx, issues_rx) = std::sync::mpsc::channel::<String>();
     // A MicroVM folder asked to be deleted, checked on its machine for work
@@ -5670,22 +5672,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 continue;
             }
-            if engine.is_none() {
-                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
-            }
-            let Some(eng) = engine.as_mut() else { continue };
-            eng.set_states(tab_states(&tabs));
-            eng.set_places(places_by_surface(&surfaces, &tabs));
-            let who = serde_json::Value::String(panel.clone());
             let files = serde_json::json!(paths);
             let (method, params): (&str, Vec<serde_json::Value>) = match act.as_str() {
-                "status" => ("git_status", vec![who.clone()]),
-                "branch" => ("git_branch", vec![who.clone()]),
-                "branches" => ("git_branches", vec![who.clone()]),
+                "status" => ("git_status", vec![]),
+                "branch" => ("git_branch", vec![]),
+                "branches" => ("git_branches", vec![]),
                 "diff" => (
                     "git_diff",
                     vec![
-                        who.clone(),
                         serde_json::json!({
                             "path": paths.first().cloned().unwrap_or_default(),
                             "staged": args.get("staged").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -5696,7 +5690,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 "graph" => (
                     "git_graph",
                     vec![
-                        who.clone(),
                         serde_json::json!({
                             "all": args.get("all").and_then(|v| v.as_bool()).unwrap_or(true),
                             "remotes": args.get("remotes").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -5704,11 +5697,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }),
                     ],
                 ),
-                "detail" => ("git_detail", vec![who.clone(), serde_json::json!(text)]),
+                "detail" => ("git_detail", vec![serde_json::json!(text)]),
                 "hunks" => (
                     "git_hunks",
                     vec![
-                        who.clone(),
                         serde_json::json!({
                             "path": paths.first().cloned().unwrap_or_default(),
                             "staged": args.get("staged").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -5721,7 +5713,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 "hunk" => (
                     "git_apply",
                     vec![
-                        who.clone(),
                         serde_json::json!(text),
                         serde_json::json!({
                             "cached": args.get("cached").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -5730,15 +5721,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }),
                     ],
                 ),
-                "stage" => ("git_stage", vec![who.clone(), files]),
-                "unstage" => ("git_unstage", vec![who.clone(), files]),
+                "stage" => ("git_stage", vec![files]),
+                "unstage" => ("git_unstage", vec![files]),
                 // Throwing a change away. Asked twice: once with `plan`, for
                 // the command lines the question is put in, and once for real
                 // once somebody has read them and pressed the button
                 "discard" => (
                     "git_discard",
                     vec![
-                        who.clone(),
                         files,
                         serde_json::json!({
                             "staged": args.get("staged").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -5749,56 +5739,75 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 "commit" => (
                     "git_commit",
                     vec![
-                        who.clone(),
                         serde_json::json!(text),
                         serde_json::json!({
                             "amend": args.get("amend").and_then(|v| v.as_bool()).unwrap_or(false),
                         }),
                     ],
                 ),
-                "checkout" => ("git_checkout", vec![who.clone(), serde_json::json!(text)]),
-                "merge" => ("git_merge", vec![who.clone(), serde_json::json!(text)]),
-                "remote_branches" => ("git_remote_branches", vec![who.clone()]),
+                "checkout" => ("git_checkout", vec![serde_json::json!(text)]),
+                "merge" => ("git_merge", vec![serde_json::json!(text)]),
+                "remote_branches" => ("git_remote_branches", vec![]),
                 // "make a branch and commit there" -- the answer to a refusal
                 // rather than a way around it
-                "branch_new" => ("git_branch_create", vec![who.clone(), serde_json::json!(text)]),
+                "branch_new" => ("git_branch_create", vec![serde_json::json!(text)]),
                 _ => continue,
             };
-            let answer = eng.call_primitive_as(None, grants::Subject::Human, method, &params);
-            let payload = match answer {
-                Ok(data) => serde_json::json!({ "act": act, "ok": true, "data": data }),
-                Err(e) => {
-                    // A commit refused on a shared branch is not a failure, it
-                    // is a question -- and the panel asks it in its own words,
-                    // so the reason is named rather than shown as Lua said it
-                    let on = (act == "commit")
-                        .then(|| {
-                            eng.call_primitive_as(
-                                None,
-                                grants::Subject::Human,
-                                "git_branch",
-                                std::slice::from_ref(&who),
-                            )
-                            .ok()
-                        })
-                        .flatten();
-                    let shared = on
-                        .as_ref()
-                        .and_then(|b| b.get("protected").and_then(|p| p.as_bool()))
-                        .unwrap_or(false);
-                    serde_json::json!({
-                        "act": act,
-                        "ok": false,
-                        "error": plain_error(&e),
-                        "why": if shared { "protected" } else { "" },
-                        // Named here: the panel's own idea of the branch is
-                        // only there once it has read the status, and a
-                        // commit sent before that said "  is protected"
-                        "branch": on.as_ref().and_then(|b| b.get("name").cloned()),
-                    })
-                }
+            // Asked on the folder's own line (see `GitLine`), after the same
+            // permission a script is asked for. Where the folder is, whose
+            // branches it guards and who commits there are settled here, from
+            // the screens as they are now; git itself runs on the line
+            let place = panel_places(&surfaces)
+                .into_iter()
+                .chain(tab_places(&tabs).into_iter().filter(|p| !p.dir.as_os_str().is_empty()))
+                .find(|p| p.key.matches(&panel));
+            let refused = match (caps.allows(method, grants::Subject::Human), &place) {
+                (false, _) => Some(i18n::tp(
+                    "err.hooks.not_permitted",
+                    &[("name", method), ("who", &i18n::t("grant.who.human"))],
+                )),
+                (true, None) => Some(i18n::t("err.git.no_tab")),
+                (true, Some(_)) => None,
             };
-            let js = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
+            let who = match (crate::gitops::signs_in(method), &place) {
+                (Some(to_server), Some(p)) => match p.git.to_git(to_server, &|k| caps.secret_value(k).ok()) {
+                    Ok(w) => Some(w),
+                    Err(why) => {
+                        let js = serde_json::json!({"act": act, "ok": false, "error": why, "why": "account",
+                            "folder": p.dir.display().to_string(), "panel": panel}).to_string();
+                        shell.push_git(&js);
+                        if let Some(r) = remote_ui.as_ref() {
+                            r.push_state(format!("{{\"git\":{js}}}"));
+                        }
+                        continue;
+                    }
+                },
+                _ => None,
+            };
+            let (Some(place), None) = (place, refused.clone()) else {
+                let js = serde_json::json!({"act": act, "ok": false, "error": refused.unwrap_or_default(), "panel": panel}).to_string();
+                shell.push_git(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"git\":{js}}}"));
+                }
+                continue;
+            };
+            git_lines.ask(GitJob {
+                panel: panel.clone(),
+                act: act.clone(),
+                method,
+                dir: place.dir,
+                at: place.remote,
+                protect: place.protect,
+                who,
+                params,
+                seq: 0,
+            });
+        }
+        // What the folders' git lines answered: handed to the panel, save an
+        // answer to a question asked again since, and one that took too long
+        // said as that -- a line that does not answer is not waited on
+        for js in git_lines.answers() {
             shell.push_git(&js);
             if let Some(r) = remote_ui.as_ref() {
                 r.push_state(format!("{{\"git\":{js}}}"));
@@ -12629,6 +12638,181 @@ fn open_and_say(
 
 /// A pull request's base brought into the folder its branch is in, as the
 /// thread that ran it answers
+/// One question the git panel asked of a folder, on its way to that folder's
+/// line: the primitive by name and what came after the tab, with the place
+/// already settled on the board's thread
+struct GitJob {
+    panel: String,
+    act: String,
+    method: &'static str,
+    dir: std::path::PathBuf,
+    at: Option<crate::elsewhere::Elsewhere>,
+    protect: Vec<String>,
+    who: Option<crate::git::As>,
+    params: Vec<serde_json::Value>,
+    /// Given when it is put on a line, and handed back with the answer
+    seq: u64,
+}
+
+/// What a line hands back: the question's number, and the answer as the panel
+/// reads it
+struct GitDone {
+    seq: u64,
+    panel: String,
+    act: String,
+    payload: serde_json::Value,
+}
+
+/// How long the panel waits on a line before saying the folder is not
+/// answering. The line is not waited on after that: the next question about
+/// the folder starts a new one, and whatever the old one says late is dropped
+const GIT_PANEL_WAIT: Duration = Duration::from_secs(60);
+
+/// The acts whose answer is a reading of the folder as it is. Only the newest
+/// one asked is worth drawing: a status asked twice answers twice, and the
+/// first answer is already out of date when the second is asked
+const GIT_READS: &[&str] = &["status", "branch", "branches", "diff", "graph", "detail", "hunks", "remote_branches"];
+
+/// The git panel's questions, run off the board's own thread.
+///
+/// Each folder has one line, a thread taking its questions in the order they
+/// were asked: git in one folder is one thing at a time -- a stage, then the
+/// commit that takes it -- and two at once would each find the other's lock.
+/// Different folders go on at once. Git is started and waited for, and on a
+/// network share, a large repository, a server or a MicroVM that wait is long;
+/// on the board's thread it held every terminal still while it went on
+struct GitLines {
+    lines: std::collections::HashMap<String, std::sync::mpsc::Sender<GitJob>>,
+    tx: std::sync::mpsc::Sender<GitDone>,
+    rx: std::sync::mpsc::Receiver<GitDone>,
+    seq: u64,
+    /// The newest question of each kind, per panel: an older one's answer is
+    /// not drawn
+    newest: std::collections::HashMap<(String, String), u64>,
+    /// Questions asked and not answered yet: (seq, panel, act, folder line, since)
+    waiting: Vec<(u64, String, String, String, Instant)>,
+}
+
+impl GitLines {
+    fn new() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        Self { lines: Default::default(), tx, rx, seq: 0, newest: Default::default(), waiting: Vec::new() }
+    }
+
+    /// A folder's line, by the folder as it is spelt, whatever machine it is on
+    fn key(job: &GitJob) -> String {
+        let at = job.at.as_ref().map(|a| a.address()).unwrap_or_default();
+        format!("{at}\u{1f}{}", job.dir.to_string_lossy().replace('\\', "/").to_lowercase())
+    }
+
+    fn ask(&mut self, mut job: GitJob) {
+        self.seq += 1;
+        job.seq = self.seq;
+        self.newest.insert((job.panel.clone(), job.act.clone()), job.seq);
+        let key = Self::key(&job);
+        self.waiting.push((job.seq, job.panel.clone(), job.act.clone(), key.clone(), Instant::now()));
+        let job = match self.lines.get(&key) {
+            Some(line) => match line.send(job) {
+                Ok(()) => return,
+                // The line has ended (let go of after a while unasked): a new
+                // one is started, and the question goes first on it
+                Err(std::sync::mpsc::SendError(job)) => job,
+            },
+            None => job,
+        };
+        self.start_line(key, job);
+    }
+
+    fn start_line(&mut self, key: String, first: GitJob) {
+        let (line_tx, line_rx) = std::sync::mpsc::channel::<GitJob>();
+        let done = self.tx.clone();
+        let spawned = std::thread::Builder::new().name("git-line".into()).spawn(move || {
+            // Kept for a while after the last question, then let go: a folder
+            // nobody asks about has no thread waiting for it
+            while let Ok(job) = line_rx.recv_timeout(Duration::from_secs(300)) {
+                let answer = git_answer(&job);
+                if done.send(GitDone { seq: job.seq, panel: job.panel, act: job.act, payload: answer }).is_err() {
+                    return;
+                }
+            }
+        });
+        if spawned.is_err() {
+            // Said, rather than left waiting until it is given up on
+            let _ = self.tx.send(GitDone {
+                seq: first.seq,
+                panel: first.panel,
+                act: first.act.clone(),
+                payload: serde_json::json!({"act": first.act, "ok": false, "error": i18n::t("err.git.not_answering")}),
+            });
+            return;
+        }
+        let _ = line_tx.send(first);
+        self.lines.insert(key, line_tx);
+    }
+
+    /// The answers ready now, as the panel reads them, and a "not answering"
+    /// for each question waited on too long
+    fn answers(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(d) = self.rx.try_recv() {
+            let Some(at) = self.waiting.iter().position(|w| w.0 == d.seq) else {
+                // Given up on already: said to be not answering
+                continue;
+            };
+            self.waiting.remove(at);
+            let stale = GIT_READS.contains(&d.act.as_str())
+                && self.newest.get(&(d.panel.clone(), d.act.clone())).is_some_and(|n| *n > d.seq);
+            if stale {
+                continue;
+            }
+            let mut payload = d.payload;
+            payload["panel"] = serde_json::json!(d.panel);
+            out.push(payload.to_string());
+        }
+        let (late, still): (Vec<_>, Vec<_>) =
+            self.waiting.drain(..).partition(|w| w.4.elapsed() >= GIT_PANEL_WAIT);
+        self.waiting = still;
+        for (_, panel, act, key, _) in late {
+            // The line is let go of: the next question starts a new one
+            self.lines.remove(&key);
+            out.push(
+                serde_json::json!({"act": act, "ok": false, "error": i18n::t("err.git.not_answering"), "panel": panel})
+                    .to_string(),
+            );
+        }
+        out
+    }
+}
+
+/// One question answered, on a folder's line
+fn git_answer(job: &GitJob) -> serde_json::Value {
+    let root = match crate::gitops::root(&job.dir, job.at.as_ref()) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({"act": job.act, "ok": false, "error": plain_error(&e)}),
+    };
+    match crate::gitops::call(job.method, &root, &job.protect, job.who.as_ref(), &job.params) {
+        Ok(data) => serde_json::json!({"act": job.act, "ok": true, "data": data}),
+        Err(e) => {
+            // A commit refused on a shared branch is not a failure, it is a
+            // question -- and the panel asks it in its own words, so the
+            // reason is named rather than shown as it came
+            let on = (job.act == "commit")
+                .then(|| crate::gitops::call("git_branch", &root, &job.protect, None, &[]).ok())
+                .flatten();
+            let shared = on.as_ref().and_then(|b| b.get("protected").and_then(|p| p.as_bool())).unwrap_or(false);
+            serde_json::json!({
+                "act": job.act,
+                "ok": false,
+                "error": plain_error(&e),
+                "why": if shared { "protected" } else { "" },
+                // Named here: the panel's own idea of the branch is only there
+                // once it has read the status
+                "branch": on.as_ref().and_then(|b| b.get("name").cloned()),
+            })
+        }
+    }
+}
+
 struct PrCatchUp {
     project: String,
     number: u64,
@@ -16319,3 +16503,77 @@ mod shutdown_tests {
     }
 }
 
+
+#[cfg(test)]
+mod git_line_tests {
+    use super::*;
+
+    fn repo() -> std::path::PathBuf {
+        let at = std::env::temp_dir().join(format!("shikisha-gitline-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&at).unwrap();
+        let git = |args: &[&str]| {
+            let mut c = std::process::Command::new("git");
+            c.arg("-C").arg(&at).args(args);
+            assert!(crate::detach_console(&mut c).output().unwrap().status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(at.join("a.txt"), "one").unwrap();
+        at
+    }
+
+    fn job(dir: &std::path::Path, act: &str, method: &'static str, params: Vec<serde_json::Value>) -> GitJob {
+        GitJob {
+            panel: "p1".into(),
+            act: act.into(),
+            method,
+            dir: dir.to_path_buf(),
+            at: None,
+            protect: Vec::new(),
+            who: None,
+            params,
+            seq: 0,
+        }
+    }
+
+    fn all(lines: &mut GitLines) -> Vec<serde_json::Value> {
+        let until = Instant::now() + Duration::from_secs(20);
+        let mut out = Vec::new();
+        while !lines.waiting.is_empty() && Instant::now() < until {
+            out.extend(lines.answers().iter().map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap()));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        out
+    }
+
+    /// A folder's questions are answered in the order they were asked, off
+    /// this thread; a reading asked again since is drawn once, the newest
+    #[test]
+    fn a_folders_git_is_answered_in_order_and_only_the_newest_reading_is_drawn() {
+        let dir = repo();
+        let mut lines = GitLines::new();
+        lines.ask(job(&dir, "status", "git_status", vec![]));
+        lines.ask(job(&dir, "stage", "git_stage", vec![serde_json::json!(["a.txt"])]));
+        lines.ask(job(&dir, "status", "git_status", vec![]));
+        let got = all(&mut lines);
+        let statuses: Vec<&serde_json::Value> = got.iter().filter(|g| g["act"] == "status").collect();
+        assert_eq!(statuses.len(), 1, "an older reading was drawn too: {got:?}");
+        // Asked after the stage, and answered after it: it sees the file staged
+        assert_eq!(statuses[0]["data"][0]["staged"], true, "{got:?}");
+        assert_eq!(statuses[0]["panel"], "p1", "the answer does not say which panel it is for");
+        assert!(got.iter().any(|g| g["act"] == "stage" && g["ok"] == true), "{got:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A question about a folder that is not a repository answers, and says why
+    #[test]
+    fn a_folder_that_is_no_repository_is_said_as_that() {
+        let dir = std::env::temp_dir().join(format!("shikisha-norepo-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lines = GitLines::new();
+        lines.ask(job(&dir, "status", "git_status", vec![]));
+        let got = all(&mut lines);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0]["ok"], false);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
