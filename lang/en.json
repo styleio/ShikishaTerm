@@ -1368,6 +1368,7 @@
   "msg.quick.no_home": "No home folder was found on this PC.",
   "msg.quick.ai_needs_folder": "Show a tab in the folder the AI should work in, then press it.",
   "msg.quick.no_ai": "This PC cannot start the AI this button is for. Install it first.",
+  "msg.quick.no_machine_ai": "this folder is on a MicroVM that was given no AI. Choose one for the project (its page → MicroVM setup), and it is installed on the machine.",
   "msg.quick.open_failed": "Could not open a tab for “{label}”: the settings file could not be written.",
   "msg.quick.never_ready": "The tab opened for “{label}” never got ready for input, so nothing was sent to it.",
   "msg.quick.dest.open": "Opens {program} in “{folder}”",

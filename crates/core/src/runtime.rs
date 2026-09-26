@@ -4350,7 +4350,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         None => (crate::quick::Kind::Terminal, ""),
                     };
                     let go = quick_go(kind, ai, &surfaces, &tabs, active, board_open || settings_open,
-                                      &ai_choices, home.as_deref());
+                                      &ai_choices, home.as_deref(), desks.get(desk_index));
                     (key.clone(), quick_dest(&go))
                 })
                 .collect(),
@@ -5192,7 +5192,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             let go = quick_go(
                 item.kind, &item.ai, &surfaces, &tabs, active, board_open || settings_open,
-                &ai_choices, home.as_deref(),
+                &ai_choices, home.as_deref(), desks.get(desk_index),
             );
             let QuickGo::Open { cwd, command, program } = go else {
                 if let QuickGo::Refuse(why) = go {
@@ -5466,10 +5466,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .chain(tab_places(&tabs).into_iter().filter(|p| !p.dir.as_os_str().is_empty()))
                     .find(|p| p.key.matches(&panel));
                 let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
-                let answer = match (place, desks.get(desk_index), quick_ai_choice(&ai, &ai_choices)) {
-                    (None, ..) | (_, None, _) => Err(i18n::t("err.git.no_tab")),
-                    (.., None) => Err(i18n::t("msg.quick.no_ai")),
-                    (Some(place), Some(desk), Some(choice)) => {
+                let answer = match (place, desks.get(desk_index)) {
+                    (None, _) | (_, None) => Err(i18n::t("err.git.no_tab")),
+                    (Some(place), Some(desk)) => match ai_for_folder(Some(desk), &place.dir, &ai, &ai_choices) {
+                    Err(why) => Err(why),
+                    Ok(choice) => {
+                        let choice = &choice;
                         crate::git::there(&place.dir, place.remote.as_ref());
                         let branch = crate::git::branch(&place.dir).ok().flatten().unwrap_or_default();
                         let base = crate::git::recorded_base(&place.dir, &branch).unwrap_or_default();
@@ -5479,6 +5481,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                         said
                     }
+                    },
                 };
                 let js = match answer {
                     Ok(data) => serde_json::json!({"act": act, "ok": true, "data": data}),
@@ -6025,13 +6028,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         while let Ok(done) = ci_rx.try_recv() {
             let CiFix { project, number, seq, title, url, head, sha, dir, result } = done;
             let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
-            let mut js = match (result, desks.get(desk_index), quick_ai_choice(&ai, &ai_choices)) {
+            let chosen = ai_for_folder(desks.get(desk_index), &dir, &ai, &ai_choices);
+            let mut js = match (result, desks.get(desk_index), chosen.as_ref().ok()) {
                 (Err(e), ..) => serde_json::json!({"ok": false, "error": plain_error(&format!("{e:#}"))}),
                 (Ok(failed), ..) if failed.as_array().is_none_or(|a| a.is_empty()) => {
                     serde_json::json!({"ok": false, "error": i18n::t("git.ci.none")})
                 }
                 (Ok(_), None, _) => serde_json::json!({"ok": false, "error": i18n::t("err.github.no_project")}),
-                (Ok(_), _, None) => serde_json::json!({"ok": false, "error": i18n::t("msg.quick.no_ai")}),
+                (Ok(_), _, None) => serde_json::json!({"ok": false, "error": chosen.as_ref().err().cloned().unwrap_or_default()}),
                 (Ok(failed), Some(desk), Some(choice)) => {
                     let label = i18n::t("git.ci.tab");
                     let ci = ci_ran_on(number, &title, &url, &head, &sha);
@@ -6088,10 +6092,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     Some(crate::git::CatchUpStop::Conflict { files, .. }) => {
                         let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
                         let files = files.clone();
-                        match (desks.get(desk_index), quick_ai_choice(&ai, &ai_choices)) {
+                        let chosen = ai_for_folder(desks.get(desk_index), &dir, &ai, &ai_choices);
+                        match (desks.get(desk_index), chosen.as_ref()) {
                             (None, _) => serde_json::json!({"ok": false, "error": i18n::t("err.github.no_project")}),
-                            (_, None) => serde_json::json!({"ok": false, "error": i18n::t("msg.quick.no_ai")}),
-                            (Some(desk), Some(choice)) => match resolve_in_tab_knowing(
+                            (_, Err(why)) => serde_json::json!({"ok": false, "error": why}),
+                            (Some(desk), Ok(choice)) => match resolve_in_tab_knowing(
                                 desk,
                                 &dir,
                                 &base,
@@ -12476,6 +12481,7 @@ pub enum QuickGo {
 /// The same function answers the launcher's "where would this go" and the
 /// press itself, so the two cannot disagree.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn quick_go(
     kind: crate::quick::Kind,
     ai: &str,
@@ -12485,6 +12491,7 @@ pub fn quick_go(
     covered: bool,
     ais: &[crate::uistate::AiChoice],
     home: Option<&std::path::Path>,
+    desk: Option<&config::Desk>,
 ) -> QuickGo {
     use crate::quick::Kind;
     if kind == Kind::Folder {
@@ -12493,6 +12500,13 @@ pub fn quick_go(
     let folder = (!covered).then(|| surface_folder(surfaces, tabs, active)).flatten();
     match kind {
         Kind::Terminal => match folder.or(home) {
+            // A folder on another machine opens that machine's shell: its
+            // tab with nothing written runs the shell there
+            Some(cwd) if far_folder(desk, cwd).is_some() => QuickGo::Open {
+                cwd: cwd.to_path_buf(),
+                command: String::new(),
+                program: far_folder(desk, cwd).unwrap_or_default(),
+            },
             Some(cwd) => QuickGo::Open {
                 cwd: cwd.to_path_buf(),
                 command: "powershell.exe".into(),
@@ -12505,12 +12519,29 @@ pub fn quick_go(
             // The AI's own command, without the flag that lets it act without
             // asking: starting one from a button is not the person choosing
             // that, which is a box they tick themselves in the settings
+            // On a MicroVM, the AI its machine was given
+            if let Some(given) = machine_ai_of(desk, f) {
+                return match given {
+                    Ok(a) => QuickGo::Open { cwd: f.to_path_buf(), command: a.key, program: a.name },
+                    Err(why) => QuickGo::Refuse(why),
+                };
+            }
             match quick_ai_choice(ai, ais) {
                 Some(a) => QuickGo::Open { cwd: f.to_path_buf(), command: a.key.clone(), program: a.name.clone() },
                 None => QuickGo::Refuse("msg.quick.no_ai"),
             }
         }
     }
+}
+
+/// The name of the machine a desk folder is on, when it is not this one
+fn far_folder(desk: Option<&config::Desk>, dir: &std::path::Path) -> Option<String> {
+    desk?.folders
+        .iter()
+        .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, dir)))?
+        .host
+        .as_ref()
+        .map(|h| h.name.clone())
 }
 
 /// The same answer, in the words the launcher shows
@@ -12571,6 +12602,50 @@ pub const QUICK_AI_ORDER: &[&str] = &["claude", "codex", "gemini", "aider", "kim
 /// Which of the AIs this PC can start a prompt opens: the one it names, or
 /// with none named the first in `QUICK_AI_ORDER` -- not whichever profile
 /// happens to be read first
+/// The AI a folder's tabs run when the folder is on a MicroVM: the one its
+/// machine was given (the project's `machine_ai`), whatever this PC has.
+/// `None` for a folder that is not on one -- this PC's AIs are the answer
+/// there. A machine given no AI, or one this app does not know, is refused
+/// with the words that say so: a tab typing `claude` on a machine that has
+/// only Codex, or nothing, is a `command not found` and nothing else
+pub fn machine_ai_of(
+    desk: Option<&config::Desk>,
+    dir: &std::path::Path,
+) -> Option<Result<crate::uistate::AiChoice, &'static str>> {
+    let d = desk?;
+    let f = d
+        .folders
+        .iter()
+        .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, dir)))?;
+    f.host.as_ref().filter(|h| h.is_made())?;
+    let given = f
+        .project
+        .as_deref()
+        .and_then(|n| d.projects.iter().find(|p| p.name == n))
+        .and_then(|p| p.machine_ai.clone());
+    Some(match given.as_deref().map(str::trim) {
+        Some(k) if !k.eq_ignore_ascii_case(crate::microvm::NO_AI) => match crate::profile::machine_ai(k) {
+            Some(m) => Ok(crate::uistate::AiChoice { key: m.key.clone(), name: m.name, command: m.key }),
+            None => Err("msg.quick.no_machine_ai"),
+        },
+        _ => Err("msg.quick.no_machine_ai"),
+    })
+}
+
+/// The AI to hand work in `dir` to: its machine's on a MicroVM, else the one
+/// the settings chose among this PC's
+fn ai_for_folder(
+    desk: Option<&config::Desk>,
+    dir: &std::path::Path,
+    ai: &str,
+    ais: &[crate::uistate::AiChoice],
+) -> Result<crate::uistate::AiChoice, String> {
+    match machine_ai_of(desk, dir) {
+        Some(r) => r.map_err(i18n::t),
+        None => quick_ai_choice(ai, ais).cloned().ok_or_else(|| i18n::t("msg.quick.no_ai")),
+    }
+}
+
 pub fn quick_ai_choice<'a>(
     ai: &str,
     ais: &'a [crate::uistate::AiChoice],
@@ -14339,6 +14414,41 @@ mod tests {
         assert!(quick_ai_choice("", &[]).is_none());
     }
 
+    /// A folder on a MicroVM hands its work to the AI its machine was given,
+    /// never to one only this PC has; a machine given none says so, and its
+    /// terminal is the machine's own shell rather than this PC's PowerShell
+    #[test]
+    fn a_microvm_folder_runs_what_its_machine_was_given() {
+        let far = std::path::PathBuf::from("/home/user/site");
+        let here = std::env::temp_dir();
+        let desk = config::Desk {
+            folders: vec![
+                config::Folder {
+                    cwd: Some(far.clone()),
+                    host: Some(config::HostSpec { name: "vm".into(), kind: Some("e2b".into()), instance: Some("m1".into()), ..Default::default() }),
+                    project: Some("site".into()),
+                    ..Default::default()
+                },
+                config::Folder { cwd: Some(here.clone()), ..Default::default() },
+            ],
+            projects: vec![config::ProjectSpec { name: "site".into(), machine_ai: Some("none".into()), ..Default::default() }],
+            ..Default::default()
+        };
+        assert_eq!(machine_ai_of(Some(&desk), &far), Some(Err("msg.quick.no_machine_ai")));
+        assert_eq!(machine_ai_of(Some(&desk), &here), None, "a folder here is asked about a machine");
+        let ais = vec![crate::uistate::AiChoice { key: "claude".into(), name: "Claude Code".into(), command: "claude".into() }];
+        assert_eq!(
+            ai_for_folder(Some(&desk), &far, "", &ais),
+            Err(i18n::t("msg.quick.no_machine_ai")),
+            "this PC's AI was handed a MicroVM folder"
+        );
+        assert_eq!(ai_for_folder(Some(&desk), &here, "", &ais).map(|a| a.key), Ok("claude".to_string()));
+        assert_eq!(
+            quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, Some(&far), Some(&desk)),
+            QuickGo::Open { cwd: far.clone(), command: String::new(), program: "vm".into() }
+        );
+    }
+
     /// Where a button goes with nothing open: a command opens in the home
     /// folder, a prompt goes nowhere, and neither guesses a folder
     #[test]
@@ -14348,20 +14458,20 @@ mod tests {
         // No tabs at all: nothing to send to, so a new one opens -- but only
         // with a folder in front, which the board is not
         assert_eq!(
-            quick_go(crate::quick::Kind::Ai, "", &[], &[], 0, true, &ais, Some(&dir)),
+            quick_go(crate::quick::Kind::Ai, "", &[], &[], 0, true, &ais, Some(&dir), None),
             QuickGo::Refuse("msg.quick.ai_needs_folder")
         );
         assert_eq!(
-            quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, Some(&dir)),
+            quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, Some(&dir), None),
             QuickGo::Open { cwd: dir.clone(), command: "powershell.exe".into(), program: "PowerShell".into() }
         );
         assert_eq!(
-            quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, None),
+            quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, None, None),
             QuickGo::Refuse("msg.quick.no_home")
         );
         // A folder sends nothing, wherever it is pressed
         assert_eq!(
-            quick_go(crate::quick::Kind::Folder, "", &[], &[], 0, false, &ais, Some(&dir)),
+            quick_go(crate::quick::Kind::Folder, "", &[], &[], 0, false, &ais, Some(&dir), None),
             QuickGo::Refuse("msg.quick.gone")
         );
     }

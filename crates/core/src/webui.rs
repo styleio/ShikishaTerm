@@ -5994,6 +5994,17 @@ const defaultAiCommand = () => {
   const flag = current.yolo ? cliFlagOf(head) : "";
   return flag ? head + " " + flag : head;
 };
+// What a new tab in a folder on a MicroVM runs: the AI its machine was given
+// (the project's machine_ai), since this PC's AIs are not there; the machine's
+// own shell when it was given none. Null for any other folder
+const machineStart = (desk, group) => {
+  const g = (desk.folders || [])[group] || {};
+  const h = (current.hosts || []).find(x => (x.name || "").trim() === (g.host || "").trim());
+  if (!h || (h.kind || "").trim().toLowerCase() !== "e2b") return null;
+  const p = (desk.projects || []).find(x => x.name === g.project);
+  const ai = p && p.machine_ai;
+  return ai && ai !== "none" && MACHINE_AIS.some(a => a.key === ai) ? ai : "";
+};
 // What picking a kind puts in the command field. The AI entry is a function
 // because its answer depends on which CLI this machine has.
 // Where a new browser tab opens, until somebody writes another address
@@ -6432,7 +6443,8 @@ function addTabTo(desk, group) {
     // AI panel is where the switches that decide how one runs live -- a tab
     // that began as a plain shell hid them behind a dropdown nobody knew to
     // open. A shell is one pick away in the Kind row above.
-    const command = defaultAiCommand();
+    const far = machineStart(desk, group);
+    const command = far !== null ? far : defaultAiCommand();
     const t = newTab({group, command});
     t.name = kindName(command);
     autoNames.set(t, t.name);

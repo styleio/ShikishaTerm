@@ -1358,6 +1358,7 @@
   "msg.quick.no_home": "このPCのホームフォルダが見つかりません。",
   "msg.quick.ai_needs_folder": "AIに作業させるフォルダのタブを表示してから押してください。",
   "msg.quick.no_ai": "このボタンのAIを、このPCで起動できません。先にインストールしてください。",
+  "msg.quick.no_machine_ai": "このフォルダの MicroVM には AI が入っていません。プロジェクトのページの MicroVM のセットアップで AI を選ぶと、マシンに入ります",
   "msg.quick.open_failed": "「{label}」のタブを開けませんでした。設定ファイルに書き込めません。",
   "msg.quick.never_ready": "「{label}」のために開いたタブが入力を受け付けなかったため、送っていません。",
   "msg.quick.dest.open": "「{folder}」で {program} を開きます",
