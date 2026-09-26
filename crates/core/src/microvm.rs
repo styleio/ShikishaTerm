@@ -61,7 +61,7 @@ impl Checkout {
                 };
                 let box_ = crate::e2b::create(&key, &asking).map_err(|e| format!("{e:#}"))?;
                 if stop() {
-                    let _ = crate::e2b::kill(&key, &box_.id);
+                    crate::e2b::throw_away(&key, &box_.id);
                     return Err(String::new());
                 }
                 set(Outcome::Running("microvm.cloning"));
@@ -74,7 +74,7 @@ impl Checkout {
                 match preparing.commands(&at) {
                     Ok(c) => steps.extend(c.into_iter().map(|a| (PHASE_PREPARING, a))),
                     Err(e) => {
-                        let _ = crate::e2b::kill(&key, &box_.id);
+                        crate::e2b::throw_away(&key, &box_.id);
                         return Err(e);
                     }
                 }
@@ -89,7 +89,7 @@ impl Checkout {
                         Err(e) => Some(e),
                     };
                     if let Some(e) = failed {
-                        let _ = crate::e2b::kill(&key, &box_.id);
+                        crate::e2b::throw_away(&key, &box_.id);
                         return Err(e);
                     }
                 }

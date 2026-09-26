@@ -6525,6 +6525,50 @@ pub fn config_file_path() -> std::path::PathBuf {
         .unwrap_or_else(|| candidates[0].clone())
 }
 
+/// Every MicroVM machine the settings name, and what names it: a folder on a
+/// desk, or a project's own checkout.
+///
+/// Read from the settings as saved, since this is asked to decide whether a
+/// machine may be deleted: a machine is in use while anything written down
+/// points at it, whatever this run happens to have open
+pub fn machines_in_use() -> std::collections::BTreeMap<String, Vec<MachineUse>> {
+    let mut used: std::collections::BTreeMap<String, Vec<MachineUse>> = Default::default();
+    let Some(cfg) = load() else { return used };
+    let (desks, _) = cfg.resolve_desks();
+    for d in &desks {
+        for f in &d.folders {
+            let Some(id) = f.host.as_ref().filter(|h| h.is_made()).and_then(|h| h.instance.clone()) else {
+                continue;
+            };
+            let folder = f
+                .name
+                .clone()
+                .filter(|n| !n.trim().is_empty())
+                .or_else(|| f.cwd.as_ref().map(|c| c.to_string_lossy().rsplit('/').next().unwrap_or_default().to_string()))
+                .unwrap_or_default();
+            used.entry(id).or_default().push(MachineUse::Folder { desk: d.name.clone(), folder });
+        }
+        for p in &d.projects {
+            for home in &p.homes {
+                if let Some(id) = home.sandbox.clone() {
+                    used.entry(id).or_default().push(MachineUse::Checkout { desk: d.name.clone(), project: p.name.clone() });
+                }
+            }
+        }
+    }
+    used
+}
+
+/// What a machine is to the settings (see [`machines_in_use`])
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum MachineUse {
+    /// A working folder is on it
+    Folder { desk: String, folder: String },
+    /// A project's own checkout there, the one its worktrees are copied from
+    Checkout { desk: String, project: String },
+}
+
 pub fn load() -> Option<Config> {
     for path in config_candidates() {
         let Ok(text) = std::fs::read_to_string(&path) else {

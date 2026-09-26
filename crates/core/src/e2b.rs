@@ -333,6 +333,21 @@ pub fn kill(key: &str, id: &str) -> Result<()> {
     }
 }
 
+/// Throw away a machine a making made and could not finish with.
+///
+/// Its own call rather than `let _ = kill(..)`: a machine that would not go is
+/// one nothing will ever point at, paid for until somebody finds it, so it is
+/// at least written down where it can be found -- and it is in the list of
+/// machines in the settings, where it can be deleted
+pub fn throw_away(key: &str, id: &str) {
+    if let Err(e) = kill(key, id) {
+        crate::append_hook_log(&format!("could not throw away machine {id}: {e:#}"));
+        // Nothing points at it, so the list in the settings is where it is
+        // deleted from -- and that list must be able to
+        take_back(id);
+    }
+}
+
 /// The machines being deleted, or that were and would not go.
 ///
 /// Every request to a paused machine starts it again -- they are made to wake
@@ -369,13 +384,28 @@ pub struct Listed {
     /// `running` or `paused`
     pub state: String,
     pub marks: std::collections::BTreeMap<String, String>,
+    /// When it was started, as the service writes it (RFC 3339)
+    pub started: String,
 }
 
-/// The machines this key has, running or paused, carrying this app's mark
+impl Listed {
+    /// Whether this app made it. A key can be shared with other programs,
+    /// and their machines are theirs to delete
+    pub fn ours(&self) -> bool {
+        self.marks.get(MARK).is_some_and(|v| v == "1")
+    }
+}
+
+/// Every machine this key has, running or paused.
+///
+/// Not only the ones carrying this app's mark: a copy of a machine is not
+/// promised to carry the marks of the one it was copied from, and a machine
+/// nobody can see is one that is paid for until somebody finds it on the
+/// service's own pages. Which are this app's is [`Listed::ours`]
 pub fn list(key: &str) -> Result<Vec<Listed>> {
     let v = answered(
         agent()
-            .get(&format!("{API}/v2/sandboxes?metadata={MARK}%3D1&state=running,paused"))
+            .get(&format!("{API}/v2/sandboxes?state=running,paused"))
             .header("X-API-Key", key)
             .call(),
     )?;
@@ -398,6 +428,7 @@ pub fn list(key: &str) -> Result<Vec<Listed>> {
                         m.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string())).collect()
                     })
                     .unwrap_or_default(),
+                started: r.get("startedAt").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
             })
         })
         .collect())
@@ -1561,6 +1592,21 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// Only a machine carrying this app's mark is called this app's: the
+    /// key can be another program's too, and its machines are its own
+    #[test]
+    fn a_machine_is_ours_by_its_mark() {
+        let with = |marks: &[(&str, &str)]| Listed {
+            id: "m".into(),
+            state: "paused".into(),
+            marks: marks.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            started: String::new(),
+        };
+        assert!(with(&[(MARK, "1"), ("project", "site")]).ours());
+        assert!(!with(&[("project", "site")]).ours(), "a machine with no mark is taken for this app's");
+        assert!(!with(&[(MARK, "0")]).ours());
+    }
+
     /// A machine being deleted is not spoken to again, so nothing still
     /// holding it -- an editor with a file open -- can wake it. Refused here,
     /// before a key is looked for or a request made

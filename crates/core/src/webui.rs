@@ -1908,6 +1908,69 @@ fn handle(
                 .and_then(|(_, v)| v.as_str().map(str::to_string));
             req.respond(json_resp(serde_json::json!({ "failed": failed })))?;
         }
+        // Every MicroVM machine the key has, and what in the settings each is.
+        // The only place a machine nothing points at any more can be seen
+        // from here: one left by a making that never finished, a folder taken
+        // off the list, a project or a desk removed. Each is paid for until it
+        // is deleted, so the list is where that is done
+        ("GET", "/api/microvm/machines") => {
+            let resp = match crate::e2b::key() {
+                None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.e2b.no_key") }),
+                Some(key) => match crate::e2b::list(&key) {
+                    Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                    Ok(listed) => {
+                        let used = crate::config::machines_in_use();
+                        let rows: Vec<serde_json::Value> = listed
+                            .iter()
+                            .map(|m| {
+                                serde_json::json!({
+                                    "id": m.id,
+                                    "state": m.state,
+                                    "started": m.started,
+                                    "ours": m.ours(),
+                                    "project": m.marks.get("project"),
+                                    "pc": m.marks.get("pc"),
+                                    "used": used.get(&m.id).cloned().unwrap_or_default(),
+                                })
+                            })
+                            .collect();
+                        serde_json::json!({ "ok": true, "machines": rows })
+                    }
+                },
+            };
+            req.respond(json_resp(resp))?;
+        }
+        // Delete one machine from that list. Refused while anything in the
+        // settings still points at it: that one is deleted with its folder,
+        // from the board, where its tabs are closed first
+        ("POST", "/api/microvm/drop") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let id = p.get("id").and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+            let resp = if id.is_empty() {
+                serde_json::json!({ "ok": false })
+            } else if crate::config::machines_in_use().contains_key(&id) {
+                serde_json::json!({ "ok": false, "error": crate::i18n::t("settings.machines.in_use") })
+            } else {
+                match crate::e2b::key() {
+                    None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.e2b.no_key") }),
+                    Some(key) => match crate::e2b::kill(&key, &id) {
+                        Ok(()) => serde_json::json!({ "ok": true }),
+                        Err(e) => {
+                            // Not let go of after all: nothing points at it, and
+                            // a second press is how it is tried again
+                            crate::e2b::take_back(&id);
+                            serde_json::json!({ "ok": false, "error": format!("{e:#}") })
+                        }
+                    },
+                }
+            };
+            req.respond(json_resp(resp))?;
+        }
         // Which project a folder belongs to, and whether its folder is one the
         // app made. The settings screen cannot work either out: both mean
         // looking at what git keeps behind the folder
@@ -9682,7 +9745,96 @@ function hostsCard() {
       el("button", {onclick: () => hostDialog(null, draw, "ssh")}, T["settings.hosts.add.ssh"]),
       el("button", {onclick: () => hostDialog(null, draw, "e2b")}, T["settings.hosts.add.e2b"])));
   setTimeout(draw, 0);
-  return c;
+  // The machines themselves, once there is a MicroVM to have made any
+  const made = (current.hosts || []).some(h => (h.kind || "").trim().toLowerCase() === "e2b");
+  return made ? [c, machinesCard()] : c;
+}
+
+// Every MicroVM machine the key has, each with what in the settings it is.
+// A machine nothing points at is still paid for, and this is the one place
+// it shows: deleted here, after being told what it was
+function machinesCard() {
+  const box = el("div", {}, el("div", {class:"hint"}, T["settings.machines.loading"]));
+  const ago = at => {
+    const t = Date.parse(at || "");
+    if (!t) return "";
+    const m = Math.max(0, Math.floor((Date.now() - t) / 60000));
+    if (m < 60) return fill(T["settings.machines.minutes"], {n: m});
+    if (m < 60 * 24) return fill(T["settings.machines.hours"], {n: Math.floor(m / 60)});
+    return fill(T["settings.machines.days"], {n: Math.floor(m / 1440)});
+  };
+  const useOf = u => u.kind === "checkout"
+    ? fill(T["settings.machines.use.checkout"], {project: u.project, desk: u.desk})
+    : fill(T["settings.machines.use.folder"], {folder: u.folder, desk: u.desk});
+  const load = async () => {
+    let j = {};
+    try { j = await (await fetch("/api/microvm/machines", {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { j = {ok:false, error:String(e)}; }
+    box.textContent = "";
+    if (!j.ok) {
+      box.append(el("div", {class:"hint warn"}, j.error || T["settings.machines.failed"]),
+        el("div", {class:"row"}, el("button", {onclick: load}, T["settings.machines.reload"])));
+      return;
+    }
+    const rows = j.machines || [];
+    if (!rows.length) {
+      box.append(el("div", {class:"hint"}, T["settings.machines.none"]));
+    }
+    const unused = rows.filter(m => !m.used.length);
+    if (unused.length) box.append(el("div", {class:"hint warn"}, fill(T["settings.machines.unused_count"], {n: unused.length})));
+    const list = el("div", {class:"rows"});
+    // The ones nothing points at first: they are what this card is for
+    for (const m of [...unused, ...rows.filter(m => m.used.length)]) {
+      const what = m.used.length
+        ? m.used.map(useOf).join(" / ")
+        : (m.ours ? T["settings.machines.unused"] : T["settings.machines.not_ours"]);
+      const who = [m.project ? fill(T["settings.machines.project"], {project: m.project}) : "",
+                   m.pc ? fill(T["settings.machines.pc"], {pc: m.pc}) : "",
+                   ago(m.started)].filter(Boolean).join(" · ");
+      const state = m.state === "paused" ? T["settings.machines.paused"] : T["settings.machines.running"];
+      const row = el("div", {class:"listrow devrow"},
+        el("span", {class:"mono"}, m.id),
+        el("span", {class:"hint"}, state + (who ? " · " + who : "")),
+        el("span", {class: m.used.length ? "hint" : "hint warn"}, what));
+      if (!m.used.length) {
+        row.append(el("button", {class:"danger", onclick: async () => {
+          const sure = fill(m.ours ? T["settings.machines.drop.sure"] : T["settings.machines.drop.sure_other"],
+            {id: m.id, pc: m.pc || "?"});
+          if (!await confirmAction(sure, T["settings.machines.drop"])) return;
+          let r = {};
+          try {
+            r = await (await fetch("/api/microvm/drop", {method:"POST",
+              headers:{"X-Token":TOKEN}, body: JSON.stringify({id: m.id})})).json();
+          } catch (e) { r = {ok:false, error:String(e)}; }
+          if (!r.ok) msg(r.error || T["settings.machines.failed"], true);
+          else msg(fill(T["settings.machines.dropped"], {id: m.id}));
+          load();
+        }}, T["settings.machines.drop"]));
+      }
+      list.append(row);
+    }
+    box.append(list, el("div", {class:"row"}, el("button", {onclick: load}, T["settings.machines.reload"])));
+  };
+  setTimeout(load, 0);
+  return card(T["settings.machines.title"], el("div", {class:"hint"}, T["settings.machines.hint"]), box);
+}
+
+// What stands on a host entry: the folders on it, and the projects that keep
+// their own checkout there. Named as the person reads them on the board
+function hostUsers(name) {
+  if (!name) return [];
+  const out = [];
+  for (const d of desks) {
+    (d.folders || []).forEach((f, i) => {
+      if ((f.host || "").trim() === name) out.push(folderLabel(f, i));
+    });
+    for (const p of d.projects || []) {
+      if ((p.homes || []).some(home => (home.host || "").trim() === name)) {
+        out.push(fill(T["settings.hosts.drop.project"], {project: p.name || ""}));
+      }
+    }
+  }
+  return [...new Set(out)];
 }
 
 // A name nothing else is using. Two with one name would be one machine to
@@ -9829,6 +9981,16 @@ function hostDialog(at, redraw, kind, done) {
     el("div", {class:"mfoot"},
       editing
         ? el("button", {class:"danger", onclick: async () => {
+            // Not while anything is on it. A folder whose place is gone from
+            // the list can be neither opened nor deleted -- and on a MicroVM
+            // its machine is still paid for, with nothing left that deletes it.
+            // What is on it is named, and deleting that from the board is the
+            // way on
+            const users = hostUsers((h.name || "").trim());
+            if (users.length) {
+              msg(fill(T["settings.hosts.drop.in_use"], {name: h.name || "", what: users.join(", ")}), true);
+              return;
+            }
             if (!await confirmAction(fill(T["settings.hosts.drop.sure"], {name: h.name || ""}),
                                      T["settings.hosts.drop"])) return;
             current.hosts.splice(at, 1);

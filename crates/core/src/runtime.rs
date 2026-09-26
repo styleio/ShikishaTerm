@@ -147,6 +147,9 @@ struct Pending {
     /// written down as the project's -- which happens the moment it is made,
     /// whether or not the worktree after it is
     checkout_noted: bool,
+    /// When writing that checkout down was last tried, so a failure is tried
+    /// again a while later rather than on every pass
+    checkout_tried: Option<Instant>,
     /// The folder the dialog was opened on
     from: std::path::PathBuf,
     /// What the folder's card is called. What the person wrote, in whatever
@@ -240,7 +243,13 @@ impl Pending {
         }
         let plan = self.making.plan.clone();
         let (Some(host), Some(id)) = (plan.host.as_ref(), self.making.machines().checkout) else { return Ok(()) };
-        self.checkout_noted = true;
+        // Tried again a while later when writing it failed, rather than on
+        // every pass -- and never given up on: a checkout that is written
+        // nowhere is a machine the next worktree makes a second of
+        if self.checkout_tried.is_some_and(|t| t.elapsed() < Duration::from_secs(10)) {
+            return Ok(());
+        }
+        self.checkout_tried = Some(Instant::now());
         let at = plan.main.to_string_lossy().to_string();
         let home = config::ProjectHome {
             host: host.name.clone(),
@@ -253,6 +262,9 @@ impl Pending {
         // here, so the folders here stay in it
         let here = crate::repo::main_checkout(&self.from).map(|m| m.display().to_string().replace('\\', "/"));
         config::set_project_home(&self.desk_id, &plan.project, &home, here.as_deref())?;
+        // Written down: what follows is the folder for it, which is tried
+        // once -- a second try would add the folder twice
+        self.checkout_noted = true;
         // The AI it was made with is the project's from now on, said in its
         // settings rather than left to be asked again
         config::set_project_value(
@@ -340,6 +352,9 @@ struct Leaving {
     main: Option<std::path::PathBuf>,
     /// Where it stood in the list and what it said there, to put it back
     taken: Option<config::TakenFolder>,
+    /// A project's checkout on a MicroVM, let go of by the project as its
+    /// folder went: put back with the folder, if the folder is
+    checkout: Option<(String, String, config::ProjectHome)>,
     /// Why the folder is still there, once it is known to be
     error: Option<String>,
     /// Put back in the list: the row waits for the card, as a made one does
@@ -415,6 +430,20 @@ pub fn web_address_in(text: &str) -> String {
         .to_string()
 }
 
+/// Delete a machine a row made and is putting away unwritten, unless the
+/// settings point at it after all (a write that got halfway). On a thread:
+/// the service is asked, and the board does not wait for it
+fn let_go_if_nobodys(id: String) {
+    std::thread::spawn(move || {
+        if config::machines_in_use().contains_key(&id) {
+            return;
+        }
+        if let Some(key) = crate::e2b::key() {
+            crate::e2b::throw_away(&key, &id);
+        }
+    });
+}
+
 struct VmJob {
     id: u64,
     desk: String,
@@ -451,6 +480,18 @@ enum VmWork {
 }
 
 impl VmJob {
+    /// The machine it made, once it has finished making it
+    fn finished(&self) -> Option<String> {
+        let done = match &self.work {
+            VmWork::Clone { job, .. } => job.outcome(),
+            VmWork::Prepare { job, .. } => job.outcome(),
+        };
+        match done {
+            crate::microvm::Outcome::Done { sandbox, .. } => Some(sandbox),
+            _ => None,
+        }
+    }
+
     fn state(&self) -> crate::uistate::MakingState {
         let phase = match &self.work {
             VmWork::Clone { job, .. } => job.outcome(),
@@ -6793,17 +6834,32 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .and_then(|n| d.projects.iter().find(|p| p.name == n))
                     .and_then(|p| p.home_on(&h.name))
                     .filter(|home| home.sandbox.is_some() && home.sandbox == h.instance);
-                if let (Some(home), Some(p)) = (checkout, project.as_deref()) {
-                    if let Err(e) = config::drop_project_home(&d.id, p, &h.name) {
-                        flash = Some(format!("{e:#}"));
-                        continue;
-                    }
-                    if let Some(id) = home.sandbox.as_deref() {
-                        crate::worktree::forget_checkout(id);
-                    }
-                }
+                let checkout = checkout.cloned();
+                // The folder first: taking it can be refused (the desk's last
+                // folder), and a project that let go of its checkout while the
+                // folder stayed would make a second one for its next worktree
                 match config::take_folder(&d.name, &at) {
                     Ok(taken) => {
+                        let mut dropped = None;
+                        if let (Some(home), Some(p)) = (checkout, project.as_deref()) {
+                            match config::drop_project_home(&d.id, p, &h.name) {
+                                Ok(()) => {
+                                    if let Some(id) = home.sandbox.as_deref() {
+                                        crate::worktree::forget_checkout(id);
+                                    }
+                                    dropped = Some((d.id.clone(), p.to_string(), home));
+                                }
+                                Err(e) => {
+                                    // The folder goes back where it was, and
+                                    // nothing is deleted
+                                    if let Some(t) = &taken {
+                                        let _ = config::put_folder_back(&d.name, t);
+                                    }
+                                    flash = Some(format!("{e:#}"));
+                                    continue;
+                                }
+                            }
+                        }
                         let removal = crate::worktree::Removal::start_on_microvm(at.clone(), h);
                         // The throwaway editor is in no list the settings
                         // keep, so the reload that ends the tabs leaves it
@@ -6817,6 +6873,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             desk: d.name.clone(),
                             main: None,
                             taken,
+                            checkout: dropped,
                             error: None,
                             restored: None,
                             gone: false,
@@ -6853,6 +6910,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         name,
                         main,
                         taken,
+                        checkout: None,
                         error: None,
                         restored: None,
                         gone: false,
@@ -6909,13 +6967,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 flash = Some(i18n::tp("msg.folder.in_use", &[("name", &busy.title)]));
                 continue;
             }
+            // On a MicroVM the folder is its machine, and taking it off the
+            // list leaves the machine as it leaves files on a disk -- but a
+            // machine is paid for. Said, with where it is deleted from
+            let on_microvm = desks.get(desk_index).is_some_and(|d| {
+                d.folders.iter().any(|f| {
+                    f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, at))
+                        && f.host.as_ref().is_some_and(|h| h.is_made())
+                })
+            });
             match config::remove_folder(&desk, at) {
                 // Said out loud, because the folder is still on disk and this
                 // is the only sign that it was left there on purpose. Said by
                 // the reload that closes its tabs, too: "settings reloaded" is
                 // not what happened, and it is the last word otherwise
                 Ok(()) => {
-                    let said = i18n::tp("msg.folder.closed", &[("path", &folder)]);
+                    let said = i18n::tp(
+                        if on_microvm { "msg.folder.closed_microvm" } else { "msg.folder.closed" },
+                        &[("path", &folder)],
+                    );
                     said_before_reload = Some((Instant::now(), said.clone()));
                     flash = Some(said);
                 }
@@ -7026,6 +7096,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             VmWork::Prepare { job, .. } => job.stop(),
                         }
                     }
+                    // Finished, and only writing it down failed: that is what
+                    // is tried again. Running it again would make a second
+                    // machine and leave the first one nobody's
+                    "retry" if j.error.is_some() && j.finished().is_some() => j.error = None,
                     "retry" if j.error.is_some() => {
                         j.error = None;
                         j.stopping = false;
@@ -7045,7 +7119,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             },
                         };
                     }
-                    "dismiss" if j.error.is_some() => j.gone = true,
+                    "dismiss" if j.error.is_some() => {
+                        // A clone that finished and was never written down is a
+                        // machine nothing will point at: it goes with the row
+                        if let (VmWork::Clone { .. }, Some(id)) = (&j.work, j.finished()) {
+                            let_go_if_nobodys(id);
+                        }
+                        j.gone = true;
+                    }
                     _ => {}
                 }
                 continue;
@@ -7063,6 +7144,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         Some(taken) => match config::put_folder_back(&l.desk, taken) {
                             Ok(()) => {
                                 l.removal.put_back();
+                                // A project's checkout is the project's again
+                                if let Some((desk_id, project, home)) = &l.checkout
+                                    && let Err(e) = config::set_project_home(desk_id, project, home, None) {
+                                        flash = Some(format!("{e:#}"));
+                                    }
                                 l.restored = Some(Instant::now());
                             }
                             Err(e) => flash = Some(format!("{e:#}")),
@@ -7077,7 +7163,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             prune.arg("-C").arg(main).args(["worktree", "prune"]);
                             let _ = crate::detach_console(&mut prune).output();
                         }
-                        flash = Some(i18n::tp("msg.folder.left", &[("path", &l.removal.folder.display().to_string())]));
+                        // A machine that would not be deleted is still paid
+                        // for, and the list in the settings is where it goes
+                        let said = if l.removal.on_microvm() { "msg.folder.closed_microvm" } else { "msg.folder.left" };
+                        flash = Some(i18n::tp(said, &[("path", &l.removal.folder.display().to_string())]));
                         l.gone = true;
                     }
                     _ => {}
@@ -7136,6 +7225,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     p.trust = None;
                     p.unlinked.clear();
                     p.gone = p.error.is_some();
+                    // A worktree copied onto a machine of its own and never
+                    // written down: nothing will ever point at that machine
+                    if p.gone && p.made && p.written.is_none()
+                        && let Some(id) = p.making.machines().worktree {
+                            let_go_if_nobodys(id);
+                        }
                 }
                 _ => {}
             }
@@ -8145,6 +8240,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 desk: desk.clone(),
                                 desk_id: desks.get(desk_index).map(|d| d.id.clone()).unwrap_or_default(),
                                 checkout_noted: false,
+                                checkout_tried: None,
                                 from: from.clone(),
                                 label: label.clone(),
                                 start: start.clone(),
@@ -8213,6 +8309,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             desk: desk.clone(),
                             desk_id: desks.get(desk_index).map(|d| d.id.clone()).unwrap_or_default(),
                             checkout_noted: false,
+                            checkout_tried: None,
                             from: from.clone(),
                             // The AI on the end, the same way its branch has
                             // it, so a card and its branch read as one pair

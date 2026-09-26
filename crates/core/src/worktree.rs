@@ -687,7 +687,7 @@ fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> boo
                     at_stage(if n == 0 { Stage::Creating } else { Stage::Installing });
                     if let Err(e) = run_for(&here, &argv) {
                         // A machine the project could not be put on is no checkout
-                        let _ = crate::e2b::kill(&key, &box_.id);
+                        crate::e2b::throw_away(&key, &box_.id);
                         return Err(e);
                     }
                 }
@@ -719,7 +719,7 @@ fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> boo
             if stopped {
                 at_stage(Stage::Stopping);
             }
-            let _ = crate::e2b::kill(&key, &copy.id);
+            crate::e2b::throw_away(&key, &copy.id);
             return match ran {
                 Err(e) if !stopped => Err(e),
                 _ => Err(Stopped.into()),
@@ -894,7 +894,7 @@ impl Making {
                     // ...and on a MicroVM the worktree is its machine
                     let copy = machines.lock().unwrap_or_else(|e| e.into_inner()).worktree.take();
                     if let (Some(id), Some(key)) = (copy, crate::e2b::key()) {
-                        let _ = crate::e2b::kill(&key, &id);
+                        crate::e2b::throw_away(&key, &id);
                     }
                     Err(Stopped.into())
                 }
@@ -1798,6 +1798,11 @@ impl Removal {
             Some(host) => Removal::start_on_microvm(self.folder.clone(), host.clone()),
             None => Removal::start(self.folder.clone()),
         }
+    }
+
+    /// Whether it is a MicroVM's machine being deleted
+    pub fn on_microvm(&self) -> bool {
+        self.on.is_some()
     }
 
     /// Given up on, and the folder put back in the list: its machine, if it

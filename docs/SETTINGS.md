@@ -123,6 +123,8 @@ One-tap buttons in the input bar
 
 Servers over SSH, and MicroVMs, to cut worktrees on besides this PC
 
+**MicroVM machines**
+
 - **Name** — What the picker calls it. Two accounts on one server are two entries
 - **Image** — The service's image a project's MicroVM is made from
 - **Minutes before it pauses** — Running untouched this long, a MicroVM pauses. Paused, it keeps everything; a request to one of its addresses, or opening it again, starts it where it stopped.
