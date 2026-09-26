@@ -985,6 +985,26 @@ pub fn project_folder(sources: &[Source], project: &str, folder: &str) -> Option
         .then_some(dir)
 }
 
+/// The folder of a project on another machine that is on `head`, asked of git
+/// in each of its folders there in turn. Waits on those machines, so it is for
+/// a thread. On the thread that asked, git about the folder found runs there
+/// from here on (see `git::there`)
+pub fn far_head_folder(s: &Source, head: &str) -> Option<std::path::PathBuf> {
+    let head = head.trim();
+    if head.is_empty() {
+        return None;
+    }
+    for (dir, at) in &s.far {
+        crate::git::there(dir, Some(at));
+        let on = crate::git::run(dir, &["branch", "--show-current"]).ok();
+        if on.as_deref().map(str::trim) == Some(head) {
+            return Some(dir.clone());
+        }
+    }
+    crate::git::there(&s.dir, None);
+    None
+}
+
 /// The folder on this PC where a pull request's branch is checked out: the
 /// project's checkout itself, or any worktree cut from it. None when no folder
 /// stands on that branch -- one is made for it first
@@ -1391,7 +1411,7 @@ pub fn ci_failures(
         .iter()
         .find(|s| s.name == project)
         .ok_or_else(|| anyhow!(crate::i18n::t("err.github.no_project")))?;
-    let (repo, token) = target(&source.dir, &source.git, look)?;
+    let (repo, token) = target_of(source, look)?;
     let hub = Hub::new(token);
     let checks = hub.checks(&repo, sha)?;
     let mut out = Vec::new();
