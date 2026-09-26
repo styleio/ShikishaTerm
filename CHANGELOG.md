@@ -114,6 +114,14 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **One page for an SSH host, with cloning and adding a folder as tabs.**
+  "Add a project" has one way in for a server, "SSH host": the server is
+  chosen at the top -- with "+ Add an SSH host" last -- and under it the
+  two things to do there are tabs: Clone (the address, the account, where
+  on the server) and Add a folder on the server (walk to it and add it,
+  asked for no address and no account). The "where" switch that turned the
+  first page's cards into a server's is gone; everything it reached is on
+  the server's page.
 - **An SSH host added from the board can sign in with a password.** The
   form had only a key file, and a server that takes a password could not be
   added there. "How it signs in" now chooses a key file or a password; the

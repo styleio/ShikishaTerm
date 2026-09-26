@@ -278,6 +278,19 @@ try {
   await board.run('closeAddProject(); true');
   fs.writeFileSync(CONFIG, JSON.stringify(had, null, 2));
   await until(() => board.run('(S.hosts || []).some(h => h.name === "srv")'), 'the server back in the settings', 20000);
+  // One page for a server: the server above, and the two things to do there
+  // as tabs. Adding a folder asks for no address and no account
+  await board.run(`openAddProject(); apShow("sshclone"); true`);
+  await until(() => board.run('!!document.querySelector("#addproj .aptabs")'), 'the server page', 10000);
+  check(await board.run('[...document.querySelectorAll("#addproj .aptabs button")].map(b => b.textContent).join(",")') === 'クローンする,サーバーのフォルダを追加',
+    'cloning and adding a folder are two tabs under one server');
+  await board.run('document.querySelectorAll("#addproj .aptabs button")[1].click(); true');
+  await until(() => board.run('(document.querySelectorAll("#addproj .aprrow") || []).length > 0'), 'the server\'s folders on the add tab', 30000);
+  const addTab = await board.run('document.querySelector("#addproj .sbody").textContent');
+  check(!/Git の URL/.test(addTab) && !/git サーバーに使うアカウント/.test(addTab) && /srv/.test(addTab),
+    'the add tab asks for the server and a folder, and for no address or account');
+  await board.shot('5-sshadd');
+  await board.run('closeAddProject(); true');
   await openClone(HELLO);
   check(await board.run('apHost') === 'srv', 'the server is chosen, as a MicroVM is');
   check(await board.run('[...document.querySelectorAll("#addproj .aphostadd")].length === 0'), 'the list is closed until it is pressed');
