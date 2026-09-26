@@ -80,6 +80,7 @@ fn main() {
             let mut opts = desk::tab_options(&ft.cfg, d.folder_of(ft));
             let argv = desk::resolve_launch(argv, &mut opts, Some(d), &ft.cfg);
             let cwd = opts.cwd.clone();
+            let far = opts.remote.is_some() || opts.cloud.is_some();
             let program = argv.first().cloned().unwrap_or_default();
             println!(
                 "  tab title={title:?} id={:?} program={program:?} cwd={:?}",
@@ -113,7 +114,9 @@ fn main() {
                     }
                 }
                 Some(s) => {
-                    let ok = tab::resumable(&argv, &ft.cfg.profile, &s.id);
+                    // On another machine its record is there, looked for as
+                    // the tab starts, and not on this PC
+                    let ok = tab::resumable_at(&argv, &ft.cfg.profile, &s.id, far);
                     // The hash beside it is what the log calls this same
                     // conversation (`Session::short`). Printed together so a
                     // line in hooks.log can be matched to a record on the disk
@@ -130,7 +133,7 @@ fn main() {
                     );
                 }
             }
-            let carried = desk::carried_conversation(Some(&saved), d, &argv, &ft.cfg, &cwd, &title);
+            let carried = desk::carried_conversation(Some(&saved), d, &argv, &ft.cfg, &cwd, &title, far);
             // Whose conversation the tab would come up on. The CLI's own
             // records say where each one was had, and a tab carrying one that
             // was had somewhere else is the shape of a report written down

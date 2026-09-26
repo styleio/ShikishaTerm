@@ -55,7 +55,9 @@ pub struct TabOptions {
     /// What to run in that shell once it stands there, in the far end's own
     /// words (`claude`). The tab's command, when it is more than a shell: a
     /// program cannot be started over there, only typed, so it is typed after
-    /// the folder -- on screen, as a person would. None for a plain terminal
+    /// the folder -- on screen, as a person would. None for a plain terminal.
+    /// What is typed is this with the conversation's arguments, worked out as
+    /// the tab starts ([`far_launch`])
     pub remote_run: Option<String>,
     /// The machine this tab's terminal is on, when that machine has to be made
     /// before it can be talked to. Separate from `remote` because there is no
@@ -2405,14 +2407,7 @@ fn plan_launch(
     if already_resumes(spec, argv) {
         return (argv.to_vec(), None);
     }
-    let put = |extra: &[String], id: &str| -> Vec<String> {
-        let mut out = argv.to_vec();
-        let at = 1.min(out.len());
-        for (i, a) in extra.iter().enumerate() {
-            out.insert(at + i, a.replace("{id}", id));
-        }
-        out
-    };
+    let put = |extra: &[String], id: &str| with_args(argv, extra, id);
     match plan {
         Resume::Id(s) if !spec.with_id.is_empty() => (put(&spec.with_id, &s.id), Some(s)),
         // Asked to carry one on by a CLI that cannot be told which: the caller
@@ -2427,6 +2422,57 @@ fn plan_launch(
         }
         _ => (argv.to_vec(), None),
     }
+}
+
+/// The command with a profile's arguments put straight after the program,
+/// `{id}` standing for the conversation
+fn with_args(argv: &[String], extra: &[String], id: &str) -> Vec<String> {
+    let mut out = argv.to_vec();
+    let at = 1.min(out.len());
+    for (i, a) in extra.iter().enumerate() {
+        out.insert(at + i, a.replace("{id}", id));
+    }
+    out
+}
+
+/// What is typed into the shell on another machine to start this command, and
+/// the conversation it will be having -- the far half of [`plan_launch`].
+///
+/// The arguments are the ones a launch here gets, so a tab on a MicroVM is
+/// handed its conversation the way a tab here is. What differs is where the
+/// record of a conversation is: on that machine, where this PC cannot look
+/// before the launch. So the line asks there, as it runs: when the record the
+/// profile's `verify` names is there the conversation is resumed, and when it
+/// is not, a new one starts under the same id -- so either way the id this
+/// app remembers is the conversation the tab is having
+pub fn far_launch(
+    spec: Option<&crate::profile::ResumeSpec>,
+    argv: &[String],
+    plan: Resume,
+) -> (String, Option<Session>) {
+    let shell = crate::worktree::for_a_shell;
+    if let (Some(spec), Resume::Id(s)) = (spec, &plan)
+        && !spec.with_id.is_empty()
+        && !already_resumes(spec, argv)
+    {
+        // The id goes into the line unquoted, as part of a pattern the shell
+        // expands: only an id made of the characters ids are made of. Any
+        // other is handed over quoted, as one word, and not looked for
+        let plain = !s.id.is_empty() && s.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        const AT: &str = "\u{1}id\u{1}";
+        let resume = shell(&with_args(argv, &spec.with_id, AT))
+            .replace(AT, &if plain { s.id.clone() } else { crate::ssh::sh_quote(&s.id) });
+        return match (&spec.verify, spec.new_id.is_empty(), plain) {
+            (Some(verify), false, true) => {
+                let record = verify.replace("{home}", "$HOME").replace("{id}", &s.id);
+                let fresh = shell(&with_args(argv, &spec.new_id, &s.id));
+                (format!("if ls {record} >/dev/null 2>&1; then {resume}; else {fresh}; fi"), Some(s.clone()))
+            }
+            _ => (resume, Some(s.clone())),
+        };
+    }
+    let (out, session) = plan_launch(spec, argv, plan);
+    (shell(&out), session)
 }
 
 /// The conversation a tab may claim as its own, once it is known whether
@@ -2476,13 +2522,20 @@ pub fn carries_conversations(argv: &[String], profile_spec: &Option<String>) -> 
 }
 
 pub fn resumable(argv: &[String], profile_spec: &Option<String>, id: &str) -> bool {
+    resumable_at(argv, profile_spec, id, false)
+}
+
+/// The same, for a tab whose terminal is on this PC or -- `far` -- on another
+/// machine. Over there the record is not this PC's to look for: the line typed
+/// there looks for it as it starts (see [`far_launch`])
+pub fn resumable_at(argv: &[String], profile_spec: &Option<String>, id: &str, far: bool) -> bool {
     let Some(spec) = Tab::resolve_profile(argv, profile_spec).resume else {
         return false;
     };
     if spec.with_id.is_empty() {
         return false;
     }
-    spec.verify
+    far || spec.verify
         .as_ref()
         .is_none_or(|v| crate::sessionfind::exists(v, id))
 }
@@ -3196,7 +3249,20 @@ impl Tab {
                 !carrying.as_deref().is_some_and(|id| crate::vault::belongs(prog, at, id))
                     && !crate::vault::here(prog, at, 1).is_empty()
             });
-        let (resumed, session) = plan_launch(resume_spec.as_ref(), argv, plan);
+        // A terminal on another machine is told its command by typing it
+        // there, with the conversation's arguments the same as here. A plain
+        // terminal there is typed nothing: the shell that opens is the tab
+        let (resumed, session, far_typed) = match (local, opts.remote_run.is_some()) {
+            (true, _) => {
+                let (resumed, session) = plan_launch(resume_spec.as_ref(), argv, plan);
+                (resumed, session, None)
+            }
+            (false, true) => {
+                let (line, session) = far_launch(resume_spec.as_ref(), argv, plan);
+                (argv.to_vec(), session, Some(line))
+            }
+            (false, false) => (argv.to_vec(), None, None),
+        };
         let session = claimed(session, opts.held.as_ref());
         // Whether this tab is about to run the person's own program on this PC.
         //
@@ -3283,7 +3349,7 @@ impl Tab {
             // put in a job object
             (None, Some(spec), _) => {
                 let (m, k) =
-                    crate::ssh::shell(spec, rows, cols, opts.remote_cwd.as_deref(), opts.remote_run.as_deref())?;
+                    crate::ssh::shell(spec, rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?;
                 (m, k, None, None)
             }
             // The same, except the far end does not exist yet. Asking for it
@@ -3292,7 +3358,7 @@ impl Tab {
             (None, None, Some(host)) => {
                 let box_ = crate::e2b::machine(host)?;
                 let (m, k) =
-                    crate::e2b::shell(&box_, rows, cols, opts.remote_cwd.as_deref(), opts.remote_run.as_deref())?;
+                    crate::e2b::shell(&box_, rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?;
                 (m, k, None, None)
             }
             (None, None, None) => anyhow::bail!("a tab with no terminal of any kind"),
@@ -5952,4 +6018,73 @@ pub struct RecordedStep {
     pub value: String,
     pub xpath: bool,
     pub hint: String,
+}
+
+#[cfg(test)]
+mod far_launch_tests {
+    use super::*;
+
+    fn claude() -> crate::profile::ResumeSpec {
+        crate::profile::ResumeSpec {
+            new_id: vec!["--session-id".into(), "{id}".into()],
+            with_id: vec!["--resume".into(), "{id}".into()],
+            newest_here: vec!["--continue".into()],
+            verify: Some("{home}/.claude/projects/*/{id}.jsonl".into()),
+            ..Default::default()
+        }
+    }
+    fn argv(line: &str) -> Vec<String> {
+        line.split_whitespace().map(str::to_string).collect()
+    }
+    const ID: &str = "11111111-1111-4111-8111-111111111111";
+
+    /// A tab on a MicroVM starts its CLI with the arguments a tab here gets:
+    /// a new conversation under an id this app chose, so the app knows which
+    /// conversation the tab is having without being told
+    #[test]
+    fn a_new_conversation_is_started_under_our_id_there_too() {
+        let (line, session) = far_launch(Some(&claude()), &argv("claude"), Resume::Fresh);
+        let s = session.expect("the conversation is not known");
+        assert_eq!(s.source, SessionSource::Minted);
+        assert_eq!(line, format!("claude --session-id {}", s.id));
+    }
+
+    /// The conversation it was having is carried on where it is: the record is
+    /// looked for on that machine as the line runs, and when it is gone a new
+    /// one starts under the same id -- so the id remembered is right either way
+    #[test]
+    fn a_conversation_is_resumed_when_its_record_is_there() {
+        let had = Session { id: ID.into(), source: SessionSource::Minted };
+        let (line, session) = far_launch(Some(&claude()), &argv("claude --model opus"), Resume::Id(had.clone()));
+        assert_eq!(session.map(|s| s.id), Some(ID.to_string()));
+        assert_eq!(
+            line,
+            format!(
+                "if ls $HOME/.claude/projects/*/{ID}.jsonl >/dev/null 2>&1; \
+                 then claude --resume {ID} --model opus; else claude --session-id {ID} --model opus; fi"
+            )
+        );
+    }
+
+    /// An id that is not made of the characters ids are made of does not go
+    /// into a pattern the shell expands; it is handed over as a word
+    #[test]
+    fn an_odd_id_is_not_put_into_the_shell_as_a_pattern() {
+        let odd = Session { id: "a b;$(x)".into(), source: SessionSource::Hook };
+        let (line, _) = far_launch(Some(&claude()), &argv("claude"), Resume::Id(odd));
+        assert_eq!(line, "claude --resume 'a b;$(x)'");
+    }
+
+    /// A command that already says how to resume, and a program with no way of
+    /// being told a conversation, are typed as they are written
+    #[test]
+    fn what_carries_nothing_is_typed_as_written() {
+        let had = Session { id: ID.into(), source: SessionSource::Minted };
+        let (line, session) = far_launch(Some(&claude()), &argv("claude --continue"), Resume::Id(had));
+        assert_eq!(line, "claude --continue");
+        assert!(session.is_none(), "a conversation it was not given is claimed");
+        let (line, session) = far_launch(None, &argv("htop"), Resume::Fresh);
+        assert_eq!(line, "htop");
+        assert!(session.is_none());
+    }
 }

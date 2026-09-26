@@ -914,10 +914,14 @@ pub fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'s
             // before handing the CLI an id it has never heard of: it would say
             // so in its own words, in red, in a place the person has no reason
             // to connect with the key they just pressed
-            let gone = spec
-                .verify
-                .as_ref()
-                .is_some_and(|v| !sessionfind::exists(v, &s.id));
+            // On another machine the record is there, and the line typed
+            // there asks for it (see `tab::far_launch`)
+            let far = t.remote().is_some() || t.cloud().is_some();
+            let gone = !far
+                && spec
+                    .verify
+                    .as_ref()
+                    .is_some_and(|v| !sessionfind::exists(v, &s.id));
             if gone {
                 append_hook_log(&format!("\"{}\" no longer has {}", t.title, s.short()));
                 return (tab::Resume::Fresh, Some("msg.resume.gone"));
@@ -9583,6 +9587,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     for t in tabs.iter_mut() {
         t.kill();
     }
+    // A shell on a MicroVM outlives this program unless it is told to end, and
+    // the telling is on its way (see `e2b::settle`)
+    crate::e2b::settle(Duration::from_secs(5));
     Ok(())
 }
 /// A value made safe to put in a URL's query.
@@ -14063,7 +14070,7 @@ mod tests {
             }],
         };
         let plan = |saved: &crate::lastsession::Saved| {
-            carried_conversation(Some(saved), &desk, &argv, cfg, &here, "AGENT")
+            carried_conversation(Some(saved), &desk, &argv, cfg, &here, "AGENT", false)
         };
 
         // This tab was told to start clean, so nothing is carried however well
@@ -14071,7 +14078,7 @@ mod tests {
         let known = remembered("claude", "11111111-1111-4111-8111-111111111111");
         let mut off = cfg.clone();
         off.restore_conversation = Some(false);
-        let told = carried_conversation(Some(&known), &desk, &argv, &off, &here, "AGENT");
+        let told = carried_conversation(Some(&known), &desk, &argv, &off, &here, "AGENT", false);
         assert_eq!(
             told.plan,
             tab::Resume::Fresh,
@@ -14104,6 +14111,7 @@ mod tests {
                 cfg,
                 &here,
                 "AGENT",
+                false,
             )
             .plan,
             tab::Resume::Fresh,

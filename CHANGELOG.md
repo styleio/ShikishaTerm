@@ -216,6 +216,18 @@ once it reaches its first tagged release.
   deletes the original", which never happens: the links are taken out first.
 
 ### Fixed
+- **An AI on a MicroVM comes back on its conversation when the app restarts.**
+  A tab in a folder on a MicroVM started its AI without the conversation's
+  arguments, so the app remembered a conversation the AI never had, and after
+  a restart it said the conversation was gone and started clean. The line
+  typed there now carries them as a tab here does: a new conversation under
+  the app's id, and on a restart that conversation resumed -- looked for on
+  the machine as the line runs, and started afresh under the same id when it
+  is not there. A restarted tab on a machine that was already running also
+  came up on a bare prompt: the line that starts the AI was sent to the shell
+  by a name the MicroVM did not answer to, and is now sent by its process id.
+  Quitting ends the shell on the MicroVM, so the next start does not put a
+  second AI on the same conversation.
 - **A tab added to a folder on a MicroVM offers that machine's shell.** The
   kind "Command" read "PowerShell / cmd" and offered both, and the line shown
   as what would run was this PC's -- a MicroVM is Linux. It says it opens the

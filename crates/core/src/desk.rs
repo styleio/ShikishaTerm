@@ -373,10 +373,10 @@ pub fn apply_ws_config(
                 // starting is part of what it comes up as: a tab that lost the
                 // conversation it was having keeps the offer of the way back
                 let carried = match ft.cfg.id.as_deref().and_then(|id| resume.remove(id)) {
-                    Some(s) if tab::resumable(&argv, &ft.cfg.profile, &s.id) => {
+                    Some(s) if tab::resumable_at(&argv, &ft.cfg.profile, &s.id, far_opts(&said)) => {
                         Carried { plan: tab::Resume::Id(s), lost: false }
                     }
-                    _ => launch_plan(carry, desk, &argv, &ft.cfg, &said.cwd, &title),
+                    _ => launch_plan(carry, desk, &argv, &ft.cfg, &said.cwd, &title, far_opts(&said)),
                 };
                 let mut opts = opts;
                 opts.lost = carried.lost;
@@ -578,7 +578,7 @@ pub fn spawn_desk(
         // Kept for the message, because the options are moved into the tab and
         // the message is only wanted when that did not happen
         let said = opts.clone();
-        let carried = launch_plan(carry, desk, &argv, &ft.cfg, &cwd, &title);
+        let carried = launch_plan(carry, desk, &argv, &ft.cfg, &cwd, &title, far_opts(&said));
         opts.lost = carried.lost;
         match Tab::spawn_as(
             title.clone(),
@@ -1494,6 +1494,7 @@ pub fn carried_conversation(
     cfg: &config::TabConfig,
     cwd: &Option<std::path::PathBuf>,
     title: &str,
+    far: bool,
 ) -> Carried {
     // Whether any of this is worth a word at all. A shell has no conversation
     // to lose, and "this one starts clean" said about one is a sentence about
@@ -1541,13 +1542,19 @@ pub fn carried_conversation(
             title,
         );
     };
-    match tab::resumable(argv, &cfg.profile, &session.id) {
+    match tab::resumable_at(argv, &cfg.profile, &session.id, far) {
         true => Carried { plan: tab::Resume::Id(session), lost: false },
         false => Carried::lost(
             format!("{} is not on this computer any more", session.short()),
             title,
         ),
     }
+}
+
+/// Whether a tab launched with these options has its terminal on another
+/// machine, where the records of its conversations are
+fn far_opts(opts: &tab::TabOptions) -> bool {
+    opts.remote.is_some() || opts.cloud.is_some()
 }
 
 /// The conversation a tab is launched into, whichever road starts it.
@@ -1564,10 +1571,11 @@ fn launch_plan(
     cfg: &config::TabConfig,
     cwd: &Option<std::path::PathBuf>,
     title: &str,
+    far: bool,
 ) -> Carried {
     let carried = match resume_plan_of(cfg.resume.as_deref()) {
         named @ tab::Resume::Id(_) => Carried { plan: named, lost: false },
-        _ => carried_conversation(carry, desk, argv, cfg, cwd, title),
+        _ => carried_conversation(carry, desk, argv, cfg, cwd, title, far),
     };
     if let tab::Resume::Id(s) = &carried.plan {
         append_hook_log(&format!("launching \"{title}\" carrying {}", s.short()));

@@ -644,7 +644,11 @@ pub struct SandboxKiller {
 
 impl portable_pty::ChildKiller for SandboxKiller {
     fn kill(&mut self) -> std::io::Result<()> {
-        let _ = self.to_far_end.send(Note::Ended);
+        ENDING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.to_far_end.send(Note::Ended).is_err() {
+            // Its typing thread has already gone, and with it the shell
+            ENDING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
         Ok(())
     }
     fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
@@ -652,11 +656,25 @@ impl portable_pty::ChildKiller for SandboxKiller {
     }
 }
 
-/// A name for this terminal that the far end will answer to.
+/// Shells there that were told to end and have not been ended yet.
 ///
-/// Used instead of the process id so that nothing has to wait for the id to
-/// come back before it can type: the name is decided here, before the shell
-/// exists, and every later call names it
+/// A shell on a MicroVM does not end when this program does: the far end keeps
+/// it, and whatever runs in it, until it is told. Telling it is a request on
+/// the typing thread, and a program that quits straight after asking can be
+/// gone before the request is -- which left the AI of every tab running on the
+/// machine, and the next start put a second one on the same conversation
+static ENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Wait, for at most `most`, for every shell told to end to have been ended.
+/// Asked once, as this program closes
+pub fn settle(most: Duration) {
+    let until = std::time::Instant::now() + most;
+    while ENDING.load(std::sync::atomic::Ordering::SeqCst) > 0 && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A name for this terminal, which a listing of what runs on the machine shows
 fn a_tag() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -678,7 +696,7 @@ pub fn shell(
 {
     let tag = a_tag();
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-    let (up_tx, up_rx) = std::sync::mpsc::channel::<Result<()>>();
+    let (up_tx, up_rx) = std::sync::mpsc::channel::<Result<u32>>();
     let (note_tx, note_rx) = std::sync::mpsc::channel::<Note>();
 
     // The listening thread. It holds the streaming response open for as long
@@ -690,30 +708,47 @@ pub fn shell(
         listen(&box_, &tag_, rows, cols, started.as_deref(), &up_tx, &out_tx);
     })?;
 
-    // The typing thread. One call per note, in the order they were made
-    let (box_, tag_) = (sandbox.clone(), tag.clone());
+    // Nothing is handed back until the shell is actually there. A tab given a
+    // terminal that never opened shows an empty screen and no reason for it
+    let pid = up_rx
+        .recv_timeout(Duration::from_millis(START_MS))
+        .map_err(|_| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", "the terminal did not open")])))??;
+
+    // The typing thread. One call per note, in the order they were made.
+    //
+    // The shell is named by the process id the far end handed back, as the
+    // service's own client names it. Not by our tag: asked by tag, the far end
+    // answered "no process with that tag" for a shell it was listing under that
+    // very tag -- every time on a machine that was already running, which is a
+    // tab brought back after a restart -- and the line that starts the AI never
+    // arrived. The tag stays on the shell, where a listing still shows it
+    let at = serde_json::json!({ "pid": pid });
+    let box_ = sandbox.clone();
     std::thread::Builder::new().name("e2b-pty-in".into()).spawn(move || {
         while let Ok(note) = note_rx.recv() {
             match note {
                 Note::Typed(bytes) => {
-                    let _ = send_input(&box_, &tag_, &bytes);
+                    // What was typed and did not arrive is said, not dropped:
+                    // a terminal that silently ate its first line looks like
+                    // one that was never asked for anything
+                    if let Err(e) = send_input(&box_, &at, &bytes) {
+                        crate::append_hook_log(&format!("e2b: typing into shell {pid} failed: {e:#}"));
+                    }
                 }
                 Note::Size { rows, cols } => {
-                    let _ = resize(&box_, &tag_, rows, cols);
+                    let _ = resize(&box_, &at, rows, cols);
                 }
                 Note::Ended => {
-                    let _ = signal(&box_, &tag_, "SIGNAL_SIGKILL");
+                    if let Err(e) = signal(&box_, &at, "SIGNAL_SIGKILL") {
+                        crate::append_hook_log(&format!("e2b: ending shell {pid} failed: {e:#}"));
+                    }
+                    ENDING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
             }
         }
     })?;
 
-    // Nothing is handed back until the shell is actually there. A tab given a
-    // terminal that never opened shows an empty screen and no reason for it
-    up_rx
-        .recv_timeout(Duration::from_millis(START_MS))
-        .map_err(|_| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", "the terminal did not open")])))??;
     // The shell was started in the folder, so only the program is typed --
     // through the typing thread, ahead of anything a person types after
     if let Some(line) = crate::ssh::typed_first(None, then) {
@@ -744,7 +779,7 @@ fn listen(
     rows: u16,
     cols: u16,
     cwd: Option<&str>,
-    up: &std::sync::mpsc::Sender<Result<()>>,
+    up: &std::sync::mpsc::Sender<Result<u32>>,
     out: &std::sync::mpsc::Sender<Vec<u8>>,
 ) {
     let body = serde_json::json!({
@@ -799,9 +834,13 @@ fn listen(
         held.extend_from_slice(&buf[..n]);
         for msg in whole_frames(&mut held) {
             let event = msg.get("event");
-            if !opened && event.and_then(|e| e.get("start")).is_some() {
+            if !opened && let Some(start) = event.and_then(|e| e.get("start")) {
                 opened = true;
-                let _ = up.send(Ok(()));
+                // The id everything after this is sent to. A start that does
+                // not carry one is a shell nothing could ever be typed into
+                let _ = up.send(start.get("pid").and_then(|p| p.as_u64()).map(|p| p as u32).ok_or_else(|| {
+                    anyhow!(crate::i18n::tp("err.e2b.call", &[("e", "the shell started without an id")]))
+                }));
             }
             if let Some(s) = event.and_then(|e| e.get("data")).and_then(|d| d.get("pty"))
                 && let Some(bytes) = unwrap_bytes(s)
@@ -880,41 +919,49 @@ fn headed(req: ureq::RequestBuilder<ureq::typestate::WithBody>, sandbox: &Sandbo
 fn tell(sandbox: &Sandbox, method: &str, body: &serde_json::Value) -> Result<()> {
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_millis(INPUT_MS)))
+        .http_status_as_error(false)
         .build()
         .new_agent();
-    headed(agent.post(&format!("{SANDBOX}/{method}")), sandbox)
+    let mut resp = headed(agent.post(&format!("{SANDBOX}/{method}")), sandbox)
         .header("Content-Type", "application/json")
         .send(serde_json::to_vec(body)?)
         .map_err(|e| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])))?;
+    // A refusal says why in its body, and the why is the part worth keeping
+    if resp.status().as_u16() >= 400 {
+        let why = resp.body_mut().read_to_string().unwrap_or_default();
+        let said = format!("{} {}", resp.status(), why.trim());
+        bail!(crate::i18n::tp("err.e2b.call", &[("e", &said)]));
+    }
     Ok(())
 }
 
-fn send_input(sandbox: &Sandbox, tag: &str, bytes: &[u8]) -> Result<()> {
+/// `at` is which process: `{"pid": n}`
+fn send_input(sandbox: &Sandbox, at: &serde_json::Value, bytes: &[u8]) -> Result<()> {
     use base64::Engine as _;
     let typed = base64::engine::general_purpose::STANDARD.encode(bytes);
     tell(
         sandbox,
         "process.Process/SendInput",
-        &serde_json::json!({ "process": { "tag": tag }, "input": { "pty": typed } }),
+        &serde_json::json!({ "process": at, "input": { "pty": typed } }),
     )
 }
 
-fn resize(sandbox: &Sandbox, tag: &str, rows: u16, cols: u16) -> Result<()> {
+fn resize(sandbox: &Sandbox, at: &serde_json::Value, rows: u16, cols: u16) -> Result<()> {
     tell(
         sandbox,
         "process.Process/Update",
         &serde_json::json!({
-            "process": { "tag": tag },
+            "process": at,
             "pty": { "size": { "cols": cols as u32, "rows": rows as u32 } },
         }),
     )
 }
 
-fn signal(sandbox: &Sandbox, tag: &str, which: &str) -> Result<()> {
+fn signal(sandbox: &Sandbox, at: &serde_json::Value, which: &str) -> Result<()> {
     tell(
         sandbox,
         "process.Process/SendSignal",
-        &serde_json::json!({ "process": { "tag": tag }, "signal": which }),
+        &serde_json::json!({ "process": at, "signal": which }),
     )
 }
 
@@ -1348,9 +1395,8 @@ mod tests {
         assert!(entry_of(&serde_json::json!({ "size": 1 })).is_none());
     }
 
-    /// Every terminal in this program gets a name of its own, decided before
-    /// the far end has said anything -- which is what lets typing start
-    /// without waiting for a process id to come back
+    /// Every terminal in this program gets a name of its own, so a listing of
+    /// what runs on a machine says which of them are this program's
     #[test]
     fn two_terminals_are_never_the_same_terminal() {
         let (a, b) = (a_tag(), a_tag());
