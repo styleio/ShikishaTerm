@@ -3349,6 +3349,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     top:calc(var(--fy) + (100% - var(--fy) - var(--fb)) / 2); transform:translateY(-50%);
     display:none; flex-direction:column; align-items:center; gap:var(--s3); z-index:8; }
   #pageui.on { display:flex; }
+  /* Put away after a few seconds untouched, so the column they sit on can be
+     read; any touch on the screen brings them back. In one step, not a fade:
+     nothing in the window moves smoothly (STYLEGUIDE §6) */
+  #pageui.on.idle { visibility:hidden; }
   .pagebtn { width:50px; height:50px; border-radius:50%; border:1px solid var(--line);
     background:color-mix(in srgb, var(--panel) 66%, transparent); color:var(--text); font-size:19px; line-height:1;
     -webkit-backdrop-filter:blur(4px); backdrop-filter:blur(4px);
@@ -10617,8 +10621,11 @@ window.__state = function (json) {
     // window does, and two round buttons in the middle of a pane covered the
     // terminal they were meant to page
     const showPager = !OURS && phoneWidth() && !screen.hidden && !web && !onModelTab();
+    const wasShown = pager.classList.contains("on");
     pager.classList.toggle("on", showPager);
     if (!showPager) pgReset();
+    // Arriving on a terminal tab shows them, and the idle count starts there
+    else if (!wasShown) pgWake();
     // 📖 rides with the pager because it answers the same need — reading what
     // was said — and offers the better half of the answer wherever there is a
     // record to read. Where there is none it is not shown at all: a button that
@@ -12747,7 +12754,39 @@ let pgPending = 0, pgTimer = 0, pgWaiting = false, pgWaitTimer = 0;
 function pgReset() {
   pgPending = 0; pgWaiting = false; clearTimeout(pgTimer); clearTimeout(pgWaitTimer);
   const c = document.getElementById("pageCount"); if (c) c.textContent = "";
+  // Gone with the pager, so it comes back awake rather than already put away
+  clearTimeout(pgIdleTimer);
+  const p = document.getElementById("pageui"); if (p) p.classList.remove("idle");
 }
+
+// The buttons stand over the right edge of the terminal, on the very rows being
+// read. Left untouched for a few seconds they step aside; a touch anywhere on
+// the screen -- the one thing a person does before wanting them -- brings them
+// back and starts the count again. The touch still does what it does: it is
+// not spent on waking the buttons
+const PAGER_IDLE_MS = 3000;
+let pgIdleTimer = 0;
+
+function pgWake() {
+  const p = document.getElementById("pageui");
+  if (!p || !p.classList.contains("on")) return;
+  p.classList.remove("idle");
+  clearTimeout(pgIdleTimer);
+  pgIdleTimer = setTimeout(pgSleep, PAGER_IDLE_MS);
+}
+// Not while a move is still gathering taps or waiting for its screen: the count
+// and the spinner between the buttons are the answer to a tap, and hiding them
+// would make that tap look like it did nothing
+function pgSleep() {
+  if (pgPending !== 0 || pgWaiting) {
+    pgIdleTimer = setTimeout(pgSleep, PAGER_IDLE_MS);
+    return;
+  }
+  const p = document.getElementById("pageui");
+  if (p && p.classList.contains("on")) p.classList.add("idle");
+}
+// Capture, so a handler below that stops the touch cannot keep it from here
+document.addEventListener("pointerdown", pgWake, { capture: true, passive: true });
 // The little indicator between the buttons: the pending count while you tap,
 // then a spinner from the moment a move fires until the new screen lands. On a
 // good link the spinner flashes for a fraction of a second; on a slow one it
