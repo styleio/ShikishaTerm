@@ -3219,14 +3219,18 @@ pub fn run_for(plan: &Plan, argv: &[String]) -> Result<()> {
 ///
 /// Not this machine's shell: the far end is a server, and single quotes are
 /// what a server's shell takes literally. Only where they are needed, so an
-/// ordinary path stays readable on screen and in the log
+/// ordinary path stays readable on screen and in the log -- and needed is
+/// any word with something in it the shell would read as its own: a space,
+/// a quote, but just as much `(`, `$`, `*`, `;` or `&`. A format like
+/// `--format=%(refname:short)` left bare is a syntax error there, the whole
+/// line runs nothing, and what it was asked comes back empty. A `~` stays
+/// bare, as it was, so a path from home still starts at home
 pub fn for_a_shell(argv: &[String]) -> String {
+    let plain = |a: &str| !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-~^".contains(c));
     argv.iter()
-        .map(|a| match a.contains(' ') || a.contains('\'') || a.contains('"') {
-            // A server's shell, not this one: single quotes, and a single
-            // quote inside them closed and reopened the way sh wants
-            true => format!("'{}'", a.replace('\'', "'\\''")),
-            false => a.clone(),
+        .map(|a| match plain(a) {
+            false => format!("'{}'", a.replace('\'', "'\\''")),
+            true => a.clone(),
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -3284,6 +3288,20 @@ mod tests {
     /// The branches of a folder on another machine, read back from git there:
     /// the remote's default first and chosen, then the rest, `origin/HEAD` and
     /// repeats left out. With no remote default, the folder's own branch
+    #[test]
+    fn a_word_the_far_shell_would_read_as_its_own_is_quoted() {
+        let line = |argv: &[&str]| for_a_shell(&argv.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+        assert_eq!(
+            line(&["git", "-C", "/home/user/site", "for-each-ref", "--format=%(refname:short)", "refs/remotes"]),
+            "git -C /home/user/site for-each-ref '--format=%(refname:short)' refs/remotes",
+            "a format in brackets is left for the shell to trip over"
+        );
+        assert_eq!(line(&["cd", "/srv/a b"]), "cd '/srv/a b'");
+        assert_eq!(line(&["echo", "it's"]), "echo 'it'\\''s'");
+        assert_eq!(line(&["echo", "$HOME", "a;b", "*", "x&y"]), "echo '$HOME' 'a;b' '*' 'x&y'", "the shell is handed something to do");
+        assert_eq!(line(&["ls", "~/work", ""]), "ls ~/work ''", "home is not home, or an empty word is no word");
+    }
+
     #[test]
     fn a_far_folders_branches_are_read_back() {
         let said = format!("origin/main

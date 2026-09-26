@@ -448,6 +448,11 @@ try {
   await gitSend('branch');
   await until(() => board.run('JSON.stringify(G.branch)').then((b) => (JSON.parse(b || 'null') || {}).name === BRANCH), 'the panel to say the branch, read over there', 60000);
   check(true, 'the panel reports on the worktree\'s machine: ' + await board.run('JSON.stringify(G.branch)'));
+  // Made with no base named, it grows from the server's default, and
+  // bringing its latest in fetches the branch that default is
+  const cut = await board.run('JSON.stringify(G.branch)').then((b) => JSON.parse(b || 'null') || {});
+  check((cut.catch_up || [])[0] === 'git fetch origin +refs/heads/master:refs/remotes/origin/master',
+    'catching up fetches the branch the server\'s default is, not one called HEAD: ' + JSON.stringify({base: cut.base, catch_up: cut.catch_up}));
   await inside(`cd ${wt.cwd} && echo "from the panel" > panel.txt`);
   await gitSend('status');
   await until(() => board.run('(G.rows || []).some(r => r.path === "panel.txt")'), 'the new file in the panel\'s list', 60000);
@@ -458,6 +463,24 @@ try {
   await until(async () => (await inside(`git -C ${wt.cwd} log -1 --format=%s`)) === 'panel: committed over there', 'the commit, made on the machine', 60000);
   const author = await inside(`git -C ${wt.cwd} log -1 --format='%an <%ae>'`);
   check(/@users\.noreply\.github\.com>$/.test(author) && !/x-access-token/.test(author), 'by the account, as GitHub knows it: ' + author);
+
+  console.log('4e. a branch the server has is offered a pull request, with where it goes');
+  // The repository here cannot be pushed to, so the machine is told the
+  // server has the branch as it is, and follows it: what a push leaves
+  // behind. Put back afterwards, so step 5 still finds the commit unpushed
+  await inside(`cd ${wt.cwd} && git update-ref refs/remotes/origin/${BRANCH} HEAD && git branch -q -u origin/${BRANCH}`);
+  const prSaid = () => board.run(`JSON.stringify({github: gitOnGithub(), place: (gitTab() || {}).place || null, branch: G.branch, prs: G.prs, why: G.prsWhy, shown: gitPrFormShown(), pr: I.pr && {from: I.pr.from, project: I.pr.project, head: I.pr.head, bases: I.pr.bases, base: I.pr.base}})`);
+  await gitSend('branch');
+  await until(() => board.run('!!(G.branch && G.branch.upstream)'), 'the panel to see the branch follow the server', 60000)
+    .catch(async (e) => { console.log('    (the panel has: ' + await prSaid() + ')'); throw e; });
+  await until(async () => {
+    await board.run('gitAskPrs(); gitPrFormFit(); true');
+    return board.run('!!(I.pr && I.pr.from === "git" && Array.isArray(I.pr.bases))');
+  }, 'the pull request form and where it can go', 90000)
+    .catch(async (e) => { console.log('    (the panel has: ' + await prSaid() + ')'); throw e; });
+  const bases = await board.run('I.pr.bases');
+  check(bases.includes('master') && !bases.includes(BRANCH), 'where it goes is offered, from what the machine knows the server has: ' + JSON.stringify(bases));
+  await inside(`cd ${wt.cwd} && git branch -q --unset-upstream && git update-ref -d refs/remotes/origin/${BRANCH}`);
 
   console.log('4b. what it serves answers from anywhere, at the address the menu lists');
   await inside(`cd ${wt.cwd} && printf '<?php echo "served-from-the-" . "worktree";' > index.php && (nohup php -S 0.0.0.0:8000 >/dev/null 2>&1 &) ; sleep 1; echo ok`);

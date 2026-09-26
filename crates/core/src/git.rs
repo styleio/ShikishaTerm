@@ -1532,6 +1532,17 @@ pub fn catch_up_steps_for(dir: &Path, head: Option<&str>, base: &str) -> Vec<Vec
         Some((r, b)) if remotes.lines().any(|m| m.trim() == r) => (r.to_string(), b.to_string()),
         _ => ("origin".to_string(), base.to_string()),
     };
+    // `origin/HEAD` is the server's default, not a branch of that name: what
+    // it points at is the branch fetched and merged. A worktree on another
+    // machine made with no base named was written down that way
+    let branch = match branch.as_str() {
+        "HEAD" => run(dir, &["symbolic-ref", "-q", "--short", &format!("refs/remotes/{remote}/HEAD")])
+            .ok()
+            .and_then(|t| t.trim().strip_prefix(&format!("{remote}/")).map(str::to_string))
+            .filter(|b| !b.is_empty())
+            .unwrap_or(branch),
+        _ => branch,
+    };
     let fetch = |b: &str| vec!["fetch".into(), remote.clone(), format!("+refs/heads/{b}:refs/remotes/{remote}/{b}")];
     let mut steps = Vec::new();
     if let Some(h) = head.map(str::trim).filter(|h| !h.is_empty() && *h != branch) {
@@ -2441,6 +2452,24 @@ mod tests {
         assert!(matches!(err.downcast_ref::<CatchUpStop>(), Some(CatchUpStop::Dirty)), "{err}");
         assert_eq!(run(&near, &["rev-parse", "HEAD"]).unwrap(), head, "the branch moved");
         assert_eq!(std::fs::read_to_string(near.join("a.txt")).unwrap(), "mine\n", "the work was touched");
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
+    }
+
+    /// A branch written down as cut from `origin/HEAD` -- a worktree on another
+    /// machine made with no base named -- brings in the branch the server's
+    /// default is, not a branch called HEAD that the server does not have
+    #[test]
+    fn catching_up_from_the_servers_default_fetches_the_branch_it_is() {
+        let Some((seed, far, near)) = catch_up_setup("cu-head") else { return };
+        let steps = said(&catch_up_steps(&near, "origin/HEAD"));
+        assert_eq!(
+            steps,
+            vec!["git fetch origin +refs/heads/main:refs/remotes/origin/main".to_string(), "git merge --no-edit origin/main".to_string()],
+            "a branch named HEAD is asked of the server"
+        );
+        catch_up_advance(&seed, "b.txt", "new\n");
+        catch_up(&near, "origin/HEAD", &As::default()).unwrap();
+        assert_eq!(std::fs::read_to_string(near.join("b.txt")).unwrap().trim_end(), "new", "the latest was not brought in");
         for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
     }
 

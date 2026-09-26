@@ -320,6 +320,18 @@ once it reaches its first tagged release.
   deletes the original", which never happens: the links are taken out first.
 
 ### Fixed
+- **A pull request from a folder on a MicroVM offers where it can go.** The
+  git panel's pull request form had nothing under "into": the list is read
+  from git on that machine, and the line asking it carried
+  `--format=%(refname:short)` bare, which a server's shell reads as a syntax
+  error -- the whole line ran nothing and the list came back empty, with
+  nothing said. Every word a far shell would read as its own is now quoted.
+  The list is also asked of the folder the form is for, not the project's
+  first folder elsewhere: each folder on a MicroVM is a machine of its own.
+- **Bringing the latest in on a worktree grown from the server's default.**
+  A worktree on a MicroVM or a server made with no base named is cut from
+  `origin/HEAD`, and catching up asked the server for a branch called HEAD.
+  It now fetches and merges the branch the default is.
 - **A worktree on a server opens on what the server's checkout runs.** Asked
   to run "the same" as its original, a worktree cut on a server over SSH got
   one plain terminal, while a worktree here takes its checkout's tabs and one

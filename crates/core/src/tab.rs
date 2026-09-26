@@ -2504,7 +2504,9 @@ pub fn far_launch(
         // expands: only an id made of the characters ids are made of. Any
         // other is handed over quoted, as one word, and not looked for
         let plain = !s.id.is_empty() && s.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-        const AT: &str = "\u{1}id\u{1}";
+        // A word the shell's quoting leaves as it is, so it is still there to
+        // be replaced
+        const AT: &str = "__SHIKISHA_SESSION_ID__";
         let resume = shell(&with_args(argv, &spec.with_id, AT))
             .replace(AT, &if plain { s.id.clone() } else { crate::ssh::sh_quote(&s.id) });
         return match (&spec.verify, spec.new_id.is_empty(), plain) {

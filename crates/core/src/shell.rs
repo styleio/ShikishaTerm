@@ -17251,7 +17251,7 @@ function gitPrFormFit() {
           draft:false, close: !!made, issue: made ? {repo: made[1], number: Number(made[2])} : null, kept:"",
           files:null, open:{}, more:false};
   I.pr.body = prFixes("", I.pr);
-  gitIssuesAsk("pr_bases", {project: I.pr.project});
+  gitIssuesAsk("pr_bases", {project: I.pr.project, folder: I.pr.folder});
 }
 // Where it goes, until somebody chooses: a base it has not been sent to yet --
 // the one the branch was cut from first, then the server's default

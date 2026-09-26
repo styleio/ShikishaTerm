@@ -1177,14 +1177,24 @@ pub fn answer(
     // has, the one its server calls the default first
     if act == "pr_bases" {
         let mut bases: Vec<String> = Vec::new();
-        let found = match source.far.first() {
+        // On another machine, the folder the form is for: each folder on a
+        // MicroVM is a machine of its own, with its own copy of the
+        // repository and its own last fetch -- and the one being worked in is
+        // the one that is up. Any folder, for a form not written for one
+        let folder = s("folder");
+        let here = source
+            .far
+            .iter()
+            .find(|(d, _)| !folder.is_empty() && crate::uistate::same_folder(d, std::path::Path::new(&folder)))
+            .or(source.far.first());
+        let found = match here {
             // On another machine: what git there knows the server has
             Some((dir, crate::elsewhere::Elsewhere::Cloud(host))) => {
                 crate::worktree::far_bases_now(host, &dir.to_string_lossy().replace('\\', "/")).0
             }
-            Some(_) => {
-                source.note_far(&source.dir);
-                crate::git::run(&source.dir, &["for-each-ref", "--format=%(refname:short)", "refs/remotes"])
+            Some((dir, _)) => {
+                source.note_far(dir);
+                crate::git::run(dir, &["for-each-ref", "--format=%(refname:short)", "refs/remotes"])
                     .map(|t| t.lines().map(|l| l.trim().to_string()).collect())
                     .unwrap_or_default()
             }
