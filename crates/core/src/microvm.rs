@@ -123,37 +123,63 @@ impl Checkout {
 /// failed. Told to each machine here, on a thread, when what it would be
 /// given changes.
 ///
-/// A machine seen for the first time is only noted: it has what it was made
-/// with, and telling it again would start every paused machine each time the
-/// app opens. `folders` is (machine, what it signs in as)
+/// What each machine was last given is kept in a file, as a fingerprint and
+/// never as the token, so a token replaced while the app was closed is seen
+/// the next time. A machine is told only while a terminal of it is open and
+/// speaking: telling a paused one would start it, and it is told when it is
+/// next looked at instead. One that could not be told keeps its old
+/// fingerprint, and is tried again the next time round. A machine seen for the
+/// first time is taken to have what it would be given. `folders` is
+/// (machine, what it signs in as)
 pub fn keep_sign_ins_current(folders: Vec<(String, crate::config::FarSignIn)>) {
-    static TOLD: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
-        std::sync::OnceLock::new();
-    if folders.is_empty() {
+    static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if folders.is_empty() || BUSY.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
     std::thread::spawn(move || {
-        let told = TOLD.get_or_init(Default::default);
+        let mut given = given_sign_ins();
+        let before = given.clone();
         for (id, far) in folders {
             // Only a sign-in that could be worked out: one that cannot says
             // nothing about what the machine should now be given
             let Ok(sign_in) = far.resolve() else { continue };
             let print = sign_in_print(sign_in.as_ref());
-            let before = told.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), print.clone());
-            match before {
-                None => {}
-                Some(was) if was == print => {}
+            match given.get(&id) {
+                None => {
+                    given.insert(id, print);
+                }
+                Some(was) if *was == print => {}
+                Some(_) if !crate::e2b::awake(&id) => {}
                 Some(_) => {
                     let Some(key) = crate::e2b::key() else { continue };
-                    if let Err(e) = crate::e2b::sign_in_as(&key, &id, sign_in.as_ref()) {
-                        crate::append_hook_log(&format!("could not give machine {id} its new sign-in: {e:#}"));
-                        // Tried again at the next change of the settings
-                        told.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+                    match crate::e2b::sign_in_as(&key, &id, sign_in.as_ref()) {
+                        Ok(()) => {
+                            crate::append_hook_log(&format!("machine {id} was given its new sign-in"));
+                            given.insert(id, print);
+                        }
+                        Err(e) => crate::append_hook_log(&format!(
+                            "could not give machine {id} its new sign-in (tried again later): {e:#}"
+                        )),
                     }
                 }
             }
         }
+        if given != before {
+            let text = serde_json::to_string_pretty(&given).unwrap_or_default();
+            let _ = crate::crypto::write_atomic(&crate::config::state_path(GIVEN), &text);
+        }
+        BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
     });
+}
+
+/// The file the fingerprints of what each machine was given are kept in
+const GIVEN: &str = "microvm-sign-ins.json";
+
+fn given_sign_ins() -> std::collections::BTreeMap<String, String> {
+    std::fs::read_to_string(crate::config::state_path(GIVEN))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
 }
 
 /// What a sign-in is, reduced to something that can be compared and kept in
@@ -172,11 +198,24 @@ fn sign_in_print(s: Option<&crate::e2b::SignIn>) -> String {
 /// A copy is the machine as it was that instant, what was running in it
 /// included: a server somebody tried in the checkout, the AI that was open
 /// there, the shell's history of what was typed. None of that is the new
-/// worktree's. Everything this account runs is ended -- save the shell running
-/// this and the service's own agent, which the machine is reached through --
-/// and the histories go. What was installed and signed in to stays: that is
-/// what every worktree is copied to have
-pub const AFTER_FORK: &str = "me=$(id -un); for p in $(ps -u \"$me\" -o pid= 2>/dev/null); do case \"$p\" in $$|$PPID) continue;; esac; case \"$(ps -o comm= -p \"$p\" 2>/dev/null)\" in envd*) continue;; esac; kill -TERM \"$p\" 2>/dev/null; done; rm -f ~/.bash_history ~/.zsh_history ~/.python_history ~/.node_repl_history ~/.lesshst ~/.viminfo; true";
+/// worktree's. Everything the terminals' account runs is ended -- save the
+/// shell running this and the service's own agent, which the machine is
+/// reached through. Hung up first, which ends a shell a person had open (it
+/// ignores being asked to terminate) and has it write its history out; killed
+/// if it is still there a second later; and only then are the histories
+/// deleted, including what was just written. What was installed and signed in
+/// to stays: that is what every worktree is copied to have
+pub const AFTER_FORK: &str = "me=user; \
+command -v ps >/dev/null 2>&1 || { echo 'ps is not on this machine' >&2; exit 3; }; \
+list() { ps -u \"$me\" -o pid=,comm= 2>/dev/null | while read -r p c; do \
+case \"$p\" in $$|$PPID) continue;; esac; \
+case \"$c\" in envd*) continue;; esac; \
+echo \"$p\"; done; }; \
+for p in $(list); do kill -HUP \"$p\" 2>/dev/null; done; \
+sleep 1; \
+for p in $(list); do kill -KILL \"$p\" 2>/dev/null; done; \
+rm -f /home/$me/.bash_history /home/$me/.zsh_history /home/$me/.python_history /home/$me/.node_repl_history /home/$me/.lesshst /home/$me/.viminfo; \
+true";
 
 /// The addresses a folder's MicroVM answers on from anywhere: each port
 /// something listens on in there, with the public URL the service gives it.
@@ -1029,5 +1068,24 @@ mod tests {
         assert!(!format!("{note:?}").contains("0123456789"), "the token is in what is said");
         let failed = sign_in_note("gone", &Err("no such account".into())).unwrap();
         assert_eq!((failed.kind.as_str(), failed.error.as_str()), ("none", "no such account"));
+    }
+}
+
+#[cfg(test)]
+mod after_fork_tests {
+    /// The clearing ends what the terminals' account runs and nothing of the
+    /// service's, says when it cannot see the processes at all, and deletes
+    /// the histories only after the shells were hung up and wrote them out
+    #[test]
+    fn the_clearing_hangs_up_then_kills_and_only_then_deletes() {
+        let s = super::AFTER_FORK;
+        if let Ok(to) = std::env::var("SHIKISHA_AFTER_FORK_OUT") {
+            std::fs::write(to, s).unwrap();
+        }
+        assert!(s.starts_with("me=user;"), "run as whoever the service's default is: {s}");
+        assert!(s.contains("envd*) continue"), "the service's own agent is ended");
+        assert!(s.contains("exit 3"), "a machine with no ps reads as cleared");
+        let (hup, kill, rm) = (s.find("kill -HUP").unwrap(), s.find("kill -KILL").unwrap(), s.find("rm -f").unwrap());
+        assert!(hup < kill && kill < rm, "the histories are deleted before the shells write them");
     }
 }

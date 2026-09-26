@@ -858,9 +858,11 @@ impl Link {
     }
     fn set_open(&self, open: bool) {
         self.open.store(open, std::sync::atomic::Ordering::Relaxed);
+        let id = self.sandbox().id;
+        awake_as(&id, open);
         // Speaking again: whatever it slept through, it is awake now
         if open {
-            asleep_as(&self.sandbox().id, false);
+            asleep_as(&id, false);
         }
     }
     /// The stream went with the machine under it: said on screen, and the
@@ -922,6 +924,26 @@ fn asleep_as(id: &str, yes: bool) {
             a.remove(id);
         }
     }
+}
+
+/// The machines a terminal of this program is open and speaking on: known to
+/// be running, so asking something of one starts nothing
+static AWAKE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn awake_as(id: &str, yes: bool) {
+    if let Ok(mut a) = AWAKE.get_or_init(Default::default).lock() {
+        if yes {
+            a.insert(id.to_string());
+        } else {
+            a.remove(id);
+        }
+    }
+}
+
+/// Whether a terminal of this program is open on this machine now
+pub fn awake(id: &str) -> bool {
+    AWAKE.get_or_init(Default::default).lock().is_ok_and(|a| a.contains(id))
 }
 
 /// Whether this machine's terminal found it paused and nothing has woken it
@@ -1733,6 +1755,13 @@ mod tests {
         assert!(asleep("sleep-test"));
         asleep_as("sleep-test", false);
         assert!(!asleep("sleep-test"));
+
+        // Awake only while a terminal of it is open and speaking
+        assert!(!awake("awake-test"), "a machine nothing is open on is taken for running");
+        awake_as("awake-test", true);
+        assert!(awake("awake-test"));
+        awake_as("awake-test", false);
+        assert!(!awake("awake-test"));
     }
 
     /// A key the service turns away is said as a key to fix in the settings
