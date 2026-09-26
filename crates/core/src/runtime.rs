@@ -1167,8 +1167,23 @@ pub fn restart_tab(t: &mut Tab, alone: bool, keep: bool, rows: u16, cols: u16) -
 /// front of the tab pointed it at the tab after it, or past the last one --
 /// and then no answer came back at all, so the list sat open under its
 /// heading with nothing in it
-fn past_of(surfaces: &[Surface], tabs: &[Tab], which: usize) -> Option<crate::uistate::PastState> {
+///
+/// A tab on another machine has its CLI's records there: the list is asked of
+/// that machine on a thread (`tx`), and says it is being asked until it comes
+fn past_of(
+    surfaces: &[Surface],
+    tabs: &[Tab],
+    which: usize,
+    tx: &std::sync::mpsc::Sender<(usize, Vec<crate::vault::Hit>)>,
+) -> Option<crate::uistate::PastState> {
     let t = tabs.get(session_at(surfaces, which)?)?;
+    if let (Some(at), Some(cwd)) = (tab_machine(t), t.cwd()) {
+        let (program, cwd, tx) = (t.program().to_string(), cwd.to_path_buf(), tx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send((which, crate::vault::here_far(&program, &at, &cwd, 12)));
+        });
+        return Some(crate::uistate::PastState { tab: which, name: t.title.clone(), hits: Vec::new(), asking: true });
+    }
     Some(crate::uistate::PastState {
         tab: which,
         name: t.title.clone(),
@@ -1176,6 +1191,7 @@ fn past_of(surfaces: &[Surface], tabs: &[Tab], which: usize) -> Option<crate::ui
             .cwd()
             .map(|c| crate::vault::here(t.program(), c, 12))
             .unwrap_or_default(),
+        asking: false,
     })
 }
 
@@ -1491,6 +1507,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut git_lines = GitLines::new();
     // Answers to the Issue tab, from the threads that waited for GitHub
     let (issues_tx, issues_rx) = std::sync::mpsc::channel::<String>();
+    // What was said before in a tab's folder on another machine, read there
+    let (past_tx, past_rx) = std::sync::mpsc::channel::<(usize, Vec<crate::vault::Hit>)>();
     // A MicroVM folder asked to be deleted, checked on its machine for work
     // that would go with it; and the ones that passed, to go on
     let (far_discard_tx, far_discard_rx) = std::sync::mpsc::channel::<(String, Result<(), String>)>();
@@ -6998,12 +7016,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // up on a conversation of nobody's, and answered from the CLI's own
         // records -- the app's memory of that tab is exactly what is missing
         for which in shell.mail().take_past_lists() {
-            past_view = past_of(&surfaces, &tabs, which as usize);
+            past_view = past_of(&surfaces, &tabs, which as usize, &past_tx);
             // Asking is the moment the loss has been seen, so the caption goes
             // back to its ordinary manners: the offer stands while nobody has
             // spoken here, and no longer holds itself open past that
             if let Some(t) = session_at(&surfaces, which as usize).and_then(|i| tabs.get_mut(i)) {
                 t.lost = false;
+            }
+        }
+        // A list asked of another machine, back: put on the list that asked,
+        // if it is still the one open
+        while let Ok((which, hits)) = past_rx.try_recv() {
+            if let Some(v) = past_view.as_mut().filter(|v| v.tab == which && v.asking) {
+                v.hits = hits;
+                v.asking = false;
             }
         }
         // One of them chosen: that tab is relaunched into it, the way every

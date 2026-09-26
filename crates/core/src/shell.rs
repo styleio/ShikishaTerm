@@ -14489,6 +14489,11 @@ function renderPast() {
   const hint = v.querySelector(".vhint");
   list.textContent = "";
   const hits = ps.hits || [];
+  // A folder on another machine: its records are there, and being read
+  if (ps.asking) {
+    hint.textContent = T["past.asking"] || "";
+    return;
+  }
   if (!hits.length) {
     hint.textContent = T["past.none"] || "Nothing has been said in this folder before.";
     return;

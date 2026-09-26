@@ -250,6 +250,87 @@ fn here_in(src: &Source, cwd: &Path, most: usize) -> Vec<Hit> {
     out
 }
 
+/// The same list for a folder on another machine, read from the CLI's records
+/// there.
+///
+/// The records are where the CLI ran, and for a folder on a MicroVM or a
+/// server that is not this PC -- so the list asked of this PC's disk was always
+/// empty there, on the window and on a phone alike. Asked of the machine in
+/// one command: its newest records, each with the start of it, which is where
+/// every CLI writes the folder and the id. Waits on the machine, so it is for
+/// a thread; asking starts a paused machine, and it is asked when somebody
+/// opens the list
+pub fn here_far(program: &str, at: &crate::elsewhere::Elsewhere, cwd: &Path, most: usize) -> Vec<Hit> {
+    let Some(src) = sources().into_iter().find(|s| s.program == program) else {
+        return Vec::new();
+    };
+    let Some(line) = far_listing(&src.verify) else { return Vec::new() };
+    let out = match crate::elsewhere::exec(at, &line, 60_000) {
+        Ok(r) => r.out,
+        Err(e) => {
+            crate::append_hook_log(&format!("could not read the {program} records on {}: {e:#}", at.address()));
+            return Vec::new();
+        }
+    };
+    far_hits(&out, &src, cwd, most)
+}
+
+/// The one command that lists a CLI's records on a Linux machine, newest
+/// first, each as `@@F <mtime> <path>` and then the start of it in base64.
+/// `None` for a pattern that does not start at the home folder
+fn far_listing(verify: &str) -> Option<String> {
+    let rest = verify.strip_prefix("{home}/")?.replace("{id}", "*");
+    // Only what a glob is made of: the pattern is a profile's, and anything
+    // else in it would be words for the shell
+    if !rest.chars().all(|c| c.is_ascii_alphanumeric() || "/*._-".contains(c)) {
+        return None;
+    }
+    Some(format!(
+        "cd \"$HOME\" 2>/dev/null || exit 0; ls -t {rest} 2>/dev/null | head -n {LOOK_CAP} | while IFS= read -r f; do \
+printf '@@F %s %s\\n' \"$(stat -c %Y \"$f\" 2>/dev/null || echo 0)\" \"$f\"; head -c {FOLDER_CAP} \"$f\" | base64 -w0; echo; done"
+    ))
+}
+
+/// What `far_listing` printed, read into the conversations of `cwd`
+fn far_hits(out: &str, src: &Source, cwd: &Path, most: usize) -> Vec<Hit> {
+    use base64::Engine as _;
+    let mut hits = Vec::new();
+    let mut lines = out.lines();
+    while let Some(head_line) = lines.next() {
+        if hits.len() >= most {
+            break;
+        }
+        let Some(rest) = head_line.strip_prefix("@@F ") else { continue };
+        let Some((when, path)) = rest.split_once(' ') else { continue };
+        let body = lines.next().unwrap_or_default();
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(body.trim()) else { continue };
+        let head = String::from_utf8_lossy(&bytes).into_owned();
+        let Some(at) = cwd_of(&head, src) else { continue };
+        if !crate::uistate::same_folder(Path::new(&at), cwd) {
+            continue;
+        }
+        let Some(id) = id_of(Path::new(path), &head, src) else { continue };
+        // What was asked first, from the start of the record brought over:
+        // read the way a record here is read, from a copy of that start
+        let snippet = {
+            let tmp = std::env::temp_dir().join(format!("shikisha-far-record-{}", crate::random_hex(6)));
+            let said = std::fs::write(&tmp, &bytes).ok().and_then(|()| first_ask(&tmp, src));
+            let _ = std::fs::remove_file(&tmp);
+            said.unwrap_or_default()
+        };
+        hits.push(Hit {
+            program: src.program.clone(),
+            id,
+            title: title_of(Some(&at), &src.program),
+            snippet,
+            cwd: Some(at),
+            when: when.trim().parse().unwrap_or(0),
+            tab: None,
+        });
+    }
+    hits
+}
+
 /// What the person asked first in a record, for saying which conversation this
 /// is. Their own words, told apart from everything else the file holds the way
 /// that CLI's profile says (`crate::asks`)
@@ -705,5 +786,40 @@ mod tests {
         assert!(glob_seg("a.jsonl", "a.jsonl"));
         assert!(!glob_seg("a.jsonl", "b.jsonl"));
         assert!(!glob_seg("rollout-*.jsonl", "other.jsonl"));
+    }
+}
+
+#[cfg(test)]
+mod far_tests {
+    use super::*;
+
+    /// A CLI's records on another machine, as the machine lists them, read
+    /// into the conversations of one folder there -- newest first, and none of
+    /// another folder's
+    #[test]
+    fn a_far_folders_conversations_are_read_from_its_machines_records() {
+        let src = Source {
+            program: "claude".into(),
+            with_id: vec!["--resume".into(), "{id}".into()],
+            verify: "{home}/.claude/projects/*/{id}.jsonl".into(),
+            id_path: None,
+            cwd_path: None,
+            asks: None,
+        };
+        // What the listing printed for two records, the newer of another folder
+        let out = "@@F 1790430223 .claude/projects/-home-user-site/bbb.jsonl\n\
+eyJ0eXBlIjoidXNlciIsImN3ZCI6Ii9ob21lL3VzZXIvb3RoZXIiLCJzZXNzaW9uSWQiOiJiYmIifQo=\n\
+@@F 1790430222 .claude/projects/-home-user-site/aaa.jsonl\n\
+eyJ0eXBlIjoidXNlciIsImN3ZCI6Ii9ob21lL3VzZXIvc2l0ZSIsInNlc3Npb25JZCI6ImFhYSIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiZml4IHRoZSBsb2dpbiBidWcifX0K\n";
+        let hits = far_hits(out, &src, Path::new("/home/user/site"), 12);
+        assert_eq!(hits.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), vec!["aaa"]);
+        assert_eq!(hits[0].when, 1_790_430_222);
+        assert_eq!(hits[0].cwd.as_deref(), Some("/home/user/site"));
+
+        // The listing is only ever a glob under the home folder
+        let line = far_listing(&src.verify).unwrap();
+        assert!(line.contains("ls -t .claude/projects/*/*.jsonl"), "{line}");
+        assert_eq!(far_listing("/etc/{id}"), None, "a pattern outside the home folder is listed");
+        assert_eq!(far_listing("{home}/$(reboot)/{id}"), None, "a pattern with shell words in it is run");
     }
 }

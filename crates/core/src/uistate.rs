@@ -268,6 +268,9 @@ pub struct PastState {
     /// What that tab is called, so the overlay can say which tab it is about
     pub name: String,
     pub hits: Vec<crate::vault::Hit>,
+    /// Still being asked of the machine the folder is on
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub asking: bool,
 }
 
 /// The Vault overlay's contents: what was searched and what turned up.

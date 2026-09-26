@@ -489,6 +489,7 @@
   "past.title": "EARLIER CONVERSATIONS",
   "past.say": "{name} started a new conversation. Pick the one to go back to.",
   "past.none": "Nothing has been said in this folder before.",
+  "past.asking": "Reading the conversations kept on the machine this folder is on…",
   "vault.more": "Showing the most recent matches — narrow the search for older ones.",
   "tui.menu.palette": "Command palette (find & run anything)",
   "palette.title": "COMMANDS",
