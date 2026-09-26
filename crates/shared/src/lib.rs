@@ -377,7 +377,14 @@ pub enum Ev {
     /// Reopen one past conversation as a tab, resuming it. Named by the values
     /// a hit carries, so the window can build the tab without holding the last
     /// search
-    VaultOpen { program: String, id: String, cwd: Option<String>, title: String },
+    VaultOpen {
+        program: String,
+        id: String,
+        cwd: Option<String>,
+        title: String,
+        /// The machine it was had on, by its settings entry: none is this PC
+        host: Option<String>,
+    },
     /// What has been said in one tab's folder before. Asked when a tab came up
     /// on a conversation of nobody's although that folder has been worked in:
     /// the answer is the list the person chooses from
@@ -1156,6 +1163,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             cwd: v.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
             title: v.get("title").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            host: v.get("host").and_then(|x| x.as_str()).map(str::to_string).filter(|h| !h.is_empty()),
         },
         Some("stop") => Ev::Stop,
         Some("restart") => Ev::Restart,

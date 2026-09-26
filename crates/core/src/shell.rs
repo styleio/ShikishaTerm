@@ -14551,7 +14551,7 @@ function renderVault() {
     const row = el("div", {class:"vrow", onclick:() => {
       closeVault();
       if (live) send({kind:"select", tab:h.tab});
-      else send({kind:"vaultopen", program:h.program, id:h.id, cwd:h.cwd || "", title:h.title});
+      else send({kind:"vaultopen", program:h.program, id:h.id, cwd:h.cwd || "", title:h.title, host:h.host || ""});
     }});
     row.append(el("div", {class:"vr1"},
       el("span", {class:"vprog"}, live ? (T["vault.live"] || "open") : h.program),

@@ -84,6 +84,10 @@ pub struct Hit {
     /// this is the present, not the past
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab: Option<usize>,
+    /// The machine the record is on, by its settings entry: none is this PC.
+    /// What reopening it goes by, with the folder
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 /// What a search came back with, and whether it saw everything.
@@ -141,6 +145,7 @@ pub fn search(query: &str, limit: usize) -> Found {
             cwd,
             when: when.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
             tab: None,
+            host: None,
         });
     }
     // A capped scan that still filled the page is honestly complete for the
@@ -222,6 +227,7 @@ fn far_search_hits(out: &str, sources: &[Source], needle: &str, machine: &str, l
             cwd,
             when: when.trim().parse().unwrap_or(0),
             tab: None,
+            host: Some(machine.to_string()),
         });
     }
     // Newest first across every CLI there, as the search here orders them
@@ -327,6 +333,7 @@ fn here_in(src: &Source, cwd: &Path, most: usize) -> Vec<Hit> {
             cwd: Some(at),
             when: when.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
             tab: None,
+            host: None,
         });
     }
     out
@@ -408,6 +415,7 @@ fn far_hits(out: &str, src: &Source, cwd: &Path, most: usize) -> Vec<Hit> {
             cwd: Some(at),
             when: when.trim().parse().unwrap_or(0),
             tab: None,
+            host: None,
         });
     }
     hits
@@ -840,6 +848,7 @@ mod tests {
             snippet: String::new(),
             when: 0,
             tab: None,
+            host: None,
         };
         // With no profiles installed in the test env, reopen has nothing to
         // resolve against; the shape is what a real source produces

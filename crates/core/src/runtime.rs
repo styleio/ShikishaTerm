@@ -2881,7 +2881,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             }
             // The sign-in step shows the checkout's own terminal in its dialog
-            if let Some(id) = login_pending.as_ref().filter(|p| p.shown).and_then(|p| p.host.instance.as_deref()) {
+            // (the checkout's machine by the project's record of it: the
+            // settings entry carries no machine)
+            if let Some(id) = login_pending.as_ref().filter(|p| p.shown).and_then(|p| p.home.sandbox.as_deref()) {
                 crate::e2b::shown(id);
             }
 
@@ -7065,6 +7067,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // surface 0, so tab i sits at i + 1 -- the number
                             // Select expects and a person presses
                             tab: Some(i + 1),
+                            host: None,
                         });
                     }
                 }
@@ -7121,6 +7124,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     v.hits.push(h);
                 }
             }
+            // What is on screen first, then every machine's together, newest
+            // first: a conversation of today on a MicroVM above a year-old one
+            // here, as one list would have it
+            v.hits.sort_by(|a, b| match (a.tab.is_some(), b.tab.is_some()) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                (true, true) => std::cmp::Ordering::Equal,
+                (false, false) => b.when.cmp(&a.when),
+            });
+            v.hits.truncate(120);
         }
         // A folder renamed in the list, or taken out of it. Both are changes
         // to the settings, so the reload that follows is what actually shows
@@ -9150,7 +9163,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
         for ev in shell.mail().take_vault_opens() {
-            if let shikisha_shared::Ev::VaultOpen { program, id, cwd, title } = ev {
+            if let shikisha_shared::Ev::VaultOpen { program, id, cwd, title, host } = ev {
                 // The command is the program alone; the resume id rides in its
                 // own field, where the launch path turns it into the CLI's
                 // resume flags. Writing the flags into the command here would
@@ -9171,14 +9184,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let far_path = cwd.as_deref().is_some_and(|c| cfg!(windows) && c.starts_with('/'));
                 let on_desk = folder.is_some_and(|p| {
                     desks.get(desk_index).is_some_and(|d| {
-                        d.folders.iter().any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, p)))
+                        d.folders.iter().any(|f| {
+                            f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, p))
+                                && (host.is_none() || f.host.as_ref().map(|h| h.name.as_str()) == host.as_deref())
+                        })
                     })
                 });
                 if far_path && !on_desk {
                     flash = Some(i18n::tp("msg.vault.far_not_here", &[("title", &title)]));
                     continue;
                 }
-                if config::append_tab(&desk, tab, folder) {
+                if config::append_tab_on(&desk, tab, folder, host.as_deref()) {
                     flash = Some(i18n::tp("msg.vault.reopened", &[("title", &title)]));
                 } else {
                     flash = Some(i18n::t("msg.vault.reopen_failed"));
@@ -12827,8 +12843,9 @@ struct GitDone {
 }
 
 /// How long the panel waits on a line before saying the folder is not
-/// answering. The line is not waited on after that: the next question about
-/// the folder starts a new one, and whatever the old one says late is dropped
+/// answering yet. The line goes on: a second git in the same folder would only
+/// find the first one's lock, and a commit whose hooks take two minutes still
+/// lands -- so what the line says late is handed over when it comes
 const GIT_PANEL_WAIT: Duration = Duration::from_secs(60);
 
 /// The acts whose answer is a reading of the folder as it is. Only the newest
@@ -12852,8 +12869,9 @@ struct GitLines {
     /// The newest question of each kind, per panel: an older one's answer is
     /// not drawn
     newest: std::collections::HashMap<(String, String), u64>,
-    /// Questions asked and not answered yet: (seq, panel, act, folder line, since)
-    waiting: Vec<(u64, String, String, String, Instant)>,
+    /// Questions asked and not answered yet: (seq, panel, act, since, and
+    /// whether the panel was already told this one is slow)
+    waiting: Vec<(u64, String, String, Instant, bool)>,
 }
 
 impl GitLines {
@@ -12864,7 +12882,7 @@ impl GitLines {
 
     /// A folder's line, by the folder as it is spelt, whatever machine it is on
     fn key(job: &GitJob) -> String {
-        let at = job.at.as_ref().map(|a| a.address()).unwrap_or_default();
+        let at = job.at.as_ref().map(|a| a.machine_key()).unwrap_or_default();
         format!("{at}\u{1f}{}", job.dir.to_string_lossy().replace('\\', "/").to_lowercase())
     }
 
@@ -12873,7 +12891,7 @@ impl GitLines {
         job.seq = self.seq;
         self.newest.insert((job.panel.clone(), job.act.clone()), job.seq);
         let key = Self::key(&job);
-        self.waiting.push((job.seq, job.panel.clone(), job.act.clone(), key.clone(), Instant::now()));
+        self.waiting.push((job.seq, job.panel.clone(), job.act.clone(), Instant::now(), false));
         let job = match self.lines.get(&key) {
             Some(line) => match line.send(job) {
                 Ok(()) => return,
@@ -12890,9 +12908,10 @@ impl GitLines {
         let (line_tx, line_rx) = std::sync::mpsc::channel::<GitJob>();
         let done = self.tx.clone();
         let spawned = std::thread::Builder::new().name("git-line".into()).spawn(move || {
-            // Kept for a while after the last question, then let go: a folder
-            // nobody asks about has no thread waiting for it
-            while let Ok(job) = line_rx.recv_timeout(Duration::from_secs(300)) {
+            // For as long as the app runs. A line that let itself go when idle
+            // could go in the instant a question was handed to it, and take
+            // the question with it; a waiting thread costs nothing
+            while let Ok(job) = line_rx.recv() {
                 let answer = git_answer(&job);
                 if done.send(GitDone { seq: job.seq, panel: job.panel, act: job.act, payload: answer }).is_err() {
                     return;
@@ -12918,11 +12937,9 @@ impl GitLines {
     fn answers(&mut self) -> Vec<String> {
         let mut out = Vec::new();
         while let Ok(d) = self.rx.try_recv() {
-            let Some(at) = self.waiting.iter().position(|w| w.0 == d.seq) else {
-                // Given up on already: said to be not answering
-                continue;
-            };
-            self.waiting.remove(at);
+            if let Some(at) = self.waiting.iter().position(|w| w.0 == d.seq) {
+                self.waiting.remove(at);
+            }
             let stale = GIT_READS.contains(&d.act.as_str())
                 && self.newest.get(&(d.panel.clone(), d.act.clone())).is_some_and(|n| *n > d.seq);
             if stale {
@@ -12932,14 +12949,11 @@ impl GitLines {
             payload["panel"] = serde_json::json!(d.panel);
             out.push(payload.to_string());
         }
-        let (late, still): (Vec<_>, Vec<_>) =
-            self.waiting.drain(..).partition(|w| w.4.elapsed() >= GIT_PANEL_WAIT);
-        self.waiting = still;
-        for (_, panel, act, key, _) in late {
-            // The line is let go of: the next question starts a new one
-            self.lines.remove(&key);
+        // Slow: said once, and the answer still handed over when it comes
+        for w in self.waiting.iter_mut().filter(|w| !w.4 && w.3.elapsed() >= GIT_PANEL_WAIT) {
+            w.4 = true;
             out.push(
-                serde_json::json!({"act": act, "ok": false, "error": i18n::t("err.git.not_answering"), "panel": panel})
+                serde_json::json!({"act": w.2, "ok": false, "slow": true, "error": i18n::t("err.git.not_answering"), "panel": w.1})
                     .to_string(),
             );
         }
@@ -16761,6 +16775,26 @@ mod git_line_tests {
         assert_eq!(statuses[0]["panel"], "p1", "the answer does not say which panel it is for");
         assert!(got.iter().any(|g| g["act"] == "stage" && g["ok"] == true), "{got:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A line slow to answer is said to be slow, once, and what it says late
+    /// is still handed over -- a commit whose hooks took two minutes landed
+    #[test]
+    fn a_slow_answer_is_said_to_be_slow_and_still_handed_over() {
+        let mut lines = GitLines::new();
+        let long_ago = Instant::now().checked_sub(GIT_PANEL_WAIT + Duration::from_secs(1)).unwrap();
+        lines.waiting.push((99, "p1".into(), "commit".into(), long_ago, false));
+        let said: Vec<serde_json::Value> = lines.answers().iter().map(|j| serde_json::from_str(j).unwrap()).collect();
+        assert_eq!(said.len(), 1);
+        assert_eq!(said[0]["slow"], true);
+        assert!(lines.answers().is_empty(), "said to be slow twice");
+        lines
+            .tx
+            .send(GitDone { seq: 99, panel: "p1".into(), act: "commit".into(), payload: serde_json::json!({"act": "commit", "ok": true}) })
+            .unwrap();
+        let late: Vec<serde_json::Value> = lines.answers().iter().map(|j| serde_json::from_str(j).unwrap()).collect();
+        assert_eq!(late.len(), 1, "the late answer was dropped");
+        assert_eq!(late[0]["ok"], true);
     }
 
     /// A question about a folder that is not a repository answers, and says why

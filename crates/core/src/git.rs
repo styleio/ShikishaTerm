@@ -405,7 +405,7 @@ pub fn far_place(at: &crate::elsewhere::Elsewhere, dir: &Path, awake: bool) -> (
     }
     static KEPT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Kept>>> =
         std::sync::OnceLock::new();
-    let key = format!("{}\u{1f}{}", at.address(), dir.to_string_lossy());
+    let key = format!("{}\u{1f}{}", at.machine_key(), dir.to_string_lossy());
     let kept = KEPT.get_or_init(Default::default);
     let mut k = kept.lock().unwrap_or_else(|e| e.into_inner());
     // The first ask too waits for the machine to be up: a desk opened with

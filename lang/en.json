@@ -3303,7 +3303,7 @@
   "err.git.no_repo": "{p} is not inside a git repository",
   "err.git.no_commit": "No commit was named",
   "err.git.no_tab": "That tab has no working folder",
-  "err.git.not_answering": "Git in this folder did not answer within a minute. The folder may be on a network share, a server or a MicroVM that is slow or unreachable. Press the button again to ask anew.",
+  "err.git.not_answering": "Git in this folder has not answered for a minute. It is still being waited for, and its answer is shown when it comes -- the folder may be on a network share, a server or a MicroVM that is slow or unreachable.",
   "err.git.bad_argument": "A git call was given an argument of the wrong kind.",
   "err.git.not_installed": "git is not installed on this PC. Install it from https://git-scm.com/downloads, then restart SHIKISHA-TERM.",
   "err.git.account.missing": "There is no git account \"{name}\" any more. Choose another under \"Git account\" on the project's page in the settings.",

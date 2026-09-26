@@ -5369,14 +5369,24 @@ pub(crate) fn ensure_folders(holder: &mut serde_json::Value) {
 }
 
 /// The tabs of the working folder at this path, making one if there is none.
-/// One answer to "where does a tab go", used by everything that adds one
-fn folder_tabs_at<'a>(holder: &'a mut serde_json::Value, cwd: Option<&Path>) -> &'a mut Vec<serde_json::Value> {
+/// One answer to "where does a tab go", used by everything that adds one.
+/// A folder on the machine `host` names is preferred: two machines can each
+/// have a folder at the same path, and a tab for one of them belongs in that one
+fn folder_tabs_on<'a>(
+    holder: &'a mut serde_json::Value,
+    cwd: Option<&Path>,
+    host: Option<&str>,
+) -> &'a mut Vec<serde_json::Value> {
     ensure_folders(holder);
     let folders = holder["folders"].as_array_mut().expect("made just above");
-    let at = folders.iter().position(|g| {
+    let same = |g: &serde_json::Value| {
         let here = g.get("cwd").and_then(|c| c.as_str()).map(resolve_folder_cwd);
         here.as_deref() == cwd
-    });
+    };
+    let on = |g: &serde_json::Value| g.get("host").and_then(|h| h.as_str()).map(str::trim) == host;
+    let at = host
+        .and_then(|_| folders.iter().position(|g| same(g) && on(g)))
+        .or_else(|| folders.iter().position(same));
     let at = match at {
         Some(i) => i,
         None => {
@@ -5923,6 +5933,12 @@ pub fn append_tab(desk: &str, tab: serde_json::Value, cwd: Option<&Path>) -> boo
     append_tab_at(&config_file_path(), desk, tab, cwd)
 }
 
+/// The same, into the folder at `cwd` on the machine `host` names (see
+/// `folder_tabs_on`)
+pub fn append_tab_on(desk: &str, tab: serde_json::Value, cwd: Option<&Path>, host: Option<&str>) -> bool {
+    append_tab_at_on(&config_file_path(), desk, tab, cwd, host)
+}
+
 /// The same, told which settings file to write. Split out so it can be checked
 /// against a file of its own rather than against whatever this machine has
 pub fn append_tab_at(
@@ -5930,6 +5946,16 @@ pub fn append_tab_at(
     desk: &str,
     tab: serde_json::Value,
     cwd: Option<&Path>,
+) -> bool {
+    append_tab_at_on(path, desk, tab, cwd, None)
+}
+
+fn append_tab_at_on(
+    path: &Path,
+    desk: &str,
+    tab: serde_json::Value,
+    cwd: Option<&Path>,
+    host: Option<&str>,
 ) -> bool {
     let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
     let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
@@ -5952,7 +5978,7 @@ pub fn append_tab_at(
     let mut used = tab_ids_in(desk);
     let mut tab = tab;
     name_new_tabs(&mut tab, &mut used);
-    folder_tabs_at(desk, cwd).push(tab);
+    folder_tabs_on(desk, cwd, host).push(tab);
     match serde_json::to_string_pretty(&doc) {
         Ok(out) => crate::crypto::write_atomic(path, &out).is_ok(),
         Err(_) => false,
@@ -9169,5 +9195,26 @@ mod machines_named_tests {
         super::collect_sandboxes(&v, &mut out);
         out.sort();
         assert_eq!(out, vec!["m1".to_string(), "m2".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod append_on_host_tests {
+    /// Two machines can each have a folder at the same path; a tab named for
+    /// one of them goes into that one, and a tab named for none into the first
+    #[test]
+    fn a_tab_goes_into_the_folder_on_its_own_machine() {
+        let path = std::env::temp_dir().join(format!("shikisha-append-{}.json", crate::random_hex(6)));
+        let doc = serde_json::json!({"desks": [{"name": "D", "folders": [
+            {"cwd": "/home/user/site", "host": "alpha", "tabs": []},
+            {"cwd": "/home/user/site", "host": "beta", "tabs": []},
+        ]}]});
+        std::fs::write(&path, doc.to_string()).unwrap();
+        let at = std::path::Path::new("/home/user/site");
+        assert!(super::append_tab_at_on(&path, "D", serde_json::json!({"name": "t1"}), Some(at), Some("beta")));
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let tabs = |i: usize| v["desks"][0]["folders"][i]["tabs"].as_array().map(|a| a.len()).unwrap_or(0);
+        assert_eq!((tabs(0), tabs(1)), (0, 1), "the tab went to the other machine's folder");
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -57,6 +57,17 @@ impl Elsewhere {
         }
     }
 
+    /// Which machine this is, for keeping things apart by machine: a server by
+    /// its address, a MicroVM by the machine itself -- every worktree there is
+    /// one of its own under the same entry, and a worktree made again under
+    /// the same name is another machine
+    pub fn machine_key(&self) -> String {
+        match self {
+            Self::Ssh(spec) => spec.address(),
+            Self::Cloud(host) => format!("{}#{}", host.name, host.instance.as_deref().unwrap_or_default()),
+        }
+    }
+
     /// Who the work is done as, where that is a thing a person chose. A
     /// sandbox hands out one account and it is not anybody's choice
     pub fn user(&self) -> Option<&str> {

@@ -3281,7 +3281,7 @@
   "err.git.no_repo": "{p} は git リポジトリの中ではありません",
   "err.git.no_commit": "コミットが指定されていません",
   "err.git.no_tab": "そのタブには作業フォルダがありません",
-  "err.git.not_answering": "このフォルダの git が 1 分以内に答えませんでした。ネットワーク共有・サーバー・MicroVM の上にあり、遅いか届かない可能性があります。もう一度ボタンを押すと、改めて問い合わせます。",
+  "err.git.not_answering": "このフォルダの git が 1 分たっても答えません。引き続き待っていて、答えが届いたら表示します。ネットワーク共有・サーバー・MicroVM の上にあり、遅いか届かない可能性があります。",
   "err.git.bad_argument": "git の呼び出しに、種類の違う引数が渡されました。",
   "err.git.not_installed": "この PC に git がインストールされていません。https://git-scm.com/downloads からインストールして、SHIKISHA-TERM を起動し直してください。",
   "err.git.account.missing": "git アカウント「{name}」はもうありません。設定のプロジェクトのページの「git アカウント」で選び直してください。",
