@@ -228,7 +228,10 @@ try {
   await board.shot('1b-row');
   await until(async () => (await rowStage()) === 'vm_preparing', 'the row to say the AI is being installed', 240000);
   check(true, 'the row says the AI and the machine setup are being installed');
-  await until(() => (project()?.homes || []).some((h) => h.sandbox), 'the checkout written down as the project\'s', 240000)
+  // Written in a few strokes -- the home, the account, the AI, the folder --
+  // and read only once all of them are there, not between two of them
+  await until(() => (project()?.homes || []).some((h) => h.sandbox) && project().git_account && project().machine_ai
+      && !!folderAt(CHECKOUT) && !!folderAt(CHECKOUT).sandbox, 'the checkout written down as the project\'s', 240000)
     .catch(async (e) => { console.log('    (the board says: ' + JSON.stringify(await board.run('S.making')) + ')'); throw e; });
   const home = project().homes[0];
   check(home.host === vm.name && home.at === CHECKOUT, 'the checkout is where it says: ' + JSON.stringify(home));

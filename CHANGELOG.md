@@ -114,6 +114,14 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **A terminal on a MicroVM whose link died without a word takes itself up
+  again.** The stream carrying a terminal can be dropped on the way with no
+  word to this end: typing still reached the shell over there, and what it
+  printed never came back, so the screen stood still and looked deaf. The
+  far end speaks at least every fifty seconds; a stream silent for well past
+  that is taken for dead, and when the machine is running the same shell is
+  taken up again on a fresh stream. A paused machine is left paused, and the
+  next thing typed wakes it.
 - **A file attached from the input bar reaches a folder on a MicroVM or a
   server.** It was saved beside the folder on this PC -- under a `C:\home\…`
   that exists nowhere -- and the AI over there was handed that path. Now it

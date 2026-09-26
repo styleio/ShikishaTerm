@@ -305,6 +305,14 @@ pub fn keep_up(host: &crate::config::HostSpec) -> Result<()> {
     .map(|_| ())
 }
 
+/// What state a machine is in -- `running` or `paused` -- asked of the
+/// service's own records and not of the machine, so that asking does not
+/// wake one that is paused (every request to a paused machine does)
+pub fn state_of(key: &str, id: &str) -> Result<String> {
+    let v = answered(agent().get(&format!("{API}/sandboxes/{id}")).header("X-API-Key", key).call())?;
+    Ok(v.get("state").and_then(|s| s.as_str()).unwrap_or_default().to_string())
+}
+
 /// Let it go. A sandbox nobody kills still pauses when its time runs out, so
 /// this is what ends one for good
 pub fn kill(key: &str, id: &str) -> Result<()> {
@@ -738,7 +746,22 @@ struct Link {
     open: std::sync::atomic::AtomicBool,
     /// Whether this terminal was ended from here: nothing is woken after
     ended: std::sync::atomic::AtomicBool,
+    /// When the stream last said anything -- output, or the keepalive the
+    /// far end sends every fifty seconds when there is none. A stream silent
+    /// for far longer than that has died without saying so: a link through a
+    /// proxy can be dropped with no word to this end, and a read on it waits
+    /// forever. The watch below takes such a stream up again
+    last_frame: std::sync::Mutex<std::time::Instant>,
+    /// Which stream is the current one. A stream superseded by a fresh one
+    /// may still be blocked in a read; anything it says afterwards is stale
+    generation: std::sync::atomic::AtomicU64,
 }
+
+/// How long a stream may say nothing before it is taken for dead. The far
+/// end speaks every fifty seconds at the least
+const SILENT_FOR: Duration = Duration::from_secs(130);
+/// How often the watch looks
+const WATCH_EVERY: Duration = Duration::from_secs(15);
 
 impl Link {
     fn is_open(&self) -> bool {
@@ -752,6 +775,19 @@ impl Link {
     }
     fn sandbox(&self) -> Sandbox {
         self.sandbox.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    fn heard(&self) {
+        *self.last_frame.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+    }
+    fn silent_for(&self) -> Duration {
+        self.last_frame.lock().unwrap_or_else(|e| e.into_inner()).elapsed()
+    }
+    fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    /// A fresh stream is about to be the current one
+    fn next_generation(&self) -> u64 {
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
     }
     fn pid(&self) -> Option<u32> {
         *self.pid.lock().unwrap_or_else(|e| e.into_inner())
@@ -802,14 +838,70 @@ pub fn shell(
         out: out_tx,
         open: std::sync::atomic::AtomicBool::new(false),
         ended: std::sync::atomic::AtomicBool::new(false),
+        last_frame: std::sync::Mutex::new(std::time::Instant::now()),
+        generation: std::sync::atomic::AtomicU64::new(0),
     });
 
     // The listening thread. It holds the streaming response open for as long
     // as the shell lives, which is why it cannot be the thread anything else
     // is waiting on
     let l = std::sync::Arc::clone(&link);
+    let stream_no = link.next_generation();
     std::thread::Builder::new().name("e2b-pty".into()).spawn(move || {
-        pump(&l, Stream::Start { rows, cols }, Some(&up_tx));
+        pump(&l, Stream::Start { rows, cols }, Some(&up_tx), stream_no);
+    })?;
+
+    // The watch. A stream that has said nothing for far longer than the far
+    // end's keepalive has died without a word; when the machine is running,
+    // the same shell is taken up again on a fresh stream, and the person
+    // sees their terminal go on. A paused machine is left paused -- the
+    // watch asks the service's records, never the machine -- and the link is
+    // marked closed for the next thing typed to wake it
+    let l = std::sync::Arc::clone(&link);
+    std::thread::Builder::new().name("e2b-pty-watch".into()).spawn(move || {
+        loop {
+            std::thread::sleep(WATCH_EVERY);
+            if l.is_ended() || std::sync::Arc::strong_count(&l) <= 1 {
+                return;
+            }
+            if !l.is_open() || l.silent_for() < SILENT_FOR {
+                continue;
+            }
+            let id = l.sandbox().id;
+            let Some(key) = key() else { continue };
+            match state_of(&key, &id).as_deref() {
+                Ok("running") => {
+                    crate::append_hook_log(&format!(
+                        "e2b: the stream of {} on {} has been silent for {}s; taking the shell up again",
+                        l.tag,
+                        id,
+                        l.silent_for().as_secs()
+                    ));
+                    l.set_open(false);
+                    let (up_tx, up_rx) = std::sync::mpsc::channel::<Result<u32>>();
+                    let again = std::sync::Arc::clone(&l);
+                    let stream_no = l.next_generation();
+                    let spawned = std::thread::Builder::new().name("e2b-pty".into()).spawn(move || {
+                        pump(&again, Stream::Connect, Some(&up_tx), stream_no);
+                    });
+                    let taken = spawned.is_ok()
+                        && up_rx.recv_timeout(Duration::from_millis(START_MS)).is_ok_and(|r| r.is_ok());
+                    if !taken {
+                        crate::append_hook_log(&format!("e2b: the shell {} on {} could not be taken up again", l.tag, id));
+                        l.say(&crate::i18n::t("msg.microvm.slept"));
+                    }
+                }
+                Ok(state) => {
+                    crate::append_hook_log(&format!(
+                        "e2b: the stream of {} on {} is silent and the machine is {state}; the next thing typed wakes it",
+                        l.tag, id
+                    ));
+                    l.set_open(false);
+                    l.say(&crate::i18n::t("msg.microvm.slept"));
+                }
+                Err(e) => crate::append_hook_log(&format!("e2b: could not ask after {id}: {e:#}")),
+            }
+        }
     })?;
 
     // The typing thread. One call per note, in the order they were made --
@@ -910,8 +1002,9 @@ fn wake(link: &std::sync::Arc<Link>, size: (u16, u16)) -> Result<()> {
     };
     let (up_tx, up_rx) = std::sync::mpsc::channel::<Result<u32>>();
     let l = std::sync::Arc::clone(link);
+    let stream_no = link.next_generation();
     std::thread::Builder::new().name("e2b-pty".into()).spawn(move || {
-        pump(&l, how, Some(&up_tx));
+        pump(&l, how, Some(&up_tx), stream_no);
     })?;
     up_rx
         .recv_timeout(Duration::from_millis(START_MS))
@@ -938,7 +1031,10 @@ fn wake(link: &std::sync::Arc<Link>, size: (u16, u16)) -> Result<()> {
 /// the far end answers. Everything after is screen. When the stream ends and
 /// this terminal was not ended from here, the machine has paused under it:
 /// said on screen, and the link is left for the next thing typed to wake
-fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32>>>) {
+fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32>>>, stream_no: u64) {
+    // Whether this stream is still the current one. One taken for dead and
+    // superseded may come back to life; what it says then is stale
+    let current = || link.generation() == stream_no;
     let tell_up = |r: Result<u32>| {
         if let Some(u) = up {
             let _ = u.send(r);
@@ -997,6 +1093,7 @@ fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32
     };
     let mut opened = matches!(how, Stream::Connect);
     if opened {
+        link.heard();
         link.set_open(true);
         tell_up(Ok(link.pid().unwrap_or_default()));
     }
@@ -1009,8 +1106,13 @@ fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32
             Err(e) => break format!("{e}"),
             Ok(n) => n,
         };
+        if !current() {
+            return;
+        }
         held.extend_from_slice(&buf[..n]);
         for msg in whole_frames(&mut held) {
+            // Anything at all, the keepalive included, is the stream alive
+            link.heard();
             let event = msg.get("event");
             if !opened && let Some(start) = event.and_then(|e| e.get("start")) {
                 opened = true;
@@ -1055,6 +1157,10 @@ fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32
             }
         }
     };
+    // A stream already superseded ending is nothing: the current one stands
+    if !current() {
+        return;
+    }
     link.set_open(false);
     crate::append_hook_log(&format!(
         "e2b: the stream of {} on {} ended: {why} (opened: {opened}, ended from here: {})",
