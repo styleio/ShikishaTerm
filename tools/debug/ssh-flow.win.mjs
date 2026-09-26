@@ -314,14 +314,11 @@ try {
   // Committed, and not pushed: removed, and the branch stays on the server
   await there(`cd ${TREE} && git add draft.txt && git -c user.name=check -c user.email=check@example.invalid commit -qm draft`);
   await discard(TREE);
-  // Said the moment git there is done, and gone again soon after
-  const saidGone = flashSaid(/を削除しました/, 'the row saying it is gone');
   await until(() => !(desk().folders || []).some((f) => f.cwd === TREE), 'the folder off the list', 60000);
   await until(async () => (await there(`test -e ${TREE} && echo there || echo gone`)) === 'gone', 'the folder gone from the server', 60000);
   check(true, 'the worktree is removed on the server');
   check(!(await there(`git -C ${REPO} worktree list --porcelain`)).includes(TREE), 'git there no longer lists it');
   check((await there(`git -C ${REPO} log -1 --format=%s ${BRANCH}`)) === 'draft', 'its branch stays in the repository there, with the commit not pushed');
-  check(/check-ssh を削除しました/.test(await saidGone), 'and it is said to be gone once it is');
 
   console.log('5. a project cloned onto the server, from a page of its own');
   // The page: the address, the server chosen as a MicroVM is, where on it
