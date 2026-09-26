@@ -114,6 +114,15 @@ once it reaches its first tagged release.
   which puts what is written on the checkout's machine and goes on to the
   first worktree -- not that beside a "Save and run on the MicroVM" that did
   half of it.)
+- **A terminal on a MicroVM wakes the machine when it is typed into.** A
+  machine untouched for its minutes pauses, and the stream carrying the
+  terminal ended with it: the screen stayed, and typing went nowhere, with
+  nothing said. Now the terminal says the machine has paused, and the next
+  thing typed wakes it and takes the same shell up again -- the shell and
+  whatever runs in it (the AI included) sleep with the machine and are there
+  when it wakes; only one that has ended gets a new shell in its place.
+  Nothing wakes a machine by itself: a terminal left open is not somebody
+  working in it.
 - **A project cloned onto a MicroVM asks for the AI's sign-in before its
   first worktree.** Every worktree is a copy of the checkout's machine,
   sign-in and all, so one cut before the sign-in has none -- and the way

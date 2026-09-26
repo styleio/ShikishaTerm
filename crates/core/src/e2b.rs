@@ -376,7 +376,10 @@ pub fn list(key: &str) -> Result<Vec<Listed>> {
 static KNOWN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Sandbox>>> =
     std::sync::OnceLock::new();
 
-fn remember(s: &Sandbox) {
+/// A machine this program has spoken to, kept so it is not connected to
+/// again before every call. What `create` and `connect` do with what they
+/// were given; a probe that made a machine its own way does the same
+pub fn remember(s: &Sandbox) {
     if let Ok(mut k) = KNOWN.get_or_init(Default::default).lock() {
         k.insert(s.id.clone(), s.clone());
     }
@@ -681,66 +684,147 @@ fn a_tag() -> String {
     format!("shikisha-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
+/// One terminal's link to its machine, shared by the threads that listen,
+/// type, and wake it.
+///
+/// A machine untouched for its minutes pauses, and the stream carrying this
+/// terminal ends with it -- while the shell in there, and whatever runs in
+/// it, sleep with the machine and are there again when it wakes. So the
+/// terminal is not ended when its stream is: it says so on screen, and the
+/// next thing typed wakes the machine and takes the same process up again,
+/// by the id the far end gave it. Only a process that is gone gets a new
+/// shell in its place. Nothing wakes a machine by itself: a terminal left
+/// open is not somebody working in it
+struct Link {
+    host: crate::config::HostSpec,
+    sandbox: std::sync::Mutex<Sandbox>,
+    /// A name for the shell, which a listing of what runs there shows
+    tag: String,
+    /// The shell's process id there, once the far end has said it. What
+    /// every call names it by: asked by tag, the far end answered "no
+    /// process with that tag" for a shell it listed under that very tag
+    pid: std::sync::Mutex<Option<u32>>,
+    cwd: Option<String>,
+    /// What to type once a new shell stands in the folder (`claude`)
+    then: Option<String>,
+    out: std::sync::mpsc::Sender<Vec<u8>>,
+    /// Whether the stream is up now
+    open: std::sync::atomic::AtomicBool,
+    /// Whether this terminal was ended from here: nothing is woken after
+    ended: std::sync::atomic::AtomicBool,
+}
+
+impl Link {
+    fn is_open(&self) -> bool {
+        self.open.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn set_open(&self, open: bool) {
+        self.open.store(open, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn is_ended(&self) -> bool {
+        self.ended.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn sandbox(&self) -> Sandbox {
+        self.sandbox.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    fn pid(&self) -> Option<u32> {
+        *self.pid.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    /// Which process, the way a call names it: `{"pid": n}`
+    fn at(&self) -> Option<serde_json::Value> {
+        self.pid().map(|p| serde_json::json!({ "pid": p }))
+    }
+    /// A line of this program's own on the screen, told apart from the
+    /// program's by being dim and in brackets
+    fn say(&self, text: &str) {
+        let _ = self.out.send(format!("\r\n\x1b[2m[{text}]\x1b[0m\r\n").into_bytes());
+    }
+}
+
+/// How a stream is asked for: a new shell, or the one already there
+enum Stream {
+    Start { rows: u16, cols: u16 },
+    Connect,
+}
+
 /// Open a terminal in a sandbox.
 ///
 /// Returns the pair a tab needs and nothing else, the same as
 /// [`crate::ssh::shell`], so that a tab's own code reads the same whether the
-/// shell is here, on a server, or on a machine that was made a second ago
+/// shell is here, on a server, or on a machine that was made a second ago.
+/// The machine is asked for here, by the entry naming it, so that a machine
+/// which pauses under the terminal can be asked for again (see [`Link`])
 pub fn shell(
-    sandbox: &Sandbox,
+    host: &crate::config::HostSpec,
     rows: u16,
     cols: u16,
     cwd: Option<&str>,
     then: Option<&str>,
 ) -> Result<(Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>)>
 {
-    let tag = a_tag();
+    let sandbox = machine(host)?;
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let (up_tx, up_rx) = std::sync::mpsc::channel::<Result<u32>>();
     let (note_tx, note_rx) = std::sync::mpsc::channel::<Note>();
+    let link = std::sync::Arc::new(Link {
+        host: host.clone(),
+        sandbox: std::sync::Mutex::new(sandbox),
+        tag: a_tag(),
+        pid: std::sync::Mutex::new(None),
+        cwd: cwd.map(str::to_string),
+        then: then.map(str::to_string),
+        out: out_tx,
+        open: std::sync::atomic::AtomicBool::new(false),
+        ended: std::sync::atomic::AtomicBool::new(false),
+    });
 
     // The listening thread. It holds the streaming response open for as long
     // as the shell lives, which is why it cannot be the thread anything else
     // is waiting on
-    let (box_, tag_) = (sandbox.clone(), tag.clone());
-    let started = cwd.map(str::to_string);
+    let l = std::sync::Arc::clone(&link);
     std::thread::Builder::new().name("e2b-pty".into()).spawn(move || {
-        listen(&box_, &tag_, rows, cols, started.as_deref(), &up_tx, &out_tx);
+        pump(&l, Stream::Start { rows, cols }, Some(&up_tx));
     })?;
 
-    // Nothing is handed back until the shell is actually there. A tab given a
-    // terminal that never opened shows an empty screen and no reason for it
-    let pid = up_rx
-        .recv_timeout(Duration::from_millis(START_MS))
-        .map_err(|_| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", "the terminal did not open")])))??;
-
-    // The typing thread. One call per note, in the order they were made.
-    //
-    // The shell is named by the process id the far end handed back, as the
-    // service's own client names it. Not by our tag: asked by tag, the far end
-    // answered "no process with that tag" for a shell it was listing under that
-    // very tag -- every time on a machine that was already running, which is a
-    // tab brought back after a restart -- and the line that starts the AI never
-    // arrived. The tag stays on the shell, where a listing still shows it
-    let at = serde_json::json!({ "pid": pid });
-    let box_ = sandbox.clone();
+    // The typing thread. One call per note, in the order they were made --
+    // and the one that wakes a paused machine, since typing is what asks
+    let l = std::sync::Arc::clone(&link);
     std::thread::Builder::new().name("e2b-pty-in".into()).spawn(move || {
+        let mut size = (rows, cols);
         while let Ok(note) = note_rx.recv() {
             match note {
                 Note::Typed(bytes) => {
+                    if !l.is_open() && !l.is_ended() {
+                        crate::append_hook_log(&format!("e2b: waking {} for a terminal typed into", l.sandbox().id));
+                        if let Err(e) = wake(&l, size) {
+                            crate::append_hook_log(&format!("e2b: could not wake {}: {e:#}", l.sandbox().id));
+                            l.say(&crate::i18n::tp("msg.microvm.wake_failed", &[("e", &format!("{e:#}"))]));
+                            continue;
+                        }
+                    }
                     // What was typed and did not arrive is said, not dropped:
                     // a terminal that silently ate its first line looks like
                     // one that was never asked for anything
-                    if let Err(e) = send_input(&box_, &at, &bytes) {
-                        crate::append_hook_log(&format!("e2b: typing into shell {pid} failed: {e:#}"));
+                    let Some(at) = l.at() else { continue };
+                    if let Err(e) = send_input(&l.sandbox(), &at, &bytes) {
+                        crate::append_hook_log(&format!("e2b: typing into shell {at} failed: {e:#}"));
                     }
                 }
                 Note::Size { rows, cols } => {
-                    let _ = resize(&box_, &at, rows, cols);
+                    size = (rows, cols);
+                    if l.is_open()
+                        && let Some(at) = l.at()
+                    {
+                        let _ = resize(&l.sandbox(), &at, rows, cols);
+                    }
                 }
                 Note::Ended => {
-                    if let Err(e) = signal(&box_, &at, "SIGNAL_SIGKILL") {
-                        crate::append_hook_log(&format!("e2b: ending shell {pid} failed: {e:#}"));
+                    l.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+                    if l.is_open()
+                        && let Some(at) = l.at()
+                        && let Err(e) = signal(&l.sandbox(), &at, "SIGNAL_SIGKILL")
+                    {
+                        crate::append_hook_log(&format!("e2b: ending shell {at} failed: {e:#}"));
                     }
                     ENDING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                     return;
@@ -749,6 +833,11 @@ pub fn shell(
         }
     })?;
 
+    // Nothing is handed back until the shell is actually there. A tab given a
+    // terminal that never opened shows an empty screen and no reason for it
+    up_rx
+        .recv_timeout(Duration::from_millis(START_MS))
+        .map_err(|_| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", "the terminal did not open")])))??;
     // The shell was started in the folder, so only the program is typed --
     // through the typing thread, ahead of anything a person types after
     if let Some(line) = crate::ssh::typed_first(None, then) {
@@ -769,32 +858,93 @@ pub fn shell(
     Ok((Box::new(pty), Box::new(SandboxKiller { to_far_end: note_tx })))
 }
 
-/// Hold the stream open and pass on what comes out of it.
+/// Wake the machine under a terminal whose stream has ended, and take the
+/// terminal up again: the same shell when it is still there (the machine
+/// slept with it), a new one in the same folder when it is not
+fn wake(link: &std::sync::Arc<Link>, size: (u16, u16)) -> Result<()> {
+    let id = link.sandbox().id.clone();
+    if let_go_of(&id) {
+        bail!(crate::i18n::tp("err.e2b.let_go", &[("host", &link.host.name), ("id", &id)]));
+    }
+    let key = key().ok_or_else(|| anyhow!(crate::i18n::t("err.e2b.no_key")))?;
+    let woken = connect(&key, &id, link.host.minutes_or_default())?;
+    *link.sandbox.lock().unwrap_or_else(|e| e.into_inner()) = woken.clone();
+    // Whether the shell is still there: asked by sizing it, which is a
+    // question the far end answers at once and refuses for a process gone
+    let same = link.at().is_some_and(|at| resize(&woken, &at, size.0, size.1).is_ok());
+    crate::append_hook_log(&format!(
+        "e2b: {} is awake; the shell {} is {}",
+        woken.id,
+        link.tag,
+        if same { "still there" } else { "gone, a new one opens" }
+    ));
+    let how = match same {
+        true => Stream::Connect,
+        false => Stream::Start { rows: size.0, cols: size.1 },
+    };
+    let (up_tx, up_rx) = std::sync::mpsc::channel::<Result<u32>>();
+    let l = std::sync::Arc::clone(link);
+    std::thread::Builder::new().name("e2b-pty".into()).spawn(move || {
+        pump(&l, how, Some(&up_tx));
+    })?;
+    up_rx
+        .recv_timeout(Duration::from_millis(START_MS))
+        .map_err(|_| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", "the terminal did not open")])))??;
+    match same {
+        true => link.say(&crate::i18n::t("msg.microvm.woke")),
+        false => {
+            link.say(&crate::i18n::t("msg.microvm.new_shell"));
+            if let Some(line) = crate::ssh::typed_first(None, link.then.as_deref())
+                && let Some(at) = link.at()
+            {
+                let _ = send_input(&link.sandbox(), &at, line.as_bytes());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Hold a stream open and pass on what comes out of it.
 ///
-/// The first thing the far end says is that the shell has started; that is
-/// what releases whoever asked for it. Everything after is screen
-fn listen(
-    sandbox: &Sandbox,
-    tag: &str,
-    rows: u16,
-    cols: u16,
-    cwd: Option<&str>,
-    up: &std::sync::mpsc::Sender<Result<u32>>,
-    out: &std::sync::mpsc::Sender<Vec<u8>>,
-) {
-    let body = serde_json::json!({
-        "process": {
-            // A login shell, because a person opening a terminal expects their
-            // own profile to have been read -- the same thing ssh gives them
-            "cmd": "/bin/bash",
-            "args": ["-i", "-l"],
-            "envs": { "TERM": TERM },
-            "cwd": cwd,
-        },
-        "pty": { "size": { "cols": cols as u32, "rows": rows as u32 } },
-        "tag": tag,
-        "stdin": true,
-    });
+/// For a new shell, the first thing the far end says is that it has started,
+/// with the id everything after this is sent to, and that is what releases
+/// whoever asked for it (`up`); a shell taken up again is there the moment
+/// the far end answers. Everything after is screen. When the stream ends and
+/// this terminal was not ended from here, the machine has paused under it:
+/// said on screen, and the link is left for the next thing typed to wake
+fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32>>>) {
+    let tell_up = |r: Result<u32>| {
+        if let Some(u) = up {
+            let _ = u.send(r);
+        }
+    };
+    let (method, body) = match &how {
+        Stream::Start { rows, cols } => (
+            "process.Process/Start",
+            serde_json::json!({
+                "process": {
+                    // A login shell, because a person opening a terminal
+                    // expects their own profile to have been read -- the
+                    // same thing ssh gives them
+                    "cmd": "/bin/bash",
+                    "args": ["-i", "-l"],
+                    "envs": { "TERM": TERM },
+                    "cwd": link.cwd,
+                },
+                "pty": { "size": { "cols": *cols as u32, "rows": *rows as u32 } },
+                "tag": link.tag,
+                "stdin": true,
+            }),
+        ),
+        Stream::Connect => {
+            let Some(at) = link.at() else {
+                tell_up(Err(anyhow!(crate::i18n::tp("err.e2b.call", &[("e", "there is no shell to take up")]))));
+                return;
+            };
+            ("process.Process/Connect", serde_json::json!({ "process": at }))
+        }
+    };
+    let sandbox = link.sandbox();
     // No overall deadline on this one: the whole point of it is to stay open.
     // Everything else in this module still has one
     let agent = ureq::Agent::config_builder()
@@ -803,32 +953,34 @@ fn listen(
         .new_agent();
     let sent = serde_json::to_vec(&body).map(|b| frame(&b));
     let resp = match sent {
-        Ok(b) => headed(agent.post(&format!("{SANDBOX}/process.Process/Start")), sandbox)
+        Ok(b) => headed(agent.post(&format!("{SANDBOX}/{method}")), &sandbox)
             .header("Keepalive-Ping-Interval", KEEPALIVE)
             .header("Content-Type", "application/connect+json")
             .send(b),
         Err(e) => {
-            let _ = up.send(Err(anyhow!("{e}")));
+            tell_up(Err(anyhow!("{e}")));
             return;
         }
     };
     let mut resp = match resp {
         Ok(r) => r,
         Err(e) => {
-            let _ = up.send(Err(anyhow!(crate::i18n::tp(
-                "err.e2b.call",
-                &[("e", &format!("{e}"))]
-            ))));
+            tell_up(Err(anyhow!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))]))));
             return;
         }
     };
+    let mut opened = matches!(how, Stream::Connect);
+    if opened {
+        link.set_open(true);
+        tell_up(Ok(link.pid().unwrap_or_default()));
+    }
     let mut reader = resp.body_mut().as_reader();
     let mut held: Vec<u8> = Vec::new();
     let mut buf = [0u8; 8192];
-    let mut opened = false;
-    loop {
+    let why = loop {
         let n = match std::io::Read::read(&mut reader, &mut buf) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break "the far end closed the stream".to_string(),
+            Err(e) => break format!("{e}"),
             Ok(n) => n,
         };
         held.extend_from_slice(&buf[..n]);
@@ -838,33 +990,64 @@ fn listen(
                 opened = true;
                 // The id everything after this is sent to. A start that does
                 // not carry one is a shell nothing could ever be typed into
-                let _ = up.send(start.get("pid").and_then(|p| p.as_u64()).map(|p| p as u32).ok_or_else(|| {
-                    anyhow!(crate::i18n::tp("err.e2b.call", &[("e", "the shell started without an id")]))
-                }));
+                match start.get("pid").and_then(|p| p.as_u64()).map(|p| p as u32) {
+                    Some(pid) => {
+                        *link.pid.lock().unwrap_or_else(|e| e.into_inner()) = Some(pid);
+                        link.set_open(true);
+                        tell_up(Ok(pid));
+                    }
+                    None => {
+                        tell_up(Err(anyhow!(crate::i18n::tp(
+                            "err.e2b.call",
+                            &[("e", "the shell started without an id")]
+                        ))));
+                        return;
+                    }
+                }
             }
             if let Some(s) = event.and_then(|e| e.get("data")).and_then(|d| d.get("pty"))
                 && let Some(bytes) = unwrap_bytes(s)
                 // Nobody is listening any more: the tab has gone
-                && out.send(bytes).is_err()
+                && link.out.send(bytes).is_err()
             {
+                link.set_open(false);
                 return;
             }
             if event.and_then(|e| e.get("end")).is_some() {
                 if !opened {
-                    let _ = up.send(Err(anyhow!(crate::i18n::tp(
+                    tell_up(Err(anyhow!(crate::i18n::tp(
                         "err.e2b.call",
                         &[("e", "the shell ended before it started")]
                     ))));
                 }
+                // The shell itself ended: what a person typing `exit` gets,
+                // and a tab reads it as the program ending
+                crate::append_hook_log(&format!("e2b: the shell {} on {} ended", link.tag, sandbox.id));
+                link.set_open(false);
+                link.ended.store(true, std::sync::atomic::Ordering::Relaxed);
                 return;
             }
         }
-    }
+    };
+    link.set_open(false);
+    crate::append_hook_log(&format!(
+        "e2b: the stream of {} on {} ended: {why} (opened: {opened}, ended from here: {})",
+        link.tag,
+        sandbox.id,
+        link.is_ended()
+    ));
     if !opened {
-        let _ = up.send(Err(anyhow!(crate::i18n::tp(
+        tell_up(Err(anyhow!(crate::i18n::tp(
             "err.e2b.call",
             &[("e", "the machine closed the connection")]
         ))));
+        return;
+    }
+    // The stream went, and not because this terminal ended: the machine
+    // has paused under it, or the link dropped. Said on screen; the next
+    // thing typed wakes it
+    if !link.is_ended() {
+        link.say(&crate::i18n::t("msg.microvm.slept"));
     }
 }
 

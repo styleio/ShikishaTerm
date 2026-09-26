@@ -150,7 +150,16 @@ fn files_on(sandbox: &shikisha_core::e2b::Sandbox) -> anyhow::Result<()> {
 
 fn run_on(sandbox: &shikisha_core::e2b::Sandbox) -> anyhow::Result<()> {
     println!("opening a terminal...");
-    let (pty, mut killer) = shikisha_core::e2b::shell(sandbox, 24, 80, Some("/home/user"), None)?;
+    // A terminal is opened by the entry naming the machine, so that it can
+    // be asked for again if the machine pauses under it
+    shikisha_core::e2b::remember(sandbox);
+    let host = shikisha_core::config::HostSpec {
+        name: "probe".into(),
+        kind: Some("e2b".into()),
+        ..Default::default()
+    }
+    .with_instance(Some(&sandbox.id));
+    let (pty, mut killer) = shikisha_core::e2b::shell(&host, 24, 80, Some("/home/user"), None)?;
     let mut reader = pty.try_clone_reader()?;
     let mut writer = pty.take_writer()?;
 

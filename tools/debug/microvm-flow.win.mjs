@@ -383,6 +383,33 @@ try {
   const has = await inside('claude --version 2>&1 | head -1; php --version 2>&1 | head -1');
   check(/Claude Code/.test(has) && /PHP \d/.test(has), 'the worktree has what its checkout was prepared with: ' + has.replace(/\n/g, ' | '));
 
+  console.log('4a. the machine paused under the terminal wakes when it is typed into');
+  // Paused from outside, as it is after its minutes; the terminal says so.
+  // A key typed into it wakes the machine, and Claude in it goes on
+  const paused = await e2b('POST', `/sandboxes/${wt.sandbox}/pause`);
+  check(paused.status < 300, 'the worktree\'s machine is paused from outside');
+  await until(async () => ((await ours()).find((s) => s.sandboxID === wt.sandbox) || {}).state === 'paused', 'the service to say it is paused', 60000);
+  const aiNow = await aiTab();
+  await board.run(`send({kind:"select", tab: ${aiNow.index}}); true`);
+  // In front before anything is typed: a key sent on the heels of the
+  // selection would land in the tab that was in front a moment ago
+  await until(() => board.run(`S.active === ${aiNow.index}`), 'the worktree\'s Claude tab in front', 30000);
+  const screen = () => board.run('document.getElementById("screen").textContent');
+  await until(async () => /接続が切れました/.test(await screen()), 'the terminal to say its link ended', 60000);
+  // Enter, typed into the paused machine's terminal: it wakes the machine
+  // (the app says so in its log; on screen Claude redraws over the notice
+  // the moment it is back) and Claude, still there, takes the key -- the
+  // theme is chosen, and its next screen asks how to sign in
+  await board.run('send({kind:"key", named:"enter"}); true');
+  const appLog = () => fs.readFileSync(path.join(APP, 'logs', 'hooks.log'), 'utf8');
+  await until(async () => new RegExp('e2b: ' + wt.sandbox + ' is awake').test(appLog()), 'the app to wake the machine for the key', 90000)
+    .catch((e) => { console.log('    (the app says: ' + appLog().split(/\r?\n/).filter((l) => /e2b/.test(l)).slice(-4).join(' | ') + ')'); throw e; });
+  check(!/could not wake/.test(appLog()), 'the same shell is taken up again, not refused');
+  await until(async () => /login method/i.test(await screen()), 'Claude, still there, to take the key and go on', 90000)
+    .catch(async (e) => { console.log('    (the terminal says: ' + (await screen()).replace(/\s+/g, ' ').trim().slice(-300) + ')'); throw e; });
+  check(true, 'Claude in the terminal went on after the pause, as it was');
+  await until(async () => ((await ours()).find((s) => s.sandboxID === wt.sandbox) || {}).state === 'running', 'the service to say it is running again', 60000);
+
   console.log('4c. the git panel reports on the worktree, with git run over there');
   // Asked the way the column beside the tab asks -- the tab named, the act,
   // its arguments -- and answered from the machine's own git in that folder

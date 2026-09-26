@@ -3356,9 +3356,8 @@ impl Tab {
             // here rather than earlier is what keeps a machine from being
             // rented by a desk that is only being read
             (None, None, Some(host)) => {
-                let box_ = crate::e2b::machine(host)?;
                 let (m, k) =
-                    crate::e2b::shell(&box_, rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?;
+                    crate::e2b::shell(host, rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?;
                 (m, k, None, None)
             }
             (None, None, None) => anyhow::bail!("a tab with no terminal of any kind"),
