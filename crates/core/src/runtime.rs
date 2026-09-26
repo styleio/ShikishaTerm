@@ -14950,7 +14950,8 @@ mod tests {
             Surface::Session(0),
             Surface::Session(1),
         ];
-        let asked = |n| past_of(&surfaces, &tabs, n).map(|p| (p.tab, p.name));
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let asked = |n| past_of(&surfaces, &tabs, n, &tx).map(|p| (p.tab, p.name));
         assert_eq!(asked(3), Some((3, "hippo".into())), "screen 3 is hippo");
         assert_eq!(asked(4), Some((4, "raven".into())), "raven's list never came back");
         // A page has no conversation to go back to
