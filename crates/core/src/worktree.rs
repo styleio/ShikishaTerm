@@ -2048,6 +2048,45 @@ pub fn ready_to_discard(folder: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The same question about a folder on a MicroVM, asked of git there -- and
+/// one more. A worktree here leaves its branch in the project's repository when
+/// its folder goes; a MicroVM worktree is a machine of its own, and its
+/// branch goes with it. So a commit that was never pushed is work that
+/// exists only there, as much as a change never committed is.
+///
+/// Waits on the machine: for a thread
+pub fn far_ready_to_discard(host: &crate::config::HostSpec, folder: &str) -> Result<()> {
+    const SPLIT: &str = "__SHIKISHA_SPLIT__";
+    let dir = for_a_shell(&[folder.to_string()]);
+    // What is not committed; then what is committed and nowhere else -- ahead
+    // of the branch it pushes to, or, with none, of every remote branch
+    let line = format!(
+        "cd {dir} && git status --porcelain=v1 -z --untracked-files=all; echo; echo {SPLIT}; \
+(git rev-list --count @{{u}}..HEAD 2>/dev/null || git rev-list --count HEAD --not --remotes)"
+    );
+    let at = crate::elsewhere::Elsewhere::of(host)?;
+    let ran = crate::elsewhere::exec(&at, &line, 60_000)?;
+    if !ran.ok() {
+        bail!(crate::i18n::tp("err.worktree.failed", &[("said", &ran.said()), ("command", &line)]));
+    }
+    far_unsaved(&ran.out, SPLIT)
+}
+
+/// What `far_ready_to_discard` asked, read back: the status, then the count
+/// of commits nowhere else
+fn far_unsaved(out: &str, split: &str) -> Result<()> {
+    let (status, ahead) = out.split_once(split).unwrap_or((out, ""));
+    let dirty = unsaved_work(status.trim_end_matches(['\n', '\r']), &|_| false);
+    if dirty > 0 {
+        bail!(crate::i18n::tp("err.worktree.dirty", &[("count", &dirty.to_string())]));
+    }
+    let ahead: usize = ahead.trim().lines().last().and_then(|l| l.trim().parse().ok()).unwrap_or(0);
+    if ahead > 0 {
+        bail!(crate::i18n::tp("err.worktree.unpushed", &[("count", &ahead.to_string())]));
+    }
+    Ok(())
+}
+
 /// How many of the changes `git status -z` lists are work that exists only in
 /// this folder.
 ///
@@ -3117,6 +3156,18 @@ pub fn run(argv: &[String]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// A MicroVM folder is refused while anything in it exists nowhere else:
+    /// a change not committed, or a commit not pushed
+    #[test]
+    fn a_microvm_folder_with_unsaved_work_is_refused() {
+        let s = "__S__";
+        assert!(far_unsaved(&format!("\n{s}\n0\n"), s).is_ok(), "a clean folder is refused");
+        let dirty = far_unsaved(&format!(" M src/a.rs\0?? notes.txt\0\n{s}\n0\n"), s).unwrap_err();
+        assert_eq!(format!("{dirty:#}"), crate::i18n::tp("err.worktree.dirty", &[("count", "2")]));
+        let ahead = far_unsaved(&format!("\n{s}\n3\n"), s).unwrap_err();
+        assert_eq!(format!("{ahead:#}"), crate::i18n::tp("err.worktree.unpushed", &[("count", "3")]));
+    }
+
     /// The branches of a folder on another machine, read back from git there:
     /// the remote's default first and chosen, then the rest, `origin/HEAD` and
     /// repeats left out. With no remote default, the folder's own branch

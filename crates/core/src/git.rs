@@ -408,8 +408,10 @@ pub fn far_place(at: &crate::elsewhere::Elsewhere, dir: &Path, awake: bool) -> (
     let key = format!("{}\u{1f}{}", at.address(), dir.to_string_lossy());
     let kept = KEPT.get_or_init(Default::default);
     let mut k = kept.lock().unwrap_or_else(|e| e.into_inner());
+    // The first ask too waits for the machine to be up: a desk opened with
+    // ten worktrees on it is not ten machines started to fill in ten rows
     let due = match k.get(&key) {
-        None => true,
+        None => awake,
         Some(p) => !p.busy && awake && p.asked.elapsed() >= std::time::Duration::from_secs(30),
     };
     let found = k.get(&key).map(|p| p.found.clone()).unwrap_or_default();

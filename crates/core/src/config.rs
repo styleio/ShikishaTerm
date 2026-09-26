@@ -6531,10 +6531,28 @@ pub fn config_file_path() -> std::path::PathBuf {
 /// Read from the settings as saved, since this is asked to decide whether a
 /// machine may be deleted: a machine is in use while anything written down
 /// points at it, whatever this run happens to have open
-pub fn machines_in_use() -> std::collections::BTreeMap<String, Vec<MachineUse>> {
+///
+/// An error, never an empty answer, when the settings could not be read whole
+/// -- the file unreadable, or a desk's own file half written by a sync: every
+/// machine would read as unused, and the next press would delete one somebody
+/// is working on
+pub fn machines_in_use() -> Result<std::collections::BTreeMap<String, Vec<MachineUse>>, String> {
     let mut used: std::collections::BTreeMap<String, Vec<MachineUse>> = Default::default();
-    let Some(cfg) = load() else { return used };
-    let (desks, _) = cfg.resolve_desks();
+    let Some(cfg) = load() else { return Err(crate::i18n::t("err.machines.unreadable")) };
+    let (desks, errors) = cfg.resolve_desks();
+    if let Some(why) = errors.first() {
+        return Err(crate::i18n::tp("err.machines.unreadable_desk", &[("why", why)]));
+    }
+    // A folder whose MicroVM entry is gone from the list reads as a folder
+    // here, and its machine as nobody's. Its machine is still named in the
+    // folder, so it is looked for there too
+    let raw: serde_json::Value = config_candidates()
+        .into_iter()
+        .find_map(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(without_bom(&t)).ok())
+        .unwrap_or_default();
+    let mut named_anywhere: Vec<String> = Vec::new();
+    collect_sandboxes(&raw, &mut named_anywhere);
     for d in &desks {
         for f in &d.folders {
             let Some(id) = f.host.as_ref().filter(|h| h.is_made()).and_then(|h| h.instance.clone()) else {
@@ -6556,7 +6574,27 @@ pub fn machines_in_use() -> std::collections::BTreeMap<String, Vec<MachineUse>> 
             }
         }
     }
-    used
+    for id in named_anywhere {
+        used.entry(id).or_insert_with(|| vec![MachineUse::Named]);
+    }
+    Ok(used)
+}
+
+/// Every `"sandbox"` written anywhere in the settings file, whatever it is
+/// under
+fn collect_sandboxes(v: &serde_json::Value, out: &mut Vec<String>) {
+    match v {
+        serde_json::Value::Object(o) => {
+            for (k, x) in o {
+                match (k.as_str(), x.as_str()) {
+                    ("sandbox", Some(id)) if !id.trim().is_empty() => out.push(id.trim().to_string()),
+                    _ => collect_sandboxes(x, out),
+                }
+            }
+        }
+        serde_json::Value::Array(a) => a.iter().for_each(|x| collect_sandboxes(x, out)),
+        _ => {}
+    }
 }
 
 /// What a machine is to the settings (see [`machines_in_use`])
@@ -6567,6 +6605,9 @@ pub enum MachineUse {
     Folder { desk: String, folder: String },
     /// A project's own checkout there, the one its worktrees are copied from
     Checkout { desk: String, project: String },
+    /// Named in the settings by a folder or a project this app can no longer
+    /// place (its MicroVM entry is gone from the list, say)
+    Named,
 }
 
 pub fn load() -> Option<Config> {
@@ -9109,5 +9150,24 @@ mod browser_kind_tests {
         let empty: super::TabConfig =
             serde_json::from_str(r#"{"command": "browser https://x/", "ask": {}}"#).unwrap();
         assert!(empty.ask.is_some(), "an empty banner is treated as if there were none");
+    }
+}
+
+#[cfg(test)]
+mod machines_named_tests {
+    /// A machine named anywhere in the settings -- under a folder, a project's
+    /// checkout, a desk -- is found, so one whose entry was renamed away is
+    /// never read as nobody's
+    #[test]
+    fn a_machine_named_anywhere_is_found() {
+        let v = serde_json::json!({
+            "desks": [{"folders": [{"cwd": "/home/user/a", "host": "gone", "sandbox": "m1"}],
+                       "projects": [{"name": "p", "homes": [{"host": "vm", "sandbox": "m2"}]}]}],
+            "folders": [{"sandbox": ""}],
+        });
+        let mut out = Vec::new();
+        super::collect_sandboxes(&v, &mut out);
+        out.sort();
+        assert_eq!(out, vec!["m1".to_string(), "m2".to_string()]);
     }
 }

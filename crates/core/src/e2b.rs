@@ -233,6 +233,7 @@ pub fn create(key: &str, asking: &Asking) -> Result<Sandbox> {
     )?;
     let made = sandbox_of(&v)?;
     remember(&made);
+    made_here(&made.id);
     Ok(made)
 }
 
@@ -272,6 +273,7 @@ pub fn fork(key: &str, id: &str, minutes: u32) -> Result<Sandbox> {
     }
     let made = sandbox_of(one.get("sandbox").unwrap_or(&serde_json::Value::Null))?;
     remember(&made);
+    made_here(&made.id);
     Ok(made)
 }
 
@@ -330,6 +332,9 @@ pub fn kill(key: &str, id: &str) -> Result<()> {
     // it, so nothing can wake it while the answer is on its way -- or after
     // one that says it is still there
     let_go(id);
+    if let Ok(mut m) = MADE.get_or_init(Default::default).lock() {
+        m.remove(id);
+    }
     let resp = agent()
         .delete(&format!("{API}/sandboxes/{id}"))
         .header("X-API-Key", key)
@@ -341,6 +346,24 @@ pub fn kill(key: &str, id: &str) -> Result<()> {
         Err(ureq::Error::StatusCode(404)) => Ok(()),
         Err(e) => bail!(call_failed(&e)),
     }
+}
+
+/// The machines this run asked for, until they are deleted: a machine being
+/// made is in no settings yet, and the list in the settings must not offer to
+/// delete one out from under the making
+static MADE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn made_here(id: &str) {
+    if let Ok(mut m) = MADE.get_or_init(Default::default).lock() {
+        m.insert(id.to_string());
+    }
+}
+
+/// Whether this run made this machine and has not let it go. Asked about one
+/// the settings do not name: that is one still being made
+pub fn being_made(id: &str) -> bool {
+    MADE.get_or_init(Default::default).lock().is_ok_and(|m| m.contains(id))
 }
 
 /// Throw away a machine a making made and could not finish with.
@@ -599,6 +622,31 @@ enum Note {
     Typed(Vec<u8>),
     Size { rows: u16, cols: u16 },
     Ended,
+    /// The tab is on a screen: a terminal that has not been opened yet opens
+    Shown,
+}
+
+/// The terminals waiting to be looked at before they open, by machine.
+///
+/// Opening a terminal starts its machine and pays for it from then on. A desk
+/// opens every tab it has at once -- ten worktrees are ten machines -- and a
+/// machine nobody is looking at has nothing to do. So a terminal on a MicroVM
+/// is opened when its tab is first on a screen, or first typed into
+static WAITING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Vec<std::sync::mpsc::Sender<Note>>>>> =
+    std::sync::OnceLock::new();
+
+/// A tab on this machine is on a screen: every terminal of it still waiting
+/// opens. Nothing happens for a machine with none waiting
+pub fn shown(id: &str) {
+    let waiting = WAITING
+        .get_or_init(Default::default)
+        .lock()
+        .ok()
+        .and_then(|mut w| w.remove(id))
+        .unwrap_or_default();
+    for tx in waiting {
+        let _ = tx.send(Note::Shown);
+    }
 }
 
 /// The reading half of a terminal in a sandbox.
@@ -810,6 +858,16 @@ impl Link {
     }
     fn set_open(&self, open: bool) {
         self.open.store(open, std::sync::atomic::Ordering::Relaxed);
+        // Speaking again: whatever it slept through, it is awake now
+        if open {
+            asleep_as(&self.sandbox().id, false);
+        }
+    }
+    /// The stream went with the machine under it: said on screen, and the
+    /// machine written down as asleep, so nothing here wakes it but a person
+    fn slept(&self) {
+        asleep_as(&self.sandbox().id, true);
+        self.say(&crate::i18n::t("msg.microvm.slept"));
     }
     fn is_ended(&self) -> bool {
         self.ended.load(std::sync::atomic::Ordering::Relaxed)
@@ -844,6 +902,33 @@ impl Link {
     }
 }
 
+/// The machines whose terminal found them paused, until one of their
+/// terminals is speaking again.
+///
+/// What this program asks of a machine on its own -- the branch a row shows,
+/// whether a file under an open editor changed, more minutes -- is not asked of
+/// one of these: every request to a paused machine starts it, and the line
+/// that says it paused is itself a change on the screen, which is what those
+/// askings took to mean somebody was at work there. So a machine that paused
+/// was started again a moment later, and paid for another stretch, for nothing
+static ASLEEP: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn asleep_as(id: &str, yes: bool) {
+    if let Ok(mut a) = ASLEEP.get_or_init(Default::default).lock() {
+        if yes {
+            a.insert(id.to_string());
+        } else {
+            a.remove(id);
+        }
+    }
+}
+
+/// Whether this machine's terminal found it paused and nothing has woken it
+pub fn asleep(id: &str) -> bool {
+    ASLEEP.get_or_init(Default::default).lock().is_ok_and(|a| a.contains(id))
+}
+
 /// How a stream is asked for: a new shell, or the one already there
 enum Stream {
     Start { rows: u16, cols: u16 },
@@ -865,7 +950,13 @@ pub fn shell(
     then: Option<&str>,
 ) -> Result<(Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>)>
 {
-    let sandbox = machine(host)?;
+    // Not opened until it is looked at (see `WAITING`): nothing is asked of
+    // the machine, which stays as it is -- paused, if it was
+    let waits = host.instance.as_deref().is_some_and(|id| !let_go_of(id));
+    let sandbox = match (waits, host.instance.as_deref()) {
+        (true, Some(id)) => Sandbox { id: id.to_string(), token: None },
+        _ => machine(host)?,
+    };
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let (up_tx, up_rx) = std::sync::mpsc::channel::<Result<u32>>();
     let (note_tx, note_rx) = std::sync::mpsc::channel::<Note>();
@@ -886,11 +977,19 @@ pub fn shell(
     // The listening thread. It holds the streaming response open for as long
     // as the shell lives, which is why it cannot be the thread anything else
     // is waiting on
-    let l = std::sync::Arc::clone(&link);
-    let stream_no = link.next_generation();
-    std::thread::Builder::new().name("e2b-pty".into()).spawn(move || {
-        pump(&l, Stream::Start { rows, cols }, Some(&up_tx), stream_no);
-    })?;
+    if waits {
+        // Asleep as far as everything here is concerned until it opens: the
+        // row's branch, more minutes, a file's stamp are not asked of it
+        asleep_as(&link.sandbox().id, true);
+        link.say(&crate::i18n::t("msg.microvm.waiting"));
+        let _ = up_tx.send(Ok(0));
+    } else {
+        let l = std::sync::Arc::clone(&link);
+        let stream_no = link.next_generation();
+        std::thread::Builder::new().name("e2b-pty".into()).spawn(move || {
+            pump(&l, Stream::Start { rows, cols }, Some(&up_tx), stream_no);
+        })?;
+    }
 
     // The watch. A stream that has said nothing for far longer than the far
     // end's keepalive has died without a word; when the machine is running,
@@ -929,7 +1028,7 @@ pub fn shell(
                         && up_rx.recv_timeout(Duration::from_millis(START_MS)).is_ok_and(|r| r.is_ok());
                     if !taken {
                         crate::append_hook_log(&format!("e2b: the shell {} on {} could not be taken up again", l.tag, id));
-                        l.say(&crate::i18n::t("msg.microvm.slept"));
+                        l.slept();
                     }
                 }
                 Ok(state) => {
@@ -938,7 +1037,7 @@ pub fn shell(
                         l.tag, id
                     ));
                     l.set_open(false);
-                    l.say(&crate::i18n::t("msg.microvm.slept"));
+                    l.slept();
                 }
                 Err(e) => crate::append_hook_log(&format!("e2b: could not ask after {id}: {e:#}")),
             }
@@ -967,6 +1066,16 @@ pub fn shell(
                     let Some(at) = l.at() else { continue };
                     if let Err(e) = send_input(&l.sandbox(), &at, &bytes) {
                         crate::append_hook_log(&format!("e2b: typing into shell {at} failed: {e:#}"));
+                    }
+                }
+                // Looked at for the first time: opened, as typing would
+                Note::Shown => {
+                    if !l.is_open() && !l.is_ended() {
+                        crate::append_hook_log(&format!("e2b: opening a terminal on {} as its tab is shown", l.sandbox().id));
+                        if let Err(e) = wake(&l, size) {
+                            crate::append_hook_log(&format!("e2b: could not wake {}: {e:#}", l.sandbox().id));
+                            l.say(&crate::i18n::tp("msg.microvm.wake_failed", &[("e", &format!("{e:#}"))]));
+                        }
                     }
                 }
                 Note::Size { rows, cols } => {
@@ -998,8 +1107,13 @@ pub fn shell(
         .recv_timeout(Duration::from_millis(START_MS))
         .map_err(|_| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", "the terminal did not open")])))??;
     // The shell was started in the folder, so only the program is typed --
-    // through the typing thread, ahead of anything a person types after
-    if let Some(line) = crate::ssh::typed_first(None, then) {
+    // through the typing thread, ahead of anything a person types after. A
+    // terminal waiting to be looked at has it typed when it opens (`wake`)
+    if waits {
+        if let Ok(mut w) = WAITING.get_or_init(Default::default).lock() {
+            w.entry(link.sandbox().id).or_default().push(note_tx.clone());
+        }
+    } else if let Some(line) = crate::ssh::typed_first(None, then) {
         let _ = note_tx.send(Note::Typed(line.into_bytes()));
     }
 
@@ -1220,7 +1334,7 @@ fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32
     // has paused under it, or the link dropped. Said on screen; the next
     // thing typed wakes it
     if !link.is_ended() {
-        link.say(&crate::i18n::t("msg.microvm.slept"));
+        link.slept();
     }
 }
 
@@ -1602,6 +1716,25 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// A terminal waiting to be looked at opens when a tab on its machine is
+    /// shown, once; and a machine found asleep is asleep until it speaks
+    #[test]
+    fn a_waiting_terminal_opens_when_it_is_shown() {
+        let (tx, rx) = std::sync::mpsc::channel::<Note>();
+        WAITING.get_or_init(Default::default).lock().unwrap().entry("wait-test".into()).or_default().push(tx);
+        shown("another-machine");
+        assert!(rx.try_recv().is_err(), "another machine's tab opened this one");
+        shown("wait-test");
+        assert!(matches!(rx.try_recv(), Ok(Note::Shown)), "shown, and nothing opened");
+        shown("wait-test");
+        assert!(rx.try_recv().is_err(), "opened twice");
+
+        asleep_as("sleep-test", true);
+        assert!(asleep("sleep-test"));
+        asleep_as("sleep-test", false);
+        assert!(!asleep("sleep-test"));
+    }
+
     /// A key the service turns away is said as a key to fix in the settings
     #[test]
     fn a_refused_key_is_said_as_the_key() {

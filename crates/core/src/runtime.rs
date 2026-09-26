@@ -459,8 +459,15 @@ pub fn web_address_in(text: &str) -> String {
 /// the service is asked, and the board does not wait for it
 fn let_go_if_nobodys(id: String) {
     std::thread::spawn(move || {
-        if config::machines_in_use().contains_key(&id) {
-            return;
+        // Kept when the settings cannot be read whole: whether it is
+        // somebody's cannot be told, and a machine is not deleted on a guess
+        match config::machines_in_use() {
+            Ok(used) if !used.contains_key(&id) => {}
+            Ok(_) => return,
+            Err(why) => {
+                append_hook_log(&format!("kept machine {id}: {why}"));
+                return;
+            }
         }
         if let Some(key) = crate::e2b::key() {
             crate::e2b::throw_away(&key, &id);
@@ -1482,6 +1489,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let (git_tx, git_rx) = std::sync::mpsc::channel::<String>();
     // Answers to the Issue tab, from the threads that waited for GitHub
     let (issues_tx, issues_rx) = std::sync::mpsc::channel::<String>();
+    // A MicroVM folder asked to be deleted, checked on its machine for work
+    // that would go with it; and the ones that passed, to go on
+    let (far_discard_tx, far_discard_rx) = std::sync::mpsc::channel::<(String, Result<(), String>)>();
+    let mut far_discard_checked: std::collections::HashSet<String> = Default::default();
     // A pull request's draft prompt for a folder on another machine, whose
     // commits and change are read there on a thread: (prompt, shape)
     let (pr_draft_tx, pr_draft_rx) = std::sync::mpsc::channel::<(String, String)>();
@@ -2836,6 +2847,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             }
 
+            // A tab on a MicroVM on a screen -- in any pane; a phone looks at
+            // what the window shows -- opens its terminal, which starts its
+            // machine. One nobody is looking at leaves its machine alone
+            for (_, s) in pane_layout.leaves() {
+                if let Some(t) = session_at(&surfaces, s).and_then(|i| tabs.get(i))
+                    && let Some(id) = t.cloud().and_then(|h| h.instance.as_deref())
+                {
+                    crate::e2b::shown(id);
+                }
+            }
+            // The sign-in step shows the checkout's own terminal in its dialog
+            if let Some(id) = login_pending.as_ref().filter(|p| p.shown).and_then(|p| p.host.instance.as_deref()) {
+                crate::e2b::shown(id);
+            }
+
             let mut fired_notes: Vec<(usize, String)> = Vec::new();
             for i in 0..tabs.len() {
                 let showing = session_at(&surfaces, active) == Some(i);
@@ -2952,6 +2978,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // written there, once per machine and AI in this run
                 for t in tabs.iter().filter(|t| t.is_ai() && t.had_output()) {
                     let Some(at) = tab_machine(t) else { continue };
+                    // Written when the machine is up for its own reasons
+                    if t.cloud().and_then(|h| h.instance.as_deref()).is_some_and(crate::e2b::asleep) {
+                        continue;
+                    }
                     let machine = match &at {
                         crate::elsewhere::Elsewhere::Cloud(h) => h.instance.clone().unwrap_or_else(|| h.name.clone()),
                         other => other.address(),
@@ -2965,7 +2995,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // is up (see `git::far_place`)
                     let far = match (tab_machine(t), t.cwd()) {
                         (Some(at), Some(c)) => {
-                            let awake = t.ms_since_change(now_ms) < 120_000;
+                            let asleep = t.cloud().and_then(|h| h.instance.as_deref()).is_some_and(crate::e2b::asleep);
+                            let awake = !asleep && t.ms_since_change(now_ms) < 120_000;
                             Some(crate::git::far_place(&at, c, awake))
                         }
                         _ => None,
@@ -7083,6 +7114,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Then the tabs are ended by taking the folder out of the settings --
         // git will not remove a folder something is still standing in -- and
         // the removal itself waits for them to actually be gone
+        // A MicroVM folder checked on its machine: nothing unsaved there, and
+        // the deleting goes on as it would have; something there, and nothing
+        // happens but being told what
+        while let Ok((folder, said)) = far_discard_rx.try_recv() {
+            match said {
+                Ok(()) => {
+                    far_discard_checked.insert(folder.clone());
+                    shell.mail().folder_discards.push((folder, false));
+                }
+                Err(why) => flash = Some(i18n::tp("msg.folder.not_discarded", &[("path", &folder), ("why", &why)])),
+            }
+        }
         for (folder, unasked) in shell.mail().take_folder_discards() {
             // Written before the folder is tried: the person asked not to be
             // asked again, whatever becomes of this one
@@ -7102,6 +7145,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .and_then(|f| f.host.clone().filter(|h| h.is_made()).map(|h| (h, f.project.clone())))
             });
             if let Some((h, project)) = on_microvm {
+                // Asked of the machine first, on a thread: what is not
+                // committed or not pushed there is lost with the machine, and
+                // nothing is closed on the way to finding that out
+                if !far_discard_checked.remove(&folder) {
+                    let (tx, folder, host) = (far_discard_tx.clone(), folder.clone(), h.clone());
+                    flash = Some(i18n::tp("msg.folder.checking", &[("path", &folder)]));
+                    std::thread::spawn(move || {
+                        let said = crate::worktree::far_ready_to_discard(&host, &folder).map_err(|e| format!("{e:#}"));
+                        let _ = tx.send((folder, said));
+                    });
+                    continue;
+                }
                 let Some(d) = desks.get(desk_index) else { continue };
                 let checkout = project
                     .as_deref()
@@ -10859,6 +10914,10 @@ fn keep_machines_up(tabs: &[Tab], now_ms: u64, kept: &mut std::collections::Hash
     for t in tabs {
         let Some(host) = t.cloud() else { continue };
         let Some(id) = host.instance.clone() else { continue };
+        // Paused under its terminal: more minutes would start it again
+        if crate::e2b::asleep(&id) {
+            continue;
+        }
         if t.ms_since_change(now_ms) >= MACHINE_IN_USE_MS
             || kept.get(&id).is_some_and(|at| at.elapsed() < MACHINE_KEPT_EVERY)
         {
@@ -10904,7 +10963,12 @@ fn far_stamp_polls(
         }
         let awake = tabs
             .iter()
-            .any(|t| tab_machine(t).as_ref() == Some(at) && t.ms_since_change(now_ms) < FAR_AWAKE_MS);
+            .any(|t| {
+                tab_machine(t).as_ref() == Some(at)
+                    && t.ms_since_change(now_ms) < FAR_AWAKE_MS
+                    // The change may be the line that says it paused
+                    && !t.cloud().and_then(|h| h.instance.as_deref()).is_some_and(crate::e2b::asleep)
+            });
         if !awake {
             continue;
         }

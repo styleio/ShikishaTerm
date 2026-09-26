@@ -1919,7 +1919,12 @@ fn handle(
                 Some(key) => match crate::e2b::list(&key) {
                     Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
                     Ok(listed) => {
-                        let used = crate::config::machines_in_use();
+                        // Settings that cannot be read whole: the machines
+                        // are listed, and none is offered for deleting
+                        let (used, unsure) = match crate::config::machines_in_use() {
+                            Ok(u) => (u, None),
+                            Err(why) => (Default::default(), Some(why)),
+                        };
                         let rows: Vec<serde_json::Value> = listed
                             .iter()
                             .map(|m| {
@@ -1931,10 +1936,11 @@ fn handle(
                                     "project": m.marks.get("project"),
                                     "pc": m.marks.get("pc"),
                                     "used": used.get(&m.id).cloned().unwrap_or_default(),
+                                    "making": !used.contains_key(&m.id) && crate::e2b::being_made(&m.id),
                                 })
                             })
                             .collect();
-                        serde_json::json!({ "ok": true, "machines": rows })
+                        serde_json::json!({ "ok": true, "machines": rows, "unsure": unsure })
                     }
                 },
             };
@@ -1953,8 +1959,12 @@ fn handle(
             let id = p.get("id").and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
             let resp = if id.is_empty() {
                 serde_json::json!({ "ok": false })
-            } else if crate::config::machines_in_use().contains_key(&id) {
+            } else if let Err(why) = crate::config::machines_in_use() {
+                serde_json::json!({ "ok": false, "error": why })
+            } else if crate::config::machines_in_use().is_ok_and(|u| u.contains_key(&id)) {
                 serde_json::json!({ "ok": false, "error": crate::i18n::t("settings.machines.in_use") })
+            } else if crate::e2b::being_made(&id) {
+                serde_json::json!({ "ok": false, "error": crate::i18n::t("settings.machines.making_refused") })
             } else {
                 match crate::e2b::key() {
                     None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.e2b.no_key") }),
@@ -9802,6 +9812,7 @@ function machinesCard() {
   };
   const useOf = u => u.kind === "checkout"
     ? fill(T["settings.machines.use.checkout"], {project: u.project, desk: u.desk})
+    : u.kind === "named" ? T["settings.machines.use.named"]
     : fill(T["settings.machines.use.folder"], {folder: u.folder, desk: u.desk});
   const load = async () => {
     let j = {};
@@ -9817,13 +9828,17 @@ function machinesCard() {
     if (!rows.length) {
       box.append(el("div", {class:"hint"}, T["settings.machines.none"]));
     }
-    const unused = rows.filter(m => !m.used.length);
+    // What the settings say could not be read: nothing is offered for deleting
+    if (j.unsure) box.append(el("div", {class:"hint warn"}, fill(T["settings.machines.unsure"], {why: j.unsure})));
+    const unused = rows.filter(m => !m.used.length && !m.making && !j.unsure);
     if (unused.length) box.append(el("div", {class:"hint warn"}, fill(T["settings.machines.unused_count"], {n: unused.length})));
     const list = el("div", {class:"rows"});
     // The ones nothing points at first: they are what this card is for
     for (const m of [...unused, ...rows.filter(m => m.used.length)]) {
       const what = m.used.length
         ? m.used.map(useOf).join(" / ")
+        : m.making ? T["settings.machines.making"]
+        : j.unsure ? T["settings.machines.unknown"]
         : (m.ours ? T["settings.machines.unused"] : T["settings.machines.not_ours"]);
       const who = [m.project ? fill(T["settings.machines.project"], {project: m.project}) : "",
                    m.pc ? fill(T["settings.machines.pc"], {pc: m.pc}) : "",
@@ -9832,8 +9847,8 @@ function machinesCard() {
       const row = el("div", {class:"listrow devrow"},
         el("span", {class:"mono"}, m.id),
         el("span", {class:"hint"}, state + (who ? " · " + who : "")),
-        el("span", {class: m.used.length ? "hint" : "hint warn"}, what));
-      if (!m.used.length) {
+        el("span", {class: m.used.length || m.making ? "hint" : "hint warn"}, what));
+      if (!m.used.length && !m.making && !j.unsure) {
         row.append(el("button", {class:"danger", onclick: async () => {
           const sure = fill(m.ours ? T["settings.machines.drop.sure"] : T["settings.machines.drop.sure_other"],
             {id: m.id, pc: m.pc || "?"});
@@ -10053,6 +10068,18 @@ function hostDialog(at, redraw, kind, done) {
 
   save.addEventListener("click", () => {
     if (held) { sayWhy(); return; }
+    // A host with folders on it keeps its name and its kind: the folders find
+    // it by that name, and one renamed away from under them is a folder whose
+    // machine nothing can reach -- or, on a MicroVM, delete
+    if (editing) {
+      const was = (h.name || "").trim(), users = hostUsers(was);
+      const kindNow = made ? "e2b" : "ssh", kindWas = (h.kind || "").trim().toLowerCase() === "e2b" ? "e2b" : "ssh";
+      if (users.length && (nameIn.value.trim() !== was || kindNow !== kindWas)) {
+        why.textContent = fill(T["settings.hosts.rename.in_use"], {name: was, what: users.join(", ")});
+        why.hidden = false;
+        return;
+      }
+    }
     const it = editing ? current.hosts[at] : {};
     it.name = nameIn.value.trim();
     // Where a project is checked out over there, and where its worktrees go,
