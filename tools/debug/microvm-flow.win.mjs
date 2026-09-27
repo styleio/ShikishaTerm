@@ -586,6 +586,15 @@ try {
   await until(() => cfg.run('typeof TOKEN === "string" && !!TOKEN'), 'the settings page, read in', 30000);
   const api = (p, body) => cfg.run(`fetch(${JSON.stringify(p)}, {method:"POST", headers:{"X-Token":TOKEN}, body:${JSON.stringify(JSON.stringify(body))}}).then(r => r.json())`);
   const machines = () => cfg.run('fetch("/api/microvm/machines", {headers:{"X-Token":TOKEN}}).then(r => r.json())');
+  // Its setup, for this step, is one line that takes a while: what runs
+  // while it is asked again, and what its row says it is doing
+  const setupTo = (line) => {
+    const c = saved();
+    c.desks[0].projects.find((p) => p.name === PROJECT).machine_setup = line;
+    fs.writeFileSync(CONFIG, JSON.stringify(c, null, 2));
+  };
+  setupTo('echo shk-slow && sleep 60');
+  await until(() => (project().machine_setup || '') === 'echo shk-slow && sleep 60', 'the setup saved', 10000);
   // Asked once: a row for each machine of the project, each saying the
   // command it is on, which of how many, and for how long
   const prepare = { desk: desk().id, project: PROJECT };
@@ -601,8 +610,26 @@ try {
   check(again.ok && again.already === again.machines, 'a second ask says it is running already: ' + JSON.stringify(again));
   await sleep(3000);
   check((await preparingRows()) <= 2, 'and the install is not started a second time');
+  // The setup line, said by its number; its own words only when asked
+  const setupRow = '[...document.querySelectorAll(".making .mstep")].find(r => /マシンの設定 1\\/1 行目/.test(r.textContent))';
+  await until(() => board.run(`!!${setupRow}`), 'the setup line to run, said by its number', 600000)
+    .catch(async (e) => { console.log('    (the rows say: ' + await board.run('[...document.querySelectorAll(".making")].map(r => r.textContent).join(" | ")') + ')'); throw e; });
+  check(!(await board.run('[...document.querySelectorAll(".making")].some(r => r.textContent.includes("shk-slow"))')),
+    'the row does not show the command as written: ' + await board.run(`${setupRow}.textContent`));
+  await board.run(`${setupRow}.parentElement.querySelector(".mline").click(); true`);
+  await until(() => board.run('[...document.querySelectorAll(".making .mcmd")].some(c => c.textContent.includes("shk-slow"))'), 'the command shown when asked', 10000);
+  check(true, 'and shows it when asked');
+  // Asked again with a setup saved since it began: said as running again
+  // afterwards, and run once the first is done
+  setupTo('echo shk-again');
+  await until(() => (project().machine_setup || '') === 'echo shk-again', 'the new setup saved', 10000);
+  const changed = await api('/api/project/machine-setup', prepare);
+  check(changed.ok && changed.again === changed.machines, 'an ask with settings saved since says it runs again afterwards: ' + JSON.stringify(changed));
   await until(async () => (await preparingRows()) === 0, 'the machines prepared', 600000)
     .catch(async (e) => { console.log('    (the board says: ' + JSON.stringify(await board.run('S.making')) + ')'); throw e; });
+  await until(() => (project().homes || []).some((h) => (h.prepared || '').includes('shk-again')), 'the checkout written down as prepared with the setup saved since', 60000)
+    .catch(async (e) => { console.log('    (the checkout says it has: ' + JSON.stringify((project().homes || []).map((h) => h.prepared)) + ')'); throw e; });
+  check(true, 'the setup saved while it ran is what the checkout is prepared with');
   // Taken off the list: its machine stays, and the list of machines says
   // what the folder was, to put back or to delete -- not "being made"
   // A tab still at something -- an AI waiting on its own question -- keeps a

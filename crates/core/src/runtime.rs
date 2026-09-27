@@ -567,6 +567,10 @@ enum VmWork {
         /// A worktree's machine rather than the checkout's: nothing of the
         /// project's is written when it is done
         worktree: bool,
+        /// What was asked for while it ran, with settings saved since it
+        /// began: run once it has ended, rather than lost under "already
+        /// running"
+        again: Option<crate::microvm::Preparing>,
     },
     /// A project cloned onto a server reached over SSH, by the server's own
     /// git. The same row as a MicroVM's clone: the dialog closes, and the
@@ -636,7 +640,7 @@ impl VmJob {
                 VmWork::SshClone { .. } => None,
             }
             .filter(|_| self.error.is_none())
-            .map(|s| crate::uistate::MakingStep { n: s.n, of: s.of, what: s.what, since: s.since }),
+            .map(|s| crate::uistate::MakingStep { n: s.n, of: s.of, what: s.what, line: s.line, since: s.since }),
             ..Default::default()
         }
     }
@@ -1660,7 +1664,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let (past_tx, past_rx) = std::sync::mpsc::channel::<(usize, Vec<crate::vault::Hit>)>();
     // A MicroVM folder asked to be deleted, checked on its machine for work
     // that would go with it; and the ones that passed, to go on
-    let (far_discard_tx, far_discard_rx) = std::sync::mpsc::channel::<(String, Result<(), String>)>();
+    // A folder's answer carries whether it is the folder's own (work found
+    // there) or the folder could not be asked at all
+    let (far_discard_tx, far_discard_rx) = std::sync::mpsc::channel::<(String, Result<(), (String, bool)>)>();
     let mut far_discard_checked: std::collections::HashSet<String> = Default::default();
     // A pull request's draft prompt for a folder on another machine, whose
     // commits and change are read there on a thread: (prompt, shape)
@@ -7481,7 +7487,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     far_discard_checked.insert(folder.clone());
                     shell.mail().folder_discards.push((folder, false));
                 }
-                Err(why) => {
+                // Not reached: nothing is known about its work, and the
+                // answer is to try again, not to go and push something
+                Err((why, false)) => {
+                    let path = crate::uistate::place_of(std::path::Path::new(&folder)).1.display().to_string();
+                    flash = Some(i18n::tp("msg.folder.not_checked", &[("path", &path), ("why", &why)]));
+                }
+                Err((why, true)) => {
                     // A MicroVM's folder loses what is not pushed too; a
                     // server's keeps its branch, and says only why
                     let key = std::path::PathBuf::from(&folder);
@@ -7528,13 +7540,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     std::thread::spawn(move || {
                         // A machine the service no longer has cannot be asked,
                         // and has nothing left on it to lose: the folder goes
+                        // -- which is only ever asked when the machine did not
+                        // answer: one that answered with work on it keeps it
                         let said = crate::worktree::far_ready_to_discard(&host, &path).or_else(|e| {
-                            match host.instance.as_deref().is_some_and(crate::e2b::check_gone) {
+                            match !crate::worktree::is_refusal(&e) && host.instance.as_deref().is_some_and(crate::e2b::check_gone) {
                                 true => Ok(()),
                                 false => Err(e),
                             }
                         });
-                        let _ = tx.send((folder, said.map_err(|e| format!("{e:#}"))));
+                        let _ = tx.send((folder, said.map_err(|e| (format!("{e:#}"), crate::worktree::is_refusal(&e)))));
                     });
                     continue;
                 }
@@ -7608,7 +7622,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let (tx, folder, host, path) = (far_discard_tx.clone(), folder.clone(), h.clone(), at.to_string_lossy().to_string());
                     flash = Some(i18n::tp("msg.folder.checking", &[("path", &path)]));
                     std::thread::spawn(move || {
-                        let said = crate::worktree::far_ready_to_discard(&host, &path).map_err(|e| format!("{e:#}"));
+                        let said = crate::worktree::far_ready_to_discard(&host, &path)
+                            .map_err(|e| (format!("{e:#}"), crate::worktree::is_refusal(&e)));
                         let _ = tx.send((folder, said));
                     });
                     continue;
@@ -7982,13 +7997,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 sign_in: sign_in.clone(),
                                 preparing: preparing.clone(),
                             }),
-                            VmWork::Prepare { home, preparing, follow, worktree, .. } => Ok(VmWork::Prepare {
-                                job: crate::microvm::Prepare::start(j.host.clone(), &home.at, preparing.clone()),
-                                home: home.clone(),
-                                preparing: preparing.clone(),
-                                follow: follow.clone(),
-                                worktree: *worktree,
-                            }),
+                            // What was asked last is what is tried again
+                            VmWork::Prepare { home, preparing, follow, worktree, again, .. } => {
+                                let preparing = again.clone().unwrap_or_else(|| preparing.clone());
+                                Ok(VmWork::Prepare {
+                                    job: crate::microvm::Prepare::start(j.host.clone(), &home.at, preparing.clone()),
+                                    home: home.clone(),
+                                    preparing,
+                                    follow: follow.clone(),
+                                    worktree: *worktree,
+                                    again: None,
+                                })
+                            }
                             VmWork::SshClone { spec, url, parent, .. } => crate::addproject::start_clone_on(spec.clone(), url, parent)
                                 .map(|job| VmWork::SshClone { job, spec: spec.clone(), url: url.clone(), parent: parent.clone() }),
                         };
@@ -8570,14 +8590,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // One at a time per machine: a second ask while the first is
                 // still on it would run the same install twice at once. It is
                 // not dropped either: where it was going is where the one
-                // already running goes once it is done (the page that asked
-                // has said it is already running, see microvm::preparing)
+                // already running goes once it is done, and settings saved
+                // since it began run again after it (the page that asked has
+                // said which, see microvm::preparing_with)
                 if let Some(running) = vm_jobs.iter_mut().find(|j| !j.gone && j.error.is_none() && j.host.instance == host.instance) {
-                    if let VmWork::Prepare { follow, worktree: false, .. } = &mut running.work
-                        && !worktree
-                        && follow.is_none()
-                    {
-                        *follow = ask.follow.clone();
+                    if let VmWork::Prepare { follow, worktree: running_worktree, preparing, again, .. } = &mut running.work {
+                        if !*running_worktree && !worktree && follow.is_none() {
+                            *follow = ask.follow.clone();
+                        }
+                        *again = (*preparing != targets.preparing).then(|| targets.preparing.clone());
                     }
                     continue;
                 }
@@ -8595,6 +8616,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // The dialog opens once, after the checkout
                         follow: ask.follow.clone().filter(|_| !worktree),
                         worktree,
+                        again: None,
                     },
                     host,
                     error: None,
@@ -8606,6 +8628,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // How each job on a machine is getting on. Done, what it made is
         // written down and the board is told what comes next; failed, the
         // row says so and waits to be tried again or put away
+        let mut reruns: Vec<VmJob> = Vec::new();
         for j in vm_jobs.iter_mut().filter(|j| j.error.is_none() && !j.gone) {
             // A server's clone: the folder there written on the desk, and the
             // project on through its rules, as a MicroVM's goes. A stopped
@@ -8668,6 +8691,43 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 VmWork::Prepare { job, .. } => job.outcome(),
                 VmWork::SshClone { .. } => continue,
             };
+            // Asked again with other settings while it ran: once it has ended
+            // -- done, or failed, which the newer settings may be the answer
+            // to -- what was asked last runs, and whatever was to follow waits
+            // for that one. Stopped, nothing runs after it
+            let ended = match &outcome {
+                crate::microvm::Outcome::Running(_) => false,
+                crate::microvm::Outcome::Failed(e) => !e.is_empty(),
+                crate::microvm::Outcome::Done { .. } => true,
+            };
+            if ended
+                && let VmWork::Prepare { home, follow, worktree, again, .. } = &mut j.work
+                && let Some(next) = again.take()
+            {
+                append_hook_log(&format!("preparing {} on {} again, with the settings saved while it ran", j.project, j.host.name));
+                making_seq += 1;
+                reruns.push(VmJob {
+                    id: making_seq,
+                    desk: j.desk.clone(),
+                    desk_id: j.desk_id.clone(),
+                    project: j.project.clone(),
+                    at: j.at.clone(),
+                    work: VmWork::Prepare {
+                        job: crate::microvm::Prepare::start(j.host.clone(), &home.at, next.clone()),
+                        home: home.clone(),
+                        preparing: next,
+                        follow: follow.take(),
+                        worktree: *worktree,
+                        again: None,
+                    },
+                    host: j.host.clone(),
+                    error: None,
+                    stopping: false,
+                    gone: false,
+                });
+                j.gone = true;
+                continue;
+            }
             match outcome {
                 crate::microvm::Outcome::Running(_) => {}
                 crate::microvm::Outcome::Failed(e) if e.is_empty() => j.gone = true,
@@ -8812,6 +8872,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
         vm_jobs.retain(|j| !j.gone);
+        vm_jobs.extend(reruns);
         // A colour chosen for a project. Written against the folder git shares
         // between its branches, so all of them change at once
         for (folder, color) in shell.mail().take_folder_colors() {

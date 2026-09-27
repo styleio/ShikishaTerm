@@ -932,6 +932,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .making .mbtns { flex-basis:100%; display:flex; flex-wrap:wrap; gap:var(--s2); padding:var(--s1) 0 2px 18px; }
   .making .mstep { flex-basis:100%; padding-left:18px; font-size:11px; color:var(--dim); overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .making .mstepbox { flex-basis:100%; display:flex; flex-wrap:wrap; align-items:center; column-gap:var(--s2); min-width:0; }
+  .making .mstepbox .mstep { flex:1 1 0; min-width:0; }
+  .making .mline { flex:none; font:inherit; font-size:11px; min-height:22px; padding:0 var(--s2); border-radius:var(--r-ctl);
+    border:1px solid var(--edge); background:var(--panel2); color:var(--dim); cursor:pointer; }
+  .making .mline:hover { border-color:var(--edge-hi); color:var(--text); }
+  .making .mcmd { flex-basis:100%; margin:2px 0 0 18px; font-size:11px; color:var(--text); white-space:pre-wrap; overflow-wrap:anywhere; }
   .making .mbtns button { font:inherit; font-size:11px; min-height:24px; padding:0 var(--s2); border-radius:var(--r-ctl);
     border:1px solid var(--edge); background:var(--panel2); color:var(--text); cursor:pointer; }
   .making .mbtns button:hover { border-color:var(--edge-hi); }
@@ -6776,7 +6782,7 @@ function makingRow(m) {
       : failed ? (m.error || T["tui.making.failed"] || "") : (T["tui.making.stage." + m.stage] || "")));
   // The command running now, which of how many, and for how long: an install
   // can take many minutes, and a stop is heard once that command is done
-  if (m.step && !failed) row.append(makingStep(m.step, stopping));
+  if (m.step && !failed) row.append(makingStep(m, stopping));
   // The branch is there and git will not go into it. The press is the same
   // one the question asks for, so a row answered here needs no dialog
   if (untrusted) {
@@ -6809,7 +6815,11 @@ function makingRow(m) {
   }
   return row;
 }
-function makingStep(st, stopping) {
+// A setup line's own words, shown on a row only once asked for there: they
+// are the person's, and may hold a token, where a board is seen by others
+const stepShown = new Set();
+function makingStep(m, stopping) {
+  const st = m.step;
   const line = el("div", {class:"mstep", "data-since":String(st.since), title:st.what || ""});
   // The time goes in last, and the command as written goes in as it is: a
   // setup line is the person's own, and may hold anything
@@ -6817,7 +6827,14 @@ function makingStep(st, stopping) {
     .replace("{n}", st.n).replace("{of}", st.of).replace("{time}", "\u0000").replace("{what}", () => st.what || "")
     + (stopping ? " · " + (T["tui.making.step.stopping"] || "") : "");
   line.textContent = stepText(line);
-  return line;
+  if (!st.line) return line;
+  const shown = stepShown.has(m.id);
+  const toggle = el("button", {type:"button", class:"mline", onclick:e => {
+    e.stopPropagation();
+    shown ? stepShown.delete(m.id) : stepShown.add(m.id);
+    drawTabs();
+  }}, shown ? (T["tui.making.step.hide"] || "") : (T["tui.making.step.show"] || ""));
+  return el("div", {class:"mstepbox"}, line, toggle, shown ? el("code", {class:"mcmd mono"}, st.line) : null);
 }
 // How long the command has run, as minutes and seconds
 function stepText(line) {

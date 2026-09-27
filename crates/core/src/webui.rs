@@ -1543,13 +1543,24 @@ fn drop_machine(id: &str) -> serde_json::Value {
             .and_then(|c| c.hosts.into_iter().find(|h| h.name.trim() == name && h.is_made()))
             .unwrap_or_else(|| crate::config::HostSpec { name: name.clone(), kind: Some("e2b".into()), ..Default::default() })
             .with_instance(Some(id));
-        if let Err(e) = crate::worktree::far_ready_to_discard(&host, &cwd) {
-            if !crate::e2b::check_gone(id) {
+        match crate::worktree::far_ready_to_discard(&host, &cwd) {
+            Ok(()) => {}
+            // It answered, with work on it
+            Err(e) if crate::worktree::is_refusal(&e) => {
                 return serde_json::json!({ "ok": false, "error": crate::i18n::tp(
                     "settings.machines.drop_unsaved",
                     &[("folder", &cwd), ("why", &format!("{e:#}"))],
                 ) });
             }
+            // It did not answer: gone, and nothing is left to lose; else
+            // nothing is known about its work, and it is tried again later
+            Err(e) if !crate::e2b::check_gone(id) => {
+                return serde_json::json!({ "ok": false, "error": crate::i18n::tp(
+                    "settings.machines.drop_unchecked",
+                    &[("id", id), ("folder", &cwd), ("why", &format!("{e:#}"))],
+                ) });
+            }
+            Err(_) => {}
         }
     }
     match crate::e2b::kill(&key, id) {
@@ -2521,16 +2532,21 @@ fn handle(
                 (Some(desk_id), Some(project)) => match crate::microvm::prepare_targets(&desk_id, &project) {
                     Ok(t) => {
                         // A machine being prepared already is not started again:
-                        // the ask joins the one running, and the page says so
+                        // the ask joins the one running -- or, with settings
+                        // saved since it began, runs after it -- and the page
+                        // says which
                         let machines: Vec<Option<String>> = t
                             .homes
                             .iter()
                             .map(|(h, _)| h.instance.clone())
                             .chain(t.worktrees.iter().map(|(h, _)| h.instance.clone()))
                             .collect();
-                        let already = machines.iter().flatten().filter(|id| crate::microvm::preparing(id)).count();
+                        let now = t.preparing.said();
+                        let running: Vec<String> = machines.iter().flatten().filter_map(|id| crate::microvm::preparing_with(id)).collect();
+                        let already = running.iter().filter(|with| **with == now).count();
+                        let again = running.len() - already;
                         PREPARE_ASKS.lock().unwrap_or_else(|e| e.into_inner()).push(PrepareAsk { desk_id, project, follow: text("follow") });
-                        serde_json::json!({ "ok": true, "started": true, "machines": machines.len(), "already": already })
+                        serde_json::json!({ "ok": true, "started": true, "machines": machines.len(), "already": already, "again": again })
                     }
                     Err(error) => serde_json::json!({ "ok": false, "error": error }),
                 },
@@ -12506,8 +12522,8 @@ async function prepareMicrovms(desk, p, follow) {
   if (!j.ok) { toast(j.error || "", true); return false; }
   // Every machine already on it: the ask joins that, and where it was going
   // is where that goes once it is done
-  toast(j.already && j.already === j.machines
-    ? T[follow ? "settings.microvm.already_follow" : "settings.microvm.already"]
+  toast(j.again ? T["settings.microvm.again"]
+    : j.already && j.already === j.machines ? T[follow ? "settings.microvm.already_follow" : "settings.microvm.already"]
     : T["settings.microvm.started"]);
   return true;
 }

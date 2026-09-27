@@ -247,6 +247,28 @@ impl std::fmt::Display for InUse {
 
 impl std::error::Error for InUse {}
 
+/// What a folder on another machine answered when asked whether it can go:
+/// not yet -- it holds work nothing else has (changes not committed, commits
+/// not pushed), or on a server it is not a worktree. Told apart from a folder
+/// that could not be asked at all -- a network that is down -- whose answer is
+/// to try again, not to go and push something
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused(pub String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Whether what [`far_ready_to_discard`] said is the folder's own answer,
+/// rather than the folder not being reached
+pub fn is_refusal(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<Refused>().is_some()
+}
+
 /// The first name after `name` -- `name-2`, `name-3` -- that is a new branch
 /// with a free folder where this project puts its folders, for when `name` is
 /// taken
@@ -2244,11 +2266,11 @@ fn far_unsaved(out: &str, split: &str) -> Result<()> {
     let (status, ahead) = out.split_once(split).unwrap_or((out, ""));
     let dirty = unsaved_work(status.trim_end_matches(['\n', '\r']), &|_| false);
     if dirty > 0 {
-        bail!(crate::i18n::tp("err.worktree.dirty", &[("count", &dirty.to_string())]));
+        return Err(Refused(crate::i18n::tp("err.worktree.dirty", &[("count", &dirty.to_string())])).into());
     }
     let ahead: usize = ahead.trim().lines().last().and_then(|l| l.trim().parse().ok()).unwrap_or(0);
     if ahead > 0 {
-        bail!(crate::i18n::tp("err.worktree.unpushed", &[("count", &ahead.to_string())]));
+        return Err(Refused(crate::i18n::tp("err.worktree.unpushed", &[("count", &ahead.to_string())])).into());
     }
     Ok(())
 }
@@ -2262,11 +2284,11 @@ fn server_unsaved(out: &str, split: &str) -> Result<()> {
     }
     let (status, linked) = out.split_once(split).unwrap_or((out, ""));
     if !linked.contains(LINKED) {
-        bail!(crate::i18n::t("err.worktree.not_a_branch"));
+        return Err(Refused(crate::i18n::t("err.worktree.not_a_branch")).into());
     }
     let dirty = unsaved_work(status.trim_end_matches(['\n', '\r']), &|_| false);
     if dirty > 0 {
-        bail!(crate::i18n::tp("err.worktree.dirty_server", &[("count", &dirty.to_string())]));
+        return Err(Refused(crate::i18n::tp("err.worktree.dirty_server", &[("count", &dirty.to_string())])).into());
     }
     Ok(())
 }
@@ -3410,6 +3432,9 @@ mod tests {
         assert_eq!(format!("{dirty:#}"), crate::i18n::tp("err.worktree.dirty", &[("count", "2")]));
         let ahead = far_unsaved(&format!("\n{s}\n3\n"), s).unwrap_err();
         assert_eq!(format!("{ahead:#}"), crate::i18n::tp("err.worktree.unpushed", &[("count", "3")]));
+        // Work found is told apart from a folder that could not be asked
+        assert!(is_refusal(&dirty) && is_refusal(&ahead));
+        assert!(!is_refusal(&anyhow::anyhow!("connection refused")), "a network down was taken for work there");
     }
 
     /// A tab's own command reaches the far shell as the line it was: its

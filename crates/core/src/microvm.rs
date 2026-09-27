@@ -76,19 +76,20 @@ impl Checkout {
                 let clone = vec!["git".into(), "clone".into(), "--quiet".into(), "--".into(), url.clone(), at.clone()];
                 // The clone, then what the machine is prepared with, each in
                 // turn; the first that fails ends it, and the machine goes
-                let mut steps = vec![(PHASE_CLONING, crate::i18n::tp("tui.making.step.clone", &[("project", &project)]), clone)];
-                steps.extend(identity.into_iter().map(|a| (PHASE_CLONING, crate::i18n::t("tui.making.step.identity"), a)));
+                let planned = |what: String, argv: Vec<String>| PlannedStep { what, line: String::new(), argv };
+                let mut steps = vec![(PHASE_CLONING, planned(crate::i18n::tp("tui.making.step.clone", &[("project", &project)]), clone))];
+                steps.extend(identity.into_iter().map(|a| (PHASE_CLONING, planned(crate::i18n::t("tui.making.step.identity"), a))));
                 match preparing.steps(&at) {
-                    Ok(c) => steps.extend(c.into_iter().map(|(what, a)| (PHASE_PREPARING, what, a))),
+                    Ok(c) => steps.extend(c.into_iter().map(|s| (PHASE_PREPARING, s))),
                     Err(e) => {
                         crate::e2b::throw_away(&key, &box_.id);
                         return Err(e);
                     }
                 }
                 let of = steps.len();
-                for (i, (phase, what, argv)) in steps.into_iter().enumerate() {
+                for (i, (phase, PlannedStep { what, line, argv })) in steps.into_iter().enumerate() {
                     set(Outcome::Running(phase));
-                    *step.lock().unwrap_or_else(|e| e.into_inner()) = Some(Step::now(i + 1, of, &what));
+                    *step.lock().unwrap_or_else(|e| e.into_inner()) = Some(Step::now(i + 1, of, &what, &line));
                     let line = crate::worktree::for_a_shell(&argv);
                     let ran = crate::e2b::exec(&box_, &line, None).map_err(|e| format!("{e:#}"));
                     let failed = match ran {
@@ -389,26 +390,35 @@ impl Preparing {
     /// setup line in the checkout. An AI with no install line is said as that
     /// rather than skipped in silence
     pub fn commands(&self, checkout: &str) -> Result<Vec<Vec<String>>, String> {
-        Ok(self.steps(checkout)?.into_iter().map(|(_, argv)| argv).collect())
+        Ok(self.steps(checkout)?.into_iter().map(|s| s.argv).collect())
     }
 
     /// The same commands, each with what its row says while it runs: the
-    /// machine being readied, the AI being installed, a setup line as written
-    pub fn steps(&self, checkout: &str) -> Result<Vec<(String, Vec<String>)>, String> {
-        let mut out = vec![(crate::i18n::t("tui.making.step.ground"), vec!["sh".into(), "-lc".into(), GROUND.into()])];
+    /// machine being readied, the AI being installed, a line of the setup by
+    /// its number. A setup line is the person's own and may hold a token, so
+    /// its words are kept apart, for the row to show only when asked
+    pub fn steps(&self, checkout: &str) -> Result<Vec<PlannedStep>, String> {
+        let step = |what: String, line: String, argv: Vec<String>| PlannedStep { what, line, argv };
+        let mut out = vec![step(crate::i18n::t("tui.making.step.ground"), String::new(), vec!["sh".into(), "-lc".into(), GROUND.into()])];
         if let Some(ai) = &self.ai {
             let line = crate::profile::install_on_linux(ai)
                 .ok_or_else(|| crate::i18n::tp("err.microvm.no_install", &[("ai", ai)]))?;
             let name = crate::profile::machine_ai(ai).map(|m| m.name).unwrap_or_else(|| ai.clone());
             // Once: a machine that has it is not made to install it again,
             // which on a small machine is what runs it out of memory
-            out.push((
+            out.push(step(
                 crate::i18n::tp("tui.making.step.ai", &[("ai", &name)]),
+                String::new(),
                 vec!["sh".into(), "-lc".into(), format!("command -v {ai} >/dev/null 2>&1 || {{ {line}; }}")],
             ));
         }
-        for line in &self.lines {
-            out.push((line.clone(), vec!["sh".into(), "-lc".into(), format!("cd {checkout} && {line}")]));
+        let of = self.lines.len().to_string();
+        for (k, line) in self.lines.iter().enumerate() {
+            out.push(step(
+                crate::i18n::tp("tui.making.step.setup", &[("k", &(k + 1).to_string()), ("of", &of)]),
+                line.clone(),
+                vec!["sh".into(), "-lc".into(), format!("cd {checkout} && {line}")],
+            ));
         }
         Ok(out)
     }
@@ -583,12 +593,12 @@ pub fn prepare(
     let _busy = crate::e2b::busy(host);
     let steps = preparing.steps(checkout)?;
     let of = steps.len();
-    for (i, (what, argv)) in steps.into_iter().enumerate() {
+    for (i, PlannedStep { what, line, argv }) in steps.into_iter().enumerate() {
         if stop() {
             return Err(String::new());
         }
         at_step(PHASE_PREPARING);
-        on_command(Step::now(i + 1, of, &what));
+        on_command(Step::now(i + 1, of, &what, &line));
         let line = argv.last().cloned().unwrap_or_default();
         let ran = crate::e2b::exec(&machine, &crate::worktree::for_a_shell(&argv), None).map_err(|e| format!("{e:#}"))?;
         if !ran.ok() {
@@ -625,23 +635,36 @@ pub struct Step {
     pub n: usize,
     pub of: usize,
     pub what: String,
+    /// The setup line as written, when it is one: shown only when asked
+    pub line: String,
     pub since: u64,
 }
 
 impl Step {
-    fn now(n: usize, of: usize, what: &str) -> Step {
+    fn now(n: usize, of: usize, what: &str, line: &str) -> Step {
         let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        Step { n, of, what: what.to_string(), since }
+        Step { n, of, what: what.to_string(), line: line.to_string(), since }
     }
 }
 
-/// The machines being prepared right now, by id: a second ask for one of
-/// them joins the one running rather than starting the install again
-static PREPARING: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+/// The machines being prepared right now, by id, each with what it is being
+/// prepared with ([`Preparing::said`]): a second ask for one of them joins
+/// the one running rather than starting the install again -- and one with
+/// settings saved since runs after it
+static PREPARING: std::sync::OnceLock<Mutex<std::collections::HashMap<String, String>>> = std::sync::OnceLock::new();
 
-/// Whether the machine `id` is being prepared right now
-pub fn preparing(id: &str) -> bool {
-    PREPARING.get_or_init(Default::default).lock().is_ok_and(|p| p.contains(id))
+/// What the machine `id` is being prepared with right now, while it is
+pub fn preparing_with(id: &str) -> Option<String> {
+    PREPARING.get_or_init(Default::default).lock().ok().and_then(|p| p.get(id).cloned())
+}
+
+/// One command of a machine's preparation: what its row says, the setup line
+/// it runs as written (empty for the app's own), and the command itself
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedStep {
+    pub what: String,
+    pub line: String,
+    pub argv: Vec<String>,
 }
 
 /// A checkout's machine being prepared, on a thread of its own: an install
@@ -665,7 +688,7 @@ impl Prepare {
         let checkout = checkout.to_string();
         let sandbox = host.instance.clone().unwrap_or_default();
         if let Ok(mut p) = PREPARING.get_or_init(Default::default).lock() {
-            p.insert(sandbox.clone());
+            p.insert(sandbox.clone(), preparing.said());
         }
         std::thread::spawn(move || {
             let set = |o: Outcome| *outcome.lock().unwrap_or_else(|e| e.into_inner()) = o;
@@ -1286,11 +1309,15 @@ mod tests {
         assert_eq!(cmds.len(), 4);
         // Each with what its row says while it runs: the ground, the AI by its
         // name, and a setup line as it was written
-        let said: Vec<String> = p.steps("/home/user/site").unwrap().into_iter().map(|(what, _)| what).collect();
-        assert_eq!(said[0], crate::i18n::t("tui.making.step.ground"));
+        let steps = p.steps("/home/user/site").unwrap();
+        assert_eq!(steps[0].what, crate::i18n::t("tui.making.step.ground"));
         let claude = crate::profile::machine_ai("claude").map(|m| m.name).unwrap_or_default();
-        assert_eq!(said[1], crate::i18n::tp("tui.making.step.ai", &[("ai", &claude)]));
-        assert_eq!(said[2..], ["sudo apt-get install -y php-cli", "composer --version"]);
+        assert_eq!(steps[1].what, crate::i18n::tp("tui.making.step.ai", &[("ai", &claude)]));
+        // A setup line is said by its number: its words may hold a token,
+        // and are kept apart for the row to show only when asked
+        assert_eq!(steps[2].what, crate::i18n::tp("tui.making.step.setup", &[("k", "1"), ("of", "2")]));
+        assert_eq!([steps[2].line.as_str(), steps[3].line.as_str()], ["sudo apt-get install -y php-cli", "composer --version"]);
+        assert!(steps[..2].iter().all(|s| s.line.is_empty()));
         assert_eq!(p.said(), "ai: claude\nsudo apt-get install -y php-cli\ncomposer --version\n");
         let none = Preparing::of(Some("none"), None);
         assert!(none.is_empty() && none.commands("/x").unwrap() == [vec!["sh".to_string(), "-lc".into(), GROUND.into()]]);

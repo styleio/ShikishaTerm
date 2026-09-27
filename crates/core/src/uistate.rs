@@ -1163,6 +1163,10 @@ pub struct MakingStep {
     pub n: usize,
     pub of: usize,
     pub what: String,
+    /// A setup line as written, which the row shows only when asked: the
+    /// person's own words may hold a token, and a board is seen by others
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub line: String,
     /// When it started, in Unix seconds: the page counts the time from it
     pub since: u64,
 }

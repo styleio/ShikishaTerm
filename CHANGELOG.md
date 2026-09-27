@@ -340,11 +340,21 @@ once it reaches its first tagged release.
   press while the machines are still being prepared said it had started and
   did nothing, and the worktree dialog it was to open afterwards never
   opened. It now says it is running already, and the dialog opens once the
-  one running is done.
+  one running is done. With settings saved since it began, it says so, and
+  runs again with them once the first is done.
 - **A MicroVM being set up says what it is doing.** Its row says which
   command it is on, of how many -- getting the machine ready, installing the
-  AI, a setup line as written -- and how long that command has run; stopped,
-  it says it stops once that command has finished.
+  AI, a line of the machine setup by its number -- and how long that command
+  has run; stopped, it says it stops once that command has finished. A setup
+  line's own words, which may hold a token, are shown only when asked for.
+- **A MicroVM that could not be deleted can still be put back.** What its
+  folder was is forgotten only once the machine is deleted, so a delete
+  that failed on the way leaves it to put back on the list, and to be asked
+  about its work again.
+- **A machine that could not be reached is not said to hold work.** Deleting
+  a folder on a MicroVM or a server, or a MicroVM from the settings, when the
+  machine did not answer said there was work to commit and push; it now
+  says the machine could not be asked, and to try again once it can be.
 - **The same path on two machines is two folders.** A folder is its machine
   and its path: `/home/ubuntu/app` on staging and on production, or a
   project's checkout on two MicroVM entries, were one folder to the board --

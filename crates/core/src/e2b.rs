@@ -672,18 +672,24 @@ pub fn kill(key: &str, id: &str) -> Result<()> {
         m.remove(id);
     }
     forget_ends(id);
-    crate::config::forget_off_list(id);
     let resp = agent()
         .delete(&format!("{API}/sandboxes/{id}"))
         .header("X-API-Key", key)
         .call();
-    match answered(resp) {
+    let gone = match answered(resp) {
         Ok(_) => Ok(()),
         // Gone already is what was asked for: a second try after an answer
         // that was lost on the way back finds nothing to kill
         Err(e) if is_gone(&e) => Ok(()),
         Err(e) => Err(e),
+    };
+    // What its folder was, kept to put it back on a list, goes with the
+    // machine and not before: a delete that did not happen leaves a machine
+    // that can still be put back, and asked about its work the next time
+    if gone.is_ok() {
+        crate::config::forget_off_list(id);
     }
+    gone
 }
 
 /// The machines this run asked for, until they are written down or deleted: a
