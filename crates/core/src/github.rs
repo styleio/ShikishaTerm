@@ -945,6 +945,11 @@ pub fn desk_sources(desk: &crate::config::Desk) -> Vec<Source> {
         let Ok(at) = crate::elsewhere::Elsewhere::of(host) else { continue };
         if let Some(s) = out.iter_mut().find(|s| s.name == project) {
             if !s.far.is_empty() {
+                // Not known from the first folder (its machine paused): any
+                // other folder of it that can say, says it
+                if s.repo.is_none() {
+                    s.repo = far_origin(host, cwd);
+                }
                 s.far.push((cwd.to_path_buf(), at, host.name.clone()));
             }
             continue;
@@ -952,7 +957,13 @@ pub fn desk_sources(desk: &crate::config::Desk) -> Vec<Source> {
         let spec = desk.projects.iter().find(|p| p.name == project);
         out.push(Source {
             name: project.to_string(),
-            repo: far_origin(host, cwd),
+            // Where the project is fetched from, as it was written when its
+            // checkout there was made: known without asking any machine,
+            // which a paused one would be started for
+            repo: spec
+                .and_then(|p| p.origin.as_deref())
+                .and_then(|o| crate::repo::github_path(o.trim()))
+                .or_else(|| far_origin(host, cwd)),
             dir: cwd.to_path_buf(),
             at: cwd.to_path_buf(),
             git: desk.git_use(spec.and_then(|p| p.git_account.as_deref())),
@@ -975,6 +986,10 @@ pub fn far_origin(host: &crate::config::HostSpec, dir: &std::path::Path) -> Opti
         match k.get(&key) {
             Some(Some(found)) => return found.clone(),
             Some(None) => return None,
+            // A paused MicroVM is not started to be asked: a panel put back
+            // on screen at launch would start, and bill, a machine nobody is
+            // using. Asked once something of this program has it running
+            None if host.is_made() && host.instance.as_deref().is_some_and(crate::e2b::asleep) => return None,
             None => {
                 k.insert(key.clone(), None);
             }

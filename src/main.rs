@@ -604,7 +604,7 @@ impl WinSurface {
         match ev {
             shikisha_shared::Ev::VaultSearch { query, wake } => self.mail.vault_queries.push((query, wake)),
             ev @ shikisha_shared::Ev::VaultOpen { .. } => self.mail.vault_opens.push(ev),
-            shikisha_shared::Ev::PastList { tab } => self.mail.past_lists.push(tab),
+            shikisha_shared::Ev::PastList { tab, wake } => self.mail.past_lists.push((tab, wake)),
             shikisha_shared::Ev::PastResume { tab, id } => self.mail.past_resumes.push((tab, id)),
             _ => {}
         }
@@ -758,7 +758,7 @@ impl WinSurface {
                 }
                 Ev::VaultSearch { query, wake } => self.mail.vault_queries.push((query, wake)),
                 ev @ Ev::VaultOpen { .. } => self.mail.vault_opens.push(ev),
-                Ev::PastList { tab } => self.mail.past_lists.push(tab),
+                Ev::PastList { tab, wake } => self.mail.past_lists.push((tab, wake)),
                 Ev::PastResume { tab, id } => self.mail.past_resumes.push((tab, id)),
                 ev @ Ev::Branch { .. } => {
                     self.mail.branches.extend(shikisha_shared::BranchAsk::of(ev));
@@ -1615,7 +1615,16 @@ pub fn wordmark_lines(width: u16, height: u16) -> Vec<String> {
 /// Pastes clipboard contents into the child process.
 /// Wraps it in \x1b[200~ ... \x1b[201~ if the child is in bracketed paste mode
 fn paste_clipboard(t: &Tab) -> Result<Option<String>> {
-    match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
+    let got = arboard::Clipboard::new().and_then(|mut c| c.get_text());
+    // A picture, into a tab on another machine: an AI there cannot read this
+    // PC's clipboard, as one here does. Sent up to the folder there as 📎
+    // sends a file, and its path typed in its place
+    if got.is_err()
+        && let Some(said) = paste_image_far(t)
+    {
+        return said;
+    }
+    match got {
         Ok(text) => {
             let bracketed = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste();
             let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
@@ -1631,6 +1640,39 @@ fn paste_clipboard(t: &Tab) -> Result<Option<String>> {
         }
         Err(e) => Ok(Some(i18n::tp("msg.paste_failed", &[("error", &e.to_string())]))),
     }
+}
+
+/// The picture on the clipboard sent up to the folder of a tab on another
+/// machine, and its path there typed into the tab. `None` when the tab is on
+/// this PC or the clipboard holds no picture: pasted as before
+fn paste_image_far(t: &Tab) -> Option<Result<Option<String>>> {
+    let machine = match (t.remote(), t.cloud()) {
+        (Some(spec), _) => shikisha_core::elsewhere::Elsewhere::Ssh(spec.clone()),
+        (None, Some(host)) => shikisha_core::elsewhere::Elsewhere::Cloud(host.clone()),
+        (None, None) => return None,
+    };
+    let there = t.remote_cwd()?.to_string();
+    let image = arboard::Clipboard::new().and_then(|mut c| c.get_image()).ok()?;
+    let mut png = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut png, image.width as u32, image.height as u32);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let written = enc.write_header().and_then(|mut w| w.write_image_data(&image.bytes));
+        if let Err(e) = written {
+            return Some(Ok(Some(i18n::tp("msg.paste_failed", &[("error", &e.to_string())]))));
+        }
+    }
+    use base64::Engine as _;
+    let data = base64::engine::general_purpose::STANDARD.encode(&png);
+    let said = shikisha_core::remote::attach_save_at("", Some((&machine, &there)), "pasted.png", &data);
+    Some(match said.get("path").and_then(|p| p.as_str()) {
+        Some(path) => t.write_bytes(path.as_bytes()).map(|_| None),
+        None => Ok(Some(i18n::tp(
+            "msg.paste_failed",
+            &[("error", said.get("error").and_then(|e| e.as_str()).unwrap_or_default())],
+        ))),
+    })
 }
 
 /// How long a burst of output takes to reach the rows the window is handed.

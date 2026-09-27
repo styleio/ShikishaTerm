@@ -4902,6 +4902,17 @@ pub fn put_back_on_list(id: &str, fallback: &str) -> Result<()> {
     write_off_list(&all)
 }
 
+/// Forgets what was kept of every machine the service no longer has, told
+/// the ones it has: deleted outside this app, there is nothing to put back
+pub fn prune_off_list(there: &std::collections::HashSet<String>) {
+    let mut all = off_list();
+    let before = all.len();
+    all.retain(|id, _| there.contains(id));
+    if all.len() != before {
+        let _ = write_off_list(&all);
+    }
+}
+
 /// Forgets what was kept of machine `id`'s folder: the machine is gone
 pub fn forget_off_list(id: &str) {
     let mut all = off_list();

@@ -664,15 +664,30 @@ fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> boo
     let mut noted = Machines::default();
     // Several worktrees asked for at once -- one per AI -- share the one
     // checkout the first of them makes, rather than each making its own
+    //
+    // A checkout whose machine the service no longer has -- deleted outside
+    // this app -- is made again, as one that was never made is, from where
+    // the project is fetched from; the project's record of it is written
+    // over when the new one is there
     let made_here = match host.instance.clone() {
-        Some(id) => Ok(Err(id)),
+        Some(id) => match crate::e2b::connect(&key, &id, minutes) {
+            Ok(_) => Ok(Err(id)),
+            Err(e) if crate::e2b::is_gone(&e) && !plan.origin.trim().is_empty() => {
+                crate::append_hook_log(&format!("the checkout {id} of {} is gone from the service; making it again", plan.project));
+                forget_checkout(&id);
+                checkout_slot(&host.name, &plan.project)
+            }
+            Err(e) if crate::e2b::is_gone(&e) => {
+                return Err(e.context(crate::i18n::tp("err.worktree.checkout_gone", &[("project", &plan.project), ("host", &host.name)])));
+            }
+            Err(e) => return Err(e),
+        },
         None => checkout_slot(&host.name, &plan.project),
     };
     let checkout = match made_here {
         Ok(Err(id)) => {
             // Signed in as the account chosen now, which may not be the one it
             // was made with, before it is copied: the copy keeps what it had
-            crate::e2b::connect(&key, &id, minutes)?;
             crate::e2b::sign_in_as(&key, &id, sign_in.as_ref())?;
             id
         }
@@ -687,6 +702,8 @@ fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> boo
                 };
                 let box_ = crate::e2b::create(&key, &asking)?;
                 let here = Plan { host: Some(host.with_instance(Some(&box_.id))), ..plan.clone() };
+                // Kept up through the clone and the install (see e2b::busy)
+                let _busy = crate::e2b::busy(here.host.as_ref().expect("named just above"));
                 // The clone, then what the machine is prepared with: said on
                 // the row as each, since the second takes minutes
                 for (n, argv) in plan.checking_out().into_iter().enumerate() {
@@ -723,6 +740,7 @@ fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> boo
         Err(e) => crate::append_hook_log(&format!("could not clear the copy {}: {e:#}", copy.id)),
     }
     let here = Plan { host: Some(host.with_instance(Some(&copy.id))), ..plan.clone() };
+    let _busy = crate::e2b::busy(here.host.as_ref().expect("named just above"));
     let steps = here.cutting().into_iter().map(|a| (Stage::Creating, a))
         .chain(here.getting_ready().into_iter().map(|a| (Stage::SettingUp, a)));
     for (stage, argv) in steps {

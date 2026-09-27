@@ -1507,6 +1507,16 @@ pub fn take_prepare_asks() -> Vec<PrepareAsk> {
     std::mem::take(&mut *PREPARE_ASKS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
+/// Folders on another machine asked to be deleted from a settings page with
+/// no way to the board of its own -- a phone's, opened whole -- by place key.
+/// Handed to the app, which deletes them as a press on the board does: the
+/// machine is asked first, and a row says how it goes
+static FOLDER_DISCARDS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub fn take_folder_discards() -> Vec<String> {
+    std::mem::take(&mut *FOLDER_DISCARDS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// The machine a folder on the desks is on, when it is not this one
 fn far_host_of(at: &std::path::Path) -> Option<crate::config::HostSpec> {
     crate::config::load().and_then(|c| {
@@ -1971,6 +1981,14 @@ fn handle(
                             Ok(u) => (u, None),
                             Err(why) => (Default::default(), Some(why)),
                         };
+                        // A folder taken off a list whose machine the service
+                        // no longer has cannot be put back: forgotten here,
+                        // where the whole list is in hand. The service answers a
+                        // page of at most a hundred; a full page may not be all
+                        // of them, and nothing is forgotten on its word
+                        if listed.len() < 100 {
+                            crate::config::prune_off_list(&listed.iter().map(|m| m.id.clone()).collect());
+                        }
                         let off = crate::config::off_list();
                         let rows: Vec<serde_json::Value> = listed
                             .iter()
@@ -2027,6 +2045,25 @@ fn handle(
                             serde_json::json!({ "ok": false, "error": format!("{e:#}") })
                         }
                     },
+                }
+            };
+            req.respond(json_resp(resp))?;
+        }
+        // A folder on another machine deleted from a settings page that has no
+        // board of its own to tell (see FOLDER_DISCARDS)
+        ("POST", "/api/folder/discard-far") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let folder = p.get("folder").and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+            let resp = match folder.is_empty() {
+                true => serde_json::json!({ "ok": false }),
+                false => {
+                    FOLDER_DISCARDS.lock().unwrap_or_else(|e| e.into_inner()).push(folder);
+                    serde_json::json!({ "ok": true })
                 }
             };
             req.respond(json_resp(resp))?;
@@ -6127,9 +6164,19 @@ const machineStart = (desk, group) => {
       || FAR_DEFAULTS.ai_order.find(k => found.includes(k)) || found[0] || "";
   }
   const p = (desk.projects || []).find(x => x.name === g.project);
-  const ai = p && p.machine_ai;
+  const ai = p && machineHas(p, h.name);
   return ai && ai !== "none" && MACHINE_AIS.some(a => a.key === ai) ? ai : "";
 };
+// The AI a project's machines on a MicroVM have: what its checkout there was
+// last prepared with (its first line, "ai: X"), else what the project says --
+// an AI changed in the settings and never run is not on them
+// (microvm::machine_has)
+function machineHas(p, host) {
+  const home = (p.homes || []).find(x => (x.host || "").trim() === (host || "").trim());
+  const first = ((home && home.prepared) || "").split("\n")[0];
+  const said = first.startsWith("ai:") ? first.slice(3).trim() : "";
+  return said || (first.startsWith("ai:") ? "none" : p.machine_ai);
+}
 // What picking a kind puts in the command field. The AI entry is a function
 // because its answer depends on which CLI this machine has.
 // Where a new browser tab opens, until somebody writes another address
@@ -15886,7 +15933,11 @@ function farFolderDiscard(folder) {
     try { window.ipc.postMessage(JSON.stringify(ask)); closeSettings(); return; } catch (e) {}
   }
   if (EMBED) { toBoard({discard: folder}); return; }
-  toast(T["settings.group.discard.board"], true);
+  // A page opened whole (a phone's): the app is told, and the board -- where
+  // the check and the row that says how it goes are -- is where this goes
+  settingsApi("/api/folder/discard-far", {folder})
+    .then(j => { if (j && j.ok) location.href = "/"; else toast(T["settings.group.discard.board"], true); })
+    .catch(() => toast(T["settings.group.discard.board"], true));
 }
 async function closeSettings() {
   // Nothing was loaded, so there is nothing to lose — don't ask.

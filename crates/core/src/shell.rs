@@ -362,6 +362,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-radius:var(--r-ctl); }
   #login .lhelpsay { font-size:12px; color:var(--dim); line-height:1.5; }
   #login .lurlrow, #login .lcoderow { display:flex; align-items:center; gap:var(--s2); min-width:0; }
+  #login .lkeys { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); margin:var(--s2) 0; }
+  #login .lkeyssay { font-size:12px; color:var(--dim); }
+  #login .lkey { min-width:44px; font-family:var(--mono); }
   #login .lurl { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono);
     font-size:12px; color:var(--brand); }
   #login .lurlnone { flex:1; font-size:12px; color:var(--dim); }
@@ -7482,7 +7485,10 @@ function tabMenu(anchor, t, where, e) {
 }
 function folderMenu(e, g) {
   const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
-  openList(e.currentTarget, [
+  // The row pressed, kept now: by the time an entry is chosen the event is
+  // over, and its currentTarget is nothing
+  const row = e.currentTarget;
+  openList(row, [
     // What is being done in it, whole, over what can be done to it. The card
     // has room for a line of it, and a phone has no pointer to rest on it
     g.summary ? el("div", {class:"fabout"},
@@ -7500,9 +7506,9 @@ function folderMenu(e, g) {
     // all except a settings page that refused while it had tabs
     // On a MicroVM: the addresses it answers on from anywhere -- what a
     // webhook is pointed at, and a page opened on a phone
-    onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, e.currentTarget))
+    onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, row))
       // On a server: what it listens on, carried here to open in a tab
-      : g.host ? item(T["tui.menu.ports"] || "", () => openFarPorts(g, e.currentTarget)) : null,
+      : g.host ? item(T["tui.menu.ports"] || "", () => openFarPorts(g, row)) : null,
     item(T["tui.menu.forget"] || "", () => forgetHere(g)),
     // Last and in red, the one entry that cannot be taken back. Only a
     // worktree, here or on a server, where git there removes it: a project's
@@ -8918,7 +8924,8 @@ function drawLogin() {
         // the terminal below -- nothing runs from here, the person does
         ...(git ? [loginCommands(st.commands || [])] : []),
         loginTerminal(),
-        ...(git ? [] : [loginHelp(st)]),
+        loginKeys(),
+        ...(git ? [loginType()] : [loginHelp(st)]),
         el("div", {class:"lstate"})),
       el("div", {class:"sfoot"},
         el("button", {type:"button", class:"quiet", onclick:later}, T["tui.login.later"] || ""),
@@ -8962,12 +8969,44 @@ function loginCommands(commands) {
       copy.textContent = T["tui.login.copied"] || "";
       setTimeout(() => { copy.textContent = T["tui.gitsignin.copy"] || ""; }, 2000);
     }}, T["tui.gitsignin.copy"] || "");
+    // Typed into the terminal, without Enter: read there, then sent with
+    // the Enter key below. What a phone does in place of pasting, which a
+    // page served over plain http is not let do
+    const type = el("button", {type:"button", class:"quiet", onclick:() => send({kind:"key", text:c})},
+      T["tui.login.type"] || "");
     list.append(el("div", {class:"lcmd"},
       el("span", {class:"lcmdn"}, String(i + 1)),
       el("code", {class:"lcmdc mono"}, c),
-      copy));
+      copy, type));
   });
   return list;
+}
+// The keys a sign-in asks for, one press each: Enter to go on, the arrows to
+// choose, Esc to go back, Tab. On a phone the step covers the input bar, and
+// these are how a first-run question is answered without leaving the step;
+// in the window they are there all the same, for a mouse
+function loginKeys() {
+  const key = (named, label) => el("button", {type:"button", class:"quiet lkey",
+    onclick:() => send({kind:"key", named})}, label);
+  return el("div", {class:"lkeys"},
+    el("span", {class:"lkeyssay"}, T["tui.login.keys"] || ""),
+    key("enter", "Enter"), key("up", "\u2191"), key("down", "\u2193"), key("esc", "Esc"), key("tab", "Tab"));
+}
+// A line typed into the terminal from the step, then Enter: for a server's
+// git, where there is no code to paste, only what its sign-in asks
+function loginType() {
+  const line = el("input", {type:"text", class:"lcode", placeholder:T["tui.login.type.ph"] || "",
+    autocomplete:"off", spellcheck:"false"});
+  const go = () => {
+    const v = line.value;
+    if (v) send({kind:"key", text:v});
+    setTimeout(() => send({kind:"key", named:"enter"}), v ? 400 : 0);
+    line.value = "";
+  };
+  line.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } e.stopPropagation(); });
+  line.addEventListener("keyup", e => e.stopPropagation());
+  line.addEventListener("keypress", e => e.stopPropagation());
+  return el("div", {class:"lcoderow"}, line, el("button", {type:"button", class:"quiet", onclick:go}, T["tui.login.code.send"] || ""));
 }
 // The terminal in the step is a terminal: a press puts the keyboard on it
 // (the hidden field the board types through, so Ctrl+V pastes as it does
@@ -12802,11 +12841,25 @@ kbd.addEventListener("keydown", e => {
   }
   if (e.ctrlKey && e.key.length === 1) {
     e.preventDefault();
+    // Ctrl+V in the window, on a tab of another machine: an AI there cannot
+    // read this PC's clipboard as one here does, so the window pastes it --
+    // text as a paste, a picture sent up to the folder there and its path
+    // typed in (see paste_clipboard)
+    if (!REMOTE && e.key.toLowerCase() === "v" && !e.shiftKey && !e.altKey && activeTabFar()) {
+      send({kind:"paste"});
+      return;
+    }
     // Shift and Alt go along: Ctrl+Shift+M is a key a person can bind, and
     // without them it would arrive as Ctrl+M
     send({kind:"key", ctrl:e.key.toLowerCase(), shift:e.shiftKey, alt:e.altKey});
   }
 });
+// Whether the tab in front is a terminal on another machine
+function activeTabFar() {
+  const t = ((S && S.tabs) || []).find(x => x.index === (S && S.active));
+  const g = t && ((S && S.groups) || [])[t.group];
+  return !!(g && g.host);
+}
 
 // A key set to work with no prefix (Settings > Keys), pressed while the caret
 // is in one of the page's own boxes -- the input bar, the ideas, a dialog --
@@ -14589,6 +14642,14 @@ function renderPast() {
   // A folder on another machine: its records are there, and being read
   if (ps.asking) {
     hint.textContent = T["past.asking"] || "";
+    return;
+  }
+  // On a paused MicroVM: read only when asked, since reading starts it
+  if (ps.sleeping) {
+    hint.textContent = T["past.sleeping"] || "";
+    list.append(el("div", {class:"row"}, el("button", {type:"button", onclick:() => {
+      send({kind:"pastlist", tab:ps.tab, wake:true});
+    }}, T["past.wake"] || "")));
     return;
   }
   if (!hits.length) {
@@ -22033,9 +22094,13 @@ mod tests {
         assert!(PAGE.contains(r#"g.linked || onMicrovm(g)
       ? el("div", {class:"warn", onclick:() => { closeFolderMenu(); discardFolder(g); }}, T["tui.menu.discard"] || "")"#),
             "the menu has no red delete, or offers it on a project's own checkout");
-        assert!(PAGE.contains(r#"onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, e.currentTarget))"#),
+        // The row is kept when the menu opens: by the time an entry is
+        // chosen, the event's currentTarget is nothing, and the list had
+        // nowhere to stand
+        assert!(PAGE.contains("const row = e.currentTarget;") && PAGE.contains("openList(row, ["), "the pressed row is not kept");
+        assert!(PAGE.contains(r#"onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, row))"#),
             "a folder on a MicroVM does not say where it answers from");
-        assert!(PAGE.contains(r#": g.host ? item(T["tui.menu.ports"] || "", () => openFarPorts(g, e.currentTarget)) : null,"#),
+        assert!(PAGE.contains(r#": g.host ? item(T["tui.menu.ports"] || "", () => openFarPorts(g, row)) : null,"#),
             "a folder on a server does not offer its ports");
         assert!(PAGE.contains("if (S && S.discard_unasked) { go(false); return; }"), "turned off, it still asks");
         assert!(PAGE.contains(r#"never: T["tui.discard.never"] || "","#), "the question has no box to stop it asking");

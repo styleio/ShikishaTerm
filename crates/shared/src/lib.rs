@@ -388,7 +388,9 @@ pub enum Ev {
     /// What has been said in one tab's folder before. Asked when a tab came up
     /// on a conversation of nobody's although that folder has been worked in:
     /// the answer is the list the person chooses from
-    PastList { tab: u32 },
+    /// `wake`: a paused MicroVM is started to be read (asked for in so many
+    /// words: reading it is what starts it, and it is billed while running)
+    PastList { tab: u32, wake: bool },
     /// Put one tab back into a conversation from its folder's past. The tab is
     /// relaunched resuming that id -- the same resume every other road uses
     PastResume { tab: u32, id: String },
@@ -1153,6 +1155,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("pastlist") => Ev::PastList {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+            wake: v.get("wake").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         Some("pastresume") => Ev::PastResume {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as u32,

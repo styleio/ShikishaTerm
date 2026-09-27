@@ -271,6 +271,10 @@ pub struct PastState {
     /// Still being asked of the machine the folder is on
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub asking: bool,
+    /// The folder is on a MicroVM that is paused, and was not started to be
+    /// read: the list offers to start it
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sleeping: bool,
 }
 
 /// The Vault overlay's contents: what was searched and what turned up.

@@ -60,6 +60,9 @@ impl Checkout {
                     sign_in,
                 };
                 let box_ = crate::e2b::create(&key, &asking).map_err(|e| format!("{e:#}"))?;
+                // The clone and the install take longer than a small
+                // machine's minutes: kept up until they are done
+                let _busy = crate::e2b::busy(&host.with_instance(Some(&box_.id)));
                 if stop() {
                     crate::e2b::throw_away(&key, &box_.id);
                     return Err(String::new());
@@ -554,6 +557,7 @@ pub fn prepare(
     stop: &dyn Fn() -> bool,
 ) -> Result<(), String> {
     let machine = crate::e2b::machine(host).map_err(|e| format!("{e:#}"))?;
+    let _busy = crate::e2b::busy(host);
     for argv in preparing.commands(checkout)? {
         if stop() {
             return Err(String::new());

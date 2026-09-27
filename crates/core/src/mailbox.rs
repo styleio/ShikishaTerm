@@ -215,7 +215,8 @@ pub struct Mailbox {
     pub vault_opens: Vec<shikisha_shared::Ev>,
     /// Tabs asked what was said in their folder before, by the number a person
     /// presses. The loop reads the records and puts the list into state
-    pub past_lists: Vec<u32>,
+    /// (the tab, whether a paused MicroVM may be started to read it)
+    pub past_lists: Vec<(u32, bool)>,
     /// Tabs asked to be put back into one of those conversations: which tab,
     /// and which conversation
     pub past_resumes: Vec<(u32, String)>,
@@ -534,7 +535,7 @@ impl Mailbox {
     pub fn take_vault_opens(&mut self) -> Vec<shikisha_shared::Ev> {
         std::mem::take(&mut self.vault_opens)
     }
-    pub fn take_past_lists(&mut self) -> Vec<u32> {
+    pub fn take_past_lists(&mut self) -> Vec<(u32, bool)> {
         std::mem::take(&mut self.past_lists)
     }
     pub fn take_past_resumes(&mut self) -> Vec<(u32, String)> {

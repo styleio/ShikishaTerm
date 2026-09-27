@@ -2868,9 +2868,13 @@ fn proxy_settings(
 
     // Loopback only. Treat any HTTP status as a normal response so an upstream 4xx
     // body (e.g. a validation error) reaches the phone rather than being swallowed.
+    // An assistant AI asked to propose something may take up to four minutes,
+    // after the files it reads are fetched from a machine that may have to be
+    // started first: those are waited for as long as the page itself waits
+    let slow = matches!(sub, "/api/project/machine-setup-ai" | "/api/project/inherit-ai");
     let agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
-        .timeout_global(Some(std::time::Duration::from_secs(120)))
+        .timeout_global(Some(std::time::Duration::from_secs(if slow { 330 } else { 120 })))
         .build()
         .new_agent();
     // Tell the settings server the operator is on a phone, not at this PC's screen.

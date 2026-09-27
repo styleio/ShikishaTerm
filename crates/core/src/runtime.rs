@@ -277,14 +277,23 @@ impl Pending {
         if !plan.origin.trim().is_empty() {
             config::set_project_value(&self.desk_id, &plan.project, "origin", Some(plan.origin.trim()))?;
         }
-        config::append_folder_starting(
-            &self.desk,
-            None,
-            &plan.main,
-            None,
-            &crate::microvm::start_with(plan.preparing.ai.as_deref()),
-            Some(&host.name),
-        )?;
+        // A checkout made again in place of one gone from the service stands
+        // in the folder the old one had, tabs and all: only its machine changes
+        let key = crate::uistate::place_key(Some(&host.name), &plan.main);
+        let listed = config::load()
+            .map(|c| c.resolve_desks().0)
+            .and_then(|ds| ds.into_iter().find(|d| d.name == self.desk))
+            .is_some_and(|d| d.folder_at(std::path::Path::new(&key)).is_some());
+        if !listed {
+            config::append_folder_starting(
+                &self.desk,
+                None,
+                &plan.main,
+                None,
+                &crate::microvm::start_with(plan.preparing.ai.as_deref()),
+                Some(&host.name),
+            )?;
+        }
         config::set_folder_far(&self.desk, &plan.main, &host.name, Some(&plan.project), Some(&id))?;
         Ok(())
     }
@@ -401,6 +410,36 @@ struct LoginPending {
     ai: String,
     name: String,
     shown: bool,
+    /// Where the step goes on to: a project just cloned goes through its
+    /// rules; an AI given to a checkout already in use goes back to the
+    /// worktree dialog the page was on its way to, or nowhere
+    after: LoginAfter,
+}
+
+/// What comes after a sign-in step
+#[derive(Clone)]
+enum LoginAfter {
+    /// A project just cloned: through its rules, onto its first worktree
+    Rules,
+    /// The worktree dialog on this checkout
+    Dialog(String),
+    Nothing,
+}
+
+impl LoginPending {
+    /// On to what comes after it, once it is done with ("next", or signed
+    /// in before it was ever shown)
+    fn go_on(&self) {
+        match &self.after {
+            LoginAfter::Rules => {
+                crate::webui::ask_branch_next(&self.folder, true);
+            }
+            LoginAfter::Dialog(f) => {
+                crate::webui::ask_branch_next(f, false);
+            }
+            LoginAfter::Nothing => {}
+        }
+    }
 }
 
 /// How often the machine is asked again while the sign-in step is open
@@ -1247,14 +1286,21 @@ fn past_of(
     tabs: &[Tab],
     which: usize,
     tx: &std::sync::mpsc::Sender<(usize, Vec<crate::vault::Hit>)>,
+    wake: bool,
 ) -> Option<crate::uistate::PastState> {
     let t = tabs.get(session_at(surfaces, which)?)?;
+    // A paused MicroVM is not started to be read unless that was asked for:
+    // reading it starts it, and it is billed from then on
+    let paused = t.cloud().and_then(|h| h.instance.as_deref()).is_some_and(crate::e2b::asleep);
+    if paused && !wake {
+        return Some(crate::uistate::PastState { tab: which, name: t.title.clone(), sleeping: true, ..Default::default() });
+    }
     if let (Some(at), Some(cwd)) = (tab_machine(t), t.cwd()) {
         let (program, cwd, tx) = (t.program().to_string(), cwd.to_path_buf(), tx.clone());
         std::thread::spawn(move || {
             let _ = tx.send((which, crate::vault::here_far(&program, &at, &cwd, 12)));
         });
-        return Some(crate::uistate::PastState { tab: which, name: t.title.clone(), hits: Vec::new(), asking: true });
+        return Some(crate::uistate::PastState { tab: which, name: t.title.clone(), hits: Vec::new(), asking: true, sleeping: false });
     }
     Some(crate::uistate::PastState {
         tab: which,
@@ -1264,6 +1310,7 @@ fn past_of(
             .map(|c| crate::vault::here(t.program(), c, 12))
             .unwrap_or_default(),
         asking: false,
+        sleeping: false,
     })
 }
 
@@ -7201,8 +7248,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // What was said in one tab's folder before. Asked by a tab that came
         // up on a conversation of nobody's, and answered from the CLI's own
         // records -- the app's memory of that tab is exactly what is missing
-        for which in shell.mail().take_past_lists() {
-            past_view = past_of(&surfaces, &tabs, which as usize, &past_tx);
+        for (which, wake) in shell.mail().take_past_lists() {
+            past_view = past_of(&surfaces, &tabs, which as usize, &past_tx, wake);
             // Asking is the moment the loss has been seen, so the caption goes
             // back to its ordinary manners: the offer stands while nobody has
             // spoken here, and no longer holds itself open past that
@@ -7450,8 +7497,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let (tx, folder, host, path) = (far_discard_tx.clone(), folder.clone(), h.clone(), at.to_string_lossy().to_string());
                     flash = Some(i18n::tp("msg.folder.checking", &[("path", &path)]));
                     std::thread::spawn(move || {
-                        let said = crate::worktree::far_ready_to_discard(&host, &path).map_err(|e| format!("{e:#}"));
-                        let _ = tx.send((folder, said));
+                        // A machine the service no longer has cannot be asked,
+                        // and has nothing left on it to lose: the folder goes
+                        let said = crate::worktree::far_ready_to_discard(&host, &path).or_else(|e| {
+                            match host.instance.as_deref().is_some_and(crate::e2b::check_gone) {
+                                true => Ok(()),
+                                false => Err(e),
+                            }
+                        });
+                        let _ = tx.send((folder, said.map_err(|e| format!("{e:#}"))));
                     });
                     continue;
                 }
@@ -8192,7 +8246,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // The same address already on its way onto a machine: a
                     // second press is the first one, not a second machine
                     let fetched = crate::worktree::fetchable(&text);
-                    let going = |j: &VmJob| !j.gone && j.error.is_none() && j.desk_id == desk.map(|d| d.id.clone()).unwrap_or_default();
+                    // A row that made its machine and only failed to write it
+                    // down still owns it: "try again" writes that one
+                    let going = |j: &VmJob| {
+                        !j.gone
+                            && (j.error.is_none() || j.finished().is_some())
+                            && j.desk_id == desk.map(|d| d.id.clone()).unwrap_or_default()
+                    };
                     if vm_jobs.iter().any(|j| going(j) && matches!(&j.work, VmWork::Clone { url, .. } if crate::worktree::fetchable(url) == fetched)) {
                         add_view = failed(i18n::t("err.microvm.cloning_already"));
                         continue;
@@ -8420,6 +8480,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         // A project's checkouts on MicroVMs, asked by the settings page to be
         // prepared as its saved settings say: one row per machine
+        // A far folder's deleting asked from a settings page with no board of
+        // its own: the same as a press on the board, asked first
+        for folder in crate::webui::take_folder_discards() {
+            shell.mail().folder_discards.push((folder, false));
+        }
         for ask in crate::webui::take_prepare_asks() {
             let targets = match crate::microvm::prepare_targets(&ask.desk_id, &ask.project) {
                 Ok(t) => t,
@@ -8484,6 +8549,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             && crate::addproject::is_github(url)
                             && git_signin.is_none()
                             && login_pending.is_none()
+                            && login_queue.is_empty()
                         {
                             let probe = std::sync::Arc::new(std::sync::Mutex::new(None));
                             let (slot, spec2, parent2) = (probe.clone(), spec.clone(), parent.clone());
@@ -8585,6 +8651,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                                 ai: known.key,
                                                 name: known.name,
                                                 shown: false,
+                                                after: LoginAfter::Rules,
                                             });
                                         }
                                         None => {
@@ -8634,6 +8701,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                             ai: known.key,
                                             name: known.name,
                                             shown: false,
+                                            // A project already in use: back
+                                            // where the page was going, never
+                                            // through the rules a new one has
+                                            after: follow.clone().map(LoginAfter::Dialog).unwrap_or(LoginAfter::Nothing),
                                         });
                                     }
                                     None => {
@@ -9218,6 +9289,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         env,
                     ),
                 };
+                // A checkout's machine being prepared is copied half-installed:
+                // the worktree would miss what the project is being given
+                // while being counted as having it. Made once it is done
+                let preparing_now = on.filter(|h| h.is_made()).is_some_and(|h| {
+                    vm_jobs.iter().any(|j| {
+                        !j.gone
+                            && j.error.is_none()
+                            && j.host.name == h.name
+                            && project.is_some_and(|p| p.name == j.project)
+                            && matches!(j.work, VmWork::Prepare { worktree: false, .. })
+                    })
+                });
+                let planned = match preparing_now {
+                    true => Err(anyhow::anyhow!(i18n::tp(
+                        "err.microvm.preparing_now",
+                        &[("project", &project.map(|p| p.name.clone()).unwrap_or_default())]
+                    ))),
+                    false => planned,
+                };
                 let planned = planned.and_then(|plan| far_in_use(desks.get(desk_index), plan));
                 match planned {
                     // Open in another folder already: not a dead end but a
@@ -9475,7 +9565,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // given by the machine setup) goes straight on to the rules, and one
         // that is not is shown the step, looked at again every few seconds
         // while it is open so a sign-in done in it is seen
-        if login_pending.is_none() && branch_view.is_none() {
+        // One step at a time: a server's git sign-in up is let finish first
+        if login_pending.is_none() && branch_view.is_none() && git_signin.is_none() {
             login_pending = login_queue.pop_front();
         }
         if let Some(p) = login_pending.as_mut() {
@@ -9525,10 +9616,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             };
             if go_on {
-                let folder = p.folder.clone();
+                p.go_on();
                 login_pending = None;
                 login_view = None;
-                crate::webui::ask_branch_next(&folder, true);
             }
         }
         // The sign-in step for a server's git. Drawn once the server has been
@@ -9635,11 +9725,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             }
             if login_pending.as_ref().is_some_and(|p| p.folder == folder) {
+                if act == "next"
+                    && let Some(p) = login_pending.as_ref()
+                {
+                    p.go_on();
+                }
                 login_pending = None;
                 login_view = None;
-                if act == "next" {
-                    crate::webui::ask_branch_next(&folder, true);
-                }
             }
         }
         for ev in shell.mail().take_vault_opens() {
@@ -10927,6 +11019,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // A shell on a MicroVM outlives this program unless it is told to end, and
     // the telling is on its way (see `e2b::settle`)
     crate::e2b::settle(Duration::from_secs(5));
+    // Then every machine this run spoke to is paused rather than left to run
+    // out its minutes, billed, with nothing of this program on it
+    crate::e2b::pause_all(Duration::from_secs(5));
     Ok(())
 }
 /// A value made safe to put in a URL's query.
@@ -15835,7 +15930,7 @@ mod tests {
             Surface::Session(1),
         ];
         let (tx, _rx) = std::sync::mpsc::channel();
-        let asked = |n| past_of(&surfaces, &tabs, n, &tx).map(|p| (p.tab, p.name));
+        let asked = |n| past_of(&surfaces, &tabs, n, &tx, false).map(|p| (p.tab, p.name));
         assert_eq!(asked(3), Some((3, "hippo".into())), "screen 3 is hippo");
         assert_eq!(asked(4), Some((4, "raven".into())), "raven's list never came back");
         // A page has no conversation to go back to

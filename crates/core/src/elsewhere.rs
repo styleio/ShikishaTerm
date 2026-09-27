@@ -101,10 +101,12 @@ pub fn files(
 pub fn exec(at: &Elsewhere, command: &str, wait_ms: u64) -> Result<crate::ssh::Ran> {
     match at {
         Elsewhere::Ssh(spec) => crate::ssh::exec(spec, command, wait_ms),
-        // The far end keeps its own deadline on this call, so the number is
-        // not passed on -- it would be a second one meaning something else
+        // Waited for as long as the caller says, as over SSH: a panel that
+        // gives up after half a minute there must not hang for twenty here
+        // when the network goes. A paused machine is woken first, which is
+        // not counted against it
         Elsewhere::Cloud(host) => {
-            crate::e2b::exec(&crate::e2b::machine(host)?, command, None)
+            crate::e2b::exec_within(&crate::e2b::machine(host)?, command, None, std::time::Duration::from_millis(wait_ms.max(1)))
         }
     }
 }

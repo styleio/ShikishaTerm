@@ -65,6 +65,9 @@ fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         // Making one takes a few seconds; the sandbox is being built
         .timeout_global(Some(Duration::from_secs(60)))
+        // A refusal is read, not turned into a bare number: the service says
+        // why in the body, and that is what the person is shown
+        .http_status_as_error(false)
         .build()
         .new_agent()
 }
@@ -179,20 +182,77 @@ pub fn public_url(id: &str, port: u16) -> String {
 /// One call to the service, and what it answered
 fn answered(resp: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<serde_json::Value> {
     let mut resp = resp.map_err(|e| anyhow!(call_failed(&e)))?;
-    let said = resp.body_mut().read_to_string()?;
+    let status = resp.status().as_u16();
+    let said = resp.body_mut().read_to_string().unwrap_or_default();
+    if !(200..300).contains(&status) {
+        return Err(refused(status, &said));
+    }
     if said.trim().is_empty() {
         return Ok(serde_json::Value::Null);
     }
     serde_json::from_str(&said).map_err(|_| anyhow!(crate::i18n::tp("err.e2b.said", &[("said", &said)])))
 }
 
-/// What a call the service refused says, in words a person can act on. A key
-/// that is wrong or no longer valid is said as that -- "could not be reached"
-/// sent people looking at their network for a problem in the settings
+/// What a call that never got an answer says: the network, or the service
+/// not there
 fn call_failed(e: &ureq::Error) -> String {
     match e {
         ureq::Error::StatusCode(401 | 403) => crate::i18n::t("err.e2b.bad_key"),
         other => crate::i18n::tp("err.e2b.call", &[("e", &format!("{other}"))]),
+    }
+}
+
+/// A machine the service says it does not have: deleted outside this app,
+/// or ended by the service. Carried as its own kind of error so the callers
+/// that can do something about it -- make the checkout again, let a folder
+/// go without asking the machine -- can tell it from a network that is down
+#[derive(Debug)]
+pub struct NotThere;
+
+impl std::fmt::Display for NotThere {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::i18n::t("err.e2b.not_there"))
+    }
+}
+
+impl std::error::Error for NotThere {}
+
+/// Whether an error is the service saying the machine is not there
+pub fn is_gone(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<NotThere>())
+}
+
+/// What a call the service answered and refused says, in words a person can
+/// act on, with the service's own reason where it gave one. A key that is
+/// wrong is said as that -- "could not be reached" sent people looking at
+/// their network for a problem in the settings -- and so is a limit on how
+/// many machines may run at once
+fn refused(status: u16, said: &str) -> anyhow::Error {
+    // The reason, from the JSON the service answers with, else the body
+    let reason = serde_json::from_str::<serde_json::Value>(said)
+        .ok()
+        .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(str::to_string))
+        .unwrap_or_else(|| said.trim().chars().take(300).collect());
+    match status {
+        401 | 403 => anyhow!(crate::i18n::t("err.e2b.bad_key")),
+        404 => anyhow::Error::new(NotThere),
+        429 => anyhow!(crate::i18n::tp("err.e2b.too_many", &[("said", &reason)])),
+        _ => anyhow!(crate::i18n::tp("err.e2b.refused", &[("status", &status.to_string()), ("said", &reason)])),
+    }
+}
+
+/// Whether the machine is gone from the service, asked of the service's own
+/// records (which does not wake a paused one). One that is gone is forgotten
+/// here, so nothing more is sent to it on this run. A service that cannot be
+/// asked is not taken to have said "gone"
+pub fn check_gone(id: &str) -> bool {
+    let Some(key) = key() else { return false };
+    match state_of(&key, id) {
+        Err(e) if is_gone(&e) => {
+            forget(id);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -318,6 +378,133 @@ pub fn keep_up(host: &crate::config::HostSpec) -> Result<()> {
     .map(|_| ())
 }
 
+/// A machine given its full minutes again and again while a long piece of
+/// this app's own work runs on it -- a clone, an install, a worktree being
+/// cut -- and let go of when that is done ([`Busy`] dropped). Nothing on the
+/// board moves meanwhile, so `runtime::keep_machines_up` never sees it at
+/// work, and a machine with a few minutes paused in the middle of an install
+pub fn busy(host: &crate::config::HostSpec) -> Busy {
+    let id = host.instance.clone().unwrap_or_default();
+    working(&id, true);
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (flag, host) = (done.clone(), host.clone());
+    // Half its minutes, and never less often than every five: a machine
+    // given ten is still asked well before they run out
+    let every = Duration::from_secs((u64::from(host.minutes_or_default()) * 30).clamp(60, 300));
+    std::thread::spawn(move || {
+        let mut since = std::time::Instant::now();
+        while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_secs(2));
+            if since.elapsed() >= every && !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                since = std::time::Instant::now();
+                if let Err(e) = keep_up(&host) {
+                    crate::append_hook_log(&format!("e2b: keeping {} up during work failed: {e:#}", host.name));
+                }
+            }
+        }
+    });
+    Busy(done, id)
+}
+
+/// Work on a machine going on: dropped, the machine is let pause again as
+/// its minutes say
+pub struct Busy(std::sync::Arc<std::sync::atomic::AtomicBool>, String);
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        working(&self.1, false);
+    }
+}
+
+/// The machines this app's own work is running on now (see [`busy`]), by
+/// how many pieces of it
+static WORKING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u32>>> = std::sync::OnceLock::new();
+
+fn working(id: &str, one_more: bool) {
+    if id.is_empty() {
+        return;
+    }
+    if let Ok(mut w) = WORKING.get_or_init(Default::default).lock() {
+        let n = w.entry(id.to_string()).or_insert(0);
+        *n = if one_more { *n + 1 } else { n.saturating_sub(1) };
+        if *n == 0 {
+            w.remove(id);
+        }
+    }
+}
+
+fn is_working(id: &str) -> bool {
+    WORKING.get_or_init(Default::default).lock().is_ok_and(|w| w.contains_key(id))
+}
+
+/// Pause a machine now, rather than when its minutes run out: what is on it
+/// stays, and the next thing asked of it starts it again. One already paused
+/// is what was asked for
+pub fn pause(key: &str, id: &str) -> Result<()> {
+    let resp = agent().post(&format!("{API}/sandboxes/{id}/pause")).header("X-API-Key", key).send_empty();
+    match resp {
+        Ok(r) if r.status().as_u16() == 409 => Ok(()),
+        other => answered(other).map(|_| ()),
+    }
+}
+
+/// How long a machine with nothing of this program open on it is left
+/// running before it is paused: long enough for a tab closed and opened
+/// again, or a desk switched away and back, not to pay for a pause and a start
+const PAUSE_AFTER: Duration = Duration::from_secs(90);
+
+/// A machine whose last terminal here was just closed, paused once nothing
+/// has opened one again for [`PAUSE_AFTER`] and no work of this app's is
+/// running on it. Its minutes would otherwise run on, billed, with nobody
+/// using it -- thirty of them, as the settings are given
+fn pause_when_left(id: &str) {
+    let id = id.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(PAUSE_AFTER);
+        if awake(&id) || is_working(&id) || being_made(&id) || let_go_of(&id) {
+            return;
+        }
+        let Some(key) = key() else { return };
+        match pause(&key, &id) {
+            Ok(()) => crate::append_hook_log(&format!("e2b: paused {id}, left with nothing open on it")),
+            Err(e) => crate::append_hook_log(&format!("e2b: could not pause {id}: {e:#}")),
+        }
+    });
+}
+
+/// Every machine this run spoke to, paused as the app quits -- each on a
+/// thread of its own, waited for at most `most`. A machine being made or
+/// worked on by this app is left to finish; one that could not be paused
+/// pauses when its minutes run out, as before
+pub fn pause_all(most: Duration) {
+    let Some(key) = key() else { return };
+    let ids: Vec<String> = KNOWN
+        .get_or_init(Default::default)
+        .lock()
+        .map(|k| k.keys().cloned().collect())
+        .unwrap_or_default();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let mut asked = 0;
+    for id in ids.into_iter().filter(|id| !is_working(id) && !being_made(id) && !let_go_of(id)) {
+        let (key, tx) = (key.clone(), tx.clone());
+        asked += 1;
+        std::thread::spawn(move || {
+            if let Err(e) = pause(&key, &id) {
+                crate::append_hook_log(&format!("e2b: could not pause {id} on the way out: {e:#}"));
+            }
+            let _ = tx.send(());
+        });
+    }
+    let until = std::time::Instant::now() + most;
+    for _ in 0..asked {
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if rx.recv_timeout(left).is_err() {
+            break;
+        }
+    }
+}
+
 /// What state a machine is in -- `running` or `paused` -- asked of the
 /// service's own records and not of the machine, so that asking does not
 /// wake one that is paused (every request to a paused machine does)
@@ -342,12 +529,12 @@ pub fn kill(key: &str, id: &str) -> Result<()> {
         .delete(&format!("{API}/sandboxes/{id}"))
         .header("X-API-Key", key)
         .call();
-    match resp {
+    match answered(resp) {
         Ok(_) => Ok(()),
         // Gone already is what was asked for: a second try after an answer
         // that was lost on the way back finds nothing to kill
-        Err(ureq::Error::StatusCode(404)) => Ok(()),
-        Err(e) => bail!(call_failed(&e)),
+        Err(e) if is_gone(&e) => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -516,8 +703,11 @@ pub fn machine(host: &crate::config::HostSpec) -> Result<Sandbox> {
         return Ok(s);
     }
     let key = key().ok_or_else(|| anyhow!(crate::i18n::t("err.e2b.no_key")))?;
-    connect(&key, id, host.minutes_or_default())
-        .map_err(|e| anyhow!(crate::i18n::tp("err.e2b.gone", &[("host", &host.name), ("id", id), ("e", &format!("{e:#}"))])))
+    connect(&key, id, host.minutes_or_default()).map_err(|e| match is_gone(&e) {
+        // Kept as "not there", for whoever can do something about it
+        true => e.context(crate::i18n::tp("err.e2b.deleted", &[("host", &host.name), ("id", id)])),
+        false => anyhow!(crate::i18n::tp("err.e2b.gone", &[("host", &host.name), ("id", id), ("e", &format!("{e:#}"))])),
+    })
 }
 
 /// Run one command inside a sandbox, and wait for it to finish.
@@ -528,6 +718,14 @@ pub fn machine(host: &crate::config::HostSpec) -> Result<Sandbox> {
 /// turned into the one shape the rest of the app knows, so nothing above here
 /// has to care which kind of machine ran it.
 pub fn exec(sandbox: &Sandbox, command: &str, cwd: Option<&str>) -> Result<crate::ssh::Ran> {
+    exec_within(sandbox, command, cwd, COMMAND_WAIT)
+}
+
+/// The same, given up on after `wait`: what a caller that asks something
+/// quick -- the git panel, a check before a delete -- waits, as it would for
+/// a server over SSH, rather than the minutes an install is given. What was
+/// started goes on over there; only the waiting for it ends
+pub fn exec_within(sandbox: &Sandbox, command: &str, cwd: Option<&str>, wait: Duration) -> Result<crate::ssh::Ran> {
     let body = serde_json::json!({
         "process": {
             "cmd": "/bin/sh",
@@ -538,7 +736,7 @@ pub fn exec(sandbox: &Sandbox, command: &str, cwd: Option<&str>) -> Result<crate
         "pty": serde_json::Value::Null,
         "stdin": false,
     });
-    let mut req = waiting(COMMAND_WAIT.as_millis() as u64)
+    let mut req = waiting(wait.as_millis() as u64)
         .post(&format!("{SANDBOX}/process.Process/Start"))
         .header("Keepalive-Ping-Interval", KEEPALIVE)
         .header("Connect-Protocol-Version", "1")
@@ -937,6 +1135,10 @@ fn count_open(id: &str, one_more: bool) {
         *n = if one_more { *n + 1 } else { n.saturating_sub(1) };
         if *n == 0 {
             o.remove(id);
+            // The last one here closed: paused a while later, unless one opens
+            if !one_more && !cfg!(test) {
+                pause_when_left(id);
+            }
         }
     }
 }
@@ -1113,6 +1315,8 @@ pub fn shell(
     // marked closed for the next thing typed to wake it
     let l = std::sync::Arc::clone(&link);
     std::thread::Builder::new().name("e2b-pty-watch".into()).spawn(move || {
+        // Whether the service not answering has been said, since it last did
+        let mut unreachable_said = false;
         loop {
             std::thread::sleep(WATCH_EVERY);
             if l.is_ended() || std::sync::Arc::strong_count(&l) <= 1 {
@@ -1153,8 +1357,19 @@ pub fn shell(
                     l.set_open(false);
                     l.slept();
                 }
-                Err(e) => crate::append_hook_log(&format!("e2b: could not ask after {id}: {e:#}")),
+                // The service cannot be asked: the network is likely down.
+                // Said once, so a terminal that looks alive is not trusted
+                // with work that never arrives
+                Err(e) => {
+                    crate::append_hook_log(&format!("e2b: could not ask after {id}: {e:#}"));
+                    if !unreachable_said {
+                        unreachable_said = true;
+                        l.say(&crate::i18n::tp("msg.microvm.unreachable", &[("e", &format!("{e:#}"))]));
+                    }
+                    continue;
+                }
             }
+            unreachable_said = false;
         }
     })?;
 
@@ -1163,6 +1378,9 @@ pub fn shell(
     let l = std::sync::Arc::clone(&link);
     std::thread::Builder::new().name("e2b-pty-in".into()).spawn(move || {
         let mut size = (rows, cols);
+        // When typing that did not arrive was last said: once while it goes
+        // on failing, not once a key
+        let mut said_lost: Option<std::time::Instant> = None;
         while let Ok(note) = note_rx.recv() {
             match note {
                 Note::Typed(bytes) => {
@@ -1178,8 +1396,15 @@ pub fn shell(
                     // a terminal that silently ate its first line looks like
                     // one that was never asked for anything
                     let Some(at) = l.at() else { continue };
-                    if let Err(e) = send_input(&l.sandbox(), &at, &bytes) {
-                        crate::append_hook_log(&format!("e2b: typing into shell {at} failed: {e:#}"));
+                    match send_input(&l.sandbox(), &at, &bytes) {
+                        Ok(()) => said_lost = None,
+                        Err(e) => {
+                            crate::append_hook_log(&format!("e2b: typing into shell {at} failed: {e:#}"));
+                            if said_lost.is_none_or(|t| t.elapsed() >= Duration::from_secs(10)) {
+                                said_lost = Some(std::time::Instant::now());
+                                l.say(&crate::i18n::tp("msg.microvm.typing_lost", &[("e", &format!("{e:#}"))]));
+                            }
+                        }
                     }
                 }
                 // Looked at for the first time: opened, as typing would
@@ -1739,7 +1964,11 @@ fn download(sandbox: &Sandbox, from: &str, wait_ms: u64) -> Result<Vec<u8>> {
         sandbox,
     )
     .call()
-    .map_err(|e| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])))?;
+    .map_err(|e| match e {
+        // Said as the file not being there, not as a network that is down
+        ureq::Error::StatusCode(404) => anyhow!(crate::i18n::tp("err.e2b.no_file", &[("path", from)])),
+        e => anyhow!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])),
+    })?;
     let mut out = Vec::new();
     std::io::Read::read_to_end(&mut resp.body_mut().as_reader(), &mut out)?;
     Ok(out)
@@ -1875,6 +2104,34 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// What the service refuses is said with its own reason, and a machine it
+    /// does not have is told apart from a network that is down
+    #[test]
+    fn a_refusal_keeps_the_services_reason() {
+        let gone = super::refused(404, r#"{"code":404,"message":"sandbox not found"}"#);
+        assert!(super::is_gone(&gone), "{gone:#}");
+        let too_many = format!("{:#}", super::refused(429, r#"{"message":"concurrent sandbox limit reached"}"#));
+        assert!(too_many.contains("concurrent sandbox limit reached"), "{too_many}");
+        let other = super::refused(400, "timeout too long");
+        assert!(!super::is_gone(&other));
+        let said = format!("{other:#}");
+        assert!(said.contains("400") && said.contains("timeout too long"), "{said}");
+        // Kept as "not there" under the words a caller puts on it
+        assert!(super::is_gone(&gone.context("the machine of vm is not there")));
+    }
+
+    /// Work of this app's own on a machine is counted while it runs, so the
+    /// machine is not paused under it
+    #[test]
+    fn a_machine_worked_on_is_not_paused() {
+        let host = crate::config::HostSpec { name: "vm".into(), instance: Some("busy-test".into()), ..Default::default() };
+        {
+            let _one = super::busy(&host);
+            let _two = super::busy(&host);
+            assert!(super::is_working("busy-test"));
+        }
+        assert!(!super::is_working("busy-test"), "still counted once done");
+    }
     /// The shell there ending reaches the tab as the end of what it reads, the
     /// way a program here ending does: an empty piece is that end, and what
     /// came before it is read first
