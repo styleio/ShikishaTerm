@@ -326,6 +326,11 @@ once it reaches its first tagged release.
   deletes the original", which never happens: the links are taken out first.
 
 ### Fixed
+- **"Public URL" on a MicroVM folder's menu shows its addresses.** Pressed
+  while a terminal in the folder was at work, it did nothing: the list was
+  hung on the folder's card, which is built again every time a tab in it
+  changes. It is drawn where the menu was opened. The same held for a
+  server folder's "Open the server's ports".
 - **A MicroVM taken off the list can be put back or deleted at once.** The
   settings' list of machines called a machine made in this run "being made"
   until the app was restarted, even after its folder was taken off a list,

@@ -148,7 +148,12 @@ async function connect(target, name) {
     const r = await send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(SHOTS, `microvm-${label}.png`), Buffer.from(r.data, 'base64'));
   };
-  return { ws, run, shot };
+  // A press the way a hand makes one: the page's own handlers, and the
+  // rows it builds again under the pointer, see it the way they see a person
+  const press = async (x, y, button = 'left') => {
+    for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x, y, button, clickCount: 1 });
+  };
+  return { ws, run, shot, press };
 }
 const settingsOn = async (pattern) => {
   let t;
@@ -582,8 +587,19 @@ try {
   const g = `(S.groups || []).find(x => x.folder === ${JSON.stringify(wt.cwd)})`;
   await until(() => board.run(`!!${g}`), 'the worktree\'s card', 30000);
   check(await board.run(`onMicrovm(${g})`), 'the card knows it is on a MicroVM');
-  await board.run(`openFarPorts(${g}, document.querySelector("#tabs") || document.body); true`);
+  // Opened as a person opens it: a right-click on the card, then the entry.
+  // The card is built again while its terminal is at work, and the list is
+  // drawn all the same
+  const card = await board.run(`(() => { const r = [...document.querySelectorAll("#tabs .tab.folder")].find(x => (x.querySelector(".nm") || {}).textContent === ${g}.name); if (!r) return null; const b = r.getBoundingClientRect(); return {x: b.left + 30, y: b.top + b.height / 2}; })()`);
+  check(!!card, 'the worktree\'s card is on the board');
+  await board.press(card.x, card.y, 'right');
+  await until(() => board.run('[...document.querySelectorAll(".fmenu div")].some(d => d.textContent === "公開 URL")'), 'the card\'s menu', 10000);
+  await sleep(2000);
+  const entry = await board.run('(() => { const d = [...document.querySelectorAll(".fmenu div")].find(d => d.textContent === "公開 URL"); const b = d.getBoundingClientRect(); return {x: b.left + b.width / 2, y: b.top + b.height / 2}; })()');
+  await board.press(entry.x, entry.y);
   await until(() => board.run(`!!(S.far_ports && !S.far_ports.busy && S.far_ports.folder === gkey(${g}))`), 'the addresses', 60000);
+  await until(() => board.run('/8000/.test((document.querySelector(".fmenu.farports") || {textContent: ""}).textContent)'), 'the addresses drawn under the pointer', 10000)
+    .catch(async (e) => { console.log('    (the page has: ' + await board.run('JSON.stringify({open: !!farPortsOpen, menus: [...document.querySelectorAll(".fmenu")].map(m => m.textContent)})') + ')'); throw e; });
   const ports = await board.run('S.far_ports.ports');
   const p8000 = ports.find((p) => p.port === 8000);
   check(!!p8000 && p8000.url === `https://8000-${wt.sandbox}.e2b.app`, 'the port and its public URL are listed: ' + JSON.stringify(ports));

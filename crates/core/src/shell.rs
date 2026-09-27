@@ -7546,6 +7546,13 @@ function folderMenu(e, g) {
   // The row pressed, kept now: by the time an entry is chosen the event is
   // over, and its currentTarget is nothing
   const row = e.currentTarget;
+  // And where it was pressed, as a place on the window: what an entry opens
+  // after this -- an answer the machine is asked for -- is drawn there. Not
+  // on the row: the row is built again whenever a tab in the folder changes
+  // (a terminal at work, many times a second), and a list hung on the one
+  // pressed was never drawn at all
+  const r = row.getBoundingClientRect();
+  const at = e.clientX || e.clientY ? {clientX: e.clientX, clientY: e.clientY} : {clientX: r.left, clientY: r.bottom};
   openList(row, [
     // What is being done in it, whole, over what can be done to it. The card
     // has room for a line of it, and a phone has no pointer to rest on it
@@ -7564,9 +7571,9 @@ function folderMenu(e, g) {
     // all except a settings page that refused while it had tabs
     // On a MicroVM: the addresses it answers on from anywhere -- what a
     // webhook is pointed at, and a page opened on a phone
-    onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, row))
+    onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, at))
       // On a server: what it listens on, carried here to open in a tab
-      : g.host ? item(T["tui.menu.ports"] || "", () => openFarPorts(g, row)) : null,
+      : g.host ? item(T["tui.menu.ports"] || "", () => openFarPorts(g, at)) : null,
     item(T["tui.menu.forget"] || "", () => forgetHere(g)),
     // Last and in red, the one entry that cannot be taken back. Only a
     // worktree, here or on a server, where git there removes it: a project's
@@ -7585,8 +7592,9 @@ const onMicrovm = g => !!(g && g.host && ((S && S.hosts) || []).some(h => h.name
 // machine when somebody asks -- asking starts a paused one, so never on a
 // timer -- and listed where its menu was, each a press to copy
 let farPortsOpen = null;
-function openFarPorts(g, anchor) {
-  farPortsOpen = {folder: gkey(g), anchor, drawn: ""};
+// `at` is the place on the window it is drawn at ({clientX, clientY})
+function openFarPorts(g, at) {
+  farPortsOpen = {folder: gkey(g), at, drawn: ""};
   send({kind:"farports", folder: gkey(g)});
   drawFarPorts();
 }
@@ -7618,8 +7626,7 @@ function drawFarPorts() {
   }
   if (!st.busy) rows.push(el("div", {class:"aphostadd", onclick:() => { o.drawn = ""; send({kind:"farports", folder:o.folder}); }},
     T["tui.urls.again"] || ""));
-  if (!document.body.contains(o.anchor)) { farPortsOpen = null; return; }
-  openList(o.anchor, rows);
+  openList(document.body, rows, false, o.at);
   const m = [...document.querySelectorAll(".fmenu")].pop();
   if (m) m.classList.add("farports");
 }
@@ -22262,9 +22269,9 @@ mod tests {
         // chosen, the event's currentTarget is nothing, and the list had
         // nowhere to stand
         assert!(PAGE.contains("const row = e.currentTarget;") && PAGE.contains("openList(row, ["), "the pressed row is not kept");
-        assert!(PAGE.contains(r#"onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, row))"#),
+        assert!(PAGE.contains(r#"onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, at))"#),
             "a folder on a MicroVM does not say where it answers from");
-        assert!(PAGE.contains(r#": g.host ? item(T["tui.menu.ports"] || "", () => openFarPorts(g, row)) : null,"#),
+        assert!(PAGE.contains(r#": g.host ? item(T["tui.menu.ports"] || "", () => openFarPorts(g, at)) : null,"#),
             "a folder on a server does not offer its ports");
         assert!(PAGE.contains("if (S && S.discard_unasked) { go(false); return; }"), "turned off, it still asks");
         assert!(PAGE.contains(r#"never: T["tui.discard.never"] || "","#), "the question has no box to stop it asking");
