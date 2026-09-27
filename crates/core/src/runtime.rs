@@ -4176,6 +4176,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FarPage { folder, port }) => {
                         shell.mail().far_pages.push((folder, port));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FarServe { folder }) => {
+                        shell.mail().far_serves.push(folder);
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Login { folder, act }) => {
                         shell.mail().logins.push((folder, act));
                     }
@@ -7759,6 +7762,44 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     Err(error) => crate::uistate::FarPortsState { folder, server, private, busy: false, ports: Vec::new(), error },
                 });
             });
+        }
+        // A folder's server started by the AI its machine has, in a tab of its
+        // own. How a server is started differs from project to project, and
+        // "start one" is a dead end to somebody who does not know how: the AI
+        // looks at the project, starts it so it keeps running, and says the
+        // port -- listening where that machine's list can reach it (every
+        // address on a MicroVM, where its addresses come in; only the
+        // server's own loopback on a server, where it is carried over SSH and
+        // nobody else is let in). A tab already at it is brought forward
+        for folder in shell.mail().take_far_serves() {
+            let Some(desk) = desks.get(desk_index) else { continue };
+            let at = std::path::PathBuf::from(&folder);
+            let Some(on) = desk.folder_at(&at).and_then(|f| f.host.clone()) else {
+                flash = Some(i18n::t("tui.urls.serve.no_folder"));
+                continue;
+            };
+            let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
+            let chosen = match ai_for_folder(Some(desk), &at, &ai, &ai_choices) {
+                Ok(c) => c,
+                Err(why) => {
+                    flash = Some(why);
+                    continue;
+                }
+            };
+            let prompt = i18n::tp(
+                if on.is_made() { "ai.serve.prompt" } else { "ai.serve.prompt_server" },
+                &[("language", &i18n::t("lang.self"))],
+            );
+            let label = i18n::t("tui.urls.serve.tab");
+            match hand_to_ai_tab(desk, &at, &label, &chosen, &tabs, &mut pending_quicks, &mut reveal, || prompt) {
+                Ok(v) => {
+                    if v["already"] == false {
+                        watcher.poke();
+                    }
+                    flash = Some(i18n::tp("msg.urls.serve.asked", &[("ai", &chosen.name)]));
+                }
+                Err(why) => flash = Some(why),
+            }
         }
         // One of a MicroVM's public addresses, opened in a browser tab here.
         // Only an address this app found for that folder: the page names the

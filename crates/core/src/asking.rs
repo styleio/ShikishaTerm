@@ -192,6 +192,7 @@ mod tests {
             "snip.ai.text.prompt", "snip.ai.noun.prompt", "prompt.choose.system",
             "words.rules.operation", "words.rules.target", "words.op.click",
             "words.op.type", "words.value.system", "words.value.ask",
+            "ai.serve.prompt", "ai.serve.prompt_server",
         ] {
             assert!(
                 !words.contains_key(key),

@@ -610,6 +610,18 @@ try {
   check(await board.run('(() => { const m = document.querySelector(".fmenu.farports"); const lines = [...m.querySelectorAll(".farport")]; return !!m.querySelector(".farhead") && !m.querySelector(".farhead").onclick && lines.length === ports.length && lines.every(l => !!l.querySelector(".fcopy")); })()'.replace('ports.length', String(ports.length))),
     'a heading that is read, and one line a port with its copy button');
   check(!ports.some((p) => p.port === 22 || p.port === 111), 'the image\'s own ports are not offered: ' + ports.map((p) => p.port).join(', '));
+  // Every line the same width, and the list inside the window
+  check(await board.run('(() => { const m = document.querySelector(".fmenu.farports"); const b = m.getBoundingClientRect(); const w = [...m.children].map(c => Math.round(c.getBoundingClientRect().width)); return w.every(x => x === w[0]) && b.bottom <= innerHeight - 8; })()'),
+    'every line of the list is as wide as the others, and the list is inside the window');
+  // How a server is started differs from project to project: the machine's
+  // AI is handed it, in a tab of its own in the folder
+  await board.run('document.querySelector(".fmenu.farports .farserve").click(); true');
+  await until(() => board.run(`(S.tabs || []).some(t => t.name === "サーバー起動" && t.group === (S.groups || []).indexOf(${g}))`), 'a tab for the AI to start the server in', 60000)
+    .catch(async (e) => { console.log('    (the board says: ' + await board.run('S.flash || ""') + ')'); throw e; });
+  check(true, 'the AI is handed starting the server, in a tab of its own in the folder');
+  await board.run('(() => { const t = (S.tabs || []).find(t => t.name === "サーバー起動"); if (t) send({kind:"closetab", tab:t.index, key:t.key || "", sure:true}); return true; })()');
+  await until(() => board.run('!(S.tabs || []).some(t => t.name === "サーバー起動")'), 'that tab closed', 30000);
+  await board.run(`openFarPorts(${g}, {clientX: 200, clientY: 200}); true`);
   await board.shot('3b-urls');
   if (p8000) {
     const got = await fetch(p8000.url).then((r) => r.text()).catch((e) => String(e));

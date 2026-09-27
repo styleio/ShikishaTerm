@@ -338,6 +338,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // Opening one of them in a browser tab here: a tab like any other the
         // phone adds, on an address this app worked out itself
         Ev::FarPage { .. } => true,
+        // A server started there by the machine's AI, in a tab of its own:
+        // the same press from a phone, whose list offers it too
+        Ev::FarServe { .. } => true,
         // The sign-in step of a project just cloned onto a MicroVM: "next"
         // opens the project's rules, "later" puts the step away. The clone
         // itself is allowed from here, so the step that follows it is
@@ -3027,6 +3030,7 @@ mod tests {
             Ev::FolderDiscard { folder: "a".into(), unasked: false },
             Ev::FarPorts { folder: "a".into() },
             Ev::FarPage { folder: "a".into(), port: 3000 },
+            Ev::FarServe { folder: "a".into() },
             Ev::Login { folder: "/home/user/a".into(), act: "next".into() },
             Ev::FolderColor { folder: "a".into(), color: "blue".into() },
             Ev::FontSize { px: 14 },

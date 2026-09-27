@@ -309,6 +309,10 @@ pub enum Ev {
     /// its port; which address that is, is the app's own answer to `FarPorts`
     /// and not something a page gets to say
     FarPage { folder: String, port: u16 },
+    /// A server started in a folder on another machine by that machine's AI,
+    /// in a tab of its own: how one is started differs from project to
+    /// project (PHP, Python, Node...), and the AI finds out and starts it
+    FarServe { folder: String },
     /// The sign-in step of a project just cloned onto a MicroVM, answered:
     /// `next` goes on to the project's rules, `later` puts the step away.
     /// `folder` is the checkout on the machine
@@ -1041,6 +1045,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             machine: v.get("machine").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             fingerprint: v.get("fingerprint").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             trust: v.get("trust").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        Some("farserve") => Ev::FarServe {
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("farpage") => Ev::FarPage {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

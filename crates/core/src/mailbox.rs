@@ -258,6 +258,8 @@ pub struct Mailbox {
     pub host_keys: Vec<(String, String, bool)>,
     /// One of those addresses, to be opened in a browser tab here
     pub far_pages: Vec<(String, u16)>,
+    /// Folders on another machine whose AI is to start their server
+    pub far_serves: Vec<String>,
     /// The sign-in step of a checkout just cloned onto a MicroVM, answered:
     /// (the checkout, `next` or `later`)
     pub logins: Vec<(String, String)>,
@@ -591,6 +593,9 @@ impl Mailbox {
     }
     pub fn take_far_pages(&mut self) -> Vec<(String, u16)> {
         std::mem::take(&mut self.far_pages)
+    }
+    pub fn take_far_serves(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.far_serves)
     }
     pub fn take_logins(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.logins)

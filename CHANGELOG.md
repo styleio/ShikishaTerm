@@ -337,7 +337,8 @@ once it reaches its first tagged release.
   were the work's. The explanation looked like a choice, and each port took
   two lines. The list now opens under a heading that is read and not
   pressed; a port is one line that opens it in a browser tab, with a copy
-  button for an address anybody can open.
+  button for an address anybody can open. Every line of it wraps at the same
+  width, and it stays inside the window.
 - **A MicroVM taken off the list can be put back or deleted at once.** The
   settings' list of machines called a machine made in this run "being made"
   until the app was restarted, even after its folder was taken off a list,

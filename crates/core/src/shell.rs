@@ -488,8 +488,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .fmenu .aphostadd { border-top:1px solid var(--line); margin-top:var(--s1); color:var(--text); }
   /* A machine's ports: what the list is, then one line a port -- its number,
      its address, and a copy button for an address anybody can open */
-  .fmenu.farports { max-width:min(560px, calc(100vw - 16px)); }
-  .fmenu div.farhead { max-width:none; }
+  /* One width for the whole list, the heading's words included, so every
+     line of it wraps at the same edge */
+  .fmenu.farports { width:min(440px, calc(100vw - 16px)); }
+  .fmenu.farports div.fabout { max-width:none; }
+  .fmenu.farports div.fsay { padding-bottom:var(--s2); }
+  .fmenu .farserve { display:flex; align-items:center; gap:var(--s2); }
+  .fmenu .farserve .ico { display:flex; color:var(--dim); }
   .fmenu div.fsay { cursor:default; white-space:normal; font-size:11.5px; line-height:1.5; color:var(--dim); }
   .fmenu div.fsay:hover { background:transparent; }
   .fmenu div.fsay.bad { color:var(--warn); }
@@ -7281,10 +7286,12 @@ function putTabsAway(folder, away) {
 // arrival touches this document, which shuts a native popup the instant it
 // opens -- the same thing that once kept the browser dock's dropdown from
 // staying open. A list of our own is untouched by any of that.
-function openList(anchor, rows, tall, point) {
+function openList(anchor, rows, tall, point, cls) {
   closeFolderMenu();
-  // A long list scrolls inside itself, and is measured that way
-  const m = el("div", {class:"fmenu" + (tall ? " tall" : "")}, ...rows);
+  // A long list scrolls inside itself, and is measured that way -- and a
+  // list of a kind of its own (`cls`) is measured at its own width: a class
+  // put on after it was placed changes its height under the window's edge
+  const m = el("div", {class:"fmenu" + (tall ? " tall" : "") + (cls ? " " + cls : "")}, ...rows);
   document.body.append(m);
   // Below what was pressed -- or, opened by a right-click, where the pointer
   // is, the way every menu of that kind opens -- and never off the window
@@ -7646,11 +7653,16 @@ function drawFarPorts() {
         onclick:() => send({kind:"farpage", folder:o.folder, port:p.port})},
       el("span", {class:"nm"}, ":" + p.port), el("span", {class:"at"}, p.url || say("tui.urls.not_yet")), copy));
   }
+  // How a server is started differs from project to project: the folder's
+  // AI finds out and starts it, in a tab of its own, and says the port
+  if (!st.busy && !st.error) rows.push(el("div", {class:"aphostadd farserve", onclick:() => {
+    closeFolderMenu();
+    farPortsOpen = null;
+    send({kind:"farserve", folder:o.folder});
+  }}, pickIcon("sparkles"), el("span", {}, T["tui.urls.serve"] || "")));
   if (!st.busy) rows.push(el("div", {class:"aphostadd", onclick:() => { o.drawn = ""; send({kind:"farports", folder:o.folder}); }},
     T["tui.urls.again"] || ""));
-  openList(document.body, rows, false, o.at);
-  const m = [...document.querySelectorAll(".fmenu")].pop();
-  if (m) m.classList.add("farports");
+  openList(document.body, rows, false, o.at, "farports");
 }
 // A folder taken off the list while it is right here. Nothing on disk is
 // touched -- the folder and everything in it stays where it is -- and the tabs
