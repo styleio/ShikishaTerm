@@ -288,6 +288,13 @@ enum Job {
         command: String,
         reply: Sender<Result<Ran>>,
     },
+    /// A connection made to this PC, carried to a port on the server as if it
+    /// had been made there (see [`forward`])
+    Tunnel {
+        spec: Spec,
+        port: u16,
+        stream: std::net::TcpStream,
+    },
 }
 
 /// What a command on the far end did.
@@ -431,6 +438,31 @@ async fn handle(live: &mut Live, job: Job) {
         Job::Files { spec, job, reply } => {
             let r = do_file_job(live, &spec, job).await;
             let _ = reply.send(r);
+        }
+        Job::Tunnel { spec, port, stream } => {
+            let opened = async {
+                let route = session(live, &spec).await?;
+                let handle = live
+                    .sessions
+                    .get(&route)
+                    .ok_or_else(|| anyhow!(crate::i18n::tp("err.ssh.connect", &[("host", &route), ("e", "gone")])))?;
+                Ok::<_, anyhow::Error>(handle.channel_open_direct_tcpip("127.0.0.1", port as u32, "127.0.0.1", 0).await?)
+            }
+            .await;
+            match opened.and_then(|ch| {
+                stream.set_nonblocking(true)?;
+                Ok((ch, tokio::net::TcpStream::from_std(stream)?))
+            }) {
+                // Carried both ways, on a task of its own, until either end
+                // closes: a page loading is many of these at once
+                Ok((ch, mut here)) => {
+                    tokio::spawn(async move {
+                        let mut there = ch.into_stream();
+                        let _ = tokio::io::copy_bidirectional(&mut here, &mut there).await;
+                    });
+                }
+                Err(e) => crate::append_hook_log(&format!("ssh: could not carry a connection to port {port} on {}: {e:#}", spec.address())),
+            }
         }
         Job::Exec { spec, command, reply } => {
             let r = do_exec(live, &spec, &command).await;
@@ -1090,6 +1122,46 @@ pub fn files(spec: &Spec, job: FileJob, wait_ms: u64) -> Result<FileAnswer> {
 
 /// Run one command on another machine, and wait for the answer.
 ///
+/// A port on the server, reachable from this PC: an address on this PC's own
+/// loopback that carries every connection made to it over the connection the
+/// terminals use, to that port over there. What a server started in a
+/// terminal there (`npm run dev` on 3000) is opened in a browser tab here as
+/// if it ran here, and nothing on the server is opened to anyone else.
+///
+/// The same number here when it is free, since a page often names its own
+/// address; another when it is not. Made once for each server and port and
+/// kept while the app runs. Answers the port here
+pub fn forward(spec: &Spec, port: u16) -> Result<u16> {
+    let made = forwards();
+    let key = (spec.route(), port);
+    if let Some(here) = made.lock().map_err(|_| anyhow!("forward"))?.get(&key) {
+        return Ok(*here);
+    }
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port)).or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))?;
+    let here = listener.local_addr()?.port();
+    let spec = spec.clone();
+    std::thread::Builder::new().name(format!("ssh forward {port}")).spawn(move || {
+        for stream in listener.incoming().flatten() {
+            if hub().send(Job::Tunnel { spec: spec.clone(), port, stream }).is_err() {
+                break;
+            }
+        }
+    })?;
+    made.lock().map_err(|_| anyhow!("forward"))?.insert(key, here);
+    Ok(here)
+}
+
+/// The ports here each server's ports are carried to, by route and port there
+fn forwards() -> &'static Mutex<HashMap<(String, u16), u16>> {
+    static MADE: OnceLock<Mutex<HashMap<(String, u16), u16>>> = OnceLock::new();
+    MADE.get_or_init(Default::default)
+}
+
+/// The port here a server's port is already carried to, if it is
+pub fn forwarded(spec: &Spec, port: u16) -> Option<u16> {
+    forwards().lock().ok()?.get(&(spec.route(), port)).copied()
+}
+
 /// The primitive everything remote is built from: git on the far side, asking
 /// whether a folder is there, finding out what is installed. Blocks, like every
 /// other call here; the caller decides how long it is willing to wait

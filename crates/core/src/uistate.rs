@@ -910,6 +910,10 @@ pub struct LoginStepState {
 pub struct FarPortsState {
     /// The folder it is about
     pub folder: String,
+    /// On a server reached over SSH, whose ports are carried here when they
+    /// are opened, rather than a MicroVM, whose are public
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub server: bool,
     /// Still being asked
     pub busy: bool,
     pub ports: Vec<FarPort>,

@@ -7558,8 +7558,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Err(e) => flash = Some(format!("{e:#}")),
             }
         }
-        // The public addresses of a folder on a MicroVM: asked of the machine
-        // on a thread, since asking starts one that was paused
+        // The public addresses of a folder on a MicroVM, or the ports a
+        // server over SSH listens on: asked of the machine on a thread, since
+        // asking starts a MicroVM that was paused
         for folder in shell.mail().take_far_ports() {
             let at = std::path::PathBuf::from(&folder);
             let host = desks.get(desk_index).and_then(|d| {
@@ -7567,31 +7568,69 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .iter()
                     .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &at)))
                     .and_then(|f| f.host.clone())
-                    .filter(|h| h.is_made())
             });
             let Some(host) = host else { continue };
-            far_ports_view = Some(crate::uistate::FarPortsState { folder: folder.clone(), busy: true, ..Default::default() });
+            let server = !host.is_made();
+            far_ports_view = Some(crate::uistate::FarPortsState { folder: folder.clone(), server, busy: true, ..Default::default() });
             let tx = far_ports_tx.clone();
             std::thread::spawn(move || {
-                let said = crate::microvm::ports_of(&host);
+                let said = match server {
+                    false => crate::microvm::ports_of(&host),
+                    true => config::host_spec(&host)
+                        .map_err(|e| format!("{e:#}"))
+                        .and_then(|spec| crate::microvm::server_ports_of(&spec)),
+                };
                 let _ = tx.send(match said {
-                    Ok(ports) => crate::uistate::FarPortsState { folder, busy: false, ports, error: String::new() },
-                    Err(error) => crate::uistate::FarPortsState { folder, busy: false, ports: Vec::new(), error },
+                    Ok(ports) => crate::uistate::FarPortsState { folder, server, busy: false, ports, error: String::new() },
+                    Err(error) => crate::uistate::FarPortsState { folder, server, busy: false, ports: Vec::new(), error },
                 });
             });
         }
         // One of a MicroVM's public addresses, opened in a browser tab here.
         // Only an address this app found for that folder: the page names the
         // port, and the address is looked up rather than taken from it
+        // A server's port is carried to one on this PC first, and that is
+        // what the tab opens
         for (folder, port) in shell.mail().take_far_pages() {
-            let found = far_ports_view
+            let listed = far_ports_view
                 .as_ref()
                 .filter(|v| crate::uistate::same_folder(std::path::Path::new(&v.folder), std::path::Path::new(&folder)))
-                .and_then(|v| v.ports.iter().find(|p| p.port == port))
-                .map(|p| p.url.clone());
-            let Some(url) = found else {
+                .filter(|v| v.ports.iter().any(|p| p.port == port))
+                .cloned();
+            let Some(view) = listed else {
                 flash = Some(i18n::t("tui.urls.gone"));
                 continue;
+            };
+            let url = match view.server {
+                false => view.ports.iter().find(|p| p.port == port).map(|p| p.url.clone()).unwrap_or_default(),
+                true => {
+                    let at = std::path::PathBuf::from(&folder);
+                    let spec = desks.get(desk_index).and_then(|d| {
+                        d.folders
+                            .iter()
+                            .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &at)))
+                            .and_then(|f| f.host.clone())
+                    });
+                    match spec.map(|h| config::host_spec(&h).and_then(|s| crate::ssh::forward(&s, port))) {
+                        Some(Ok(here)) => {
+                            // Said on the list as well, where it can be copied
+                            if let Some(v) = far_ports_view.as_mut()
+                                && let Some(p) = v.ports.iter_mut().find(|p| p.port == port)
+                            {
+                                p.url = format!("http://127.0.0.1:{here}/");
+                            }
+                            format!("http://127.0.0.1:{here}/")
+                        }
+                        Some(Err(e)) => {
+                            flash = Some(i18n::tp("tui.urls.server.failed", &[("port", &port.to_string()), ("why", &format!("{e:#}"))]));
+                            continue;
+                        }
+                        None => {
+                            flash = Some(i18n::t("tui.urls.gone"));
+                            continue;
+                        }
+                    }
+                }
             };
             let short = folder.trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_string();
             let name = format!("{short}:{port}");

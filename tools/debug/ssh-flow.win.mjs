@@ -612,6 +612,33 @@ try {
     await sleep(8000);
     check((await farTab())?.state === 'EXIT' && !/接続が切れました/.test((await screen()).split('SHK49').pop()), 'a shell ended with exit ends its tab, and is not opened again');
   }
+
+  console.log('8. what a server listens on opens here, carried over SSH');
+  // A development server started there, listening on the server's own
+  // loopback only: nothing of it is reachable from outside
+  const PORT_THERE = 18765;
+  await there(`mkdir -p ~/shk-serve && echo served-from-the-server > ~/shk-serve/index.html && (nohup python3 -m http.server ${PORT_THERE} --bind 127.0.0.1 --directory ~/shk-serve >/dev/null 2>&1 &) ; sleep 1; echo ok`);
+  try {
+    const rg = `(S.groups || []).find(x => x.folder === ${JSON.stringify(REPO)})`;
+    check(await board.run(`(() => { folderMenu({currentTarget: document.body, preventDefault(){}}, ${rg}); const has = [...document.querySelectorAll(".fmenu div")].some(d => d.textContent === "サーバーのポートを開く"); closeFolderMenu(); return has; })()`),
+      'a folder on a server offers its ports on its menu');
+    await board.run(`openFarPorts(${rg}, document.querySelector("#tabs") || document.body); true`);
+    const portsSaid = () => board.run('JSON.stringify(S.far_ports || null)').then((t) => JSON.parse(t || 'null'));
+    await until(async () => { const v = await portsSaid(); return !!v && !v.busy && v.server && v.ports.some((p) => p.port === PORT_THERE); }, 'the server\x27s port, listed', 60000)
+      .catch(async (e) => { console.log('    (the list: ' + JSON.stringify(await portsSaid()) + ')'); throw e; });
+    check(true, 'the port the server listens on is listed, not yet carried here');
+    await board.run(`send({kind:"farpage", folder:${JSON.stringify(REPO)}, port:${PORT_THERE}}); true`);
+    await until(async () => !!((await portsSaid()).ports.find((p) => p.port === PORT_THERE) || {}).url, 'the port carried here', 30000);
+    const url = (await portsSaid()).ports.find((p) => p.port === PORT_THERE).url;
+    check(/^http:\/\/127\.0\.0\.1:\d+\/$/.test(url), 'carried to this PC\x27s own loopback: ' + url);
+    const got = await fetch(url).then((r) => r.text()).catch((e) => String(e));
+    check(got.trim() === 'served-from-the-server', 'what the server serves is read here: ' + got.trim().slice(0, 60));
+    await until(() => board.run(`(S.tabs || []).some(t => t.name === "shikisha-test:${PORT_THERE}")`), 'a browser tab on it', 30000);
+    check(true, 'and opened in a browser tab here');
+    await board.run('closeFolderMenu(); true');
+  } finally {
+    await there(`pkill -f "http.server ${PORT_THERE}"; rm -rf ~/shk-serve; true`);
+  }
 } catch (e) {
   check(false, e.message);
 } finally {

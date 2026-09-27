@@ -7489,7 +7489,9 @@ function folderMenu(e, g) {
     // all except a settings page that refused while it had tabs
     // On a MicroVM: the addresses it answers on from anywhere -- what a
     // webhook is pointed at, and a page opened on a phone
-    onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, e.currentTarget)) : null,
+    onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, e.currentTarget))
+      // On a server: what it listens on, carried here to open in a tab
+      : g.host ? item(T["tui.menu.ports"] || "", () => openFarPorts(g, e.currentTarget)) : null,
     item(T["tui.menu.forget"] || "", () => forgetHere(g)),
     // Last and in red, the one entry that cannot be taken back. Only a
     // worktree, here or on a server, where git there removes it: a project's
@@ -7522,13 +7524,17 @@ function drawFarPorts() {
   const sig = JSON.stringify(st);
   if (o.drawn === sig) return;
   o.drawn = sig;
-  const rows = [el("div", {class:"say"}, T["tui.urls.title"] || "")];
-  if (st.busy) rows.push(el("div", {class:"say"}, T["tui.urls.asking"] || ""));
+  // A server's ports are carried here when one is opened; a MicroVM's are public
+  const say = k => T[st.server && T[k.replace("tui.urls.", "tui.urls.server.")] ? k.replace("tui.urls.", "tui.urls.server.") : k] || "";
+  const rows = [el("div", {class:"say"}, say("tui.urls.title"))];
+  if (st.busy) rows.push(el("div", {class:"say"}, say("tui.urls.asking")));
   else if (st.error) rows.push(el("div", {class:"warn"}, st.error));
-  else if (!st.ports.length) rows.push(el("div", {class:"say"}, T["tui.urls.none"] || ""));
+  else if (!st.ports.length) rows.push(el("div", {class:"say"}, say("tui.urls.none")));
   for (const p of st.ports || []) {
-    rows.push(el("div", {class:"aphost", title:p.url, onclick:() => { copyText(p.url).then(() => toast(T["tui.urls.copied"] || "")); }},
-      el("span", {class:"nm"}, ":" + p.port), el("span", {class:"at"}, p.url)));
+    rows.push(el("div", {class:"aphost", title:p.url, onclick:() => {
+      if (p.url) copyText(p.url).then(() => toast(T["tui.urls.copied"] || ""));
+      else send({kind:"farpage", folder:o.folder, port:p.port});
+    }}, el("span", {class:"nm"}, ":" + p.port), el("span", {class:"at"}, p.url || say("tui.urls.not_yet"))));
     // The same address, opened here in a browser tab of the app
     rows.push(el("div", {class:"aphostadd", onclick:() => send({kind:"farpage", folder:o.folder, port:p.port})},
       (T["tui.urls.open"] || "").replace("{port}", p.port)));
@@ -21975,8 +21981,10 @@ mod tests {
         assert!(PAGE.contains(r#"g.linked || onMicrovm(g)
       ? el("div", {class:"warn", onclick:() => { closeFolderMenu(); discardFolder(g); }}, T["tui.menu.discard"] || "")"#),
             "the menu has no red delete, or offers it on a project's own checkout");
-        assert!(PAGE.contains(r#"onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, e.currentTarget)) : null,"#),
+        assert!(PAGE.contains(r#"onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, e.currentTarget))"#),
             "a folder on a MicroVM does not say where it answers from");
+        assert!(PAGE.contains(r#": g.host ? item(T["tui.menu.ports"] || "", () => openFarPorts(g, e.currentTarget)) : null,"#),
+            "a folder on a server does not offer its ports");
         assert!(PAGE.contains("if (S && S.discard_unasked) { go(false); return; }"), "turned off, it still asks");
         assert!(PAGE.contains(r#"never: T["tui.discard.never"] || "","#), "the question has no box to stop it asking");
         assert!(PAGE.contains("go(input.value.trim(), !!never && unasked.checked)"), "the box's answer is not handed on");

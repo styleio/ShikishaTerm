@@ -9,6 +9,12 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **What a server listens on opens in a browser tab here.** A folder on a
+  server reached over SSH has "Open the server's ports" on its menu: the
+  ports its own user listens on (a development server started in a
+  terminal there), and each one, opened, is carried over the SSH connection
+  to 127.0.0.1 on this PC -- the same number when it is free -- and opened in
+  a browser tab. Nothing on the server is opened to anyone else.
 - **A worktree on a server is deleted there.** The red "Delete" on a
   worktree's menu, and the git panel's clean-up after its pull request, work
   on a folder on a server reached over SSH: git there removes the worktree,
@@ -320,6 +326,12 @@ once it reaches its first tagged release.
   deletes the original", which never happens: the links are taken out first.
 
 ### Fixed
+- **Closing the worktree dialog stops what it was asking.** Closing only hid
+  it, and whether the checkout's AI was signed in went on being asked of its
+  machine every minute, which woke a paused MicroVM and kept it running.
+- **"Deleted" stays on screen.** Deleting a worktree writes the settings, and
+  "settings read again" was said over "deleted", sometimes seconds later. A
+  reload that says only that now leaves another message where it is.
 - **Worktrees on MicroVMs are treated as the separate machines they are.**
   Each is a copy of the checkout's machine with a repository of its own, and
   several things assumed the one repository worktrees here share:

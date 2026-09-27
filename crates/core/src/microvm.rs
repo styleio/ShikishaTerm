@@ -299,6 +299,21 @@ pub fn ports_of(host: &crate::config::HostSpec) -> Result<Vec<crate::uistate::Fa
         .collect())
 }
 
+/// The ports a server reached over SSH listens on for its own user -- what a
+/// server started in a terminal there is -- each with the address here it is
+/// carried to once it has been opened (see [`crate::ssh::forward`]), and
+/// none before. Nothing on the server is opened to anyone else
+pub fn server_ports_of(spec: &crate::ssh::Spec) -> Result<Vec<crate::uistate::FarPort>, String> {
+    let ran = crate::ssh::exec(spec, LISTENING, 30_000).map_err(|e| format!("{e:#}"))?;
+    Ok(listening(&ran.out)
+        .into_iter()
+        .map(|port| crate::uistate::FarPort {
+            port,
+            url: crate::ssh::forwarded(spec, port).map(|here| format!("http://127.0.0.1:{here}/")).unwrap_or_default(),
+        })
+        .collect())
+}
+
 /// What lists the ports listened on, on every image the service has: `ss`,
 /// and `netstat` where there is no `ss`. With the processes: `ss` names the
 /// ones the machine's own user started, and only those (see [`listening`])
