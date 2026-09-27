@@ -753,6 +753,20 @@ pub fn refused_sign_in(said: &str) -> Option<&str> {
     })
 }
 
+/// What to say when a clone was refused: which account could not open which
+/// repository, and the two things that could be wrong. A server does not
+/// say which -- GitHub answers "not found" both for a repository that is not
+/// there and for one the account may not see -- so both are named, the
+/// address first, since that is the quicker to check. None when the clone
+/// failed for some other reason. `who` is [`crate::config::GitUse::who`]
+pub fn clone_refused(said: &str, url: &str, who: &str) -> Option<String> {
+    let line = refused_sign_in(said)?;
+    Some(crate::i18n::tp(
+        "err.git.clone_refused",
+        &[("who", who), ("repo", crate::folders::scrub(url).trim()), ("said", &refusal_words(line))],
+    ))
+}
+
 /// Git's words about a refusal, without the labels it puts in front: what the
 /// server said, and nothing about which program said it
 fn refusal_words(line: &str) -> String {
@@ -2811,6 +2825,30 @@ mod tests {
         };
         assert_eq!(named("https://github.com/owner/repo.git"), "octo-cat");
         assert_ne!(named("https://gitlab.example/owner/repo.git"), "octo-cat");
+    }
+
+    /// A clone GitHub answers "not found" is said as which account could not
+    /// open which repository -- the address named without any sign-in in it
+    /// -- and a clone that failed for another reason is left in git's words
+    #[test]
+    fn a_refused_clone_names_the_account_and_the_repository() {
+        let said = "remote: Repository not found.
+fatal: repository 'https://github.com/te0ai/helloworld.git/' not found";
+        let who = crate::config::GitUse::Account {
+            spec: crate::config::GitAccountSpec { name: "HelloWorld".into(), ..Default::default() },
+        }
+        .who();
+        let why = clone_refused(said, "https://x-access-token:secret@github.com/te0ai/helloworld.git", &who).expect("not read as a refusal");
+        assert_eq!(
+            why,
+            crate::i18n::tp(
+                "err.git.clone_refused",
+                &[("who", &who), ("repo", "https://github.com/te0ai/helloworld.git"), ("said", "Repository not found")]
+            )
+        );
+        assert!(why.contains("HelloWorld") && !why.contains("secret"), "{why}");
+        assert_eq!(clone_refused("fatal: unable to access: Could not resolve host: github.com", "https://github.com/o/r.git", &who), None);
+        assert_eq!(crate::config::GitUse::Unset.who(), crate::i18n::t("git.who.pc"));
     }
 
     /// Git's words for a refused sign-in are said as what to do, and only

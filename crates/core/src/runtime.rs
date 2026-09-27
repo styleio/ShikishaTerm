@@ -554,6 +554,8 @@ enum VmWork {
         /// What it is made from, kept to try again
         url: String,
         sign_in: config::FarSignIn,
+        /// Who it signs in as, in the settings' words (GitUse::who)
+        who: String,
         preparing: crate::microvm::Preparing,
     },
     Prepare {
@@ -8019,11 +8021,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     "retry" if j.error.is_some() => {
                         j.stopping = false;
                         let again = match &j.work {
-                            VmWork::Clone { add, url, sign_in, preparing, .. } => Ok(VmWork::Clone {
-                                job: crate::microvm::Checkout::start(j.host.clone(), url, &j.project, sign_in.clone(), preparing.clone(), add.private),
+                            VmWork::Clone { add, url, sign_in, who, preparing, .. } => Ok(VmWork::Clone {
+                                job: crate::microvm::Checkout::start(j.host.clone(), url, &j.project, sign_in.clone(), who.clone(), preparing.clone(), add.private),
                                 add: add.clone(),
                                 url: url.clone(),
                                 sign_in: sign_in.clone(),
+                                who: who.clone(),
                                 preparing: preparing.clone(),
                             }),
                             // What was asked last is what is tried again
@@ -8391,7 +8394,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let sign_in = git.far(&|k| crate::git::secret(k)).unwrap_or_default();
                     // As the dialog said: chosen there, every time
                     let private = a.private;
-                    let job = crate::microvm::Checkout::start(h.clone(), &text, &project, sign_in.clone(), preparing.clone(), private);
+                    let who = git.who();
+                    let job = crate::microvm::Checkout::start(h.clone(), &text, &project, sign_in.clone(), who.clone(), preparing.clone(), private);
                     making_seq += 1;
                     vm_jobs.push(VmJob {
                         id: making_seq,
@@ -8400,7 +8404,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         project: project.clone(),
                         host: h.clone(),
                         at: crate::microvm::checkout_path(&project),
-                        work: VmWork::Clone { job, add: MicrovmAdd { host: h.name.clone(), project, account, ai: preparing.ai.clone(), private }, url: text.clone(), sign_in, preparing },
+                        work: VmWork::Clone { job, add: MicrovmAdd { host: h.name.clone(), project, account, ai: preparing.ai.clone(), private }, url: text.clone(), sign_in, who, preparing },
                         error: None,
                         stopping: false,
                         gone: false,

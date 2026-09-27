@@ -35,6 +35,7 @@ impl Checkout {
         url: &str,
         project: &str,
         sign_in: crate::config::FarSignIn,
+        who: String,
         preparing: Preparing,
         private: bool,
     ) -> Checkout {
@@ -94,6 +95,9 @@ impl Checkout {
                     let ran = crate::e2b::exec(&box_, &line, None).map_err(|e| format!("{e:#}"));
                     let failed = match ran {
                         Ok(r) if r.ok() && !stop() => None,
+                        // The clone refused: which account could not open
+                        // which repository, rather than git's "not found"
+                        Ok(r) if !stop() && i == 0 && let Some(why) = crate::git::clone_refused(&r.said(), &url, &who) => Some(why),
                         Ok(r) if !stop() => Some(crate::i18n::tp("err.worktree.failed", &[("said", &r.said()), ("command", &line)])),
                         Ok(_) => Some(String::new()),
                         Err(e) => Some(e),

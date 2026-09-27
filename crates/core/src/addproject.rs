@@ -199,7 +199,9 @@ pub fn start_clone(url: &str, parent: &str) -> Result<Job, String> {
                 let why = said.trim().trim_start_matches("fatal:").trim().to_string();
                 Outcome::Failed(match why.is_empty() {
                     true => crate::i18n::t("err.addproj.clone_stopped"),
-                    false => why,
+                    // Git on this PC as it signs in: which repository it
+                    // could not open, and what to check
+                    false => crate::git::clone_refused(&said, &url, &crate::i18n::t("git.who.pc")).unwrap_or(why),
                 })
             }
         };
@@ -551,7 +553,7 @@ pub fn start_clone_on(spec: crate::ssh::Spec, url: &str, parent: &str) -> Result
                 // here
                 said if crate::git::refused_sign_in(said).is_some() => crate::i18n::tp(
                     "err.addproj.ssh_signin",
-                    &[("host", &spec.host), ("said", said.trim_start_matches("fatal:").trim())],
+                    &[("host", &spec.host), ("repo", crate::folders::scrub(&url).trim()), ("said", said.trim_start_matches("fatal:").trim())],
                 ),
                 said => said.trim_start_matches("fatal:").trim().to_string(),
             }),

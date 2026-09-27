@@ -382,6 +382,19 @@ impl GitUse {
         }
     }
 
+    /// Who git signs in as with this choice, in the words the settings show
+    /// it in: what a refusal names, so the person knows which account to
+    /// look at or choose again
+    pub fn who(&self) -> String {
+        match self {
+            GitUse::Unset | GitUse::Pc(None) => crate::i18n::t("git.who.pc"),
+            GitUse::Pc(Some(login)) => crate::i18n::tp("git.who.pc_as", &[("login", login)]),
+            GitUse::Gh { login, .. } => crate::i18n::tp("git.who.gh", &[("login", login)]),
+            GitUse::Account { spec } => crate::i18n::tp("git.who.account", &[("name", &spec.name)]),
+            GitUse::Missing(name) => crate::i18n::tp("git.who.account", &[("name", name)]),
+        }
+    }
+
     /// Commit identity and credentials, ready for git.
     ///
     /// `sign_in` is whether what is about to run talks to a server. Nothing
