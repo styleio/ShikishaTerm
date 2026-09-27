@@ -542,6 +542,26 @@ try {
   cfg = null;
   await board.run('send({kind:"closesettings"}); true');
 
+  console.log('4g. work in a worktree does not start the checkout\'s machine');
+  // The checkout's machine paused, as it is after its minutes. Asking GitHub
+  // about the worktree's branch -- its pull requests and CI, what the panel
+  // asks every few seconds while CI runs -- and looking for the folder a
+  // pull request's branch is on are answered without it
+  const stateOf = async (id) => ((await ours()).find((s) => s.sandboxID === id) || {}).state;
+  // Paused once what 4f asked of it is over, as a machine is paused after
+  // its minutes untouched: one paused with a call still arriving is started
+  // again by the service for that call
+  await sleep(15000);
+  await e2b('POST', `/sandboxes/${home.sandbox}/pause`);
+  await until(async () => (await stateOf(home.sandbox)) === 'paused', 'the checkout\'s machine paused', 60000);
+  await board.run(`send({kind:"select", tab: ${ai.index}}); true`);
+  for (let i = 0; i < 3; i++) {
+    await board.run('gitAskPrs(); true');
+    await board.run(`gitIssuesAsk("pr_place", {project: ${JSON.stringify(project().name)}, number: 1, head: ${JSON.stringify(BRANCH)}, base: "master"}); true`);
+    await sleep(8000);
+  }
+  check((await stateOf(home.sandbox)) === 'paused', 'the checkout\'s machine stays paused: ' + await stateOf(home.sandbox));
+
   console.log('4b. what it serves answers from anywhere, at the address the menu lists');
   await inside(`cd ${wt.cwd} && printf '<?php echo "served-from-the-" . "worktree";' > index.php && (nohup php -S 0.0.0.0:8000 >/dev/null 2>&1 &) ; sleep 1; echo ok`);
   const g = `(S.groups || []).find(x => x.folder === ${JSON.stringify(wt.cwd)})`;

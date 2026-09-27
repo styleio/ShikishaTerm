@@ -256,6 +256,17 @@ try {
   await until(() => board.run('/サーバーでまだログインしていません/.test(document.querySelector("#branch .baisignin").textContent)'), 'the dialog saying so', 10000);
   check(await board.run('!/元のフォルダのマシン/.test(document.querySelector("#branch .baisignin").textContent)'),
     'said in the words for a server, not for a MicroVM: ' + await board.run('document.querySelector("#branch .baisignin").textContent'));
+  // Signed in there -- what Codex writes when it is -- and the dialog, still
+  // open, says so in time. Taken away again after
+  await there('mkdir -p ~/.codex && echo \'{"stand-in": true}\' > ~/.codex/auth.json');
+  try {
+    await until(() => board.run('!!(S.branch.ai_sign_in && S.branch.ai_sign_in.state === "yes")'), 'the server\'s AI said to be signed in', 120000)
+      .catch(async (e) => { console.log('    (the dialog has: ' + await board.run('JSON.stringify(S.branch.ai_sign_in || null)') + ')'); throw e; });
+    await until(() => board.run('/サーバーでログイン済みです/.test(document.querySelector("#branch .baisignin").textContent)'), 'the dialog saying so', 10000);
+    check(true, 'signed in on the server, the dialog says so without being closed: ' + await board.run('document.querySelector("#branch .baisignin").textContent'));
+  } finally {
+    await there('rm -rf ~/.codex');
+  }
   await board.shot('2-branch');
   await board.run('document.querySelector("#branch .bgo .go").click(); true');
   await until(() => (desk().folders || []).some((f) => f.host === 'srv' && f.cwd === TREE), 'the worktree written down', 60000);
@@ -313,7 +324,28 @@ try {
   check(/ワークツリーではありません/.test(await flashSaid(/削除していません.*ワークツリーではありません/, 'the refusal of the project\'s folder')), 'the project\'s own folder is never removed');
   // Committed, and not pushed: removed, and the branch stays on the server
   await there(`cd ${TREE} && git add draft.txt && git -c user.name=check -c user.email=check@example.invalid commit -qm draft`);
-  await discard(TREE);
+  // Asked for on the settings, from the folder's own page: the settings call
+  // it a worktree, and hand deleting it to the board, which deletes it on the
+  // server as its own menu does
+  await board.run(`openSettings(null, true, ${JSON.stringify(TREE)}); true`);
+  let folderPage;
+  await until(async () => {
+    const p = portOf(path.join('profiles', 'default'));
+    if (!p) return false;
+    folderPage = (await targetsOf(p)).find((t) => t.type === 'page' && /folder=/.test(t.url));
+    return !!folderPage;
+  }, 'the settings on the worktree\x27s page', 30000);
+  const fp = await connect(folderPage, 'the folder\x27s settings');
+  try {
+    await until(() => fp.run('[...document.querySelectorAll("button.danger")].some(b => b.textContent === "フォルダごと削除")'), 'the delete button on the worktree\x27s page', 30000)
+      .catch(async (e) => { console.log('    (the page says: ' + (await fp.run('document.body.innerText')).replace(/\s+/g, ' ').slice(0, 300) + ')'); throw e; });
+    check(true, 'the settings offer to delete a worktree on a server');
+    await fp.run('[...document.querySelectorAll("button.danger")].find(b => b.textContent === "フォルダごと削除").click(); true');
+    await until(() => fp.run('!!document.querySelector("dialog.confirm-box button.danger")'), 'the question before it goes', 10000);
+    await fp.run('document.querySelector("dialog.confirm-box button.danger").click(); true').catch(() => true);
+  } finally {
+    try { fp.ws.close(); } catch {}
+  }
   // Said once it is gone, and not covered by the settings being read again
   // -- deleting it wrote them
   const saidGone = until(() => board.run('S.flash || ""').then((t) => /check-ssh を削除しました/.test(t)), 'the board saying it is gone', 90000);

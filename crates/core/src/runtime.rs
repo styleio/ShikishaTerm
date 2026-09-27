@@ -8760,6 +8760,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
         for ask in shell.mail().take_branches() {
+            // Asked about no folder at all: the dialog is closed, or has no
+            // project yet. Nothing is kept looking for it -- whether the
+            // checkout's AI is signed in was asked of its machine every
+            // minute after the dialog had gone, and woke a paused one
+            if ask.from.trim().is_empty() && !ask.make {
+                branch_view = None;
+                bases_watch = None;
+                ai_signin_watch = None;
+                signin_waiting = None;
+                continue;
+            }
             let from = std::path::PathBuf::from(&ask.from);
             let name = ask.branch.clone();
             // The machines this could be made on besides this one

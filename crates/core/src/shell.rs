@@ -8465,6 +8465,10 @@ function closeBranch() {
   const b = document.getElementById("branch");
   if (b) b.hidden = true;
   branchFrom = "";
+  // Said to the app, which otherwise goes on asking the machines the dialog
+  // was about -- a checkout's AI sign-in every minute, waking a paused one
+  clearTimeout(branchTimer);
+  send({kind:"branch", from:"", branch:"", base:"", make:false, carry:[], seq:branchSeq});
 }
 // Asks what would happen. Not on every letter -- a name is typed in bursts,
 // and a question per keystroke would answer about halves of words
