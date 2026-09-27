@@ -659,8 +659,14 @@ try {
     check(/^http:\/\/127\.0\.0\.1:\d+\/$/.test(url), 'carried to this PC\x27s own loopback: ' + url);
     const got = await fetch(url).then((r) => r.text()).catch((e) => String(e));
     check(got.trim() === 'served-from-the-server', 'what the server serves is read here: ' + got.trim().slice(0, 60));
-    await until(() => board.run(`(S.tabs || []).some(t => t.name === "shikisha-test:${PORT_THERE}")`), 'a browser tab on it', 30000);
-    check(true, 'and opened in a browser tab here');
+    // A tab of the folder, beside its other tabs, written down as the port
+    // over there -- the port here is chosen afresh on every start
+    await until(() => board.run(`(S.tabs || []).some(t => t.name === ":${PORT_THERE}" && t.group === (S.groups || []).indexOf(${rg}))`), 'a browser tab on it, in the folder', 30000)
+      .catch(async (e) => { console.log('    (the tabs: ' + await board.run('JSON.stringify((S.tabs || []).map(t => [t.name, t.group]))') + ')'); throw e; });
+    check(true, 'and opened in a browser tab of the folder, beside its other tabs');
+    const written = (desk().folders || []).filter((f) => f.cwd === REPO && f.host);
+    check(written.some((f) => (f.tabs || []).some((t) => t.command === `browser far://${PORT_THERE}`)),
+      'written down in the folder as the port over there: ' + JSON.stringify(written.map((f) => f.tabs)));
     await board.run('closeFolderMenu(); true');
   } finally {
     await there(`pkill -f "http.server ${PORT_THERE}"; rm -rf ~/shk-serve; true`);

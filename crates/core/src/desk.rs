@@ -1022,6 +1022,32 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
 mod calling_home_tests {
     use super::*;
 
+    /// A page written as a port of its folder's machine opens at the address
+    /// that port is carried to here; any other address opens as written, and
+    /// such a port in a folder on this PC is refused rather than guessed at
+    #[test]
+    fn a_far_page_opens_where_its_port_is_carried() {
+        assert_eq!(far_port_of("far://8000"), Some(8000));
+        assert_eq!(far_port_of("far://8000/"), Some(8000));
+        assert_eq!(far_port_of("https://8000-x.e2b.app"), None);
+        assert_eq!(far_port_of("far://nope"), None);
+        let json = r#"{
+          "hosts": [ {"name":"srv", "at":"ssh://me@127.0.0.1:1"} ],
+          "desks": [ { "name":"w", "id":"w", "folders": [
+            {"cwd":"/home/me/site", "host":"srv", "tabs": [ {"id":"p","name":":38123","command":"browser far://38123"} ]},
+            {"cwd":"C:\\work", "tabs": [ {"id":"q","name":"q","command":"browser far://38124"},
+                                          {"id":"r","name":"r","command":"browser https://example.com/"} ]} ] } ]
+        }"#;
+        let cfg: config::Config = serde_json::from_str(json).expect("the settings cannot be read");
+        let (desks, _) = cfg.resolve_desks();
+        let d = &desks[0];
+        let tab = |id: &str| d.tabs.iter().find(|t| t.cfg.id.as_deref() == Some(id)).expect("the tab");
+        let far = page_address(d, tab("p"), "far://38123").expect("carried");
+        assert!(far.starts_with("http://127.0.0.1:") && far.ends_with('/'), "{far}");
+        assert!(page_address(d, tab("q"), "far://38124").is_err(), "a folder here has no machine to carry from");
+        assert_eq!(page_address(d, tab("r"), "https://example.com/").as_deref(), Ok("https://example.com/"));
+    }
+
     /// A tab in a folder on another machine runs its command there: typed
     /// into the shell that opened, once it stands in the folder. A shell
     /// named as the command is nothing to type, since the one that opened is
@@ -1392,6 +1418,33 @@ fn cwd_string(folder: Option<&config::Folder>) -> Option<String> {
     (!at.trim().is_empty()).then_some(at)
 }
 
+/// Where a page written in the settings opens. As written -- except
+/// `far://PORT`, which is that port of the machine its folder is on (a server
+/// reached over SSH, or a private MicroVM), carried to this PC's own loopback
+/// the moment it is opened: the port here is chosen then and differs from
+/// start to start, so it is the port over there that is written down.
+/// Carrying opens a listener here and nothing more, so this does not wait on
+/// the machine
+pub fn page_address(desk: &config::Desk, ft: &config::FlatTab, url: &str) -> Result<String, String> {
+    let Some(port) = far_port_of(url) else { return Ok(url.to_string()) };
+    let host = desk
+        .folder_of(ft)
+        .and_then(|f| f.host.clone())
+        .ok_or_else(|| crate::i18n::tp("err.desk.far_page_here", &[("url", url)]))?;
+    let here = match host.is_made() {
+        true => crate::e2b::forward(&host, port),
+        false => config::host_spec(&host).and_then(|s| crate::ssh::forward(&s, port)),
+    }
+    .map_err(|e| format!("{e:#}"))?;
+    Ok(format!("http://127.0.0.1:{here}/"))
+}
+
+/// The port a `far://PORT` page names, when that is what it is
+pub fn far_port_of(url: &str) -> Option<u16> {
+    let rest = url.trim().strip_prefix("far://")?;
+    rest.trim_end_matches('/').parse().ok()
+}
+
 /// Launches the tabs for a desk (called on first activation)
 /// Opens the browsers declared in config.
 ///
@@ -1439,6 +1492,13 @@ pub fn open_declared_browsers(desk: &config::Desk, caps: &hooks::Caps, errors: &
                 ft.cfg.private,
             )
             .calling_itself(ft.cfg.user_agent.clone());
+            let url = match page_address(desk, ft, &url) {
+                Ok(u) => u,
+                Err(e) => {
+                    errors.push(crate::i18n::tp("err.desk.browser_open", &[("id", &name), ("e", &e)]));
+                    continue;
+                }
+            };
             if let Err(e) = caps.browser_open(&name, &url, profile) {
                 errors.push(crate::i18n::tp(
                     "err.desk.browser_open",

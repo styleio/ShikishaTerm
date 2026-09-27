@@ -6088,7 +6088,9 @@ function parseBrowser(c) {
 }
 const buildBrowser = o => (o.head || "browser") + " " + (o.url || "");
 /// Whether the URL can be embedded in the window. file: and data: can't be opened
-const openableUrl = u => /^https?:\/\/\S/i.test((u || "").trim());
+const openableUrl = u => /^https?:\/\/\S/i.test((u || "").trim()) || !!farPortOf(u);
+// A port of the folder's machine, carried to this PC when the page is opened
+const farPortOf = u => { const m = /^far:\/\/(\d+)\/?$/i.exec((u || "").trim()); return m ? m[1] : null; };
 
 // Model (API connection). The primitive is a single "model provider/model-name" line.
 // The provider is everything up to the first "/"; the rest is the whole model name (split only
@@ -15188,7 +15190,10 @@ function kindPanel(t, cmdInput, rebuild, real) {
     const note = el("span", {class:"hint"});
     const check = () => {
       const bad = web.url && !openableUrl(web.url);
-      note.textContent = bad ? T["settings.browser.url.bad"] : T["settings.browser.url.hint"];
+      const far = farPortOf(web.url);
+      note.textContent = bad ? T["settings.browser.url.bad"]
+        : far ? (T["settings.browser.url.far"] || "").replaceAll("{port}", far)
+        : T["settings.browser.url.hint"];
       note.style.color = bad ? "var(--danger)" : "";
     };
     u.addEventListener("input", () => { web.url = u.value.trim(); check(); upd(); });

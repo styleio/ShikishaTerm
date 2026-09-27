@@ -7729,7 +7729,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             });
             let Some(host) = host else { continue };
             let server = !host.is_made();
-            far_ports_view = Some(crate::uistate::FarPortsState { folder: folder.clone(), server, busy: true, ..Default::default() });
+            // Asked again: what was said last stays while the machine is
+            // asked, on the list and here -- a line still on the screen is
+            // one that can still be pressed, and is not "no longer listed"
+            let (ports, private) = far_ports_view
+                .as_ref()
+                .filter(|v| v.folder == folder && !v.busy && v.error.is_empty())
+                .map(|v| (v.ports.clone(), v.private))
+                .unwrap_or_default();
+            far_ports_view = Some(crate::uistate::FarPortsState { folder: folder.clone(), server, busy: true, ports, private, ..Default::default() });
             let tx = far_ports_tx.clone();
             std::thread::spawn(move || {
                 // A private MicroVM's addresses answer nobody from outside:
@@ -7881,11 +7889,34 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
             };
-            let short = crate::uistate::place_of(std::path::Path::new(&folder)).1.to_string_lossy().trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_string();
-            let name = format!("{short}:{port}");
-            match caps.browser_open(&name, &url, shikisha_shared::BrowserProfile::shared_default()) {
-                Ok(()) => reveal = Some((name, Instant::now() + Duration::from_secs(10))),
-                Err(e) => flash = Some(format!("{e:#}")),
+            // A tab of the folder, written down beside its other tabs: it
+            // stands in the folder's row with them, and is there again the
+            // next time the app starts. An address anybody can open is kept
+            // as it is; one carried to this PC is kept as the port over there
+            // (far://PORT), carried again whenever it is opened. One already
+            // there for the same address is brought forward, not made twice
+            let written = match (view.server, view.private) {
+                (false, false) => url.clone(),
+                _ => format!("far://{port}"),
+            };
+            let Some(desk) = desks.get(desk_index) else { continue };
+            let key = std::path::PathBuf::from(&folder);
+            let have = desk.tabs.iter().find(|ft| {
+                desk.folder_of(ft).and_then(|f| f.place()).is_some_and(|p| crate::uistate::same_folder(&p, &key))
+                    && config::browser_url_of(&ft.cfg.command.argv()).as_deref() == Some(written.as_str())
+            });
+            if let Some(ft) = have {
+                reveal = Some((ft.page_key(), Instant::now() + Duration::from_secs(10)));
+                continue;
+            }
+            let (on, cwd) = crate::uistate::place_of(&key);
+            let line = serde_json::json!({ "name": format!(":{port}"), "command": format!("browser {written}") });
+            match config::add_tab_at(&config::config_file_path(), &desk.name, line, Some(&cwd), on.as_deref(), config::NewFolder::Refused) {
+                Ok(id) => {
+                    reveal = Some((id, Instant::now() + Duration::from_secs(20)));
+                    watcher.poke();
+                }
+                Err(e) => flash = Some(e),
             }
         }
         while let Ok(answer) = far_ports_rx.try_recv() {

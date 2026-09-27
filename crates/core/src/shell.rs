@@ -7649,8 +7649,9 @@ function drawFarPorts() {
           copyText(p.url).then(() => toast(T["tui.urls.copied"] || ""));
         }}, pickIcon("copy"))
       : null;
+    // Chosen: the list goes, and the page comes up as a tab of the folder
     rows.push(el("div", {class:"aphost farport", title:(T["tui.urls.open"] || "").replaceAll("{port}", p.port),
-        onclick:() => send({kind:"farpage", folder:o.folder, port:p.port})},
+        onclick:() => { closeFolderMenu(); farPortsOpen = null; send({kind:"farpage", folder:o.folder, port:p.port}); }},
       el("span", {class:"nm"}, ":" + p.port), el("span", {class:"at"}, p.url || say("tui.urls.not_yet")), copy));
   }
   // How a server is started differs from project to project: the folder's

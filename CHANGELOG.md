@@ -341,6 +341,16 @@ once it reaches its first tagged release.
   deletes the original", which never happens: the links are taken out first.
 
 ### Fixed
+- **A machine's port opens as a tab of its folder.** Opening a port from a
+  folder's list of ports put up a page of its own, in no folder: the row
+  showed that page alone, and it was gone on the next start. It is now a
+  browser tab written into the folder, beside its other tabs, and there
+  again on the next start. An address anybody can open is kept as it is; a
+  port carried to this PC (a server's, a private MicroVM's) is kept as the
+  port over there, `far://PORT`, and carried again each time it is opened --
+  the settings page takes that as an address and says what it is. A port
+  pressed while the list was being asked again was said to be no longer
+  listed; the list keeps what it said last while it asks.
 - **"Public URL" on a MicroVM folder's menu shows its addresses.** Pressed
   while a terminal in the folder was at work, it did nothing: the list was
   hung on the folder's card, which is built again every time a tab in it

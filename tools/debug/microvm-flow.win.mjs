@@ -622,6 +622,19 @@ try {
   await board.run('(() => { const t = (S.tabs || []).find(t => t.name === "サーバー起動"); if (t) send({kind:"closetab", tab:t.index, key:t.key || "", sure:true}); return true; })()');
   await until(() => board.run('!(S.tabs || []).some(t => t.name === "サーバー起動")'), 'that tab closed', 30000);
   await board.run(`openFarPorts(${g}, {clientX: 200, clientY: 200}); true`);
+  // A port pressed is a browser tab of the folder, beside its other tabs, and
+  // written down there: the folder's row still holds every tab it had
+  await until(() => board.run('!!document.querySelector(".fmenu.farports .farport")'), 'the list again', 60000);
+  const before = await board.run(`(S.tabs || []).filter(t => t.group === (S.groups || []).indexOf(${g})).length`);
+  await board.run('document.querySelector(".fmenu.farports .farport").click(); true');
+  await until(() => board.run(`(S.tabs || []).some(t => t.name === ":8000" && t.group === (S.groups || []).indexOf(${g}))`), 'the page as a tab of the folder', 30000)
+    .catch(async (e) => { console.log('    (the tabs: ' + await board.run('JSON.stringify((S.tabs || []).map(t => [t.name, t.group]))') + ')'); throw e; });
+  check(await board.run(`(S.tabs || []).filter(t => t.group === (S.groups || []).indexOf(${g})).length`) === before + 1,
+    'the port opens as one more tab of the folder, and its other tabs stay beside it');
+  check((folderAt(wt.cwd).tabs || []).some((t) => t.command === `browser https://8000-${wt.sandbox}.e2b.app`),
+    'and it is written down in the folder, to be there on the next start');
+  check(!(await board.run('!!document.querySelector(".fmenu.farports")')), 'the list is put away once a port is chosen');
+  await board.run(`openFarPorts(${g}, {clientX: 200, clientY: 200}); true`);
   await board.shot('3b-urls');
   if (p8000) {
     const got = await fetch(p8000.url).then((r) => r.text()).catch((e) => String(e));
