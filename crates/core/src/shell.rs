@@ -283,14 +283,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #setup .sfield, #addproj .sfield { display:flex; flex-direction:column; gap:var(--s2); }
   #setup .slabel, #addproj .slabel { font-size:12px; font-weight:500; color:var(--text); }
   #setup .shint, #addproj .shint { font-size:11.5px; color:var(--faint); line-height:1.5; }
-  .vmmore { display:flex; align-items:center; gap:var(--s2); background:none; border:0; padding:0;
-    color:var(--dim); font:inherit; font-size:12px; cursor:pointer; }
-  .vmmore:hover { color:var(--text); }
-  .vmmore .caret { font-size:9px; display:inline-block; }
-  .vmmore[aria-expanded="true"] .caret { transform:rotate(90deg); }
-  .vmadv { margin:var(--s2) 0 0 var(--s3); }
-  .vmadv .vmcheck { display:flex; align-items:center; gap:var(--s2); font-size:13px; cursor:pointer; }
-  .vmadv .vmhint { font-size:11.5px; color:var(--faint); line-height:1.5; margin-top:2px; }
+  .vmvis { display:flex; flex-direction:column; gap:var(--s1); border-radius:6px; }
+  .vmvis.need { outline:2px solid var(--warn, #d9822b); outline-offset:3px; }
+  .vmvis .vmlabel { font-size:12px; color:var(--dim); }
+  .vmvis .vmopt { display:flex; align-items:baseline; gap:var(--s2); font-size:13px; cursor:pointer; }
+  .vmvis .vmopt .vmsay { font-size:11.5px; color:var(--faint); }
+  .vmvis .vmloses { font-size:11.5px; color:var(--dim); line-height:1.5; margin:2px 0 0 var(--s4); }
   /* Cards to pick one AI from. A card is the size of a thing to press with a
      finger, and wears its AI's colour where a tab row does: the left edge and
      the name. Picked is the selection's own recipe -- the raised surface and the
@@ -5980,8 +5978,10 @@ function apMicrovm(body) {
   // The AI its machine is given, installed once there and in every worktree after
   let ai = defaultMachineAi();
   const aiPick = machineAiPick(ai, v => { ai = v; });
-  // Unlisted unless said otherwise, under the advanced fold
-  let priv = false;
+  // Who can open what its machines serve: chosen here, every time, since a
+  // machine keeps it for good. Nothing is chosen until somebody chooses
+  let priv = null;
+  const vis = vmVisibility(priv, v => { priv = v; go.check(); });
   let lookAsk = 0;
   const look = () => {
     if (!apVm || !url.value.trim()) { drawSignIn(signin, null, false); return; }
@@ -6003,10 +6003,11 @@ function apMicrovm(body) {
   const prog = apProgress();
   const go = apGo(T["tui.addproj.clone.go"] || "", () =>
       !url.value.trim() ? {at:url, why:T["tui.addproj.clone.need_url"] || ""}
-      : !apVm ? {at:vm, why:T["tui.addproj.microvm.need_vm"] || ""} : null,
+      : !apVm ? {at:vm, why:T["tui.addproj.microvm.need_vm"] || ""}
+      : priv === null ? {at:vis, why:T["tui.microvm.visibility.need"] || ""} : null,
     () => {
       apAsk = Date.now();
-      send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai, account, private:priv});
+      send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai, account, private:priv === true});
       apLive.running = true;
       drawAddProject();
     });
@@ -6017,7 +6018,7 @@ function apMicrovm(body) {
     signin,
     el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.microvm.ai"] || ""), aiPick,
       el("div", {class:"shint"}, T["tui.microvm.ai.hint"] || "")),
-    el("div", {class:"sfield"}, vmAdvanced(priv, v => { priv = v; })),
+    el("div", {class:"sfield"}, vis),
     el("div", {class:"apfoot"}, go.why, go.btn, prog.bar));
   url.addEventListener("input", () => { drawAcct(); go.check(); lookLater(); });
   url.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); go.btn.click(); } });
@@ -8158,7 +8159,7 @@ function openBranch(g, preset) {
   branchDone = (S && S.branch && S.branch.done && S.branch.folder) || "";
   branchHost = "";
   branchMachineAi = "";
-  branchPrivate = false;
+  branchPrivate = null;
   const dest = document.getElementById("bdest");
   if (dest) { dest.dataset.said = ""; dest.textContent = ""; }
   const q = document.getElementById("bq");
@@ -8562,7 +8563,7 @@ function askBranch() {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:false, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, machine_ai:branchMachineAi, private:branchPrivate, seq:branchSeq});
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, machine_ai:branchMachineAi, private:branchPrivate === true, seq:branchSeq});
   }, 180);
 }
 
@@ -8882,7 +8883,7 @@ function drawDest(b, p) {
       say.append(el("div", {}, T["tui.branch.dest.first_vm.say"] || ""),
         el("div", {class:"bmachineai"}, el("span", {class:"blabel"}, T["tui.microvm.ai"] || ""),
           machineAiPick(branchMachineAi, v => { branchMachineAi = v; askBranch(); })),
-        vmAdvanced(branchPrivate, v => { branchPrivate = v; }));
+        vmVisibility(branchPrivate, v => { branchPrivate = v; b.querySelector(".berr").textContent = ""; }));
     }
   }
   // The project says another AI than its machines have: changed in the
@@ -9201,8 +9202,9 @@ function loginMirror(box, screen) {
 // worktree dialog. Empty until chosen: then the app installs what the
 // project says
 let branchMachineAi = "";
-// The same, whether those machines are private (see vmAdvanced)
-let branchPrivate = false;
+// The same, whether those machines are private (see vmVisibility): null
+// until chosen
+let branchPrivate = null;
 
 // Whose repository an address names, lowercased: `acme` for
 // https://github.com/acme/site.git and for git@github.com:acme/site
@@ -9215,28 +9217,36 @@ function ownerOfUrl(url) {
   return parts.length >= 3 ? parts[1].toLowerCase() : "";
 }
 
-// A MicroVM's advanced choices, folded shut: who can open what it serves.
-// Unlisted is what it is unless ticked -- anybody with an address may open
-// it, as a video shared by its link; private is nobody from outside, and a
-// port is opened in this app's browser tab with the machine's own key. Said
-// once, when the project's first machine there is made, and kept by every
-// worktree copied from it
-function vmAdvanced(isPrivate, onChange) {
-  const tick = el("input", {type:"checkbox"});
-  tick.checked = !!isPrivate;
-  tick.addEventListener("change", () => onChange(tick.checked));
-  const inner = el("div", {class:"vmadv"},
-    el("label", {class:"vmcheck"}, tick, el("span", {}, T["tui.microvm.private"] || "")),
-    el("div", {class:"vmhint"}, T["tui.microvm.private.hint"] || ""));
-  inner.hidden = true;
-  const more = el("button", {type:"button", class:"vmmore", "aria-expanded":"false"},
-    el("span", {class:"caret"}, "\u25B8"), el("span", {}, T["tui.microvm.advanced"] || ""));
-  more.onclick = () => {
-    inner.hidden = !inner.hidden;
-    more.setAttribute("aria-expanded", String(!inner.hidden));
+// Who can open what a MicroVM serves, chosen before it is made: a machine
+// keeps it for good, so it is asked every time and never left to a default
+// nobody read. Unlisted: anybody who has an address, as a video shared by
+// its link. Private: nobody from outside, and a port is opened in this app's
+// browser tab with the machine's own key. What private gives up is said
+// only once it is chosen -- said always, it is noise for the many who never
+// choose it. `value` is null until chosen, then true or false
+function vmVisibility(value, onChange) {
+  const name = "vmvis" + (++vmVisSeq);
+  const loses = el("div", {class:"vmloses"}, T["tui.microvm.private.loses"] || "");
+  loses.hidden = value !== true;
+  const box = el("div", {class:"vmvis", role:"radiogroup", tabindex:"-1"});
+  const opt = (v, label, say) => {
+    const r = el("input", {type:"radio", name});
+    r.checked = value === v;
+    r.addEventListener("change", () => {
+      if (!r.checked) return;
+      loses.hidden = v !== true;
+      box.classList.remove("need");
+      onChange(v);
+    });
+    return el("label", {class:"vmopt"}, r, el("span", {}, label), el("span", {class:"vmsay"}, say));
   };
-  return el("div", {class:"vmadvbox"}, more, inner);
+  box.append(el("span", {class:"vmlabel"}, T["tui.microvm.visibility"] || ""),
+    opt(false, T["tui.microvm.unlisted"] || "", T["tui.microvm.unlisted.say"] || ""),
+    opt(true, T["tui.microvm.private"] || "", T["tui.microvm.private.say"] || ""),
+    loses);
+  return box;
 }
+let vmVisSeq = 0;
 // Choosing the AI a MicroVM is given: the ones that can be installed there,
 // and "none". What is chosen is on screen from the start -- the assistant AI
 // when it is one of them, else the first one this PC has, else the first --
@@ -9553,11 +9563,23 @@ function applyCarryLines(b, lines) {
       proj.focus();
       return;
     }
+    // A MicroVM's first machine for this project: who can open what it
+    // serves is chosen before it is made, since the machine keeps it
+    const vis = b.querySelector(".bdestsay .vmvis");
+    if (vis && branchPrivate === null) {
+      const err = b.querySelector(".berr");
+      err.textContent = T["tui.microvm.visibility.need"] || "";
+      vis.classList.remove("need");
+      void vis.offsetWidth;
+      vis.classList.add("need");
+      vis.focus();
+      return;
+    }
     const q = document.getElementById("bq");
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:true, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, machine_ai:branchMachineAi, private:branchPrivate, adopt,
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, machine_ai:branchMachineAi, private:branchPrivate === true, adopt,
           auto:branchAuto(), seq:branchSeq});
   };
   b.querySelector(".bgo .go").onclick = () => makeIt(false);
@@ -22374,7 +22396,7 @@ mod tests {
             "the server is not asked which GitHub accounts it holds");
         assert!(PAGE.contains("const walker = apWalker(parent);") && PAGE.contains("const walker = apWalker(path);"),
             "the two pages that walk a server do not share the walker");
-        assert!(PAGE.contains(r#"send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai, account, private:priv});"#),
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai, account, private:priv === true});"#),
             "a project cannot be cloned onto a MicroVM");
         assert!(PAGE.contains(r#"addMicrovm(name => { apVm = name; drawVm(); go.check(); look(); });"#),
             "a MicroVM cannot be added from where it is chosen");

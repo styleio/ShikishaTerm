@@ -65,11 +65,10 @@ pub struct ProjectSpec {
     /// deleted there is made again from this
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
-    /// Its MicroVMs are private: what they serve answers only this app, which
-    /// carries each machine's token, and not anybody who has the address.
-    /// Absent is unlisted -- anybody with an address may open it. Said when
-    /// its checkout on a MicroVM is made, and kept by every worktree copied
-    /// from it; a machine made before it was said keeps what it was made with
+    /// Written by one build only, for a whole project: that a machine of it
+    /// was made private. What each checkout's machine is, is its own
+    /// ([`ProjectHome::private`]); this is read once, to learn that from the
+    /// service for the checkouts made then, and taken off
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub microvm_private: bool,
     /// The git account the column beside a folder of this project fetches,
@@ -146,6 +145,12 @@ pub struct ProjectHome {
     /// what is written now, and say when the machine has not had it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared: Option<String>,
+    /// For a MicroVM: whether the checkout's machine was made private (see
+    /// `e2b::Asking::private`), as chosen when it was made. Every worktree
+    /// copied from it is the same; a machine keeps it for good. Absent on a
+    /// checkout made before this was written: unlisted, as every machine was
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private: Option<bool>,
 }
 
 impl ProjectSpec {

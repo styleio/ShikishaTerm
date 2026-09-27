@@ -214,6 +214,20 @@ try {
   const aiPick = '[...document.querySelectorAll("#addproj select")].find(s => [...s.options].some(o => o.value === "claude"))';
   check(await board.run(`!!${aiPick} && ${aiPick}.value === "claude"`), 'the AI to install is chosen from the start: Claude Code');
   if (!(await board.run(`!!${aiPick}`))) console.log('    (the board has: ' + JSON.stringify(await board.run('({ais: S.machine_ais, assistant: S.assistant, selects: [...document.querySelectorAll("#addproj select")].map(s => s.outerHTML.slice(0, 200))})')) + ')');
+  // Who can open what it serves is chosen before it is made, never left to
+  // a default: pressed without a choice, it is asked for; what private gives
+  // up is said only once private is chosen
+  check(await board.run('!!document.querySelector("#addproj .vmvis") && ![...document.querySelectorAll("#addproj .vmvis input")].some(i => i.checked)'),
+    'who can open it is asked, with nothing chosen');
+  check(await board.run('document.querySelector("#addproj .vmvis .vmloses").hidden'), 'what private gives up is not said before it is chosen');
+  await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
+  check(await board.run('!document.getElementById("addproj").hidden && !(S.making || []).some(m => m.name === "Hello-World")'),
+    'pressed without choosing, nothing is made');
+  await board.run('(() => { const r = document.querySelectorAll("#addproj .vmvis input")[1]; r.checked = true; r.dispatchEvent(new Event("change")); })(); true');
+  check(await board.run('!document.querySelector("#addproj .vmvis .vmloses").hidden'), 'chosen private, what it gives up is said');
+  // This run's machines are unlisted: 4b opens what one serves from anywhere
+  await board.run('(() => { const r = document.querySelectorAll("#addproj .vmvis input")[0]; r.checked = true; r.dispatchEvent(new Event("change")); })(); true');
+  check(await board.run('document.querySelector("#addproj .vmvis .vmloses").hidden'), 'chosen unlisted, it is not said');
   await board.shot('1-clone');
 
   console.log('2. the checkout, on a machine of its own, as a row on the board');
@@ -235,6 +249,7 @@ try {
     .catch(async (e) => { console.log('    (the board says: ' + JSON.stringify(await board.run('S.making')) + ')'); throw e; });
   const home = project().homes[0];
   check(home.host === vm.name && home.at === CHECKOUT, 'the checkout is where it says: ' + JSON.stringify(home));
+  check(home.private === false && !project().microvm_private, 'the machine is written down as unlisted, as chosen, on the checkout and not the project');
   check(project().git_account === 'check', 'the account it signed in as is the project\'s own');
   check(!!folderAt(CHECKOUT) && folderAt(CHECKOUT).sandbox === home.sandbox && folderAt(CHECKOUT).project === PROJECT,
     'the checkout has a folder of its own on the desk, on its machine');

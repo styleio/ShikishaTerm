@@ -769,6 +769,47 @@ pub fn prepare_targets(desk_id: &str, project: &str) -> Result<Targets, String> 
     Ok(Targets { preparing: Preparing::of(p.machine_ai.as_deref(), p.machine_setup.as_deref()), homes, worktrees })
 }
 
+/// Learns, for the checkouts made while a whole project said "private"
+/// (`ProjectSpec::microvm_private`, written by one build only), what each
+/// machine really is, from the service's records -- which do not wake a
+/// paused one -- and writes it on the checkout; then takes the project's
+/// word off. A service that cannot be asked is asked again the next time the
+/// app starts. Once, on a thread of its own
+pub fn settle_private_homes() {
+    std::thread::spawn(|| {
+        let Some(cfg) = crate::config::load() else { return };
+        let (desks, _) = cfg.resolve_desks();
+        for d in &desks {
+            for p in d.projects.iter().filter(|p| p.microvm_private) {
+                let mut all = true;
+                for home in p.homes.iter().filter(|h| h.private.is_none()) {
+                    let Some(host) = cfg.hosts.iter().find(|x| x.name == home.host && x.is_made()) else { continue };
+                    let Some(id) = home.sandbox.as_deref() else { continue };
+                    match crate::e2b::is_private(&host.with_instance(Some(id))) {
+                        Ok(private) => {
+                            let said = crate::config::ProjectHome { private: Some(private), ..home.clone() };
+                            if let Err(e) = crate::config::set_project_home(&d.id, &p.name, &said, None) {
+                                all = false;
+                                crate::append_hook_log(&format!("could not write what {} on {} was made as: {e:#}", p.name, home.host));
+                            }
+                        }
+                        // Gone from the service: nothing to learn, and nothing to ask again
+                        Err(e) if crate::e2b::is_gone(&e) => {}
+                        Err(e) => {
+                            all = false;
+                            crate::append_hook_log(&format!("could not ask what {} on {} was made as: {e:#}", p.name, home.host));
+                        }
+                    }
+                }
+                if all
+                    && let Err(e) = crate::config::set_project_flag(&d.id, &p.name, "microvm_private", false) {
+                        crate::append_hook_log(&format!("could not take the old private mark off {}: {e:#}", p.name));
+                    }
+            }
+        }
+    });
+}
+
 /// One line of a machine setup the assistant AI proposes, with why
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SetupLine {
@@ -1236,6 +1277,7 @@ mod tests {
             placement: None,
             sandbox: None,
             prepared: None,
+            private: None,
         };
         assert_eq!(ai_sign_in_note(&host, Some(&home), None, FRESH), None);
         assert_eq!(ai_sign_in_note(&host, Some(&home), Some(NO_AI), FRESH), None);

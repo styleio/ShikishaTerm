@@ -12456,10 +12456,17 @@ function microvmNow(p) {
     // project just added that press is the way on, and there is no other
     ...microvmHomes(p).map(h => el("div", {class: h.prepared === want ? "hint" : "hint caution"},
       fill(T[h.prepared === want ? "settings.microvm.done" : firstFlow ? "settings.microvm.not_done_first" : "settings.microvm.not_done"], {host: h.host}))),
-    // Who can open what its machines serve: chosen when its first machine
-    // there was made, and not changed here -- a machine keeps what it was
-    // made with
-    el("div", {class:"hint"}, T[e.microvm_private ? "settings.microvm.private" : "settings.microvm.unlisted"]),
+    // Who can open what each checkout's machines serve: chosen when that
+    // machine was made, and kept by it -- one line per machine, since two
+    // MicroVMs of one project can have been made differently. One made
+    // before it was written down is unlisted, as every machine then was --
+    // unless its project was marked private, when the service is being
+    // asked (microvm::settle_private_homes)
+    ...microvmHomes(p).map(h => {
+      const priv = typeof h.private === "boolean" ? h.private : (e.microvm_private ? null : false);
+      return el("div", {class:"hint"},
+        fill(T[priv === true ? "settings.microvm.private" : priv === false ? "settings.microvm.unlisted" : "settings.microvm.visibility_unknown"], {host: h.host}));
+    }),
   ];
 }
 // The parts: the AI, the machine setup with the AI to write it, and the

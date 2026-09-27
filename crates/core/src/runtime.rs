@@ -258,6 +258,7 @@ impl Pending {
             placement: None,
             sandbox: Some(id.clone()),
             prepared: self.making.machines().prepared,
+            private: Some(plan.private),
         };
         // A project nobody had written down is written down with its checkout
         // here, so the folders here stay in it
@@ -278,10 +279,7 @@ impl Pending {
         if !plan.origin.trim().is_empty() {
             config::set_project_value(&self.desk_id, &plan.project, "origin", Some(plan.origin.trim()))?;
         }
-        // And, made private, that it is: its next checkout is made so too
-        if plan.private {
-            config::set_project_flag(&self.desk_id, &plan.project, "microvm_private", true)?;
-        }
+
         // A checkout made again in place of one gone from the service stands
         // in the folder the old one had, tabs and all: only its machine changes
         let key = crate::uistate::place_key(Some(&host.name), &plan.main);
@@ -885,9 +883,13 @@ fn far_of(
             .as_deref(),
             project.and_then(|p| p.machine_setup.as_deref()),
         ),
-        // What the project says; for one whose first checkout this makes,
-        // what the dialog chose too
-        private: project.is_some_and(|p| p.microvm_private) || private,
+        // What its checkout there was made as -- a worktree is a copy of it,
+        // and a checkout made again in its place is made the same -- else,
+        // for the first one there, what the dialog chose
+        private: project
+            .and_then(|p| p.home_on(&host.name))
+            .and_then(|h| h.private)
+            .unwrap_or(private),
     };
     (far, account, sign_in)
 }
@@ -1506,6 +1508,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         ssh::use_secrets(tokens.clone());
         // The sandbox service's key travels with the rest, under its own name
         crate::e2b::use_key(tokens.get("e2b_api_key").cloned());
+        // What each MicroVM checkout was made as, where only its project said
+        crate::microvm::settle_private_homes();
         // ...and what a git typed in a terminal signs in with, for the same
         // reason: the tab is handed its account's token as it starts
         crate::git::use_secrets(tokens);
@@ -7724,8 +7728,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let tx = far_ports_tx.clone();
             std::thread::spawn(move || {
                 // A private MicroVM's addresses answer nobody from outside:
-                // listed without them, and carried here when opened
-                let private = !server && crate::e2b::is_private(&host).unwrap_or(false);
+                // listed without them, and carried here when opened. One
+                // whose kind could not be learnt is not taken for unlisted:
+                // its addresses would be offered and open nothing
+                let private = match server {
+                    true => Ok(false),
+                    false => crate::e2b::is_private(&host)
+                        .map_err(|e| i18n::tp("tui.urls.unknown", &[("e", &format!("{e:#}"))])),
+                };
+                let private = match private {
+                    Ok(p) => p,
+                    Err(error) => {
+                        let _ = tx.send(crate::uistate::FarPortsState { folder, server, busy: false, error, ..Default::default() });
+                        return;
+                    }
+                };
                 let said = match server {
                     false => crate::microvm::ports_of(&host).map(|ports| match private {
                         true => ports.into_iter().map(|p| crate::uistate::FarPort { url: String::new(), ..p }).collect(),
@@ -8372,9 +8389,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         continue;
                     }
                     let sign_in = git.far(&|k| crate::git::secret(k)).unwrap_or_default();
-                    // Private as the dialog said, or as a project of that
-                    // name already written down says
-                    let private = a.private || written.is_some_and(|p| p.microvm_private);
+                    // As the dialog said: chosen there, every time
+                    let private = a.private;
                     let job = crate::microvm::Checkout::start(h.clone(), &text, &project, sign_in.clone(), preparing.clone(), private);
                     making_seq += 1;
                     vm_jobs.push(VmJob {
@@ -8758,6 +8774,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 placement: None,
                                 sandbox: Some(sandbox.clone()),
                                 prepared: Some(prepared),
+                                private: Some(add.private),
                             };
                             config::set_project_home(&j.desk_id, &add.project, &home, None)
                                 .and_then(|()| match &add.account {
@@ -8771,12 +8788,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 // Where it came from, so a checkout deleted
                                 // later can be made again: nothing here has it
                                 .and_then(|()| config::set_project_value(&j.desk_id, &add.project, "origin", Some(&crate::worktree::fetchable(url))))
-                                // Private, so every checkout made again for it
-                                // is too (its worktrees are copies, and are)
-                                .and_then(|()| match add.private {
-                                    true => config::set_project_flag(&j.desk_id, &add.project, "microvm_private", true),
-                                    false => Ok(()),
-                                })
+
                                 .and_then(|()| {
                                     config::append_folder_starting(
                                         &j.desk,
