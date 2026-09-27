@@ -67,43 +67,63 @@ export const en: LpCopy = {
     image: { src: "/lp/hero.webp", alt: "A conductor with a baton directing four small robots, each at a laptop" },
   },
   scenes: {
-    eyebrow: "For every way of working",
-    title: "Alone, with four agents, or from the train.",
+    eyebrow: "For any workflow",
+    title: "On your PC, as cloud agents, or from your phone.",
     items: [
       {
         id: "parallel",
-        tab: "Run four at once",
-        title: "Four agents in one window. Look only at the one that is waiting.",
+        tab: "Run many at once",
+        title: "Multiple agents in one window. Instantly spot the ones waiting for you.",
         body:
-          "Split one window four ways and give Claude Code, Codex, Gemini and Aider different jobs on the same repository. Every tab says whether it is working, done, or waiting for you, so there is nothing to go looking for.",
-        points: ["A different AI and a different folder per tab", "Ctrl+B 0 turns the four into a list", "What each one costs the machine, and how long it has been quiet"],
+          "Split the screen as many ways as you need and assign Claude Code, Codex, Gemini, Aider, and others to different tasks on the same repository. Every tab shows whether the agent is working, done, or waiting for input, so nothing gets lost.",
+        points: [
+          "Close the app and pick up exactly where you left off",
+          "Works with the AI agents you already use",
+          "Git worktrees: work on multiple branches simultaneously",
+          "Get Slack notifications when tasks complete"
+        ],
         image: { src: "/lp/shot-quad.webp", alt: "Claude Code, Codex, Gemini and Aider running side by side in four panes of one window, each answering a question about the same repository", width: 1760, height: 970 },
       },
       {
-        id: "review",
-        tab: "Write, then review",
-        title: "A writer and a reviewer, looping until it passes.",
+        id: "cloud",
+        tab: "Cloud agents",
+        title: "YOLO mode, without the worry.",
         body:
-          "Say it once: when this one finishes, send the result to the review tab. From then on the hand-off happens without you. Write the rule in Lua, or describe it in plain language and let an AI you already have in a tab write it.",
-        points: ["Messages you on Slack when it is done", "You set how many times work may pass along", "The whole exchange is a transcript you can read"],
-        image: { src: "/lp/shot-desktop.webp", alt: "Several AI agents in one window, each row showing whether it is working, done, or waiting", width: 1600, height: 687 },
+          "Clone your project into a cloud MicroVM and let your agents work side by side in a secure environment. No matter your PC's specs, you can run as many as you want. Each instance is fully isolated, so an agent that goes off the rails will never touch your local machine.",
+        points: [
+          "Fully isolated for permission-free execution",
+          "Run dozens of agents at once with zero local load",
+          "Consistent environments ready on any PC",
+          "Share a preview with your team via URL"
+        ],
+        image: { src: "/lp/shot-microvm.en.webp", alt: "The Clone onto a MicroVM dialog: a Git URL, the MicroVM, the account for the git server, the AI to install, and who can open what the machine serves", width: 558, height: 683 },
       },
       {
-        id: "git",
-        tab: "git in the same window",
-        title: "Stage a piece of a file. Keep the decisions for yourself.",
+        id: "tools",
+        tab: "Built in",
+        title: "Browser, Git, and SFTP built right in. No need to leave the terminal.",
         body:
-          "The git panel opens where a terminal would. You stage a piece of a diff, not the whole file. Write the commit message yourself or have it written for you, and let an AI untangle a merge while you decide.",
-        points: ["The history is on the back of the same panel", "A folder of its own for every branch", "A tab whose folder is missing says so and stops"],
-        image: { src: "/lp/shot-git.webp", alt: "The git panel: branches, files staged for the next commit, a diff with a hunk that can be dropped, and a button that writes the commit message", width: 1600, height: 657 },
+          "Everything you need to build is right inside the terminal. Check your work in a browser tab and let the AI drive it. Stage partial diffs in the Git panel, and transfer files seamlessly to a server over SFTP.",
+        points: [
+          "AI debugs autonomously in the built-in browser",
+          "Stage partial diffs and let AI write the commit message",
+          "AI-assisted merge conflict resolution",
+          "Transfer files seamlessly via SFTP"
+        ],
+        image: { src: "/lp/shot-browser.en.webp", alt: "A travel booking form open in the built-in browser, with an AI filling in the fields", width: 1280, height: 900 },
       },
       {
         id: "away",
         tab: "Answer from the train",
-        title: "See “waiting for you” on the train, and answer in one line.",
+        title: "See who's “waiting for you” on the go, and answer in one line.",
         body:
-          "Scan one QR code and your phone shows what every tab is doing and lets you send instructions. By the time you are back at the desk, the next piece is done. Over Tailscale, only your own devices can reach it.",
-        points: ["On your own Wi-Fi there is nothing to install", "Encrypted all the way", "Everything you can do at the PC, you can do from the phone"],
+          "Scan a QR code to see live tab activity and send instructions right from your phone. By the time you return to your desk, the next task is done. Connections are fully private and secure over Tailscale.",
+        points: [
+          "No dedicated app to install",
+          "Push notifications upon task completion",
+          "End-to-end encrypted",
+          "Full terminal control from your mobile device"
+        ],
         image: { src: "/lp/shot-phone.webp", alt: "SHIKISHA-TERM on a phone: a live list of several agents and their states", width: 533, height: 986, bare: true },
       },
     ],
