@@ -314,11 +314,17 @@ try {
   // Committed, and not pushed: removed, and the branch stays on the server
   await there(`cd ${TREE} && git add draft.txt && git -c user.name=check -c user.email=check@example.invalid commit -qm draft`);
   await discard(TREE);
+  // Said once it is gone, and not covered by the settings being read again
+  // -- deleting it wrote them
+  const saidGone = until(() => board.run('S.flash || ""').then((t) => /check-ssh を削除しました/.test(t)), 'the board saying it is gone', 90000);
   await until(() => !(desk().folders || []).some((f) => f.cwd === TREE), 'the folder off the list', 60000);
   await until(async () => (await there(`test -e ${TREE} && echo there || echo gone`)) === 'gone', 'the folder gone from the server', 60000);
   check(true, 'the worktree is removed on the server');
   check(!(await there(`git -C ${REPO} worktree list --porcelain`)).includes(TREE), 'git there no longer lists it');
   check((await there(`git -C ${REPO} log -1 --format=%s ${BRANCH}`)) === 'draft', 'its branch stays in the repository there, with the commit not pushed');
+  await saidGone;
+  await sleep(3000);
+  check(/check-ssh を削除しました/.test(await board.run('S.flash || ""')), 'the board says it is gone, and a moment later still does: ' + await board.run('S.flash || ""'));
 
   console.log('5. a project cloned onto the server, from a page of its own');
   // The page: the address, the server chosen as a MicroVM is, where on it
@@ -467,6 +473,28 @@ try {
     check(!(await there(`GIT_TERMINAL_PROMPT=0 git ls-remote https://someone-else@github.com/styleio/helloworld.git >/dev/null 2>&1 && echo read || echo refused`)).includes('read'),
       'the same repository asked as another account is not read with styleio\x27s sign-in');
     check(!(desk().folders || []).some((f) => f.host === 'srv' && f.cwd === CLONES), 'and the terminal put there for the step is off the desk');
+
+    console.log('5c. a project of another GitHub account, on the same server');
+    // The second account is read from .private/.env and never written here
+    const U2 = dotenv.GITHUB_HELLO_WORLD_USER2, PAT2 = dotenv.GITHUB_HELLO_WORLD_PAT2;
+    check(!!U2 && !!PAT2, 'a second account and its token are in .private/.env (GITHUB_HELLO_WORLD_USER2, GITHUB_HELLO_WORLD_PAT2)');
+    const SECOND = `https://github.com/${U2}/helloworld.git`;
+    const SECOND_AT = `${CLONES}/second`;
+    // As gh does with two accounts signed in: each one's token for its own
+    // name, and nothing for a name it does not hold
+    await there(`mkdir -p ${SECOND_AT} && git config --global --replace-all credential.https://github.com.helper '!f() { [ "$1" = get ] || exit 0; u=; while read l && [ -n "$l" ]; do case "$l" in username=*) u=\${l#username=};; esac; done; case "$u" in styleio) echo username=styleio; echo password=${PAT};; ${U2}) echo username=${U2}; echo password=${PAT2};; esac; true; }; f'`);
+    await openClone(SECOND);
+    await board.run(`(() => { const p = document.querySelector("#addproj .aprow input.apin"); p.value = ${JSON.stringify(SECOND_AT)}; p.dispatchEvent(new Event("input"));
+      const a = ${acctIn}; a.value = ${JSON.stringify(U2)}; a.dispatchEvent(new Event("input")); return true; })()`);
+    await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
+    await until(() => !!(desk().folders || []).find((f) => f.host === 'srv' && f.cwd === `${SECOND_AT}/helloworld`), 'the second account\x27s clone', 180000)
+      .catch(async (e) => { console.log('    (the board has: ' + await board.run('JSON.stringify({flash: S.flash, making: S.making, step: S.login_step && {state: S.login_step.state, account: S.login_step.account}})') + ')'); throw e; });
+    check((await there(`git -C ${SECOND_AT}/helloworld remote get-url origin`)) === `https://${U2}@github.com/${U2}/helloworld.git`,
+      'the second project signs in as its own account, named in its address');
+    check((await there(`GIT_TERMINAL_PROMPT=0 git -C ${CLONES}/helloworld fetch -q && GIT_TERMINAL_PROMPT=0 git -C ${SECOND_AT}/helloworld fetch -q && echo both`)) === 'both',
+      'both projects fetch on the one server, each as its own account');
+    check(!(await there(`GIT_TERMINAL_PROMPT=0 git ls-remote https://styleio@github.com/${U2}/helloworld.git >/dev/null 2>&1 && echo read || echo refused`)).includes('read'),
+      'the second account\x27s repository is not read as the first account');
   } finally {
     await there('git config --global --unset-all credential.https://github.com.helper; true');
   }

@@ -1167,6 +1167,23 @@ fn server_answers(
     }
 }
 
+/// Whether a reload's message says no more than that the settings were read
+/// again, with the tabs that came and went as they did: nothing failed,
+/// nothing waits for a restart. The parts are the ones `desk::apply_ws_config`
+/// joins, each checked for being one of those words
+fn reload_said_only_that(note: &str) -> bool {
+    let counted = |key: &str, part: &str| {
+        let t = i18n::tp(key, &[("n", "\u{0}")]);
+        let (before, after) = t.split_once('\u{0}').unwrap_or((&t, ""));
+        part.strip_prefix(before)
+            .and_then(|rest| rest.strip_suffix(after))
+            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    };
+    let mut parts = note.split(" / ");
+    parts.next() == Some(i18n::t("msg.config_reloaded").as_str())
+        && parts.all(|p| counted("msg.config_added", p) || counted("msg.config_removed", p))
+}
+
 /// Whether this tab is the only one that could have left "the newest
 /// conversation in this folder" — same program, same folder.
 ///
@@ -2723,7 +2740,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let from_setup = setup_reload
                     .take()
                     .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(10));
-                if !from_setup {
+                // A reload that only says it happened does not cover what was
+                // said a moment ago: the settings are written by what was just
+                // done -- a worktree deleted, a folder added -- and "settings
+                // read again" over "deleted" hid the one thing worth reading.
+                // One that says more than that and what it added or ended --
+                // what failed, what needs a restart -- is said
+                let plain = reload_said_only_that(&note);
+                // Something else still on screen: a message lives until it
+                // fades (FLASH_LIFE), and a reload a few seconds later is
+                // often the same deed's second write
+                let just_said = flash
+                    .as_deref()
+                    .is_some_and(|f| !f.trim_start_matches(">> ").starts_with(&i18n::t("msg.config_reloaded")));
+                if !from_setup && !(plain && just_said) {
                     flash = Some(format!(">> {note}"));
                 }
                 // A settings save may have changed the quick actions — push them
@@ -14976,6 +15006,22 @@ mod tests {
             quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, Some(&far), Some(&desk)),
             QuickGo::Open { cwd: far.clone(), command: String::new(), program: "vm".into() }
         );
+    }
+
+    /// A reload that says only that it happened, and what tabs came and went,
+    /// gives way to what was said a moment ago; one that says what failed or
+    /// what waits for a restart does not
+    #[test]
+    fn a_reload_that_only_says_so_is_told_apart() {
+        let reloaded = i18n::t("msg.config_reloaded");
+        let removed = i18n::tp("msg.config_removed", &[("n", "1")]);
+        let added = i18n::tp("msg.config_added", &[("n", "12")]);
+        let restart = i18n::tp("msg.config_needs_restart", &[("n", "1")]);
+        assert!(reload_said_only_that(&reloaded));
+        assert!(reload_said_only_that(&format!("{reloaded} / {removed}")), "a tab ended by what was done is news");
+        assert!(reload_said_only_that(&format!("{reloaded} / {added} / {removed}")));
+        assert!(!reload_said_only_that(&format!("{reloaded} / {restart}")), "a restart waiting is kept quiet");
+        assert!(!reload_said_only_that("the settings could not be read"), "a failure is kept quiet");
     }
 
     /// A worktree on a MicroVM the desk already has is in use, as git says of
