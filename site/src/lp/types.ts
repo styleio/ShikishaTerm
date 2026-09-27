@@ -10,7 +10,8 @@ export type Scene = {
   title: string;
   body: string;
   points: string[];
-  image: { src: string; alt: string; width: number; height: number };
+  // bare: drawn without the card frame -- a device that is its own frame (the phone)
+  image: { src: string; alt: string; width: number; height: number; bare?: boolean };
 };
 
 export type Feature = {
@@ -36,7 +37,7 @@ export type LpCopy = {
     fineprint: string;
     zip: Link;
     github: Link;
-    works: { label: string; groups: { label: string; names: string[] }[] };
+    works: { label: string; names: { name: string; logo: string }[] };
     image: { src: string; alt: string };
   };
   scenes: { eyebrow: string; title: string; items: Scene[] };

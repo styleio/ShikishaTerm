@@ -103,6 +103,9 @@ p {
 body:lang(ja) {
   word-break: auto-phrase;
 }
+.sentence {
+  display: inline-block;
+}
 ul,
 ol {
   margin: 0;
@@ -558,28 +561,85 @@ ol {
   color: var(--ink);
   margin-bottom: 24px;
 }
-.works-group + .works-group {
-  margin-top: 24px;
-}
-.works-kind {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--ink-soft);
-  margin-bottom: 12px;
-}
-.works ul {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 12px 12px;
-}
-.works li {
-  padding: 6px 16px;
-  border: 2px solid var(--ink);
-  border-radius: 999px;
+/* Two ticker bands running in opposite directions, edge to edge. Each band
+   holds its list twice and slides by one list's width, so the loop has no seam */
+.marquee {
+  position: relative;
+  overflow: hidden;
+  border-block: 2px solid var(--ink);
   background: var(--white);
-  font-weight: 700;
-  font-size: 15px;
+}
+.marquee-row {
+  display: flex;
+  padding-block: 12px;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+/* the line between the two rows belongs to the band, so the rows' fade leaves it whole */
+.marquee::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: 50%;
+  border-top: 2px dashed var(--ink);
+  transform: translateY(-1px);
+}
+.marquee-row ul {
+  display: flex;
+  flex-shrink: 0;
+  min-width: max-content;
+  animation: marquee var(--dur, 48s) linear infinite;
+}
+.marquee-row.rev ul {
+  animation-direction: reverse;
+}
+.marquee:hover ul {
+  animation-play-state: paused;
+}
+.marquee li {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: 0.01em;
+}
+.marquee .logo {
+  display: inline-flex;
+  margin-right: 12px;
+}
+.marquee .logo svg {
+  width: 28px;
+  height: 28px;
+}
+.marquee li::after {
+  content: "✦";
+  margin-inline: 24px;
+  color: var(--coral);
+  font-size: 16px;
+}
+@keyframes marquee {
+  to {
+    transform: translateX(-100%);
+  }
+}
+/* No motion wanted: one still list that wraps, and the second copy goes away */
+@media (prefers-reduced-motion: reduce) {
+  .marquee-row {
+    justify-content: center;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  .marquee-row ul {
+    animation: none;
+    flex-wrap: wrap;
+    justify-content: center;
+    row-gap: 8px;
+    padding-inline: var(--pad-x);
+  }
+  .marquee-row ul[aria-hidden] {
+    display: none;
+  }
 }
 @media (max-width: 768px) {
   .hero {
@@ -610,12 +670,19 @@ ol {
   .works {
     margin-top: 56px;
   }
-  .works ul {
-    gap: 8px;
+  .marquee li {
+    font-size: 16px;
   }
-  .works li {
-    font-size: 14px;
-    padding: 4px 12px;
+  .marquee .logo {
+    margin-right: 8px;
+  }
+  .marquee .logo svg {
+    width: 22px;
+    height: 22px;
+  }
+  .marquee li::after {
+    margin-inline: 16px;
+    font-size: 12px;
   }
 }
 

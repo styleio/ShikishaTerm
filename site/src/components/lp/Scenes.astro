@@ -5,6 +5,9 @@ interface Props {
   copy: LpCopy;
 }
 const { scenes } = Astro.props.copy;
+// A title of two sentences breaks between them first: each sentence is kept
+// together when it fits, so a line never ends in the middle of the first one
+const sentences = (title: string) => title.split(/(?<=。)/).filter(Boolean);
 ---
 
 <section class="scenes section" id="scenes">
@@ -36,14 +39,14 @@ const { scenes } = Astro.props.copy;
         return (
           <div class="scene" role="tabpanel" id={`scene-${s.id}`} aria-labelledby={`tab-${s.id}`} hidden={i !== 0}>
             <div class="scene-text">
-              <h3>{s.title}</h3>
+              <h3>{sentences(s.title).map((t) => <span class="sentence">{t}</span>)}</h3>
               <p>{s.body}</p>
               <ul class="check-list">
                 {s.points.map((p) => <li>{p}</li>)}
               </ul>
             </div>
             <div class={`scene-shot ${tall ? "tall" : ""}`}>
-              {tall ? (
+              {s.image.bare ? (
                 <img src={s.image.src} alt={s.image.alt} width={s.image.width} height={s.image.height} loading="lazy" />
               ) : (
                 <div class="nb shot">

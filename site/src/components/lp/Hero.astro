@@ -8,6 +8,14 @@ const { hero } = Astro.props.copy;
 const STORE = "https://apps.microsoft.com/detail/9PB8XQVM87Z0";
 // The last line of the title carries the highlighter stroke
 const lines = hero.title;
+// Each name in the works-with band carries its mark, drawn inline so it takes
+// the ink colour (see src/assets/logos/README.md for where they come from)
+const logos = import.meta.glob<string>("../../assets/logos/*.svg", { query: "?raw", import: "default", eager: true });
+const logo = (key: string) => logos[`../../assets/logos/${key}.svg`] ?? "";
+// The works-with names run as two bands in opposite directions. Each band is
+// its list twice, so moving by one list's width lands where it started
+const half = Math.ceil(hero.works.names.length / 2);
+const rows = [hero.works.names.slice(0, half), hero.works.names.slice(half)];
 ---
 
 <section class="hero">
@@ -53,12 +61,15 @@ const lines = hero.title;
 
   <div class="container works">
     <p class="works-label">{hero.works.label}</p>
-    {hero.works.groups.map((g) => (
-      <div class="works-group">
-        <p class="works-kind">{g.label}</p>
-        <ul>
-          {g.names.map((n) => <li>{n}</li>)}
-        </ul>
+  </div>
+  <div class="marquee">
+    {rows.map((row, r) => (
+      <div class={`marquee-row ${r % 2 ? "rev" : ""}`} style={`--dur:${row.length * 4}s`}>
+        {[0, 1].map((copy) => (
+          <ul aria-hidden={copy ? "true" : undefined}>
+            {row.map((n) => <li><span class="logo" aria-hidden="true" set:html={logo(n.logo)} />{n.name}</li>)}
+          </ul>
+        ))}
       </div>
     ))}
   </div>

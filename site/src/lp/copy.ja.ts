@@ -38,70 +38,93 @@ export const ja: LpCopy = {
     github: { label: "ソースを読む(GitHub)", href: REPO, external: true },
     works: {
       label: "動くもの",
-      groups: [
-        { label: "タブで動かすAIエージェント", names: ["Claude Code", "Codex", "Gemini CLI", "Aider", "SSH 越しのシェル"] },
-        { label: "APIキーでつなぐ", names: ["OpenAI", "Anthropic (Claude)", "Google Gemini", "DeepSeek", "xAI (Grok)", "Mistral", "Moonshot AI (Kimi)", "MiniMax", "Groq", "Cerebras", "OpenRouter", "Together AI", "Hugging Face", "NVIDIA NIM"] },
-        { label: "このPCで動かす（キー不要）", names: ["Ollama", "LM Studio"] },
-        { label: "判断モデル", names: ["Jev (TypeSafe)", "Laya (impossibl)"] },
+      names: [
+        { name: "Claude Code", logo: "claudecode" },
+        { name: "Codex", logo: "codex" },
+        { name: "Gemini CLI", logo: "geminicli" },
+        { name: "Aider", logo: "terminal" },
+        { name: "OpenAI", logo: "openai" },
+        { name: "Anthropic (Claude)", logo: "anthropic" },
+        { name: "Google Gemini", logo: "gemini" },
+        { name: "DeepSeek", logo: "deepseek" },
+        { name: "xAI (Grok)", logo: "xai" },
+        { name: "Mistral", logo: "mistral" },
+        { name: "Moonshot AI (Kimi)", logo: "moonshot" },
+        { name: "Ollama", logo: "ollama" },
+        { name: "MiniMax", logo: "minimax" },
+        { name: "Groq", logo: "groq" },
+        { name: "Cerebras", logo: "cerebras" },
+        { name: "OpenRouter", logo: "openrouter" },
+        { name: "Together AI", logo: "together" },
+        { name: "Hugging Face", logo: "huggingface" },
+        { name: "NVIDIA NIM", logo: "nvidia" },
+        { name: "LM Studio", logo: "lmstudio" },
+        { name: "Jev (TypeSafe)", logo: "choice" },
+        { name: "Laya (impossibl)", logo: "choice" },
+        { name: "SSH 越しのシェル", logo: "terminal" },
       ],
     },
     image: { src: "/lp/hero.webp", alt: "指揮者が、ノートPCに向かう4体の小さなロボットを指揮しているイラスト" },
   },
   scenes: {
     eyebrow: "どんな開発スタイルにも",
-    title: "一人でも、4体でも、外からでも。",
+    title: "ローカルでも、クラウドエージェントでも、スマホからでも。",
     items: [
       {
         id: "parallel",
-        tab: "4体のAIを並列駆動",
-        title: "1つの画面で4体並行。待機中のAIだけを拾い上げる。",
+        tab: "複数AIを並列駆動",
+        title: "複数のAIを1画面で並行稼働。待機中のAIだけを的確に拾い上げる。",
         body:
-          "1つのウィンドウを4分割し、Claude Code・Codex・Gemini・Aider に同じリポジトリの別のタスクを割り当てます。各タブには「処理中」「完了」「確認待ち」のステータスが常に表示されるため、AIの迷子を探して回る必要はありません。",
+          "画面は好きなだけ分割でき、Claude Code・Codex・Gemini・Aider などに、同じリポジトリの別々のタスクを割り当てられます。各タブには「処理中」「完了」「確認待ち」のステータスが常に表示されるため、AIの迷子を探して回る必要はありません。",
         points: [
-          "タブごとに独立したAIモデルと作業ディレクトリ",
-          "Ctrl+B 0 で4体のステータス一覧へ瞬時に切り替え",
-          "各AIの負荷状況と、アイドルタイム（待機時間）も可視化"
+          "ソフトを閉じても、前回の会話から再開できます",
+          "様々なAIエージェントを動かすことが可能です",
+          "Gitワークツリーによる複数ブランチの同時並行作業",
+          "作業が完了したらSlackなどに通知"
         ],
         image: { src: "/lp/shot-quad.webp", alt: "1つの窓を4分割し、Claude Code・Codex・Gemini・Aider が同時に答えている画面", width: 1760, height: 970 },
       },
       {
-        id: "review",
-        tab: "AI同士の自動レビュー",
-        title: "「実装」と「レビュー」を、パスするまでAI同士でループ。",
+        id: "cloud",
+        tab: "クラウドエージェント",
+        title: "安心してYOLOモード",
         body:
-          "「実装が終わったら、結果をレビュー用のタブへ」。このワークフローを一度決めておけば、以後の受け渡しは全自動。設定は Lua スクリプトで書いても、普通の言葉で指示してタブ内のAIに記述させても構いません。",
+          "クラウド上の MicroVM にプロジェクトを複製し、AIによる安全な並行開発を実現。あなたのPCのスペックを問わず何体でも同時に動かせます。完全に隔離された環境のため、万が一AIが暴走してもPCには一切影響しません。",
         points: [
-          "レビュー完了やエラーを Slack に自動通知",
-          "無限ループを防ぐため、往復回数の上限は自分で設定",
-          "AI同士のやり取りは、すべて詳細なログとして保存"
+          "隔離されているから、許可待ちなしで走らせられる",
+          "数十体のAIを同時稼働しても私のPCは静か",
+          "どのPCでも同じ環境・設定で即起動",
+          "URLを発行して、チームと簡単にプレビュー共有"
         ],
-        image: { src: "/lp/shot-desktop.webp", alt: "複数のAIを一覧に並べ、各行が処理中・完了・確認待ちのどれかを示している画面", width: 1600, height: 687 },
+        image: { src: "/lp/shot-microvm.ja.webp", alt: "「MicroVM にクローン」の画面。Git の URL、MicroVM、git のアカウント、入れる AI、サーバーの公開範囲を選んでクローンする", width: 558, height: 683 },
       },
       {
-        id: "git",
-        tab: "シームレスな Git 連携",
-        title: "変更の一部だけをステージ。最終判断は人間が握る。",
+        id: "tools",
+        tab: "便利な内蔵機能",
+        title: "ブラウザも、Gitも、SFTPも。ターミナルを出る理由がない。",
         body:
-          "Git パネルはターミナルと同じ画面内に開きます。ファイル単位ではなく、差分の一部だけを選んで細かくステージング可能。コミットメッセージはAIに書かせても良いですし、面倒なコンフリクトの解消もAIに解きほぐさせることができます。",
+          "開発に必要な道具は、ターミナルと同じ画面に最初から入っています。開発中のページはブラウザのタブで確かめ、AIに操作させることもできます。Git パネルでは差分の一部だけを選んでコミットでき、SFTP ではサーバーのファイルを左右に並べてやり取りできます。",
         points: [
-          "同じパネルの裏側（タブ切替）でコミット履歴を確認",
-          "ブランチごとに専用の作業ワークスペースを保持",
-          "対象フォルダが存在しない場合は、警告を出して安全に停止"
+          "内蔵ブラウザで、AIが自分でデバッグ",
+          "差分の一部だけコミット。コミット文はAIが作成",
+          "コンフリクトもAIが自動解決",
+          "SFTPで、PCとサーバーのファイルを送受信"
         ],
-        image: { src: "/lp/shot-git.webp", alt: "git パネル。ブランチ、次のコミットに入るファイル、一部だけ外せる差分、コミットメッセージを書かせるボタン", width: 1600, height: 657 },
+        image: { src: "/lp/shot-browser.ja.webp", alt: "内蔵ブラウザで旅行の予約フォームを開き、AI が項目を入力している画面", width: 1280, height: 900 },
       },
       {
         id: "away",
         tab: "スマホからのリモート指揮",
         title: "移動中に「確認待ち」をチェックし、一言返す。",
         body:
-          "QRコードを読み込むだけで、どのタブが何をしているかがスマホからリアルタイムに見え、指示も送れます。デスクに戻る頃には次の処理が完了。Tailscale 越しなら、セキュアなプライベート接続で安全にアクセスできます。",
+          "QRコードを読み込むだけで、どのタブが何をしているかがスマホからリアルタイムに見え、指示も送れます。デスクに戻る頃には次の処理が完了。Tailscaleを利用してセキュアなプライベート接続で安全にアクセスできます。",
         points: [
-          "同じ Wi-Fi 内なら、追加のアプリインストールは不要",
+          "専用アプリのインストール不要",
+          "作業完了をプッシュ通知で",
           "通信経路はエンドツーエンドで暗号化",
           "PC でできる操作は、スマホからもすべて実行可能"
         ],
-        image: { src: "/lp/shot-phone.webp", alt: "スマホで見る SHIKISHA-TERM。複数のAIの状態が一覧で並んでいる", width: 533, height: 986 },
+        image: { src: "/lp/shot-phone.webp", alt: "スマホで見る SHIKISHA-TERM。複数のAIの状態が一覧で並んでいる", width: 533, height: 986, bare: true },
       },
     ],
   },
