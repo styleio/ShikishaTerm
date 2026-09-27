@@ -1508,12 +1508,16 @@ end
 -- so does anyone writing their own. Each line exists because of a way a chain
 -- actually stops: a prompt nobody can answer, a second "done" that ends the
 -- next turn as well, a report with nothing in it, and work nobody asked for.
+--
+-- The promises are in English, as every instruction to a model is; what the
+-- agent writes for a person is in the language of the screen
 function shikisha.contract()
   return table.concat({
     shikisha.t("agent.contract.ask"),
     shikisha.t("agent.contract.once"),
     shikisha.t("agent.contract.summary"),
     shikisha.t("agent.contract.wait"),
+    shikisha.tf("agent.contract.language", { language = shikisha.t("lang.self") }),
   }, "\n")
 end
 function shikisha.wait(tab, pattern, timeout_ms)
@@ -7525,6 +7529,8 @@ mod tests {
             "Say you have finished once",
             "what is left",
             "wait for the next instruction",
+            // ...and what they write for a person, in the language of the screen
+            "Write everything a person reads",
         ];
         let opening = |e: &mut HookEngine| -> String {
             e.fire("on_start", &ctx(1, ""), None);

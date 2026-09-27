@@ -4702,6 +4702,10 @@ impl Tab {
                     system.push('\n');
                     system.push_str(p);
                 }
+                // In English, as every instruction to a model is; what it
+                // writes for the person is in the language of the screen
+                system.push_str("\n\n");
+                system.push_str(&crate::i18n::tp("agent.model.language", &[("language", &crate::i18n::t("lang.self"))]));
                 msgs.push(serde_json::json!({"role": "system", "content": system}));
                 for (is_user, content) in h.iter() {
                     msgs.push(serde_json::json!({
@@ -4796,6 +4800,9 @@ impl Tab {
                 system.push('\n');
                 system.push_str(&crate::i18n::t("agent.model.persona_tail"));
             }
+            // The statement is read by people, in the language of the screen
+            system.push_str("\n\n");
+            system.push_str(&crate::i18n::tp("agent.model.language", &[("language", &crate::i18n::t("lang.self"))]));
             let answer = crate::bridge::complete(
                 &conn.url, &conn.model, &conn.headers, conn.timeout, Some(&system), prompt.trim(),
             );

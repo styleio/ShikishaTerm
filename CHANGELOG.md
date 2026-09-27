@@ -9,6 +9,14 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **The AI starts a machine's server.** A folder on a MicroVM or a server
+  has "Have the AI start the server" in its list of ports. How a server is
+  started differs from project to project (PHP, Python, Node...), so the AI
+  that machine has reads the project, installs what is missing, starts it in
+  the background so it keeps running, and says the port, the log and how to
+  stop it -- in a tab of its own. On a MicroVM it listens on every address,
+  which is how its addresses reach it; on a server only on 127.0.0.1, which
+  is carried over SSH.
 - **What a server listens on opens in a browser tab here.** A folder on a
   server reached over SSH has "Open the server's ports" on its menu: the
   ports its own user listens on (a development server started in a
@@ -288,6 +296,13 @@ once it reaches its first tagged release.
   page, beside this PC's.
 
 ### Changed
+- **Instructions to the AIs are in English only; they answer in the screen's
+  language.** The agents' briefs, protocols and what is sent back each turn
+  (browser operation, operating another tab, discussions), the model
+  system prompts and the pieces put into the CI and tab prompts were kept in
+  two languages, which drift apart. They are written once, in English, as
+  the git prompts are, and each asks for what a person reads to be in the
+  language of the screen. Records, buttons and notices stay translated.
 - **A worktree's folder is named for its work in one piece**: `feature/login`
   is the folder `feature-login`, no longer `feature` with `login` inside, and
   the project's branch prefix is left off it. Worktrees already made stay
