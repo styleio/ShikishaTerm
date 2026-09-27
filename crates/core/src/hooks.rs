@@ -4882,21 +4882,45 @@ local function stopped()
   return (shikisha.get_var("words_running") or 0) == 0
 end
 
+-- The answer to "what goes in this field" is a shape, not a sentence: a
+-- model left to answer in words sometimes talks about the question first
+-- ("Choices list empty; answer ...") and that remark was typed into the
+-- field along with the value
+local VALUE_SHAPE = {
+  type = "object",
+  properties = { value = { type = "string" } },
+  required = { "value" },
+  additionalProperties = false,
+}
+
 -- What to put in a field, written by the model that writes words. Nil when
 -- the run is over: stopped while it was asked, or ended here because no
--- words came back
+-- words came back. An answer that is not the shape is asked for once more
+-- before the run gives up on it
 local function write(into)
-  local ok, said = pcall(shikisha.ai_text, {
-    model = WORDS_MODEL ~= "" and WORDS_MODEL or nil,
-    system = ASK.value_system,
-    prompt = fill(ASK.value_ask, into),
-  })
-  if stopped() then return nil end
-  if not ok then
-    finish(1, shikisha.tf("words.err.no_text", { why = tostring(said) }), false)
-    return nil
+  local ask = { goal = into.goal, field = into.field, choices = "" }
+  if into.choices and into.choices ~= "" then
+    ask.choices = "\nChoices offered: " .. into.choices
   end
-  return tostring(said or "")
+  local said
+  for _ = 1, 2 do
+    local ok
+    ok, said = pcall(shikisha.ai_text, {
+      model = WORDS_MODEL ~= "" and WORDS_MODEL or nil,
+      system = ASK.value_system,
+      prompt = fill(ASK.value_ask, ask),
+      shape = VALUE_SHAPE,
+    })
+    if stopped() then return nil end
+    if not ok then
+      finish(1, shikisha.tf("words.err.no_text", { why = tostring(said) }), false)
+      return nil
+    end
+    local got = shikisha.json_decode(tostring(said or ""))
+    if type(got) == "table" and type(got.value) == "string" then return got.value end
+  end
+  finish(1, shikisha.tf("words.err.no_text", { why = tostring(said) }), false)
+  return nil
 end
 
 -- One move: read the page, decide, carry it out, write down what was done.
