@@ -1537,6 +1537,12 @@ function shikisha.ai_ask(prompt, opts)
   return coroutine.yield({op = "ai", prompt = prompt, timeout_ms = opts.timeout_ms,
     light = opts.light and true or false, ai = opts.ai})
 end
+-- Ask another tab and wait for its reply. Carried out by the app loop when it
+-- comes through the pipe or MCP (see asktab.rs): what runs here is only the
+-- check that the tab exists, made under the permission table like any call
+function shikisha.ask_tab(tab, text, opts)
+  return { accepted = true, state = shikisha.state(tab) }
+end
 function shikisha.sleep(ms)
   return coroutine.yield({ op = "sleep", ms = ms })
 end

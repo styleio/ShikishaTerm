@@ -75,7 +75,9 @@ Each tool is one SHIKISHA-TERM automation primitive, named as it is in the \
 app's manual with a `shikisha_` prefix. Arguments go in `params`, in the order \
 the tool's description shows between the brackets. `shikisha_list` answers what \
 this connection is allowed to call, and `shikisha_lua` runs a whole piece of \
-Lua when a loop or a branch is wanted in one call.";
+Lua when a loop or a branch is wanted in one call. `[[tab:ID]]` in a message \
+is another SHIKISHA tab: `shikisha_ask_tab` with that ID asks it and waits for \
+its reply.";
 
 // ── Which instance, and with what key ──────────────────────────────────────
 

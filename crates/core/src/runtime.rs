@@ -970,6 +970,101 @@ pub fn subject_of(caller: Option<&str>, tabs: &[Tab]) -> grants::Subject {
         None => grants::Subject::Ai,
     }
 }
+/// One look at every ask waiting on another tab (see asktab.rs).
+fn tend_asks(
+    asks: &mut Vec<crate::asktab::Ask>,
+    eng: &hooks::HookEngine,
+    desk: Option<&config::Desk>,
+    surfaces: &[Surface],
+    tabs: &[Tab],
+) {
+    use crate::asktab::{Phase, Step};
+    let keys: Vec<hooks::TabKey> = tab_states(tabs).into_iter().map(|(k, _)| k).collect();
+    let find = |name: &str| {
+        hooks::TabRef::Name(name.to_string())
+            .resolve(&keys)
+            .and_then(|i| tabs.get(i - 1))
+    };
+    let mut briefed = false;
+    let mut send = |from: Option<&str>, to: &str, text: &str| {
+        if !briefed {
+            brief_engine(eng, desk, surfaces, tabs);
+            briefed = true;
+        }
+        let who = subject_of(from, tabs);
+        eng.call_primitive_as(from, who, "send_to_tab", &[serde_json::json!(to), serde_json::json!(text)])
+    };
+    asks.retain_mut(|a| {
+        let target = find(&a.target);
+        let caller = a.caller.as_deref().and_then(find);
+        let caller_free = caller.is_some_and(|t| crate::asktab::quiet(t.state));
+        let same_folder = match (caller.and_then(|t| t.cwd()), target.and_then(|t| t.cwd())) {
+            (Some(x), Some(y)) => Some(crate::sessionfind::same_folder(x, y)),
+            _ => None,
+        };
+        match crate::asktab::step(a, target, caller_free, same_folder) {
+            Step::Nothing => true,
+            Step::Drop => false,
+            Step::Send => match send(a.caller.as_deref(), &a.target, &a.text) {
+                Ok(_) => {
+                    append_hook_log(&format!("ask_tab: sent to {}", a.target));
+                    a.phase = Phase::Waiting;
+                    a.sent_at = Some(std::time::Instant::now());
+                    true
+                }
+                Err(e) => {
+                    if let Some(line) = a.reply.take() {
+                        let _ = line.send(Err(e));
+                    }
+                    false
+                }
+            },
+            Step::Answer(v) => {
+                let state = v["state"].as_str().unwrap_or_default().to_string();
+                append_hook_log(&format!(
+                    "ask_tab: {} -> {state} ({}s, from {})",
+                    a.target,
+                    v["seconds"],
+                    v["source"].as_str().unwrap_or_default()
+                ));
+                let pending = state == "PENDING";
+                let reply = v["reply"].as_str().map(str::to_string);
+                // Still holding the line: answer on it
+                if let Some(line) = a.reply.take() {
+                    if line.send(Ok(v)).is_ok() {
+                        if pending {
+                            a.phase = Phase::Deliver;
+                            return true;
+                        }
+                        return false;
+                    }
+                    append_hook_log("ask_tab: the caller let go of the line; the reply goes into its tab");
+                }
+                // Nobody holds the line any more: a finished reply goes into
+                // the caller's tab once it is free; anything else is dropped
+                match (state.as_str(), reply) {
+                    ("PENDING", _) => {
+                        a.phase = Phase::Deliver;
+                        true
+                    }
+                    ("DONE", Some(r)) if a.caller.is_some() => {
+                        a.phase = Phase::Handing(crate::asktab::handed(&a.target, &r));
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            Step::Hand(text) => {
+                let to = a.caller.clone().unwrap_or_default();
+                match send(Some(&a.target), &to, &text) {
+                    Ok(_) => append_hook_log(&format!("ask_tab: handed {}'s reply to {to}", a.target)),
+                    Err(e) => append_hook_log(&format!("ask_tab: could not hand the reply to {to}: {e}")),
+                }
+                false
+            }
+        }
+    });
+}
 pub fn tab_states(tabs: &[Tab]) -> Vec<(hooks::TabKey, String)> {
     tabs.iter()
         .map(|t| (t.key(), t.state.label().to_string()))
@@ -1647,6 +1742,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // One at a time: a second one would be a second thing typing into pages
     // while the person watches only one of them
     let mut driving: Option<(usize, String)> = None;
+    // Asks from one tab to another that are waiting for a reply (ask_tab), and
+    // how many each caller has made in its current turn
+    let mut asks: Vec<crate::asktab::Ask> = Vec::new();
+    let mut ask_rounds: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     // A words run taken out of an engine that was built again, waiting to be
     // taken up by the new one (HookEngine::words_carry)
     let mut words_carried: Option<serde_json::Value> = None;
@@ -3834,6 +3933,59 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                     }
                 }
+                // ask_tab is answered later, when the other tab has finished:
+                // checked here, then kept (see asktab.rs)
+                if call.method == "ask_tab" {
+                    if let Some(eng) = engine.as_ref() {
+                        brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
+                        let who = subject_of(call.caller.as_deref(), &tabs);
+                        let taken = crate::asktab::parse(&call.params).and_then(|(target, text, wait)| {
+                            eng.call_primitive_as(
+                                call.caller.as_deref(),
+                                who,
+                                "ask_tab",
+                                &[serde_json::json!(target), serde_json::json!(text)],
+                            )
+                            .map(|_| (target, text, wait))
+                        });
+                        match taken {
+                            Err(e) => {
+                                let _ = call.reply.send(Err(e));
+                            }
+                            Ok((target, text, wait)) => {
+                                let max_rounds = config::operate().max_rounds;
+                                let round = ask_rounds.entry(call.caller.clone().unwrap_or_default()).or_insert(0);
+                                *round += 1;
+                                if max_rounds > 0 && *round > max_rounds {
+                                    let _ = call.reply.send(Err(format!(
+                                        "round limit reached ({max_rounds} of {max_rounds}): stop asking and report to the person"
+                                    )));
+                                } else {
+                                    append_hook_log(&format!(
+                                        "ask_tab: {} asks {target} (round {round}/{max_rounds})",
+                                        call.caller.as_deref().unwrap_or("outside")
+                                    ));
+                                    let now = std::time::Instant::now();
+                                    asks.push(crate::asktab::Ask {
+                                        reply: Some(call.reply),
+                                        caller: call.caller,
+                                        target,
+                                        text,
+                                        phase: crate::asktab::Phase::Queued,
+                                        asked_at: now,
+                                        sent_at: None,
+                                        seen_busy: false,
+                                        quiet_since: None,
+                                        deadline: now + wait,
+                                        round: *round,
+                                        max_rounds,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let answer = match engine.as_ref() {
                     Some(eng) => {
                         // Who exists, before anything is answered. An engine
@@ -3860,6 +4012,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 };
                 let _ = call.reply.send(answer);
             }
+        }
+
+        // Asks waiting on another tab: a look at each, every turn of the loop
+        if !asks.is_empty() {
+            if let Some(eng) = engine.as_ref() {
+                tend_asks(&mut asks, eng, desks.get(desk_index), &surfaces, &tabs);
+            }
+        }
+        if !ask_rounds.is_empty() {
+            // A caller's count is for one turn of its own: once it is quiet
+            // with nothing out, the next request from the person starts again
+            let keys: Vec<hooks::TabKey> = tab_states(&tabs).into_iter().map(|(k, _)| k).collect();
+            ask_rounds.retain(|caller, _| {
+                asks.iter().any(|a| a.caller.as_deref() == Some(caller.as_str()))
+                    || hooks::TabRef::Name(caller.clone())
+                        .resolve(&keys)
+                        .and_then(|i| tabs.get(i - 1))
+                        .is_some_and(|t| !crate::asktab::quiet(t.state) && t.state != TabState::Exited)
+            });
         }
 
         // Process remote operations and frame delivery every iteration (waiting 200ms

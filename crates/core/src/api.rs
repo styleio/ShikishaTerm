@@ -455,6 +455,13 @@ fn handle_line(line: &str, caller: Option<&str>, tx: &Sender<ApiCall>) -> String
         // A lone value is the one-argument case written the short way
         Some(other) => vec![other.clone()],
     };
+    // ask_tab is answered when another tab has finished, which can be an hour
+    // of work; the loop decides when to answer it, not this line
+    let hold = if method == "ask_tab" {
+        crate::asktab::LINE_HOLD
+    } else {
+        std::time::Duration::from_secs(300)
+    };
     let (reply, wait) = channel();
     let call = ApiCall {
         caller: caller.map(str::to_string),
@@ -467,7 +474,7 @@ fn handle_line(line: &str, caller: Option<&str>, tx: &Sender<ApiCall>) -> String
     }
     // Generous: a primitive may be waiting on a page, and a caller that asked
     // for that is not helped by being told "timeout" while it is still working
-    match wait.recv_timeout(std::time::Duration::from_secs(300)) {
+    match wait.recv_timeout(hold) {
         Ok(Ok(result)) => serde_json::json!({"id": id, "ok": true, "result": result}).to_string(),
         Ok(Err(e)) => error_line(&id, &e),
         Err(_) => error_line(&id, "the app did not answer"),
