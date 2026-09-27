@@ -857,7 +857,7 @@ pub struct Source {
     /// For a project that is on another machine and not here: its folders
     /// there, each with its own machine (every worktree on a MicroVM is a
     /// machine of its own). Git about any of them runs there
-    pub far: Vec<(std::path::PathBuf, crate::elsewhere::Elsewhere)>,
+    pub far: Vec<(std::path::PathBuf, crate::elsewhere::Elsewhere, String)>,
 }
 
 impl Source {
@@ -867,9 +867,20 @@ impl Source {
         let at = self
             .far
             .iter()
-            .find(|(f, _)| crate::uistate::same_folder(f, dir))
-            .map(|(_, at)| at);
+            .find(|(f, _, _)| crate::uistate::same_folder(f, dir))
+            .map(|(_, at, _)| at);
         crate::git::there(dir, at);
+    }
+
+    /// The project's folder a place key names (see `uistate::place_key`):
+    /// its path, and the machine it is on. A key naming a machine is only
+    /// that machine's folder; a bare path is the first folder of that path
+    pub fn far_at(&self, key: &std::path::Path) -> Option<(std::path::PathBuf, &crate::elsewhere::Elsewhere)> {
+        let (on, path) = crate::uistate::place_of(key);
+        self.far
+            .iter()
+            .find(|(f, _, name)| crate::uistate::same_folder(f, &path) && on.as_deref().is_none_or(|h| h.trim() == name.trim()))
+            .map(|(f, at, _)| (f.clone(), at))
     }
 }
 
@@ -934,7 +945,7 @@ pub fn desk_sources(desk: &crate::config::Desk) -> Vec<Source> {
         let Ok(at) = crate::elsewhere::Elsewhere::of(host) else { continue };
         if let Some(s) = out.iter_mut().find(|s| s.name == project) {
             if !s.far.is_empty() {
-                s.far.push((cwd.to_path_buf(), at));
+                s.far.push((cwd.to_path_buf(), at, host.name.clone()));
             }
             continue;
         }
@@ -945,7 +956,7 @@ pub fn desk_sources(desk: &crate::config::Desk) -> Vec<Source> {
             dir: cwd.to_path_buf(),
             at: cwd.to_path_buf(),
             git: desk.git_use(spec.and_then(|p| p.git_account.as_deref())),
-            far: vec![(cwd.to_path_buf(), at)],
+            far: vec![(cwd.to_path_buf(), at, host.name.clone())],
         });
     }
     out
@@ -990,11 +1001,12 @@ pub fn project_folder(sources: &[Source], project: &str, folder: &str) -> Option
     // On another machine: one of the project's folders there, and git about
     // it runs there from here on this thread
     if let Some(s) = sources.iter().find(|s| s.name == project && !s.far.is_empty()) {
-        let found = s.far.iter().any(|(f, _)| crate::uistate::same_folder(f, &dir));
-        if found {
-            s.note_far(&dir);
+        // Named by place key: the folder on the machine the key names
+        let found = s.far_at(&dir);
+        if let Some((path, at)) = &found {
+            crate::git::there(path, Some(at));
         }
-        return found.then_some(dir);
+        return found.map(|(path, _)| path);
     }
     let fam = crate::repo::family_of(&dir)?;
     sources
@@ -1019,8 +1031,8 @@ pub fn far_head_folder(s: &Source, head: &str) -> Option<std::path::PathBuf> {
     let heard = |dir: &std::path::Path, at: &crate::elsewhere::Elsewhere| {
         crate::git::far_place(at, dir, false).0.as_deref() == Some(head)
     };
-    let (first, rest): (Vec<_>, Vec<_>) = s.far.iter().partition(|(dir, at)| heard(dir, at));
-    for (dir, at) in first.into_iter().chain(rest) {
+    let (first, rest): (Vec<_>, Vec<_>) = s.far.iter().partition(|(dir, at, _)| heard(dir, at));
+    for (dir, at, _) in first.into_iter().chain(rest) {
         crate::git::there(dir, Some(at));
         let on = crate::git::run(dir, &["branch", "--show-current"]).ok();
         if on.as_deref().map(str::trim) == Some(head) {
@@ -1208,12 +1220,11 @@ pub fn answer(
         // repository and its own last fetch -- and the one being worked in is
         // the one that is up. Any folder, for a form not written for one
         let folder = s("folder");
-        let here = source
-            .far
-            .iter()
-            .find(|(d, _)| !folder.is_empty() && crate::uistate::same_folder(d, std::path::Path::new(&folder)))
-            .or(source.far.first());
-        let found = match here {
+        let here = (!folder.is_empty())
+            .then(|| source.far_at(std::path::Path::new(&folder)))
+            .flatten()
+            .or(source.far.first().map(|(d, at, _)| (d.clone(), at)));
+        let found = match here.as_ref().map(|(d, at)| (d, *at)) {
             // On another machine: what git there knows the server has
             Some((dir, crate::elsewhere::Elsewhere::Cloud(host))) => {
                 crate::worktree::far_bases_now(host, &dir.to_string_lossy().replace('\\', "/")).0
@@ -1531,7 +1542,7 @@ mod tests {
             dir: "/home/user/site".into(),
             at: "/home/user/site".into(),
             git: crate::config::GitUse::Missing("gone".into()),
-            far: vec![("/home/user/site".into(), at)],
+            far: vec![("/home/user/site".into(), at, "vm".into())],
         };
         let err = super::target_of(&s, &|_| None).unwrap_err();
         assert!(err.downcast_ref::<super::AccountTrouble>().is_some(), "the repository was asked of the machine: {err:#}");

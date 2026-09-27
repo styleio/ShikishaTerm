@@ -2244,9 +2244,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // reopened tab: a wait that is never answered must not outlive the
         // afternoon
         if let Some((folder, until)) = going_to.clone() {
-            let is_it = |f: &std::path::Path| crate::uistate::same_folder(f, &folder);
             if let Some(n) = (1..=surface_count)
-                .find(|&s| surface_folder(&surfaces, &tabs, s).is_some_and(is_it))
+                .find(|&s| surface_is_place(&surfaces, &tabs, s, &folder))
             {
                 active = n;
                 left_split = true;
@@ -2347,13 +2346,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // arrangement is a row now (`splits.rs`), so it is in the folder's own
         // list with a name and a ✕, and pressing the folder goes to the folder
         for want in shell.mail().take_folder_views() {
+            // By place key: a folder of the same path on another machine is
+            // not the one pressed
             let want = std::path::PathBuf::from(want);
             let is_want = |f: &std::path::Path| crate::uistate::same_folder(f, &want);
-            if folder_press_moves(surface_folder(&surfaces, &tabs, active), &want, board_open || settings_open) {
+            if board_open || settings_open || !surface_is_place(&surfaces, &tabs, active, &want) {
                 {
                     {
                         let Some(n) = (1..=surface_count)
-                            .find(|&s| surface_folder(&surfaces, &tabs, s).is_some_and(is_want))
+                            .find(|&s| surface_is_place(&surfaces, &tabs, s, &want))
                         else {
                             // Nothing runs there yet: pressing it opens the
                             // default command in it, which is what a folder
@@ -4421,6 +4422,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
         view_settled_at = active;
+        // A desk folder by its place key: its path, and its machine's name when
+        // it is on another machine (see `uistate::place_key`). Two machines
+        // can have the same path, and the board keys every folder fact by this
+        let place = |f: &config::Folder| -> Option<std::path::PathBuf> {
+            let c = f.cwd.as_ref()?;
+            Some(std::path::PathBuf::from(crate::uistate::place_key(f.host.as_ref().map(|h| h.name.as_str()), c)))
+        };
         let ui = Ui {
             ais: ai_choices.clone(),
             split_open: open_split.clone(),
@@ -4564,9 +4572,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .map(|w| {
                     w.folders
                         .iter()
-                        .filter_map(|f| {
-                            f.cwd.clone().map(|c| (c, f.name.clone().unwrap_or_default()))
-                        })
+                        .filter_map(|f| place(f).map(|c| (c, f.name.clone().unwrap_or_default())))
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -4575,13 +4581,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .map(|w| {
                     w.folders
                         .iter()
-                        .filter_map(|f| f.cwd.clone().zip(f.project.clone()))
+                        .filter_map(|f| place(f).zip(f.project.clone()))
                         .collect()
                 })
                 .unwrap_or_default(),
             folder_items: desks
                 .get(desk_index)
-                .map(|w| w.folders.iter().filter_map(|f| f.cwd.clone().zip(f.work_item.clone())).collect())
+                .map(|w| w.folders.iter().filter_map(|f| place(f).zip(f.work_item.clone())).collect())
                 .unwrap_or_default(),
             folder_labels: desks
                 .get(desk_index)
@@ -4589,7 +4595,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     w.folders
                         .iter()
                         .filter_map(|f| {
-                            f.cwd.clone().map(|folder| crate::uistate::FolderLabel {
+                            place(f).map(|folder| crate::uistate::FolderLabel {
                                 folder,
                                 summary: f.summary.clone(),
                                 auto: f.auto_label,
@@ -4611,7 +4617,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     w.folders
                         .iter()
                         .filter(|f| f.host.is_some())
-                        .filter_map(|f| f.cwd.clone())
+                        .filter_map(place)
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -4620,7 +4626,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .map(|w| {
                     w.folders
                         .iter()
-                        .filter_map(|f| f.cwd.clone().zip(f.host.as_ref().map(|h| h.name.clone())))
+                        .filter_map(|f| place(f).zip(f.host.as_ref().map(|h| h.name.clone())))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            server_names: cfg
+                .as_ref()
+                .map(|c| {
+                    c.hosts
+                        .iter()
+                        .filter(|h| !h.is_made())
+                        .filter_map(|h| config::host_spec(h).ok().map(|s| (s, h.name.clone())))
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -4638,7 +4654,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 .and_then(|p| p.home_on(&host.name))?;
                             let checkout = home.at.trim_end_matches('/');
                             let linked = cwd.to_string_lossy().trim_end_matches('/') != checkout;
-                            Some((cwd, crate::uistate::far_family(&host.name, checkout), linked))
+                            Some((place(f)?, crate::uistate::far_family(&host.name, checkout), linked))
                         })
                         .collect()
                 })
@@ -4657,7 +4673,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 crate::elsewhere::Elsewhere::Ssh(spec) => spec.machine(),
                                 crate::elsewhere::Elsewhere::Cloud(h) => format!("microvm:{}", h.name),
                             };
-                            f.cwd.clone().zip(Some(machine))
+                            place(f).zip(Some(machine))
                         })
                         .collect()
                 })
@@ -6472,11 +6488,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // board does not wait on a network: read there on a
                     // thread, and the draft starts when it is back
                     if crate::git::is_far(&dir) {
+                        // The machine the folder the page named is on, by its place key
                         let at = crate::github::desk_sources(desk)
-                            .into_iter()
-                            .flat_map(|s| s.far)
-                            .find(|(f, _)| crate::uistate::same_folder(f, &dir))
-                            .map(|(_, at)| at);
+                            .iter()
+                            .find_map(|s| s.far_at(std::path::Path::new(&text("folder"))).map(|(_, at)| at.clone()));
                         crate::git::there(&dir, None);
                         let tx = pr_draft_tx.clone();
                         std::thread::spawn(move || {
@@ -7374,14 +7389,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Err(why) => {
                     // A MicroVM's folder loses what is not pushed too; a
                     // server's keeps its branch, and says only why
+                    let key = std::path::PathBuf::from(&folder);
                     let on_server = desks.get(desk_index).is_some_and(|d| {
                         d.folders.iter().any(|f| {
-                            f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, std::path::Path::new(&folder)))
+                            f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &key))
                                 && f.host.as_ref().is_some_and(|h| !h.is_made())
                         })
                     });
                     let said = if on_server { "msg.folder.not_discarded_server" } else { "msg.folder.not_discarded" };
-                    flash = Some(i18n::tp(said, &[("path", &folder), ("why", &why)]));
+                    let path = crate::uistate::place_of(&key).1.display().to_string();
+                    flash = Some(i18n::tp(said, &[("path", &path), ("why", &why)]));
                 }
             }
         }
@@ -7391,7 +7408,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if unasked {
                 config::save_setting(&["confirm_worktree_delete"], serde_json::json!(false));
             }
-            let at = std::path::PathBuf::from(&folder);
+            // Which folder, by its place key (its machine and its path), and
+            // the path itself, which is what is asked about and deleted there
+            let key = std::path::PathBuf::from(&folder);
+            let at = crate::uistate::place_of(&key).1;
             // A folder on a MicroVM is its machine: the machine goes, and with
             // it everything in the folder. The project's checkout there going
             // is the project's checkout there going -- the next worktree makes
@@ -7400,7 +7420,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let on_microvm = desks.get(desk_index).and_then(|d| {
                 d.folders
                     .iter()
-                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &at)))
+                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &key)))
                     .and_then(|f| f.host.clone().filter(|h| h.is_made()).map(|h| (h, f.project.clone())))
             });
             if let Some((h, project)) = on_microvm {
@@ -7408,10 +7428,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // committed or not pushed there is lost with the machine, and
                 // nothing is closed on the way to finding that out
                 if !far_discard_checked.remove(&folder) {
-                    let (tx, folder, host) = (far_discard_tx.clone(), folder.clone(), h.clone());
-                    flash = Some(i18n::tp("msg.folder.checking", &[("path", &folder)]));
+                    let (tx, folder, host, path) = (far_discard_tx.clone(), folder.clone(), h.clone(), at.to_string_lossy().to_string());
+                    flash = Some(i18n::tp("msg.folder.checking", &[("path", &path)]));
                     std::thread::spawn(move || {
-                        let said = crate::worktree::far_ready_to_discard(&host, &folder).map_err(|e| format!("{e:#}"));
+                        let said = crate::worktree::far_ready_to_discard(&host, &path).map_err(|e| format!("{e:#}"));
                         let _ = tx.send((folder, said));
                     });
                     continue;
@@ -7426,7 +7446,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // The folder first: taking it can be refused (the desk's last
                 // folder), and a project that let go of its checkout while the
                 // folder stayed would make a second one for its next worktree
-                match config::take_folder(&d.name, &at) {
+                match config::take_folder(&d.name, &key) {
                     Ok(taken) => {
                         let mut dropped = None;
                         if let (Some(home), Some(p)) = (checkout, project.as_deref()) {
@@ -7478,15 +7498,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let on_server = desks.get(desk_index).and_then(|d| {
                 d.folders
                     .iter()
-                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &at)))
+                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &key)))
                     .and_then(|f| f.host.clone().filter(|h| !h.is_made()).map(|h| (h, f.project.clone())))
             });
             if let Some((h, project)) = on_server {
                 if !far_discard_checked.remove(&folder) {
-                    let (tx, folder, host) = (far_discard_tx.clone(), folder.clone(), h.clone());
-                    flash = Some(i18n::tp("msg.folder.checking", &[("path", &folder)]));
+                    let (tx, folder, host, path) = (far_discard_tx.clone(), folder.clone(), h.clone(), at.to_string_lossy().to_string());
+                    flash = Some(i18n::tp("msg.folder.checking", &[("path", &path)]));
                     std::thread::spawn(move || {
-                        let said = crate::worktree::far_ready_to_discard(&host, &folder).map_err(|e| format!("{e:#}"));
+                        let said = crate::worktree::far_ready_to_discard(&host, &path).map_err(|e| format!("{e:#}"));
                         let _ = tx.send((folder, said));
                     });
                     continue;
@@ -7499,7 +7519,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .and_then(|p| p.home_on(&h.name))
                     .map(|home| crate::uistate::far_family(&h.name, &home.at))
                     .unwrap_or_default();
-                match config::take_folder(&d.name, &at) {
+                match config::take_folder(&d.name, &key) {
                     Ok(taken) => {
                         let removal = crate::worktree::Removal::start_on_server(at.clone(), h);
                         editors.retain(|e| !(e.scratch && e.dir.as_deref().is_some_and(|d| removal.takes(d, e.at.as_ref()))));
@@ -7562,11 +7582,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // server over SSH listens on: asked of the machine on a thread, since
         // asking starts a MicroVM that was paused
         for folder in shell.mail().take_far_ports() {
-            let at = std::path::PathBuf::from(&folder);
+            let key = std::path::PathBuf::from(&folder);
             let host = desks.get(desk_index).and_then(|d| {
                 d.folders
                     .iter()
-                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &at)))
+                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &key)))
                     .and_then(|f| f.host.clone())
             });
             let Some(host) = host else { continue };
@@ -7594,7 +7614,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for (folder, port) in shell.mail().take_far_pages() {
             let listed = far_ports_view
                 .as_ref()
-                .filter(|v| crate::uistate::same_folder(std::path::Path::new(&v.folder), std::path::Path::new(&folder)))
+                // The list asked about: by place key, or -- asked by a bare path,
+                // from a page older than place keys -- the list of that path
+                .filter(|v| {
+                    let (on, path) = crate::uistate::place_of(std::path::Path::new(&folder));
+                    let (listed_on, listed_path) = crate::uistate::place_of(std::path::Path::new(&v.folder));
+                    crate::uistate::same_folder(&listed_path, &path) && on.is_none_or(|h| listed_on.as_deref() == Some(h.as_str()))
+                })
                 .filter(|v| v.ports.iter().any(|p| p.port == port))
                 .cloned();
             let Some(view) = listed else {
@@ -7604,11 +7630,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let url = match view.server {
                 false => view.ports.iter().find(|p| p.port == port).map(|p| p.url.clone()).unwrap_or_default(),
                 true => {
-                    let at = std::path::PathBuf::from(&folder);
+                    let key = std::path::PathBuf::from(&folder);
                     let spec = desks.get(desk_index).and_then(|d| {
                         d.folders
                             .iter()
-                            .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &at)))
+                            .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &key)))
                             .and_then(|f| f.host.clone())
                     });
                     match spec.map(|h| config::host_spec(&h).and_then(|s| crate::ssh::forward(&s, port))) {
@@ -7632,7 +7658,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
             };
-            let short = folder.trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_string();
+            let short = crate::uistate::place_of(std::path::Path::new(&folder)).1.to_string_lossy().trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_string();
             let name = format!("{short}:{port}");
             match caps.browser_open(&name, &url, shikisha_shared::BrowserProfile::shared_default()) {
                 Ok(()) => reveal = Some((name, Instant::now() + Duration::from_secs(10))),
@@ -7652,6 +7678,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for folder in shell.mail().take_folder_closes() {
             let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
             let at = std::path::Path::new(&folder);
+            let (on, path) = crate::uistate::place_of(at);
             // The tabs standing in it go with it, and that is the point: a
             // folder whose tabs are started again on every launch can never be
             // emptied by hand, so asking for an empty folder first was asking
@@ -7659,7 +7686,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // in the middle of something is in the way -- the same two states
             // a tab's own close stops to ask about, for the same reason
             if let Some(busy) = tabs.iter().find(|t| {
-                t.cwd().is_some_and(|c| crate::uistate::same_folder(c, at))
+                t.cwd().is_some_and(|c| crate::uistate::same_folder(c, &path))
+                    && on.as_deref().is_none_or(|h| t.host() == Some(h))
                     && matches!(t.state, TabState::Busy | TabState::Question)
             }) {
                 flash = Some(i18n::tp("msg.folder.in_use", &[("name", &busy.title)]));
@@ -7670,7 +7698,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // machine is paid for. Said, with where it is deleted from
             let on_microvm = desks.get(desk_index).is_some_and(|d| {
                 d.folders.iter().any(|f| {
-                    f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, at))
+                    f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), at))
                         && f.host.as_ref().is_some_and(|h| h.is_made())
                 })
             });
@@ -8810,7 +8838,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 signin_waiting = None;
                 continue;
             }
-            let from = std::path::PathBuf::from(&ask.from);
+            // The folder asked from, by its place key, and its path
+            let from_key = std::path::PathBuf::from(&ask.from);
+            let from = crate::uistate::place_of(&from_key).1;
             let name = ask.branch.clone();
             // The machines this could be made on besides this one
             let machines: Vec<crate::config::HostSpec> =
@@ -8822,7 +8852,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let from_far = desks.get(desk_index).and_then(|d| {
                 d.folders
                     .iter()
-                    .find(|f| f.host.is_some() && f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &from)))
+                    .find(|f| f.host.is_some() && f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &from_key)))
                     .and_then(|f| f.host.clone())
             });
             let wanted_host = match (ask.host.trim(), &from_far) {
@@ -8972,7 +9002,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }).flatten();
             let mut view = crate::uistate::BranchPlan {
                 seq: ask.seq,
-                from: from.display().to_string(),
+                from: ask.from.clone(),
                 branch: name.clone(),
                 asked: name.clone(),
                 base: chosen.clone(),
@@ -9459,7 +9489,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // way the terminal put there for it comes off the desk
             if git_signin.as_ref().is_some_and(|g| g.look.as_ref().is_some_and(|l| l.parent == folder)) {
                 if let Some(g) = git_signin.take() {
-                    if g.added && config::remove_folder(&g.desk, std::path::Path::new(&folder)).is_ok() {
+                    // The folder put there for the step, on its own machine: a
+                    // folder of the same path on another machine stays
+                    let key = crate::uistate::place_key(Some(&g.host.name), std::path::Path::new(&folder));
+                    if g.added && config::remove_folder(&g.desk, std::path::Path::new(&key)).is_ok() {
                         watcher.poke();
                     }
                     if act == "next" {
@@ -13100,7 +13133,10 @@ fn far_in_use(desk: Option<&config::Desk>, plan: crate::worktree::Plan) -> anyho
             return None;
         }
         let same_place = crate::uistate::same_folder(cwd, &plan.folder);
+        // A branch is a repository's: one of that name in another project's
+        // folder on the same machine is another branch
         let same_branch = host.is_made()
+            && f.project.as_deref() == Some(plan.project.as_str())
             && crate::elsewhere::Elsewhere::of(there)
                 .ok()
                 .and_then(|at| crate::git::far_place(&at, cwd, false).0)
@@ -13810,6 +13846,18 @@ fn fill_or_append(prompt: &str, words: &[(&str, &str)], main: &str, material: &s
 
 pub fn folder_press_moves(front: Option<&std::path::Path>, want: &std::path::Path, covered: bool) -> bool {
     covered || !front.is_some_and(|f| crate::uistate::same_folder(f, want))
+}
+
+/// Whether the row on screen `surface` stands in the folder a place key
+/// names (see `uistate::place_key`): a tab by its folder and its machine, so
+/// a folder of the same path on another machine is not it; a panel by its
+/// folder, which is all it says of where it is
+pub fn surface_is_place(surfaces: &[Surface], tabs: &[Tab], surface: usize, key: &std::path::Path) -> bool {
+    match surface.checked_sub(1).and_then(|i| surfaces.get(i)) {
+        Some(Surface::Session(i)) => tabs.get(*i).is_some_and(|t| t.cwd().is_some_and(|c| crate::uistate::is_place(c, t.host(), key))),
+        Some(_) => surface_folder(surfaces, tabs, surface).is_some_and(|d| crate::uistate::same_folder(d, &crate::uistate::place_of(key).1)),
+        None => false,
+    }
 }
 
 pub fn surface_folder<'a>(surfaces: &'a [Surface], tabs: &'a [Tab], surface: usize) -> Option<&'a std::path::Path> {

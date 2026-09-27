@@ -1513,7 +1513,7 @@ fn far_host_of(at: &std::path::Path) -> Option<crate::config::HostSpec> {
         let (desks, _) = c.resolve_desks();
         desks.into_iter().flat_map(|d| d.folders).find_map(|f| {
             let host = f.host.clone()?;
-            f.cwd.as_deref().filter(|c| crate::uistate::same_folder(c, at)).map(|_| host)
+            f.cwd.as_deref().filter(|c| crate::uistate::is_place(c, Some(&host.name), at)).map(|_| host)
         })
     })
 }
@@ -1526,7 +1526,7 @@ fn far_home_of(at: &std::path::Path, host: &crate::config::HostSpec) -> Option<S
     let project = desks
         .iter()
         .flat_map(|d| d.folders.iter())
-        .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, at)))?
+        .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), at)))?
         .project
         .clone()?;
     desks.into_iter().flat_map(|d| d.projects).find(|p| p.name == project)?.home_on(&host.name).map(|h| h.at.clone())
@@ -1535,6 +1535,7 @@ fn far_home_of(at: &std::path::Path, host: &crate::config::HostSpec) -> Option<S
 /// Whether a folder on another machine is a branch's folder: one that is not
 /// the project's checkout there, the way the board tells them apart
 fn far_cut(at: &std::path::Path, home: Option<&str>) -> bool {
+    let at = crate::uistate::place_of(at).1;
     home.is_some_and(|h| h.trim_end_matches('/') != at.to_string_lossy().replace('\\', "/").trim_end_matches('/'))
 }
 
@@ -2046,9 +2047,11 @@ fn handle(
             // word for a worktree says nothing. Deleting one is the board's,
             // which asks the machine first (see `farFolderDiscard`)
             if let Some(host) = far_host_of(at).filter(|_| !at.as_os_str().is_empty()) {
+                // The path there, out of the place key the page named it by
+                let path = crate::uistate::place_of(at).1;
                 let branch = crate::elsewhere::Elsewhere::of(&host)
                     .ok()
-                    .and_then(|m| crate::git::far_place(&m, at, true).0);
+                    .and_then(|m| crate::git::far_place(&m, &path, true).0);
                 let home_at = named.as_ref().and_then(|(n, _)| {
                     crate::config::load()?
                         .resolve_desks()
@@ -2059,7 +2062,7 @@ fn handle(
                         .home_on(&host.name)
                         .map(|h| h.at.clone())
                 });
-                let checkout = home_at.clone().unwrap_or_else(|| at.to_string_lossy().to_string());
+                let checkout = home_at.clone().unwrap_or_else(|| path.to_string_lossy().to_string());
                 req.respond(json_resp(serde_json::json!({
                     "family": crate::uistate::far_family(&host.name, &checkout),
                     "cut": far_cut(at, home_at.as_deref()),
@@ -2573,7 +2576,7 @@ fn handle(
             let planned = match &far {
                 Some(host) => {
                     let cut = far_cut(&at, far_home_of(&at, host).as_deref());
-                    crate::worktree::rename_plan_far(host, &at.to_string_lossy(), cut, to)
+                    crate::worktree::rename_plan_far(host, &crate::uistate::place_of(&at).1.to_string_lossy(), cut, to)
                 }
                 None => crate::worktree::rename_plan(&at, to),
             };
@@ -12093,7 +12096,7 @@ function folderPane(desk, g, gi) {
     el("span", {class:"hint"}, T["settings.group.delete.hint"]));
   box.append(buttons);
 
-  familyOf(g.cwd, desk).then(where => {
+  familyOf(placeKey(g), desk).then(where => {
     paint(where && where.family);
     if (!where) return;
     // A devcontainer and a setup belong to the repository, so they are offered
@@ -12110,7 +12113,7 @@ function folderPane(desk, g, gi) {
       if (!guard()) return;
       if (!await confirmAction(fill(T["settings.group.discard.sure"], {name: folderLabel(g, gi)}), T["settings.group.discard"])) return;
       // On another machine: the board deletes it, as its own menu does
-      if (where.host) { farFolderDiscard(g.cwd); return; }
+      if (where.host) { farFolderDiscard(placeKey(g)); return; }
       toast(T["tui.making.stage.removing"]);
       const r = await fetch("/api/folder/discard",
         {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: g.cwd})})
@@ -12839,10 +12842,12 @@ function projectPane(desk, p) {
   for (const gi of p.folders) {
     const g = desk.folders[gi];
     const fam = FAMILIES[(g.cwd || "").trim()] || {};
+    const home = g.host ? homes.find(h => h.host === g.host) : null;
+    const cut = g.host ? !!home && (home.at || "").replace(/\/+$/, "") !== (g.cwd || "").replace(/\/+$/, "") : fam.cut;
     rows.append(el("div", {class:"listrow secretrow", onclick:() => { sel = {desk:sel.desk, grp:gi, tab:null, global:false}; render(); }},
       el("span", {class:"secretname"}, folderLabel(g, gi)),
       el("span", {class:"hint mono secretdesc"}, folderWhere(g)),
-      el("span", {class:"hint"}, fam.cut ? T["settings.project.worktree"] : T["settings.project.checkout"]),
+      el("span", {class:"hint"}, cut ? T["settings.project.worktree"] : T["settings.project.checkout"]),
       el("span", {class:"go"}, "›")));
   }
   const folders = card(T["settings.project.folders"],
@@ -13469,7 +13474,7 @@ function renameCard(g, branch) {
     // to press, and an empty box would be a box with nothing in it
     if (!want || want === branch) { said.hidden = true; line.textContent = ""; note.textContent = ""; go.disabled = true; return; }
     const r = await fetch("/api/folder/rename",
-      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: g.cwd, name: want})})
+      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: placeKey(g), name: want})})
       .then(r => r.json()).catch(() => ({ok:false, error:""}));
     // An answer about a name that has since been typed over says nothing
     // about the one in the box now
@@ -13487,7 +13492,7 @@ function renameCard(g, branch) {
   go.addEventListener("click", async () => {
     const want = box.value.trim();
     const r = await fetch("/api/folder/rename",
-      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: g.cwd, name: want, go: true})})
+      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: placeKey(g), name: want, go: true})})
       .then(r => r.json()).catch(() => ({ok:false, error:""}));
     if (!r.ok) { toast(r.error || T["settings.group.rename.failed"], true); return; }
     toast(fill(T["msg.branch.renamed"], {from: r.from, to: r.to}));
@@ -13507,6 +13512,18 @@ function renameCard(g, branch) {
 
 // Which project a folder belongs to, as the app sees it. Answered by the app
 // because it means looking at what git shares behind the folder
+// A settings folder's place key: its path, or its machine's name with its
+// path for one on another machine -- two machines can have the same path
+const placeKey = g => g && g.host ? "\u0001" + g.host + "\u0001" + (g.cwd || "") : ((g && g.cwd) || "");
+// Whether a settings folder is the one a place key names: on that machine
+// when the key names one, else the folder of that path, as before place keys
+const samePlace = (g, key) => {
+  const norm = c => (c || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const k = key || "";
+  if (k.charAt(0) !== "\u0001") return norm(g.cwd) === norm(k);
+  const [, host, path] = k.split("\u0001");
+  return (g.host || "") === host && norm(g.cwd) === norm(path);
+};
 async function familyOf(cwd, desk) {
   if (!(cwd || "").trim()) return null;
   try {
@@ -16161,7 +16178,7 @@ load().then(() => {
     const same = c => (c || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const from = (q.get("folder") || "").trim();
     const gi = from
-      ? (desks[wi].folders || []).findIndex(g => same(g.cwd) === same(from))
+      ? (desks[wi].folders || []).findIndex(g => samePlace(g, from))
       : -1;
     sel = {desk:wi, grp:null, tab:addTabTo(desks[wi], gi >= 0 ? gi : undefined), global:false};
     sel.grp = desks[wi].tabs[sel.tab].group || 0;
@@ -16192,7 +16209,7 @@ load().then(() => {
     const same = c => (c || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const from = (q.get("folder") || "").trim();
     const gi = from
-      ? (desks[cur].folders || []).findIndex(g => same(g.cwd) === same(from))
+      ? (desks[cur].folders || []).findIndex(g => samePlace(g, from))
       : (desks[cur].folders || []).findIndex(g => !(g.cwd || "").trim());
     if (gi >= 0) {
       const tabs = desks[cur].tabs || [];
@@ -16243,7 +16260,7 @@ load().then(() => {
   if (projectAsk && want && desks[cur]) {
     // Either slash: the settings write D:/work, a path said by Windows is D:\work
     const same = c => (c || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-    const gi = (desks[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
+    const gi = (desks[cur].folders || []).findIndex(g => samePlace(g, want));
     if (gi >= 0) {
       const cwd = (desks[cur].folders[gi].cwd || "").trim();
       // Asked once, then waited for: asking again restarts the moment the
@@ -16287,7 +16304,7 @@ load().then(() => {
   }
   if (want && desks[cur]) {
     const same = c => (c || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-    const gi = (desks[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
+    const gi = (desks[cur].folders || []).findIndex(g => samePlace(g, want));
     if (gi >= 0) {
       sel = {desk:cur, grp:gi, tab:null, global:false};
       render();

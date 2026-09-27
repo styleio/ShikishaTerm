@@ -314,7 +314,7 @@ pub fn row_put_away(
         && n.checked_sub(1)
             .and_then(|i| surfaces.get(i))
             .and_then(|p| surface_dir(p, tabs))
-            .is_some_and(|d| hidden.iter().any(|h| crate::uistate::same_folder(h, &d)))
+            .is_some_and(|d| hidden.iter().any(|h| crate::uistate::same_folder(&crate::uistate::place_of(h).1, &d)))
 }
 
 /// The row the view goes to when the one it was on is not one it may rest on:
@@ -408,8 +408,10 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             .collect(),
     };
     groups.retain(|(k, _)| !put_away.iter().any(|h| crate::uistate::same_folder(h, k)));
+    // A row says only its folder's path, so it is put away with the folder of
+    // that path (the key's path, for a folder on another machine)
     let hidden_here = |dir: Option<&std::path::Path>| {
-        dir.is_some_and(|d| put_away.iter().any(|h| crate::uistate::same_folder(h, d)))
+        dir.is_some_and(|d| put_away.iter().any(|h| crate::uistate::same_folder(&crate::uistate::place_of(h).1, d)))
     };
     crate::uistate::GroupState::name_projects(&mut groups, &ui.folder_projects);
     crate::uistate::GroupState::name_work_items(&mut groups, &ui.folder_items);
@@ -514,6 +516,22 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     }
     // The pairing link as it should be shown, with the network it leads to
     let shown = ui.qr.as_deref().map(crate::netaddr::shown_link);
+    // The folder a panel stands under: on the machine it is on, by place key,
+    // when the panel knows its machine; by path alone when it knows nothing
+    // more, as before place keys -- the first folder of that path
+    let group_on = |dir: &std::path::Path, at: Option<&crate::elsewhere::Elsewhere>| -> Option<usize> {
+        let host = at.and_then(|m| match m {
+            crate::elsewhere::Elsewhere::Cloud(h) => Some(h.name.clone()),
+            crate::elsewhere::Elsewhere::Ssh(spec) => ui.server_names.iter().find(|(s, _)| s == spec).map(|(_, n)| n.clone()),
+        });
+        match (host, at) {
+            (Some(h), _) => {
+                let key = std::path::PathBuf::from(crate::uistate::place_key(Some(&h), dir));
+                groups.iter().position(|(k, _)| crate::uistate::same_folder(k, &key))
+            }
+            (None, _) => groups.iter().position(|(k, _)| crate::uistate::same_folder(&crate::uistate::place_of(k).1, dir)),
+        }
+    };
     crate::uistate::UiState {
         groups: groups.iter().map(|(_, g)| g.clone()).collect(),
         branch: ui.branch.clone(),
@@ -600,8 +618,10 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                         .filter(|_| t.is_ai())
                         .and_then(|c| ui.drafts.iter().find(|(k, _)| crate::uistate::same_folder(k, c)))
                         .map(|(_, d)| d.clone());
+                    // Under its own machine's folder, by place key
                     ts.group = t.cwd().and_then(|c| {
-                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, c))
+                        let key = std::path::PathBuf::from(crate::uistate::place_key(t.host(), c));
+                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, &key))
                     });
                     // A terminal on a server wears that server's name. A tab
                     // in a folder on a server is on one too: its terminal is
@@ -621,9 +641,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     // It stands under the folder it was written in, exactly as
                     // the panels beside it do, so it is in that folder's tab
                     // bar and is folded away with it
-                    let group = dir.as_deref().and_then(|d| {
-                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
-                    });
+                    let group = dir.as_deref().and_then(|d| group_on(d, None));
                     let mut t = crate::uistate::TabState::browser(i + 1, key, name, group);
                     // What a script is asking the person about this page, if
                     // anything. The board draws the bar under the page from it
@@ -637,9 +655,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     Some(t)
                 }
                 Surface::Sftp { key, name, dir, at, .. } => {
-                    let group = dir.as_deref().and_then(|d| {
-                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
-                    });
+                    let group = dir.as_deref().and_then(|d| group_on(d, at.as_ref()));
                     let mut t = crate::uistate::TabState::sftp(i + 1, key, name, group);
                     // The panel's server, which is the one its questions are
                     // about -- so the page reads the mark off the tab, and the
@@ -656,9 +672,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     // It works in a folder, so it stands under that folder's
                     // heading and is folded away with it -- the same as the
                     // panels beside it
-                    let group = dir.as_deref().and_then(|d| {
-                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
-                    });
+                    let group = dir.as_deref().and_then(|d| group_on(d, at.as_ref()));
                     let mut t = crate::uistate::TabState::editor(i + 1, key, name, group);
                     // A file on a server wears that server's mark, as the file
                     // panel beside it does: editing production is the thing
@@ -678,29 +692,23 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     // well be rows of another folder -- it points at them, it
                     // does not hold them -- and that changes nothing about
                     // where the row itself lives
-                    let group = dir.as_deref().and_then(|d| {
-                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
-                    });
+                    let group = dir.as_deref().and_then(|d| group_on(d, None));
                     Some(crate::uistate::TabState::split(i + 1, key, name, group))
                 }
                 Surface::Failed { key, name, dir, why, install_url, machine } => {
-                    let group = dir.as_deref().and_then(|d| {
-                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
-                    });
+                    let group = dir.as_deref().and_then(|d| group_on(d, None));
                     let mut t = crate::uistate::TabState::failed(i + 1, key, name, group);
                     t.failed = Some(crate::uistate::FailedState { why: why.clone(), install_url: install_url.clone() });
                     t.mark = machine.as_deref().and_then(|m| crate::uistate::MarkState::of(m, &ui.server_marks));
                     Some(t)
                 }
-                Surface::Git { key, name, dir, .. } => {
+                Surface::Git { key, name, dir, at, .. } => {
                     // The panel reports on a folder, so it stands under that
                     // folder's heading and is put away with it. Worked out from
                     // where it actually points, exactly as a tab's is -- carried
                     // as a number decided elsewhere, it was never filled in, and
                     // a panel belonging to nothing sat on outside a folded folder
-                    let group = dir.as_deref().and_then(|d| {
-                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
-                    });
+                    let group = dir.as_deref().and_then(|d| group_on(d, at.as_ref()));
                     let mut t = crate::uistate::TabState::git(i + 1, key, name, group);
                     // Which repository it reports on, the same as a session's:
                     // the column asks it before asking GitHub whether this
@@ -1625,6 +1633,10 @@ pub struct Ui {
     pub folders_hidden: std::collections::BTreeSet<std::path::PathBuf>,
     /// Those same folders, each with the name of the machine it is on
     pub folder_hosts: Vec<(std::path::PathBuf, String)>,
+    /// Each server entry's name by what reaches it, so a panel that knows
+    /// only the connection (a git or file panel on a server) is put under
+    /// that machine's folder, not another machine's folder of the same path
+    pub server_names: Vec<(crate::ssh::Spec, String)>,
     /// And the household each belongs to over there, where its project has a
     /// checkout on that machine: the checkout's git folder named with the
     /// machine ([`crate::uistate::far_family`]), and whether the folder is a

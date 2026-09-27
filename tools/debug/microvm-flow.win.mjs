@@ -568,7 +568,7 @@ try {
   await until(() => board.run(`!!${g}`), 'the worktree\'s card', 30000);
   check(await board.run(`onMicrovm(${g})`), 'the card knows it is on a MicroVM');
   await board.run(`openFarPorts(${g}, document.querySelector("#tabs") || document.body); true`);
-  await until(() => board.run(`!!(S.far_ports && !S.far_ports.busy && S.far_ports.folder === ${JSON.stringify(wt.cwd)})`), 'the addresses', 60000);
+  await until(() => board.run(`!!(S.far_ports && !S.far_ports.busy && S.far_ports.folder === gkey(${g}))`), 'the addresses', 60000);
   const ports = await board.run('S.far_ports.ports');
   const p8000 = ports.find((p) => p.port === 8000);
   check(!!p8000 && p8000.url === `https://8000-${wt.sandbox}.e2b.app`, 'the port and its public URL are listed: ' + JSON.stringify(ports));

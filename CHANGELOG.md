@@ -326,6 +326,18 @@ once it reaches its first tagged release.
   deletes the original", which never happens: the links are taken out first.
 
 ### Fixed
+- **The same path on two machines is two folders.** A folder is its machine
+  and its path: `/home/ubuntu/app` on staging and on production, or a
+  project's checkout on two MicroVM entries, were one folder to the board --
+  drawn once, with both machines' tabs under it -- and taking one off the
+  list, renaming it, deleting it, or opening its settings could reach the
+  other. Every folder is now known by its machine and its path, on the board,
+  in what the page asks of the app, and in the settings; a page older than
+  that, naming a folder by its path alone, still reaches the first of that
+  path.
+- **A tab's own command on a server or MicroVM runs as it was written.** A
+  command like `npm run dev && npm test` or `echo $HOME` had its `&&` and
+  `$HOME` sent as text.
 - **Closing the worktree dialog stops what it was asking.** Closing only hid
   it, and whether the checkout's AI was signed in went on being asked of its
   machine every minute, which woke a paused MicroVM and kept it running.

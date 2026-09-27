@@ -6123,7 +6123,9 @@ function drawAddProject() {
 }
 // The worktree dialog opened again on a folder, on a machine chosen for it
 function reopenBranchOn(folder, host) {
-  const g = ((S && S.groups) || []).find(x => sameFolder(x.folder, folder));
+  // That machine's folder of that path first, by its key
+  const gs = (S && S.groups) || [];
+  const g = gs.find(x => gkey(x) === placeKeyOf(host, folder)) || gs.find(x => sameFolder(x.folder, folder));
   openBranch(g || {folder});
   branchHost = host;
   drawBranch();
@@ -6388,6 +6390,14 @@ function addChosenFolder(path, git) {
 }
 // Two spellings of one folder: case and the direction of the slashes do not
 // make a different folder on Windows
+// Which folder a card is, and nothing else is: its place key (the path here,
+// or its machine's name with its path for one elsewhere). What every ask
+// about a folder names it by -- two machines can have the same path
+function gkey(g) { return (g && (g.key || g.folder)) || ""; }
+// The path of a place key, and the key of a path on a machine: what is shown
+// is always the path, and what is asked about is the key
+function placePath(k) { const s = k || ""; return s.charAt(0) === "\u0001" ? (s.split("\u0001")[2] || "") : s; }
+function placeKeyOf(host, path) { return host ? "\u0001" + host + "\u0001" + (path || "") : (path || ""); }
 const sameFolder = (a, b) => (a || "").replace(/[\\/]+$/, "").replace(/\//g, "\\").toLowerCase()
   === (b || "").replace(/[\\/]+$/, "").replace(/\//g, "\\").toLowerCase();
 
@@ -6873,7 +6883,7 @@ function folderRow(g, mine, card) {
   // but never led anywhere
   const row = el("div", {class:"tab folder" + (g.linked ? " cut" : "")
         + (card ? " wcard" : "") + (inFront(g) ? " front" : ""),
-      title:folderAbout(g), onclick:() => send({kind:"folderview", folder:g.folder || ""})},
+      title:folderAbout(g), onclick:() => send({kind:"folderview", folder:gkey(g)})},
     chip,
     // A card has no fold of its own: its tabs put away from the "N tabs" row
     // under it, and the whole project from its heading. A caret here stood in
@@ -6884,7 +6894,7 @@ function folderRow(g, mine, card) {
     // On the row itself as well as in the count above, so a folded list
     // still shows which folder is the one with the problem
     ailMark(g),
-    nameSlot("tabs", "f:" + g.folder, g.name || "", v => send({kind:"foldername", folder:g.folder, name:v}), folderNameClass(g)),
+    nameSlot("tabs", "f:" + gkey(g), g.name || "", v => send({kind:"foldername", folder:gkey(g), name:v}), folderNameClass(g)),
     // A card says it on its second line, with the machine's address
     card ? null : serverMark(g.mark));
   // Shut, the row has to speak for what it is hiding: the state of whichever
@@ -7041,10 +7051,10 @@ function emptyRow(g, card) {
   const next = (S.coach || 0) === 2 ? " pulse" : "";
   const own = !g.linked;
   const row = el("div", {class:"tab folder empty" + (g.linked ? " cut" : "") + (card ? " wcard" : "") + (own ? next : ""), title:folderAbout(g),
-      onclick:() => { if (own) send({kind:"folderview", folder:g.folder || ""}); else addTabHere(g); }},
+      onclick:() => { if (own) send({kind:"folderview", folder:gkey(g)}); else addTabHere(g); }},
     card ? el("span", {class:"dot"}) : g.linked ? cutMark() : el("span", {class:"chip"}),
     ailMark(g),
-    nameSlot("tabs", "f:" + g.folder, g.name || "", v => send({kind:"foldername", folder:g.folder, name:v}), folderNameClass(g)),
+    nameSlot("tabs", "f:" + gkey(g), g.name || "", v => send({kind:"foldername", folder:gkey(g), name:v}), folderNameClass(g)),
     ...(card
       ? [g.family && !g.linked ? el("span", {class:"prim", title:T["tui.folder.primary.title"] || ""}, T["tui.folder.primary"] || "primary") : null,
          el("span", {class:"fill"}), folderSummary(g), folderWhere(g)]
@@ -7384,8 +7394,8 @@ function drawHeld(g) {
   // this machine, and opening on it greeted the person with the error they
   // pressed the button to get away from
   b.querySelector(".hmove").onclick = () =>
-    openBrowse("", path => send({kind:"foldermove", folder:g.folder, to:path}));
-  b.querySelector(".hhide").onclick = () => send({kind:"folderhide", folder:g.folder, hide:true});
+    openBrowse("", path => send({kind:"foldermove", folder:gkey(g), to:path}));
+  b.querySelector(".hhide").onclick = () => send({kind:"folderhide", folder:gkey(g), hide:true});
   b.querySelector(".kill").onclick = () => forgetFolder(g);
 }
 // Taking a folder that is not here off the list. Nothing on disk is touched --
@@ -7398,7 +7408,7 @@ function forgetFolder(g) {
     what: g.folder,
     label: T["tui.held.forget"] || "",
     danger: true,
-    go: () => send({kind:"folderclose", folder:g.folder}),
+    go: () => send({kind:"folderclose", folder:gkey(g)}),
   });
 }
 
@@ -7482,7 +7492,7 @@ function folderMenu(e, g) {
     item(T["tui.menu.rename"] || "", () => startRename("tabs", "f:" + g.folder)),
     // Everything else about it -- the colour, where it is, taking it off the
     // list -- is on its own page in the settings
-    item(T["tui.menu.edit"] || "", () => openSettings(null, false, g.folder)),
+    item(T["tui.menu.edit"] || "", () => openSettings(null, false, gkey(g))),
     // Off the list, with nothing on disk touched. Every folder has it, the
     // project's own checkout included -- that one is never thrown away, and
     // until this was here it was the one folder with no way off the list at
@@ -7511,8 +7521,8 @@ const onMicrovm = g => !!(g && g.host && ((S && S.hosts) || []).some(h => h.name
 // timer -- and listed where its menu was, each a press to copy
 let farPortsOpen = null;
 function openFarPorts(g, anchor) {
-  farPortsOpen = {folder: g.folder, anchor, drawn: ""};
-  send({kind:"farports", folder: g.folder});
+  farPortsOpen = {folder: gkey(g), anchor, drawn: ""};
+  send({kind:"farports", folder: gkey(g)});
   drawFarPorts();
 }
 function drawFarPorts() {
@@ -7558,14 +7568,14 @@ function forgetHere(g) {
     say: T["tui.forget.say"] || "",
     what: g.folder,
     label: T["tui.menu.forget"] || "",
-    go: () => send({kind:"folderclose", folder:g.folder}),
+    go: () => send({kind:"folderclose", folder:gkey(g)}),
   });
 }
 
 // A worktree deleted for good, folder and all. Asked first unless the person
 // said not to ask again -- here, or under Basic
 function discardFolder(g) {
-  const go = unasked => send({kind:"folderdiscard", folder:g.folder, unasked});
+  const go = unasked => send({kind:"folderdiscard", folder:gkey(g), unasked});
   if (S && S.discard_unasked) { go(false); return; }
   askQuestion({
     title: T["tui.discard.title"] || "",
@@ -8040,7 +8050,7 @@ function openBranch(g, preset) {
   coachAside();
   preset = preset || {};
   branchLink = preset.link || null;
-  branchFrom = g.folder || "";
+  branchFrom = gkey(g);
   branchSeq += 1;
   b.hidden = false;
   b.querySelector(".vtitle").textContent = T["tui.branch.title"] || "WORKTREE";
@@ -8176,9 +8186,9 @@ let branchDone = "";
 function drawProject(b, p) {
   const box = document.getElementById("bproj");
   const list = branchProjects();
-  const g = list.find(x => sameFolder(x.folder, branchFrom));
+  const g = list.find(x => sameFolder(gkey(x), branchFrom));
   const name = !branchFrom ? ""
-    : ((p && p.from === branchFrom && (p.project_name || p.project)) || (g && (g.project || g.name)) || leafOf(branchFrom));
+    : ((p && p.from === branchFrom && (p.project_name || p.project)) || (g && (g.project || g.name)) || leafOf(placePath(branchFrom)));
   const said = JSON.stringify([name, branchFrom, g ? g.color : ""]);
   if (box.dataset.said !== said) {
     box.dataset.said = said;
@@ -8187,7 +8197,7 @@ function drawProject(b, p) {
     if (g && g.color) chip.style.background = g.color;
     box.classList.toggle("empty", !branchFrom);
     box.append(chip, el("span", {class:"nm"}, name || T["tui.branch.pick_project"] || ""),
-      el("span", {class:"at"}, branchFrom ? homeShort(branchFrom) : ""), el("span", {class:"caret"}, "▾"));
+      el("span", {class:"at"}, branchFrom ? homeShort(placePath(branchFrom)) : ""), el("span", {class:"caret"}, "▾"));
   }
   // With nothing to choose from, said under the picker: the one step before
   // this one
@@ -8199,7 +8209,7 @@ function drawProject(b, p) {
       c.style.background = x.color;
       return el("div", {class:"projrow", onclick:() => {
         closeFolderMenu();
-        if (sameFolder(x.folder, branchFrom)) return;
+        if (sameFolder(gkey(x), branchFrom)) return;
         const keep = document.getElementById("bagain").checked;
         openBranch({folder: x.folder}, {keepStart:true, keepAgain:keep});
       }}, c, el("span", {class:"nm"}, x.project || x.name), el("span", {class:"at"}, homeShort(x.folder)));
@@ -8383,7 +8393,7 @@ function chooseBranchResult(r) {
 
 // The Issue tab's project this worktree's project is, by its folder
 function ghProject() {
-  return projectAt(branchFrom);
+  return projectAt(placePath(branchFrom));
 }
 // Ask GitHub, a moment after the last letter. The open ones when nothing is
 // typed. Asked of the same questions the Issue tab asks, under a number of
@@ -15626,7 +15636,7 @@ function openSettings(section, ret, folder, tab) {
     if (at && at.kind === "browser" && !at.settings && at.id) {
       tabkey = at.id;
       const g = at.group != null ? (S.groups || [])[at.group] : null;
-      if (g && g.folder) folder = g.folder;
+      if (g && g.folder) folder = gkey(g);
     }
     // A git or file panel, an editor, a split: written in the same list as a
     // page and, like a page, not counted among the terminals -- so it too is
@@ -15634,7 +15644,7 @@ function openSettings(section, ret, folder, tab) {
     if (at && !at.settings && !["pty", "browser", "issues", "split"].includes(at.kind) && at.key) {
       tabkey = at.key.replace(/^[a-z]+:/, "");
       const g = at.group != null ? (S.groups || [])[at.group] : null;
-      if (g && g.folder) folder = g.folder;
+      if (g && g.folder) folder = gkey(g);
     }
     if (at && at.kind === "pty" && !at.settings) {
       const grp = at.group == null ? null : at.group;
@@ -15646,7 +15656,7 @@ function openSettings(section, ret, folder, tab) {
       tabpos = sibs.indexOf(at);
       tabname = at.name || null;
       const g = grp != null ? (S.groups || [])[grp] : null;
-      if (g && g.folder) folder = g.folder;
+      if (g && g.folder) folder = gkey(g);
     }
   }
   if (typeof REMOTE !== "undefined" && REMOTE) {
@@ -15760,7 +15770,7 @@ document.addEventListener("keydown", e => {
 // `pane` is the empty pane that asked, when one did: the new tab goes there
 // rather than wherever focus has wandered to by the time the form is done
 function addTabHere(g, pane) {
-  const at = g && g.folder ? g.folder : "";
+  const at = gkey(g);
   if (typeof REMOTE !== "undefined" && REMOTE) {
     // The same one question the window asks in its dialog, framed where the
     // window puts its dialog: over the board, which stays behind it
@@ -17261,9 +17271,9 @@ function gitPrFormFit() {
   const head = G.branch && G.branch.name;
   if (!g || !head || !gitPrFormShown()) return;
   const p = I.pr;
-  if (p && p.from === "git" && p.head === head && p.folder === g.folder) { gitPrBaseFit(); return; }
+  if (p && p.from === "git" && p.head === head && p.folder === gkey(g)) { gitPrBaseFit(); return; }
   const made = /^issue:(.+)#(\d+)$/.exec(g.work_item || "");
-  I.pr = {from:"git", project: g.project || "", folder: g.folder || "", head, base:"", bases:null, title:"", body:"",
+  I.pr = {from:"git", project: g.project || "", folder: gkey(g), head, base:"", bases:null, title:"", body:"",
           draft:false, close: !!made, issue: made ? {repo: made[1], number: Number(made[2])} : null, kept:"",
           files:null, open:{}, more:false};
   I.pr.body = prFixes("", I.pr);
@@ -21346,7 +21356,7 @@ mod tests {
         // folder opens the default command, a worktree asks which tab -- the same
         // question the line under it asks, because a row that lights under the
         // hand and then does nothing is not an answer
-        assert!(PAGE.contains(r#"onclick:() => { if (own) send({kind:"folderview", folder:g.folder || ""}); else addTabHere(g); }},"#)
+        assert!(PAGE.contains(r#"onclick:() => { if (own) send({kind:"folderview", folder:gkey(g)}); else addTabHere(g); }},"#)
             && PAGE.contains(r#"if (!own) box.append(el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)},"#),
                 "there is no way to put the first tab in an empty working folder");
         assert!(PAGE.contains(r##"step === 2 ? document.querySelector("#tabs .tab.fnew, #tabs .tab.folder.empty")"##),
@@ -21562,7 +21572,7 @@ mod tests {
         assert!(!PAGE.contains(r#"onclick:() => send({kind:"select", tab:ts[0].index})"#), "a pill inside the bundle has become a button that means something else");
         // The folder's name goes to the folder; putting it away is the caret's
         assert!(
-            PAGE.contains(r#"onclick:() => send({kind:"folderview", folder:g.folder || ""})},"#),
+            PAGE.contains(r#"onclick:() => send({kind:"folderview", folder:gkey(g)})},"#),
             "pressing the working folder's name does not go to its last tab"
         );
         assert!(
@@ -21960,7 +21970,7 @@ mod tests {
     #[test]
     fn a_folder_or_a_tab_is_renamed_where_it_stands_and_edited_from_its_right_click() {
         assert!(PAGE.contains(r#"item(T["tui.menu.rename"] || "", () => startRename("tabs", "f:" + g.folder)),"#), "a folder's menu cannot rename it");
-        assert!(PAGE.contains(r#"item(T["tui.menu.edit"] || "", () => openSettings(null, false, g.folder)),"#), "a folder's menu cannot edit it");
+        assert!(PAGE.contains(r#"item(T["tui.menu.edit"] || "", () => openSettings(null, false, gkey(g))),"#), "a folder's menu cannot edit it");
         assert!(PAGE.contains(r#"item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),"#), "a tab's menu cannot edit it");
         assert!(PAGE.contains(r#"oncontextmenu:e => { e.preventDefault(); tabMenu(e.currentTarget, t, "strip", e); }},"#), "a tab over the pane has no menu");
         assert!(PAGE.contains("const x = point ? point.clientX : r.left, y = point ? point.clientY + 2 : r.bottom + 4;"), "a right-click menu does not open at the pointer");
@@ -21988,7 +21998,7 @@ mod tests {
         assert!(PAGE.contains("if (S && S.discard_unasked) { go(false); return; }"), "turned off, it still asks");
         assert!(PAGE.contains(r#"never: T["tui.discard.never"] || "","#), "the question has no box to stop it asking");
         assert!(PAGE.contains("go(input.value.trim(), !!never && unasked.checked)"), "the box's answer is not handed on");
-        assert!(PAGE.contains(r#"send({kind:"folderdiscard", folder:g.folder, unasked})"#), "the answer does not reach the app");
+        assert!(PAGE.contains(r#"send({kind:"folderdiscard", folder:gkey(g), unasked})"#), "the answer does not reach the app");
         assert!(PAGE.contains("unasked.checked = false;"), "a box ticked once stays ticked in the next question");
     }
 
@@ -22007,7 +22017,7 @@ mod tests {
         assert!(PAGE.contains(r#"item(T["tui.menu.forget"] || "", () => forgetHere(g)),
     // Last and in red, the one entry that cannot be taken back."#),
             "taking a folder off the list is dressed as the delete below it");
-        assert!(PAGE.contains(r#"go: () => send({kind:"folderclose", folder:g.folder}),"#),
+        assert!(PAGE.contains(r#"go: () => send({kind:"folderclose", folder:gkey(g)}),"#),
             "the answer does not reach the app");
         // What it costs, before it is answered: the tabs standing in it close
         assert!(PAGE.contains(r#"say: T["tui.forget.say"] || "","#),
@@ -22526,11 +22536,11 @@ mod tests {
         // run before it runs; the other three are one message each
         for (what, why) in [
             ("openRepair(g);", "the card cannot put the folder back"),
-            (r#"openBrowse("", path => send({kind:"foldermove", folder:g.folder, to:path}))"#,
+            (r#"openBrowse("", path => send({kind:"foldermove", folder:gkey(g), to:path}))"#,
                 "the card cannot point the folder somewhere else"),
-            (r#"send({kind:"folderhide", folder:g.folder, hide:true})"#,
+            (r#"send({kind:"folderhide", folder:gkey(g), hide:true})"#,
                 "the card cannot put the folder out of sight"),
-            (r#"send({kind:"folderclose", folder:g.folder})"#,
+            (r#"send({kind:"folderclose", folder:gkey(g)})"#,
                 "the card cannot take the folder off the list"),
         ] {
             assert!(PAGE.contains(what), "{why}");
@@ -22610,7 +22620,7 @@ mod tests {
         // uncommitted and the same "don't ask again"
         assert!(
             PAGE.contains(r#"function discardFolder(g) {
-  const go = unasked => send({kind:"folderdiscard", folder:g.folder, unasked});
+  const go = unasked => send({kind:"folderdiscard", folder:gkey(g), unasked});
   if (S && S.discard_unasked) { go(false); return; }"#),
             "found worktrees are deleted by some other question than the one on the desk"
         );
@@ -22708,7 +22718,7 @@ mod tests {
             "the phone's + drops the folder"
         );
         assert!(
-            PAGE.contains("const at = g && g.folder ? g.folder : \"\";"),
+            PAGE.contains("const at = gkey(g);"),
             "the folder where + was pressed is not read"
         );
     }

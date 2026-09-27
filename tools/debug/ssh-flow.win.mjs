@@ -662,6 +662,60 @@ try {
   } finally {
     await there(`pkill -f "http.server ${PORT_THERE}"; rm -rf ~/shk-serve; true`);
   }
+
+  console.log('9. the same path on two machines is two folders');
+  // srv and srv2 (added in 6) are two entries for one server: to the app two
+  // machines, each with a folder at the same path
+  const SAME = `/home/${USER}/shk-same`;
+  await there(`mkdir -p ${SAME}`);
+  try {
+    const both = saved();
+    both.desks[0].folders.push(
+      { cwd: SAME, host: 'srv', tabs: [{ name: 'same-a', id: 'same-a', command: 'bash' }] },
+      { cwd: SAME, host: 'srv2', tabs: [{ name: 'same-b', id: 'same-b', command: 'bash' }] });
+    fs.writeFileSync(CONFIG, JSON.stringify(both, null, 2));
+    const sameGroups = () => board.run(`JSON.stringify((S.groups || []).map((g, i) => ({i, key: g.key, host: g.host, folder: g.folder})).filter(g => g.folder === ${JSON.stringify(SAME)}))`).then((t) => JSON.parse(t));
+    await until(async () => (await sameGroups()).length === 2, 'two folders of one path on the board', 60000)
+      .catch(async (e) => { console.log('    (the board has: ' + JSON.stringify(await sameGroups()) + ')'); throw e; });
+    const gs = await sameGroups();
+    check(new Set(gs.map((g) => g.key)).size === 2 && gs.some((g) => g.host === 'srv') && gs.some((g) => g.host === 'srv2'),
+      'each is its own folder, on its own machine: ' + gs.map((g) => g.host).join(', '));
+    const groupOf = (name) => board.run(`((S.tabs || []).find(t => t.name === ${JSON.stringify(name)}) || {}).group`);
+    await until(async () => (await groupOf('same-a')) != null && (await groupOf('same-b')) != null, 'both tabs on the board', 60000);
+    const [ga, gb] = [await groupOf('same-a'), await groupOf('same-b')];
+    check(ga !== gb && gs.find((g) => g.i === ga).host === 'srv' && gs.find((g) => g.i === gb).host === 'srv2',
+      'each tab stands under its own machine\x27s folder');
+    // Taking srv2's off the list leaves srv's
+    const key2 = gs.find((g) => g.host === 'srv2').key;
+    // Its settings open on it, not on the other machine's folder of that path
+    await board.run(`openSettings(null, true, ${JSON.stringify(key2)}); true`);
+    let samePage;
+    await until(async () => {
+      const p = portOf(path.join('profiles', 'default'));
+      if (!p) return false;
+      samePage = (await targetsOf(p)).find((t) => t.type === 'page' && /folder=%01srv2%01/.test(t.url));
+      return !!samePage;
+    }, 'the settings on srv2\x27s folder', 30000);
+    const sp = await connect(samePage, 'srv2\x27s folder\x27s settings');
+    try {
+      await until(() => sp.run('typeof sel === "object" && sel.grp != null && !!desks[sel.desk]'), 'the folder chosen on the page', 30000);
+      check(await sp.run('(desks[sel.desk].folders[sel.grp] || {}).host') === 'srv2', 'the settings open on srv2\x27s folder, not srv\x27s of the same path');
+    } finally {
+      try { sp.ws.close(); } catch {}
+    }
+    await board.run('send({kind:"closesettings"}); true');
+    // Once its shell has settled: a folder with a tab at work is not taken off
+    const stateOf = (name) => board.run(`((S.tabs || []).find(t => t.name === ${JSON.stringify(name)}) || {}).state || ""`);
+    await until(async () => !/BUSY|QUESTION/.test(await stateOf('same-b')), 'srv2\x27s shell settled', 60000);
+    await board.run(`send({kind:"folderclose", folder:${JSON.stringify(key2)}}); true`);
+    await until(() => !(desk().folders || []).some((f) => f.cwd === SAME && f.host === 'srv2'), 'srv2\x27s folder off the list', 60000)
+      .catch(async (e) => { console.log('    (the board says: ' + await board.run('S.flash || ""') + '; same-b is ' + await stateOf('same-b') + ')'); throw e; });
+    check((desk().folders || []).some((f) => f.cwd === SAME && f.host === 'srv'), 'and srv\x27s folder of the same path stays');
+    await until(async () => (await sameGroups()).length === 1, 'one folder of that path left on the board', 60000);
+    check((await sameGroups())[0].host === 'srv', 'the one left is srv\x27s');
+  } finally {
+    await there(`rm -rf ${SAME}`);
+  }
 } catch (e) {
   check(false, e.message);
 } finally {

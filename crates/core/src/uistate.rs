@@ -439,6 +439,11 @@ pub struct GroupState {
     /// The heading: what someone named it; else, for a worktree, the branch it
     /// was cut for; else the folder's own name
     pub name: String,
+    /// Which folder this is, and nothing else is: its path here, or its
+    /// machine's name with its path for one elsewhere (`place_key`). What
+    /// the page names it by when it asks for something done to it -- two
+    /// machines can have the same path, and `folder` is only the path
+    pub key: String,
     /// The project this folder is a piece of, in words: what the settings call
     /// it, or the folder its repository is checked out in. Absent outside a
     /// repository. Worked out here rather than on the page, because the page
@@ -524,7 +529,11 @@ impl GroupState {
     ) -> Vec<(std::path::PathBuf, GroupState)> {
         let mut out: Vec<(std::path::PathBuf, GroupState)> = Vec::new();
         for t in tabs {
-            let Some(cwd) = t.cwd() else { continue };
+            let Some(path) = t.cwd() else { continue };
+            // The folder by its place key: a tab on another machine is in that
+            // machine's folder, whichever other machine has the same path
+            let key = std::path::PathBuf::from(place_key(t.host(), path));
+            let cwd = key.as_path();
             if out.iter().any(|(k, _)| k == cwd) {
                 continue;
             }
@@ -539,15 +548,16 @@ impl GroupState {
                 .map(str::to_string)
                 .filter(|n| !n.trim().is_empty())
                 .or_else(|| t.place.branch.clone().filter(|_| t.place.linked))
-                .or_else(|| cwd.file_name().map(|n| n.to_string_lossy().to_string()))
+                .or_else(|| path.file_name().map(|n| n.to_string_lossy().to_string()))
                 .or_else(|| t.place.branch.clone())
                 .unwrap_or_default();
             out.push((
                 cwd.to_path_buf(),
                 GroupState {
                     name,
+                    key: cwd.display().to_string(),
                     project: None,
-                    folder: cwd.display().to_string(),
+                    folder: path.display().to_string(),
                     color: t
                         .place
                         .family
@@ -563,7 +573,7 @@ impl GroupState {
                     drift: Default::default(),
                     empty: false,
                     work_item: None,
-                    host: None,
+                    host: t.host().map(str::to_string),
                     mark: None,
                     // Put on by whoever is drawing, from the settings
                     // (`describe`), the same as the project's name
@@ -572,7 +582,10 @@ impl GroupState {
                 },
             ));
         }
+        // The settings' folders come keyed by place already (see the board's
+        // `Ui::folders`)
         for (cwd, name) in configured {
+            let (host, path) = place_of(cwd);
             if out.iter().any(|(k, _)| same_folder(k, cwd)) {
                 continue;
             }
@@ -588,10 +601,11 @@ impl GroupState {
                     name: Some(name.trim())
                         .filter(|n| !n.is_empty())
                         .map(str::to_string)
-                        .or_else(|| cwd.file_name().map(|n| n.to_string_lossy().to_string()))
+                        .or_else(|| path.file_name().map(|n| n.to_string_lossy().to_string()))
                         .unwrap_or_default(),
+                    key: cwd.display().to_string(),
                     project: None,
-                    folder: cwd.display().to_string(),
+                    folder: path.display().to_string(),
                     // No colour: which project it belongs to is read off a
                     // running tab's place, and nothing is running here yet
                     color: None,
@@ -602,7 +616,7 @@ impl GroupState {
                     drift: Default::default(),
                     empty: true,
                     work_item: None,
-                    host: None,
+                    host,
                     mark: None,
                     // Put on by whoever is drawing, from the settings
                     // (`describe`), the same as the project's name
@@ -1434,6 +1448,41 @@ pub fn same_folder(a: &std::path::Path, b: &std::path::Path) -> bool {
         if cfg!(windows) { s.replace('/', "\\") } else { s }
     };
     key(a) == key(b)
+}
+
+/// What marks a place on another machine: a folder is its machine and its
+/// path, and two machines can have the same path (`/home/ubuntu/app` on
+/// staging and on production, `/home/user/site` on two MicroVMs)
+pub const PLACE_ON: char = '\u{1}';
+
+/// A folder named so that no other folder has its name: its path, for one on
+/// this PC, and its machine's name with its path, for one elsewhere --
+/// `\u{1}srv\u{1}/home/ubuntu/app`. What the board keys a folder by, what the
+/// page sends back naming one, and what the settings are asked to find
+pub fn place_key(host: Option<&str>, cwd: &std::path::Path) -> String {
+    match host.map(str::trim).filter(|h| !h.is_empty()) {
+        Some(h) => format!("{PLACE_ON}{h}{PLACE_ON}{}", cwd.display()),
+        None => cwd.display().to_string(),
+    }
+}
+
+/// A place key taken apart: which machine, and the path there. A bare path --
+/// a folder on this PC, or asked about by a page older than place keys --
+/// names no machine and matches the path on whichever machine has it (`None`)
+pub fn place_of(key: &std::path::Path) -> (Option<String>, std::path::PathBuf) {
+    let s = key.to_string_lossy();
+    match s.strip_prefix(PLACE_ON).and_then(|rest| rest.split_once(PLACE_ON)) {
+        Some((host, path)) => (Some(host.to_string()), std::path::PathBuf::from(path)),
+        None => (None, key.to_path_buf()),
+    }
+}
+
+/// Whether a folder -- a path, on this PC or on the machine named -- is the
+/// place a key names. A key naming a machine is only ever that machine's
+/// folder; a bare path is the folder of that path, as before place keys
+pub fn is_place(cwd: &std::path::Path, host: Option<&str>, key: &std::path::Path) -> bool {
+    let (on, at) = place_of(key);
+    same_folder(cwd, &at) && on.is_none_or(|h| host.is_some_and(|x| x.trim() == h.trim()))
 }
 
 /// Folders to choose from, when somewhere new is being opened.
@@ -2419,6 +2468,32 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder is its machine and its path: the same path on two machines is
+    /// two folders, each on the board under its own key, and a bare path --
+    /// a folder here, or a page older than place keys -- is the path alone
+    #[test]
+    fn the_same_path_on_two_machines_is_two_folders() {
+        let at = std::path::Path::new("/home/ubuntu/app");
+        let staging = place_key(Some("staging"), at);
+        let production = place_key(Some("production"), at);
+        assert_ne!(staging, production);
+        assert_eq!(place_key(None, at), "/home/ubuntu/app", "a folder here is not its path");
+        assert_eq!(place_of(std::path::Path::new(&staging)), (Some("staging".into()), at.to_path_buf()));
+        assert_eq!(place_of(at), (None, at.to_path_buf()));
+        assert!(is_place(at, Some("staging"), std::path::Path::new(&staging)));
+        assert!(!is_place(at, Some("production"), std::path::Path::new(&staging)), "production's folder answered to staging's key");
+        assert!(is_place(at, Some("production"), at), "a bare path does not find the folder of that path");
+        let configured = vec![
+            (std::path::PathBuf::from(&staging), String::new()),
+            (std::path::PathBuf::from(&production), "prod".to_string()),
+        ];
+        let groups = GroupState::all(&[], &Default::default(), &configured);
+        let keys: Vec<(String, Option<String>, String)> = groups.iter().map(|(_, g)| (g.key.clone(), g.host.clone(), g.folder.clone())).collect();
+        assert_eq!(keys.len(), 2, "two machines' folders of one path were drawn as one: {keys:?}");
+        assert!(keys.iter().all(|(_, _, folder)| folder == "/home/ubuntu/app"), "the path shown is not the path: {keys:?}");
+        assert!(keys.iter().any(|(k, h, _)| k == &production && h.as_deref() == Some("production")));
+    }
 
     /// Confirms a browser placed inside the window gets the next number in
     /// the tab sequence.

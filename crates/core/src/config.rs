@@ -626,9 +626,9 @@ impl Desk {
         let named = self
             .folders
             .iter()
-            .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, cwd)))
+            .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), cwd)))
             .and_then(|f| f.project.as_deref());
-        project_among(&self.projects, named, Some(cwd))
+        project_among(&self.projects, named, Some(&crate::uistate::place_of(cwd).1))
     }
 
     /// What git does in the project one of this desk's folders belongs to:
@@ -682,7 +682,7 @@ impl Config {
         let (desks, _) = self.resolve_desks();
         let here = desks.iter().find(|d| match desk_id {
             Some(id) => d.id == id,
-            None => d.folders.iter().any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, cwd))),
+            None => d.folders.iter().any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), cwd))),
         })?;
         here.project_of(cwd).cloned()
     }
@@ -4859,7 +4859,14 @@ pub fn put_folder_back(desk_name: &str, taken: &TakenFolder) -> Result<()> {
 /// The same, told which settings file to edit
 fn put_folder_back_at(path: &Path, desk_name: &str, (at, entry): &TakenFolder) -> Result<()> {
     with_folders(path, desk_name, |folders| {
-        let cwd = entry.get("cwd").and_then(|c| c.as_str()).map(resolve_folder_cwd);
+        // The same folder is the same path on the same machine: one of that
+        // path on another machine is not it, and does not stop it going back
+        let host = entry.get("host").and_then(|h| h.as_str());
+        let cwd = entry
+            .get("cwd")
+            .and_then(|c| c.as_str())
+            .map(resolve_folder_cwd)
+            .map(|c| std::path::PathBuf::from(crate::uistate::place_key(host, &c)));
         if cwd.is_some_and(|cwd| folders.iter().any(|g| folder_is(g, &cwd))) {
             return Ok(());
         }
@@ -4868,25 +4875,26 @@ fn put_folder_back_at(path: &Path, desk_name: &str, (at, entry): &TakenFolder) -
     })
 }
 
-/// Whether a folder of the list works in `cwd`
+/// Whether a folder of the list works in `cwd` -- a path, or a place key
+/// naming the machine as well (`uistate::place_key`): two machines can have
+/// the same path, and a key naming one is never the other's folder
 fn folder_is(g: &serde_json::Value, cwd: &Path) -> bool {
+    let (on, at) = crate::uistate::place_of(cwd);
+    let host = g.get("host").and_then(|h| h.as_str()).map(str::trim).filter(|h| !h.is_empty());
     g.get("cwd")
         .and_then(|c| c.as_str())
         .map(resolve_folder_cwd)
-        .is_some_and(|c| c == cwd)
+        .is_some_and(|c| c == at)
+        && on.is_none_or(|h| host == Some(h.trim()))
 }
 
-/// The group working in this folder, if it is in the list.
+/// The group working in this folder, if it is in the list. `cwd` as
+/// [`folder_is`] takes it
 fn find_folder<'a>(
     groups: &'a mut [serde_json::Value],
     cwd: &Path,
 ) -> Option<&'a mut serde_json::Value> {
-    groups.iter_mut().find(|g| {
-        g.get("cwd")
-            .and_then(|c| c.as_str())
-            .map(resolve_folder_cwd)
-            .is_some_and(|c| c == cwd)
-    })
+    groups.iter_mut().find(|g| folder_is(g, cwd))
 }
 
 /// Which tab a line in the settings has to be, to be the one meant.
@@ -5075,7 +5083,13 @@ pub fn take_tab_at(path: &Path, desk_name: &str, written: usize, mark: &TabMark)
     let mut taken = None;
     with_folders(path, desk_name, |folders| {
         let (fi, p) = tab_spot(folders, written, mark)?;
-        let folder = folders[fi].get("cwd").and_then(|c| c.as_str()).map(str::to_string);
+        // Where it stood, by place key: a folder of that path on another
+        // machine is not where it goes back to
+        let host = folders[fi].get("host").and_then(|h| h.as_str()).map(str::to_string);
+        let folder = folders[fi]
+            .get("cwd")
+            .and_then(|c| c.as_str())
+            .map(|c| crate::uistate::place_key(host.as_deref(), std::path::Path::new(c)));
         let (list, last) = tab_list_mut(folders, fi, &p).expect("walked just above");
         let last = &last;
         let mut line = list.remove(*last);
@@ -5147,14 +5161,17 @@ pub fn put_tab_back_at(path: &Path, desk_name: &str, taken: &TakenTab) -> Result
         given = unique_id(&base, &used);
         line["id"] = serde_json::json!(given);
 
-        let home = taken.folder.as_deref().map(resolve_folder_cwd);
-        let at = folders.iter().position(|g| {
-            g.get("cwd").and_then(|c| c.as_str()).map(resolve_folder_cwd) == home
-        });
+        let at = taken.folder.as_deref().and_then(|f| folders.iter().position(|g| folder_is(g, std::path::Path::new(f))));
         let fi = match (at, &taken.folder) {
             (Some(i), _) => i,
             (None, Some(c)) => {
-                folders.push(serde_json::json!({ "cwd": c, "tabs": [] }));
+                // Opened again where it was, on the machine it was on
+                let (host, cwd) = crate::uistate::place_of(std::path::Path::new(c));
+                let mut folder = serde_json::json!({ "cwd": cwd.display().to_string(), "tabs": [] });
+                if let Some(h) = host {
+                    folder["host"] = serde_json::json!(h);
+                }
+                folders.push(folder);
                 folders.len() - 1
             }
             // The folder that names no path is the first one, and there is
@@ -5439,10 +5456,14 @@ fn retag(tabs: serde_json::Value, mark: &str) -> serde_json::Value {
 pub fn set_folder_work_item(desk_name: &str, cwd: &Path, item: &str) -> Result<()> {
     with_folders(&config_file_path(), desk_name, |folders| {
         let found = folders.iter_mut().find(|g| {
+            // By place key when there is one; a bare path as it always was
+            let (on, at) = crate::uistate::place_of(cwd);
+            let host = g.get("host").and_then(|h| h.as_str()).map(str::trim);
             g.get("cwd")
                 .and_then(|c| c.as_str())
                 .map(resolve_folder_cwd)
-                .is_some_and(|c| crate::uistate::same_folder(&c, cwd))
+                .is_some_and(|c| crate::uistate::same_folder(&c, &at))
+                && on.is_none_or(|h| host == Some(h.trim()))
         });
         if let Some(obj) = found.and_then(|g| g.as_object_mut()) {
             obj.insert("work_item".into(), serde_json::Value::String(item.to_string()));
@@ -8450,6 +8471,38 @@ mod tests {
         let p = &doc["desks"][0]["projects"][0];
         assert_eq!(p["at"], "D:/work/site", "a project written down now loses its checkout here");
         assert_eq!(p["homes"], serde_json::json!([{ "host": "vm", "at": "/home/user/site", "sandbox": "isb3" }]), "one machine holds two checkouts");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two machines with the same path are two folders: one named by its
+    /// place key is taken off the list alone, renamed alone, and put back
+    /// beside the other. A bare path, from a page older than place keys, is
+    /// still the first folder of that path
+    #[test]
+    fn folders_of_the_same_path_on_two_machines_are_told_apart() {
+        let dir = crate::test_temp("same-path-two-machines");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        std::fs::write(&file, r#"{"desks": [{"name": "Demo", "id": "demo", "folders": [
+            {"cwd": "/home/ubuntu/app", "host": "staging", "tabs": []},
+            {"cwd": "/home/ubuntu/app", "host": "production", "tabs": []},
+            {"cwd": "/home/ubuntu/other", "host": "production", "tabs": []}]}]}"#).unwrap();
+        let key = |h: &str| std::path::PathBuf::from(crate::uistate::place_key(Some(h), Path::new("/home/ubuntu/app")));
+        let hosts = || -> Vec<String> {
+            let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+            doc["desks"][0]["folders"].as_array().unwrap().iter().map(|f| format!("{}:{}", f["host"].as_str().unwrap_or(""), f["cwd"].as_str().unwrap_or(""))).collect()
+        };
+        rename_folder_at(&file, "Demo", &key("production"), "prod").unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!((doc["desks"][0]["folders"][0].get("name"), doc["desks"][0]["folders"][1]["name"].as_str()), (None, Some("prod")), "the staging folder was renamed");
+        let taken = take_folder_at(&file, "Demo", &key("production")).unwrap().expect("production's folder is not found by its key");
+        assert_eq!(hosts(), vec!["staging:/home/ubuntu/app", "production:/home/ubuntu/other"], "staging's folder was taken off instead");
+        put_folder_back_at(&file, "Demo", &taken).unwrap();
+        assert_eq!(hosts().len(), 3, "a folder of the same path on another machine kept it from going back");
+        assert!(take_folder_at(&file, "Demo", &key("nowhere")).unwrap().is_none(), "a key naming no machine of the list found a folder");
+        let bare = take_folder_at(&file, "Demo", Path::new("/home/ubuntu/app")).unwrap();
+        assert!(bare.is_some_and(|(at, _)| at == 0), "a bare path is not the first folder of that path");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
