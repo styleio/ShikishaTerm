@@ -38,7 +38,12 @@ export const en: LpCopy = {
     github: { label: "Read the source", href: REPO, external: true },
     works: {
       label: "Works with",
-      names: ["Claude Code", "Codex", "Gemini CLI", "Aider", "Ollama", "DeepSeek", "Qwen", "Any shell over SSH"],
+      groups: [
+        { label: "AI agents in a tab", names: ["Claude Code", "Codex", "Gemini CLI", "Aider", "Any shell over SSH"] },
+        { label: "Connected with an API key", names: ["OpenAI", "Anthropic (Claude)", "Google Gemini", "DeepSeek", "xAI (Grok)", "Mistral", "Moonshot AI (Kimi)", "MiniMax", "Groq", "Cerebras", "OpenRouter", "Together AI", "Hugging Face", "NVIDIA NIM"] },
+        { label: "On this PC (no key)", names: ["Ollama", "LM Studio"] },
+        { label: "Decision models", names: ["Jev (TypeSafe)", "Laya (impossibl)"] },
+      ],
     },
     image: { src: "/lp/hero.webp", alt: "A conductor with a baton directing four small robots, each at a laptop" },
   },

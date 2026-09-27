@@ -553,10 +553,19 @@ ol {
   text-align: center;
 }
 .works-label {
-  font-size: 14px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 24px;
+}
+.works-group + .works-group {
+  margin-top: 24px;
+}
+.works-kind {
+  font-size: 13px;
   font-weight: 700;
   color: var(--ink-soft);
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 .works ul {
   display: flex;

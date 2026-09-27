@@ -53,9 +53,14 @@ const lines = hero.title;
 
   <div class="container works">
     <p class="works-label">{hero.works.label}</p>
-    <ul>
-      {hero.works.names.map((n) => <li>{n}</li>)}
-    </ul>
+    {hero.works.groups.map((g) => (
+      <div class="works-group">
+        <p class="works-kind">{g.label}</p>
+        <ul>
+          {g.names.map((n) => <li>{n}</li>)}
+        </ul>
+      </div>
+    ))}
   </div>
 </section>
 

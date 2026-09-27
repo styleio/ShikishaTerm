@@ -38,7 +38,12 @@ export const ja: LpCopy = {
     github: { label: "ソースを読む(GitHub)", href: REPO, external: true },
     works: {
       label: "動くもの",
-      names: ["Claude Code", "Codex", "Gemini CLI", "Aider", "Ollama", "DeepSeek", "Qwen", "SSH 越しのシェル"],
+      groups: [
+        { label: "タブで動かすAIエージェント", names: ["Claude Code", "Codex", "Gemini CLI", "Aider", "SSH 越しのシェル"] },
+        { label: "APIキーでつなぐ", names: ["OpenAI", "Anthropic (Claude)", "Google Gemini", "DeepSeek", "xAI (Grok)", "Mistral", "Moonshot AI (Kimi)", "MiniMax", "Groq", "Cerebras", "OpenRouter", "Together AI", "Hugging Face", "NVIDIA NIM"] },
+        { label: "このPCで動かす（キー不要）", names: ["Ollama", "LM Studio"] },
+        { label: "判断モデル", names: ["Jev (TypeSafe)", "Laya (impossibl)"] },
+      ],
     },
     image: { src: "/lp/hero.webp", alt: "指揮者が、ノートPCに向かう4体の小さなロボットを指揮しているイラスト" },
   },

@@ -36,7 +36,7 @@ export type LpCopy = {
     fineprint: string;
     zip: Link;
     github: Link;
-    works: { label: string; names: string[] };
+    works: { label: string; groups: { label: string; names: string[] }[] };
     image: { src: string; alt: string };
   };
   scenes: { eyebrow: string; title: string; items: Scene[] };
