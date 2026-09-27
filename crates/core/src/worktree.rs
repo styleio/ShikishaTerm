@@ -70,6 +70,12 @@ impl Plan {
         }
     }
 
+    /// The folder it makes as a place key: its machine's name with its path,
+    /// which is how the folder is written down and found again
+    pub fn place(&self) -> PathBuf {
+        PathBuf::from(crate::uistate::place_key(self.host.as_ref().map(|h| h.name.as_str()), &self.folder))
+    }
+
     /// The folder on this machine the new one is written down beside.
     ///
     /// Here, the checkout it is cut from, whose tabs it takes. On another
@@ -1839,6 +1845,11 @@ impl Removal {
     /// Whether it is a MicroVM's machine being deleted
     pub fn on_microvm(&self) -> bool {
         self.on.as_ref().is_some_and(|h| h.is_made())
+    }
+
+    /// The folder going, as a place key: its path on the machine it is on
+    pub fn place(&self) -> PathBuf {
+        PathBuf::from(crate::uistate::place_key(self.on.as_ref().map(|h| h.name.as_str()), &self.folder))
     }
 
     /// Given up on, and the folder put back in the list: its machine, if it

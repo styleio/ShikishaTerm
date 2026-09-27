@@ -335,7 +335,7 @@ impl Pending {
         // Named for its branch until something is asked in it -- on another
         // machine too, from what the input bar hands its AIs
         if self.auto {
-            config::set_folder_auto_label(&self.desk, &plan.folder, true)?;
+            config::set_folder_auto_label(&self.desk, &plan.place(), true)?;
         }
         Ok(())
     }
@@ -621,9 +621,9 @@ enum Added {
 /// words say which it is, a git repository or a plain folder
 fn add_to_desk(desk: Option<&config::Desk>, at: &std::path::Path, start: &config::Start) -> Result<Added, String> {
     let name = at.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| at.display().to_string());
-    let here = desk.is_some_and(|w| {
-        w.folders.iter().filter_map(|f| f.cwd.as_ref()).any(|c| crate::uistate::same_folder(c, at))
-    });
+    // A folder of this PC's: one of the same path on another machine is
+    // another folder
+    let here = desk.is_some_and(|w| w.folder_at(at).is_some());
     if here {
         return Ok(Added::Already(i18n::tp("msg.project.already", &[("name", &name)])));
     }
@@ -2819,20 +2819,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // an AI just finished a turn in: what a folder's automatic name is
             // written from, and when. Heard whatever the emergency stop says --
             // it stops AIs acting, and this is not an AI acting
+            // By place key: what was asked in a folder on one machine is not
+            // what a folder of the same path on another is doing
             for t in tabs.iter_mut() {
                 let asked = std::mem::take(&mut t.asked);
-                if let Some(at) = t.cwd() {
+                if let Some(at) = t.place() {
                     for text in asked {
-                        heard.hear(at, &text);
+                        heard.hear(&at, &text);
                     }
                 }
             }
             for &(idx, old, new) in &transitions {
                 if old == TabState::Busy
                     && new.turn_ended()
-                    && let Some(at) = tabs.get(idx - 1).and_then(|t| t.cwd())
+                    && let Some(at) = tabs.get(idx - 1).and_then(|t| t.place())
                 {
-                    heard.turn_ended(at);
+                    heard.turn_ended(&at);
                 }
             }
             // The first answer an AI has ever finished on this machine is the
@@ -3085,22 +3087,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let ports = crate::repo::ports_below(&roots);
                 let cost = meter.sample(&roots);
                 self_cost = cost.get(&usize::MAX).and_then(|u| u.line());
+                // Keyed by place: the same path on two machines is two
+                // repositories, each with the remote its own git says
                 git_repos = surfaces
                     .iter()
                     .filter_map(|s| match s {
                         Surface::Git { dir: Some(d), .. } => {
+                            let at = crate::view::surface_place(s, &tabs)?;
                             // A folder on another machine: its remote as git
                             // there last said (asked on a thread, see
                             // `github::far_origin`); nothing here to read
-                            let far = desks.get(desk_index).and_then(|w| {
-                                w.folders
-                                    .iter()
-                                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, d)))
-                                    .and_then(|f| f.host.clone())
-                            });
+                            let far = desks.get(desk_index).and_then(|w| w.folder_at(&at)).and_then(|f| f.host.clone());
                             match far {
-                                Some(host) => crate::github::far_origin(&host, d).map(|r| (d.clone(), r)),
-                                None => crate::repo::origin_of(d).map(|r| (d.clone(), r)),
+                                Some(host) => crate::github::far_origin(&host, d).map(|r| (at, r)),
+                                None => crate::repo::origin_of(d).map(|r| (at, r)),
                             }
                         }
                         _ => None,
@@ -4650,16 +4650,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            server_names: cfg
-                .as_ref()
-                .map(|c| {
-                    c.hosts
-                        .iter()
-                        .filter(|h| !h.is_made())
-                        .filter_map(|h| config::host_spec(h).ok().map(|s| (s, h.name.clone())))
-                        .collect()
-                })
-                .unwrap_or_default(),
             folder_far: desks
                 .get(desk_index)
                 .map(|w| {
@@ -5106,7 +5096,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     made.split(dir, 0);
                     let keyed = surface_keys(&surfaces, &tabs);
                     let panes = made.keep(|s| keyed.get(s - 1).and_then(|k| k.id.clone()));
-                    let here = surface_folder(&surfaces, &tabs, active).map(|d| d.to_path_buf());
+                    // The folder in front, on the machine it is on
+                    let here = surface_place_at(&surfaces, &tabs, active).map(|k| crate::uistate::place_of(&k));
                     let desk_name = desks.get(desk_index).map(|d| d.name.clone()).unwrap_or_default();
                     // Named here rather than left to the write, because this
                     // row is gone to the moment it arrives and the way to go
@@ -5123,7 +5114,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         "command": "split",
                         "panes": panes,
                     });
-                    if config::append_tab(&desk_name, row, here.as_deref()) {
+                    let (on, here) = here.map(|(on, at)| (on, Some(at))).unwrap_or_default();
+                    if config::append_tab_on(&desk_name, row, here.as_deref(), on.as_deref()) {
                         // It arrives with the settings this write sets off
                         reveal = Some((id, Instant::now() + Duration::from_secs(20)));
                     } else {
@@ -5397,7 +5389,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 item.kind, &item.ai, &surfaces, &tabs, active, board_open || settings_open,
                 &ai_choices, home.as_deref(), desks.get(desk_index),
             );
-            let QuickGo::Open { cwd, command, program } = go else {
+            let QuickGo::Open { at, command, program } = go else {
                 if let QuickGo::Refuse(why) = go {
                     append_hook_log(&format!("quick command \"{label}\" not sent: {why}"));
                     flash = Some(i18n::tp("msg.quick.refused", &[("label", &label), ("why", &i18n::t(why))]));
@@ -5424,11 +5416,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // The log says the button and what it was written as. The text
             // that goes out may hold a secret's value, so that is never logged
             let Some(desk) = desks.get(desk_index).map(|d| d.name.clone()) else { continue };
-            match open_and_say(&desk, &cwd, &command, &program, &label, text, item.enter, &tabs, &mut pending_quicks, &mut reveal) {
+            match open_and_say(&desk, &at, &command, &program, &label, text, item.enter, &tabs, &mut pending_quicks, &mut reveal) {
                 Some(title) => {
                     append_hook_log(&format!(
                         "quick command \"{label}\" -> new tab \"{title}\" in {}: {}",
-                        cwd.display(),
+                        crate::uistate::place_said(&at),
                         log_excerpt(&item.body, 120)
                     ));
                     watcher.poke();
@@ -5624,8 +5616,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let answer = match (place, desks.get(desk_index)) {
                     (None, _) | (_, None) => Err(i18n::t("err.git.no_tab")),
                     (Some(place), Some(desk)) => {
+                        // The folder's own, on its own machine
                         let open = surfaces.iter().find_map(|s| match s {
-                            Surface::Git { key, dir: Some(d), .. } if crate::uistate::same_folder(d, &place.dir) => Some(key.clone()),
+                            Surface::Git { key, .. }
+                                if crate::view::surface_place(s, &tabs).is_some_and(|p| crate::uistate::same_folder(&p, &place.place())) =>
+                            {
+                                Some(key.clone())
+                            }
                             _ => None,
                         });
                         match open {
@@ -5636,7 +5633,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             None => {
                                 let (title, id) = quick_tab_names("Git", "Git", &tabs);
                                 let line = serde_json::json!({"name": title, "id": id, "command": "git"});
-                                if config::append_tab(&desk.name, line, Some(&place.dir)) {
+                                if config::append_tab_on(&desk.name, line, Some(&place.dir), place.host.as_deref()) {
                                     reveal = Some((id, Instant::now() + Duration::from_secs(20)));
                                     watcher.poke();
                                     Ok(serde_json::json!({"already": false}))
@@ -5670,14 +5667,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
                 let answer = match (place, desks.get(desk_index)) {
                     (None, _) | (_, None) => Err(i18n::t("err.git.no_tab")),
-                    (Some(place), Some(desk)) => match ai_for_folder(Some(desk), &place.dir, &ai, &ai_choices) {
+                    (Some(place), Some(desk)) => match ai_for_folder(Some(desk), &place.place(), &ai, &ai_choices) {
                     Err(why) => Err(why),
                     Ok(choice) => {
                         let choice = &choice;
                         crate::git::there(&place.dir, place.remote.as_ref());
                         let branch = crate::git::branch(&place.dir).ok().flatten().unwrap_or_default();
                         let base = crate::git::recorded_base(&place.dir, &branch).unwrap_or_default();
-                        let said = resolve_in_tab(desk, &place.dir, &base, choice, &tabs, &mut pending_quicks, &mut reveal);
+                        let said = resolve_in_tab(desk, &place.place(), &base, choice, &tabs, &mut pending_quicks, &mut reveal);
                         if said.as_ref().is_ok_and(|v| v["already"] == false) {
                             watcher.poke();
                         }
@@ -6031,7 +6028,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 label_jobs.drain(..).partition(|j| now.duration_since(j.started) > LABEL_GIVE_UP);
             label_jobs = live;
             for job in stale {
-                append_hook_log(&format!("folder label for {} never came back", job.folder.display()));
+                append_hook_log(&format!("folder label for {} never came back", crate::uistate::place_said(&job.folder)));
                 heard.finished(&job.folder, now, Some(job.asks));
             }
             if let Some(desk) = desks.get(desk_index) {
@@ -6043,11 +6040,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // from the board types
                 let mut wanted = Vec::new();
                 for f in &desk.folders {
-                    let Some(cwd) = f.cwd.as_ref() else { continue };
+                    let Some(at) = f.place() else { continue };
                     match f.auto_label {
-                        true => wanted.push((cwd.clone(), f.summary.is_some())),
+                        true => wanted.push((at, f.summary.is_some())),
                         // Heard for nothing: a folder that does not ask keeps nothing
-                        false => heard.forget(cwd),
+                        false => heard.forget(&at),
                     }
                 }
                 // What people asked the AIs, read out of the record each AI
@@ -6059,8 +6056,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // and that is how most work is asked for -- folders left
                 // unnamed for weeks were all of them this
                 for t in tabs.iter() {
-                    let Some(at) = t.cwd() else { continue };
-                    if !wanted.iter().any(|(w, _)| crate::uistate::same_folder(w, at)) {
+                    let Some(at) = t.place() else { continue };
+                    if !wanted.iter().any(|(w, _)| crate::uistate::same_folder(w, &at)) {
                         continue;
                     }
                     let Some(spec) = t.resume.as_ref() else { continue };
@@ -6075,7 +6072,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .or_insert_with(|| crate::asks::begin_at(&file));
                     let (said, now_at) = crate::asks::read_from(&file, how, from);
                     read_asks.insert(file, now_at);
-                    let at = at.to_path_buf();
                     for text in said {
                         heard.hear(&at, &text);
                     }
@@ -6086,11 +6082,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 if let Some(eng) = engine.as_mut() {
                     for at in due {
-                        let Some(f) = desk.folders.iter().find(|f| {
-                            f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &at))
-                        }) else {
-                            continue;
-                        };
+                        let Some(f) = desk.folder_at(&at) else { continue };
                         let asks = heard.take(&at);
                         // What it is called and said to be now, when that was
                         // written from requests before. A folder never
@@ -6191,7 +6183,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             heard.finished(&job.folder, now, None);
                         }
                         Err(why) => {
-                            append_hook_log(&format!("folder label for {}: {why}", job.folder.display()));
+                            append_hook_log(&format!("folder label for {}: {why}", crate::uistate::place_said(&job.folder)));
                             crate::labels::note_outcome(&job.folder, Some(&why));
                             heard.finished(&job.folder, now, Some(job.asks));
                         }
@@ -6228,9 +6220,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // The failed checks of a pull request's commit, read: handed to an AI tab
         // in the folder its branch is in, told what the desk's CI prompt says
         while let Ok(done) = ci_rx.try_recv() {
-            let CiFix { project, number, seq, title, url, head, sha, dir, result } = done;
+            let CiFix { project, number, seq, title, url, head, sha, dir, at, result } = done;
             let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
-            let chosen = ai_for_folder(desks.get(desk_index), &dir, &ai, &ai_choices);
+            let chosen = ai_for_folder(desks.get(desk_index), &at, &ai, &ai_choices);
             let mut js = match (result, desks.get(desk_index), chosen.as_ref().ok()) {
                 (Err(e), ..) => serde_json::json!({"ok": false, "error": plain_error(&format!("{e:#}"))}),
                 (Ok(failed), ..) if failed.as_array().is_none_or(|a| a.is_empty()) => {
@@ -6241,10 +6233,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 (Ok(failed), Some(desk), Some(choice)) => {
                     let label = i18n::t("git.ci.tab");
                     let ci = ci_ran_on(number, &title, &url, &head, &sha);
-                    let opened = hand_to_ai_tab(desk, &dir, &label, choice, &tabs, &mut pending_quicks, &mut reveal, || {
+                    let opened = hand_to_ai_tab(desk, &at, &label, choice, &tabs, &mut pending_quicks, &mut reveal, || {
                         // What came from GitHub -- the title, the logs -- goes in last,
                         // so nothing in it is taken for a word to fill in
-                        desk.git_of(&dir)
+                        desk.git_of(&at)
                             .ci_prompt()
                             .replace("{ci}", &ci)
                             // Empty rather than "0" for a branch with no pull
@@ -6286,7 +6278,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // A pull request's base, brought into its folder. A conflict goes to an
         // AI tab from here; anything else is said on the pull request's page
         while let Ok(done) = pr_rx.try_recv() {
-            let PrCatchUp { project, number, seq, dir, base, result, far_branch } = done;
+            let PrCatchUp { project, number, seq, dir, at, base, result, far_branch } = done;
             let folder = dir.display().to_string();
             let answer = match result {
                 Ok(taken) => serde_json::json!({"ok": true, "data": {"state": if taken > 0 { "taken" } else { "latest" }, "taken": taken, "base": base, "folder": folder}}),
@@ -6294,13 +6286,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     Some(crate::git::CatchUpStop::Conflict { files, .. }) => {
                         let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
                         let files = files.clone();
-                        let chosen = ai_for_folder(desks.get(desk_index), &dir, &ai, &ai_choices);
+                        let chosen = ai_for_folder(desks.get(desk_index), &at, &ai, &ai_choices);
                         match (desks.get(desk_index), chosen.as_ref()) {
                             (None, _) => serde_json::json!({"ok": false, "error": i18n::t("err.github.no_project")}),
                             (_, Err(why)) => serde_json::json!({"ok": false, "error": why}),
                             (Some(desk), Ok(choice)) => match resolve_in_tab_knowing(
                                 desk,
-                                &dir,
+                                &at,
                                 &base,
                                 far_branch.as_ref().map(|b| (b.clone(), files.clone())),
                                 choice,
@@ -6351,6 +6343,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 FilesAt::Here(d) => (d.clone(), None),
                 FilesAt::There { at, root } => (std::path::PathBuf::from(root), Some(at.clone())),
             };
+            // The folder's machine by name: a file over there is that
+            // machine's folder's, and one here is this PC's
+            let on = machine.as_ref().and_then(|_| panel_machine(&panel, &surfaces, &tabs));
+            let here_key = std::path::PathBuf::from(crate::uistate::place_key(on.as_deref(), &dir));
             let focused = surfaces
                 .get(pane_layout.focused_surface().wrapping_sub(1))
                 .and_then(|s| match s {
@@ -6360,8 +6356,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let key = focused
                 .or_else(|| {
                     surfaces.iter().find_map(|s| match s {
-                        Surface::Editor { key, dir: Some(d), .. }
-                            if crate::uistate::same_folder(d, &dir) =>
+                        Surface::Editor { key, .. }
+                            if crate::view::surface_place(s, &tabs).is_some_and(|p| crate::uistate::same_folder(&p, &here_key)) =>
                         {
                             Some(key.clone())
                         }
@@ -6391,6 +6387,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 stamp: None,
                 scratch: key == EDITOR_SCRATCH,
                 at: machine,
+                on,
                 // A change is only ever of a file that is being shown
                 diff: showing.as_ref().and_then(|_| (!diff.trim().is_empty()).then(|| diff.trim().to_string())),
             };
@@ -6571,7 +6568,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 &[("name", "git_catch_up"), ("who", &i18n::t("grant.who.human"))],
                             )}));
                         }
-                        let Some(dir) = crate::github::far_head_folder(&far, &head) else {
+                        let Some((dir, on)) = crate::github::far_head_folder(&far, &head) else {
                             return say(match act.as_str() {
                                 "pr_place" => serde_json::json!({"ok": true, "data": {"folder": null}}),
                                 // Said of the project's machines, not of this PC
@@ -6599,7 +6596,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             (false, Err(why)) => return say(serde_json::json!({"ok": false, "error": why})),
                             (false, Ok(who)) => crate::git::catch_up_for(&dir, Some(&head), &base, &who),
                         };
-                        let _ = prs.send(PrCatchUp { project: project.clone(), number, seq: seq.clone(), dir, base, result, far_branch: Some(head.clone()) });
+                        let at = std::path::PathBuf::from(crate::uistate::place_key(Some(&on), &dir));
+                        let _ = prs.send(PrCatchUp { project: project.clone(), number, seq: seq.clone(), dir, at, base, result, far_branch: Some(head.clone()) });
                     });
                     continue;
                 }
@@ -6644,7 +6642,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 // straight to the AI: nothing to fetch or merge again
                                 (_, true) => {
                                     let _ = pr_tx.send(PrCatchUp {
-                                        project: project.clone(), number, seq: seq.clone(), dir: dir.clone(), base: base.clone(), far_branch: None,
+                                        project: project.clone(), number, seq: seq.clone(), dir: dir.clone(), at: dir.clone(), base: base.clone(), far_branch: None,
                                         result: Err(anyhow::Error::new(crate::git::CatchUpStop::Conflict {
                                             base: base.clone(),
                                             files: crate::git::conflicts(&dir).unwrap_or_default(),
@@ -6658,7 +6656,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     let (project, base, seq) = (project.clone(), base.clone(), seq.clone());
                                     std::thread::spawn(move || {
                                         let result = crate::git::catch_up_for(&dir, Some(&head), &base, &who);
-                                        let _ = tx.send(PrCatchUp { project, number, seq, dir, base, result, far_branch: None });
+                                        let _ = tx.send(PrCatchUp { project, number, seq, at: dir.clone(), dir, base, result, far_branch: None });
                                     });
                                     None
                                 }
@@ -6757,9 +6755,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     "error": i18n::tp("err.github.pr.no_folder", &[("branch", &head)])});
                                 let _ = issues.send(js.to_string());
                             }
-                            Some(dir) => {
+                            Some((dir, on)) => {
+                                let at = std::path::PathBuf::from(crate::uistate::place_key(Some(&on), &dir));
                                 let result = crate::github::ci_failures(&sources, &project, &sha, &|k| tokens.get(k).cloned());
-                                let _ = tx.send(CiFix { project, number, seq, title, url, head, sha, dir, result });
+                                let _ = tx.send(CiFix { project, number, seq, title, url, head, sha, dir, at, result });
                             }
                         }
                     });
@@ -6778,7 +6777,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let tx = ci_tx.clone();
                         std::thread::spawn(move || {
                             let result = crate::github::ci_failures(&sources, &project, &sha, &|k| tokens.get(k).cloned());
-                            let _ = tx.send(CiFix { project, number, seq, title, url, head, sha, dir, result });
+                            let _ = tx.send(CiFix { project, number, seq, title, url, head, sha, at: dir.clone(), dir, result });
                         });
                     }
                 }
@@ -7804,7 +7803,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             match act.as_str() {
                 "show" => {
                     let Some(desk) = desks.get(desk_index) else { continue };
-                    let here: Vec<std::path::PathBuf> = desk.folders.iter().filter_map(|f| f.cwd.clone()).collect();
+                    // This PC's folders: worktrees are found on its own disk
+                    let here: Vec<std::path::PathBuf> =
+                        desk.folders.iter().filter(|f| f.host.is_none()).filter_map(|f| f.cwd.clone()).collect();
                     let found = folders::watch().cuts(&here).remove(std::path::Path::new(&family)).unwrap_or_default();
                     let mut added = 0;
                     for (folder, branch) in found {
@@ -8048,7 +8049,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             match p.write_down() {
                 Ok(()) => {
                     p.written = Some(Instant::now());
-                    remember_work_item(&p.desk, &p.making.plan.folder, &p.link, &mut pending_drafts);
+                    remember_work_item(&p.desk, &p.making.plan.place(), &p.link, &mut pending_drafts);
                 }
                 Err(e) => p.error = Some(format!("{e:#}")),
             }
@@ -8077,7 +8078,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 desks.iter().filter(|d| d.name == p.desk).any(|d| {
                     d.folders
                         .iter()
-                        .any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &p.making.plan.folder)))
+                        .any(|f| f.place().is_some_and(|c| crate::uistate::same_folder(&c, &p.making.plan.place())))
                 })
             };
             // A row with a question on it stays until the question is
@@ -8114,7 +8115,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 desks.iter().filter(|d| d.name == l.desk).any(|d| {
                     d.folders
                         .iter()
-                        .any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &l.removal.folder)))
+                        .any(|f| f.place().is_some_and(|c| crate::uistate::same_folder(&c, &l.removal.place())))
                 })
             };
             !l.gone && !l.restored.is_some_and(|at| at.elapsed() > MAKING_CARD_WAIT || listed())
@@ -9225,11 +9226,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let taken = e.downcast_ref::<crate::worktree::InUse>().cloned().unwrap_or_else(|| {
                             crate::worktree::InUse { branch: wanted.clone(), folder: Default::default() }
                         });
-                        let listed = desks.get(desk_index).is_some_and(|d| {
-                            d.folders
-                                .iter()
-                                .any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, &taken.folder)))
-                        });
+                        // That folder on the machine it is on
+                        let taken_at = std::path::PathBuf::from(crate::uistate::place_key(
+                            on.map(|h| h.name.as_str()),
+                            &taken.folder,
+                        ));
+                        let listed = desks.get(desk_index).is_some_and(|d| d.folder_at(&taken_at).is_some());
                         if ask.adopt && ask.make {
                             // The answer was "that folder": taken in as it is,
                             // running what a new one would, and tied to the issue
@@ -9248,14 +9250,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // new one would. One already on the desk keeps
                             // whatever it was called there
                             let taken_in = taken_in.and_then(|()| match (listed, ask.auto) {
-                                (false, true) => config::set_folder_auto_label(&desk, &taken.folder, true),
+                                (false, true) => config::set_folder_auto_label(&desk, &taken_at, true),
                                 _ => Ok(()),
                             });
                             match taken_in {
                                 Ok(()) => {
                                     view.done = true;
-                                    remember_work_item(&desk, &taken.folder, &ask.link, &mut pending_drafts);
-                                    shell.mail().folder_views.push(taken.folder.display().to_string());
+                                    remember_work_item(&desk, &taken_at, &ask.link, &mut pending_drafts);
+                                    shell.mail().folder_views.push(taken_at.display().to_string());
                                     flash = Some(i18n::tp(
                                         "msg.branch.adopted",
                                         &[("path", &taken.folder.display().to_string())],
@@ -9291,7 +9293,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // A second press on the same folder is the first one
                             // still going, not another worktree. One that failed
                             // there is what this press tries again
-                            let same = |p: &Pending| crate::uistate::same_folder(&p.making.plan.folder, &plan.folder);
+                            // The same folder on the same machine
+                            let same = |p: &Pending| crate::uistate::same_folder(&p.making.plan.place(), &plan.place());
                             makings.retain(|p| !(same(p) && p.error.is_some() && !p.made));
                             let already = makings.iter().any(|p| !p.gone && same(p));
                             making_seq += 1;
@@ -9379,7 +9382,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // Each folder's own branch is the drawn name with its
                         // AI on the end, so each is drawn in its own right
                         let branch = plan.branch.clone();
-                        if makings.iter().any(|p| !p.gone && crate::uistate::same_folder(&p.making.plan.folder, &plan.folder)) {
+                        if makings.iter().any(|p| !p.gone && crate::uistate::same_folder(&p.making.plan.place(), &plan.place())) {
                             continue;
                         }
                         making_seq += 1;
@@ -11462,6 +11465,27 @@ pub fn files_at(panel: &str, surfaces: &[Surface], tabs: &[Tab]) -> Option<Files
     }
 }
 
+/// The machine, by name, of the folder a panel or tab named `panel` stands in
+/// -- what an editor it opens a file there for stands under. None is this PC
+pub fn panel_machine(panel: &str, surfaces: &[Surface], tabs: &[Tab]) -> Option<String> {
+    for s in surfaces {
+        let Some(p) = crate::desk::panel_place(s) else { continue };
+        if !p.key.matches(panel) {
+            continue;
+        }
+        return match s {
+            Surface::Browser { on, .. }
+            | Surface::Sftp { on, .. }
+            | Surface::Editor { on, .. }
+            | Surface::Failed { on, .. }
+            | Surface::Git { on, .. }
+            | Surface::Split { on, .. } => on.clone(),
+            Surface::Session(_) | Surface::Issues { .. } => None,
+        };
+    }
+    tabs.iter().find(|t| t.key().matches(panel))?.host().map(str::to_string)
+}
+
 /// What a thread working on a folder over there brings back: the answer for
 /// the page, and what an open file is now, when the work found out.
 pub struct FarFiles {
@@ -12694,7 +12718,9 @@ pub fn open_settings(
 }
 /// A folder made for an issue or a pull request: write down which, and hold
 /// its address for the input bar of the AI that starts there -- put there, not
-/// sent, so the person reads it before anything happens
+/// sent, so the person reads it before anything happens. The folder is a place
+/// key (see [`crate::uistate::place_key`]): an AI in the same path on another
+/// machine is not starting this work
 fn remember_work_item(
     desk: &str,
     folder: &std::path::Path,
@@ -12708,7 +12734,7 @@ fn remember_work_item(
         return;
     }
     if let Err(e) = config::set_folder_work_item(desk, folder, &format!("{kind}:{repo}#{number}")) {
-        append_hook_log(&format!("could not note what {} was made for: {e:#}", folder.display()));
+        append_hook_log(&format!("could not note what {} was made for: {e:#}", crate::uistate::place_said(folder)));
     }
     if url.starts_with("https://github.com/") {
         drafts.retain(|(f, _, _)| !crate::uistate::same_folder(f, folder));
@@ -13039,8 +13065,10 @@ pub fn hand_over(
 /// Where a quick command goes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QuickGo {
-    /// Into a new tab, started in this folder with this command
-    Open { cwd: std::path::PathBuf, command: String, program: String },
+    /// Into a new tab, started in this folder with this command. The folder
+    /// is a place key (see [`crate::uistate::place_key`]): the same path on
+    /// another machine is another folder, and the tab goes to this one
+    Open { at: std::path::PathBuf, command: String, program: String },
     /// Nowhere, and the dictionary key saying why
     Refuse(&'static str),
 }
@@ -13064,7 +13092,6 @@ pub enum QuickGo {
 /// The same function answers the launcher's "where would this go" and the
 /// press itself, so the two cannot disagree.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub fn quick_go(
     kind: crate::quick::Kind,
     ai: &str,
@@ -13080,62 +13107,62 @@ pub fn quick_go(
     if kind == Kind::Folder {
         return QuickGo::Refuse("msg.quick.gone");
     }
-    let folder = (!covered).then(|| surface_folder(surfaces, tabs, active)).flatten();
+    // The folder in front, with the machine it is on
+    let folder = (!covered).then(|| surface_place_at(surfaces, tabs, active)).flatten();
     match kind {
-        Kind::Terminal => match folder.or(home) {
+        Kind::Terminal => match folder.as_deref().or(home) {
             // A folder on another machine opens that machine's shell: its
             // tab with nothing written runs the shell there
-            Some(cwd) if far_folder(desk, cwd).is_some() => QuickGo::Open {
-                cwd: cwd.to_path_buf(),
+            Some(at) if far_folder(desk, at).is_some() => QuickGo::Open {
+                at: at.to_path_buf(),
                 command: String::new(),
-                program: far_folder(desk, cwd).unwrap_or_default(),
+                program: far_folder(desk, at).unwrap_or_default(),
             },
-            Some(cwd) => QuickGo::Open {
-                cwd: cwd.to_path_buf(),
+            Some(at) => QuickGo::Open {
+                at: at.to_path_buf(),
                 command: "powershell.exe".into(),
                 program: "PowerShell".into(),
             },
             None => QuickGo::Refuse("msg.quick.no_home"),
         },
         _ => {
-            let Some(f) = folder else { return QuickGo::Refuse("msg.quick.ai_needs_folder") };
+            let Some(f) = folder.as_deref() else { return QuickGo::Refuse("msg.quick.ai_needs_folder") };
             // The AI's own command, without the flag that lets it act without
             // asking: starting one from a button is not the person choosing
             // that, which is a box they tick themselves in the settings
             // On a MicroVM, the AI its machine was given
             if let Some(given) = machine_ai_of(desk, f).or_else(|| server_ai_of(desk, f, ai)) {
                 return match given {
-                    Ok(a) => QuickGo::Open { cwd: f.to_path_buf(), command: a.key, program: a.name },
+                    Ok(a) => QuickGo::Open { at: f.to_path_buf(), command: a.key, program: a.name },
                     Err(why) => QuickGo::Refuse(why),
                 };
             }
             match quick_ai_choice(ai, ais) {
-                Some(a) => QuickGo::Open { cwd: f.to_path_buf(), command: a.key.clone(), program: a.name.clone() },
+                Some(a) => QuickGo::Open { at: f.to_path_buf(), command: a.key.clone(), program: a.name.clone() },
                 None => QuickGo::Refuse("msg.quick.no_ai"),
             }
         }
     }
 }
 
-/// The name of the machine a desk folder is on, when it is not this one
-fn far_folder(desk: Option<&config::Desk>, dir: &std::path::Path) -> Option<String> {
-    desk?.folders
-        .iter()
-        .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, dir)))?
-        .host
-        .as_ref()
-        .map(|h| h.name.clone())
+/// The name of the machine the desk folder a place key names is on, when it
+/// is not this one
+fn far_folder(desk: Option<&config::Desk>, at: &std::path::Path) -> Option<String> {
+    desk?.folder_at(at)?.host.as_ref().map(|h| h.name.clone())
 }
 
 /// The same answer, in the words the launcher shows
 pub fn quick_dest(go: &QuickGo) -> crate::quick::QuickDest {
     match go {
-        QuickGo::Open { cwd, program, .. } => crate::quick::QuickDest {
+        QuickGo::Open { at, program, .. } => crate::quick::QuickDest {
             how: "open",
             name: i18n::tp(
                 "msg.quick.dest.open",
                 &[
-                    ("folder", &cwd.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| cwd.display().to_string())),
+                    ("folder", &{
+                        let cwd = crate::uistate::place_of(at).1;
+                        cwd.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| cwd.display().to_string())
+                    }),
                     ("program", program),
                 ],
             ),
@@ -13193,13 +13220,10 @@ pub const QUICK_AI_ORDER: &[&str] = &["claude", "codex", "gemini", "aider", "kim
 /// only Codex, or nothing, is a `command not found` and nothing else
 pub fn machine_ai_of(
     desk: Option<&config::Desk>,
-    dir: &std::path::Path,
+    at: &std::path::Path,
 ) -> Option<Result<crate::uistate::AiChoice, &'static str>> {
     let d = desk?;
-    let f = d
-        .folders
-        .iter()
-        .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, dir)))?;
+    let f = d.folder_at(at)?;
     let host = f.host.as_ref().filter(|h| h.is_made())?;
     // What was installed on the project's machines, which is not always what
     // the project says it will be given next (see microvm::machine_has)
@@ -13220,16 +13244,10 @@ pub fn machine_ai_of(
 /// server, and for one whose server has not answered yet
 pub fn server_ai_of(
     desk: Option<&config::Desk>,
-    dir: &std::path::Path,
+    at: &std::path::Path,
     ai: &str,
 ) -> Option<Result<crate::uistate::AiChoice, &'static str>> {
-    let host = desk?
-        .folders
-        .iter()
-        .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, dir)))?
-        .host
-        .as_ref()
-        .filter(|h| !h.is_made())?;
+    let host = desk?.folder_at(at)?.host.as_ref().filter(|h| !h.is_made())?;
     let found = crate::serverai::known(host)?;
     Some(match crate::serverai::choose(&found, ai, QUICK_AI_ORDER) {
         Some(key) => {
@@ -13292,15 +13310,16 @@ fn server_ai_choices(host: &config::HostSpec) -> Option<Vec<crate::uistate::AiCh
     )
 }
 
-/// The AI to hand work in `dir` to: its machine's on a MicroVM, one its
-/// server has on a server, else the one the settings chose among this PC's
+/// The AI to hand work in the folder `at` names (a place key) to: its
+/// machine's on a MicroVM, one its server has on a server, else the one the
+/// settings chose among this PC's
 fn ai_for_folder(
     desk: Option<&config::Desk>,
-    dir: &std::path::Path,
+    at: &std::path::Path,
     ai: &str,
     ais: &[crate::uistate::AiChoice],
 ) -> Result<crate::uistate::AiChoice, String> {
-    match machine_ai_of(desk, dir).or_else(|| server_ai_of(desk, dir, ai)) {
+    match machine_ai_of(desk, at).or_else(|| server_ai_of(desk, at, ai)) {
         Some(r) => r.map_err(i18n::t),
         None => quick_ai_choice(ai, ais).cloned().ok_or_else(|| i18n::t("msg.quick.no_ai")),
     }
@@ -13336,14 +13355,15 @@ pub fn quick_ai_choice<'a>(
 pub const QUICK_SETTLE_MS: u64 = 2_500;
 pub const QUICK_WAIT: Duration = Duration::from_secs(90);
 
-/// Open a tab running `command` in `cwd` and have `text` typed into it once the
-/// program in it is ready: what a quick command does, and what the git panel's
+/// Open a tab running `command` in the folder `at` names (a place key: that
+/// path, on that machine) and have `text` typed into it once the program in
+/// it is ready: what a quick command does, and what the git panel's
 /// "Resolve" does with its instruction. Answers the tab's title; the caller
 /// tells the settings watcher, which is what starts the tab
 #[allow(clippy::too_many_arguments)]
 fn open_and_say(
     desk: &str,
-    cwd: &std::path::Path,
+    at: &std::path::Path,
     command: &str,
     program: &str,
     label: &str,
@@ -13355,7 +13375,8 @@ fn open_and_say(
 ) -> Option<String> {
     let (title, tab_id) = quick_tab_names(label, program, tabs);
     let line = serde_json::json!({"name": title, "id": tab_id, "command": command});
-    if !config::append_tab(desk, line, Some(cwd)) {
+    let (host, cwd) = crate::uistate::place_of(at);
+    if !config::append_tab_on(desk, line, Some(&cwd), host.as_deref()) {
         return None;
     }
     *reveal = Some((tab_id.clone(), Instant::now() + Duration::from_secs(20)));
@@ -13363,7 +13384,7 @@ fn open_and_say(
         id: tab_id,
         title: title.clone(),
         label: label.to_string(),
-        cwd: cwd.to_path_buf(),
+        at: at.to_path_buf(),
         text,
         submit,
         until: Instant::now() + QUICK_WAIT,
@@ -13552,6 +13573,9 @@ struct PrCatchUp {
     /// Handed back as it came, so the screen that asked can tell its answer
     seq: serde_json::Value,
     dir: std::path::PathBuf,
+    /// The same folder as a place key (see [`crate::uistate::place_key`]):
+    /// where work handed on from it goes, on the machine it is on
+    at: std::path::PathBuf,
     /// `origin/<base>`
     base: String,
     result: anyhow::Result<u64>,
@@ -13566,14 +13590,14 @@ struct PrCatchUp {
 /// merge at a time. The git column and a pull request's page both come here
 fn resolve_in_tab(
     desk: &config::Desk,
-    dir: &std::path::Path,
+    at: &std::path::Path,
     base: &str,
     choice: &crate::uistate::AiChoice,
     tabs: &[Tab],
     pending: &mut Vec<PendingQuick>,
     reveal: &mut Option<(String, Instant)>,
 ) -> Result<serde_json::Value, String> {
-    resolve_in_tab_knowing(desk, dir, base, None, choice, tabs, pending, reveal)
+    resolve_in_tab_knowing(desk, at, base, None, choice, tabs, pending, reveal)
 }
 
 /// The same, told the branch and the conflicted files where they are already
@@ -13582,7 +13606,7 @@ fn resolve_in_tab(
 #[allow(clippy::too_many_arguments)]
 fn resolve_in_tab_knowing(
     desk: &config::Desk,
-    dir: &std::path::Path,
+    at: &std::path::Path,
     base: &str,
     known: Option<(String, Vec<String>)>,
     choice: &crate::uistate::AiChoice,
@@ -13590,11 +13614,14 @@ fn resolve_in_tab_knowing(
     pending: &mut Vec<PendingQuick>,
     reveal: &mut Option<(String, Instant)>,
 ) -> Result<serde_json::Value, String> {
-    hand_to_ai_tab(desk, dir, &i18n::t("git.catch_up.tab"), choice, tabs, pending, reveal, || {
+    // The folder by its path, for git and for the words; the tab goes to the
+    // folder on its own machine
+    let dir = crate::uistate::place_of(at).1;
+    hand_to_ai_tab(desk, at, &i18n::t("git.catch_up.tab"), choice, tabs, pending, reveal, || {
         let (branch, files) = known.unwrap_or_else(|| {
-            (crate::git::branch(dir).ok().flatten().unwrap_or_default(), crate::git::conflicts(dir).unwrap_or_default())
+            (crate::git::branch(&dir).ok().flatten().unwrap_or_default(), crate::git::conflicts(&dir).unwrap_or_default())
         });
-        desk.git_of(dir)
+        desk.git_of(at)
             .merge_prompt()
             .replace("{folder}", &dir.display().to_string())
             .replace("{branch}", &branch)
@@ -13606,13 +13633,14 @@ fn resolve_in_tab_knowing(
     })
 }
 
-/// Work handed to a new tab of `choice` in `dir`, under `label`, with `prompt`
-/// as its first message. A tab already at the same work there is brought
-/// forward instead, and the prompt is not written: one AI on it at a time
+/// Work handed to a new tab of `choice` in the folder `at` names (a place
+/// key), under `label`, with `prompt` as its first message. A tab already at
+/// the same work there is brought forward instead, and the prompt is not
+/// written: one AI on it at a time
 #[allow(clippy::too_many_arguments)]
 fn hand_to_ai_tab(
     desk: &config::Desk,
-    dir: &std::path::Path,
+    at: &std::path::Path,
     label: &str,
     choice: &crate::uistate::AiChoice,
     tabs: &[Tab],
@@ -13620,11 +13648,11 @@ fn hand_to_ai_tab(
     reveal: &mut Option<(String, Instant)>,
     prompt: impl FnOnce() -> String,
 ) -> Result<serde_json::Value, String> {
-    if let Some((title, name)) = opened_for(label, dir, tabs, pending) {
+    if let Some((title, name)) = opened_for(label, at, tabs, pending) {
         *reveal = Some((name, Instant::now() + Duration::from_secs(20)));
         return Ok(serde_json::json!({"title": title, "already": true}));
     }
-    match open_and_say(&desk.name, dir, &choice.key, &choice.name, label, prompt(), true, tabs, pending, reveal) {
+    match open_and_say(&desk.name, at, &choice.key, &choice.name, label, prompt(), true, tabs, pending, reveal) {
         Some(title) => Ok(serde_json::json!({"title": title, "already": false})),
         None => Err(i18n::tp("msg.quick.open_failed", &[("label", label)])),
     }
@@ -13643,13 +13671,16 @@ struct CiFix {
     /// pull request to name
     sha: String,
     dir: std::path::PathBuf,
+    /// The same folder as a place key: where the tab that fixes it goes
+    at: std::path::PathBuf,
     result: anyhow::Result<serde_json::Value>,
 }
 
-/// A tab opened under `label` in `dir` that is still running, or one on its
-/// way there: its title and the name to bring it forward by. Pressing again
-/// shows that one, rather than setting a second AI on the same work
-pub fn opened_for(label: &str, dir: &std::path::Path, tabs: &[Tab], pending: &[PendingQuick]) -> Option<(String, String)> {
+/// A tab opened under `label` in the folder `at` names (a place key) that is
+/// still running, or one on its way there: its title and the name to bring it
+/// forward by. Pressing again shows that one, rather than setting a second AI
+/// on the same work
+pub fn opened_for(label: &str, at: &std::path::Path, tabs: &[Tab], pending: &[PendingQuick]) -> Option<(String, String)> {
     // The title `quick_tab_names` gives: the label, or the label and a number
     let named = |title: &str| {
         title == label
@@ -13659,14 +13690,14 @@ pub fn opened_for(label: &str, dir: &std::path::Path, tabs: &[Tab], pending: &[P
                 .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
     };
     let open = tabs.iter().find(|t| {
-        named(&t.title) && !t.exited() && t.cwd().is_some_and(|c| crate::uistate::same_folder(c, dir))
+        named(&t.title) && !t.exited() && t.place().is_some_and(|c| crate::uistate::same_folder(&c, at))
     });
     if let Some(t) = open {
         return Some((t.title.clone(), t.id.clone().unwrap_or_else(|| t.title.clone())));
     }
     pending
         .iter()
-        .find(|p| p.label == label && crate::uistate::same_folder(&p.cwd, dir))
+        .find(|p| p.label == label && crate::uistate::same_folder(&p.at, at))
         .map(|p| (p.title.clone(), p.id.clone()))
 }
 
@@ -13686,8 +13717,8 @@ pub struct PendingQuick {
     /// What its tab strip will say
     pub title: String,
     pub label: String,
-    /// The folder it opens in
-    pub cwd: std::path::PathBuf,
+    /// The folder it opens in, as a place key (see [`crate::uistate::place_key`])
+    pub at: std::path::PathBuf,
     pub text: String,
     pub submit: bool,
     pub until: Instant,
@@ -13896,20 +13927,26 @@ fn rename_drawn_branch(settings: &std::path::Path, job: &LabelJob, slug: &str) {
         return;
     }
     let Some(drawn) = job.drawn.as_deref() else { return };
-    let Some(plan) = crate::worktree::auto_rename_plan(&job.folder, drawn, slug, &job.prefix) else {
+    // Renamed here, where git is: a drawn name is only ever written for a
+    // folder on this PC
+    let (on, dir) = crate::uistate::place_of(&job.folder);
+    if on.is_some() {
+        return;
+    }
+    let Some(plan) = crate::worktree::auto_rename_plan(&dir, drawn, slug, &job.prefix) else {
         return;
     };
     if let Err(why) = crate::worktree::rename(&plan) {
-        append_hook_log(&format!("the branch in {} kept its name: {why:#}", job.folder.display()));
+        append_hook_log(&format!("the branch in {} kept its name: {why:#}", dir.display()));
         return;
     }
-    append_hook_log(&format!("{} ({})", plan.line(), job.folder.display()));
+    append_hook_log(&format!("{} ({})", plan.line(), dir.display()));
     // The settings hold the branch a folder is on, and no longer a drawn name:
     // this happens once, and the next name written is only a name
     if let Err(why) = config::set_folder_branch_at(settings, &job.desk, &job.folder, &plan.to, None) {
         append_hook_log(&format!(
             "the branch in {} is now {} and the settings still say {}: {why:#}",
-            job.folder.display(),
+            dir.display(),
             plan.to,
             plan.from
         ));
@@ -13921,6 +13958,7 @@ fn rename_drawn_branch(settings: &std::path::Path, job: &LabelJob, slug: &str) {
 struct LabelJob {
     tag: String,
     desk: String,
+    /// The folder as a place key (see [`crate::uistate::place_key`])
     folder: std::path::PathBuf,
     asks: Vec<String>,
     started: Instant,
@@ -13976,28 +14014,25 @@ pub fn folder_press_moves(front: Option<&std::path::Path>, want: &std::path::Pat
 }
 
 /// Whether the row on screen `surface` stands in the folder a place key
-/// names (see `uistate::place_key`): a tab by its folder and its machine, so
-/// a folder of the same path on another machine is not it; a panel by its
-/// folder, which is all it says of where it is
+/// names (see `uistate::place_key`): a row by its folder and the machine that
+/// folder is on, so a folder of the same path on another machine is not it
 pub fn surface_is_place(surfaces: &[Surface], tabs: &[Tab], surface: usize, key: &std::path::Path) -> bool {
-    match surface.checked_sub(1).and_then(|i| surfaces.get(i)) {
-        Some(Surface::Session(i)) => tabs.get(*i).is_some_and(|t| t.cwd().is_some_and(|c| crate::uistate::is_place(c, t.host(), key))),
-        Some(_) => surface_folder(surfaces, tabs, surface).is_some_and(|d| crate::uistate::same_folder(d, &crate::uistate::place_of(key).1)),
-        None => false,
+    surface_place_at(surfaces, tabs, surface).is_some_and(|here| {
+        let (on, at) = crate::uistate::place_of(&here);
+        crate::uistate::is_place(&at, on.as_deref(), key)
+    })
+}
+
+/// The folder the row on screen `surface` works in, as a place key (see
+/// [`crate::view::surface_place`]). A page stands under the folder it was
+/// written in, and works in none: nothing is started there from it
+pub fn surface_place_at(surfaces: &[Surface], tabs: &[Tab], surface: usize) -> Option<std::path::PathBuf> {
+    match surfaces.get(surface.checked_sub(1)?)? {
+        Surface::Browser { .. } => None,
+        s => crate::view::surface_place(s, tabs),
     }
 }
 
-pub fn surface_folder<'a>(surfaces: &'a [Surface], tabs: &'a [Tab], surface: usize) -> Option<&'a std::path::Path> {
-    match surfaces.get(surface.checked_sub(1)?)? {
-        Surface::Session(i) => tabs.get(*i)?.cwd(),
-        Surface::Git { dir, .. }
-        | Surface::Editor { dir, .. }
-        | Surface::Sftp { dir, .. }
-        | Surface::Failed { dir, .. }
-        | Surface::Split { dir, .. } => dir.as_deref(),
-        Surface::Browser { .. } | Surface::Issues { .. } => None,
-    }
-}
 pub fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
     surfaces
         .iter()
@@ -14997,7 +15032,7 @@ mod survey_tests {
             id: "resolve-conflicts".into(),
             title: "Resolve conflicts".into(),
             label: "Resolve conflicts".into(),
-            cwd: here.clone(),
+            at: here.clone(),
             text: String::new(),
             submit: true,
             until: Instant::now() + QUICK_WAIT,
@@ -15008,6 +15043,9 @@ mod survey_tests {
         );
         assert_eq!(opened_for("Resolve conflicts", &there, &[], &pending), None, "another folder's merge is its own");
         assert_eq!(opened_for("Review", &here, &[], &pending), None, "another kind of work is not this one");
+        // The same path on a server is another folder
+        let far = std::path::PathBuf::from(crate::uistate::place_key(Some("srv"), &here));
+        assert_eq!(opened_for("Resolve conflicts", &far, &[], &pending), None, "this PC's merge was taken for the server's");
     }
 
     /// The probe picker follows argv first, then the prompt's shape
@@ -15203,23 +15241,28 @@ mod tests {
     /// terminal is the machine's own shell rather than this PC's PowerShell
     #[test]
     fn a_microvm_folder_runs_what_its_machine_was_given() {
-        let far = std::path::PathBuf::from("/home/user/site");
+        let path = std::path::PathBuf::from("/home/user/site");
+        // The folder by its place key: that path, on the machine "vm"
+        let far = std::path::PathBuf::from(crate::uistate::place_key(Some("vm"), &path));
         let here = std::env::temp_dir();
         let desk = config::Desk {
             folders: vec![
                 config::Folder {
-                    cwd: Some(far.clone()),
+                    cwd: Some(path.clone()),
                     host: Some(config::HostSpec { name: "vm".into(), kind: Some("e2b".into()), instance: Some("m1".into()), ..Default::default() }),
                     project: Some("site".into()),
                     ..Default::default()
                 },
                 config::Folder { cwd: Some(here.clone()), ..Default::default() },
+                // The same path on this PC is a folder of this PC's
+                config::Folder { cwd: Some(path.clone()), ..Default::default() },
             ],
             projects: vec![config::ProjectSpec { name: "site".into(), machine_ai: Some("none".into()), ..Default::default() }],
             ..Default::default()
         };
         assert_eq!(machine_ai_of(Some(&desk), &far), Some(Err("msg.quick.no_machine_ai")));
         assert_eq!(machine_ai_of(Some(&desk), &here), None, "a folder here is asked about a machine");
+        assert_eq!(machine_ai_of(Some(&desk), &path), None, "the same path on this PC was taken for the machine's");
         let ais = vec![crate::uistate::AiChoice { key: "claude".into(), name: "Claude Code".into(), command: "claude".into() }];
         assert_eq!(
             ai_for_folder(Some(&desk), &far, "", &ais),
@@ -15229,7 +15272,12 @@ mod tests {
         assert_eq!(ai_for_folder(Some(&desk), &here, "", &ais).map(|a| a.key), Ok("claude".to_string()));
         assert_eq!(
             quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, Some(&far), Some(&desk)),
-            QuickGo::Open { cwd: far.clone(), command: String::new(), program: "vm".into() }
+            QuickGo::Open { at: far.clone(), command: String::new(), program: "vm".into() }
+        );
+        assert_eq!(
+            quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, Some(&path), Some(&desk)),
+            QuickGo::Open { at: path.clone(), command: "powershell.exe".into(), program: "PowerShell".into() },
+            "a terminal in the folder here was opened on the machine"
         );
     }
 
@@ -15288,19 +15336,26 @@ mod tests {
     /// server with none says so; one not heard from yet is this PC's choice
     #[test]
     fn a_server_folder_runs_an_ai_the_server_has() {
-        let far = std::path::PathBuf::from("/home/me/site");
+        let path = std::path::PathBuf::from("/home/me/site");
+        let far = |host: &str| std::path::PathBuf::from(crate::uistate::place_key(Some(host), &path));
         let srv = |name: &str| config::HostSpec { name: name.into(), at: format!("ssh://me@{name}.example:22"), ..Default::default() };
         let desk = |host: &str| config::Desk {
-            folders: vec![config::Folder { cwd: Some(far.clone()), host: Some(srv(host)), ..Default::default() }],
+            folders: vec![
+                config::Folder { cwd: Some(path.clone()), host: Some(srv(host)), ..Default::default() },
+                config::Folder { cwd: Some(path.clone()), ..Default::default() },
+            ],
             ..Default::default()
         };
         crate::serverai::set_known(&srv("has-codex"), vec!["codex".into()]);
         crate::serverai::set_known(&srv("has-none"), vec![]);
         let ais = vec![crate::uistate::AiChoice { key: "claude".into(), name: "Claude Code".into(), command: "claude".into() }];
-        assert_eq!(ai_for_folder(Some(&desk("has-codex")), &far, "claude", &ais).map(|a| a.key), Ok("codex".to_string()),
+        assert_eq!(ai_for_folder(Some(&desk("has-codex")), &far("has-codex"), "claude", &ais).map(|a| a.key), Ok("codex".to_string()),
             "this PC's Claude was typed on a server that has only Codex");
-        assert_eq!(ai_for_folder(Some(&desk("has-none")), &far, "claude", &ais), Err(i18n::t("msg.quick.no_server_ai")));
-        assert_eq!(server_ai_of(Some(&desk("never-asked")), &far, "claude"), None, "a server not heard from is refused");
+        assert_eq!(ai_for_folder(Some(&desk("has-none")), &far("has-none"), "claude", &ais), Err(i18n::t("msg.quick.no_server_ai")));
+        assert_eq!(server_ai_of(Some(&desk("never-asked")), &far("never-asked"), "claude"), None, "a server not heard from is refused");
+        // The same path on this PC runs this PC's AI
+        assert_eq!(ai_for_folder(Some(&desk("has-codex")), &path, "claude", &ais).map(|a| a.key), Ok("claude".to_string()),
+            "the folder here was given the server's AI");
     }
 
     /// Where a button goes with nothing open: a command opens in the home
@@ -15317,7 +15372,7 @@ mod tests {
         );
         assert_eq!(
             quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, Some(&dir), None),
-            QuickGo::Open { cwd: dir.clone(), command: "powershell.exe".into(), program: "PowerShell".into() }
+            QuickGo::Open { at: dir.clone(), command: "powershell.exe".into(), program: "PowerShell".into() }
         );
         assert_eq!(
             quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, None, None),
@@ -15394,6 +15449,7 @@ mod tests {
             name: "ed".into(),
             dir: Some(std::path::PathBuf::from(dir)),
             at,
+            on: None,
         };
         let far = [editor(Some(vm.clone()), "/home/user/proj")];
         let place = files_at("ed", &far, &[]).expect("the editor has a folder");
@@ -15735,7 +15791,7 @@ mod tests {
         tabs[1].id = Some("raven".into());
         // A page sitting in front of both of them, as the settings put it
         let surfaces = vec![
-            Surface::Browser { key: "swift".into(), name: "検索".into(), dir: None },
+            Surface::Browser { key: "swift".into(), name: "検索".into(), dir: None, on: None },
             Surface::Session(0),
             Surface::Session(1),
         ];
@@ -15773,8 +15829,8 @@ mod tests {
         // A page and the settings in front, as they were on 2026-09-23 when
         // the list opened empty: raven is screen 4, and the tab list has two
         let surfaces = vec![
-            Surface::Browser { key: "shrimp".into(), name: "検索".into(), dir: None },
-            Surface::Browser { key: "settings".into(), name: "settings".into(), dir: None },
+            Surface::Browser { key: "shrimp".into(), name: "検索".into(), dir: None, on: None },
+            Surface::Browser { key: "settings".into(), name: "settings".into(), dir: None, on: None },
             Surface::Session(0),
             Surface::Session(1),
         ];
@@ -16005,10 +16061,12 @@ mod tests {
         let remembered = |program: &str, session: &str| crate::lastsession::Saved {
             version: 1,
             desks: vec![crate::lastsession::SavedWs {
+                places: false,
                 name: "W".into(),
                 id: None,
                 panes: None,
                 tabs: vec![crate::lastsession::SavedTab {
+                    host: None,
                     title: "AGENT".into(),
                     id: None,
                     cwd: Some("D:\\Work".into()),
@@ -16356,7 +16414,7 @@ mod tests {
             std::collections::HashMap::new(),
             Default::default(),
         ));
-        let page = |k: &str| Surface::Browser { key: k.into(), name: k.into(), dir: None };
+        let page = |k: &str| Surface::Browser { key: k.into(), name: k.into(), dir: None, on: None };
         let surfaces = vec![
             page(SETTINGS_TAB),
             page(RESULT_TAB),
@@ -16458,7 +16516,7 @@ mod tests {
     #[test]
     fn a_page_knows_its_number_and_both_of_its_names() {
         let surfaces = vec![
-            Surface::Browser { key: "html".into(), name: "HTML解析".into(), dir: None },
+            Surface::Browser { key: "html".into(), name: "HTML解析".into(), dir: None, on: None },
             Surface::Session(0),
         ];
         let page = page_ctx(&surfaces, "html", "https://example.com/".into(), true)
@@ -16592,7 +16650,7 @@ mod tests {
         let surfaces = surfaces_of(Some(&desk), &tabs, &hosted, &[], false);
         assert_eq!(
             surfaces,
-            vec![Surface::Browser { key: "html".into(), name: "HTML解析".into(), dir: None }, Surface::Session(0)],
+            vec![Surface::Browser { key: "html".into(), name: "HTML解析".into(), dir: None, on: None }, Surface::Session(0)],
             "they are not in the order of the settings"
         );
         // A session must be resolvable from its screen number
@@ -16648,7 +16706,7 @@ mod tests {
         let surfaces = surfaces_of(Some(&desk), &tabs, &[], &[], false);
         assert_eq!(
             surfaces,
-            vec![Surface::Browser { key: "html".into(), name: "HTML解析".into(), dir: None }, Surface::Session(0)],
+            vec![Surface::Browser { key: "html".into(), name: "HTML解析".into(), dir: None, on: None }, Surface::Session(0)],
             "before it is opened, the numbers are off"
         );
     }
@@ -16667,7 +16725,7 @@ mod tests {
             vec![
                 Surface::Session(0),
                 Surface::Session(1),
-                Surface::Browser { key: "settings".into(), name: "settings".into(), dir: None }
+                Surface::Browser { key: "settings".into(), name: "settings".into(), dir: None, on: None }
             ]
         );
     }
@@ -16688,7 +16746,7 @@ mod tests {
         let after = vec![
             Surface::Session(0),
             Surface::Session(1),
-            Surface::Browser { key: "settings".into(), name: "settings".into(), dir: None },
+            Surface::Browser { key: "settings".into(), name: "settings".into(), dir: None, on: None },
         ];
         assert_eq!(settings_active(&after), 3, "when open, it is where it is");
     }
@@ -17214,7 +17272,7 @@ mod tests {
     #[test]
     fn a_browser_in_the_row_does_not_hide_the_tabs_behind_it() {
         let surfaces = vec![
-            Surface::Browser { key: "html".into(), name: "解析".into(), dir: None },
+            Surface::Browser { key: "html".into(), name: "解析".into(), dir: None, on: None },
             Surface::Session(0),
         ];
         let keys = surface_keys(&surfaces, &[]);

@@ -1933,7 +1933,12 @@ fn handle(
             let at = query_param(req.url(), "path")
                 .map(|c| percent_decode(&c))
                 .unwrap_or_default();
-            let at = crate::config::resolve_folder_cwd(&at);
+            // By place key: a folder of the same path on another machine is
+            // another folder, and so is what went wrong naming it
+            let at = match crate::uistate::place_of(std::path::Path::new(&at)) {
+                (Some(host), path) => std::path::PathBuf::from(crate::uistate::place_key(Some(&host), &path)),
+                (None, _) => crate::config::resolve_folder_cwd(&at),
+            };
             let failed = crate::labels::outcomes()
                 .into_iter()
                 .find(|(k, _)| crate::uistate::same_folder(std::path::Path::new(k), &at))
@@ -12048,7 +12053,7 @@ function folderPane(desk, g, gi) {
   // Why the last try to write them failed, when it did. Only while it is on:
   // a folder that no longer asks has nothing to fix
   if (g.auto_label && (g.cwd || "").trim()) {
-    fetch("/api/folder-label?path=" + encodeURIComponent(g.cwd), {headers:{"X-Token":TOKEN}})
+    fetch("/api/folder-label?path=" + encodeURIComponent(placeKey(g)), {headers:{"X-Token":TOKEN}})
       .then(r => r.json())
       .then(j => {
         if (!j || !j.failed || !g.auto_label) return;

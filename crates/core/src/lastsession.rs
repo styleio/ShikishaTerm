@@ -51,6 +51,29 @@ pub struct SavedWs {
     pub panes: Option<crate::layout::Layout>,
     #[serde(default)]
     pub tabs: Vec<SavedTab>,
+    /// Whether its tabs say which machine their folder is on. Written by
+    /// every start since tabs did; a desk left by a build before that --
+    /// or rewritten by one, which drops what it does not know -- says
+    /// nothing, and its tabs are matched by folder alone, as they were then
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub places: bool,
+}
+
+impl SavedWs {
+    /// Whether a remembered tab stood in the folder a place key names: that
+    /// path, on that machine -- or, for a desk written before tabs said their
+    /// machine, that path wherever it was
+    fn is_at(&self, s: &SavedTab, place: Option<&str>) -> bool {
+        let (host, cwd) = match place {
+            Some(p) => {
+                let (host, at) = crate::uistate::place_of(std::path::Path::new(p));
+                (host, Some(at.display().to_string()))
+            }
+            None => (None, None),
+        };
+        same_folder(s.cwd.as_deref(), cwd.as_deref())
+            && (!self.places || s.host.as_deref().map(str::trim) == host.as_deref().map(str::trim))
+    }
 }
 
 /// One tab's conversation, with enough beside it to be sure it is the same tab.
@@ -65,6 +88,11 @@ pub struct SavedTab {
     pub id: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The machine that folder is on, by the name the settings give it.
+    /// Absent for this PC. Two machines can each have a folder at one path,
+    /// and a conversation had on one of them is not the other's
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     pub program: String,
     pub session: String,
     /// How that id was come by, kept because it says how far to trust it
@@ -189,7 +217,7 @@ impl Saved {
         self.conversation_of(
             desk,
             t.program(),
-            t.cwd().map(|c| c.display().to_string()).as_deref(),
+            t.place().map(|c| c.display().to_string()).as_deref(),
             t.id.as_deref(),
             &t.title,
         )
@@ -200,7 +228,9 @@ impl Saved {
     /// At startup the answer is needed BEFORE the process is launched -- that
     /// is the whole point of carrying a conversation over -- so the test is
     /// written against the four things that identify a tab rather than against
-    /// a live one. `conversation_for` is the same test, asked later
+    /// a live one. `conversation_for` is the same test, asked later. Its
+    /// folder is a place key (see [`crate::uistate::place_key`]): a path is a
+    /// folder on this PC, and a folder on another machine names that machine
     pub fn conversation_of(
         &self,
         desk: &crate::config::Desk,
@@ -252,7 +282,7 @@ impl Saved {
         let here: Vec<&SavedTab> = desk
             .tabs
             .iter()
-            .filter(|s| s.program == program && same_folder(s.cwd.as_deref(), cwd))
+            .filter(|s| s.program == program && desk.is_at(s, cwd))
             .collect();
         if let [only] = here.as_slice() {
             return Some(only);
@@ -299,7 +329,7 @@ impl Saved {
             .map(|d| {
                 d.tabs
                     .iter()
-                    .filter(|s| s.program == program && same_folder(s.cwd.as_deref(), cwd))
+                    .filter(|s| s.program == program && d.is_at(s, cwd))
                     .count()
             })
             .unwrap_or(0)
@@ -354,6 +384,7 @@ impl Saved {
                     title: t.title.clone(),
                     id: t.id.clone(),
                     cwd: t.cwd().map(|c| c.display().to_string()),
+                    host: t.host().map(str::to_string),
                     program: t.program().to_string(),
                     session: s.id.clone(),
                     source: format!("{:?}", s.source),
@@ -366,6 +397,7 @@ impl Saved {
             id: id.clone(),
             panes: panes.cloned(),
             tabs: saved,
+            places: true,
         };
         // Filed under the id. What this desk left under its name before ids
         // were kept goes: it is the same desk, and left behind it would be
@@ -422,10 +454,12 @@ mod tests {
         let saved = Saved {
             version: VERSION,
             desks: vec![SavedWs {
+                places: false,
                 name: "work".into(),
                 id: None,
                 panes: None,
                 tabs: vec![SavedTab {
+                    host: None,
                     title: "AGENT".into(),
                     id: Some("coder".into()),
                     cwd: Some("D:\\Test".into()),
@@ -474,6 +508,7 @@ mod tests {
     #[test]
     fn closing_one_tab_leaves_the_others_their_conversations() {
         let tab = |id: &str, cwd: &str, session: &str| SavedTab {
+            host: None,
             title: "claude".into(),
             id: Some(id.into()),
             cwd: Some(cwd.into()),
@@ -484,6 +519,7 @@ mod tests {
         let saved = Saved {
             version: VERSION,
             desks: vec![SavedWs {
+                places: false,
                 name: "work".into(),
                 id: None,
                 panes: None,
@@ -517,6 +553,7 @@ mod tests {
     #[test]
     fn two_tabs_in_one_folder_are_told_apart_by_name_or_not_at_all() {
         let tab = |id: &str, title: &str, session: &str| SavedTab {
+            host: None,
             title: title.into(),
             id: Some(id.into()),
             cwd: Some("D:\\Work".into()),
@@ -527,6 +564,7 @@ mod tests {
         let saved = Saved {
             version: VERSION,
             desks: vec![SavedWs {
+                places: false,
                 name: "work".into(),
                 id: None,
                 panes: None,
@@ -547,6 +585,40 @@ mod tests {
         assert_eq!(saved.remembered_here(&named("work"), "claude", Some("D:\\Work")), 2);
     }
 
+    /// A conversation had in a folder on one machine is that machine's: the
+    /// same path on another machine, or on this PC, is another folder. A desk
+    /// written before tabs said their machine is read by folder alone, as it
+    /// was then, so nothing it remembered is lost on the way
+    #[test]
+    fn the_same_path_on_two_machines_remembers_two_conversations() {
+        let tab = |host: Option<&str>, session: &str| SavedTab {
+            host: host.map(str::to_string),
+            title: "claude".into(),
+            id: Some("claude".into()),
+            cwd: Some("/home/ubuntu/app".into()),
+            program: "claude".into(),
+            session: session.into(),
+            source: "Minted".into(),
+        };
+        let desk = |places: bool, tabs: Vec<SavedTab>| Saved {
+            version: VERSION,
+            desks: vec![SavedWs { places, name: "work".into(), id: None, panes: None, tabs }],
+        };
+        let key = |host: Option<&str>| crate::uistate::place_key(host, std::path::Path::new("/home/ubuntu/app"));
+        let saved = desk(true, vec![tab(Some("srv"), "on-srv"), tab(Some("srv2"), "on-srv2"), tab(None, "here")]);
+        let found = |host: Option<&str>| {
+            saved.conversation_of(&named("work"), "claude", Some(&key(host)), Some("claude"), "claude").map(|s| s.id)
+        };
+        assert_eq!(found(Some("srv")), Some("on-srv".into()));
+        assert_eq!(found(Some("srv2")), Some("on-srv2".into()), "another machine's conversation was handed over");
+        assert_eq!(found(None), Some("here".into()));
+        assert_eq!(saved.remembered_here(&named("work"), "claude", Some(&key(Some("srv")))), 1);
+        // Written by a build before machines were kept: by folder, as then
+        let old = desk(false, vec![tab(None, "before")]);
+        let found_old = old.conversation_of(&named("work"), "claude", Some(&key(Some("srv"))), Some("claude"), "claude");
+        assert_eq!(found_old.map(|s| s.id), Some("before".into()), "a conversation remembered before was lost");
+    }
+
     /// A desk renamed since the app closed brings its conversations back.
     ///
     /// Remembered by name, a renamed desk's AI tabs came back as new
@@ -555,6 +627,7 @@ mod tests {
     #[test]
     fn a_renamed_desk_is_still_remembered_and_a_new_one_of_the_same_name_is_not() {
         let tab = |session: &str| SavedTab {
+            host: None,
             title: "claude".into(),
             id: Some("claude".into()),
             cwd: Some("D:/Work".into()),
@@ -563,6 +636,7 @@ mod tests {
             source: "Minted".into(),
         };
         let entry = |id: Option<&str>, name: &str, session: &str| SavedWs {
+            places: false,
             name: name.into(),
             id: id.map(str::to_string),
             panes: None,
@@ -635,10 +709,12 @@ mod tests {
         let saved = Saved {
             version: VERSION,
             desks: vec![SavedWs {
+                places: false,
                 name: "work".into(),
                 id: None,
                 panes: None,
                 tabs: vec![SavedTab {
+                    host: None,
                     title: "claude".into(),
                     id: Some("claude".into()),
                     cwd: Some(r"C:\Users\me\Work".into()),

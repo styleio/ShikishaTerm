@@ -125,6 +125,13 @@ impl TabOptions {
         folder && machine(self) == machine(other)
     }
 
+    /// Its folder as a place key (see [`crate::uistate::place_key`]): the
+    /// folder and the machine the settings say it is on
+    pub fn place(&self) -> Option<std::path::PathBuf> {
+        let cwd = self.cwd.as_deref()?;
+        Some(std::path::PathBuf::from(crate::uistate::place_key(self.host.as_deref(), cwd)))
+    }
+
     /// Why this launch cannot run what it was given, if it cannot.
     ///
     /// **The one place the question "does this tab have somewhere to work?" is
@@ -3135,6 +3142,13 @@ impl Tab {
     /// can reach them by the path we hand back.
     pub fn cwd(&self) -> Option<&std::path::Path> {
         self.opts.cwd.as_deref()
+    }
+
+    /// Its folder as a place key (see [`crate::uistate::place_key`]): the
+    /// folder and the machine it is on, so the same path on another machine
+    /// is another folder
+    pub fn place(&self) -> Option<std::path::PathBuf> {
+        self.opts.place()
     }
 
     /// Whether this tab stands where a launch with these options would

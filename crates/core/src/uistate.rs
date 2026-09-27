@@ -1485,6 +1485,15 @@ pub fn place_of(key: &std::path::Path) -> (Option<String>, std::path::PathBuf) {
     }
 }
 
+/// A place key written for a log: `srv:/home/ubuntu/app`, or the path alone
+/// for a folder on this PC. The mark inside a key is not a character to print
+pub fn place_said(key: &std::path::Path) -> String {
+    match place_of(key) {
+        (Some(host), at) => format!("{host}:{}", at.display()),
+        (None, at) => at.display().to_string(),
+    }
+}
+
 /// Whether a folder -- a path, on this PC or on the machine named -- is the
 /// place a key names. A key naming a machine is only ever that machine's
 /// folder; a bare path is the folder of that path, as before place keys

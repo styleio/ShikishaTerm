@@ -26,7 +26,7 @@ pub fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
 /// its own -- a page, a failed tab, the issue list.
 pub fn panel_place(s: &Surface) -> Option<hooks::TabPlace> {
     match s {
-        Surface::Git { key, dir: Some(d), at, protect, git, .. } => Some(hooks::TabPlace {
+        Surface::Git { key, dir: Some(d), at, on, protect, git, .. } => Some(hooks::TabPlace {
             key: hooks::TabKey { id: Some(key.clone()) },
             dir: d.clone(),
             // A git panel reports on its folder where the folder is: on
@@ -34,8 +34,7 @@ pub fn panel_place(s: &Surface) -> Option<hooks::TabPlace> {
             // the folder is the place there, as that machine spells it
             remote: at.clone(),
             remote_dir: at.as_ref().map(|_| far_path(d)).unwrap_or_default(),
-            // A panel is never the caller a tab is added beside
-            host: None,
+            host: on.clone(),
             protect: protect.clone(),
             git: git.clone(),
         }),
@@ -43,7 +42,7 @@ pub fn panel_place(s: &Surface) -> Option<hooks::TabPlace> {
         // reading and writing the file it is showing goes through the same
         // fence as everything else. A folder on another machine is fenced
         // there, by its path on that machine
-        Surface::Editor { key, dir: Some(d), at, .. } => Some(hooks::TabPlace {
+        Surface::Editor { key, dir: Some(d), at, on, .. } => Some(hooks::TabPlace {
             key: hooks::TabKey { id: Some(key.clone()) },
             dir: d.clone(),
             remote: at.clone(),
@@ -51,19 +50,19 @@ pub fn panel_place(s: &Surface) -> Option<hooks::TabPlace> {
                 Some(_) => far_path(d),
                 None => String::new(),
             },
-            host: None,
+            host: on.clone(),
             protect: Vec::new(),
             git: Default::default(),
         }),
         // A file panel is. `sftp_put("that name", …)` reaches the same
         // server the screen is showing, which is the whole point of the
         // panel being a tab rather than a window of its own
-        Surface::Sftp { key, dir, at, remote_dir, .. } => Some(hooks::TabPlace {
+        Surface::Sftp { key, dir, at, on, remote_dir, .. } => Some(hooks::TabPlace {
             key: hooks::TabKey { id: Some(key.clone()) },
             dir: dir.clone().unwrap_or_default(),
             remote: at.clone(),
             remote_dir: remote_dir.clone(),
-            host: None,
+            host: on.clone(),
             protect: Vec::new(),
             git: Default::default(),
         }),
@@ -380,7 +379,7 @@ pub fn apply_ws_config(
                     Some(s) if tab::resumable_at(&argv, &ft.cfg.profile, &s.id, far_opts(&said)) => {
                         Carried { plan: tab::Resume::Id(s), lost: false }
                     }
-                    _ => launch_plan(carry, desk, &argv, &ft.cfg, &said.cwd, &title, far_opts(&said)),
+                    _ => launch_plan(carry, desk, &argv, &ft.cfg, &said.place(), &title, far_opts(&said)),
                 };
                 let mut opts = opts;
                 opts.lost = carried.lost;
@@ -578,11 +577,10 @@ pub fn spawn_desk(
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
         let mut opts = tab_options(&ft.cfg, desk.folder_of(ft));
         let argv = resolve_launch(argv, &mut opts, Some(desk), &ft.cfg);
-        let cwd = opts.cwd.clone();
         // Kept for the message, because the options are moved into the tab and
         // the message is only wanted when that did not happen
         let said = opts.clone();
-        let carried = launch_plan(carry, desk, &argv, &ft.cfg, &cwd, &title, far_opts(&said));
+        let carried = launch_plan(carry, desk, &argv, &ft.cfg, &said.place(), &title, far_opts(&said));
         opts.lost = carried.lost;
         match Tab::spawn_as(
             title.clone(),
@@ -1173,10 +1171,12 @@ mod calling_home_tests {
         let last = crate::lastsession::Saved {
             version: 1,
             desks: vec![crate::lastsession::SavedWs {
+                places: false,
                 name: "w".into(),
                 id: Some("w".into()),
                 panes: None,
                 tabs: vec![crate::lastsession::SavedTab {
+                    host: None,
                     title: "sh".into(),
                     id: Some("agent".into()),
                     cwd: Some(here),
@@ -1492,7 +1492,8 @@ impl Carried {
 ///
 /// The tab is recognised by the same things `lastsession` writes down, in the
 /// same spelling: the program is `argv[0]` and the folder is the resolved
-/// `cwd`, exactly as a running tab would report them.
+/// `cwd` with the machine it is on -- a place key, exactly as a running tab
+/// would report it ([`tab::TabOptions::place`]).
 pub fn carried_conversation(
     carry: Option<&crate::lastsession::Saved>,
     desk: &config::Desk,

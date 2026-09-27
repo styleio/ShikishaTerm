@@ -1147,15 +1147,22 @@ pub struct TabPlace {
     /// none, and then there is nothing for a path to be outside of
     pub remote_dir: String,
     /// The machine the folder is on, by the name the settings give it: `None`
-    /// for this one, and for a panel, which never makes a call of its own.
-    /// What `open_tab` adds beside a tab by: the path alone can be a folder
-    /// on two machines
+    /// for this one. What `open_tab` adds beside a tab by: the path alone can
+    /// be a folder on two machines
     pub host: Option<String>,
     /// The branches this folder guards, already settled by the settings
     pub protect: Vec<String>,
     /// The git account chosen for it: on a git tab, the tab's own; beside a
     /// folder, its project's
     pub git: crate::config::GitUse,
+}
+
+impl TabPlace {
+    /// Its folder as a place key (see [`crate::uistate::place_key`]): the
+    /// folder and the machine that folder is on
+    pub fn place(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(crate::uistate::place_key(self.host.as_deref(), &self.dir))
+    }
 }
 
 impl TabRef {
@@ -8835,7 +8842,7 @@ end
         let mut surfaces = Vec::new();
         for index in 1..=3 {
             surfaces.push(crate::view::Surface::Browser {
-                key: format!("page{index}"), name: format!("Page {index}"), dir: None,
+                key: format!("page{index}"), name: format!("Page {index}"), dir: None, on: None,
             });
             // Both the local browser and the connected browser enter this
             // queue. Draining a batch must preserve every page report.
@@ -9464,6 +9471,7 @@ mod live_sftp {
             name: "deploy".into(),
             dir: Some(here.clone()),
             at: Some(crate::elsewhere::Elsewhere::Ssh(l.spec.clone())),
+            on: None,
             remote_dir: site(&l),
         }];
         let (tx, rx) = std::sync::mpsc::channel();

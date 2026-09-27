@@ -300,6 +300,26 @@ pub fn surface_dir(p: &Surface, tabs: &[Tab]) -> Option<std::path::PathBuf> {
     }
 }
 
+/// The folder a surface stands in, as a place key (see
+/// [`crate::uistate::place_key`]): its folder and the machine that folder is
+/// on. A tab by its own folder and machine; a panel by the folder it was
+/// written under and that folder's machine. What lays a row under its folder,
+/// puts it away with it, and finds the folder it is in -- so a folder of the
+/// same path on another machine is never it
+pub fn surface_place(p: &Surface, tabs: &[Tab]) -> Option<std::path::PathBuf> {
+    let (dir, on) = match p {
+        Surface::Session(i) => return tabs.get(*i).and_then(|t| t.place()),
+        Surface::Browser { dir, on, .. }
+        | Surface::Sftp { dir, on, .. }
+        | Surface::Editor { dir, on, .. }
+        | Surface::Failed { dir, on, .. }
+        | Surface::Git { dir, on, .. }
+        | Surface::Split { dir, on, .. } => (dir.as_deref()?, on.as_deref()),
+        Surface::Issues { .. } => return None,
+    };
+    Some(std::path::PathBuf::from(crate::uistate::place_key(on, dir)))
+}
+
 /// Whether the row numbered `n` stands in a folder put out of sight.
 ///
 /// Rows are numbered the way the view numbers them, from 1; row 0 is the
@@ -313,8 +333,8 @@ pub fn row_put_away(
     !hidden.is_empty()
         && n.checked_sub(1)
             .and_then(|i| surfaces.get(i))
-            .and_then(|p| surface_dir(p, tabs))
-            .is_some_and(|d| hidden.iter().any(|h| crate::uistate::same_folder(&crate::uistate::place_of(h).1, &d)))
+            .and_then(|p| surface_place(p, tabs))
+            .is_some_and(|d| hidden.iter().any(|h| crate::uistate::same_folder(h, &d)))
 }
 
 /// The row the view goes to when the one it was on is not one it may rest on:
@@ -377,7 +397,7 @@ pub fn settle(
         return Settled::Stay;
     }
     if !drifted {
-        return match at.checked_sub(1).and_then(|i| surfaces.get(i)).and_then(|p| surface_dir(p, tabs)) {
+        return match at.checked_sub(1).and_then(|i| surfaces.get(i)).and_then(|p| surface_place(p, tabs)) {
             Some(dir) => Settled::Bring(dir),
             // Unreachable while the row is put away, which is what having a
             // folder means -- and staying put is the harmless answer anyway
@@ -408,10 +428,10 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             .collect(),
     };
     groups.retain(|(k, _)| !put_away.iter().any(|h| crate::uistate::same_folder(h, k)));
-    // A row says only its folder's path, so it is put away with the folder of
-    // that path (the key's path, for a folder on another machine)
-    let hidden_here = |dir: Option<&std::path::Path>| {
-        dir.is_some_and(|d| put_away.iter().any(|h| crate::uistate::same_folder(&crate::uistate::place_of(h).1, d)))
+    // A row is put away with the folder it stands in: that path on that
+    // machine (see [`surface_place`])
+    let hidden_here = |place: Option<&std::path::Path>| {
+        place.is_some_and(|d| put_away.iter().any(|h| crate::uistate::same_folder(h, d)))
     };
     crate::uistate::GroupState::name_projects(&mut groups, &ui.folder_projects);
     crate::uistate::GroupState::name_work_items(&mut groups, &ui.folder_items);
@@ -443,10 +463,17 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     // background look found it. Its household was only guessed from the path,
     // and without a colour it had no + to cut a worktree with: a project added
     // a moment ago could not be given its first worktree until a tab ran there
-    let repos = folders::watch().repos(&groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>());
+    // Only this PC's folders are looked at on this PC's disk: a key naming
+    // another machine is no path here
+    let on_this_pc: Vec<std::path::PathBuf> = groups
+        .iter()
+        .map(|(k, _)| k.clone())
+        .filter(|k| crate::uistate::place_of(k).0.is_none())
+        .collect();
+    let repos = folders::watch().repos(&on_this_pc);
     // The worktrees each project has that this desk does not list, as the same
     // background look found them
-    let cuts = folders::watch().cuts(&groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>());
+    let cuts = folders::watch().cuts(&on_this_pc);
     // Every folder this desk has, which is not the same as every folder it
     // draws. A worktree being made is git's before it is the desk's; its own
     // row says it, and it is not a stranger found for that moment in between.
@@ -502,13 +529,9 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         // in it and never draws the rows underneath, so the panel simply had
         // no line to press
         if g.empty
-            && ui.surfaces.iter().any(|s| match s {
-                Surface::Git { dir: Some(d), .. }
-                | Surface::Sftp { dir: Some(d), .. }
-                | Surface::Editor { dir: Some(d), .. } => {
-                    crate::uistate::same_folder(d, at)
-                }
-                _ => false,
+            && ui.surfaces.iter().any(|s| {
+                matches!(s, Surface::Git { .. } | Surface::Sftp { .. } | Surface::Editor { .. })
+                    && surface_place(s, tabs).is_some_and(|p| crate::uistate::same_folder(&p, at))
             })
         {
             g.empty = false;
@@ -516,21 +539,11 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     }
     // The pairing link as it should be shown, with the network it leads to
     let shown = ui.qr.as_deref().map(crate::netaddr::shown_link);
-    // The folder a panel stands under: on the machine it is on, by place key,
-    // when the panel knows its machine; by path alone when it knows nothing
-    // more, as before place keys -- the first folder of that path
-    let group_on = |dir: &std::path::Path, at: Option<&crate::elsewhere::Elsewhere>| -> Option<usize> {
-        let host = at.and_then(|m| match m {
-            crate::elsewhere::Elsewhere::Cloud(h) => Some(h.name.clone()),
-            crate::elsewhere::Elsewhere::Ssh(spec) => ui.server_names.iter().find(|(s, _)| s == spec).map(|(_, n)| n.clone()),
-        });
-        match (host, at) {
-            (Some(h), _) => {
-                let key = std::path::PathBuf::from(crate::uistate::place_key(Some(&h), dir));
-                groups.iter().position(|(k, _)| crate::uistate::same_folder(k, &key))
-            }
-            (None, _) => groups.iter().position(|(k, _)| crate::uistate::same_folder(&crate::uistate::place_of(k).1, dir)),
-        }
+    // The folder a row stands under: its folder on the machine that folder
+    // is on, by place key (see [`surface_place`])
+    let group_of = |p: &Surface| -> Option<usize> {
+        let key = surface_place(p, tabs)?;
+        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, &key))
     };
     crate::uistate::UiState {
         groups: groups.iter().map(|(_, g)| g.clone()).collect(),
@@ -609,20 +622,18 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             // screen number is untouched -- the number is carried on the row,
             // not counted from the list -- so bringing the folder back brings
             // the same tabs back under the same numbers
-            .filter(|(_, p)| !hidden_here(surface_dir(p, tabs).as_deref()))
+            .filter(|(_, p)| !hidden_here(surface_place(p, tabs).as_deref()))
             .filter_map(|(i, p)| Some((p, match p {
                 Surface::Session(s) => tabs.get(*s).map(|t| {
                     let mut ts = crate::uistate::TabState::of(i + 1, t);
+                    // The draft made for its folder, on its own machine
                     ts.draft = t
-                        .cwd()
+                        .place()
                         .filter(|_| t.is_ai())
-                        .and_then(|c| ui.drafts.iter().find(|(k, _)| crate::uistate::same_folder(k, c)))
+                        .and_then(|c| ui.drafts.iter().find(|(k, _)| crate::uistate::same_folder(k, &c)))
                         .map(|(_, d)| d.clone());
                     // Under its own machine's folder, by place key
-                    ts.group = t.cwd().and_then(|c| {
-                        let key = std::path::PathBuf::from(crate::uistate::place_key(t.host(), c));
-                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, &key))
-                    });
+                    ts.group = group_of(p);
                     // A terminal on a server wears that server's name. A tab
                     // in a folder on a server is on one too: its terminal is
                     // opened there, with the same address the folder has
@@ -637,11 +648,11 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                         .map(|(_, s)| s.clone());
                     ts
                 }),
-                Surface::Browser { key, name, dir } => {
+                Surface::Browser { key, name, .. } => {
                     // It stands under the folder it was written in, exactly as
                     // the panels beside it do, so it is in that folder's tab
                     // bar and is folded away with it
-                    let group = dir.as_deref().and_then(|d| group_on(d, None));
+                    let group = group_of(p);
                     let mut t = crate::uistate::TabState::browser(i + 1, key, name, group);
                     // What a script is asking the person about this page, if
                     // anything. The board draws the bar under the page from it
@@ -654,8 +665,8 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     t.words_fast = ui.words_fast.iter().any(|k| k == key);
                     Some(t)
                 }
-                Surface::Sftp { key, name, dir, at, .. } => {
-                    let group = dir.as_deref().and_then(|d| group_on(d, at.as_ref()));
+                Surface::Sftp { key, name, at, .. } => {
+                    let group = group_of(p);
                     let mut t = crate::uistate::TabState::sftp(i + 1, key, name, group);
                     // The panel's server, which is the one its questions are
                     // about -- so the page reads the mark off the tab, and the
@@ -663,7 +674,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     t.mark = at.as_ref().and_then(|m| crate::uistate::MarkState::of_place(m, &ui.server_marks));
                     Some(t)
                 }
-                Surface::Editor { key, name, dir, at } => {
+                Surface::Editor { key, name, at, .. } => {
                     let showing = ui
                         .editors
                         .iter()
@@ -672,7 +683,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     // It works in a folder, so it stands under that folder's
                     // heading and is folded away with it -- the same as the
                     // panels beside it
-                    let group = dir.as_deref().and_then(|d| group_on(d, at.as_ref()));
+                    let group = group_of(p);
                     let mut t = crate::uistate::TabState::editor(i + 1, key, name, group);
                     // A file on a server wears that server's mark, as the file
                     // panel beside it does: editing production is the thing
@@ -686,37 +697,37 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     Some(t)
                 }
                 Surface::Issues { key } => Some(crate::uistate::TabState::issues(i + 1, key)),
-                Surface::Split { key, name, dir } => {
+                Surface::Split { key, name, .. } => {
                     // It stands under its folder's heading and folds away with
                     // it, like every other row written there. What it shows may
                     // well be rows of another folder -- it points at them, it
                     // does not hold them -- and that changes nothing about
                     // where the row itself lives
-                    let group = dir.as_deref().and_then(|d| group_on(d, None));
+                    let group = group_of(p);
                     Some(crate::uistate::TabState::split(i + 1, key, name, group))
                 }
-                Surface::Failed { key, name, dir, why, install_url, machine } => {
-                    let group = dir.as_deref().and_then(|d| group_on(d, None));
+                Surface::Failed { key, name, why, install_url, machine, .. } => {
+                    let group = group_of(p);
                     let mut t = crate::uistate::TabState::failed(i + 1, key, name, group);
                     t.failed = Some(crate::uistate::FailedState { why: why.clone(), install_url: install_url.clone() });
                     t.mark = machine.as_deref().and_then(|m| crate::uistate::MarkState::of(m, &ui.server_marks));
                     Some(t)
                 }
-                Surface::Git { key, name, dir, at, .. } => {
+                Surface::Git { key, name, .. } => {
                     // The panel reports on a folder, so it stands under that
                     // folder's heading and is put away with it. Worked out from
                     // where it actually points, exactly as a tab's is -- carried
                     // as a number decided elsewhere, it was never filled in, and
                     // a panel belonging to nothing sat on outside a folded folder
-                    let group = dir.as_deref().and_then(|d| group_on(d, at.as_ref()));
+                    let group = group_of(p);
                     let mut t = crate::uistate::TabState::git(i + 1, key, name, group);
                     // Which repository it reports on, the same as a session's:
                     // the column asks it before asking GitHub whether this
                     // branch has pull requests or CI
-                    let repo = dir.as_deref().and_then(|d| {
+                    let repo = surface_place(p, tabs).and_then(|d| {
                         ui.git_repos
                             .iter()
-                            .find(|(k, _)| crate::uistate::same_folder(k, d))
+                            .find(|(k, _)| crate::uistate::same_folder(k, &d))
                             .map(|(_, r)| r.as_str())
                     });
                     t.place = repo.map(|r| crate::uistate::PlaceState {
@@ -1029,8 +1040,8 @@ mod drawn_away_tests {
         let ui = Ui {
             active: 1,
             surfaces: vec![
-                Surface::Browser { key: "probe".into(), name: "試し".into(), dir: None },
-                Surface::Browser { key: "here".into(), name: "こちら".into(), dir: None },
+                Surface::Browser { key: "probe".into(), name: "試し".into(), dir: None, on: None },
+                Surface::Browser { key: "here".into(), name: "こちら".into(), dir: None, on: None },
             ],
             away: vec![("probe".to_string(), "台所のノート".to_string())],
             ..Default::default()
@@ -1042,6 +1053,46 @@ mod drawn_away_tests {
             "a page drawn over there does not say which device"
         );
         assert_eq!(state.tabs[1].away, None, "even a page here is treated as over there");
+    }
+
+    /// A row stands in its folder on the machine that folder is on: a panel of
+    /// a server's folder is under that folder, not under this PC's folder of
+    /// the same path, and putting one of them away leaves the other drawn
+    #[test]
+    fn a_row_stands_under_its_own_machines_folder() {
+        use std::path::PathBuf;
+        let path = PathBuf::from("/srv/app");
+        let far = PathBuf::from(crate::uistate::place_key(Some("srv"), &path));
+        let git = |key: &str, on: Option<&str>| Surface::Git {
+            key: key.into(),
+            name: key.into(),
+            dir: Some(path.clone()),
+            at: None,
+            on: on.map(str::to_string),
+            protect: Vec::new(),
+            git: Default::default(),
+        };
+        let page = |key: &str, on: Option<&str>| Surface::Browser {
+            key: key.into(),
+            name: key.into(),
+            dir: Some(path.clone()),
+            on: on.map(str::to_string),
+        };
+        let ui = Ui {
+            active: 1,
+            surfaces: vec![git("here", None), git("there", Some("srv")), page("there-page", Some("srv"))],
+            folders: vec![(path.clone(), "here".into()), (far.clone(), "there".into())],
+            ..Default::default()
+        };
+        let state = ui_state_of(&[], &ui, None);
+        let name_of = |i: usize| state.tabs[i].group.map(|g| state.groups[g].name.clone());
+        assert_eq!(name_of(0).as_deref(), Some("here"));
+        assert_eq!(name_of(1).as_deref(), Some("there"), "the server's panel was put under this PC's folder");
+        assert_eq!(name_of(2).as_deref(), Some("there"), "a page written in the server's folder");
+        let hidden = Ui { folders_hidden: std::collections::BTreeSet::from([far.clone()]), ..ui };
+        let state = ui_state_of(&[], &hidden, None);
+        assert_eq!(state.tabs.len(), 1, "putting the server's folder away took this PC's with it: {:?}", state.tabs);
+        assert_eq!(state.tabs[0].index, 1);
     }
 
     /// A folder put out of sight takes its tabs with it and leaves a number
@@ -1056,9 +1107,9 @@ mod drawn_away_tests {
         let ui = Ui {
             active: 1,
             surfaces: vec![
-                Surface::Git { key: "g1".into(), name: "git".into(), dir: Some(away.clone()), at: None,
+                Surface::Git { key: "g1".into(), name: "git".into(), dir: Some(away.clone()), at: None, on: None,
                     protect: Vec::new(), git: Default::default() },
-                Surface::Git { key: "g2".into(), name: "git".into(), dir: Some(here.clone()), at: None,
+                Surface::Git { key: "g2".into(), name: "git".into(), dir: Some(here.clone()), at: None, on: None,
                     protect: Vec::new(), git: Default::default() },
             ],
             folders: vec![(away.clone(), "server".into()), (here.clone(), "here".into())],
@@ -1127,6 +1178,7 @@ mod drawn_away_tests {
             name: "git".into(),
             dir: Some(dir.clone()),
             at: None,
+            on: None,
             protect: Vec::new(),
             git: Default::default(),
         };
@@ -1175,6 +1227,7 @@ mod drawn_away_tests {
             name: "git".into(),
             dir: Some(dir.clone()),
             at: None,
+            on: None,
             protect: Vec::new(),
             git: Default::default(),
         };
@@ -1229,7 +1282,7 @@ mod drawn_away_tests {
     fn a_page_of_this_machines_own_says_nothing_about_where_it_is() {
         let ui = Ui {
             active: 1,
-            surfaces: vec![Surface::Browser { key: "probe".into(), name: "試し".into(), dir: None }],
+            surfaces: vec![Surface::Browser { key: "probe".into(), name: "試し".into(), dir: None, on: None }],
             ..Default::default()
         };
         let state = ui_state_of(&[], &ui, None);
@@ -1269,6 +1322,8 @@ pub struct EditorOpen {
     /// question for the program, and the page is told the file
     #[serde(skip)]
     pub at: Option<crate::elsewhere::Elsewhere>,
+    /// That machine by name, when it has one (see [`Surface::Editor::on`])
+    pub on: Option<String>,
     /// Which change of the file it is showing instead of the file itself --
     /// `work`, `staged` or `commit:<hash>` -- when a list of changes opened it
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1317,7 +1372,7 @@ pub fn surfaces_written(
                     .or_else(|| ft.cfg.name.clone())
                     .unwrap_or_else(|| "split".into());
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
-                out.push((Surface::Split { key, name, dir: desk.cwd_of(ft) }, Some(written)));
+                out.push((Surface::Split { key, name, dir: desk.cwd_of(ft), on: desk.machine_of(ft) }, Some(written)));
                 continue;
             }
             if config::is_editor_panel(&argv) {
@@ -1335,7 +1390,7 @@ pub fn surfaces_written(
                     .folder_of(ft)
                     .and_then(|f| f.host.as_ref())
                     .and_then(|h| crate::elsewhere::Elsewhere::of(h).ok());
-                out.push((Surface::Editor { key, name, dir: desk.cwd_of(ft), at }, Some(written)));
+                out.push((Surface::Editor { key, name, dir: desk.cwd_of(ft), at, on: desk.machine_of(ft) }, Some(written)));
                 continue;
             }
             if config::is_sftp_panel(&argv) {
@@ -1379,7 +1434,7 @@ pub fn surfaces_written(
                     .as_ref()
                     .and_then(|sp| sp.remote_dir.clone())
                     .unwrap_or_default();
-                out.push((Surface::Sftp { key, name, dir: desk.cwd_of(ft), at, remote_dir }, Some(written)));
+                out.push((Surface::Sftp { key, name, dir: desk.cwd_of(ft), at, on: desk.machine_of(ft), remote_dir }, Some(written)));
                 continue;
             }
             if config::is_git_panel(&argv) {
@@ -1393,6 +1448,7 @@ pub fn surfaces_written(
                 out.push((
                     Surface::Git {
                         dir: desk.cwd_of(ft),
+                        on: desk.machine_of(ft),
                         // A folder on another machine has its git there
                         at: desk
                             .folder_of(ft)
@@ -1418,7 +1474,7 @@ pub fn surfaces_written(
                     used_web.push(h);
                 }
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
-                out.push((Surface::Browser { key, name, dir: desk.cwd_of(ft) }, Some(written)));
+                out.push((Surface::Browser { key, name, dir: desk.cwd_of(ft), on: desk.machine_of(ft) }, Some(written)));
                 continue;
             }
             let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
@@ -1440,6 +1496,7 @@ pub fn surfaces_written(
                         key: ft.cfg.id.clone().unwrap_or_else(|| title.clone()),
                         name: title,
                         dir: desk.cwd_of(ft),
+                        on: desk.machine_of(ft),
                         why: failed.why,
                         install_url: failed.install_url,
                         // Worked out the way a launch reaches it: the address
@@ -1478,6 +1535,7 @@ pub fn surfaces_written(
                         .unwrap_or_else(|| i18n::t("tui.state.editor")),
                     dir: e.dir.clone(),
                     at: e.at.clone(),
+                    on: e.on.clone(),
                 },
                 None,
             ));
@@ -1498,7 +1556,7 @@ pub fn surfaces_written(
             } else {
                 h.clone()
             };
-            out.push((Surface::Browser { key: h.clone(), name, dir: None }, None));
+            out.push((Surface::Browser { key: h.clone(), name, dir: None, on: None }, None));
         }
     }
     // An editor's tab says which file it is showing rather than what it was
@@ -1620,8 +1678,8 @@ pub struct Ui {
     /// Of those, what each says is being done in it, and whether that is
     /// written for it from what its AIs are asked
     pub folder_labels: Vec<crate::uistate::FolderLabel>,
-    /// Words waiting for the input bar of the AI tabs in a folder: (the folder,
-    /// the words). The address of the issue a worktree was just made for
+    /// Words waiting for the input bar of the AI tabs in a folder: (the folder
+    /// as a place key, the words). The address of the issue a worktree was just made for
     pub drafts: Vec<(std::path::PathBuf, String)>,
     /// Of those, the ones that live on another machine. This machine has no
     /// opinion worth having about them: it is asked whether every folder is
@@ -1633,10 +1691,6 @@ pub struct Ui {
     pub folders_hidden: std::collections::BTreeSet<std::path::PathBuf>,
     /// Those same folders, each with the name of the machine it is on
     pub folder_hosts: Vec<(std::path::PathBuf, String)>,
-    /// Each server entry's name by what reaches it, so a panel that knows
-    /// only the connection (a git or file panel on a server) is put under
-    /// that machine's folder, not another machine's folder of the same path
-    pub server_names: Vec<(crate::ssh::Spec, String)>,
     /// And the household each belongs to over there, where its project has a
     /// checkout on that machine: the checkout's git folder named with the
     /// machine ([`crate::uistate::far_family`]), and whether the folder is a
@@ -1709,7 +1763,8 @@ pub struct Ui {
     /// The newer version the update card asks about, when it is up
     pub update: Option<crate::update::Offer>,
     /// Where each git tab's folder pushes to on GitHub (`owner/name`), looked
-    /// up every couple of seconds with the tabs' places rather than per frame
+    /// up every couple of seconds with the tabs' places rather than per frame.
+    /// By place key (see [`surface_place`])
     pub git_repos: Vec<(std::path::PathBuf, String)>,
     /// A tab's ✕ waiting for an answer (see `closed::close`)
     pub close_ask: Option<crate::uistate::CloseAskState>,
@@ -1750,6 +1805,9 @@ pub enum Surface {
         /// runs (automation, the result view), which is written nowhere and
         /// really is in no folder
         dir: Option<std::path::PathBuf>,
+        /// The machine that folder is on, by name. None is this PC (see
+        /// [`surface_place`])
+        on: Option<String>,
     },
     /// The git panel: no process, no page, drawn by the board itself.
     ///
@@ -1763,6 +1821,8 @@ pub enum Surface {
         /// The machine the folder is on, when it is not this one: git is
         /// run there, about the folder as that machine spells it
         at: Option<crate::elsewhere::Elsewhere>,
+        /// That machine by name. None is this PC
+        on: Option<String>,
         /// The branches its folder will not take a direct commit onto. The
         /// panel has no tab of its own to borrow the answer from, so it carries
         /// the folder's own
@@ -1777,6 +1837,8 @@ pub enum Surface {
         key: String,
         name: String,
         dir: Option<std::path::PathBuf>,
+        /// The machine that folder is on, by name. None is this PC
+        on: Option<String>,
         why: String,
         install_url: Option<String>,
         /// The server it was to reach ([`crate::ssh::Spec::machine`]), for a
@@ -1803,6 +1865,8 @@ pub enum Surface {
         /// writes it, and every file the editor reads or saves is that
         /// machine's
         at: Option<crate::elsewhere::Elsewhere>,
+        /// The machine of the folder it stands under, by name. None is this PC
+        on: Option<String>,
     },
     /// The file panel: two lists of files, one on this machine and one on a
     /// server, drawn by the board.
@@ -1821,6 +1885,10 @@ pub enum Surface {
         name: String,
         dir: Option<std::path::PathBuf>,
         at: Option<crate::elsewhere::Elsewhere>,
+        /// The machine its folder is on, by name. None is this PC. Not `at`,
+        /// which may be an address written on the panel itself: a file panel
+        /// in a folder here reaching a server still stands in the folder here
+        on: Option<String>,
         /// Where the far side's list opens. Empty starts wherever signing in
         /// puts you
         remote_dir: String,
@@ -1844,6 +1912,8 @@ pub enum Surface {
         /// of the list. It runs nothing there -- this is where it lives, not
         /// where it works
         dir: Option<std::path::PathBuf>,
+        /// The machine that folder is on, by name. None is this PC
+        on: Option<String>,
     },
 }
 

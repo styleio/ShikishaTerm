@@ -334,7 +334,14 @@ once it reaches its first tagged release.
   other. Every folder is now known by its machine and its path, on the board,
   in what the page asks of the app, and in the settings; a page older than
   that, naming a folder by its path alone, still reaches the first of that
-  path.
+  path. What the board does on its own knows the machine too: a git, file or
+  editor panel, a page and a split stand under their own machine's folder and
+  are put away with it; the quick buttons, merging, fixing CI and a pull
+  request's conflicts open their tab in that folder and hand it the AI that
+  machine has; a folder's automatic name and summary, the issue a worktree was
+  made for, the conversation a tab comes back on after a restart, and a
+  worktree being made are each that machine's folder's alone. A tab added
+  with no machine named goes into this PC's folder of that path.
 - **A tab's own command on a server or MicroVM runs as it was written.** A
   command like `npm run dev && npm test` or `echo $HOME` had its `&&` and
   `$HOME` sent as text. Its quotes are the shell's too: `echo "a b"` printed

@@ -673,7 +673,9 @@ try {
     const both = saved();
     both.desks[0].folders.push(
       { cwd: SAME, host: 'srv', tabs: [{ name: 'same-a', id: 'same-a', command: 'bash' }] },
-      { cwd: SAME, host: 'srv2', tabs: [{ name: 'same-b', id: 'same-b', command: 'bash' }] });
+      // A git panel too: a row with no terminal of its own, which stands
+      // under its folder by the machine the folder is on
+      { cwd: SAME, host: 'srv2', tabs: [{ name: 'same-b', id: 'same-b', command: 'bash' }, { name: 'same-git', id: 'same-git', command: 'git' }] });
     fs.writeFileSync(CONFIG, JSON.stringify(both, null, 2));
     const sameGroups = () => board.run(`JSON.stringify((S.groups || []).map((g, i) => ({i, key: g.key, host: g.host, folder: g.folder})).filter(g => g.folder === ${JSON.stringify(SAME)}))`).then((t) => JSON.parse(t));
     await until(async () => (await sameGroups()).length === 2, 'two folders of one path on the board', 60000)
@@ -686,6 +688,16 @@ try {
     const [ga, gb] = [await groupOf('same-a'), await groupOf('same-b')];
     check(ga !== gb && gs.find((g) => g.i === ga).host === 'srv' && gs.find((g) => g.i === gb).host === 'srv2',
       'each tab stands under its own machine\x27s folder');
+    await until(async () => (await groupOf('same-git')) != null, 'the git panel on the board', 60000);
+    check(await groupOf('same-git') === gb, 'the git panel stands under srv2\x27s folder, not srv\x27s of the same path');
+    // Put out of sight: srv's folder goes, and srv2's of the same path stays
+    const key1 = gs.find((g) => g.host === 'srv').key;
+    const shown = (name) => board.run(`(S.tabs || []).some(t => t.name === ${JSON.stringify(name)})`);
+    await board.run(`send({kind:"folderhide", folder:${JSON.stringify(key1)}, hide:true}); true`);
+    await until(async () => !(await shown('same-a')), 'srv\x27s folder out of sight', 30000);
+    check(await shown('same-b') && await shown('same-git'), 'putting srv\x27s folder away leaves srv2\x27s of the same path drawn');
+    await board.run('send({kind:"folderhide", folder:"", hide:false}); true');
+    await until(() => shown('same-a'), 'srv\x27s folder back', 30000);
     // Taking srv2's off the list leaves srv's
     const key2 = gs.find((g) => g.host === 'srv2').key;
     // Its settings open on it, not on the other machine's folder of that path

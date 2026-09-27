@@ -1022,8 +1022,11 @@ pub fn project_folder(sources: &[Source], project: &str, folder: &str) -> Option
 ///
 /// The folder the board last heard is on that branch is asked first, and
 /// alone when it still is: every folder on a MicroVM is a machine of its own,
-/// and asking each in turn started every paused one to find the one wanted
-pub fn far_head_folder(s: &Source, head: &str) -> Option<std::path::PathBuf> {
+/// and asking each in turn started every paused one to find the one wanted.
+///
+/// Answered with the machine it is on, by name: the same path can be a folder
+/// on two machines, and work handed to the folder goes to this one
+pub fn far_head_folder(s: &Source, head: &str) -> Option<(std::path::PathBuf, String)> {
     let head = head.trim();
     if head.is_empty() {
         return None;
@@ -1032,11 +1035,11 @@ pub fn far_head_folder(s: &Source, head: &str) -> Option<std::path::PathBuf> {
         crate::git::far_place(at, dir, false).0.as_deref() == Some(head)
     };
     let (first, rest): (Vec<_>, Vec<_>) = s.far.iter().partition(|(dir, at, _)| heard(dir, at));
-    for (dir, at, _) in first.into_iter().chain(rest) {
+    for (dir, at, host) in first.into_iter().chain(rest) {
         crate::git::there(dir, Some(at));
         let on = crate::git::run(dir, &["branch", "--show-current"]).ok();
         if on.as_deref().map(str::trim) == Some(head) {
-            return Some(dir.clone());
+            return Some((dir.clone(), host.clone()));
         }
     }
     crate::git::there(&s.dir, None);

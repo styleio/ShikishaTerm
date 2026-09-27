@@ -3375,6 +3375,28 @@ impl Desk {
     pub fn cwd_of(&self, t: &FlatTab) -> Option<std::path::PathBuf> {
         self.folder_of(t).and_then(|f| f.cwd.clone())
     }
+
+    /// The machine a tab's folder is on, by name. None is this PC
+    pub fn machine_of(&self, t: &FlatTab) -> Option<String> {
+        self.folder_of(t).and_then(|f| f.host.as_ref()).map(|h| h.name.clone())
+    }
+
+    /// The folder a place key names (see [`crate::uistate::place_key`]): that
+    /// path on that machine, and a bare path only on this PC. What a key was
+    /// made from is always one of these, so a folder of the same path on
+    /// another machine is never it
+    pub fn folder_at(&self, key: &Path) -> Option<&Folder> {
+        self.folders.iter().find(|f| f.place().is_some_and(|p| crate::uistate::same_folder(&p, key)))
+    }
+}
+
+impl Folder {
+    /// Its place key: its machine's name with its path, or its path when it
+    /// is on this PC. None for a folder with no path
+    pub fn place(&self) -> Option<std::path::PathBuf> {
+        let cwd = self.cwd.as_deref()?;
+        Some(std::path::PathBuf::from(crate::uistate::place_key(self.host.as_ref().map(|h| h.name.as_str()), cwd)))
+    }
 }
 
 /// The connection a named machine stands for.
@@ -5479,9 +5501,12 @@ fn folder_tabs_on<'a>(
         let here = g.get("cwd").and_then(|c| c.as_str()).map(resolve_folder_cwd);
         here.as_deref() == cwd
     };
+    // On the machine named; with none named, this PC's folder of that path
+    // before one of the same path elsewhere
     let on = |g: &serde_json::Value| g.get("host").and_then(|h| h.as_str()).map(str::trim) == host;
-    let at = host
-        .and_then(|_| folders.iter().position(|g| same(g) && on(g)))
+    let at = folders
+        .iter()
+        .position(|g| same(g) && on(g))
         .or_else(|| folders.iter().position(same));
     let at = match at {
         Some(i) => i,
@@ -6106,18 +6131,25 @@ pub fn add_tab_at(
         .ok_or_else(|| tp("err.tab_add.no_desk", &[("desk", desk)]))?;
     // The folder as the desk already spells it -- on the machine asked for,
     // when one was -- so the line lands in that folder's list and not in a
-    // second one spelled another way
+    // second one spelled another way. No machine asked for is this PC's
+    // folder first, and a folder of that path anywhere after
     let spelled = cwd.and_then(|want| {
-        let on = |g: &serde_json::Value| {
-            host.is_none() || g.get("host").and_then(|h| h.as_str()).map(str::trim) == host
+        let on = |g: &serde_json::Value, strict: bool| {
+            let there = g.get("host").and_then(|h| h.as_str()).map(str::trim);
+            match host {
+                Some(_) => there == host,
+                None => !strict || there.is_none(),
+            }
         };
-        holder.get("folders").and_then(|f| f.as_array()).and_then(|fs| {
+        let fs = holder.get("folders").and_then(|f| f.as_array())?;
+        let find = |strict: bool| {
             fs.iter()
-                .filter(|g| on(g))
+                .filter(|g| on(g, strict))
                 .filter_map(|g| g.get("cwd").and_then(|c| c.as_str()))
                 .map(resolve_folder_cwd)
                 .find(|c| crate::uistate::same_folder(c, want))
-        })
+        };
+        find(true).or_else(|| find(false))
     });
     if new_folder == NewFolder::Refused && spelled.is_none() {
         let at = cwd.map(|c| c.display().to_string()).unwrap_or_default();
@@ -7947,7 +7979,8 @@ mod tests {
 
     /// Two machines can each have a folder at the same path. Named, the
     /// machine decides which one the tab goes into; a machine with no such
-    /// folder is refused rather than given a new one
+    /// folder is refused rather than given a new one. Named none, it is this
+    /// PC's folder of that path, wherever the others are in the list
     #[test]
     fn the_machine_named_decides_between_two_folders_at_one_path() {
         let dir = std::env::temp_dir().join(format!("shikisha-addtab-{}", crate::random_hex(6)));
@@ -7957,7 +7990,8 @@ mod tests {
             &file,
             serde_json::json!({"desks": [{"name": "Demo", "folders": [
                 {"cwd": "/home/user/proj", "host": "vm-a", "tabs": []},
-                {"cwd": "/home/user/proj", "host": "vm-b", "tabs": []}]}]})
+                {"cwd": "/home/user/proj", "host": "vm-b", "tabs": []},
+                {"cwd": "/home/user/proj", "tabs": []}]}]})
             .to_string(),
         )
         .unwrap();
@@ -7971,7 +8005,17 @@ mod tests {
             .iter()
             .map(|f| f["tabs"].as_array().unwrap().len())
             .collect();
-        assert_eq!(counts, vec![0, 1], "it went into the folder on the other machine");
+        assert_eq!(counts, vec![0, 1, 0], "it went into the folder on the other machine");
+        add_tab_at(&file, "Demo", serde_json::json!({"command": "codex"}), Some(far), None, NewFolder::Refused)
+            .expect("added here");
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let counts: Vec<usize> = doc["desks"][0]["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["tabs"].as_array().unwrap().len())
+            .collect();
+        assert_eq!(counts, vec![0, 1, 1], "a tab for this PC went into a machine's folder of the same path");
         let said = add_tab_at(&file, "Demo", serde_json::json!({"command": "codex"}), Some(far), Some("vm-c"), NewFolder::Refused)
             .expect_err("a machine with no such folder");
         assert!(said.contains("/home/user/proj"), "{said}");
