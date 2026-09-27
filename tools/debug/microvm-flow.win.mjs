@@ -417,6 +417,19 @@ try {
   await until(async () => awakeCount() > 0, 'the worktree\'s terminal to open as its tab is shown', 90000);
   await until(async () => /claude/i.test(await board.run('document.getElementById("screen").textContent')),
     'Claude to start in the worktree\'s terminal', 90000);
+  // Settled before the machine is paused, as one is after its minutes: a
+  // Claude paused while it is still starting times its first call to its
+  // servers out when it wakes, and ends -- which is Claude, not the pause
+  let lastScreen = '', sameSince = Date.now();
+  await until(async () => {
+    const now = await board.run('document.getElementById("screen").textContent');
+    if (now !== lastScreen) { lastScreen = now; sameSince = Date.now(); }
+    return Date.now() - sameSince > 8000;
+  }, 'Claude to settle on a screen', 120000);
+  // Which Claude is running there, to know it is the same one afterwards
+  const claudePid = async () => (await on(wt.sandbox, 'pgrep -x claude | head -n 1')).trim();
+  const pidBefore = await claudePid();
+  check(/^\d+$/.test(pidBefore), 'Claude is running on the worktree\'s machine: ' + pidBefore);
   const openedTimes = awakeCount();
   // Paused from outside, as it is after its minutes; the terminal says so.
   // A key typed into it wakes the machine, and Claude in it goes on
@@ -430,16 +443,20 @@ try {
   await until(() => board.run(`S.active === ${aiNow.index}`), 'the worktree\'s Claude tab in front', 30000);
   const screen = () => board.run('document.getElementById("screen").textContent');
   await until(async () => /接続が切れました/.test(await screen()), 'the terminal to say its link ended', 60000);
-  // Enter, typed into the paused machine's terminal: it wakes the machine
-  // (the app says so in its log; on screen Claude redraws over the notice
-  // the moment it is back) and Claude, still there, takes the key -- the
-  // theme is chosen, and its next screen asks how to sign in
-  await board.run('send({kind:"key", named:"enter"}); true');
+  // A key typed into the paused machine's terminal wakes the machine (the
+  // app says so in its log). One that answers none of Claude's questions --
+  // Enter chose whatever its screen had in front, "No, exit" included, and
+  // Claude ended by being answered, not by the pause
+  await board.run('send({kind:"key", named:"right"}); true');
   // Once more than when it was first opened: this one is the key's
   await until(async () => awakeCount() > openedTimes, 'the app to wake the machine for the key', 90000)
     .catch((e) => { console.log('    (the app says: ' + appLog().split(/\r?\n/).filter((l) => /e2b/.test(l)).slice(-4).join(' | ') + ')'); throw e; });
   check(!/could not wake/.test(appLog()), 'the same shell is taken up again, not refused');
-  await until(async () => /login method/i.test(await screen()), 'Claude, still there, to take the key and go on', 90000)
+  // The same Claude, still running, and its screen drawn again over the
+  // notice: nothing was started over
+  await until(async () => (await claudePid()) === pidBefore, 'Claude, the same process, still running after the pause', 90000)
+    .catch(async (e) => { console.log('    (claude there now: ' + JSON.stringify(await claudePid()) + '; the terminal says: ' + (await screen()).replace(/\s+/g, ' ').trim().slice(-300) + ')'); throw e; });
+  await until(async () => !/\$\s*$/.test((await screen()).trimEnd()) && /MicroVM を再開しました/.test(await screen()), 'Claude\'s screen, not a shell, after the notice', 60000)
     .catch(async (e) => { console.log('    (the terminal says: ' + (await screen()).replace(/\s+/g, ' ').trim().slice(-300) + ')'); throw e; });
   check(true, 'Claude in the terminal went on after the pause, as it was');
   await until(async () => ((await ours()).find((s) => s.sandboxID === wt.sandbox) || {}).state === 'running', 'the service to say it is running again', 60000);
@@ -516,6 +533,7 @@ try {
   // The settings tell the worktree from the checkout, and say it is one
   await board.run('openSettings("gitaccounts", true); true');
   cfg = await connect(await settingsOn(/section=gitaccounts/), 'the settings');
+  await until(() => cfg.run('typeof TOKEN === "string" && !!TOKEN'), 'the settings page, read in', 30000);
   const familyOf = (p) => cfg.run(`fetch("/api/family?path=" + encodeURIComponent(${JSON.stringify(p)}), {headers:{"X-Token":TOKEN}}).then(r => r.json())`);
   const wfam = await familyOf(wt.cwd);
   const hfam = await familyOf(CHECKOUT);
