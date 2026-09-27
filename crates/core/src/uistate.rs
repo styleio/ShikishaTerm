@@ -940,6 +940,10 @@ pub struct FarPortsState {
     /// are opened, rather than a MicroVM, whose are public
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub server: bool,
+    /// On a MicroVM made private: nobody reaches its ports from outside, and
+    /// one is carried here, with the machine's token, when it is opened
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
     /// Still being asked
     pub busy: bool,
     pub ports: Vec<FarPort>,

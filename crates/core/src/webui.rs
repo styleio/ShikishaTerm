@@ -12440,6 +12440,10 @@ function microvmNow(p) {
     // project just added that press is the way on, and there is no other
     ...microvmHomes(p).map(h => el("div", {class: h.prepared === want ? "hint" : "hint caution"},
       fill(T[h.prepared === want ? "settings.microvm.done" : firstFlow ? "settings.microvm.not_done_first" : "settings.microvm.not_done"], {host: h.host}))),
+    // Who can open what its machines serve: chosen when its first machine
+    // there was made, and not changed here -- a machine keeps what it was
+    // made with
+    el("div", {class:"hint"}, T[e.microvm_private ? "settings.microvm.private" : "settings.microvm.unlisted"]),
   ];
 }
 // The parts: the AI, the machine setup with the AI to write it, and the

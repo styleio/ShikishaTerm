@@ -278,6 +278,10 @@ impl Pending {
         if !plan.origin.trim().is_empty() {
             config::set_project_value(&self.desk_id, &plan.project, "origin", Some(plan.origin.trim()))?;
         }
+        // And, made private, that it is: its next checkout is made so too
+        if plan.private {
+            config::set_project_flag(&self.desk_id, &plan.project, "microvm_private", true)?;
+        }
         // A checkout made again in place of one gone from the service stands
         // in the folder the old one had, tabs and all: only its machine changes
         let key = crate::uistate::place_key(Some(&host.name), &plan.main);
@@ -755,6 +759,8 @@ struct MicrovmAdd {
     account: Option<String>,
     /// The AI its machine is given, written as the project's own
     ai: Option<String>,
+    /// Its machines made private, written as the project's own
+    private: bool,
 }
 
 /// The account a project from `url` signs in to its git server as, before
@@ -793,6 +799,7 @@ struct FarProject {
     env: Option<crate::devcontainer::Env>,
     sign_in: config::FarSignIn,
     preparing: crate::microvm::Preparing,
+    private: bool,
 }
 
 impl FarProject {
@@ -805,6 +812,7 @@ impl FarProject {
             env: self.env.clone(),
             sign_in: self.sign_in.clone(),
             preparing: self.preparing.clone(),
+            private: self.private,
         }
     }
 }
@@ -824,6 +832,7 @@ fn far_of(
     checkout: &Option<std::path::PathBuf>,
     env: Option<crate::devcontainer::Env>,
     machine_ai: &str,
+    private: bool,
 ) -> (FarProject, String, Result<config::FarSignIn, String>) {
     let name = project
         .map(|p| p.name.clone())
@@ -872,6 +881,9 @@ fn far_of(
             .as_deref(),
             project.and_then(|p| p.machine_setup.as_deref()),
         ),
+        // What the project says; for one whose first checkout this makes,
+        // what the dialog chose too
+        private: project.is_some_and(|p| p.microvm_private) || private,
     };
     (far, account, sign_in)
 }
@@ -4163,6 +4175,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         project,
                         ai,
                         account,
+                        private,
                     }) => {
                         shell.mail().add_projects.push(crate::mailbox::AddAsk {
                             how,
@@ -4173,6 +4186,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             project,
                             ai,
                             account,
+                            private,
                         });
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::RemoteList { host, path, ask }) => {
@@ -7682,15 +7696,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             far_ports_view = Some(crate::uistate::FarPortsState { folder: folder.clone(), server, busy: true, ..Default::default() });
             let tx = far_ports_tx.clone();
             std::thread::spawn(move || {
+                // A private MicroVM's addresses answer nobody from outside:
+                // listed without them, and carried here when opened
+                let private = !server && crate::e2b::is_private(&host).unwrap_or(false);
                 let said = match server {
-                    false => crate::microvm::ports_of(&host),
+                    false => crate::microvm::ports_of(&host).map(|ports| match private {
+                        true => ports.into_iter().map(|p| crate::uistate::FarPort { url: String::new(), ..p }).collect(),
+                        false => ports,
+                    }),
                     true => config::host_spec(&host)
                         .map_err(|e| format!("{e:#}"))
                         .and_then(|spec| crate::microvm::server_ports_of(&spec)),
                 };
                 let _ = tx.send(match said {
-                    Ok(ports) => crate::uistate::FarPortsState { folder, server, busy: false, ports, error: String::new() },
-                    Err(error) => crate::uistate::FarPortsState { folder, server, busy: false, ports: Vec::new(), error },
+                    Ok(ports) => crate::uistate::FarPortsState { folder, server, private, busy: false, ports, error: String::new() },
+                    Err(error) => crate::uistate::FarPortsState { folder, server, private, busy: false, ports: Vec::new(), error },
                 });
             });
         }
@@ -7715,9 +7735,37 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 flash = Some(i18n::t("tui.urls.gone"));
                 continue;
             };
-            let url = match view.server {
-                false => view.ports.iter().find(|p| p.port == port).map(|p| p.url.clone()).unwrap_or_default(),
-                true => {
+            let url = match (view.server, view.private) {
+                (false, false) => view.ports.iter().find(|p| p.port == port).map(|p| p.url.clone()).unwrap_or_default(),
+                // A private MicroVM's port, carried here with its token
+                (false, true) => {
+                    let key = std::path::PathBuf::from(&folder);
+                    let host = desks.get(desk_index).and_then(|d| {
+                        d.folders
+                            .iter()
+                            .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &key)))
+                            .and_then(|f| f.host.clone())
+                    });
+                    match host.map(|h| crate::e2b::forward(&h, port)) {
+                        Some(Ok(here)) => {
+                            if let Some(v) = far_ports_view.as_mut()
+                                && let Some(p) = v.ports.iter_mut().find(|p| p.port == port)
+                            {
+                                p.url = format!("http://127.0.0.1:{here}/");
+                            }
+                            format!("http://127.0.0.1:{here}/")
+                        }
+                        Some(Err(e)) => {
+                            flash = Some(i18n::tp("tui.urls.server.failed", &[("port", &port.to_string()), ("why", &format!("{e:#}"))]));
+                            continue;
+                        }
+                        None => {
+                            flash = Some(i18n::t("tui.urls.gone"));
+                            continue;
+                        }
+                    }
+                }
+                (true, _) => {
                     let key = std::path::PathBuf::from(&folder);
                     let spec = desks.get(desk_index).and_then(|d| {
                         d.folders
@@ -7928,7 +7976,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         j.stopping = false;
                         let again = match &j.work {
                             VmWork::Clone { add, url, sign_in, preparing, .. } => Ok(VmWork::Clone {
-                                job: crate::microvm::Checkout::start(j.host.clone(), url, &j.project, sign_in.clone(), preparing.clone()),
+                                job: crate::microvm::Checkout::start(j.host.clone(), url, &j.project, sign_in.clone(), preparing.clone(), add.private),
                                 add: add.clone(),
                                 url: url.clone(),
                                 sign_in: sign_in.clone(),
@@ -8292,7 +8340,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         continue;
                     }
                     let sign_in = git.far(&|k| crate::git::secret(k)).unwrap_or_default();
-                    let job = crate::microvm::Checkout::start(h.clone(), &text, &project, sign_in.clone(), preparing.clone());
+                    // Private as the dialog said, or as a project of that
+                    // name already written down says
+                    let private = a.private || written.is_some_and(|p| p.microvm_private);
+                    let job = crate::microvm::Checkout::start(h.clone(), &text, &project, sign_in.clone(), preparing.clone(), private);
                     making_seq += 1;
                     vm_jobs.push(VmJob {
                         id: making_seq,
@@ -8301,7 +8352,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         project: project.clone(),
                         host: h.clone(),
                         at: crate::microvm::checkout_path(&project),
-                        work: VmWork::Clone { job, add: MicrovmAdd { host: h.name.clone(), project, account, ai: preparing.ai.clone() }, url: text.clone(), sign_in, preparing },
+                        work: VmWork::Clone { job, add: MicrovmAdd { host: h.name.clone(), project, account, ai: preparing.ai.clone(), private }, url: text.clone(), sign_in, preparing },
                         error: None,
                         stopping: false,
                         gone: false,
@@ -8648,6 +8699,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 // Where it came from, so a checkout deleted
                                 // later can be made again: nothing here has it
                                 .and_then(|()| config::set_project_value(&j.desk_id, &add.project, "origin", Some(&crate::worktree::fetchable(url))))
+                                // Private, so every checkout made again for it
+                                // is too (its worktrees are copies, and are)
+                                .and_then(|()| match add.private {
+                                    true => config::set_project_flag(&j.desk_id, &add.project, "microvm_private", true),
+                                    false => Ok(()),
+                                })
                                 .and_then(|()| {
                                     config::append_folder_starting(
                                         &j.desk,
@@ -9282,7 +9339,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // can be done about a machine we would have to ask
                 let planned = match on {
                     Some(h) => {
-                        let far = far_of(desks.get(desk_index), project, h, &from, &checkout, env.clone(), &ask.machine_ai);
+                        let far = far_of(desks.get(desk_index), project, h, &from, &checkout, env.clone(), &ask.machine_ai, ask.private);
                         if h.is_made() {
                             view.sign_in = crate::microvm::sign_in_note(&far.1, &far.2);
                             signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
@@ -9450,7 +9507,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let fanned = match on {
                     Some(h) => {
                         let env = ask.setup.then(|| told.clone()).flatten();
-                        let far = far_of(desks.get(desk_index), project, h, &from, &checkout, env, &ask.machine_ai);
+                        let far = far_of(desks.get(desk_index), project, h, &from, &checkout, env, &ask.machine_ai, ask.private);
                         if h.is_made() {
                             view.sign_in = crate::microvm::sign_in_note(&far.1, &far.2);
                             signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
@@ -15443,6 +15500,7 @@ mod tests {
             project: "site".into(),
             sign_in: Default::default(),
             preparing: Default::default(),
+            private: false,
         };
         let taken = far_in_use(Some(&desk), plan("/home/user/site-fix", vm("m0"))).unwrap_err();
         let taken = taken.downcast_ref::<crate::worktree::InUse>().expect("a second machine on the same place was made");

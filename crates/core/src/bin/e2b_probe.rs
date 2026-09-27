@@ -33,6 +33,7 @@ fn probe() -> anyhow::Result<()> {
         minutes: 5,
         marks: shikisha_core::e2b::marks("e2b_probe"),
         sign_in: None,
+        private: false,
     };
     let sandbox = shikisha_core::e2b::create(&key, &asking)?;
     println!("  got {}", sandbox.id);

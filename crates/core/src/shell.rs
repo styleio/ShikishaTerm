@@ -283,6 +283,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #setup .sfield, #addproj .sfield { display:flex; flex-direction:column; gap:var(--s2); }
   #setup .slabel, #addproj .slabel { font-size:12px; font-weight:500; color:var(--text); }
   #setup .shint, #addproj .shint { font-size:11.5px; color:var(--faint); line-height:1.5; }
+  .vmmore { display:flex; align-items:center; gap:var(--s2); background:none; border:0; padding:0;
+    color:var(--dim); font:inherit; font-size:12px; cursor:pointer; }
+  .vmmore:hover { color:var(--text); }
+  .vmmore .caret { font-size:9px; display:inline-block; }
+  .vmmore[aria-expanded="true"] .caret { transform:rotate(90deg); }
+  .vmadv { margin:var(--s2) 0 0 var(--s3); }
+  .vmadv .vmcheck { display:flex; align-items:center; gap:var(--s2); font-size:13px; cursor:pointer; }
+  .vmadv .vmhint { font-size:11.5px; color:var(--faint); line-height:1.5; margin-top:2px; }
   /* Cards to pick one AI from. A card is the size of a thing to press with a
      finger, and wears its AI's colour where a tab row does: the left edge and
      the name. Picked is the selection's own recipe -- the raised surface and the
@@ -5966,6 +5974,8 @@ function apMicrovm(body) {
   // The AI its machine is given, installed once there and in every worktree after
   let ai = defaultMachineAi();
   const aiPick = machineAiPick(ai, v => { ai = v; });
+  // Unlisted unless said otherwise, under the advanced fold
+  let priv = false;
   let lookAsk = 0;
   const look = () => {
     if (!apVm || !url.value.trim()) { drawSignIn(signin, null, false); return; }
@@ -5990,7 +6000,7 @@ function apMicrovm(body) {
       : !apVm ? {at:vm, why:T["tui.addproj.microvm.need_vm"] || ""} : null,
     () => {
       apAsk = Date.now();
-      send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai, account});
+      send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai, account, private:priv});
       apLive.running = true;
       drawAddProject();
     });
@@ -6001,6 +6011,7 @@ function apMicrovm(body) {
     signin,
     el("div", {class:"sfield"}, el("label", {class:"slabel"}, T["tui.microvm.ai"] || ""), aiPick,
       el("div", {class:"shint"}, T["tui.microvm.ai.hint"] || "")),
+    el("div", {class:"sfield"}, vmAdvanced(priv, v => { priv = v; })),
     el("div", {class:"apfoot"}, go.why, go.btn, prog.bar));
   url.addEventListener("input", () => { drawAcct(); go.check(); lookLater(); });
   url.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) { e.preventDefault(); go.btn.click(); } });
@@ -7570,8 +7581,10 @@ function drawFarPorts() {
   const sig = JSON.stringify(st);
   if (o.drawn === sig) return;
   o.drawn = sig;
-  // A server's ports are carried here when one is opened; a MicroVM's are public
-  const say = k => T[st.server && T[k.replace("tui.urls.", "tui.urls.server.")] ? k.replace("tui.urls.", "tui.urls.server.") : k] || "";
+  // A server's ports are carried here when one is opened, and so are a
+  // private MicroVM's; an unlisted MicroVM's answer anybody with the address
+  const variant = st.server ? "tui.urls.server." : st.private ? "tui.urls.private." : "";
+  const say = k => T[variant && T[k.replace("tui.urls.", variant)] ? k.replace("tui.urls.", variant) : k] || "";
   const rows = [el("div", {class:"say"}, say("tui.urls.title"))];
   if (st.busy) rows.push(el("div", {class:"say"}, say("tui.urls.asking")));
   else if (st.error) rows.push(el("div", {class:"warn"}, st.error));
@@ -8128,6 +8141,7 @@ function openBranch(g, preset) {
   branchDone = (S && S.branch && S.branch.done && S.branch.folder) || "";
   branchHost = "";
   branchMachineAi = "";
+  branchPrivate = false;
   const dest = document.getElementById("bdest");
   if (dest) { dest.dataset.said = ""; dest.textContent = ""; }
   const q = document.getElementById("bq");
@@ -8531,7 +8545,7 @@ function askBranch() {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:false, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, machine_ai:branchMachineAi, seq:branchSeq});
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, machine_ai:branchMachineAi, private:branchPrivate, seq:branchSeq});
   }, 180);
 }
 
@@ -8836,7 +8850,8 @@ function drawDest(b, p) {
       if (!branchMachineAi) branchMachineAi = (p && p.machine_ai) || defaultMachineAi();
       say.append(el("div", {}, T["tui.branch.dest.first_vm.say"] || ""),
         el("div", {class:"bmachineai"}, el("span", {class:"blabel"}, T["tui.microvm.ai"] || ""),
-          machineAiPick(branchMachineAi, v => { branchMachineAi = v; askBranch(); })));
+          machineAiPick(branchMachineAi, v => { branchMachineAi = v; askBranch(); })),
+        vmAdvanced(branchPrivate, v => { branchPrivate = v; }));
     }
   }
   // The project says another AI than its machines have: changed in the
@@ -9155,6 +9170,8 @@ function loginMirror(box, screen) {
 // worktree dialog. Empty until chosen: then the app installs what the
 // project says
 let branchMachineAi = "";
+// The same, whether those machines are private (see vmAdvanced)
+let branchPrivate = false;
 
 // Whose repository an address names, lowercased: `acme` for
 // https://github.com/acme/site.git and for git@github.com:acme/site
@@ -9167,6 +9184,28 @@ function ownerOfUrl(url) {
   return parts.length >= 3 ? parts[1].toLowerCase() : "";
 }
 
+// A MicroVM's advanced choices, folded shut: who can open what it serves.
+// Unlisted is what it is unless ticked -- anybody with an address may open
+// it, as a video shared by its link; private is nobody from outside, and a
+// port is opened in this app's browser tab with the machine's own key. Said
+// once, when the project's first machine there is made, and kept by every
+// worktree copied from it
+function vmAdvanced(isPrivate, onChange) {
+  const tick = el("input", {type:"checkbox"});
+  tick.checked = !!isPrivate;
+  tick.addEventListener("change", () => onChange(tick.checked));
+  const inner = el("div", {class:"vmadv"},
+    el("label", {class:"vmcheck"}, tick, el("span", {}, T["tui.microvm.private"] || "")),
+    el("div", {class:"vmhint"}, T["tui.microvm.private.hint"] || ""));
+  inner.hidden = true;
+  const more = el("button", {type:"button", class:"vmmore", "aria-expanded":"false"},
+    el("span", {class:"caret"}, "\u25B8"), el("span", {}, T["tui.microvm.advanced"] || ""));
+  more.onclick = () => {
+    inner.hidden = !inner.hidden;
+    more.setAttribute("aria-expanded", String(!inner.hidden));
+  };
+  return el("div", {class:"vmadvbox"}, more, inner);
+}
 // Choosing the AI a MicroVM is given: the ones that can be installed there,
 // and "none". What is chosen is on screen from the start -- the assistant AI
 // when it is one of them, else the first one this PC has, else the first --
@@ -9487,7 +9526,7 @@ function applyCarryLines(b, lines) {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:true, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, machine_ai:branchMachineAi, adopt,
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, machine_ai:branchMachineAi, private:branchPrivate, adopt,
           auto:branchAuto(), seq:branchSeq});
   };
   b.querySelector(".bgo .go").onclick = () => makeIt(false);
@@ -22273,7 +22312,7 @@ mod tests {
             "the server is not asked which GitHub accounts it holds");
         assert!(PAGE.contains("const walker = apWalker(parent);") && PAGE.contains("const walker = apWalker(path);"),
             "the two pages that walk a server do not share the walker");
-        assert!(PAGE.contains(r#"send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai, account});"#),
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"microvm", text:url.value.trim(), parent:"", ask:apAsk, host:apVm, ai, account, private:priv});"#),
             "a project cannot be cloned onto a MicroVM");
         assert!(PAGE.contains(r#"addMicrovm(name => { apVm = name; drawVm(); go.check(); look(); });"#),
             "a MicroVM cannot be added from where it is chosen");

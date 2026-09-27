@@ -65,6 +65,13 @@ pub struct ProjectSpec {
     /// deleted there is made again from this
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// Its MicroVMs are private: what they serve answers only this app, which
+    /// carries each machine's token, and not anybody who has the address.
+    /// Absent is unlisted -- anybody with an address may open it. Said when
+    /// its checkout on a MicroVM is made, and kept by every worktree copied
+    /// from it; a machine made before it was said keeps what it was made with
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub microvm_private: bool,
     /// The git account the column beside a folder of this project fetches,
     /// pulls and pushes with, and reads pull request numbers with: one of the
     /// app's `git_accounts` by name, or [`THIS_PC`]. Absent until somebody
@@ -3547,6 +3554,34 @@ pub fn drop_project_home(desk_id: &str, project: &str, host: &str) -> Result<()>
 /// project written down by name, with no folder on this PC to find it by
 pub fn set_project_git_account(desk_id: &str, project: &str, account: &str) -> Result<()> {
     set_project_value(desk_id, project, "git_account", Some(account))
+}
+
+/// Writes a yes-or-no setting of a project's, by name: no takes it off, as
+/// a setting that is absent says no
+pub fn set_project_flag(desk_id: &str, project: &str, key: &str, on: bool) -> Result<()> {
+    let path = config_file_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+    let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))
+        .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
+    let Some(entry) = desk_entry_mut(&mut doc, desk_id) else { return Ok(()) };
+    let Some(p) = entry
+        .get_mut("projects")
+        .and_then(|p| p.as_array_mut())
+        .and_then(|list| list.iter_mut().find(|p| p.get("name").and_then(|n| n.as_str()) == Some(project)))
+        .and_then(|p| p.as_object_mut())
+    else {
+        return Ok(());
+    };
+    match on {
+        true => {
+            p.insert(key.into(), serde_json::Value::Bool(true));
+        }
+        false => {
+            p.shift_remove(key);
+        }
+    }
+    crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&doc)?)?;
+    Ok(())
 }
 
 /// Writes one of a project's own settings, by name, onto a project written

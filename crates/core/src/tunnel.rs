@@ -650,6 +650,12 @@ impl Wire {
     pub fn close(&self) {
         let _ = self.raw.shutdown(std::net::Shutdown::Both);
     }
+
+    /// How long a read waits before it gives up for now, for a caller that
+    /// has two directions to serve from one thread
+    pub fn read_timeout(&self, wait: Option<std::time::Duration>) -> std::io::Result<()> {
+        self.raw.set_read_timeout(wait)
+    }
 }
 
 /// Open a line to a board, encrypted if its address says so.

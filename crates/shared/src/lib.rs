@@ -235,6 +235,10 @@ pub enum Ev {
         /// on the checkout's machine, by its command (`claude`), or `none`.
         /// Empty is what the project says
         machine_ai: String,
+        /// On a MicroVM the project has no checkout on yet: its machines made
+        /// private (see `AddProject`). A project that says so is private
+        /// whatever this says
+        private: bool,
         /// Whether to run what the project says its environment needs. On
         /// unless somebody says otherwise: a folder that skipped it is a
         /// folder the first thing anybody does in is fail to build
@@ -461,7 +465,9 @@ pub enum Ev {
     /// machine is the checkout of, when it was asked for from one.
     /// Allowed from a phone as the worktree dialog is: a folder written
     /// on this PC, or a machine made for the desk, is the same reach either way
-    AddProject { how: String, text: String, parent: String, ask: u64, host: String, project: String, ai: String, account: String },
+    /// `private`: a clone onto a MicroVM whose machines answer only this
+    /// app, not anybody with an address (see `e2b::Asking::private`)
+    AddProject { how: String, text: String, parent: String, ask: u64, host: String, project: String, ai: String, account: String, private: bool },
     /// A folder on another machine, listed for the add-a-project dialog.
     /// `host` is the machine's name in the settings; `ask` the dialog's own
     /// number, so an answer to an older listing is not taken for this one.
@@ -830,6 +836,7 @@ pub struct BranchAsk {
     pub at: String,
     pub host: String,
     pub machine_ai: String,
+    pub private: bool,
     pub setup: bool,
     pub link: serde_json::Value,
     pub adopt: bool,
@@ -841,8 +848,8 @@ impl BranchAsk {
     /// The ask carried by a branch event, or nothing for any other event.
     pub fn of(ev: Ev) -> Option<Self> {
         match ev {
-            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, machine_ai, setup, link, adopt, auto, seq } => {
-                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, machine_ai, setup, link, adopt, auto, seq })
+            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, machine_ai, private, setup, link, adopt, auto, seq } => {
+                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, machine_ai, private, setup, link, adopt, auto, seq })
             }
             _ => None,
         }
@@ -1096,6 +1103,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             at: v.get("at").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             machine_ai: v.get("machine_ai").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
+            private: v.get("private").and_then(|x| x.as_bool()).unwrap_or(false),
             // Absent means yes: an older shell that does not send it is not
             // asking for a folder nothing can be built in
             setup: v.get("setup").and_then(|x| x.as_bool()).unwrap_or(true),
@@ -1197,6 +1205,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             project: v.get("project").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
             ai: v.get("ai").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
             account: v.get("account").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),
+            private: v.get("private").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         Some("remotelist") => Ev::RemoteList {
             host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string(),

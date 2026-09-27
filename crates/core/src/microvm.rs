@@ -36,6 +36,7 @@ impl Checkout {
         project: &str,
         sign_in: crate::config::FarSignIn,
         preparing: Preparing,
+        private: bool,
     ) -> Checkout {
         let job = Checkout {
             outcome: Arc::new(Mutex::new(Outcome::Running(PHASE_MAKING))),
@@ -60,6 +61,7 @@ impl Checkout {
                     minutes: host.minutes_or_default(),
                     marks: crate::e2b::marks(&project),
                     sign_in,
+                    private,
                 };
                 let box_ = crate::e2b::create(&key, &asking).map_err(|e| format!("{e:#}"))?;
                 // The clone and the install take longer than a small

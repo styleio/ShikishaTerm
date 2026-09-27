@@ -46,6 +46,8 @@ pub struct Plan {
     pub sign_in: crate::config::FarSignIn,
     /// What a MicroVM checkout made for it is prepared with, after the clone
     pub preparing: crate::microvm::Preparing,
+    /// On a MicroVM: its machines made private (see `e2b::Asking::private`)
+    pub private: bool,
 }
 
 /// The machines a making on a MicroVM made, as soon as it made them: the one
@@ -345,6 +347,7 @@ pub fn plan_for(
         project: String::new(),
         sign_in: Default::default(),
         preparing: Default::default(),
+        private: false,
     })
 }
 
@@ -434,6 +437,7 @@ pub fn plan_on(far: &Far, branch: &str, prefix: &str, base: Option<&str>, at: Op
         project: far.project.to_string(),
         sign_in: far.sign_in.clone(),
         preparing: far.preparing.clone(),
+        private: far.private,
     })
 }
 
@@ -453,6 +457,8 @@ pub struct Far<'a> {
     pub sign_in: crate::config::FarSignIn,
     /// What a checkout made for it on a MicroVM is prepared with
     pub preparing: crate::microvm::Preparing,
+    /// Its MicroVM machines made private (see `e2b::Asking::private`)
+    pub private: bool,
 }
 
 /// Where a MicroVM fetches a project from: the project's own remote, spelled
@@ -699,6 +705,7 @@ fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> boo
                     minutes,
                     marks: crate::e2b::marks(&plan.project),
                     sign_in: sign_in.clone(),
+                    private: plan.private,
                 };
                 let box_ = crate::e2b::create(&key, &asking)?;
                 let here = Plan { host: Some(host.with_instance(Some(&box_.id))), ..plan.clone() };
@@ -3649,7 +3656,7 @@ origin/master
         project: &'a str,
         origin: &'a str,
     ) -> Far<'a> {
-        Far { host, home, project, origin, env: None, sign_in: Default::default(), preparing: Default::default() }
+        Far { host, home, project, origin, env: None, sign_in: Default::default(), preparing: Default::default(), private: false }
     }
 
     /// A place that lands inside the checkout is refused before anything is
@@ -4064,6 +4071,7 @@ tools/conpty.ps1"));
             project: String::new(),
             sign_in: Default::default(),
             preparing: Default::default(),
+            private: false,
         };
         assert_eq!(
             plan.argv(),

@@ -37,6 +37,9 @@ pub struct Sandbox {
     /// What the agent inside it wants to see before it will do anything.
     /// Absent on an older sandbox, where the connection itself is the proof
     pub token: Option<String>,
+    /// What a request to one of its addresses must carry when it was made
+    /// private ([`Asking::private`]); absent on one anybody may reach
+    pub traffic: Option<String>,
 }
 
 /// The key this program is using right now.
@@ -101,6 +104,10 @@ pub struct Asking {
     /// A git server's sign-in, put on its requests on the way out (see
     /// [`SignIn`]). Absent is a machine that signs in to nothing
     pub sign_in: Option<SignIn>,
+    /// Private: what it serves answers only a request carrying its own
+    /// token ([`Sandbox::traffic`]), not anybody who has the address. Said
+    /// when it is made and kept for good, and by every copy made of it
+    pub private: bool,
 }
 
 /// A git server's sign-in, added to the requests a machine sends it.
@@ -265,6 +272,7 @@ fn sandbox_of(v: &serde_json::Value) -> Result<Sandbox> {
     Ok(Sandbox {
         id: id.to_string(),
         token: v.get("envdAccessToken").and_then(|x| x.as_str()).map(str::to_string),
+        traffic: v.get("trafficAccessToken").and_then(|x| x.as_str()).map(str::to_string),
     })
 }
 
@@ -281,8 +289,11 @@ pub fn create(key: &str, asking: &Asking) -> Result<Sandbox> {
             .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
             .collect::<serde_json::Map<String, serde_json::Value>>(),
     });
-    if asking.sign_in.is_some() {
+    if asking.sign_in.is_some() || asking.private {
         body["network"] = network_of(asking.sign_in.as_ref());
+    }
+    if asking.private {
+        body["network"]["allowPublicTraffic"] = serde_json::Value::Bool(false);
     }
     let v = answered(
         agent()
@@ -503,6 +514,143 @@ pub fn pause_all(most: Duration) {
             break;
         }
     }
+}
+
+/// A private machine's port, carried to one on this PC: what a browser tab of
+/// this app opens, since a request to the machine's address must carry the
+/// machine's own token and a page cannot add one. Each request is sent on
+/// with the token and the address's own host, and one connection carries one
+/// request (a WebSocket, once upgraded, carries what it carries). Only this
+/// PC can reach the port here; the machine stays closed to everybody else.
+/// The same port here each time it is asked for again
+pub fn forward(host: &crate::config::HostSpec, port: u16) -> Result<u16> {
+    static MADE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<(String, u16), u16>>> = std::sync::OnceLock::new();
+    let id = host
+        .instance
+        .clone()
+        .ok_or_else(|| anyhow!(crate::i18n::tp("err.e2b.no_machine", &[("host", &host.name)])))?;
+    let made = MADE.get_or_init(Default::default);
+    if let Some(here) = made.lock().ok().and_then(|m| m.get(&(id.clone(), port)).copied()) {
+        return Ok(here);
+    }
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port)).or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))?;
+    let here = listener.local_addr()?.port();
+    let host = host.clone();
+    std::thread::Builder::new().name(format!("e2b forward {port}")).spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let host = host.clone();
+            let _ = std::thread::Builder::new().name("e2b forward one".into()).spawn(move || {
+                if let Err(e) = carry(&host, port, stream) {
+                    crate::append_hook_log(&format!("e2b: carrying :{port} of {} failed: {e:#}", host.name));
+                }
+            });
+        }
+    })?;
+    if let Ok(mut m) = made.lock() {
+        m.insert((id, port), here);
+    }
+    Ok(here)
+}
+
+/// One connection of [`forward`]: the request's head read, told where it is
+/// going and with what, sent on; then both ways until either side ends
+fn carry(host: &crate::config::HostSpec, port: u16, mut here: std::net::TcpStream) -> Result<()> {
+    use std::io::{Read, Write};
+    let mut head = Vec::new();
+    let mut buf = [0u8; 16 * 1024];
+    // The request's head, whole: what is read past it is the body's start
+    let end = loop {
+        let n = here.read(&mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        head.extend_from_slice(&buf[..n]);
+        if let Some(at) = head.windows(4).position(|w| w == b"\r\n\r\n") {
+            break at + 4;
+        }
+        if head.len() > 64 * 1024 {
+            bail!("a request head longer than 64 KiB");
+        }
+    };
+    // The token comes with the machine's answer to a connect; one known here
+    // without it (taken up from a terminal) is asked once more, and kept
+    let mut machine = machine(host)?;
+    if machine.traffic.is_none()
+        && let Some(key) = key()
+    {
+        machine = connect(&key, &machine.id, host.minutes_or_default())?;
+    }
+    let name = format!("{port}-{}.{PUBLIC_DOMAIN}", machine.id);
+    let sent = rewritten(&String::from_utf8_lossy(&head[..end]), &name, machine.traffic.as_deref());
+    let mut there = crate::tunnel::dial(&format!("https://{name}"))?;
+    there.write_all(sent.as_bytes())?;
+    there.write_all(&head[end..])?;
+    there.flush()?;
+    // Both ways from one thread: each side waits a moment for something to
+    // read, then the other side is looked at
+    let wait = Some(Duration::from_millis(15));
+    here.set_read_timeout(wait)?;
+    there.read_timeout(wait)?;
+    let quiet = |e: &std::io::Error| matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut);
+    loop {
+        match here.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                there.write_all(&buf[..n])?;
+                there.flush()?;
+            }
+            Err(e) if quiet(&e) => {}
+            Err(e) => return Err(e.into()),
+        }
+        match there.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => here.write_all(&buf[..n])?,
+            Err(e) if quiet(&e) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    there.close();
+    Ok(())
+}
+
+/// A request's head as it is sent on to a private machine's address: the
+/// address's own host, the machine's token, and -- unless it asks to become
+/// a WebSocket -- one request to the connection, since only the first request
+/// on a connection passes through here to be given the token
+fn rewritten(head: &str, name: &str, token: Option<&str>) -> String {
+    let mut lines = head.split("\r\n").filter(|l| !l.is_empty());
+    let first = lines.next().unwrap_or_default().to_string();
+    let rest: Vec<&str> = lines.collect();
+    let named = |l: &str, n: &str| l.split(':').next().is_some_and(|k| k.trim().eq_ignore_ascii_case(n));
+    let upgrading = rest.iter().any(|l| named(l, "upgrade"));
+    let mut out = vec![first, format!("Host: {name}")];
+    for l in rest {
+        if named(l, "host") || named(l, "e2b-traffic-access-token") || (!upgrading && named(l, "connection")) {
+            continue;
+        }
+        out.push(l.to_string());
+    }
+    if let Some(t) = token {
+        out.push(format!("e2b-traffic-access-token: {t}"));
+    }
+    if !upgrading {
+        out.push("Connection: close".into());
+    }
+    format!("{}\r\n\r\n", out.join("\r\n"))
+}
+
+/// Whether a machine was made private ([`Asking::private`]), asked of the
+/// service's own records, which does not wake a paused one. The machine is
+/// what says, not the project: one made before its project said private
+/// stays open, and one made private stays so
+pub fn is_private(host: &crate::config::HostSpec) -> Result<bool> {
+    let id = host
+        .instance
+        .as_deref()
+        .ok_or_else(|| anyhow!(crate::i18n::tp("err.e2b.no_machine", &[("host", &host.name)])))?;
+    let key = key().ok_or_else(|| anyhow!(crate::i18n::t("err.e2b.no_key")))?;
+    let v = answered(agent().get(&format!("{API}/sandboxes/{id}")).header("X-API-Key", &key).call())?;
+    Ok(v.pointer("/network/allowPublicTraffic").and_then(|x| x.as_bool()) == Some(false))
 }
 
 /// What state a machine is in -- `running` or `paused` -- asked of the
@@ -1280,7 +1428,7 @@ pub fn shell(
     // the machine, which stays as it is -- paused, if it was
     let waits = host.instance.as_deref().is_some_and(|id| !let_go_of(id));
     let sandbox = match (waits, host.instance.as_deref()) {
-        (true, Some(id)) => Sandbox { id: id.to_string(), token: None },
+        (true, Some(id)) => Sandbox { id: id.to_string(), token: None, traffic: None },
         _ => machine(host)?,
     };
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Vec<u8>>();
@@ -2114,6 +2262,69 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// On the service itself (needs E2B_API_TOKEN; makes one machine for a
+    /// minute and deletes it): a private machine refuses anybody without its
+    /// token -- still after its sign-in is changed -- and its port, carried
+    /// here, answers this PC
+    #[test]
+    #[ignore]
+    fn a_private_machine_answers_only_through_this_pc() {
+        let key = super::key().expect("E2B_API_TOKEN");
+        let asking = super::Asking {
+            template: "base".into(),
+            minutes: 5,
+            marks: super::marks("private-probe"),
+            sign_in: None,
+            private: true,
+        };
+        let made = super::create(&key, &asking).expect("made");
+        let checked = (|| -> anyhow::Result<()> {
+            let ran = super::exec(
+                &made,
+                "cd /tmp && echo private-ok > index.html && (nohup python3 -m http.server 8000 --bind 127.0.0.1 >/dev/null 2>&1 &) ; sleep 2; echo up",
+                None,
+            )?;
+            anyhow::ensure!(ran.ok(), "server: {}", ran.said());
+            let sign_in = super::SignIn { host: "github.com".into(), login: "x".into(), token: "t".into(), name: None, email: None };
+            super::sign_in_as(&key, &made.id, Some(&sign_in))?;
+            let outside = ureq::Agent::config_builder().http_status_as_error(false).build().new_agent();
+            let status = outside.get(&super::public_url(&made.id, 8000)).call()?.status().as_u16();
+            anyhow::ensure!(status == 403, "reached from outside without its token: {status}");
+            assert!(super::is_private(&crate::config::HostSpec {
+                name: "probe".into(),
+                kind: Some("e2b".into()),
+                instance: Some(made.id.clone()),
+                ..Default::default()
+            })?);
+            let host = crate::config::HostSpec { name: "probe".into(), kind: Some("e2b".into()), instance: Some(made.id.clone()), ..Default::default() };
+            let here = super::forward(&host, 8000)?;
+            let body = ureq::get(&format!("http://127.0.0.1:{here}/")).call()?.body_mut().read_to_string()?;
+            anyhow::ensure!(body.trim() == "private-ok", "carried: {body}");
+            // A second request: a new connection, given the token again
+            let again = ureq::get(&format!("http://127.0.0.1:{here}/index.html")).call()?.body_mut().read_to_string()?;
+            anyhow::ensure!(again.trim() == "private-ok", "carried again: {again}");
+            Ok(())
+        })();
+        let _ = super::kill(&key, &made.id);
+        checked.expect("private machine");
+    }
+
+    /// A request carried to a private machine goes to the machine's own
+    /// address with its token, one to a connection -- and a WebSocket keeps
+    /// the connection it asks to upgrade
+    #[test]
+    fn a_request_to_a_private_machine_carries_its_token() {
+        let head = "GET /app.js HTTP/1.1\r\nHost: 127.0.0.1:5173\r\nConnection: keep-alive\r\nAccept: */*\r\n\r\n";
+        let out = super::rewritten(head, "5173-iabc.e2b.app", Some("TOK"));
+        assert!(out.starts_with("GET /app.js HTTP/1.1\r\nHost: 5173-iabc.e2b.app\r\n"), "{out}");
+        assert!(out.contains("\r\ne2b-traffic-access-token: TOK\r\n") && out.contains("\r\nConnection: close\r\n"), "{out}");
+        assert!(!out.contains("127.0.0.1") && !out.contains("keep-alive") && out.contains("Accept: */*"), "{out}");
+        assert!(out.ends_with("\r\n\r\n"));
+        let ws = "GET /hmr HTTP/1.1\r\nHost: 127.0.0.1:5173\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n";
+        let out = super::rewritten(ws, "5173-iabc.e2b.app", Some("TOK"));
+        assert!(out.contains("Connection: Upgrade") && !out.contains("Connection: close"), "{out}");
+    }
+
     /// What the service refuses is said with its own reason, and a machine it
     /// does not have is told apart from a network that is down
     #[test]
