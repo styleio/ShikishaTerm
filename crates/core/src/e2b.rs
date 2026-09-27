@@ -336,6 +336,7 @@ pub fn kill(key: &str, id: &str) -> Result<()> {
     if let Ok(mut m) = MADE.get_or_init(Default::default).lock() {
         m.remove(id);
     }
+    forget_ends(id);
     let resp = agent()
         .delete(&format!("{API}/sandboxes/{id}"))
         .header("X-API-Key", key)
@@ -505,6 +506,12 @@ pub fn machine(host: &crate::config::HostSpec) -> Result<Sandbox> {
         bail!(crate::i18n::tp("err.e2b.let_go", &[("host", &host.name), ("id", id)]));
     }
     if let Some(s) = KNOWN.get_or_init(Default::default).lock().ok().and_then(|k| k.get(id).cloned()) {
+        // Spoken to before in this run, so not connected to again -- but a
+        // shell left on it since (its tab closed while it slept) is ended
+        // before anything else is asked of it, or it wakes with the machine
+        if has_ends(id) {
+            end_left(&s);
+        }
         return Ok(s);
     }
     let key = key().ok_or_else(|| anyhow!(crate::i18n::t("err.e2b.no_key")))?;
@@ -851,6 +858,8 @@ struct Link {
     /// The same "open", shared with the tab: what it looks at before it
     /// types into this terminal on its own (a quick command, a start hook)
     live: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The shell ended there by itself (`exit`), as the far end said
+    far_ended: std::sync::atomic::AtomicBool,
 }
 
 /// How long a stream may say nothing before it is taken for dead. The far
@@ -933,8 +942,39 @@ fn count_open(id: &str, one_more: bool) {
 
 /// Shells to end on a machine the next time it is reached, by machine: kept in
 /// a file, since the app being quit is one of the times they are left, and
-/// ended in `connect`, which everything reaching a machine goes through
+/// ended in `connect` -- the first time a run reaches a machine -- and in
+/// `machine`, every time after
 const ENDS: &str = "microvm-ends.json";
+
+/// The machines the file names, known without reading it each time a machine
+/// is reached: read once, then kept as the file is written
+static ENDS_FOR: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn ends_for() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    ENDS_FOR.get_or_init(|| std::sync::Mutex::new(ends().into_keys().collect()))
+}
+
+/// Whether there is a shell to end on this machine
+fn has_ends(id: &str) -> bool {
+    ends_for().lock().is_ok_and(|e| e.contains(id))
+}
+
+/// Forget what was to be ended on a machine that is gone: nothing left there
+/// to end, and a file that only grows is a file nobody reads
+fn forget_ends(id: &str) {
+    if !has_ends(id) {
+        return;
+    }
+    let _held = ENDS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = ends();
+    if all.remove(id).is_some() {
+        write_ends(&all);
+    }
+    if let Ok(mut e) = ends_for().lock() {
+        e.remove(id);
+    }
+}
 
 fn ends() -> std::collections::BTreeMap<String, Vec<u32>> {
     std::fs::read_to_string(crate::config::state_path(ENDS))
@@ -962,6 +1002,9 @@ fn end_later(id: &str, pid: u32) {
         list.push(pid);
     }
     write_ends(&all);
+    if let Ok(mut e) = ends_for().lock() {
+        e.insert(id.to_string());
+    }
     crate::append_hook_log(&format!("e2b: shell {pid} on {id} is ended when the machine is next reached"));
 }
 
@@ -972,6 +1015,9 @@ fn end_left(s: &Sandbox) {
     let pids = {
         let _held = ENDS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = ends();
+        if let Ok(mut e) = ends_for().lock() {
+            e.remove(&s.id);
+        }
         let Some(pids) = all.remove(&s.id) else { return };
         write_ends(&all);
         pids
@@ -1040,6 +1086,7 @@ pub fn shell(
         last_frame: std::sync::Mutex::new(std::time::Instant::now()),
         generation: std::sync::atomic::AtomicU64::new(0),
         live,
+        far_ended: std::sync::atomic::AtomicBool::new(false),
     });
 
     // The listening thread. It holds the streaming response open for as long
@@ -1169,7 +1216,9 @@ pub fn shell(
                     // down instead, and ended the next time the machine is
                     // reached for anything. Left, it would wake with the
                     // machine beside the new tab's AI, on the same conversation
-                    if let Some(pid) = l.pid() {
+                    // (not one that ended by itself: its pid is nobody's now,
+                    // and may be somebody else's by the time it is reached)
+                    if let Some(pid) = l.pid().filter(|_| !l.far_ended.load(std::sync::atomic::Ordering::SeqCst)) {
                         let told = l.is_open()
                             && match signal(&l.sandbox(), &serde_json::json!({ "pid": pid }), "SIGNAL_SIGKILL") {
                                 Ok(()) => true,
@@ -1414,6 +1463,7 @@ fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32
                 // tab is then an ended one: restarted if it is set to be
                 crate::append_hook_log(&format!("e2b: the shell {} on {} ended", link.tag, sandbox.id));
                 link.set_open(false);
+                link.far_ended.store(true, std::sync::atomic::Ordering::SeqCst);
                 link.ended.store(true, std::sync::atomic::Ordering::Relaxed);
                 let _ = link.out.send(Vec::new());
                 return;
