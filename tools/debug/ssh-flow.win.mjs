@@ -96,8 +96,13 @@ await cleanThere();
 // The server has no AI of its own: one stands in for Codex, where an
 // installer puts it, found by a login shell there (steps 3 and 7). It goes
 // again on the way out, with the folder when this made it
-const madeBin = (await there('test -d ~/.local/bin && echo had || echo new')) === 'new';
-await there('mkdir -p ~/.local/bin && printf "#!/bin/sh\necho stand-in\n" > ~/.local/bin/codex && chmod +x ~/.local/bin/codex');
+// With SSH_FLOW_REAL_AI=1 the server's own Codex, installed and signed in
+// there beforehand, is used as it is -- nothing is put in its place, and
+// nothing of it is taken away
+const REAL_AI = process.env.SSH_FLOW_REAL_AI === '1';
+if (REAL_AI && !/Logged in/.test(await there('bash -lc "codex login status" 2>&1'))) die('SSH_FLOW_REAL_AI=1, but Codex on the server is not signed in');
+const madeBin = !REAL_AI && (await there('test -d ~/.local/bin && echo had || echo new')) === 'new';
+if (!REAL_AI) await there('mkdir -p ~/.local/bin && printf "#!/bin/sh\necho stand-in\n" > ~/.local/bin/codex && chmod +x ~/.local/bin/codex');
 console.log('starting this checkout\'s build, isolated');
 stopApp();
 await sleep(800);
@@ -246,13 +251,18 @@ try {
   check(await board.run('S.branch.line').then((l) => l.includes(`git -C ${REPO} worktree add`)), 'cut from the checkout over there');
   // The AI the server has, and whether it is signed in there: every worktree
   // on the server shares that sign-in, so it is said before one is made
-  await until(() => board.run('!!(S.branch.ai_sign_in && S.branch.ai_sign_in.state === "no")'), 'the server\'s AI said to be signed out', 60000)
+  await until(() => board.run(`!!(S.branch.ai_sign_in && S.branch.ai_sign_in.state === ${JSON.stringify(REAL_AI ? 'yes' : 'no')})`), REAL_AI ? 'the server\'s own Codex said to be signed in' : 'the server\'s AI said to be signed out', 60000)
     .catch(async (e) => { console.log('    (the dialog has: ' + await board.run('JSON.stringify(S.branch.ai_sign_in || null)') + ')'); throw e; });
   check(await board.run('S.branch.ai_sign_in.ai') === 'codex', 'the AI asked about is the one the server has, not this PC\'s');
   // What the worktree runs is chosen from the server's AIs too
   await until(() => board.run('/Codex/.test(document.getElementById("bstart").textContent)'), 'the worktree to run the AI the server has', 10000)
     .catch(async (e) => { console.log('    (the picker says: ' + await board.run('document.getElementById("bstart").textContent') + ')'); throw e; });
   check(await board.run('branchStart') === 'codex', 'the worktree runs the AI the server has, not this PC\'s');
+  if (REAL_AI) {
+    // Signed in for real, by Codex's own sign-in on the server
+    await until(() => board.run('/サーバーでログイン済みです/.test(document.querySelector("#branch .baisignin").textContent)'), 'the dialog saying so', 10000);
+    check(true, 'the server\'s own Codex, signed in by its own sign-in, is said to be signed in: ' + await board.run('document.querySelector("#branch .baisignin").textContent'));
+  } else {
   await until(() => board.run('/サーバーでまだログインしていません/.test(document.querySelector("#branch .baisignin").textContent)'), 'the dialog saying so', 10000);
   check(await board.run('!/元のフォルダのマシン/.test(document.querySelector("#branch .baisignin").textContent)'),
     'said in the words for a server, not for a MicroVM: ' + await board.run('document.querySelector("#branch .baisignin").textContent'));
@@ -266,6 +276,7 @@ try {
     check(true, 'signed in on the server, the dialog says so without being closed: ' + await board.run('document.querySelector("#branch .baisignin").textContent'));
   } finally {
     await there('rm -rf ~/.codex');
+  }
   }
   await board.shot('2-branch');
   await board.run('document.querySelector("#branch .bgo .go").click(); true');
@@ -572,7 +583,10 @@ try {
   // A terminal on the server through the relay (made before the app, above)
   {
     const withRelay = saved();
-    withRelay.desks[0].folders.push({ cwd: `/home/${USER}`, host: 'relay', tabs: [{ name: 'far', id: 'far', command: 'bash' }] });
+    // A second tab whose command is a line of the shell's own: typed there as
+    // it was written, its $((..)) and && are the shell's
+    withRelay.desks[0].folders.push({ cwd: `/home/${USER}`, host: 'relay', tabs: [{ name: 'far', id: 'far', command: 'bash' },
+      { name: 'line', id: 'line', command: 'echo SHK-$((1+1)) && echo SHK-BOTH' }] });
     // A button that hands a request to Claude, as this PC would start it
     withRelay.quick_commands = { items: [{ id: 'ask', label: 'ask', kind: 'ai', body: 'hello', ai: 'claude' }] };
     fs.writeFileSync(CONFIG, JSON.stringify(withRelay, null, 2));
@@ -588,6 +602,15 @@ try {
     await typed('echo SHK$((6*7))');
     await until(async () => /SHK42/.test(await screen()), 'the terminal answering', 30000);
     check(true, 'the terminal on the server answers through the relay');
+    const lineTab = await board.run('JSON.stringify((S.tabs || []).find(t => t.name === "line") || null)').then((t) => JSON.parse(t || 'null'));
+    check(!!lineTab, 'the tab whose command is a line of the shell\x27s is on the board');
+    if (lineTab) {
+      await board.run(`send({kind:"select", tab: ${lineTab.index}}); true`);
+      await until(async () => /SHK-2/.test(await screen()) && /SHK-BOTH/.test(await screen()), 'the line run by the server\x27s shell as written', 60000)
+        .catch(async (e) => { console.log('    (the terminal says: ' + (await screen()).replace(/\s+/g, ' ').trim().slice(-200) + ')'); throw e; });
+      check(true, 'a tab\x27s own command reaches the server\x27s shell as it was written: $((1+1)) is 2, and && runs the second');
+      await board.run(`send({kind:"select", tab: ${(await farTab()).index}}); true`);
+    }
     // A button that hands work to an AI goes to the one the server has, not
     // this PC's
     const dests = () => board.run('JSON.stringify(Object.values(S.quick_to || {}).filter(d => d.how === "open").map(d => d.name))');
@@ -647,7 +670,7 @@ try {
   try { cfg && cfg.ws.close(); } catch {}
   stopApp();
   await cleanThere();
-  await there('rm -f ~/.local/bin/codex' + (madeBin ? '; rmdir ~/.local/bin 2>/dev/null; true' : ''));
+  if (!REAL_AI) await there('rm -f ~/.local/bin/codex' + (madeBin ? '; rmdir ~/.local/bin 2>/dev/null; true' : ''));
   console.log('  what it made on the server is removed: ' + await there(`cd ${REPO} && git worktree list | wc -l && git branch --list 'check/*' | wc -l`).then((s) => s.replace(/\s+/g, ' ')));
 }
 console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');

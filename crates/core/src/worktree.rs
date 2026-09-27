@@ -3281,6 +3281,22 @@ pub fn for_a_shell(argv: &[String]) -> String {
         .join(" ")
 }
 
+/// A tab's own command, typed into a far shell as it was written: a line of
+/// the shell's own, whose `&&`, `|`, `$VAR` or `*` are the shell's to read.
+/// Only a word with a space or a quote in it -- one that was one word when it
+/// was written -- is put in quotes to stay one. Not for words this app makes
+/// up (a folder, a branch, a format): those are [`for_a_shell`]'s, where
+/// nothing is the shell's to read
+pub fn as_written(argv: &[String]) -> String {
+    argv.iter()
+        .map(|a| match a.contains(' ') || a.contains('\'') || a.contains('"') {
+            true => format!("'{}'", a.replace('\'', "'\\''")),
+            false => a.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn run(argv: &[String]) -> Result<()> {
     let (head, rest) = argv.split_first().expect("a command with nothing in it");
     let mut running = std::process::Command::new(head);
@@ -3333,6 +3349,14 @@ mod tests {
     /// The branches of a folder on another machine, read back from git there:
     /// the remote's default first and chosen, then the rest, `origin/HEAD` and
     /// repeats left out. With no remote default, the folder's own branch
+    #[test]
+    fn a_tabs_own_command_reaches_the_far_shell_as_it_was_written() {
+        let line = |argv: &[&str]| as_written(&argv.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+        assert_eq!(line(&["npm", "run", "dev", "&&", "npm", "test"]), "npm run dev && npm test", "the shell's own words were quoted into text");
+        assert_eq!(line(&["echo", "$M", "*"]), "echo $M *");
+        assert_eq!(line(&["cd", "/srv/a b"]), "cd '/srv/a b'", "a word with a space is two words");
+    }
+
     #[test]
     fn a_word_the_far_shell_would_read_as_its_own_is_quoted() {
         let line = |argv: &[&str]| for_a_shell(&argv.iter().map(|a| a.to_string()).collect::<Vec<_>>());

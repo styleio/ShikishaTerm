@@ -955,7 +955,8 @@ pub fn far_run(argv: &[String]) -> Option<String> {
     let leaf = std::path::Path::new(head).file_name().map(|n| n.to_string_lossy().to_lowercase())?;
     match leaf.as_str() {
         "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" => None,
-        _ => Some(crate::worktree::for_a_shell(argv)),
+        // The command as it was written: its `&&` and `$VAR` are the shell's
+        _ => Some(crate::worktree::as_written(argv)),
     }
 }
 

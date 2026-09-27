@@ -2495,7 +2495,8 @@ pub fn far_launch(
     argv: &[String],
     plan: Resume,
 ) -> (String, Option<Session>) {
-    let shell = crate::worktree::for_a_shell;
+    // The tab's own command, as it was written (see `worktree::as_written`)
+    let shell = crate::worktree::as_written;
     if let (Some(spec), Resume::Id(s)) = (spec, &plan)
         && !spec.with_id.is_empty()
         && !already_resumes(spec, argv)
