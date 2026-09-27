@@ -486,6 +486,19 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .fmenu .aphost .ck { width:12px; flex:none; color:var(--brand); }
   .fmenu .aphost .at { margin-left:auto; padding-left:var(--s3); font-family:var(--mono); font-size:11px; color:var(--dim); }
   .fmenu .aphostadd { border-top:1px solid var(--line); margin-top:var(--s1); color:var(--text); }
+  /* A machine's ports: what the list is, then one line a port -- its number,
+     its address, and a copy button for an address anybody can open */
+  .fmenu.farports { max-width:min(560px, calc(100vw - 16px)); }
+  .fmenu div.farhead { max-width:none; }
+  .fmenu div.fsay { cursor:default; white-space:normal; font-size:11.5px; line-height:1.5; color:var(--dim); }
+  .fmenu div.fsay:hover { background:transparent; }
+  .fmenu div.fsay.bad { color:var(--warn); }
+  .fmenu .farport .nm { flex:none; font-family:var(--mono); font-weight:600; }
+  .fmenu .farport .at { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fmenu .farport .fcopy { flex:none; width:22px; height:22px; margin-right:calc(-1 * var(--s1)); padding:0; border:0;
+    border-radius:var(--r-chip); background:transparent; color:var(--dim); cursor:pointer;
+    display:flex; align-items:center; justify-content:center; }
+  .fmenu .farport .fcopy:hover { background:var(--hover); color:var(--text); }
   /* Once: a star, if you like it. Sits above the gear, and goes for good */
   .thanks { margin:auto var(--s2) var(--s2); padding:10px 12px; border:1px solid var(--line); border-radius:var(--r-card);
     background:var(--raise); font-size:12px; }
@@ -7611,18 +7624,27 @@ function drawFarPorts() {
   // private MicroVM's; an unlisted MicroVM's answer anybody with the address
   const variant = st.server ? "tui.urls.server." : st.private ? "tui.urls.private." : "";
   const say = k => T[variant && T[k.replace("tui.urls.", variant)] ? k.replace("tui.urls.", variant) : k] || "";
-  const rows = [el("div", {class:"say"}, say("tui.urls.title"))];
-  if (st.busy) rows.push(el("div", {class:"say"}, say("tui.urls.asking")));
-  else if (st.error) rows.push(el("div", {class:"warn"}, st.error));
-  else if (!st.ports.length) rows.push(el("div", {class:"say"}, say("tui.urls.none")));
+  // What the list is, read and not chosen: a heading that cannot be pressed,
+  // as a folder's summary heads its menu. What the machine said -- asking,
+  // nothing yet, what went wrong -- is read the same way
+  const rows = [el("div", {class:"fabout farhead"},
+    el("span", {class:"ttl"}, T[st.server ? "tui.menu.ports" : "tui.menu.urls"] || ""),
+    el("span", {class:"sum"}, say("tui.urls.title")))];
+  if (st.busy) rows.push(el("div", {class:"fsay"}, say("tui.urls.asking")));
+  else if (st.error) rows.push(el("div", {class:"fsay bad"}, st.error));
+  else if (!st.ports.length) rows.push(el("div", {class:"fsay"}, say("tui.urls.none")));
+  // One line a port: pressed, it opens in a browser tab of the app; an
+  // address anybody can open has a copy button of its own at the right
   for (const p of st.ports || []) {
-    rows.push(el("div", {class:"aphost", title:p.url, onclick:() => {
-      if (p.url) copyText(p.url).then(() => toast(T["tui.urls.copied"] || ""));
-      else send({kind:"farpage", folder:o.folder, port:p.port});
-    }}, el("span", {class:"nm"}, ":" + p.port), el("span", {class:"at"}, p.url || say("tui.urls.not_yet"))));
-    // The same address, opened here in a browser tab of the app
-    rows.push(el("div", {class:"aphostadd", onclick:() => send({kind:"farpage", folder:o.folder, port:p.port})},
-      (T["tui.urls.open"] || "").replaceAll("{port}", p.port)));
+    const copy = p.url && !st.server && !st.private
+      ? el("button", {type:"button", class:"fcopy", title:T["tui.urls.copy"] || "", onclick:e => {
+          e.stopPropagation();
+          copyText(p.url).then(() => toast(T["tui.urls.copied"] || ""));
+        }}, pickIcon("copy"))
+      : null;
+    rows.push(el("div", {class:"aphost farport", title:(T["tui.urls.open"] || "").replaceAll("{port}", p.port),
+        onclick:() => send({kind:"farpage", folder:o.folder, port:p.port})},
+      el("span", {class:"nm"}, ":" + p.port), el("span", {class:"at"}, p.url || say("tui.urls.not_yet")), copy));
   }
   if (!st.busy) rows.push(el("div", {class:"aphostadd", onclick:() => { o.drawn = ""; send({kind:"farports", folder:o.folder}); }},
     T["tui.urls.again"] || ""));

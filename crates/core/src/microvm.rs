@@ -335,24 +335,35 @@ pub fn server_ports_of(spec: &crate::ssh::Spec) -> Result<Vec<crate::uistate::Fa
 }
 
 /// What lists the ports listened on, on every image the service has: `ss`,
-/// and `netstat` where there is no `ss`. With the processes: `ss` names the
-/// ones the machine's own user started, and only those (see [`listening`])
-const LISTENING: &str = "ss -ltnpH 2>/dev/null || netstat -ltn 2>/dev/null";
+/// and `netstat` where there is no `ss`. With the processes: each names the
+/// ones the machine's own user started, and only those (see [`listening`]).
+/// A `netstat` that cannot say whose a port is is the last resort
+const LISTENING: &str = "ss -ltnpH 2>/dev/null || netstat -ltnp 2>/dev/null || netstat -ltn 2>/dev/null";
 
 /// The ports in a listing of listening sockets, each once, in order.
 ///
 /// What somebody started in there: a server run in a terminal, or by the AI,
-/// runs as the machine's own user, and `ss` names its process. What the image
-/// runs as root -- its SSH server, its port mapper -- has no process `ss` can
-/// name for that user, and is not the work's to offer. A listing that names
-/// no process at all (`netstat`) is taken whole. The service's own agents in
+/// runs as the machine's own user, and `ss` (`users:((..))`) or `netstat -p`
+/// (`812/python3`) names its process. What the image runs as root -- its SSH
+/// server on 22, its port mapper on 111 -- has no process either can name for
+/// that user, and is not the work's to offer: with nothing of the user's
+/// listening, nothing is. Only a listing that can name no process at all
+/// (`netstat` without `-p`) is taken whole. The service's own agents in
 /// there are never offered
 fn listening(said: &str) -> Vec<u16> {
-    let named = said.contains("users:(");
+    // Which of the three said it: `ss` lines start LISTEN; `netstat -p` has
+    // a PID/Program column, "-" for a process that is not the user's
+    let ss = said.lines().any(|l| l.trim_start().starts_with("LISTEN"));
+    let with_programs = !ss && said.contains("PID/Program");
+    let own = |l: &str| match (ss, with_programs) {
+        (true, _) => l.contains("users:("),
+        (false, true) => l.split_whitespace().last().is_some_and(|p| p.contains('/')),
+        (false, false) => true,
+    };
     let mut ports: Vec<u16> = said
         .lines()
         .filter(|l| l.contains("LISTEN") || !l.trim_start().starts_with(|c: char| c.is_ascii_alphabetic()))
-        .filter(|l| !named || l.contains("users:("))
+        .filter(|l| own(l))
         .filter_map(|l| {
             let fields: Vec<&str> = l.split_whitespace().collect();
             // `ss`: State Recv-Q Send-Q Local Peer; `netstat`: Proto Recv-Q Send-Q Local Foreign State
@@ -1330,6 +1341,13 @@ mod tests {
             "LISTEN 0 4096 0.0.0.0:111 0.0.0.0:*\n",
         );
         assert_eq!(listening(ss), vec![5173, 8000]);
+        // Nothing of the user's listening: nothing is offered, not the
+        // image's own SSH server and port mapper
+        let only_the_image = "LISTEN 0 128 0.0.0.0:22 0.0.0.0:*\nLISTEN 0 4096 0.0.0.0:111 0.0.0.0:*\nLISTEN 0 4096 *:49983 *:* users:((\"envd\",pid=1,fd=7))\n";
+        assert!(listening(only_the_image).is_empty(), "the image's own ports were offered: {:?}", listening(only_the_image));
+        // netstat -p says whose each is, "-" for one that is not the user's
+        let netstat_p = "Active Internet connections (only servers)\nProto Recv-Q Send-Q Local Address Foreign Address State PID/Program name\ntcp 0 0 0.0.0.0:22 0.0.0.0:* LISTEN -\ntcp 0 0 0.0.0.0:8000 0.0.0.0:* LISTEN 812/python3\n";
+        assert_eq!(listening(netstat_p), vec![8000]);
         let netstat = "Active Internet connections (only servers)\nProto Recv-Q Send-Q Local Address Foreign Address State\ntcp 0 0 0.0.0.0:3000 0.0.0.0:* LISTEN\n";
         assert_eq!(listening(netstat), vec![3000]);
         assert!(listening("").is_empty());

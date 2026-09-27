@@ -604,6 +604,12 @@ try {
   const p8000 = ports.find((p) => p.port === 8000);
   check(!!p8000 && p8000.url === `https://8000-${wt.sandbox}.e2b.app`, 'the port and its public URL are listed: ' + JSON.stringify(ports));
   check(await board.run('!!document.querySelector(".fmenu.farports")'), 'and shown where the menu was');
+  // Read, then chosen: what the list is heads it and cannot be pressed; a
+  // port is one line, with a copy button for its address; what the image
+  // itself runs as root (SSH on 22, the port mapper on 111) is not offered
+  check(await board.run('(() => { const m = document.querySelector(".fmenu.farports"); const lines = [...m.querySelectorAll(".farport")]; return !!m.querySelector(".farhead") && !m.querySelector(".farhead").onclick && lines.length === ports.length && lines.every(l => !!l.querySelector(".fcopy")); })()'.replace('ports.length', String(ports.length))),
+    'a heading that is read, and one line a port with its copy button');
+  check(!ports.some((p) => p.port === 22 || p.port === 111), 'the image\'s own ports are not offered: ' + ports.map((p) => p.port).join(', '));
   await board.shot('3b-urls');
   if (p8000) {
     const got = await fetch(p8000.url).then((r) => r.text()).catch((e) => String(e));

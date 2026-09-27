@@ -331,6 +331,13 @@ once it reaches its first tagged release.
   hung on the folder's card, which is built again every time a tab in it
   changes. It is drawn where the menu was opened. The same held for a
   server folder's "Open the server's ports".
+- **A machine's ports list only what was started there, one line each.**
+  With no server of the user's running, a MicroVM or a server listed what
+  its image runs as root -- SSH on 22, the port mapper on 111 -- as if they
+  were the work's. The explanation looked like a choice, and each port took
+  two lines. The list now opens under a heading that is read and not
+  pressed; a port is one line that opens it in a browser tab, with a copy
+  button for an address anybody can open.
 - **A MicroVM taken off the list can be put back or deleted at once.** The
   settings' list of machines called a machine made in this run "being made"
   until the app was restarted, even after its folder was taken off a list,
