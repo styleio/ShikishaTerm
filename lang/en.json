@@ -2923,6 +2923,7 @@
   "grant.tab_screen": "What is on a tab's screen",
   "grant.tab_read": "A tab's recording, read on from where it left off",
   "grant.send_to_tab": "Give a tab an instruction and let it run",
+  "grant.ask_tab": "Ask a tab and wait for its reply",
   "grant.draft_to_tab": "Put text in a tab's input box without sending it",
   "grant.send": "Type raw keys into a tab",
   "grant.show": "Bring a tab on screen",

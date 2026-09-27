@@ -13,6 +13,7 @@ pub mod api;
 pub mod asking;
 pub mod askpass;
 pub mod asks;
+pub mod asktab;
 pub mod attach;
 pub mod ball;
 pub mod bridge;
