@@ -8,8 +8,9 @@
 //! Asking takes a connection and a login shell there, far too long for the
 //! loop that draws the board, so the answer is kept: asked on a thread the
 //! first time anything wants it, and again once it is [`FRESH`] old, while
-//! the old answer is still given. Until the first answer, [`known`] says
-//! `None`, and whoever asked goes on as it would with no answer at all.
+//! the old answer is still given. Until the first answer, [`heard`] says it
+//! is being asked, and nothing may take this PC's AIs for the server's in the
+//! meantime -- that is the `command not found` all over again.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -18,6 +19,21 @@ use std::time::{Duration, Instant};
 /// How long an answer is trusted before the server is asked again. An AI is
 /// installed on a server now and then, not from minute to minute
 pub const FRESH: Duration = Duration::from_secs(600);
+
+/// How soon a server that could not be asked is asked again. Much sooner than
+/// [`FRESH`]: until it answers once, nothing that runs an AI there can go
+const RETRY: Duration = Duration::from_secs(30);
+
+/// What is known of a server's AIs
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Heard {
+    /// Being asked, and not answered yet
+    Asking,
+    /// Asked, and it could not be reached. Asked again after [`RETRY`]
+    Unreachable,
+    /// The commands of the AIs it has, in the profiles' order
+    Has(Vec<String>),
+}
 
 /// What each line naming an AI starts with, so nothing else a login shell
 /// prints on its way in is read as one
@@ -29,6 +45,8 @@ struct Kept {
     found: Option<Vec<String>>,
     asked: Option<Instant>,
     asking: bool,
+    /// When it last could not be asked, while it has never answered
+    failed: Option<Instant>,
 }
 
 fn kept() -> &'static Mutex<HashMap<String, Kept>> {
@@ -56,16 +74,26 @@ pub fn known_commands() -> Vec<(String, String)> {
     out
 }
 
-/// The AIs the server has, as last heard, asking it again on a thread when
-/// it has not been asked or the answer is old. `None` until the first answer
+/// The AIs the server has, as last heard. `None` until the first answer
 pub fn known(host: &crate::config::HostSpec) -> Option<Vec<String>> {
+    match heard(host)? {
+        Heard::Has(found) => Some(found),
+        Heard::Asking | Heard::Unreachable => None,
+    }
+}
+
+/// What is known of the server's AIs, asking it again on a thread when it has
+/// not been asked, the answer is old, or the last try could not reach it.
+/// `None` for a MicroVM, whose AI is what its machine was given
+pub fn heard(host: &crate::config::HostSpec) -> Option<Heard> {
     if host.is_made() {
         return None;
     }
     let key = key_of(host);
     let mut all = kept().lock().unwrap_or_else(|e| e.into_inner());
     let k = all.entry(key.clone()).or_default();
-    let stale = k.asked.is_none_or(|at| at.elapsed() > FRESH);
+    let stale = k.asked.is_none_or(|at| at.elapsed() > FRESH)
+        && k.failed.is_none_or(|at| at.elapsed() > RETRY);
     if stale && !k.asking {
         k.asking = true;
         let host = host.clone();
@@ -74,15 +102,25 @@ pub fn known(host: &crate::config::HostSpec) -> Option<Vec<String>> {
             let mut all = kept().lock().unwrap_or_else(|e| e.into_inner());
             let k = all.entry(key).or_default();
             k.asking = false;
-            k.asked = Some(Instant::now());
             // A server that could not be asked keeps what it last said: a
             // blip on the network is not an AI uninstalled
-            if let Some(found) = found {
-                k.found = Some(found);
+            match found {
+                Some(found) => {
+                    k.found = Some(found);
+                    k.asked = Some(Instant::now());
+                    k.failed = None;
+                }
+                None if k.found.is_some() => k.asked = Some(Instant::now()),
+                None => k.failed = Some(Instant::now()),
             }
         });
     }
-    k.found.clone()
+    Some(match (&k.found, k.asking) {
+        (Some(found), _) => Heard::Has(found.clone()),
+        (None, true) => Heard::Asking,
+        (None, false) if k.failed.is_some() => Heard::Unreachable,
+        (None, false) => Heard::Asking,
+    })
 }
 
 /// Asked of the server: which of the AI commands a login shell there finds.
@@ -132,6 +170,15 @@ pub fn set_known(host: &crate::config::HostSpec, found: Vec<String>) {
     let k = all.entry(key_of(host)).or_default();
     k.found = Some(found);
     k.asked = Some(Instant::now());
+}
+
+/// Written down as a server that could not be asked, and was just tried
+#[cfg(test)]
+pub fn set_unreachable(host: &crate::config::HostSpec) {
+    let mut all = kept().lock().unwrap_or_else(|e| e.into_inner());
+    let k = all.entry(key_of(host)).or_default();
+    k.found = None;
+    k.failed = Some(Instant::now());
 }
 
 #[cfg(test)]

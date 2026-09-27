@@ -8586,7 +8586,8 @@ function goingToMicrovm() {
 // The AIs a worktree can run where it is going: a server's own, once it has
 // said them, and on a MicroVM the one its machine has (the one chosen for a
 // checkout about to be made), since this PC's are not there; this PC's
-// anywhere else
+// anywhere else. A server that has not said yet offers none: this PC's AIs
+// are not its
 function startAis() {
   const p = S && S.branch;
   const offer = p && ((p.hosts || []).find(h => h.name === p.host));
@@ -8595,12 +8596,25 @@ function startAis() {
     const known = ((S && S.machine_ais) || []).find(a => a.key === key);
     return known ? [{key: known.key, name: known.name}] : [];
   }
-  return offer && offer.kind === "ssh" && Array.isArray(p.server_ais) ? p.server_ais : ((S && S.ais) || []);
+  if (offer && offer.kind === "ssh") return Array.isArray(p.server_ais) ? p.server_ais : [];
+  return (S && S.ais) || [];
 }
 // The picker for what runs, and the tick for one-per-AI. Only where this
 // machine has an AI to offer: without one the dialog is what it always was
+let serverAisTimer = 0;
 function drawStart(b) {
   const ais = startAis();
+  // A server still being asked is asked about again, so its AIs appear here
+  // once it has said them
+  const p = S && S.branch;
+  const offer = p && ((p.hosts || []).find(h => h.name === p.host));
+  if (offer && offer.kind === "ssh" && !Array.isArray(p.server_ais) && !serverAisTimer) {
+    serverAisTimer = setTimeout(() => {
+      serverAisTimer = 0;
+      const open = document.getElementById("branch");
+      if (open && !open.hidden) askBranch();
+    }, 2000);
+  }
   // An AI the machine does not have is not what the worktree runs: the one
   // it has that the settings prefer, asked about again
   if (branchStart && branchStart !== "none" && ais.length && !ais.some(a => a.key === branchStart)) {

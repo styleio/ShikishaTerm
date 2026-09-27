@@ -6217,15 +6217,15 @@ function serverAisAsk() {
 // (the project's machine_ai), since this PC's AIs are not there; the machine's
 // own shell when it was given none. On a server reached over SSH, an AI the
 // server has -- the one chosen under Basic when it has that, else the first
-// it has -- and its shell when it has none. Null for any other folder, and
-// for a server not heard from yet
+// it has -- and its shell when it has none, or has not said yet: this PC's
+// AI typed there is a `command not found`. Null for any other folder
 const machineStart = (desk, group) => {
   const g = (desk.folders || [])[group] || {};
   const h = (current.hosts || []).find(x => (x.name || "").trim() === (g.host || "").trim());
   if (!h) return null;
   if ((h.kind || "").trim().toLowerCase() !== "e2b") {
     const found = SERVER_AIS[(h.name || "").trim()];
-    if (!Array.isArray(found)) return null;
+    if (!Array.isArray(found)) return "";
     const chosen = ((current.ai_engine || "").trim().split(/\s+/)[0] || "");
     return (chosen && found.includes(chosen) ? chosen : null)
       || FAR_DEFAULTS.ai_order.find(k => found.includes(k)) || found[0] || "";

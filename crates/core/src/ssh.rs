@@ -27,8 +27,8 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Result, anyhow, bail};
@@ -97,6 +97,15 @@ pub fn use_secrets(mut all: HashMap<String, String>) {
 fn secret(key: &Option<String>) -> Option<String> {
     let key = key.as_ref()?;
     store().lock().ok()?.get(key).cloned()
+}
+
+/// One credential put in, the rest left as they are: tests run at once, and
+/// one replacing the lot would take another's password away mid-test
+#[cfg(test)]
+fn set_secret(key: &str, value: &str) {
+    if let Ok(mut m) = store().lock() {
+        m.insert(key.to_string(), value.to_string());
+    }
 }
 
 impl Spec {
@@ -186,6 +195,10 @@ fn known_hosts() -> HashMap<String, String> {
 }
 
 fn remember_host(addr: &str, fingerprint: &str) -> Result<()> {
+    // Read, changed and written whole: two servers met at the same moment
+    // must not each write the file without the other
+    static WRITING: Mutex<()> = Mutex::new(());
+    let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     let mut all = known_hosts();
     all.insert(addr.to_string(), fingerprint.to_string());
     let path = known_hosts_path();
@@ -247,8 +260,11 @@ pub enum FileAnswer {
     Bytes(Vec<u8>),
 }
 
-/// What the connection thread is asked to do. One enum, because one thread
-/// answers all of it and a second queue would be a second order of events
+/// What the connection thread is asked to do: each one a piece of work that
+/// runs on its own the moment it arrives, so a slow one -- a clone, a large
+/// file, a server that takes its time to answer -- holds up nothing but
+/// itself. What is typed into a terminal is not here at all: it goes to that
+/// terminal's own queue (see [`ToShell`])
 enum Job {
     /// Open a terminal on `spec` and report where its bytes will arrive
     Shell {
@@ -268,24 +284,22 @@ enum Job {
         /// shell -- no exit, no close, the line simply gone
         lost: Arc<AtomicBool>,
         out: Sender<Vec<u8>>,
-        reply: Sender<Result<u64>>,
+        reply: Sender<Result<ShellTx>>,
     },
-    /// Type at a terminal that is already open
-    Write { id: u64, data: Vec<u8> },
-    /// The window changed shape
-    Resize { id: u64, rows: u16, cols: u16 },
-    /// Nobody is looking at this terminal any more
-    Close { id: u64 },
-    /// Something to do with files, on the same connection a terminal uses
+    /// Something to do with files, on the same connection a terminal uses.
+    /// Given up, and its channel closed, once `wait_ms` has gone by
     Files {
         spec: Spec,
         job: FileJob,
+        wait_ms: u64,
         reply: Sender<Result<FileAnswer>>,
     },
-    /// One command, run to the end, on the same connection everything else uses
+    /// One command, run to the end, on the same connection everything else
+    /// uses. Stopped, and its channel closed, once `wait_ms` has gone by
     Exec {
         spec: Spec,
         command: String,
+        wait_ms: u64,
         reply: Sender<Result<Ran>>,
     },
     /// A connection made to this PC, carried to a port on the server as if it
@@ -296,6 +310,26 @@ enum Job {
         stream: std::net::TcpStream,
     },
 }
+
+/// What is said to one open terminal.
+///
+/// Each terminal has a queue of its own, read by a task of its own, so a
+/// keystroke waits for nothing but the keystrokes before it in the same
+/// terminal -- never for a clone on another server, never for another
+/// terminal whose far end has stopped reading
+enum ToShell {
+    Data(Vec<u8>),
+    Resize { rows: u16, cols: u16 },
+    Close,
+}
+
+type ShellTx = tokio::sync::mpsc::UnboundedSender<ToShell>;
+
+/// How much longer than a job's own limit its caller waits for the answer.
+/// The job answers for itself when its time is up, in words that say which
+/// part ran late, after closing what it had open; this is only for a thread
+/// that has stopped answering altogether
+const ANSWER_GRACE_MS: u64 = 5_000;
 
 /// What a command on the far end did.
 ///
@@ -327,10 +361,10 @@ impl Ran {
 /// The way in. One thread, one runtime, started the first time anything here
 /// is asked for -- the same shape the HTTP gateway uses, and for the same
 /// reason: the window thread must never wait on a socket
-fn hub() -> &'static Sender<Job> {
-    static HUB: OnceLock<Sender<Job>> = OnceLock::new();
+fn hub() -> &'static tokio::sync::mpsc::UnboundedSender<Job> {
+    static HUB: OnceLock<tokio::sync::mpsc::UnboundedSender<Job>> = OnceLock::new();
     HUB.get_or_init(|| {
-        let (tx, rx) = channel::<Job>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Job>();
         std::thread::Builder::new()
             .name("ssh".into())
             .spawn(move || run_hub(rx))
@@ -339,28 +373,7 @@ fn hub() -> &'static Sender<Job> {
     })
 }
 
-/// Numbers handed to terminals, so that a message about one cannot be about
-/// another after a restart
-fn next_id() -> u64 {
-    static N: AtomicU64 = AtomicU64::new(1);
-    N.fetch_add(1, Ordering::Relaxed)
-}
-
-/// What the thread keeps: connections by address, and open terminals by id.
-///
-/// A terminal is kept as its writing half only. The reading half goes to a
-/// task of its own the moment it exists, because the two directions have
-/// nothing to do with each other -- a person typing must not wait for the far
-/// end to say something, and a busy screen must not wait for a keystroke
-struct Live {
-    sessions: HashMap<String, russh::client::Handle<Client>>,
-    shells: HashMap<u64, russh::ChannelWriteHalf<russh::client::Msg>>,
-    /// When each connection last had a terminal on it, so an unused one can be
-    /// let go rather than held open for the life of the program
-    idle_since: HashMap<String, std::time::Instant>,
-}
-
-fn run_hub(rx: Receiver<Job>) {
+fn run_hub(mut rx: tokio::sync::mpsc::UnboundedReceiver<Job>) {
     let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(r) => r,
         Err(e) => {
@@ -368,142 +381,263 @@ fn run_hub(rx: Receiver<Job>) {
             return;
         }
     };
-    let mut live = Live {
-        sessions: HashMap::new(),
-        shells: HashMap::new(),
-        idle_since: HashMap::new(),
-    };
     rt.block_on(async move {
-        loop {
-            // The queue is a blocking one, and this thread is the only one that
-            // reads it. Waiting on it inside the runtime would stop the timers
-            // the connections need, so it is drained without blocking and the
-            // thread sleeps between looks
-            match rx.try_recv() {
-                Ok(job) => handle(&mut live, job).await,
-                Err(TryRecvError::Empty) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(8)).await;
-                    close_idle(&mut live).await;
-                }
-                Err(TryRecvError::Disconnected) => break,
+        tokio::spawn(async {
+            let mut every = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                every.tick().await;
+                close_idle().await;
             }
+        });
+        // Each job is a task of its own. Taken one after another, the first
+        // slow one -- a clone over a thin line -- held every other server's
+        // terminals, transfers and commands behind it until it was done
+        while let Some(job) = rx.recv().await {
+            tokio::spawn(run_job(job));
         }
     });
 }
 
-async fn close_idle(live: &mut Live) {
-    let now = std::time::Instant::now();
-    let gone: Vec<String> = live
-        .idle_since
-        .iter()
-        .filter(|(_, since)| now.duration_since(**since).as_millis() as u64 > IDLE_KEEP_MS)
-        .map(|(a, _)| a.clone())
-        .collect();
-    for addr in gone {
-        live.idle_since.remove(&addr);
-        if let Some(h) = live.sessions.remove(&addr) {
-            let _ = h
-                .disconnect(russh::Disconnect::ByApplication, "", "en")
-                .await;
-        }
-    }
-}
-
-async fn handle(live: &mut Live, job: Job) {
+async fn run_job(job: Job) {
     match job {
         Job::Shell { spec, rows, cols, cwd, then, out, lost, reply } => {
-            let r = open_shell(live, &spec, rows, cols, out, lost).await;
-            // Typed, so it is on screen like anything else typed, and so that
-            // nothing else has to know it happened. The folder first, and the
-            // program in it only if the folder is there: a program started
-            // somewhere else would work on the wrong files
-            let line = typed_first(cwd.as_deref(), then.as_deref());
-            if let (Ok(id), Some(line)) = (&r, line)
-                && let Some(ch) = live.shells.get(id) {
-                    let _ = ch.data(line.as_bytes()).await;
-                }
-            let _ = reply.send(r);
+            let opened = tokio::time::timeout(
+                std::time::Duration::from_millis(CONNECT_MS + ANSWER_GRACE_MS),
+                open_shell(&spec, rows, cols, cwd, then, out, lost),
+            )
+            .await
+            .unwrap_or_else(|_| Err(anyhow!(crate::i18n::tp("err.ssh.timeout", &[("host", &spec.address())]))));
+            // Nobody waiting for it any more is a terminal nobody will type
+            // into: the queue comes back with the refusal and is dropped, and
+            // the terminal's task closes it on the far end
+            let _ = reply.send(opened);
         }
-        Job::Write { id, data } => {
-            if let Some(ch) = live.shells.get(&id)
-                && let Err(e) = ch.data(&data[..]).await {
-                    crate::append_hook_log(&format!("ssh: could not send: {e}"));
-                }
+        Job::Files { spec, job, wait_ms, reply } => {
+            let _ = reply.send(do_file_job(&spec, job, deadline(wait_ms)).await);
         }
-        Job::Resize { id, rows, cols } => {
-            if let Some(ch) = live.shells.get(&id) {
-                let _ = ch.window_change(cols as u32, rows as u32, 0, 0).await;
-            }
-        }
-        Job::Files { spec, job, reply } => {
-            let r = do_file_job(live, &spec, job).await;
-            let _ = reply.send(r);
+        Job::Exec { spec, command, wait_ms, reply } => {
+            let _ = reply.send(do_exec(&spec, &command, deadline(wait_ms)).await);
         }
         Job::Tunnel { spec, port, stream } => {
             let opened = async {
-                let route = session(live, &spec).await?;
-                let handle = live
-                    .sessions
-                    .get(&route)
-                    .ok_or_else(|| anyhow!(crate::i18n::tp("err.ssh.connect", &[("host", &route), ("e", "gone")])))?;
-                Ok::<_, anyhow::Error>(handle.channel_open_direct_tcpip("127.0.0.1", port as u32, "127.0.0.1", 0).await?)
+                let lease = lease(&spec).await?;
+                let ch = lease.handle.channel_open_direct_tcpip("127.0.0.1", port as u32, "127.0.0.1", 0).await?;
+                stream.set_nonblocking(true)?;
+                Ok::<_, anyhow::Error>((lease, ch, tokio::net::TcpStream::from_std(stream)?))
             }
             .await;
-            match opened.and_then(|ch| {
-                stream.set_nonblocking(true)?;
-                Ok((ch, tokio::net::TcpStream::from_std(stream)?))
-            }) {
-                // Carried both ways, on a task of its own, until either end
-                // closes: a page loading is many of these at once
-                Ok((ch, mut here)) => {
-                    tokio::spawn(async move {
-                        let mut there = ch.into_stream();
-                        let _ = tokio::io::copy_bidirectional(&mut here, &mut there).await;
-                    });
+            match opened {
+                // Carried both ways until either end closes. The connection
+                // is held for as long as this is -- a page loading is many of
+                // these at once, and none may find it let go under it
+                Ok((_lease, ch, mut here)) => {
+                    let mut there = ch.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut here, &mut there).await;
                 }
                 Err(e) => crate::append_hook_log(&format!("ssh: could not carry a connection to port {port} on {}: {e:#}", spec.address())),
             }
         }
-        Job::Exec { spec, command, reply } => {
-            let r = do_exec(live, &spec, &command).await;
-            let _ = reply.send(r);
-        }
-        Job::Close { id } => {
-            if let Some(ch) = live.shells.remove(&id) {
-                let _ = ch.eof().await;
-                let _ = ch.close().await;
-            }
-            // A connection with nothing left on it starts its clock
-            for addr in live.sessions.keys() {
-                live.idle_since.insert(addr.clone(), std::time::Instant::now());
-            }
+    }
+}
+
+fn deadline(wait_ms: u64) -> tokio::time::Instant {
+    tokio::time::Instant::now() + std::time::Duration::from_millis(wait_ms)
+}
+
+// ── Connections ─────────────────────────────────────────────────────────────
+
+/// One connection this thread has made, or is making, or had until lately.
+struct Conn {
+    /// Held while the connection is being made, so that two asks for one
+    /// server at once make one connection, and asks for other servers are
+    /// not held up by it at all
+    gate: Arc<tokio::sync::Mutex<Option<Open>>>,
+    /// How many terminals, commands, transfers and connections through it
+    /// are on it now. The one thing that says whether it is in use
+    users: usize,
+    /// When the last of them went, so an unused one is let go rather than
+    /// held open for the life of the program
+    idle_since: Option<std::time::Instant>,
+}
+
+/// A connection that is open and signed in.
+struct Open {
+    handle: Arc<russh::client::Handle<Client>>,
+    /// The bastion it is reached through, held for exactly as long as it is.
+    /// Without this a bastion with no terminal of its own was let go while
+    /// the server behind it was still being used, and took it along
+    _via: Option<Lease>,
+}
+
+/// Every connection, by [`conn_key`]. A plain lock, taken only for a moment
+/// and never across a wait on the network
+fn conns() -> &'static Mutex<HashMap<String, Conn>> {
+    static CONNS: OnceLock<Mutex<HashMap<String, Conn>>> = OnceLock::new();
+    CONNS.get_or_init(Default::default)
+}
+
+/// A connection in use, handed to whoever uses it. Dropping it is how it is
+/// given back: when the last one goes, the connection starts its idle clock
+struct Lease {
+    key: String,
+    handle: Arc<russh::client::Handle<Client>>,
+}
+
+/// Being counted as a user of a connection before it is open, so it is not
+/// let go while it is being made
+struct Claim(String);
+
+impl Claim {
+    fn take(key: &str) -> (Claim, Arc<tokio::sync::Mutex<Option<Open>>>) {
+        let mut all = conns().lock().unwrap_or_else(|e| e.into_inner());
+        let c = all.entry(key.to_string()).or_insert_with(|| Conn {
+            gate: Arc::new(tokio::sync::Mutex::new(None)),
+            users: 0,
+            idle_since: None,
+        });
+        c.users += 1;
+        c.idle_since = None;
+        (Claim(key.to_string()), Arc::clone(&c.gate))
+    }
+}
+
+fn give_back(key: &str) {
+    let mut all = conns().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(c) = all.get_mut(key) {
+        c.users = c.users.saturating_sub(1);
+        if c.users == 0 {
+            c.idle_since = Some(std::time::Instant::now());
         }
     }
 }
 
-/// Make sure there is a connection to this server, and say what it is filed
-/// under. The one place "have we met this server" and "who are we" are
-/// answered, so that a terminal and a file transfer agree about both
-fn session<'a>(
-    live: &'a mut Live,
-    spec: &'a Spec,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + 'a>> {
+impl Drop for Claim {
+    fn drop(&mut self) {
+        // Turned into a lease, the lease gives it back instead
+        if !self.0.is_empty() {
+            give_back(&self.0);
+        }
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        give_back(&self.key);
+    }
+}
+
+impl Claim {
+    fn into_lease(mut self, handle: Arc<russh::client::Handle<Client>>) -> Lease {
+        Lease { key: std::mem::take(&mut self.0), handle }
+    }
+}
+
+/// Let go of every connection nobody has used for [`IDLE_KEEP_MS`]
+async fn close_idle() {
+    let now = std::time::Instant::now();
+    // Taken out under the lock and let go after it: letting go of one drops
+    // the lease on its bastion, and giving that back takes the same lock
+    let gone: Vec<Open> = {
+        let mut all = conns().lock().unwrap_or_else(|e| e.into_inner());
+        let old: Vec<String> = all
+            .iter()
+            .filter(|(_, c)| {
+                c.users == 0 && c.idle_since.is_some_and(|t| now.duration_since(t).as_millis() as u64 > IDLE_KEEP_MS)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        let mut gone = Vec::new();
+        for k in old {
+            let Some(c) = all.get(&k) else { continue };
+            // Nobody is using it, so nobody holds this; a connection being
+            // made is counted as used and never gets here
+            let Ok(mut open) = c.gate.try_lock() else { continue };
+            if let Some(o) = open.take() {
+                gone.push(o);
+            }
+            drop(open);
+            all.remove(&k);
+        }
+        gone
+    };
+    for o in gone {
+        let _ = o.handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+    }
+}
+
+/// What a connection is filed under while the program runs: which way it was
+/// reached and who signed in ([`Spec::route`]), and with what.
+///
+/// The credential is part of it because a connection is only as good as what
+/// it was signed in with. Filed by route alone, a password changed in the
+/// settings went unused for as long as the old connection lived -- trying it
+/// seemed to work, and the first reconnection found out it did not -- and a
+/// password taken out went on working. With it, the next thing asked for signs
+/// in afresh with what the settings say now, and the terminals already open
+/// keep the connection they have until they close. Kept as a keyed hash, never
+/// as the secret, and the key file's contents count, not only its name
+fn conn_key(spec: &Spec) -> String {
+    use std::hash::BuildHasher;
+    static SALT: OnceLock<std::collections::hash_map::RandomState> = OnceLock::new();
+    let key_file = spec.key.as_ref().map(|p| std::fs::read(p).unwrap_or_default());
+    let with = SALT.get_or_init(Default::default).hash_one((
+        secret(&spec.password_key),
+        &spec.key,
+        key_file,
+        secret(&spec.passphrase_key),
+        spec.jump.as_deref().map(conn_key),
+    ));
+    format!("{}#{with:016x}", spec.route())
+}
+
+/// A connection to this server, signed in, for as long as the lease is held.
+/// The one place "have we met this server" and "who are we" are answered, so
+/// that a terminal and a file transfer agree about both
+fn lease<'a>(spec: &'a Spec) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Lease>> + Send + 'a>> {
     // A bastion is reached the same way its server is, so this calls itself.
     // An async function that does that has a size nobody can write down, which
     // is what the box is for
-    Box::pin(open_session(live, spec))
+    Box::pin(async move {
+        let (claim, gate) = Claim::take(&conn_key(spec));
+        let mut open = gate.lock().await;
+        if let Some(o) = open.as_ref().filter(|o| !o.handle.is_closed()) {
+            let handle = Arc::clone(&o.handle);
+            return Ok(claim.into_lease(handle));
+        }
+        // Gone, or never made
+        *open = None;
+        let made = connect(spec).await?;
+        let handle = Arc::clone(&made.handle);
+        *open = Some(made);
+        Ok(claim.into_lease(handle))
+    })
 }
 
-async fn open_session(live: &mut Live, spec: &Spec) -> Result<String> {
-    let addr = spec.address();
-    let route = spec.route();
-    if let Some(h) = live.sessions.get(&route) {
-        if !h.is_closed() {
-            live.idle_since.remove(&route);
-            return Ok(route);
-        }
-        live.sessions.remove(&route);
+/// The fingerprint remembered for this server, by [`Spec::machine`].
+///
+/// By machine and not by address, because the address alone is not a machine:
+/// one private address behind two bastions is two servers with two keys, and
+/// filed as one, the second of them was refused as a key that had changed.
+/// A file written before carries a server reached directly under its address
+/// as typed; that is still the same machine and is read as it. A server behind
+/// a bastion is never read from such a line -- that line is the very one that
+/// could not tell two networks apart
+fn remembered(spec: &Spec) -> Option<String> {
+    let all = known_hosts();
+    let name = spec.machine();
+    if let Some(fp) = all.get(&name) {
+        return Some(fp.clone());
     }
+    if spec.jump.is_some() {
+        return None;
+    }
+    all.iter().find(|(k, _)| !k.contains('>') && machine_key(k) == name).map(|(_, fp)| fp.clone())
+}
+
+/// Open and sign in to one server
+async fn connect(spec: &Spec) -> Result<Open> {
+    let addr = spec.address();
+    let name = spec.machine();
     let config = Arc::new(russh::client::Config {
         inactivity_timeout: Some(std::time::Duration::from_secs(3600)),
         // A quiet connection is cut by some networks after a few minutes. When
@@ -516,7 +650,7 @@ async fn open_session(live: &mut Live, spec: &Spec) -> Result<String> {
         keepalive_max: KEEPALIVE_MISSES,
         ..Default::default()
     });
-    let seen = known_hosts().get(&addr).cloned();
+    let seen = remembered(spec);
     let met = Arc::new(Mutex::new(None::<String>));
     let handler = Client { expected: seen.clone(), met: Arc::clone(&met) };
     // Through a bastion, the way in is a channel on that bastion's own
@@ -525,27 +659,21 @@ async fn open_session(live: &mut Live, spec: &Spec) -> Result<String> {
     // bastion's own words instead of arriving as a failure to reach the server
     // behind it. Everything after this point -- the host key included -- is the
     // far server answering for itself
-    let hop = match &spec.jump {
-        None => None,
-        Some(via) => {
-            let through = session(live, via).await?;
-            let open = live
-                .sessions
-                .get(&through)
-                .ok_or_else(|| {
-                    anyhow!(crate::i18n::tp(
-                        "err.ssh.connect",
-                        &[("host", &through), ("e", "gone")]
-                    ))
-                })?
+    let (via, hop) = match &spec.jump {
+        None => (None, None),
+        Some(through) => {
+            let via = lease(through).await?;
+            let open = via
+                .handle
                 .channel_open_direct_tcpip(spec.host.clone(), spec.port as u32, "127.0.0.1", 0)
-                .await;
-            Some(open.map_err(|e| {
-                anyhow!(crate::i18n::tp(
-                    "err.ssh.jump",
-                    &[("jump", &through), ("host", &addr), ("e", &e.to_string())]
-                ))
-            })?)
+                .await
+                .map_err(|e| {
+                    anyhow!(crate::i18n::tp(
+                        "err.ssh.jump",
+                        &[("jump", &through.address()), ("host", &addr), ("e", &e.to_string())]
+                    ))
+                })?;
+            (Some(via), Some(open))
         }
     };
     let connect = async {
@@ -573,9 +701,9 @@ async fn open_session(live: &mut Live, spec: &Spec) -> Result<String> {
             if let (Some(before), Some(now)) = (&seen, &now)
                 && before != now {
                     crate::append_hook_log(&format!(
-                        "ssh: the key at {addr} changed: {before} -> {now}"
+                        "ssh: the key at {name} changed: {before} -> {now}"
                     ));
-                    bail!(crate::i18n::tp("err.ssh.host_changed", &[("host", &addr)]));
+                    bail!(crate::i18n::tp("err.ssh.host_changed", &[("host", &addr), ("line", &name)]));
                 }
             bail!(crate::i18n::tp(
                 "err.ssh.connect",
@@ -585,12 +713,17 @@ async fn open_session(live: &mut Live, spec: &Spec) -> Result<String> {
         Ok(Ok(h)) => h,
     };
     // A server we had not met is remembered now, with its fingerprint, so that
-    // the next time it changes we are able to say so
-    if seen.is_none()
-        && let Some(fp) = met.lock().ok().and_then(|m| m.clone()) {
-            let _ = remember_host(&addr, &fp);
-            crate::append_hook_log(&format!("ssh: first time at {addr}, key {fp}"));
+    // the next time it changes we are able to say so. One read from a line
+    // written the old way is written again under its name, and the old line
+    // is left for any older copy of the app that still reads it
+    if let Some(fp) = met.lock().ok().and_then(|m| m.clone())
+        && known_hosts().get(&name) != Some(&fp)
+    {
+        let _ = remember_host(&name, &fp);
+        if seen.is_none() {
+            crate::append_hook_log(&format!("ssh: first time at {name}, key {fp}"));
         }
+    }
 
     // A key if one is named, and the stored password otherwise. Asked for now
     // rather than kept: this is the only moment it is needed
@@ -626,32 +759,58 @@ async fn open_session(live: &mut Live, spec: &Spec) -> Result<String> {
             &[("user", &spec.user), ("host", &addr)]
         ));
     }
-    live.sessions.insert(route.clone(), handle);
-    live.idle_since.remove(&route);
-    Ok(route)
+    Ok(Open { handle: Arc::new(handle), _via: via })
 }
 
 async fn open_shell(
-    live: &mut Live,
     spec: &Spec,
     rows: u16,
     cols: u16,
+    cwd: Option<String>,
+    then: Option<String>,
     out: Sender<Vec<u8>>,
     lost: Arc<AtomicBool>,
-) -> Result<u64> {
-    let route = session(live, spec).await?;
-    let handle = live
-        .sessions
-        .get(&route)
-        .ok_or_else(|| anyhow!(crate::i18n::tp("err.ssh.connect", &[("host", &route), ("e", "gone")])))?;
-    let channel = handle.channel_open_session().await?;
+) -> Result<ShellTx> {
+    let lease = lease(spec).await?;
+    let channel = lease.handle.channel_open_session().await?;
     channel
         .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
         .await?;
     channel.request_shell(true).await?;
-    let id = next_id();
     let (mut reading, writing) = channel.split();
-    live.shells.insert(id, writing);
+    // Typed, so it is on screen like anything else typed, and so that
+    // nothing else has to know it happened. The folder first, and the
+    // program in it only if the folder is there: a program started
+    // somewhere else would work on the wrong files
+    if let Some(line) = typed_first(cwd.as_deref(), then.as_deref()) {
+        let _ = writing.data(line.as_bytes()).await;
+    }
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ToShell>();
+    // What is typed, in the order it was typed, on a task that holds the
+    // connection for as long as the terminal is open. It ends when the tab
+    // closes the terminal, when the tab has let go of every way to reach it,
+    // or when the far end will take no more -- and then the next keystroke
+    // is refused rather than said to have arrived
+    tokio::spawn(async move {
+        let _held = lease;
+        while let Some(said) = rx.recv().await {
+            match said {
+                ToShell::Data(data) => {
+                    if let Err(e) = writing.data(&data[..]).await {
+                        crate::append_hook_log(&format!("ssh: could not send: {e}"));
+                        break;
+                    }
+                }
+                ToShell::Resize { rows, cols } => {
+                    let _ = writing.window_change(cols as u32, rows as u32, 0, 0).await;
+                }
+                ToShell::Close => break,
+            }
+        }
+        rx.close();
+        let _ = writing.eof().await;
+        let _ = writing.close().await;
+    });
     // Everything the far end says goes straight to the tab's queue, from a task
     // of its own, so one quiet connection never holds up a busy one
     tokio::spawn(async move {
@@ -690,7 +849,75 @@ async fn open_shell(
             let _ = out.send(said.into_bytes());
         }
     });
-    Ok(id)
+    Ok(tx)
+}
+
+/// The words for a job that ran out of time: not answering at all is one
+/// thing, answering and taking too long is another
+fn late(spec: &Spec, connected: bool, wait_ms: u64) -> anyhow::Error {
+    match connected {
+        false => anyhow!(crate::i18n::tp("err.ssh.timeout", &[("host", &spec.address())])),
+        true => anyhow!(crate::i18n::tp(
+            "err.ssh.too_long",
+            &[("host", &spec.address()), ("secs", &wait_ms.div_ceil(1000).to_string())]
+        )),
+    }
+}
+
+/// Run one command over there and wait for it to finish.
+///
+/// Its own channel, closed when the command ends, so nothing of it is left on
+/// the connection a terminal is using. What is collected is both streams and
+/// the exit code, because the caller is a program: "it printed something" is
+/// not the same answer as "it worked".
+///
+/// Stopped when its time is up, not merely stopped being waited for: the
+/// command is told to end and its channel is closed, so a caller that gave up
+/// does not leave it running on the far end, holding the connection open
+async fn do_exec(spec: &Spec, command: &str, until: tokio::time::Instant) -> Result<Ran> {
+    use russh::ChannelMsg;
+    let wait_ms = until.saturating_duration_since(tokio::time::Instant::now()).as_millis() as u64;
+    let lease = tokio::time::timeout_at(until, lease(spec)).await.map_err(|_| late(spec, false, wait_ms))??;
+    let mut channel = tokio::time::timeout_at(until, lease.handle.channel_open_session())
+        .await
+        .map_err(|_| late(spec, true, wait_ms))??;
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    // A server may send the code and keep talking, so the streams are drained
+    // to the end rather than stopping at the first word about the ending
+    let mut code: Option<i32> = None;
+    let ran = tokio::time::timeout_at(until, async {
+        channel.exec(true, command).await?;
+        while let Some(msg) = channel.wait().await {
+            match msg {
+                ChannelMsg::Data { ref data } => out.extend_from_slice(data),
+                ChannelMsg::ExtendedData { ref data, .. } => err.extend_from_slice(data),
+                ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status as i32),
+                // OpenSSH ends the output first and says how the command ended
+                // after: stopping at the end of the output lost the code, and every
+                // command that worked read as one that did not
+                ChannelMsg::Eof => {}
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await;
+    if ran.is_err() {
+        let _ = channel.signal(russh::Sig::TERM).await;
+    }
+    let _ = channel.close().await;
+    match ran {
+        Err(_) => Err(late(spec, true, wait_ms)),
+        Ok(Err(e)) => Err(e),
+        Ok(Ok(())) => Ok(Ran {
+            // No word about the ending is not the same as a clean one: a server
+            // that closed on us has not told us the command worked
+            code: code.unwrap_or(-1),
+            out: String::from_utf8_lossy(&out).to_string(),
+            err: String::from_utf8_lossy(&err).to_string(),
+        }),
+    }
 }
 
 /// One file job, on the connection the terminals are already using.
@@ -698,70 +925,32 @@ async fn open_shell(
 /// A file session is opened for the job and closed after it. Holding one open
 /// would be faster and would also mean a tab that transfers nothing keeps a
 /// channel open on the far end for as long as the app runs; a transfer is not
-/// something that happens hundreds of times a second
-/// Run one command over there and wait for it to finish.
-///
-/// Its own channel, closed when the command ends, so nothing of it is left on
-/// the connection a terminal is using. What is collected is both streams and
-/// the exit code, because the caller is a program: "it printed something" is
-/// not the same answer as "it worked"
-async fn do_exec(live: &mut Live, spec: &Spec, command: &str) -> Result<Ran> {
-    use russh::ChannelMsg;
-    let route = session(live, spec).await?;
-    let handle = live
-        .sessions
-        .get(&route)
-        .ok_or_else(|| anyhow!(crate::i18n::tp("err.ssh.connect", &[("host", &route), ("e", "gone")])))?;
-    let mut channel = handle.channel_open_session().await?;
-    channel.exec(true, command).await?;
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    // A server may send the code and keep talking, so the streams are drained
-    // to the end rather than stopping at the first word about the ending
-    let mut code: Option<i32> = None;
-    while let Some(msg) = channel.wait().await {
-        match msg {
-            ChannelMsg::Data { ref data } => out.extend_from_slice(data),
-            ChannelMsg::ExtendedData { ref data, .. } => err.extend_from_slice(data),
-            ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status as i32),
-            // OpenSSH ends the output first and says how the command ended
-            // after: stopping at the end of the output lost the code, and every
-            // command that worked read as one that did not
-            ChannelMsg::Eof => {}
-            ChannelMsg::Close => break,
-            _ => {}
+/// something that happens hundreds of times a second. Closed the same way
+/// when its time is up, so a transfer given up on is not still going
+async fn do_file_job(spec: &Spec, job: FileJob, until: tokio::time::Instant) -> Result<FileAnswer> {
+    let wait_ms = until.saturating_duration_since(tokio::time::Instant::now()).as_millis() as u64;
+    let lease = tokio::time::timeout_at(until, lease(spec)).await.map_err(|_| late(spec, false, wait_ms))??;
+    let sftp = tokio::time::timeout_at(until, async {
+        let channel = lease.handle.channel_open_session().await?;
+        // Asking for a reply, so a server that has no file service says so here
+        // rather than leaving the first packet unanswered
+        match spec.file_command.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            // The ordinary way: the server runs its own file service
+            None => channel.request_subsystem(true, "sftp").await?,
+            // A command instead, for a machine where the files that matter belong
+            // to somebody else. What it prints has to be the file protocol and
+            // nothing else -- a shell that greets you first will not be understood
+            Some(cmd) => channel.exec(true, cmd).await?,
         }
-    }
-    let _ = channel.close().await;
-    Ok(Ran {
-        // No word about the ending is not the same as a clean one: a server
-        // that closed on us has not told us the command worked
-        code: code.unwrap_or(-1),
-        out: String::from_utf8_lossy(&out).to_string(),
-        err: String::from_utf8_lossy(&err).to_string(),
+        Ok::<_, anyhow::Error>(russh_sftp::client::SftpSession::new(channel.into_stream()).await?)
     })
-}
-
-async fn do_file_job(live: &mut Live, spec: &Spec, job: FileJob) -> Result<FileAnswer> {
-    let route = session(live, spec).await?;
-    let handle = live
-        .sessions
-        .get(&route)
-        .ok_or_else(|| anyhow!(crate::i18n::tp("err.ssh.connect", &[("host", &route), ("e", "gone")])))?;
-    let channel = handle.channel_open_session().await?;
-    // Asking for a reply, so a server that has no file service says so here
-    // rather than leaving the first packet unanswered
-    match spec.file_command.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
-        // The ordinary way: the server runs its own file service
-        None => channel.request_subsystem(true, "sftp").await?,
-        // A command instead, for a machine where the files that matter belong
-        // to somebody else. What it prints has to be the file protocol and
-        // nothing else -- a shell that greets you first will not be understood
-        Some(cmd) => channel.exec(true, cmd).await?,
-    }
-    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream()).await?;
-    let out = run_file_job(&sftp, job).await;
-    let _ = sftp.close().await;
-    out
+    .await
+    .map_err(|_| late(spec, true, wait_ms))??;
+    let out = tokio::time::timeout_at(until, run_file_job(&sftp, job)).await;
+    // Bounded too: a far end that stopped answering does not answer this
+    // either, and the channel closes when the session is dropped regardless
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), sftp.close()).await;
+    out.map_err(|_| late(spec, true, wait_ms))?
 }
 
 async fn run_file_job(
@@ -806,17 +995,22 @@ async fn run_file_job(
                 ));
             }
             let bytes = sftp.read(&from).await?;
-            if let Some(d) = to.parent() {
-                std::fs::create_dir_all(d)?;
-            }
-            std::fs::write(&to, bytes)?;
+            // Written off this thread: a large file on a slow disk would
+            // otherwise hold every other server's work while it is written
+            tokio::task::spawn_blocking(move || {
+                if let Some(d) = to.parent() {
+                    std::fs::create_dir_all(d)?;
+                }
+                std::fs::write(&to, bytes)
+            })
+            .await??;
             Ok(FileAnswer::Nothing)
         }
         FileJob::Put { from, to, overwrite } => {
             if !overwrite && sftp.try_exists(&to).await.unwrap_or(false) {
                 bail!(crate::i18n::tp("err.ssh.file_exists", &[("path", &to)]));
             }
-            let bytes = std::fs::read(&from)?;
+            let bytes = tokio::task::spawn_blocking(move || std::fs::read(&from)).await??;
             write_whole(sftp, &to, &bytes).await?;
             Ok(FileAnswer::Nothing)
         }
@@ -933,15 +1127,19 @@ impl Read for ShellReader {
     }
 }
 
-/// The writing half. Typing goes to the thread, which is the only thing that
-/// touches the connection
+/// The writing half. Typing goes to this terminal's own queue on the
+/// connection thread (see [`ToShell`])
 struct ShellWriter {
-    id: u64,
+    tx: ShellTx,
 }
 
 impl Write for ShellWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let _ = hub().send(Job::Write { id: self.id, data: buf.to_vec() });
+        // A terminal whose far end will take no more says so, like a local
+        // program that has exited, instead of swallowing what was typed
+        self.tx
+            .send(ToShell::Data(buf.to_vec()))
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the connection to the server has closed"))?;
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -956,7 +1154,7 @@ impl Write for ShellWriter {
 /// asks which of those crossed a network
 #[derive(Debug)]
 pub struct SshPty {
-    id: u64,
+    tx: ShellTx,
     size: Mutex<portable_pty::PtySize>,
     reader: Mutex<Option<ShellReader>>,
     writer_taken: AtomicBool,
@@ -967,11 +1165,7 @@ impl portable_pty::MasterPty for SshPty {
         if let Ok(mut s) = self.size.lock() {
             *s = size;
         }
-        let _ = hub().send(Job::Resize {
-            id: self.id,
-            rows: size.rows,
-            cols: size.cols,
-        });
+        let _ = self.tx.send(ToShell::Resize { rows: size.rows, cols: size.cols });
         Ok(())
     }
 
@@ -992,7 +1186,7 @@ impl portable_pty::MasterPty for SshPty {
         if self.writer_taken.swap(true, Ordering::SeqCst) {
             bail!("the writer for this connection has already been taken");
         }
-        Ok(Box::new(ShellWriter { id: self.id }))
+        Ok(Box::new(ShellWriter { tx: self.tx.clone() }))
     }
 
     /// Three questions a unix caller may ask of a local pty, none of which has
@@ -1029,12 +1223,12 @@ impl std::fmt::Debug for ShellReader {
 /// the channel and lets the far end tidy up after its own shell
 #[derive(Debug, Clone)]
 pub struct SshKiller {
-    id: u64,
+    tx: ShellTx,
 }
 
 impl portable_pty::ChildKiller for SshKiller {
     fn kill(&mut self) -> std::io::Result<()> {
-        let _ = hub().send(Job::Close { id: self.id });
+        let _ = self.tx.send(ToShell::Close);
         Ok(())
     }
     fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
@@ -1055,7 +1249,7 @@ pub fn shell(
 ) -> Result<(Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>, Arc<AtomicBool>)>
 {
     let (out_tx, out_rx) = channel::<Vec<u8>>();
-    let (reply_tx, reply_rx) = channel::<Result<u64>>();
+    let (reply_tx, reply_rx) = channel::<Result<ShellTx>>();
     let lost = Arc::new(AtomicBool::new(false));
     hub()
         .send(Job::Shell {
@@ -1069,16 +1263,16 @@ pub fn shell(
             reply: reply_tx,
         })
         .map_err(|_| anyhow!(crate::i18n::t("err.ssh.no_thread")))?;
-    let id = reply_rx
-        .recv_timeout(std::time::Duration::from_millis(CONNECT_MS + 5_000))
+    let tx = reply_rx
+        .recv_timeout(std::time::Duration::from_millis(CONNECT_MS + 2 * ANSWER_GRACE_MS))
         .map_err(|_| anyhow!(crate::i18n::tp("err.ssh.timeout", &[("host", &spec.address())])))??;
     let pty = SshPty {
-        id,
+        tx: tx.clone(),
         size: Mutex::new(portable_pty::PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }),
         reader: Mutex::new(Some(ShellReader { rx: out_rx, rest: Vec::new(), at: 0 })),
         writer_taken: AtomicBool::new(false),
     };
-    Ok((Box::new(pty), Box::new(SshKiller { id }), lost))
+    Ok((Box::new(pty), Box::new(SshKiller { tx }), lost))
 }
 
 /// The first line typed into a shell that just opened over there: the folder
@@ -1109,14 +1303,15 @@ pub fn sh_quote(word: &str) -> String {
 /// Do something with files on another machine.
 ///
 /// Blocks until the far end answers, like every other file call in the program.
-/// Whoever calls it decides how long they are willing to wait
+/// Whoever calls it decides how long they are willing to wait, and the job is
+/// stopped when that time is up rather than left going
 pub fn files(spec: &Spec, job: FileJob, wait_ms: u64) -> Result<FileAnswer> {
     let (reply_tx, reply_rx) = channel::<Result<FileAnswer>>();
     hub()
-        .send(Job::Files { spec: spec.clone(), job, reply: reply_tx })
+        .send(Job::Files { spec: spec.clone(), job, wait_ms, reply: reply_tx })
         .map_err(|_| anyhow!(crate::i18n::t("err.ssh.no_thread")))?;
     reply_rx
-        .recv_timeout(std::time::Duration::from_millis(wait_ms))
+        .recv_timeout(std::time::Duration::from_millis(wait_ms + ANSWER_GRACE_MS))
         .map_err(|_| anyhow!(crate::i18n::tp("err.ssh.timeout", &[("host", &spec.address())])))?
 }
 
@@ -1164,14 +1359,15 @@ pub fn forwarded(spec: &Spec, port: u16) -> Option<u16> {
 
 /// The primitive everything remote is built from: git on the far side, asking
 /// whether a folder is there, finding out what is installed. Blocks, like every
-/// other call here; the caller decides how long it is willing to wait
+/// other call here; the caller decides how long it is willing to wait, and the
+/// command is stopped over there when that time is up
 pub fn exec(spec: &Spec, command: &str, wait_ms: u64) -> Result<Ran> {
     let (reply_tx, reply_rx) = channel::<Result<Ran>>();
     hub()
-        .send(Job::Exec { spec: spec.clone(), command: command.to_string(), reply: reply_tx })
+        .send(Job::Exec { spec: spec.clone(), command: command.to_string(), wait_ms, reply: reply_tx })
         .map_err(|_| anyhow!(crate::i18n::t("err.ssh.no_thread")))?;
     reply_rx
-        .recv_timeout(std::time::Duration::from_millis(wait_ms))
+        .recv_timeout(std::time::Duration::from_millis(wait_ms + ANSWER_GRACE_MS))
         .map_err(|_| anyhow!(crate::i18n::tp("err.ssh.timeout", &[("host", &spec.address())])))?
 }
 
@@ -1291,8 +1487,9 @@ mod tests {
     #[test]
     fn the_stream_is_handed_out_once() {
         let (_tx, rx) = channel::<Vec<u8>>();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<ToShell>();
         let pty = SshPty {
-            id: 1,
+            tx,
             size: Mutex::new(portable_pty::PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }),
             reader: Mutex::new(Some(ShellReader { rx, rest: Vec::new(), at: 0 })),
             writer_taken: AtomicBool::new(false),
@@ -1317,44 +1514,11 @@ mod tests {
     fn a_terminal_on_another_machine_reads_and_writes_like_any_other() {
         use std::io::Write as _;
 
-        let (port_tx, port_rx) = channel::<u16>();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime");
-            rt.block_on(async move {
-                let config = Arc::new(russh::server::Config {
-                    inactivity_timeout: Some(std::time::Duration::from_secs(30)),
-                    auth_rejection_time: std::time::Duration::from_millis(1),
-                    keys: vec![
-                        russh::keys::PrivateKey::random(
-                            &mut rand::rng(),
-                            russh::keys::Algorithm::Ed25519,
-                        )
-                        .expect("host key"),
-                    ],
-                    ..Default::default()
-                });
-                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-                    .await
-                    .expect("listen");
-                let _ = port_tx.send(listener.local_addr().expect("addr").port());
-                let mut server = Fake;
-                use russh::server::Server as _;
-                let _ = server.run_on_socket(config, &listener).await;
-            });
-        });
-        let port = port_rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the test server did not start");
+        let port = fake_server();
 
         // The password is not in the settings: it is a name, and this is the
         // store standing in for the real one
-        use_secrets(HashMap::from([(
-            "ssh/ws/prod/password".to_string(),
-            "hunter2".to_string(),
-        )]));
+        set_secret("ssh/ws/prod/password", "hunter2");
         let spec = Spec {
             host: "127.0.0.1".into(),
             port,
@@ -1408,6 +1572,34 @@ mod tests {
     /// worktree on the far side and the folder was really there afterwards.
     #[test]
     fn a_command_on_another_machine_comes_back_whole() {
+        let port = fake_server();
+        set_secret("ssh/ws/prod/password", "hunter2");
+        let spec = Spec {
+            host: "127.0.0.1".into(),
+            port,
+            user: "tester".into(),
+            password_key: Some("ssh/ws/prod/password".into()),
+            key: None,
+            passphrase_key: None,
+            ..Default::default()
+        };
+
+        let good = exec(&spec, "git --version", 15_000).expect("the command did not run");
+        assert!(good.ok(), "it worked but counts as a failure: {good:?}");
+        assert_eq!(good.code, 0);
+        assert!(good.out.contains("ran:git --version"), "{good:?}");
+
+        let bad = exec(&spec, "please fail", 15_000).expect("the command did not run");
+        assert!(!bad.ok(), "it failed but counts as a success: {bad:?}");
+        assert_eq!(bad.code, 3, "the exit code did not arrive");
+        assert_eq!(bad.said(), "it went wrong", "what it said was not picked up");
+        // The two halves do not run into each other
+        assert!(bad.out.is_empty(), "{bad:?}");
+    }
+
+    /// A server of our own on the loopback, with a key made for it, that takes
+    /// `tester` / `hunter2` and gives out an echoing terminal. Answers its port
+    fn fake_server() -> u16 {
         let (port_tx, port_rx) = channel::<u16>();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -1436,34 +1628,149 @@ mod tests {
                 let _ = server.run_on_socket(config, &listener).await;
             });
         });
-        let port = port_rx
+        port_rx
             .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the test server did not start");
-        use_secrets(HashMap::from([(
-            "ssh/ws/prod/password".to_string(),
-            "hunter2".to_string(),
-        )]));
-        let spec = Spec {
+            .expect("the test server did not start")
+    }
+
+    fn fake_spec(port: u16, password_key: &str) -> Spec {
+        Spec {
             host: "127.0.0.1".into(),
             port,
             user: "tester".into(),
-            password_key: Some("ssh/ws/prod/password".into()),
-            key: None,
-            passphrase_key: None,
+            password_key: Some(password_key.into()),
             ..Default::default()
+        }
+    }
+
+    /// A long piece of work on one connection holds up nobody else.
+    ///
+    /// Everything used to go through one queue, taken one after another: while
+    /// a clone ran, what was typed into any terminal on any server waited
+    /// behind it -- and the typing was said to have been sent. Here a command
+    /// that takes three seconds is running while a terminal is opened and
+    /// typed into, and the echo has to come back long before the command ends
+    #[test]
+    fn a_long_job_holds_up_no_terminal() {
+        use std::io::Write as _;
+        let port = fake_server();
+        set_secret("ssh/ws/slow/password", "hunter2");
+        let spec = fake_spec(port, "ssh/ws/slow/password");
+        // Signed in first, so the clock below measures the waiting and not
+        // the meeting
+        exec(&spec, "true", 15_000).expect("the first command did not run");
+        let slow = {
+            let spec = spec.clone();
+            std::thread::spawn(move || exec(&spec, "slow", 15_000))
         };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        let (pty, mut killer, _) = shell(&spec, 24, 80, None, None).expect("the terminal did not open");
+        let mut reader = pty.try_clone_reader().expect("reader");
+        let mut writer = pty.take_writer().expect("writer");
+        writer.write_all(b"quick").expect("typing");
+        let mut seen = String::new();
+        let mut buf = [0u8; 1024];
+        while !seen.contains("echo:quick") {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => seen.push_str(&String::from_utf8_lossy(&buf[..n])),
+            }
+        }
+        assert!(seen.contains("echo:quick"), "the typing did not arrive: {seen:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(2_000),
+            "the terminal waited for the long command: {:?}",
+            started.elapsed()
+        );
+        let done = slow.join().expect("thread").expect("the long command did not finish");
+        assert_eq!(done.out, "done");
+        killer.kill().expect("kill");
+    }
 
-        let good = exec(&spec, "git --version", 15_000).expect("the command did not run");
-        assert!(good.ok(), "it worked but counts as a failure: {good:?}");
-        assert_eq!(good.code, 0);
-        assert!(good.out.contains("ran:git --version"), "{good:?}");
+    /// A caller that stops waiting stops the work. Otherwise a command given
+    /// up on went on over there, and a transfer went on filling a file, with
+    /// nobody to hear how it ended
+    #[test]
+    fn a_job_out_of_time_is_stopped_and_says_so() {
+        let port = fake_server();
+        set_secret("ssh/ws/late/password", "hunter2");
+        let spec = fake_spec(port, "ssh/ws/late/password");
+        exec(&spec, "true", 15_000).expect("the first command did not run");
+        let started = std::time::Instant::now();
+        let late = exec(&spec, "slow", 500).expect_err("a command past its time came back as done");
+        assert!(started.elapsed() < std::time::Duration::from_millis(2_500), "{:?}", started.elapsed());
+        assert_eq!(
+            late.to_string(),
+            crate::i18n::tp("err.ssh.too_long", &[("host", &spec.address()), ("secs", "1")]),
+            "a server that answered and ran long is not one that did not answer"
+        );
+        // And the connection is still good for the next one
+        assert!(exec(&spec, "true", 15_000).expect("the next command did not run").ok());
+    }
 
-        let bad = exec(&spec, "please fail", 15_000).expect("the command did not run");
-        assert!(!bad.ok(), "it failed but counts as a success: {bad:?}");
-        assert_eq!(bad.code, 3, "the exit code did not arrive");
-        assert_eq!(bad.said(), "it went wrong", "what it said was not picked up");
-        // The two halves do not run into each other
-        assert!(bad.out.is_empty(), "{bad:?}");
+    /// A connection is only as good as what it signed in with. A password
+    /// changed in the settings is used by the next thing asked for, and the
+    /// old connection is not handed out as if it were signed in with it
+    #[test]
+    fn a_changed_password_signs_in_again() {
+        let port = fake_server();
+        set_secret("ssh/ws/change/password", "hunter2");
+        let spec = fake_spec(port, "ssh/ws/change/password");
+        assert!(exec(&spec, "true", 15_000).expect("signed in").ok());
+        set_secret("ssh/ws/change/password", "wrong");
+        let refused = exec(&spec, "true", 15_000).expect_err("the old connection was used for a new password");
+        assert!(refused.to_string().contains(&spec.address()), "{refused}");
+        set_secret("ssh/ws/change/password", "hunter2");
+        assert!(exec(&spec, "true", 15_000).expect("signed in again").ok());
+    }
+
+    /// Two servers at one private address, behind two bastions, are two
+    /// servers with two keys. Filed by address, the second was refused as the
+    /// first one with its key changed
+    #[test]
+    fn one_private_address_behind_two_bastions_is_two_keys() {
+        let at = |host: &str| Spec { host: host.into(), port: 22, user: "me".into(), ..Default::default() };
+        let behind = |gate: &str| {
+            let mut s = at("10.0.0.1");
+            s.jump = Some(Box::new(at(gate)));
+            s
+        };
+        remember_host(&behind("gw-prod.example.com").machine(), "SHA256:prod").expect("written");
+        assert_eq!(remembered(&behind("gw-prod.example.com")).as_deref(), Some("SHA256:prod"));
+        assert_eq!(remembered(&behind("gw-staging.example.com")), None, "staging was checked against production's key");
+    }
+
+    /// A file written before this was filed by address as typed. A server
+    /// reached directly is still found in it; one behind a bastion is not,
+    /// since that line could not say which network it was about
+    #[test]
+    fn a_key_filed_the_old_way_is_found_where_it_can_be() {
+        remember_host("Old-Direct.example.com:2201", "SHA256:old").expect("written");
+        let direct = Spec { host: "old-direct.example.com".into(), port: 2201, user: "me".into(), ..Default::default() };
+        assert_eq!(remembered(&direct).as_deref(), Some("SHA256:old"));
+        remember_host("10.9.9.9:22", "SHA256:someone").expect("written");
+        let mut behind = Spec { host: "10.9.9.9".into(), port: 22, user: "me".into(), ..Default::default() };
+        behind.jump = Some(Box::new(Spec { host: "gw.example.com".into(), port: 22, user: "me".into(), ..Default::default() }));
+        assert_eq!(remembered(&behind), None);
+    }
+
+    /// What a connection is filed under changes with what it signs in with,
+    /// and with what its bastion signs in with -- and never holds the secret
+    #[test]
+    fn a_connection_is_filed_with_its_credential() {
+        set_secret("ssh/ws/key/password", "one");
+        let spec = fake_spec(22, "ssh/ws/key/password");
+        let before = conn_key(&spec);
+        assert!(!before.contains("one"));
+        assert!(before.starts_with(&spec.route()));
+        set_secret("ssh/ws/key/password", "two");
+        assert_ne!(conn_key(&spec), before, "a new password was handed the old connection");
+        let mut through = fake_spec(22, "ssh/ws/key/password");
+        through.jump = Some(Box::new(fake_spec(2222, "ssh/ws/key/gate")));
+        let first = conn_key(&through);
+        set_secret("ssh/ws/key/gate", "changed");
+        assert_ne!(conn_key(&through), first, "the bastion's new password was not asked for");
     }
 
     /// The far side of that conversation. It asks for a password, insists on
@@ -1527,6 +1834,19 @@ mod tests {
         ) -> Result<(), Self::Error> {
             let line = String::from_utf8_lossy(command).to_string();
             session.channel_success(channel)?;
+            // A command that takes its time, the way a clone over a thin line
+            // does: it answers after three seconds, from a task of its own
+            if line.contains("slow") {
+                let h = session.handle();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let _ = h.data(channel, b"done".to_vec()).await;
+                    let _ = h.eof(channel).await;
+                    let _ = h.exit_status_request(channel, 0).await;
+                    let _ = h.close(channel).await;
+                });
+                return Ok(());
+            }
             // In the order OpenSSH sends them: the output ends, then how the
             // command ended, then the channel closes
             let code = if line.contains("fail") {

@@ -9294,9 +9294,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // What the new folder runs, chosen from what the machine it goes
             // on has: a server's own AIs (see crate::serverai), this PC's
             // anywhere else. An AI the server lacks runs nothing rather than
-            // a command that is not there
+            // a command that is not there -- and so does any AI while the
+            // server has not said what it has: this PC's are not its
             let server_ais = on.filter(|h| !h.is_made()).and_then(server_ai_choices);
-            let start_ais = server_ais.as_deref().unwrap_or(&ai_choices);
+            let start_ais: &[crate::uistate::AiChoice] = match on {
+                Some(h) if !h.is_made() => server_ais.as_deref().unwrap_or_default(),
+                _ => &ai_choices,
+            };
             let start = match on {
                 // On a MicroVM what runs is the AI its machine has (see
                 // Pending::write_down), or nothing when that was chosen.
@@ -13479,15 +13483,22 @@ pub fn machine_ai_of(
 /// The AI a folder's work goes to when the folder is on a server reached over
 /// SSH: one the server has (see [`crate::serverai`]) -- the one the settings
 /// chose when it has that, else the first it has. A server with none is
-/// refused with the words that say so. `None` for a folder that is not on a
-/// server, and for one whose server has not answered yet
+/// refused with the words that say so, and so is one that has not answered
+/// yet: this PC's AI is not an answer for it, since typed there it is a
+/// `command not found` -- and the same press working a moment later is worse
+/// than one that says to wait. `None` for a folder that is not on a server
 pub fn server_ai_of(
     desk: Option<&config::Desk>,
     at: &std::path::Path,
     ai: &str,
 ) -> Option<Result<crate::uistate::AiChoice, &'static str>> {
+    use crate::serverai::Heard;
     let host = desk?.folder_at(at)?.host.as_ref().filter(|h| !h.is_made())?;
-    let found = crate::serverai::known(host)?;
+    let found = match crate::serverai::heard(host)? {
+        Heard::Has(found) => found,
+        Heard::Asking => return Some(Err("msg.quick.server_ai_asking")),
+        Heard::Unreachable => return Some(Err("msg.quick.server_ai_unreachable")),
+    };
     Some(match crate::serverai::choose(&found, ai, QUICK_AI_ORDER) {
         Some(key) => {
             let name = crate::serverai::known_commands()
@@ -15592,7 +15603,13 @@ mod tests {
         assert_eq!(ai_for_folder(Some(&desk("has-codex")), &far("has-codex"), "claude", &ais).map(|a| a.key), Ok("codex".to_string()),
             "this PC's Claude was typed on a server that has only Codex");
         assert_eq!(ai_for_folder(Some(&desk("has-none")), &far("has-none"), "claude", &ais), Err(i18n::t("msg.quick.no_server_ai")));
-        assert_eq!(server_ai_of(Some(&desk("never-asked")), &far("never-asked"), "claude"), None, "a server not heard from is refused");
+        // Not heard from yet, or not reachable: refused with words that say
+        // which, never this PC's AI typed where it is not
+        crate::serverai::set_unreachable(&srv("gone"));
+        assert_eq!(ai_for_folder(Some(&desk("gone")), &far("gone"), "claude", &ais), Err(i18n::t("msg.quick.server_ai_unreachable")),
+            "this PC's Claude was typed on a server nobody could ask");
+        assert_eq!(ai_for_folder(Some(&desk("never-asked")), &far("never-asked"), "claude", &ais), Err(i18n::t("msg.quick.server_ai_asking")),
+            "this PC's Claude was typed on a server still being asked");
         // The same path on this PC runs this PC's AI
         assert_eq!(ai_for_folder(Some(&desk("has-codex")), &path, "claude", &ais).map(|a| a.key), Ok("claude".to_string()),
             "the folder here was given the server's AI");
