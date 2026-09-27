@@ -1,14 +1,14 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/banner.png" alt="SHIKISHA-TERM — Run Claude Code, Codex and Gemini side by side" width="820">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/banner.png" alt="SHIKISHA-TERM — Run many AI agents at once, on your PC or in the cloud" width="820">
 </p>
 
 <p align="center">
-  <b>Run Claude Code, Codex and Gemini side by side — and let them hand work to each other.</b><br>
-  A single portable <code>.exe</code> for Windows. No install, no admin rights, no API keys.
+  <b>Run many AI agents at once — on your PC or in the cloud — and steer them from your phone.</b><br>
+  For Windows, from the Microsoft Store or as a portable zip. Uses the AI subscriptions you already have.
 </p>
 
 <p align="center">
-  <sub><b>Works with</b> Claude Code · Codex · Gemini · Aider · Ollama · DeepSeek · Qwen — or any shell over SSH</sub>
+  <sub><b>Works with</b> Claude Code · Codex · Gemini CLI · Aider · OpenAI · Anthropic · DeepSeek · Mistral · OpenRouter · Ollama · LM Studio — or any shell over SSH</sub>
 </p>
 
 <p align="center">
@@ -46,18 +46,19 @@ Running one terminal AI is easy. Running **four** is not.
 
 You end up with a window per agent, no idea which one is waiting for you, and a lot of
 copy-pasting between them. SHIKISHA-TERM puts them in one window and knows the difference
-between *working*, *finished* and *waiting for a human* — and can move work between agents
-on its own.
+between *working*, *finished* and *waiting for a human*. The agents can run on your PC or on a
+cloud MicroVM, and you can steer them from your phone.
 
 It talks to whatever runs in a terminal, so it is not tied to one vendor: Claude Code,
 Codex CLI, Gemini CLI, DeepSeek, Ollama, Aider, or a plain shell over SSH.
 
-**Most AI terminals run a single agent. This one runs several — and moves work between them.**
+**Most AI terminals run a single agent. This one runs several — on your PC or in the cloud.**
 
 For example:
 
-- A **code → review loop**: one agent writes, another reviews, back and forth until it passes — then a Slack ping.
-- An **AI-vs-AI debate** you can watch play out, with the verdict saved to a file.
+- **Four agents on four branches**, each in a worktree of its own, all in one window.
+- An agent in **YOLO mode on a cloud MicroVM**, sealed off from your PC.
+- An AI that opens your dev server in the **built-in browser** and debugs it on its own.
 - Kick off a long job and **check on it from your phone** on the way home — and tell it to carry on.
 
 ## Install
@@ -176,10 +177,45 @@ starting), double-click **`Settings.cmd`**.
   <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/desktop.png" alt="SHIKISHA-TERM desktop — a mission-control dashboard of several AI agents, each showing whether it is working, waiting or done" width="880">
 </p>
 
+### 1. Run many at once
+
 - **Tabs with real status** — every tab shows whether it is working, done, or waiting for
   you, detected from the screen itself rather than from any vendor API
-- **Split panes** — put an agent next to the browser it is driving, or two agents side by
-  side, and watch both at once. Each pane is sized for what is in it
+- **Split panes** — split as many ways as you like: agents side by side, or an agent next to
+  the browser it is driving
+- **Worktrees** — a folder of its own for every branch, so several branches move at once
+- **Pick up where you left off** — close the app and resume the conversation (Claude Code, Codex)
+- **Notifications** — Slack / Discord / Telegram, this PC, or your phone when a job finishes
+
+### 2. Cloud agents (MicroVM)
+
+- **A machine of its own** — clone the project onto a cloud MicroVM (E2B) and run the agents
+  there. Whatever they do never reaches your PC, which makes it the place for YOLO mode
+- **Set up once** — every worktree is a copy of the project's machine, so what you installed
+  and signed in to is already there
+- **Pauses when idle** — it keeps everything and picks up where it stopped when its URL or a
+  webhook is called
+- **The token stays outside** — the git server's token is added on the way out, so no agent
+  inside can read it
+- **Previews by URL** — open what the machine serves by URL, unlisted or private
+
+### 3. Built in
+
+- **Browser** — open pages inside the app and let an AI drive and check them. A dev server's
+  port opens in a browser tab too
+- **Git panel** — stage part of a diff, let an AI write the commit message, and let an AI tab
+  work through a conflict
+- **SFTP** — this PC on the left, the server on the right; send and fetch files
+- **A real terminal** — SSH, Docker, WSL, jump hosts, key files, port forwarding, session
+  logs, legacy encodings, IME input and mouse support
+
+### 4. Answer from your phone
+
+- Scan a QR code to see every tab and send instructions. Everything you can do at the PC, you
+  can do from the phone (see below)
+
+### Also
+
 - **Desks** — swap the whole tab layout per project, like virtual desktops. Export one
   to a single file, automation scripts included, and hand it to another machine or person
 - **Automation** — "when this finishes, hand the result to the review tab", "answer this
@@ -187,10 +223,6 @@ starting), double-click **`Settings.cmd`**.
   for you by an AI you already have installed
 - **Runaway protection** — a limit on how many times agents may hand work to each other,
   an emergency stop, and per-tab input locks
-- **Notifications** — Slack / Telegram, this PC, or your phone when a job finishes
-- **Phone access** — check status and send instructions from outside (see below)
-- **A real terminal** — SSH, Docker, WSL, jump hosts, key files, port forwarding, session
-  logs, legacy encodings, IME input and mouse support
 
 ## Use it from your phone
 
