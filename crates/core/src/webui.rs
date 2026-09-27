@@ -8091,7 +8091,7 @@ function loginsCard() {
       });
       list.append(el("div", {class:"row"},
         el("label", {}, r.label),
-        el("span", {class:"hint"}, T["settings.logins.count"].replace("{n}", r.count)),
+        el("span", {class:"hint"}, T["settings.logins.count"].replaceAll("{n}", r.count)),
         del));
     }
   }
@@ -14851,7 +14851,7 @@ function connectionFields(box, t, conn, build, cmdInput) {
       btn.classList.remove("held");
       said.textContent = r && r.ok
         ? (T["settings.server.test.ok"] || "")
-            .replace("{host}", conn.host || "").replace("{user}", conn.user || "")
+            .replaceAll("{host}", conn.host || "").replaceAll("{user}", conn.user || "")
         : ((r && r.error) || "");
       said.style.color = r && r.ok ? "var(--live)" : "var(--warn)";
     }}, T["settings.server.test"]), said));

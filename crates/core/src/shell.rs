@@ -4480,7 +4480,7 @@ function drawTabs() {
   if (S.update) {
     nav.append(el("div", {class:"thanks update"},
       el("div", {class:"tt"}, S.update.version
-        ? (T["tui.update.title"] || "{version}").replace("{version}", S.update.version)
+        ? (T["tui.update.title"] || "{version}").replaceAll("{version}", S.update.version)
         : T["tui.update.title.store"] || ""),
       el("div", {class:"tb"}, T["tui.update.body"] || ""),
       el("div", {class:"tr"},
@@ -4635,7 +4635,7 @@ function issuesClock() {
 }
 function issuesSecs() {
   const n = Math.max(0, Math.floor((Date.now() - (I.busySince || Date.now())) / 1000));
-  return (T["issues.busy.secs"] || "{n}").replace("{n}", n);
+  return (T["issues.busy.secs"] || "{n}").replaceAll("{n}", n);
 }
 function issuesList(page) {
   I.page = page || 1;
@@ -4663,7 +4663,7 @@ function issueAgo(iso) {
   const [key, n] = m < 1 ? ["now", 0] : m < 60 ? ["min", m] : m < 1440 ? ["hour", Math.floor(m / 60)]
     : m < 43200 ? ["day", Math.floor(m / 1440)] : m < 525600 ? ["month", Math.floor(m / 43200)]
     : ["year", Math.floor(m / 525600)];
-  return (T["issues.ago." + key] || "{n}").replace("{n}", n);
+  return (T["issues.ago." + key] || "{n}").replaceAll("{n}", n);
 }
 // A pull request GitHub cannot merge for its conflicts
 function prConflicted(d) {
@@ -4680,21 +4680,21 @@ function prPlaceAsk() {
 // folder, and a conflict handed to an AI tab there
 function prConflictBox(d, proj, made) {
   const base = d.base || "";
-  const box = el("div", {class:"conflict"}, el("div", {}, (T["issues.pr.conflict"] || "").replace("{base}", base)));
+  const box = el("div", {class:"conflict"}, el("div", {}, (T["issues.pr.conflict"] || "").replaceAll("{base}", base)));
   const p = I.place && I.place.key === d.project + "#" + d.number ? I.place : null;
   if (!p) return box;
   if (!p.folder) {
     // A worktree made since the question was asked is asked about again, once
     if (made && p.asked !== made.folder) { p.asked = made.folder; setTimeout(prPlaceAsk, 0); }
     // The way to make one is the button at the top of the page, named here
-    box.append(el("div", {class:"dim"}, (T["issues.pr.conflict.nowhere"] || "").replace("{start}", T["issues.start.pr"] || "")));
+    box.append(el("div", {class:"dim"}, (T["issues.pr.conflict.nowhere"] || "").replaceAll("{start}", T["issues.start.pr"] || "")));
     return box;
   }
   // Named the way the folder list names it, with the whole path on hover
   const g = ((S && S.groups) || []).find(x => x.folder && sameFolder(x.folder, p.folder));
   const name = (g && g.name) || p.folder.split(/[\\/]/).filter(Boolean).pop() || p.folder;
   box.append(el("div", {class:"dim", title: p.folder}, (T[p.merging ? "issues.pr.conflict.stopped" : "issues.pr.conflict.here"] || "")
-    .replace("{folder}", name).replace("{base}", "origin/" + base)));
+    .replaceAll("{folder}", name).replaceAll("{base}", "origin/" + base)));
   if (!p.merging) box.append(el("pre", {class:"runs"}, (p.runs || []).join("\n")));
   const go = el("button", {class:"go",
     onclick:() => { if (!I.busy) issuesAsk("pr_resolve", {project: d.project, number: d.number, head: d.head || "", base}); }},
@@ -4799,10 +4799,10 @@ window.__issues = function (d) {
     case "pr_resolve": {
       const r = d.data || {};
       I.said = r.state === "tab"
-        ? (T[r.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "").replace("{title}", r.title || "")
+        ? (T[r.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "").replaceAll("{title}", r.title || "")
           + " " + (T["issues.pr.resolve.push"] || "")
         : (T[r.state === "taken" ? "issues.pr.resolve.taken" : "issues.pr.resolve.latest"] || "")
-          .replace("{base}", r.base || "").replace("{n}", r.taken || 0);
+          .replaceAll("{base}", r.base || "").replaceAll("{n}", r.taken || 0);
       prPlaceAsk();
       break;
     }
@@ -4814,7 +4814,7 @@ window.__issues = function (d) {
       const made = d.data || {};
       if (idea && made.number) ideasAsk("issued", {id: idea, number: made.number, url: made.url || ""});
       I.create = {project: I.create.project, title:"", body:"", labels:[], assignee:"", kept:""};
-      I.said = (T["issues.created"] || "").replace("{n}", (d.data || {}).number || "");
+      I.said = (T["issues.created"] || "").replaceAll("{n}", (d.data || {}).number || "");
       issuesAsk("detail", {project: d.project, number: (d.data || {}).number});
       issuesList(1);
       return;
@@ -4862,7 +4862,7 @@ window.__issues = function (d) {
       const n = (d.data || {}).number || "";
       I.pr = {project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false, close:false, issue:null, kept:"", files:null, open:{}, more:false};
       I.kind = "pr"; I.preset = "open"; I.list = null;
-      I.said = (T["issues.pr.created"] || "").replace("{n}", n);
+      I.said = (T["issues.pr.created"] || "").replaceAll("{n}", n);
       issuesAsk("detail", {project: d.project, number: n});
       issuesList(1);
       return;
@@ -5031,7 +5031,7 @@ function drawIssueList(box) {
   if (I.list && I.list.length && I.total > I.page * 36) {
     box.append(el("div", {class:"pager"},
       I.page > 1 ? el("button", {class:"quiet", onclick:() => issuesList(I.page - 1)}, "‹ " + (T["issues.page.prev"] || "")) : null,
-      el("span", {}, (T["issues.page"] || "{n}").replace("{n}", I.page).replace("{total}", Math.ceil(I.total / 36))),
+      el("span", {}, (T["issues.page"] || "{n}").replaceAll("{n}", I.page).replaceAll("{total}", Math.ceil(I.total / 36))),
       el("button", {class:"quiet", onclick:() => issuesList(I.page + 1)}, (T["issues.page.next"] || "") + " ›")));
   }
 }
@@ -5063,7 +5063,7 @@ function drawIssueDetail(box) {
     el("h3", {}, (d.title || "") + " ", el("span", {class:"dim"}, "#" + d.number)),
     el("div", {class:"meta"},
       el("span", {class:"state"}, T["issues.state." + state] || state),
-      el("span", {}, (T["issues.opened_by"] || "{who} · {when}").replace("{who}", d.author || "").replace("{when}", issueAgo(d.created))))));
+      el("span", {}, (T["issues.opened_by"] || "{who} · {when}").replaceAll("{who}", d.author || "").replaceAll("{when}", issueAgo(d.created))))));
 
   const facts = el("dl", {class:"facts"});
   const fact = (label, value) => facts.append(el("div", {}, el("dt", {}, label), el("dd", {}, value)));
@@ -5074,12 +5074,12 @@ function drawIssueDetail(box) {
     fact(T["issues.review"] || "", T["issues.review." + (d.review || "none")] || "");
     const c = d.checks;
     fact(T["issues.checks"] || "", !c || !c.total ? (T["issues.checks.none"] || "")
-      : c.failed ? (T["issues.checks.failed"] || "").replace("{n}", c.failed)
-      : c.pending ? (T["issues.checks.pending"] || "").replace("{n}", c.pending)
-      : (T["issues.checks.passed"] || "").replace("{n}", c.passed).replace("{total}", c.total));
+      : c.failed ? (T["issues.checks.failed"] || "").replaceAll("{n}", c.failed)
+      : c.pending ? (T["issues.checks.pending"] || "").replaceAll("{n}", c.pending)
+      : (T["issues.checks.passed"] || "").replaceAll("{n}", c.passed).replaceAll("{total}", c.total));
     fact(T["issues.mergeable"] || "", T["issues.merge_state." + (d.merge_state || "unknown")] || (d.merge_state || ""));
     if (d.additions != null) fact(T["issues.changes"] || "", "+" + d.additions + " −" + d.deletions + " · "
-      + (T["issues.files"] || "").replace("{n}", d.changed_files));
+      + (T["issues.files"] || "").replaceAll("{n}", d.changed_files));
   }
   box.append(facts);
   if (prConflicted(d)) box.append(prConflictBox(d, proj, made));
@@ -5145,7 +5145,7 @@ function drawIssueDetail(box) {
   const talk = el("div", {class:"talk"});
   const lines = [];
   for (const e of d.events || []) lines.push({at: e.created, node: el("div", {class:"event"},
-    (T["issues.event." + e.kind] || e.kind).replace("{actor}", e.actor || "").replace("{subject}", e.subject == null ? "" : String(e.subject))
+    (T["issues.event." + e.kind] || e.kind).replaceAll("{actor}", e.actor || "").replaceAll("{subject}", e.subject == null ? "" : String(e.subject))
     + " · " + issueAgo(e.created))});
   for (const c of d.comments || []) lines.push({at: c.created, node: el("div", {class:"comment"},
     el("div", {class:"who"}, (c.author || "") + " · " + issueAgo(c.created)),
@@ -5158,7 +5158,7 @@ function drawIssueDetail(box) {
   const acct = proj && proj.account ? proj.account : "";
   box.append(el("h4", {}, T["issues.comment.label"] || ""));
   box.append(el("div", {class:"write field"}, write,
-    acct ? el("span", {class:"hint"}, (T["issues.as"] || "").replace("{account}", pcAcctLabel(acct))) : null,
+    acct ? el("span", {class:"hint"}, (T["issues.as"] || "").replaceAll("{account}", pcAcctLabel(acct))) : null,
     el("div", {class:"foot"},
       el("button", {onclick:() => {
         if (!write.value.trim()) return;
@@ -5357,7 +5357,7 @@ function drawPrCreate(box) {
   into.onchange = () => { p.base = into.value; prAskFiles(); };
   field(T["issues.pr.base"] || "", into,
     p.bases === null ? "\u2026" : !p.bases.length ? (T["issues.pr.bases.none"] || "")
-      : (T["issues.pr.from"] || "").replace("{head}", p.head));
+      : (T["issues.pr.from"] || "").replaceAll("{head}", p.head));
 
   // What it would carry, file by file, each opened in place to be read
   const files = p.files;
@@ -5365,7 +5365,7 @@ function drawPrCreate(box) {
     const added = (files || []).reduce((n, f) => n + f.added, 0);
     const removed = (files || []).reduce((n, f) => n + f.removed, 0);
     const name = files === null ? (T["issues.pr.files"] || "")
-      : (T["issues.pr.files.n"] || "").replace("{n}", files.length).replace("{add}", added).replace("{del}", removed);
+      : (T["issues.pr.files.n"] || "").replaceAll("{n}", files.length).replaceAll("{add}", added).replaceAll("{del}", removed);
     const list = el("div", {class:"prfiles"});
     if (files === null) list.append(el("div", {class:"empty"}, "\u2026"));
     else if (!files.length) list.append(el("div", {class:"empty"}, T["issues.pr.files.none"] || ""));
@@ -5395,7 +5395,7 @@ function drawPrCreate(box) {
     }
     if (files && files.length > SHOWN && !p.more) {
       list.append(el("button", {type:"button", class:"quiet prmore", onclick:() => { p.more = true; redraw(); }},
-        (T["issues.pr.files.more"] || "").replace("{n}", files.length - SHOWN)));
+        (T["issues.pr.files.more"] || "").replaceAll("{n}", files.length - SHOWN)));
     }
     field(name, list);
   }
@@ -5409,7 +5409,7 @@ function drawPrCreate(box) {
   // Only when the folder was made for an issue: ticked, the description ends
   // with the line GitHub closes it by
   if (p.issue) {
-    form.append(tick(p.close, (T["issues.pr.closes"] || "").replace("{ref}", prIssueRef(p)), v => {
+    form.append(tick(p.close, (T["issues.pr.closes"] || "").replaceAll("{ref}", prIssueRef(p)), v => {
       p.close = v; p.body = prFixes(p.body, p);
     }));
   }
@@ -5447,7 +5447,7 @@ function drawFailed(t) {
       : null,
     el("button", {onclick:() => openSettings()}, T["tui.failed.settings"] || ""));
   box.append(el("div", {class:"box"},
-    el("h3", {}, el("span", {class:"dot"}), (T["tui.failed.title"] || "{name}").replace("{name}", t.name)),
+    el("h3", {}, el("span", {class:"dot"}), (T["tui.failed.title"] || "{name}").replaceAll("{name}", t.name)),
     el("div", {class:"why"}, f.why || ""),
     el("div", {class:"next"}, f.install_url ? (T["tui.failed.next.install"] || "") : (T["tui.failed.next"] || "")),
     acts));
@@ -5876,7 +5876,7 @@ function apSshClone(body) {
   const sayInto = () => {
     const name = repoNameOf(url.value);
     const p = parent.value.trim();
-    into.textContent = name && p ? (T["tui.addproj.sshclone.into"] || "{path}").replace("{path}", p.replace(/\/+$/, "") + "/" + name) : "";
+    into.textContent = name && p ? (T["tui.addproj.sshclone.into"] || "{path}").replaceAll("{path}", p.replace(/\/+$/, "") + "/" + name) : "";
   };
   // The walker, under the folder field, opened by the button beside it. A
   // folder looked at is the folder the clone goes in: walking is choosing
@@ -5929,7 +5929,7 @@ function apSshClone(body) {
   sayInto();
   go.check();
   apLive = {kind:"clone", running:false, go, prog, label:T["tui.addproj.clone.go"] || "",
-    busy:(T["tui.addproj.clone.busy_on"] || "{host}").replace("{host}", apHost), walker,
+    busy:(T["tui.addproj.clone.busy_on"] || "{host}").replaceAll("{host}", apHost), walker,
     // The server's accounts, once it has said them
     accountsAsk: acctAsk, accounts: list => { acctList.replaceChildren(...list.map(a => el("option", {value:a}))); }};
   setTimeout(() => url.focus(), 0);
@@ -6056,7 +6056,7 @@ function apCreate(body) {
   const say = () => {
     const p = parent.value.trim();
     const n = name.value.trim() || "my-project";
-    summary.textContent = (T["tui.addproj.create.in"] || "{parent}").replace("{parent}", short(p));
+    summary.textContent = (T["tui.addproj.create.in"] || "{parent}").replaceAll("{parent}", short(p));
     where.textContent = p ? p.replace(/[\\/]+$/, "") + "\\" + n : "";
   };
   const go = apGo(T["tui.addproj.create.go"] || "", () =>
@@ -6218,7 +6218,7 @@ function apRemote(body) {
         go: add,
       });
     });
-  body.append(el("div", {class:"ssay"}, (T["tui.addproj.remote.say"] || "{host}").replace("{host}", apHost)),
+  body.append(el("div", {class:"ssay"}, (T["tui.addproj.remote.say"] || "{host}").replaceAll("{host}", apHost)),
     apField(T["tui.addproj.remote.folder"] || "", path,
       el("button", {class:"apicon", type:"button", title:T["tui.addproj.remote.look"] || "",
         onclick:() => look(path.value.trim() || "~")}, pickIcon("refresh"))),
@@ -6275,12 +6275,12 @@ function drawRemoteList() {
   w.list.textContent = "";
   w.here.textContent = "";
   if (w.waiting || !st || st.busy) {
-    w.list.append(el("div", {class:"aprsay"}, (T["tui.addproj.remote.listing"] || "{host}").replace("{host}", apHost)));
+    w.list.append(el("div", {class:"aprsay"}, (T["tui.addproj.remote.listing"] || "{host}").replaceAll("{host}", apHost)));
     return;
   }
   if (st.error) {
     w.list.append(el("div", {class:"aprerr"},
-      el("div", {}, (T["tui.addproj.remote.unreached"] || "{host}").replace("{host}", apHost)),
+      el("div", {}, (T["tui.addproj.remote.unreached"] || "{host}").replaceAll("{host}", apHost)),
       el("div", {class:"mono"}, st.error),
       el("button", {type:"button", onclick:() => w.look(w.path.value.trim() || "~")}, T["tui.making.retry"] || "")));
     return;
@@ -6338,7 +6338,7 @@ function apHostAdd(body) {
       const n = name.value.trim(), a = addr.value.trim(), p = port.value.trim();
       return !n ? {at:name, why:T["tui.addproj.host.need_name"] || ""}
         : /[\/\s]/.test(n) ? {at:name, why:T["err.host.name"] || ""}
-        : taken(n) ? {at:name, why:(T["err.host.taken"] || "{name}").replace("{name}", n)}
+        : taken(n) ? {at:name, why:(T["err.host.taken"] || "{name}").replaceAll("{name}", n)}
         : !a || /[\s\/]/.test(a) ? {at:addr, why:T["tui.addproj.host.need_addr"] || ""}
         : !user.value.trim() && !/@/.test(a) ? {at:user, why:T["tui.addproj.host.need_user"] || ""}
         : !/^\d{1,5}$/.test(p) || +p < 1 || +p > 65535 ? {at:port, why:T["tui.addproj.host.bad_port"] || ""}
@@ -6518,7 +6518,7 @@ function openSnipMenu(e) {
             setSnipWait(w);
             for (const c of wait.querySelectorAll(".chip")) c.classList.toggle("on", c === ev.currentTarget);
           }},
-          w === 0 ? (T["tui.snip.now"] || "Now") : (T["tui.snip.seconds"] || "{n}s").replace("{n}", w)));
+          w === 0 ? (T["tui.snip.now"] || "Now") : (T["tui.snip.seconds"] || "{n}s").replaceAll("{n}", w)));
       }
       rows.push(wait);
     }
@@ -6682,7 +6682,7 @@ function projectHead(g, kin, tabs) {
     const rows = [];
     if (found && found.kept) {
       rows.push(el("div", {onclick:() => { closeFolderMenu(); send({kind:"found", family:found.family, act:"offer"}); }},
-        (T["tui.found.offer"] || "{n}").replace("{n}", found.found.length)));
+        (T["tui.found.offer"] || "{n}").replaceAll("{n}", found.found.length)));
       rows.push(el("div", {onclick:() => { closeFolderMenu(); send({kind:"found", family:found.family, act:"show"}); }},
         T["tui.found.show"] || ""));
     }
@@ -6715,7 +6715,7 @@ function foundRow(d) {
   const box = el("div", {class:"found"});
   box.append(el("div", {class:"frow", onclick:() => { open ? foundOpen.delete(d.family) : foundOpen.add(d.family); drawTabs(); }},
     el("span", {class:"caret"}, open ? "▾" : "▸"),
-    el("span", {class:"fsay"}, ((n === 1 && T["tui.found.hiding.one"]) || T["tui.found.hiding"] || "{n}").replace("{n}", n)),
+    el("span", {class:"fsay"}, ((n === 1 && T["tui.found.hiding.one"]) || T["tui.found.hiding"] || "{n}").replaceAll("{n}", n)),
     el("span", {class:"fx", title:T["tui.found.keep.title"] || "",
       onclick:e => { e.stopPropagation(); send({kind:"found", family:d.family, act:"keep"}); }}, "✕")));
   if (!open) return box;
@@ -6745,11 +6745,11 @@ function foundRow(d) {
     }
     if (list.length > 3) {
       group.append(el("div", {class:"fmore", onclick:() => { all ? foundAll.delete(key) : foundAll.add(key); drawTabs(); }},
-        all ? (T["tui.found.fewer"] || "") : (T["tui.found.more"] || "{n}").replace("{n}", list.length - 3)));
+        all ? (T["tui.found.fewer"] || "") : (T["tui.found.more"] || "{n}").replaceAll("{n}", list.length - 3)));
     }
     panel.append(group);
   }
-  if (places.length > 5) panel.append(el("div", {class:"fmore"}, (T["tui.found.places"] || "{n}").replace("{n}", places.length - 5)));
+  if (places.length > 5) panel.append(el("div", {class:"fmore"}, (T["tui.found.places"] || "{n}").replaceAll("{n}", places.length - 5)));
   panel.append(el("div", {class:"fnote"}, T["tui.found.note"] || ""),
     el("div", {class:"fbtns"},
       el("button", {type:"button", onclick:() => send({kind:"found", family:d.family, act:"keep"})}, T["tui.found.keep"] || ""),
@@ -6779,7 +6779,7 @@ function makingRow(m) {
     failed || stopping || leaving || asking ? null : el("span", {class:"fx", title:T["tui.making.stop"] || "",
       onclick:e => { e.stopPropagation(); send({kind:"making", id:m.id, act:"stop"}); }}, "✕"),
     el("span", {class:"ms"}, untrusted ? (T["worktree.trust.row"] || "")
-      : unlinked ? (T["worktree.nolink.row"] || "").replace("{names}", (m.unlinked || []).join(", "))
+      : unlinked ? (T["worktree.nolink.row"] || "").replaceAll("{names}", (m.unlinked || []).join(", "))
       : failed ? (m.error || T["tui.making.failed"] || "") : (T["tui.making.stage." + m.stage] || "")));
   // The command running now, which of how many, and for how long: an install
   // can take many minutes, and a stop is heard once that command is done
@@ -6825,7 +6825,7 @@ function makingStep(m, stopping) {
   // The time goes in last, and the command as written goes in as it is: a
   // setup line is the person's own, and may hold anything
   line.dataset.said = (T["tui.making.step"] || "{n}/{of} {what} · {time}")
-    .replace("{n}", st.n).replace("{of}", st.of).replace("{time}", "\u0000").replace("{what}", () => st.what || "")
+    .replaceAll("{n}", st.n).replaceAll("{of}", st.of).replaceAll("{time}", "\u0000").replaceAll("{what}", () => st.what || "")
     + (stopping ? " · " + (T["tui.making.step.stopping"] || "") : "");
   line.textContent = stepText(line);
   if (!st.line) return line;
@@ -6920,7 +6920,7 @@ function askAboutLeft() {
   leftAsking = m.id;
   askQuestion({
     title: T["worktree.left.title"] || "",
-    say: (T["worktree.left.say"] || "").replace("{why}", m.error || ""),
+    say: (T["worktree.left.say"] || "").replaceAll("{why}", m.error || ""),
     what: m.folder,
     label: T["worktree.left.forget"] || "",
     go: () => { leftAsking = 0; send({kind:"making", id:m.id, act:"forget"}); },
@@ -7217,9 +7217,9 @@ function tabName(t, where, cls) {
 function agoText(since) {
   const s = Math.max(0, Math.floor(Date.now() / 1000) - since);
   if (s < 60) return T["tui.ago.now"] || "now";
-  if (s < 3600) return (T["tui.ago.m"] || "{n}m").replace("{n}", Math.floor(s / 60));
-  if (s < 86400) return (T["tui.ago.h"] || "{n}h").replace("{n}", Math.floor(s / 3600));
-  return (T["tui.ago.d"] || "{n}d").replace("{n}", Math.floor(s / 86400));
+  if (s < 3600) return (T["tui.ago.m"] || "{n}m").replaceAll("{n}", Math.floor(s / 60));
+  if (s < 86400) return (T["tui.ago.h"] || "{n}h").replaceAll("{n}", Math.floor(s / 3600));
+  return (T["tui.ago.d"] || "{n}d").replaceAll("{n}", Math.floor(s / 86400));
 }
 function agoMark(since) {
   return el("span", {class:"ago", "data-since":String(since), title:new Date(since * 1000).toLocaleString()}, agoText(since));
@@ -7321,7 +7321,7 @@ function openList(anchor, rows, tall, point) {
 function drifted(g) {
   const d = (g && g.drift) || {};
   if (!d.behind && !d.ahead) return null;
-  const say = k => (T[k] || "").replace("{n}", k.endsWith("behind") ? d.behind : d.ahead);
+  const say = k => (T[k] || "").replaceAll("{n}", k.endsWith("behind") ? d.behind : d.ahead);
   const box = el("span", {class:"drift"});
   if (d.behind) box.append(el("span", {class:"beh", title:say("tui.folder.behind")}, "↓" + d.behind));
   if (d.ahead) box.append(el("span", {class:"ahd", title:say("tui.folder.ahead")}, "↑" + d.ahead));
@@ -7614,7 +7614,7 @@ function drawFarPorts() {
     }}, el("span", {class:"nm"}, ":" + p.port), el("span", {class:"at"}, p.url || say("tui.urls.not_yet"))));
     // The same address, opened here in a browser tab of the app
     rows.push(el("div", {class:"aphostadd", onclick:() => send({kind:"farpage", folder:o.folder, port:p.port})},
-      (T["tui.urls.open"] || "").replace("{port}", p.port)));
+      (T["tui.urls.open"] || "").replaceAll("{port}", p.port)));
   }
   if (!st.busy) rows.push(el("div", {class:"aphostadd", onclick:() => { o.drawn = ""; send({kind:"farports", folder:o.folder}); }},
     T["tui.urls.again"] || ""));
@@ -7782,11 +7782,11 @@ function pickWhen(sec) {
   const day = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const diff = Math.round((day(now) - day(d)) / 86400000);
   let when;
-  if (diff === 0) when = (T["tui.browse.today"] || "{t}").replace("{t}", hm);
-  else if (diff === 1) when = (T["tui.browse.yesterday"] || "{t}").replace("{t}", hm);
+  if (diff === 0) when = (T["tui.browse.today"] || "{t}").replaceAll("{t}", hm);
+  else if (diff === 1) when = (T["tui.browse.yesterday"] || "{t}").replaceAll("{t}", hm);
   else if (d.getFullYear() === now.getFullYear()) when = two(d.getMonth() + 1) + "/" + two(d.getDate()) + " " + hm;
   else when = d.getFullYear() + "/" + two(d.getMonth() + 1) + "/" + two(d.getDate());
-  return (T["tui.browse.modified"] || "{when}").replace("{when}", when);
+  return (T["tui.browse.modified"] || "{when}").replaceAll("{when}", when);
 }
 // Where a choice would land: the folder picked in the list, or the one the
 // list is standing in
@@ -7830,7 +7830,7 @@ function drawBrowse() {
     projects.forEach((p, i) => places.append(place(p, "folder", p.name || leafOf(p.path), true, i === projects.length - 1)));
   }
   for (const p of ps.filter(x => x.kind === "drive"))
-    places.append(place(p, "drive", (T["tui.browse.drive"] || "{d}").replace("{d}", p.name)));
+    places.append(place(p, "drive", (T["tui.browse.drive"] || "{d}").replaceAll("{d}", p.name)));
 
   // Where the list is standing, one step per segment
   const crumb = b.querySelector(".pcrumb");
@@ -7867,9 +7867,9 @@ function drawBrowse() {
   const note = b.querySelector(".pnote");
   note.className = "pnote";
   note.textContent = "";
-  if (pickTyped) note.textContent = (T["tui.browse.jump"] || "{path}").replace("{path}", pickTyped);
+  if (pickTyped) note.textContent = (T["tui.browse.jump"] || "{path}").replaceAll("{path}", pickTyped);
   else if (st.error) { note.className = "pnote bad"; note.textContent = st.error; }
-  else if (words.length && !shown.length) note.textContent = (T["tui.browse.nomatch"] || "{q}").replace("{q}", pickQ.trim());
+  else if (words.length && !shown.length) note.textContent = (T["tui.browse.nomatch"] || "{q}").replaceAll("{q}", pickQ.trim());
 
   const rows = b.querySelector(".prows");
   const typing = rows.querySelector(".pr.making input");
@@ -8125,7 +8125,7 @@ function openBranch(g, preset) {
   // Said only when the worktree is for something -- an issue, a pull request.
   // Otherwise the questions below say what this is without a preface
   b.querySelector(".bsay").textContent = preset.about
-    ? (T["tui.branch.for_item"] || "{item}").replace("{item}", preset.about)
+    ? (T["tui.branch.for_item"] || "{item}").replaceAll("{item}", preset.about)
     : "";
   b.querySelector(".bgo .go .gl").textContent = T["tui.branch.make"] || "Make it";
   // Every control says what it is, in the order they stand. The name says it
@@ -8343,7 +8343,7 @@ function drawBranchTabs(b) {
   input.placeholder = branchTab === "github" ? (T["tui.branch.gh.search"] || "") : (T["tui.branch.base.search"] || "");
   // What it grows from, said under whichever tab is up: the one thing the
   // other two tabs decide without showing it
-  b.querySelector(".bfrom").textContent = branchBase ? (T["tui.branch.from.say"] || "{name}").replace("{name}", branchBase) : "";
+  b.querySelector(".bfrom").textContent = branchBase ? (T["tui.branch.from.say"] || "{name}").replaceAll("{name}", branchBase) : "";
   if (!results.hidden) drawBranchResults(b);
 }
 
@@ -8353,7 +8353,7 @@ function drawBranchChip(chip, picked) {
   chip.textContent = "";
   if (picked.branch !== undefined) {
     chip.append(el("span", {class:"ico"}, pickIcon("branch")),
-      el("span", {class:"nm"}, (T["tui.branch.from"] || "{name}").replace("{name}", picked.branch)));
+      el("span", {class:"nm"}, (T["tui.branch.from"] || "{name}").replaceAll("{name}", picked.branch)));
   } else {
     chip.append(el("span", {class:"ico"}, pickIcon(picked.kind === "pr" ? "pr" : "issue")),
       el("span", {class:"nm"}, el("b", {}, "#" + picked.number), " " + (picked.title || "")),
@@ -8408,7 +8408,7 @@ function drawBranchResults(b) {
           ghBusy = true;
           drawBranchTabs(b);
           setTimeout(() => { ghFresh = false; ghSearch(ghText); }, 800);
-        }}, (T["tui.branch.gh.use"] || "{name}").replace("{name}", a.label)));
+        }}, (T["tui.branch.gh.use"] || "{name}").replaceAll("{name}", a.label)));
       }
       box.append(pick);
     }
@@ -8447,7 +8447,7 @@ function chooseBranchResult(r) {
     branchLink = {kind: r.kind, repo: r.repo, number: r.number, url: r.url};
     const q = document.getElementById("bq");
     if (!branchNamed) q.value = r.workspace || "";
-    b.querySelector(".bsay").textContent = (T["tui.branch.for_item"] || "{item}").replace("{item}", "#" + r.number + " " + (r.title || ""));
+    b.querySelector(".bsay").textContent = (T["tui.branch.for_item"] || "{item}").replaceAll("{item}", "#" + r.number + " " + (r.title || ""));
     // A pull request is worked on on its own branch, fetched first
     if (r.kind === "pr") {
       const proj = ghProject();
@@ -8542,7 +8542,7 @@ function showMore(b, open) {
   more.setAttribute("aria-expanded", open ? "true" : "false");
   const n = Array.from(extra.querySelectorAll(".bcarry select")).filter(s => s.value !== "skip").length;
   more.querySelector(".nm").textContent = (!open && n)
-    ? (T["tui.branch.more.n"] || "More ({n} come along)").replace("{n}", n)
+    ? (T["tui.branch.more.n"] || "More ({n} come along)").replaceAll("{n}", n)
     : (T["tui.branch.more"] || "More");
 }
 function closeBranch() {
@@ -8713,7 +8713,7 @@ function drawBranch() {
   // alone is enough. Shown in the empty field rather than written into it, so
   // typing over it needs no clearing first
   if (q && mine && !typed.trim() && p.branch) {
-    q.placeholder = (T["tui.branch.asis"] || "{name}").replace("{name}", p.branch);
+    q.placeholder = (T["tui.branch.asis"] || "{name}").replaceAll("{name}", p.branch);
   }
   // A branch and a folder are held to the letters every machine can hold, so
   // what was typed is not always what gets made. Said here, under the box,
@@ -8724,7 +8724,7 @@ function drawBranch() {
   const becomes = b.querySelector(".bname");
   becomes.textContent = branchTab === "name" && mine && !p.error
       && typed.trim() && p.branch && p.branch !== typed.trim()
-    ? (T["tui.branch.becomes"] || "{name}").replace("{name}", p.branch)
+    ? (T["tui.branch.becomes"] || "{name}").replaceAll("{name}", p.branch)
     : "";
   // The lists belong to the folder, not to the name: an answer for this folder
   // fills them whatever was typed when it was asked
@@ -8780,11 +8780,11 @@ function drawBranch() {
     const key = JSON.stringify(taken);
     if (ask.dataset.key !== key) {
       ask.dataset.key = key;
-      ask.querySelector(".say").textContent = (T["tui.branch.in_use.say"] || "{branch}").replace("{branch}", taken.branch);
+      ask.querySelector(".say").textContent = (T["tui.branch.in_use.say"] || "{branch}").replaceAll("{branch}", taken.branch);
       ask.querySelector(".path").textContent = taken.folder;
       ask.querySelector(".ask").textContent = T[taken.listed ? "tui.branch.in_use.ask_listed" : "tui.branch.in_use.ask"] || "";
       ask.querySelector(".yes").textContent = T["tui.branch.in_use.yes"] || "";
-      ask.querySelector(".no").textContent = (T["tui.branch.in_use.no"] || "{name}").replace("{name}", taken.instead);
+      ask.querySelector(".no").textContent = (T["tui.branch.in_use.no"] || "{name}").replaceAll("{name}", taken.instead);
     }
   } else {
     ask.dataset.key = "";
@@ -8821,11 +8821,11 @@ function drawSetup(b, p) {
   if (!from) return;
   row.querySelector("span").textContent = T["tui.branch.setup"] || "";
   const missing = (p && p.setup_unresolved) || [];
-  const lines = [(T["tui.branch.setup.from"] || "from {name}").replace("{name}", from)];
+  const lines = [(T["tui.branch.setup.from"] || "from {name}").replaceAll("{name}", from)];
   // Named, never dropped: a setup that skipped half of itself in silence is
   // the worst of both
   if (missing.length) lines.push((T["tui.branch.setup.unresolved"] || "{names}")
-    .replace("{names}", missing.join(", ")));
+    .replaceAll("{names}", missing.join(", ")));
   say.textContent = lines.join("  ");
 }
 // Where the worktree is cut: this PC when the project is checked out here,
@@ -8981,7 +8981,7 @@ function drawLogin() {
   // The words of the step: an AI's sign-in, or a server git's (`git`)
   const git = st.kind === "git";
   const key = k => git ? k.replace("tui.login.", "tui.gitsignin.") : k;
-  const say = k => (T[key(k)] || "").replace("{ai}", st.name).replace("{host}", st.host);
+  const say = k => (T[key(k)] || "").replaceAll("{ai}", st.name).replaceAll("{host}", st.host);
   if (loginSeen !== st.seq) {
     loginSeen = st.seq;
     box.textContent = "";
@@ -9288,7 +9288,7 @@ function drawSignIn(box, note, shown, change) {
   }
   const kind = T["tui.signin.kind." + note.kind] || "";
   box.append(el("div", {class:"say"},
-    (T["tui.signin.as"] || "{account}").replace("{account}", note.account) + (kind ? " · " + kind : "")));
+    (T["tui.signin.as"] || "{account}").replaceAll("{account}", note.account) + (kind ? " · " + kind : "")));
   const other = change ? el("button", {type:"button", onclick:change}, T["tui.signin.change"] || "") : null;
   if (note.error) { box.append(signInWarn(note.error, other)); return; }
   if (note.kind === "none") box.append(el("div", {class:"say"}, T["tui.signin.none"] || ""));
@@ -9343,7 +9343,7 @@ function drawBases(b, p) {
   branchBases = list;
   if (!branchBase && p && p.base) branchBase = p.base;
   const said = branchBase
-    ? (T["tui.branch.from"] || "from {name}").replace("{name}", branchBase)
+    ? (T["tui.branch.from"] || "from {name}").replaceAll("{name}", branchBase)
     : "";
   // Written only when it changed: every touch of this document is another
   // chance to shut a list that somebody has open
@@ -9363,7 +9363,7 @@ function drawBases(b, p) {
       box.dataset.said = "";
       drawBranch();
       askBranch();
-    }}, (T["tui.branch.from"] || "from {name}").replace("{name}", name)))).classList.add("tall");
+    }}, (T["tui.branch.from"] || "from {name}").replaceAll("{name}", name)))).classList.add("tall");
   };
 }
 let branchBases = [];
@@ -9447,10 +9447,10 @@ function drawCarryLines(b, lines) {
         drawCarryApply(b, lines);
       };
       const said = l.source === ".gitignore" ? l.pattern
-        : (T["tui.branch.carry.in"] || "{line} ({file})").replace("{line}", l.pattern).replace("{file}", l.source);
+        : (T["tui.branch.carry.in"] || "{line} ({file})").replaceAll("{line}", l.pattern).replaceAll("{file}", l.source);
       byLine.append(el("div", {},
         el("span", {class:"nm", title:said}, said),
-        el("span", {class:"n"}, (T["tui.branch.carry.n"] || "{n}").replace("{n}", l.count)),
+        el("span", {class:"n"}, (T["tui.branch.carry.n"] || "{n}").replaceAll("{n}", l.count)),
         pick));
     }
   }
@@ -9462,7 +9462,7 @@ function drawCarryApply(b, lines) {
   const n = lineChoices.size;
   apply.hidden = carryTab !== "each" || !n;
   if (apply.hidden) return;
-  apply.querySelector(".say").textContent = (T["tui.branch.carry.pending"] || "{n}").replace("{n}", n);
+  apply.querySelector(".say").textContent = (T["tui.branch.carry.pending"] || "{n}").replaceAll("{n}", n);
   const go = apply.querySelector(".bcgo");
   go.textContent = T["tui.branch.carry.apply"] || "Apply to the list";
   go.onclick = () => applyCarryLines(b, lines);
@@ -10087,7 +10087,7 @@ function markFor(t) {
 function serverMark(m) {
   if (!m || !m.name) return null;
   const chip = el("span", {class:"smark",
-      title:(T["tui.mark.title"] || "{name}: {machine}").replace("{name}", m.name).replace("{machine}", m.machine || "")},
+      title:(T["tui.mark.title"] || "{name}: {machine}").replaceAll("{name}", m.name).replaceAll("{machine}", m.machine || "")},
     el("i"), el("span", {class:"mn"}, m.name));
   chip.style.setProperty("--mk", m.color || "");
   return chip;
@@ -10125,7 +10125,7 @@ const worstOf = ts => (ts || []).map(t => t.state)
 function bundleRow(g, mine, away, deep) {
   const word = mine.length === 1
       ? (T["tui.folder.tabs.one"] || "1 tab")
-      : (T["tui.folder.tabs"] || "{n} tabs").replace("{n}", mine.length);
+      : (T["tui.folder.tabs"] || "{n} tabs").replaceAll("{n}", mine.length);
   const toggle = e => { e.stopPropagation(); putTabsAway(g.folder, !away); };
   if (away) {
     // The words for what the pills can only show in colour, for the eye that
@@ -11079,7 +11079,7 @@ window.__state = function (json) {
   if (drawnOn && elsewhere.dataset.who !== drawnOn) {
     elsewhere.dataset.who = drawnOn;
     elsewhere.textContent = "";
-    elsewhere.append(el("span", {}, (T["err.far.no_cast"] || "").replace("{who}", drawnOn)));
+    elsewhere.append(el("span", {}, (T["err.far.no_cast"] || "").replaceAll("{who}", drawnOn)));
   }
   if (web && REMOTE && !drawnOn) castStart(); else castStop();
   // Window only: over a browser tab, reuse the sub-input bar (composer) — actions
@@ -11160,7 +11160,7 @@ window.__state = function (json) {
   const away = !screen.hidden && S.scrolled > 0;
   b.hidden = !away;
   if (away) {
-    b.textContent = (T["tui.scrolled"] || "").replace("{lines}", S.scrolled);
+    b.textContent = (T["tui.scrolled"] || "").replaceAll("{lines}", S.scrolled);
     b.onclick = () => send({kind:"scroll", by: -1000000});
   }
   // The app's own message arrives as state, and is shown as the same toast
@@ -11583,7 +11583,7 @@ function paintPaneHeads() {
     if (idle && !hold) { hold = document.createElement("div"); hold.className = "pidle"; el.querySelector(".pbody").append(hold); }
     if (hold) {
       hold.hidden = !idle;
-      const words = idle ? (T["tui.pane.idle"] || "{name}").replace("{name}", t.name || "") : "";
+      const words = idle ? (T["tui.pane.idle"] || "{name}").replaceAll("{name}", t.name || "") : "";
       if (hold.textContent !== words) hold.textContent = words;
     }
     // Empty means there is nothing to show here, which is the same question
@@ -12150,7 +12150,7 @@ function editPickEncoding(v) {
   ED.encPicked = true; ED.stop = null; ED.bad = false;
   ED.encoding = v;
   if (ED.dirty) {
-    ED.said = (T["tui.edit.enc.later"] || "{enc}").replace("{enc}", v);
+    ED.said = (T["tui.edit.enc.later"] || "{enc}").replaceAll("{enc}", v);
     drawEdit();
     return;
   }
@@ -12227,7 +12227,7 @@ function drawEdit() {
   if (diffing) {
     const how = diffing.file_diff.startsWith("commit:") ? "commit" : (G.staged ? "staged" : "work");
     u.kind.textContent = how === "commit"
-      ? (T["tui.edit.diff.commit"] || "{hash}").replace("{hash}", diffing.file_diff.slice(7, 14))
+      ? (T["tui.edit.diff.commit"] || "{hash}").replaceAll("{hash}", diffing.file_diff.slice(7, 14))
       : (T[how === "staged" ? "git.group.staged" : "git.group.unstaged"] || "");
     u.mark.textContent = "";
     u.save.style.display = "none";
@@ -12288,19 +12288,19 @@ function drawEdit() {
     const cancel = el("button", {class: "quiet", onclick: () => { ED.stop = null; drawEdit(); }}, T["common.cancel"] || "");
     u.say.style.color = "var(--warn)";
     if (st.why === "lossy") {
-      u.say.append(document.createTextNode((T["tui.edit.lossy_stop"] || "{enc}").replace("{enc}", ED.encoding)),
+      u.say.append(document.createTextNode((T["tui.edit.lossy_stop"] || "{enc}").replaceAll("{enc}", ED.encoding)),
         el("button", {onclick: again({lossy: true})}, T["tui.edit.lossy_save"] || ""), cancel);
     } else {
-      const chars = st.chars.join(" ") + (st.more ? (T["tui.edit.unwritable.more"] || "").replace("{n}", st.more) : "");
+      const chars = st.chars.join(" ") + (st.more ? (T["tui.edit.unwritable.more"] || "").replaceAll("{n}", st.more) : "");
       u.say.append(document.createTextNode((T["tui.edit.unwritable"] || "{enc} {chars}")
-          .replace("{enc}", st.encoding).replace("{chars}", chars)),
+          .replaceAll("{enc}", st.encoding).replaceAll("{chars}", chars)),
         el("button", {onclick: again({replace: true})}, T["tui.edit.replace_save"] || ""),
         el("button", {onclick: again({encoding: "UTF-8"})}, T["tui.edit.convert_save"] || ""),
         cancel);
     }
   } else if (!ED.exact && !ED.said) {
     u.say.style.color = "var(--warn)";
-    u.say.append(document.createTextNode((T["tui.edit.lossy"] || "{enc}").replace("{enc}", ED.encoding)));
+    u.say.append(document.createTextNode((T["tui.edit.lossy"] || "{enc}").replaceAll("{enc}", ED.encoding)));
   } else {
     u.say.style.color = "";
     u.say.append(document.createTextNode(ED.said || ""));
@@ -13500,7 +13500,7 @@ function rdInline(node, text, gh) {
     if (m.index > at) node.append(document.createTextNode(text.slice(at, m.index)));
     if (m[1] != null) node.append(el("code", {}, m[1]));
     else if (m[2] != null || m[3] != null) node.append(rdInline(el("b", {}), m[2] != null ? m[2] : m[3], gh));
-    else if (m[5] != null) node.append(mdLink(m[5], (T["issues.md.image"] || "{alt}").replace("{alt}", m[4] || "")));
+    else if (m[5] != null) node.append(mdLink(m[5], (T["issues.md.image"] || "{alt}").replaceAll("{alt}", m[4] || "")));
     else if (m[7] != null) node.append(mdLink(m[7], m[6]));
     else if (m[8] != null) node.append(mdLink(m[8], m[8]));
     else if (m[9] != null) node.append(mdLink(m[9], m[9]));
@@ -14044,7 +14044,7 @@ if (REMOTE) {
             if (a.status === 429) {
               // Too many wrong ones in a row; the door opens again in a moment
               const n = a.headers.get("Retry-After") || "60";
-              alert((T["tui.remote.password_wait"] || "Too many tries in a row. Wait {n} seconds, then try again").replace("{n}", n));
+              alert((T["tui.remote.password_wait"] || "Too many tries in a row. Wait {n} seconds, then try again").replaceAll("{n}", n));
               return;
             }
             alert(T["tui.remote.password_wrong"] || "Wrong password");
@@ -14777,7 +14777,7 @@ window.__openPast = function (tab, name) {
   v.dataset.tab = String(tab);
   v.hidden = false;
   v.querySelector(".vtitle").textContent = T["past.title"] || "EARLIER CONVERSATIONS";
-  v.querySelector(".vhint").textContent = (T["past.say"] || "").replace("{name}", name || "");
+  v.querySelector(".vhint").textContent = (T["past.say"] || "").replaceAll("{name}", name || "");
   v.querySelector(".vlist").textContent = "";
   send({kind:"pastlist", tab});
 };
@@ -14811,7 +14811,7 @@ function renderPast() {
     hint.textContent = T["past.none"] || "Nothing has been said in this folder before.";
     return;
   }
-  hint.textContent = (T["past.say"] || "").replace("{name}", ps.name || "");
+  hint.textContent = (T["past.say"] || "").replaceAll("{name}", ps.name || "");
   for (const h of hits) {
     const row = el("div", {class:"vrow", onclick:() => {
       closePast();
@@ -14843,10 +14843,10 @@ function renderVault() {
   // Other machines: still being searched, and the paused ones left out,
   // with the press that searches them too (and starts them)
   const far = [];
-  if (vs && vs.asking) far.push(el("div", {class:"vhint"}, (T["vault.asking"] || "").replace("{n}", vs.asking)));
+  if (vs && vs.asking) far.push(el("div", {class:"vhint"}, (T["vault.asking"] || "").replaceAll("{n}", vs.asking)));
   if (vs && vs.sleeping) {
     far.push(el("button", {class:"quiet", onclick:() => send({kind:"vaultsearch", query: vs.query || "", wake:true})},
-      (T["vault.wake"] || "").replace("{n}", vs.sleeping)));
+      (T["vault.wake"] || "").replaceAll("{n}", vs.sleeping)));
   }
   if (!hits.length) {
     hint.textContent = vs && vs.asking ? "" : (T["vault.none"] || "Nothing found.");
@@ -15253,7 +15253,7 @@ function ideaIssueMark(card, it) {
   slot.dataset.said = said;
   slot.textContent = "";
   if (!n) return;
-  const title = (T["tui.ideas.issue.open"] || "").replace("{n}", n);
+  const title = (T["tui.ideas.issue.open"] || "").replaceAll("{n}", n);
   const url = it.issue.url || "";
   slot.append(REMOTE && url
     ? el("a", {class:"iissue", href:url, target:"_blank", rel:"noopener", title}, "#" + n)
@@ -15630,7 +15630,7 @@ function drawQuickLauncher(fresh) {
     const pager = el("div", {class:"qplate qpager"});
     for (let p = 0; p < pages; p++) {
       pager.append(el("button", {class:p === quickWalk.page ? "on" : "",
-        title:(T["tui.quick.page"] || "{n}").replace("{n}", p + 1),
+        title:(T["tui.quick.page"] || "{n}").replaceAll("{n}", p + 1),
         onclick:() => { quickWalk.page = p; quickFocusId = ""; drawQuickLauncher(true); }}, String(p + 1)));
     }
     pagerRow.append(pager);
@@ -15826,7 +15826,7 @@ async function attachFile(file) {
     }
     if (j && j.ok && j.path) {
       insertIntoComposer(j.path);
-      toast((T["attach.saved"] || "Attached {name}").replace("{name}", name));
+      toast((T["attach.saved"] || "Attached {name}").replaceAll("{name}", name));
     } else {
       toast((j && j.error) || T["attach.err.failed"] || "Attach failed", true);
     }
@@ -16579,7 +16579,7 @@ window.__git = function (d) {
     // way out under it. Anything else is reported as it came
     G.offer = d.why === "protected";
     G.said = G.offer
-      ? (T["git.protected"] || "").replace("{branch}", d.branch || (G.branch && G.branch.name) || "")
+      ? (T["git.protected"] || "").replaceAll("{branch}", d.branch || (G.branch && G.branch.name) || "")
       : (d.error || "");
     G.bad = true;
     // Uncommitted work in the way of a pull: a person is needed, not a failure,
@@ -16659,7 +16659,7 @@ window.__git = function (d) {
   else if (d.act === "resolve_tab") {
     const got = d.data || {};
     G.said = (T[got.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "")
-      .replace("{title}", got.title || "");
+      .replaceAll("{title}", got.title || "");
   }
   else if (d.act === "detail") { G.about = d.data || null; G.sel = null; G.hunks = []; }
   else if (d.act === "hunk") {
@@ -16682,7 +16682,7 @@ window.__git = function (d) {
   else {
     // Something changed. Ask again rather than guessing what it did
     if (d.act === "commit") {
-      G.said = (T["git.committed"] || "").replace("{hash}", d.data || "");
+      G.said = (T["git.committed"] || "").replaceAll("{hash}", d.data || "");
       gitSetMessage("");
       G.offer = false; G.pick = {}; G.sel = null; G.diff = "";
       // "Commit and push" is two asks, the second made only once the first
@@ -16705,8 +16705,8 @@ window.__git = function (d) {
       try { got = JSON.parse(d.data || "{}"); } catch (e) { got = {}; }
       G.pickBase = false; G.conflict = null;
       G.said = got.taken
-        ? (T["git.catch_up.taken"] || "").replace("{base}", got.base || "").replace("{n}", got.taken)
-        : (T["git.catch_up.latest"] || "").replace("{base}", got.base || "");
+        ? (T["git.catch_up.taken"] || "").replaceAll("{base}", got.base || "").replaceAll("{n}", got.taken)
+        : (T["git.catch_up.latest"] || "").replaceAll("{base}", got.base || "");
     } else if ((d.act === "fetch" && !quiet) || d.act === "pull" || d.act === "push" || d.act === "merge") {
       G.said = String(d.data || "").split("\n").filter(Boolean).pop() || (T["git.done"] || "");
     }
@@ -17090,7 +17090,7 @@ function gitEncPicker(box) {
   }
   // What the pieces were read as, said on "Auto" while nothing is chosen
   const read = !gitEnc() && (G.hunks || [])[0] ? G.hunks[0].encoding || "" : "";
-  const auto = read ? (T["git.enc.auto"] || "{enc}").replace("{enc}", read) : (T["git.enc.auto.plain"] || "");
+  const auto = read ? (T["git.enc.auto"] || "{enc}").replaceAll("{enc}", read) : (T["git.enc.auto.plain"] || "");
   return encPickerFill(box, [["", auto]].concat(ENCODINGS.map(e => [e, e])), gitEnc());
 }
 // An encoding menu with its name beside it: the same one wherever text is read
@@ -17171,7 +17171,7 @@ function gitChangeInto(box, how, head) {
   // Read in an encoding that loses characters, the words are wrong and a piece
   // handed back would write them into the file: said, and the buttons left out
   const lossy = how !== "view" && hunks.find(h => h.exact === false);
-  if (lossy) box.append(el("div", {class:"gencnote"}, (T["git.enc.inexact"] || "").replace("{enc}", lossy.encoding || "")));
+  if (lossy) box.append(el("div", {class:"gencnote"}, (T["git.enc.inexact"] || "").replaceAll("{enc}", lossy.encoding || "")));
   hunksInto(box, hunks, how);
 }
 // The pieces themselves. `how` "view" draws them to be read and nothing more:
@@ -17182,7 +17182,7 @@ function hunksInto(box, hunks, how) {
     const bar = el("div", {class:"hunkhead"});
     bar.append(el("span", {class:"grow"},
       (T["git.hunk"] || "Hunk") + (i + 1) + "  " +
-      (T["git.hunk.lines"] || "").replace("{from}", h.start).replace("{to}", h.end)));
+      (T["git.hunk.lines"] || "").replaceAll("{from}", h.start).replaceAll("{to}", h.end)));
     const act = (label, args) => bar.append(el("button", {onclick:() => gitAsk("hunk", Object.assign({text:h.patch, encoding:h.encoding || ""}, args))}, label));
     if (how === "view" || h.exact === false) { /* read only */ }
     else if (how === "staged") act(T["git.hunk.unstage"] || "", {cached:true, reverse:true});
@@ -17401,10 +17401,10 @@ function gitNext() {
     return {icon:"up", label: T["git.publish"] || "", run:() => gitAsk("push")};
   }
   if (b.ahead) {
-    return {icon:"up", label: (T["git.push.n"] || "{n}").replace("{n}", b.ahead), run:() => gitAsk("push")};
+    return {icon:"up", label: (T["git.push.n"] || "{n}").replaceAll("{n}", b.ahead), run:() => gitAsk("push")};
   }
   if (b.behind) {
-    return {icon:"down", label: (T["git.pull.n"] || "{n}").replace("{n}", b.behind), run:() => gitAsk("pull")};
+    return {icon:"down", label: (T["git.pull.n"] || "{n}").replaceAll("{n}", b.behind), run:() => gitAsk("pull")};
   }
   // Its pull requests, as GitHub last said. A conflict first: nothing else
   // moves until it is settled. Then the one being written, then one GitHub can
@@ -17412,7 +17412,7 @@ function gitNext() {
   const open = gitPrsOpen();
   const stuck = open.find(p => gitPrAction(p) && p.merge_state === "dirty");
   if (stuck) return Object.assign({icon:"sparkles", edit:"project-git-merge", pr: stuck.number}, gitPrAction(stuck),
-    {label: (T["git.prs.resolve"] || "").replace("{base}", stuck.base || "")});
+    {label: (T["git.prs.resolve"] || "").replaceAll("{base}", stuck.base || "")});
   const form = gitPrFormShown()
     ? (() => { const p = I.pr || {};
         return {icon:"pr", label: T["git.pr.create"] || "", held: !(p.title || "").trim() || !p.base,
@@ -17429,7 +17429,7 @@ function gitNext() {
   if (form) return form;
   const ready = open.find(p => gitPrAction(p));
   if (ready) return Object.assign({icon:"check", pr: ready.number}, gitPrAction(ready),
-    G.armed === ready.number ? {} : {label: (T["git.prs.merge"] || "").replace("{base}", ready.base || "")});
+    G.armed === ready.number ? {} : {label: (T["git.prs.merge"] || "").replaceAll("{base}", ready.base || "")});
   const g = gitGroup();
   if (gitPrsDone() && g && g.linked && !onMicrovm(g)) {
     return {icon:"folder", label: T["git.cleanup"] || "", run:() => discardFolder(g)};
@@ -17666,27 +17666,27 @@ function gitIssues(d) {
   }
   G.bad = false;
   if (d.act === "create_pr") {
-    G.said = (T["issues.pr.created"] || "").replace("{n}", (d.data || {}).number || "");
+    G.said = (T["issues.pr.created"] || "").replaceAll("{n}", (d.data || {}).number || "");
     G.prForm = false;
     I.pr = {from:"", project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false, close:false, issue:null, kept:"", files:null, open:{}, more:false};
     G.prsTries = 3;
   } else if (d.act === "merge") {
-    G.said = (T["git.prs.merged"] || "").replace("{base}", G.merging || "");
+    G.said = (T["git.prs.merged"] || "").replaceAll("{base}", G.merging || "");
     // What it merged into moved on the server
     G.quietFetch = true;
     gitAsk("fetch");
   } else if (d.act === "ci_fix") {
     const tab = d.data || {};
-    G.said = (T[tab.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "").replace("{title}", tab.title || "")
+    G.said = (T[tab.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "").replaceAll("{title}", tab.title || "")
       + " " + (T["git.prs.push"] || "");
   } else if (d.act === "pr_resolve") {
     const r = d.data || {};
     G.said = r.state === "tab"
-      ? (T[r.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "").replace("{title}", r.title || "")
+      ? (T[r.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "").replaceAll("{title}", r.title || "")
         + " " + (T["git.prs.push"] || "")
       : r.state === "taken"
-        ? (T["git.catch_up.taken"] || "").replace("{base}", r.base || "").replace("{n}", r.taken || 0)
-        : (T["git.catch_up.latest"] || "").replace("{base}", r.base || "");
+        ? (T["git.catch_up.taken"] || "").replaceAll("{base}", r.base || "").replaceAll("{n}", r.taken || 0)
+        : (T["git.catch_up.latest"] || "").replaceAll("{base}", r.base || "");
     gitRefresh(true);
   }
   gitAskPrs();
@@ -17704,8 +17704,8 @@ function gitCatchUpNote() {
   const b = G.branch || {};
   if (!b.base || b.base_behind == null) return "";
   return (b.base_behind
-    ? (T["git.catch_up.behind"] || "").replace("{base}", b.base).replace("{n}", b.base_behind)
-    : (T["git.catch_up.even"] || "").replace("{base}", b.base));
+    ? (T["git.catch_up.behind"] || "").replaceAll("{base}", b.base).replaceAll("{n}", b.base_behind)
+    : (T["git.catch_up.even"] || "").replaceAll("{base}", b.base));
 }
 // A merge of the base that stopped earlier -- before this page was opened, or
 // on another screen -- is shown the same as one that stopped just now
@@ -17751,7 +17751,7 @@ function gitMenu(anchor) {
     ? ["squash", "merge", "rebase"].map(m => el("div", {onclick:() => {
         closeFolderMenu();
         try { localStorage.setItem("shikisha.git.merge", m); } catch (e) {}
-      }}, (T["git.merge.method"] || "{method}").replace("{method}", T["issues.merge." + m] || m)
+      }}, (T["git.merge.method"] || "{method}").replaceAll("{method}", T["issues.merge." + m] || m)
           + (gitMergeMethod() === m ? " ✓" : "")))
     : [];
   openList(anchor, [
@@ -17794,16 +17794,16 @@ function drawGitCommit() {
   let up = "";
   if (b && b.name) {
     if (!b.upstream) up = T["git.sync.none"] || "";
-    else if (!b.ahead && !b.behind) up = (T["git.sync.even"] || "{upstream}").replace("{upstream}", b.upstream);
-    else up = [b.ahead ? (T["git.sync.ahead"] || "{n}").replace("{n}", b.ahead) : "",
-               b.behind ? (T["git.sync.behind"] || "{n}").replace("{n}", b.behind) : ""]
+    else if (!b.ahead && !b.behind) up = (T["git.sync.even"] || "{upstream}").replaceAll("{upstream}", b.upstream);
+    else up = [b.ahead ? (T["git.sync.ahead"] || "{n}").replaceAll("{n}", b.ahead) : "",
+               b.behind ? (T["git.sync.behind"] || "{n}").replaceAll("{n}", b.behind) : ""]
       .filter(Boolean).join(" · ");
   }
   if (u.sync.textContent !== up) u.sync.textContent = up;
   // Which branch the count is against, and -- when it is one found by this
   // branch's own name rather than one it follows -- that it found it that way
   u.sync.title = b && b.upstream
-    ? (T[b.by_name ? "git.sync.title.by_name" : "git.sync.title"] || "").replace("{upstream}", b.upstream)
+    ? (T[b.by_name ? "git.sync.title.by_name" : "git.sync.title"] || "").replaceAll("{upstream}", b.upstream)
     : "";
 
   const writing = G.busy === "message";
@@ -17843,7 +17843,7 @@ function drawGitCommit() {
   }
   u.conflictBox.hidden = !G.conflict;
   if (G.conflict) {
-    u.conflictSay.textContent = (T["git.catch_up.conflict"] || "").replace("{base}", G.conflict.base);
+    u.conflictSay.textContent = (T["git.catch_up.conflict"] || "").replaceAll("{base}", G.conflict.base);
     u.conflictFiles.textContent = G.conflict.files.join("\n");
   }
   if (G.offer && document.activeElement !== u.name) u.name.focus();
@@ -17916,7 +17916,7 @@ function drawGitPrForm(u) {
   u.prClose.hidden = !p.issue;
   if (p.issue) {
     u.prCloseBox.checked = !!p.close;
-    u.prCloseWords.textContent = (T["issues.pr.closes"] || "").replace("{ref}", prIssueRef(p));
+    u.prCloseWords.textContent = (T["issues.pr.closes"] || "").replaceAll("{ref}", prIssueRef(p));
   }
 }
 // The branch's pull requests, a line for each base: where it goes, its number
@@ -18127,7 +18127,7 @@ window.__sftp = msg => {
     if (!msg.ok) {
       F.said = msg.error || ""; F.bad = true;
     } else if (msg.value != null) {
-      F.said = (T["sftp.folders.at"] || "").replace("{name}", msg.label || "");
+      F.said = (T["sftp.folders.at"] || "").replaceAll("{name}", msg.label || "");
       F.bad = false;
     } else {
       F.said = msg.label || (T["sftp.folders.done"] || "");
@@ -18144,8 +18144,8 @@ window.__sftp = msg => {
     F.moving = null;
     if (F.queue.length) { sftpNext(); return; }
     F.said = F.total > 1
-      ? (T["sftp.moved.many"] || "").replace("{n}", F.done)
-      : (T["sftp.moved.one"] || "").replace("{name}", F.lastName || "");
+      ? (T["sftp.moved.many"] || "").replaceAll("{n}", F.done)
+      : (T["sftp.moved.one"] || "").replaceAll("{name}", F.lastName || "");
     F.bad = false;
     F.total = 0; F.done = 0;
     sftpRefresh();
@@ -18165,9 +18165,9 @@ function sftpNext() {
   // "local_mkdir" is the same act on this machine, and says so in its own words
   const saying = job.act === "local_mkdir" ? "mkdir.here" : job.act;
   F.said = (T["sftp." + saying + ".doing"] || "")
-    .replace("{name}", job.name)
-    .replace("{n}", F.done + 1)
-    .replace("{of}", F.total);
+    .replaceAll("{name}", job.name)
+    .replaceAll("{n}", F.done + 1)
+    .replaceAll("{of}", F.total);
   F.bad = false;
   sftpAsk(job.act, job.args);
   drawSftp();
@@ -18227,8 +18227,8 @@ function askFolders(which, picked) {
   askQuestion({
     title: T["sftp.folders.title"] || "",
     say: (T["sftp.folders.say"] || "")
-      .replace("{n}", folders)
-      .replace("{all}", picked.length),
+      .replaceAll("{n}", folders)
+      .replaceAll("{all}", picked.length),
     what: sftpWhere(dest, F[dest].at),
     mark: dest === "remote" ? sftpMark() : null,
     sure: dest === "remote",
@@ -18293,7 +18293,7 @@ function askSend(which, files, there, go) {
   }
   askQuestion({
     title: T["sftp.over.title"] || "",
-    say: (T["sftp.over.say"] || "").replace("{n}", files.length).replace("{over}", over),
+    say: (T["sftp.over.say"] || "").replaceAll("{n}", files.length).replaceAll("{over}", over),
     what: sftpWhere(dest, F[dest].at),
     mark: dest === "remote" ? sftpMark() : null,
     sure: dest === "remote",
@@ -18356,7 +18356,7 @@ function diffParts() {
   return diffUi;
 }
 function diffEncFill() {
-  const auto = diffRead ? (T["git.enc.auto"] || "{enc}").replace("{enc}", diffRead) : (T["git.enc.auto.plain"] || "");
+  const auto = diffRead ? (T["git.enc.auto"] || "{enc}").replaceAll("{enc}", diffRead) : (T["git.enc.auto.plain"] || "");
   encPickerFill(diffUi.enc, [["", auto]].concat(ENCODINGS.map(e => [e, e])), diffEnc);
 }
 
@@ -18457,7 +18457,7 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   const sureIn = box.querySelector("#ssq");
   const why = box.querySelector(".swhy");
   sureBox.hidden = !need;
-  sureBox.querySelector("label").textContent = need ? (T["sftp.sure.label"] || "{name}").replace("{name}", need) : "";
+  sureBox.querySelector("label").textContent = need ? (T["sftp.sure.label"] || "{name}").replaceAll("{name}", need) : "";
   sureIn.value = "";
   sureIn.placeholder = need;
   why.hidden = true;
@@ -18479,7 +18479,7 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
     // Pressed before the name is in: nothing is done, the reason is written
     // above the button, and the box it is waiting on is pointed at
     if (!typed()) {
-      why.textContent = (T["sftp.sure.why"] || "{name}").replace("{name}", need);
+      why.textContent = (T["sftp.sure.why"] || "{name}").replaceAll("{name}", need);
       why.hidden = false;
       sureIn.classList.add("bad");
       sureIn.classList.remove("lookhere");
@@ -18971,13 +18971,13 @@ function pcAcctChoices(held) {
 function pcAcctLabel(v) {
   if (v === "@pc") return T["git.acct.pc"] || "";
   if (String(v || "").startsWith("@pc:")) {
-    const said = (T["git.acct.pc_as"] || "{login}").replace("{login}", String(v).slice(4));
+    const said = (T["git.acct.pc_as"] || "{login}").replaceAll("{login}", String(v).slice(4));
     return ghLabels[v] ? ghLabels[v] + " \u2014 " + said : said;
   }
   if (String(v || "").startsWith("@gh:")) {
     const at = String(v).slice(4);
     const login = at.slice(at.indexOf("/") + 1), host = at.slice(0, at.indexOf("/"));
-    const said = (T["git.acct.gh_as"] || "{login}").replace("{login}", host === "github.com" ? login : login + "@" + host);
+    const said = (T["git.acct.gh_as"] || "{login}").replaceAll("{login}", host === "github.com" ? login : login + "@" + host);
     return ghLabels[v] ? ghLabels[v] + " \u2014 " + said : said;
   }
   return v;
@@ -19374,7 +19374,7 @@ function sendBar() {
     send({kind:"operate", target: castTarget.index, goal: t});
     // A bare tab name reads as noise — say what actually happened to the text
     toast((T["tui.cast.target.sent"] || "🎯 Asked the AI to drive {name}")
-      .replace("{name}", castTarget.name || ""));
+      .replaceAll("{name}", castTarget.name || ""));
   } else if (modCtrl && t) {
     // Terminal: Ctrl latched + a typed letter = a control chord (e.g. Ctrl+C to
     // interrupt). Takes the first character; no trailing Enter — a chord isn't a line.
@@ -20922,7 +20922,7 @@ mod tests {
         // device's name in them. A second sentence saying the same thing in
         // other words is a second thing to keep true
         assert!(
-            p.contains(r#"(T["err.far.no_cast"] || "").replace("{who}", drawnOn)"#),
+            p.contains(r#"(T["err.far.no_cast"] || "").replaceAll("{who}", drawnOn)"#),
             "the board does not use the wording for the refusal"
         );
         assert!(
@@ -22133,6 +22133,15 @@ mod tests {
     /// The branch dialog says what the new folder runs, and can make one
     /// folder per AI. Both roads (asking and making) carry the same two
     /// answers, so what was shown is what happens.
+    /// A word to fill in is filled in wherever the text has it: a text that
+    /// names the AI twice showed the second one as "{ai}". `replace` with a
+    /// string fills only the first
+    #[test]
+    fn every_word_to_fill_in_is_filled_in_everywhere() {
+        let once: Vec<&str> = PAGE.lines().filter(|l| l.contains(".replace(\"{")).collect();
+        assert!(once.is_empty(), "filled only where it first appears: {once:?}");
+    }
+
     #[test]
     fn the_branch_dialog_says_what_runs_and_can_fan_out() {
         assert!(PAGE.contains(r#"make:false, carry:carrying(), start:starting(), ais:fanning(),"#), "where to start is not carried on the path that asks");
