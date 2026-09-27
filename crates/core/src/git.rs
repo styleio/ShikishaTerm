@@ -398,15 +398,8 @@ pub fn there(dir: &Path, at: Option<&crate::elsewhere::Elsewhere>) {
 /// request to a paused MicroVM starts it, and a row that asked on a timer
 /// would keep a machine nobody is using running, and paid for
 pub fn far_place(at: &crate::elsewhere::Elsewhere, dir: &Path, awake: bool) -> (Option<String>, Option<String>) {
-    struct Kept {
-        asked: std::time::Instant,
-        busy: bool,
-        found: (Option<String>, Option<String>),
-    }
-    static KEPT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Kept>>> =
-        std::sync::OnceLock::new();
-    let key = format!("{}\u{1f}{}", at.machine_key(), dir.to_string_lossy());
-    let kept = KEPT.get_or_init(Default::default);
+    let key = far_place_key(at, dir);
+    let kept = FAR_KEPT.get_or_init(Default::default);
     let mut k = kept.lock().unwrap_or_else(|e| e.into_inner());
     // The first ask too waits for the machine to be up: a desk opened with
     // ten worktrees on it is not ten machines started to fill in ten rows
@@ -428,6 +421,32 @@ pub fn far_place(at: &crate::elsewhere::Elsewhere, dir: &Path, awake: bool) -> (
         });
     }
     found
+}
+
+/// What [`far_place`] last found out about a folder, and when
+struct Kept {
+    asked: std::time::Instant,
+    busy: bool,
+    found: (Option<String>, Option<String>),
+}
+
+static FAR_KEPT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Kept>>> = std::sync::OnceLock::new();
+
+fn far_place_key(at: &crate::elsewhere::Elsewhere, dir: &Path) -> String {
+    format!("{}\u{1f}{}", at.machine_key(), dir.to_string_lossy())
+}
+
+/// The branch a folder on another machine is on now, told by whoever just
+/// changed it (a rename): the rows show it at once, rather than the old name
+/// until the machine is next asked -- which, for one asleep, is whenever it
+/// next wakes
+pub fn note_far_branch(at: &crate::elsewhere::Elsewhere, dir: &Path, branch: &str) {
+    let kept = FAR_KEPT.get_or_init(Default::default);
+    let mut k = kept.lock().unwrap_or_else(|e| e.into_inner());
+    let key = far_place_key(at, dir);
+    let repo = k.get(&key).and_then(|p| p.found.1.clone());
+    let busy = k.get(&key).is_some_and(|p| p.busy);
+    k.insert(key, Kept { asked: std::time::Instant::now(), busy, found: (Some(branch.to_string()), repo) });
 }
 
 /// Whether git about `dir` runs on another machine, as noted on this thread

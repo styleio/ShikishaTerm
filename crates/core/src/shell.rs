@@ -3777,6 +3777,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <span class="blabel"></span>
         <div id="bdest" class="bpick" tabindex="0"><span class="nm"></span><span class="caret">&#9662;</span></div>
         <div class="bdestsay"></div>
+        <div class="bvmai" hidden></div>
         <div class="bsignin" hidden></div>
         <div class="bsignin baisignin" hidden></div>
       </div>
@@ -8506,15 +8507,28 @@ function starting() { return fanning().length ? "" : branchStart; }
 // The AIs ticked for one folder each, or nothing when that box is off
 function fanning() {
   const on = document.getElementById("bfanon");
-  if (!on || !on.checked) return [];
+  if (!on || !on.checked || goingToMicrovm()) return [];
   const b = document.getElementById("branch");
   return Array.from(b.querySelectorAll(".bais input:checked")).map(i => i.value);
 }
+// Whether the worktree goes onto a MicroVM
+function goingToMicrovm() {
+  const p = S && S.branch;
+  const offer = p && ((p.hosts || []).find(h => h.name === p.host));
+  return !!(offer && offer.kind === "microvm");
+}
 // The AIs a worktree can run where it is going: a server's own, once it has
-// said them, since this PC's are not there; this PC's anywhere else
+// said them, and on a MicroVM the one its machine has (the one chosen for a
+// checkout about to be made), since this PC's are not there; this PC's
+// anywhere else
 function startAis() {
   const p = S && S.branch;
   const offer = p && ((p.hosts || []).find(h => h.name === p.host));
+  if (offer && offer.kind === "microvm") {
+    const key = offer.at ? p.vm_ai : branchMachineAi;
+    const known = ((S && S.machine_ais) || []).find(a => a.key === key);
+    return known ? [{key: known.key, name: known.name}] : [];
+  }
   return offer && offer.kind === "ssh" && Array.isArray(p.server_ais) ? p.server_ais : ((S && S.ais) || []);
 }
 // The picker for what runs, and the tick for one-per-AI. Only where this
@@ -8530,10 +8544,13 @@ function drawStart(b) {
   const row = b.querySelector(".bstartf");
   const fan = b.querySelector(".bfan");
   const list = b.querySelector(".bais");
+  // A MicroVM's worktree is a copy of a machine with one AI: nothing to fan
+  // out over, and each folder would be another billed machine
+  const vm = goingToMicrovm();
   row.hidden = !ais.length;
-  fan.hidden = !ais.length;
+  fan.hidden = !ais.length || vm;
   if (!ais.length) { list.hidden = true; return; }
-  const on = document.getElementById("bfanon").checked;
+  const on = document.getElementById("bfanon").checked && !vm;
   row.hidden = on;
   list.hidden = !on;
   fan.querySelector("span").textContent = T["tui.branch.fan"] || "One folder per AI";
@@ -8561,9 +8578,11 @@ function drawStart(b) {
     }}, label);
     openList(box, [
       ...ais.map(a => pick(a.key, a.name)),
-      pick("", T["tui.branch.start.same"] || "the same tabs as the project"),
+      // On a MicroVM the copy runs its machine's AI or nothing: this PC's
+      // tabs are not on it
+      vm ? null : pick("", T["tui.branch.start.same"] || "the same tabs as the project"),
       pick("none", T["tui.branch.start.none"] || "nothing"),
-    ]);
+    ].filter(Boolean));
   };
   // The tick boxes, drawn once per set of AIs: rebuilding them on every
   // answer would untick whatever was just unticked
@@ -8785,6 +8804,22 @@ function drawDest(b, p) {
           machineAiPick(branchMachineAi, v => { branchMachineAi = v; askBranch(); })));
     }
   }
+  // The project says another AI than its machines have: changed in the
+  // settings and never run on them. Said, with the way to run it
+  const wanted = b.querySelector(".bvmai");
+  const want = offer && offer.kind === "microvm" && offer.at && p.vm_ai_wanted ? p.vm_ai_wanted : "";
+  const aiName = k => (((S && S.machine_ais) || []).find(a => a.key === k) || {}).name
+    || (k === "none" ? (T["tui.microvm.ai.none"] || k) : k);
+  const wsig = want ? want + "\u001f" + p.vm_ai : "";
+  if (wanted && wanted.dataset.sig !== wsig) {
+    wanted.dataset.sig = wsig;
+    wanted.textContent = "";
+    wanted.hidden = !want;
+    if (want) wanted.append(signInWarn(
+      (T["tui.branch.vm_ai_wanted"] || "").split("{want}").join(aiName(want)).split("{have}").join(aiName(p.vm_ai || "none")),
+      el("button", {type:"button", onclick:() => { closeBranch(); openSettings("project-microvm", true, branchFrom); }},
+        T["tui.branch.vm_ai_run"] || "")));
+  }
   drawSignIn(b.querySelector(".bsignin"), offer && offer.kind === "microvm" ? p.sign_in : null, !!(offer && offer.kind === "microvm"),
     () => { closeBranch(); openSettings("project-gitacct", true, branchFrom); });
   drawAiSignIn(b.querySelector(".baisignin"), offer && (offer.kind === "microvm" || offer.kind === "ssh") ? p.ai_sign_in : null);
@@ -8828,7 +8863,10 @@ function signInWarn(text, ...acts) {
 // folder's terminal (a server's, put there for its git sign-in)
 function checkoutAiTab(checkout, ai) {
   const gi = ((S && S.groups) || []).findIndex(g => g.folder === checkout);
-  return gi < 0 ? null : (((S && S.tabs) || []).find(t => t.group === gi && (ai ? t.ai === ai : t.kind === "pty")) || null);
+  const tabs = ((S && S.tabs) || []).filter(t => t.group === gi);
+  // No tab of that AI there (one given to the machine after the checkout was
+  // made): the folder's terminal, where its quick AI button starts it
+  return gi < 0 ? null : (tabs.find(t => ai ? t.ai === ai : t.kind === "pty") || (ai ? tabs.find(t => t.kind === "pty") : null) || null);
 }
 
 // ── The sign-in step of a project just cloned onto a MicroVM ─────────────
@@ -21893,7 +21931,11 @@ mod tests {
         // With the fan-out ticked, the single choice is not sent as well
         assert!(PAGE.contains(r#"function starting() { return fanning().length ? "" : branchStart; }"#));
         // Nothing offered on a machine with no AI: the dialog is what it was
-        assert!(PAGE.contains("row.hidden = !ais.length;") && PAGE.contains("fan.hidden = !ais.length;"));
+        assert!(PAGE.contains("row.hidden = !ais.length;") && PAGE.contains("fan.hidden = !ais.length || vm;"));
+        // On a MicroVM the copy runs the AI its machine has, and one folder
+        // per AI would be billed machines all running that one
+        assert!(PAGE.contains("const key = offer.at ? p.vm_ai : branchMachineAi;"));
+        assert!(PAGE.contains("if (!on || !on.checked || goingToMicrovm()) return [];"));
         // Every line is shown when several folders are being made
         assert!(PAGE.contains(r#"(p.lines && p.lines.length) ? p.lines.join("\n") : p.line"#));
     }

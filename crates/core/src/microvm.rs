@@ -405,6 +405,47 @@ impl Preparing {
     }
 }
 
+/// The AI a checkout's machine was last prepared with, read back from what
+/// was remembered as run on it ([`Preparing::said`]): its command, or
+/// [`NO_AI`]. `None` when nothing was remembered -- a checkout made before
+/// that was written down
+pub fn prepared_ai(said: &str) -> Option<String> {
+    let first = said.lines().next()?.trim();
+    let ai = first.strip_prefix("ai:")?.trim();
+    Some(match ai.is_empty() {
+        true => NO_AI.to_string(),
+        false => ai.to_string(),
+    })
+}
+
+/// The AI a project's machines on a MicroVM have: what its checkout there
+/// was last prepared with, since that is what was installed -- the project's
+/// `machine_ai` is only what it will be given the next time it is prepared.
+/// A checkout that never said falls back on the project's word, and so does
+/// a project with no checkout there (its next one is made with that)
+pub fn machine_has(project: Option<&crate::config::ProjectSpec>, host: &str) -> Option<String> {
+    let p = project?;
+    p.home_on(host)
+        .and_then(|h| h.prepared.as_deref())
+        .and_then(prepared_ai)
+        .or_else(|| p.machine_ai.clone())
+}
+
+/// How old an answer about the AI's sign-in on a checkout's machine may be
+/// before it is asked again. Asking wakes the machine, which is billed while
+/// awake: so a MicroVM nothing of this program has open is asked when the
+/// dialog first opens and not again while it stands open -- a sign-in needs
+/// a terminal on that machine, and one open there wakes it anyway. A server
+/// costs nothing to ask
+pub fn sign_in_fresh(host: &crate::config::HostSpec, home: Option<&crate::config::ProjectHome>, first: bool) -> Duration {
+    let sleeping = host.is_made()
+        && home.and_then(|h| h.sandbox.as_deref()).is_some_and(crate::e2b::asleep);
+    match sleeping && !first {
+        true => Duration::MAX,
+        false => FRESH,
+    }
+}
+
 /// What "no AI" is written as
 pub const NO_AI: &str = "none";
 
@@ -589,6 +630,11 @@ pub struct Targets {
     pub preparing: Preparing,
     /// Each checkout: the entry naming its machine, and the checkout itself
     pub homes: Vec<(crate::config::HostSpec, crate::config::ProjectHome)>,
+    /// Each worktree already copied from one: a machine of its own, which a
+    /// change made to the checkout's machine now never reaches. Prepared the
+    /// same way, in its own folder, so an AI chosen afterwards is on every
+    /// machine of the project and not only on the ones copied from now on
+    pub worktrees: Vec<(crate::config::HostSpec, String)>,
 }
 
 /// What preparing `project` on desk `desk_id` means, from the saved
@@ -611,7 +657,17 @@ pub fn prepare_targets(desk_id: &str, project: &str) -> Result<Targets, String> 
     if homes.is_empty() {
         return Err(crate::i18n::tp("err.microvm.no_checkout", &[("name", project)]));
     }
-    Ok(Targets { preparing: Preparing::of(p.machine_ai.as_deref(), p.machine_setup.as_deref()), homes })
+    let checkouts: Vec<&str> = homes.iter().filter_map(|(_, h)| h.sandbox.as_deref()).collect();
+    let mut worktrees: Vec<(crate::config::HostSpec, String)> = Vec::new();
+    for f in desk.folders.iter().filter(|f| f.project.as_deref() == Some(project)) {
+        let (Some(h), Some(at)) = (f.host.as_ref().filter(|h| h.is_made()), f.cwd.as_deref()) else { continue };
+        let Some(id) = h.instance.as_deref().filter(|id| !checkouts.contains(id)) else { continue };
+        if worktrees.iter().any(|(w, _)| w.instance.as_deref() == Some(id)) {
+            continue;
+        }
+        worktrees.push((h.clone(), at.to_string_lossy().replace('\\', "/")));
+    }
+    Ok(Targets { preparing: Preparing::of(p.machine_ai.as_deref(), p.machine_setup.as_deref()), homes, worktrees })
 }
 
 /// One line of a machine setup the assistant AI proposes, with why
@@ -1016,6 +1072,47 @@ mod tests {
     /// in there, so the dialog is never silent about one of them. A line is
     /// one `sh` test or several joined by `||`, and never quotes the way a
     /// wrapping shell would trip on
+    #[test]
+    fn the_ai_a_machine_has_is_what_it_was_prepared_with() {
+        let said = Preparing::of(Some("codex"), Some("apt-get install -y php")).said();
+        assert_eq!(prepared_ai(&said).as_deref(), Some("codex"));
+        assert_eq!(prepared_ai(&Preparing::of(None, None).said()).as_deref(), Some(NO_AI));
+        assert_eq!(prepared_ai(""), None);
+        let home = |prepared: Option<String>| crate::config::ProjectHome {
+            host: "vm".into(),
+            at: "/home/user/site".into(),
+            sandbox: Some("isb1".into()),
+            prepared,
+            ..Default::default()
+        };
+        // Changed in the settings, never run: the machines still have Claude
+        let p = crate::config::ProjectSpec {
+            name: "site".into(),
+            machine_ai: Some("codex".into()),
+            homes: vec![home(Some(Preparing::of(Some("claude"), None).said()))],
+            ..Default::default()
+        };
+        assert_eq!(machine_has(Some(&p), "vm").as_deref(), Some("claude"));
+        // A checkout that never said, and a machine with no checkout: the project's word
+        let older = crate::config::ProjectSpec { homes: vec![home(None)], ..p.clone() };
+        assert_eq!(machine_has(Some(&older), "vm").as_deref(), Some("codex"));
+        assert_eq!(machine_has(Some(&p), "other").as_deref(), Some("codex"));
+        assert_eq!(machine_has(None, "vm"), None);
+    }
+
+    /// A sleeping MicroVM is asked about its sign-in when the dialog opens,
+    /// and not again while it stands open; a server is asked as before
+    #[test]
+    fn a_sleeping_checkout_is_not_woken_to_be_asked_again() {
+        let vm = crate::config::HostSpec { name: "vm".into(), kind: Some("e2b".into()), ..Default::default() };
+        let home = crate::config::ProjectHome { host: "vm".into(), sandbox: Some("isb-asleep-test".into()), ..Default::default() };
+        assert!(vm.is_made(), "the entry is not a MicroVM's");
+        assert_eq!(sign_in_fresh(&vm, Some(&home), true), FRESH);
+        assert_eq!(sign_in_fresh(&vm, Some(&home), false), Duration::MAX);
+        let server = crate::config::HostSpec { name: "srv".into(), ..Default::default() };
+        assert_eq!(sign_in_fresh(&server, Some(&home), false), FRESH);
+    }
+
     #[test]
     fn every_machine_ai_says_how_to_see_its_sign_in() {
         let ais = crate::profile::machine_ais();

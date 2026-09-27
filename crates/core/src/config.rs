@@ -59,6 +59,12 @@ pub struct ProjectSpec {
     /// it has it. What each worktree needs of its own (`npm ci`) is `setup`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_setup: Option<String>,
+    /// Where the project is fetched from, the way a MicroVM fetches it:
+    /// written when a checkout is made on one. A project that lives only on
+    /// MicroVMs has no checkout here to read its remote off, so a checkout
+    /// deleted there is made again from this
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     /// The git account the column beside a folder of this project fetches,
     /// pulls and pushes with, and reads pull request numbers with: one of the
     /// app's `git_accounts` by name, or [`THIS_PC`]. Absent until somebody
@@ -4821,6 +4827,66 @@ pub fn remove_folder(desk_name: &str, cwd: &Path) -> Result<()> {
 /// A folder taken out of the list: where it stood, and everything it said
 /// there, its tabs included
 pub type TakenFolder = (usize, serde_json::Value);
+
+/// The state file keeping the MicroVM folders taken off a list, by machine
+const OFF_LIST: &str = "microvm-off-list.json";
+
+/// The MicroVM folders taken off a desk's list whose machines were kept: by
+/// machine, the desk and the folder's entry as it stood. A machine is a
+/// folder on a MicroVM, and one taken off the list is found again only here
+/// -- nothing on the machine says where on it the folder was, or what its
+/// tabs were
+pub fn off_list() -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read_to_string(state_path(OFF_LIST))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&t).ok())
+        .unwrap_or_default()
+}
+
+fn write_off_list(all: &serde_json::Map<String, serde_json::Value>) -> Result<()> {
+    crate::crypto::write_atomic(&state_path(OFF_LIST), &serde_json::to_string_pretty(all)?)?;
+    Ok(())
+}
+
+/// Remembers a MicroVM folder taken off `desk`'s list, by its machine, so it
+/// can be put back ([`put_back_on_list`]). A folder that names no machine is
+/// not a MicroVM's, and is not kept
+pub fn keep_off_list(desk: &str, (_, entry): &TakenFolder) -> Result<()> {
+    let Some(id) = entry.get("sandbox").and_then(|s| s.as_str()).map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    let mut all = off_list();
+    all.insert(id.to_string(), serde_json::json!({ "desk": desk, "entry": entry }));
+    write_off_list(&all)
+}
+
+/// Puts the folder of machine `id` back on the list it was taken off, at its
+/// end, as it stood -- its tabs included. The desk it came from; the one
+/// named `fallback` when that desk is gone
+pub fn put_back_on_list(id: &str, fallback: &str) -> Result<()> {
+    let mut all = off_list();
+    let Some(kept) = all.get(id).cloned() else {
+        anyhow::bail!(crate::i18n::t("settings.machines.no_restore"));
+    };
+    let entry = kept.get("entry").cloned().unwrap_or_default();
+    let desk = kept.get("desk").and_then(|d| d.as_str()).unwrap_or_default().to_string();
+    let desks = load().map(|c| c.resolve_desks().0).unwrap_or_default();
+    let desk = match desks.iter().any(|d| d.name == desk) {
+        true => desk,
+        false => fallback.to_string(),
+    };
+    put_folder_back(&desk, &(usize::MAX, entry))?;
+    all.remove(id);
+    write_off_list(&all)
+}
+
+/// Forgets what was kept of machine `id`'s folder: the machine is gone
+pub fn forget_off_list(id: &str) {
+    let mut all = off_list();
+    if all.remove(id).is_some() {
+        let _ = write_off_list(&all);
+    }
+}
 
 /// [`remove_folder`], keeping what was taken so it can be put back
 /// ([`put_folder_back`]). A worktree whose folder would not delete is offered

@@ -773,6 +773,14 @@ pub struct BranchPlan {
     /// The AI the project's MicroVM checkouts are given, as it says
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub machine_ai: String,
+    /// On a MicroVM with a checkout: the AI its machine has, which is the one
+    /// a worktree copied from it can run (or `none`)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vm_ai: String,
+    /// The AI the project says its machines are given, when that is not the
+    /// one they have: changed in the settings and never run on them
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vm_ai_wanted: String,
     /// On a server reached over SSH: the AIs it has, which are what a
     /// worktree there can run -- this PC's are not there. Absent until the
     /// server has answered, and on any other machine

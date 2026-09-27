@@ -1966,10 +1966,14 @@ fn handle(
                             Ok(u) => (u, None),
                             Err(why) => (Default::default(), Some(why)),
                         };
+                        let off = crate::config::off_list();
                         let rows: Vec<serde_json::Value> = listed
                             .iter()
                             .map(|m| {
                                 serde_json::json!({
+                                    // Taken off a list with its machine kept:
+                                    // what it was, to be put back
+                                    "off_list": off.get(&m.id).and_then(|k| k.get("entry")).and_then(|e| e.get("cwd")).cloned(),
                                     "id": m.id,
                                     "state": m.state,
                                     "started": m.started,
@@ -2019,6 +2023,23 @@ fn handle(
                         }
                     },
                 }
+            };
+            req.respond(json_resp(resp))?;
+        }
+        // A MicroVM folder taken off a list, put back on it as it stood: the
+        // desk it came from, or the one the page is on when that is gone
+        ("POST", "/api/microvm/restore") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let id = p.get("id").and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+            let desk = p.get("desk").and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+            let resp = match crate::config::put_back_on_list(&id, &desk) {
+                Ok(()) => serde_json::json!({ "ok": true }),
+                Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
             };
             req.respond(json_resp(resp))?;
         }
@@ -2416,7 +2437,7 @@ fn handle(
                 (Some(desk_id), Some(project)) => match crate::microvm::prepare_targets(&desk_id, &project) {
                     Ok(t) => {
                         PREPARE_ASKS.lock().unwrap_or_else(|e| e.into_inner()).push(PrepareAsk { desk_id, project, follow: text("follow") });
-                        serde_json::json!({ "ok": true, "started": true, "machines": t.homes.len() })
+                        serde_json::json!({ "ok": true, "started": true, "machines": t.homes.len() + t.worktrees.len() })
                     }
                     Err(error) => serde_json::json!({ "ok": false, "error": error }),
                 },
@@ -2576,7 +2597,18 @@ fn handle(
             let planned = match &far {
                 Some(host) => {
                     let cut = far_cut(&at, far_home_of(&at, host).as_deref());
-                    crate::worktree::rename_plan_far(host, &crate::uistate::place_of(&at).1.to_string_lossy(), cut, to)
+                    let path = crate::uistate::place_of(&at).1.to_string_lossy().to_string();
+                    // While a name is typed, the branch the page shows: the
+                    // machine is asked only on the press (see rename_plan_far)
+                    let known = match go {
+                        true => None,
+                        false => p
+                            .get("from")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                            .or_else(|| crate::elsewhere::Elsewhere::of(host).ok().and_then(|m| crate::git::far_place(&m, std::path::Path::new(&path), false).0)),
+                    };
+                    crate::worktree::rename_plan_far(host, &path, cut, to, known.as_deref())
                 }
                 None => crate::worktree::rename_plan(&at, to),
             };
@@ -2858,16 +2890,29 @@ fn handle(
             };
             let argv = crate::config::CommandSpec::Line(str_of("command").unwrap_or_default()).argv();
             // A tab in a folder on another machine starts nothing here: the
-            // shell that opens there is typed the folder and then the command,
-            // by the same two functions the launch uses, and that line is what
-            // is shown. Nothing is added to it, so there is no conversation to
-            // carry, and nothing is looked for on this PC
+            // shell that opens there is typed the folder and then the command
+            // -- with the conversation's arguments, as the launch writes them
+            // (tab::far_launch) -- and that line is what is shown. A plain
+            // terminal there is typed the folder alone. Nothing is looked for
+            // on this PC
             if let Some(far) = v.get("far").filter(|f| f.is_object()) {
                 let cwd = far.get("cwd").and_then(|c| c.as_str()).unwrap_or_default();
-                let typed = crate::ssh::typed_first(Some(cwd), crate::desk::far_run(&argv).as_deref());
+                let run = crate::desk::far_run(&argv).map(|_| {
+                    crate::tab::far_launch_line(
+                        &argv,
+                        &str_of("profile"),
+                        crate::resume_plan_of(str_of("resume").as_deref()),
+                        &crate::i18n::t("settings.tab.command.newid"),
+                    )
+                });
+                let typed = crate::ssh::typed_first(Some(cwd), run.as_deref());
+                let carry = match run.is_some() {
+                    true => crate::tab::carry_unused(&argv, &str_of("profile")),
+                    false => Some("unsupported"),
+                };
                 req.respond(json_resp(serde_json::json!({
                     "argv": typed.map(|l| vec![l.trim_end().to_string()]).unwrap_or_default(),
-                    "added": 0, "carry": "unsupported", "missing": null, "install_url": null,
+                    "added": 0, "carry": carry, "missing": null, "install_url": null,
                 })))?;
                 return Ok(());
             }
@@ -6352,7 +6397,7 @@ function projectSectionOf(sec) {
   const s = sec || "";
   if (["project-gitacct", "project-basic", "project-folders"].includes(s)) return "basic";
   if (s.startsWith("project-git")) return "git";
-  if (s === "project-setup" || s === "project-env") return "setup";
+  if (s === "project-setup" || s === "project-env" || s === "project-microvm") return "setup";
   return "rules";
 }
 
@@ -9935,6 +9980,19 @@ function machinesCard() {
         el("span", {class:"mono"}, m.id),
         el("span", {class:"hint"}, state + (who ? " · " + who : "")),
         el("span", {class: m.used.length || m.making ? "hint" : "hint warn"}, what));
+      // Taken off a list with its machine kept: put back as it was
+      if (!m.used.length && !m.making && !j.unsure && m.off_list) {
+        row.append(el("button", {onclick: async () => {
+          let r = {};
+          try {
+            r = await (await fetch("/api/microvm/restore", {method:"POST",
+              headers:{"X-Token":TOKEN}, body: JSON.stringify({id: m.id, desk: ((desks[sel.desk] || desks[0]) || {}).name || ""})})).json();
+          } catch (e) { r = {ok:false, error:String(e)}; }
+          if (!r.ok) msg(r.error || T["settings.machines.failed"], true);
+          else msg(fill(T["settings.machines.restored"], {folder: m.off_list}));
+          load();
+        }}, T["settings.machines.restore"]));
+      }
       if (!m.used.length && !m.making && !j.unsure) {
         row.append(el("button", {class:"danger", onclick: async () => {
           const sure = fill(m.ours ? T["settings.machines.drop.sure"] : T["settings.machines.drop.sure_other"],
@@ -12878,6 +12936,19 @@ function projectPane(desk, p) {
   if (p.entry) {
     box.append(el("div", {class:"row"},
       el("button", {class:"danger", onclick: async () => {
+        // Its folders on a MicroVM are machines that know what they are only
+        // through the project: the AI they were given, the account they sign
+        // in to git as, and the checkout they are copied from. Deleted from
+        // the board first, where their machines go with them -- as a host
+        // entry with folders on it is
+        const onVm = h => ((current.hosts || []).find(x => x.name === (h || "").trim()) || {}).kind === "e2b";
+        const users = (desk.folders || []).map((g, gi) => [g, gi])
+          .filter(([g]) => (g.project || "").trim() === p.name && onVm(g.host))
+          .map(([g, gi]) => folderLabel(g, gi));
+        if (users.length) {
+          msg(fill(T["settings.project.delete.in_use_vm"], {name: p.name, what: users.join(", ")}), true);
+          return;
+        }
         if (!await confirmAction(fill(T["settings.project.delete_confirm"], {name: p.name}), T["settings.project.delete"])) return;
         desk.projects = (desk.projects || []).filter(x => x !== p.entry);
         // The folders stay; they are only no longer tied to this name
@@ -13474,7 +13545,7 @@ function renameCard(g, branch) {
     // to press, and an empty box would be a box with nothing in it
     if (!want || want === branch) { said.hidden = true; line.textContent = ""; note.textContent = ""; go.disabled = true; return; }
     const r = await fetch("/api/folder/rename",
-      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: placeKey(g), name: want})})
+      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: placeKey(g), name: want, from: branch})})
       .then(r => r.json()).catch(() => ({ok:false, error:""}));
     // An answer about a name that has since been typed over says nothing
     // about the one in the box now

@@ -337,6 +337,7 @@ pub fn kill(key: &str, id: &str) -> Result<()> {
         m.remove(id);
     }
     forget_ends(id);
+    crate::config::forget_off_list(id);
     let resp = agent()
         .delete(&format!("{API}/sandboxes/{id}"))
         .header("X-API-Key", key)

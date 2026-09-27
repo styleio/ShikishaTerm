@@ -1950,8 +1950,13 @@ pub fn rename_plan(folder: &Path, to: &str) -> Result<Rename> {
 /// The same question about a folder on another machine, asked of git there:
 /// the branch it is on, and whether that has been sent somewhere. Whether it
 /// is a branch's folder at all is the caller's to know -- on a MicroVM every
-/// folder is a checkout of its own -- and is said by `cut`
-pub fn rename_plan_far(host: &crate::config::HostSpec, folder: &str, cut: bool, to: &str) -> Result<Rename> {
+/// folder is a checkout of its own -- and is said by `cut`.
+///
+/// `known` is the branch it is on as the asker already knows it, for the
+/// line shown while a name is typed: nothing is asked of the machine then,
+/// since each question wakes a sleeping MicroVM and there is one per key
+/// pressed. The press itself asks, and runs what git there says
+pub fn rename_plan_far(host: &crate::config::HostSpec, folder: &str, cut: bool, to: &str, known: Option<&str>) -> Result<Rename> {
     let to = to.trim().to_string();
     if to.is_empty() {
         bail!(crate::i18n::t("err.worktree.no_branch"));
@@ -1961,6 +1966,9 @@ pub fn rename_plan_far(host: &crate::config::HostSpec, folder: &str, cut: bool, 
     };
     if !cut {
         bail!(crate::i18n::t("err.worktree.not_a_branch"));
+    }
+    if let Some(from) = known.map(str::trim).filter(|b| !b.is_empty()) {
+        return Ok(Rename { folder: PathBuf::from(folder), from: from.to_string(), to, sent_as: None });
     }
     let at = crate::elsewhere::Elsewhere::of(host)?;
     let ask = |args: &[&str]| -> Option<String> {
@@ -1977,6 +1985,22 @@ pub fn rename_plan_far(host: &crate::config::HostSpec, folder: &str, cut: bool, 
     Ok(Rename { folder: PathBuf::from(folder), from, to, sent_as: ask(&["rev-parse", "--abbrev-ref", "@{upstream}"]) })
 }
 
+#[cfg(test)]
+mod far_rename_tests {
+    /// The line shown while a name is typed is made from the branch the page
+    /// already shows: no machine is asked (none could be -- this entry names
+    /// a server that does not exist)
+    #[test]
+    fn the_line_shown_while_typing_asks_no_machine() {
+        let host = crate::config::HostSpec { name: "nowhere".into(), at: "nobody@nowhere.invalid".into(), ..Default::default() };
+        let r = super::rename_plan_far(&host, "/home/user/site-x", true, "feat/login", Some("mighty-gannet")).expect("asked the machine");
+        assert_eq!(r.from, "mighty-gannet");
+        assert_eq!(r.to, "feat/login");
+        assert_eq!(r.sent_as, None);
+        assert!(super::rename_plan_far(&host, "/home/user/site", false, "x", Some("main")).is_err(), "a checkout renamed");
+    }
+}
+
 /// `rename`, done by git on the machine the folder is on
 pub fn rename_far(host: &crate::config::HostSpec, r: &Rename) -> Result<()> {
     let at = crate::elsewhere::Elsewhere::of(host)?;
@@ -1989,6 +2013,7 @@ pub fn rename_far(host: &crate::config::HostSpec, r: &Rename) -> Result<()> {
         let unset: Vec<String> = vec!["git".into(), "-C".into(), r.folder.display().to_string(), "branch".into(), "--unset-upstream".into()];
         let _ = crate::elsewhere::exec(&at, &for_a_shell(&unset), 30_000);
     }
+    crate::git::note_far_branch(&at, &r.folder, &r.to);
     Ok(())
 }
 

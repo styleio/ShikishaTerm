@@ -2624,6 +2624,20 @@ pub fn launch_line(
     LaunchLine { argv: out, added }
 }
 
+/// The same, for a tab in a folder on another machine: the one line typed
+/// into the shell there, by [`far_launch`] -- the conversation's arguments
+/// and the check for its record included, as the launch writes them. A
+/// conversation that will be given a new number shows `minted_as` in its
+/// place, as [`launch_line`] does
+pub fn far_launch_line(argv: &[String], profile_spec: &Option<String>, plan: Resume, minted_as: &str) -> String {
+    let spec = Tab::resolve_profile(argv, profile_spec).resume;
+    let (line, session) = far_launch(spec.as_ref(), argv, plan);
+    match session.filter(|s| s.source == SessionSource::Minted) {
+        Some(s) => line.replace(&s.id, minted_as),
+        None => line,
+    }
+}
+
 /// Why the "come back to this conversation" tick has nothing to act on, or
 /// None when it decides something.
 ///
@@ -6200,6 +6214,18 @@ mod far_launch_tests {
         let (line, session) = far_launch(None, &argv("htop"), Resume::Fresh);
         assert_eq!(line, "htop");
         assert!(session.is_none());
+    }
+
+    /// The settings show a far tab's line as the launch types it: the
+    /// conversation's arguments included, a new number shown as a word
+    #[test]
+    fn a_far_tabs_shown_line_is_the_one_typed_there() {
+        let spec = Some("claude".to_string());
+        let fresh = far_launch_line(&argv("claude"), &spec, Resume::Fresh, "NEW");
+        let (typed, _) = far_launch(Tab::resolve_profile(&argv("claude"), &spec).resume.as_ref(), &argv("claude"), Resume::Fresh);
+        assert_eq!(typed.split_whitespace().next(), Some("claude"));
+        assert!(fresh.contains("NEW"), "{fresh}");
+        assert_eq!(far_launch_line(&argv("htop"), &None, Resume::Fresh, "NEW"), "htop");
     }
 }
 
