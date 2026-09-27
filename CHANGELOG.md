@@ -337,7 +337,9 @@ once it reaches its first tagged release.
   path.
 - **A tab's own command on a server or MicroVM runs as it was written.** A
   command like `npm run dev && npm test` or `echo $HOME` had its `&&` and
-  `$HOME` sent as text.
+  `$HOME` sent as text. Its quotes are the shell's too: `echo "a b"` printed
+  the quotes, and an empty argument, or one with a line break in it, from a
+  command written as a list was lost or cut the line short.
 - **Closing the worktree dialog stops what it was asking.** Closing only hid
   it, and whether the checkout's AI was signed in went on being asked of its
   machine every minute, which woke a paused MicroVM and kept it running.

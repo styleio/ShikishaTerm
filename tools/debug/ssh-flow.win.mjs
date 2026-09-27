@@ -584,9 +584,10 @@ try {
   {
     const withRelay = saved();
     // A second tab whose command is a line of the shell's own: typed there as
-    // it was written, its $((..)) and && are the shell's
+    // it was written, its $((..)), && and quotes are the shell's (so SHK-BOTH
+    // is on the screen only when the quotes were read, not typed as text)
     withRelay.desks[0].folders.push({ cwd: `/home/${USER}`, host: 'relay', tabs: [{ name: 'far', id: 'far', command: 'bash' },
-      { name: 'line', id: 'line', command: 'echo SHK-$((1+1)) && echo SHK-BOTH' }] });
+      { name: 'line', id: 'line', command: 'echo SHK-$((1+1)) && echo "SHK-B"\'OTH\'' }] });
     // A button that hands a request to Claude, as this PC would start it
     withRelay.quick_commands = { items: [{ id: 'ask', label: 'ask', kind: 'ai', body: 'hello', ai: 'claude' }] };
     fs.writeFileSync(CONFIG, JSON.stringify(withRelay, null, 2));
@@ -608,7 +609,7 @@ try {
       await board.run(`send({kind:"select", tab: ${lineTab.index}}); true`);
       await until(async () => /SHK-2/.test(await screen()) && /SHK-BOTH/.test(await screen()), 'the line run by the server\x27s shell as written', 60000)
         .catch(async (e) => { console.log('    (the terminal says: ' + (await screen()).replace(/\s+/g, ' ').trim().slice(-200) + ')'); throw e; });
-      check(true, 'a tab\x27s own command reaches the server\x27s shell as it was written: $((1+1)) is 2, and && runs the second');
+      check(true, 'a tab\x27s own command reaches the server\x27s shell as it was written: $((1+1)) is 2, && runs the second, and its quotes are read');
       await board.run(`send({kind:"select", tab: ${(await farTab()).index}}); true`);
     }
     // A button that hands work to an AI goes to the one the server has, not

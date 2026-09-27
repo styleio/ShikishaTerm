@@ -3282,14 +3282,19 @@ pub fn for_a_shell(argv: &[String]) -> String {
 }
 
 /// A tab's own command, typed into a far shell as it was written: a line of
-/// the shell's own, whose `&&`, `|`, `$VAR` or `*` are the shell's to read.
-/// Only a word with a space or a quote in it -- one that was one word when it
-/// was written -- is put in quotes to stay one. Not for words this app makes
-/// up (a folder, a branch, a format): those are [`for_a_shell`]'s, where
-/// nothing is the shell's to read
+/// the shell's own, whose `&&`, `|`, `$VAR`, `*` and quotes are the shell's
+/// to read.
+///
+/// A command written as a line reaches here split at its spaces, so none of
+/// its words is empty or has a space in it, and each goes back as it was:
+/// `echo "a b"` is typed `echo "a b"`, not quotes the shell prints. A word
+/// that is empty, or has a space, tab or line break in it, can only have been
+/// one argument -- written as a list, or put in by this app -- and is put in
+/// quotes to stay one. Not for words this app makes up (a folder, a branch, a
+/// format): those are [`for_a_shell`]'s, where nothing is the shell's to read
 pub fn as_written(argv: &[String]) -> String {
     argv.iter()
-        .map(|a| match a.contains(' ') || a.contains('\'') || a.contains('"') {
+        .map(|a| match a.is_empty() || a.chars().any(char::is_whitespace) {
             true => format!("'{}'", a.replace('\'', "'\\''")),
             false => a.clone(),
         })
@@ -3346,15 +3351,21 @@ mod tests {
         assert_eq!(format!("{ahead:#}"), crate::i18n::tp("err.worktree.unpushed", &[("count", "3")]));
     }
 
-    /// The branches of a folder on another machine, read back from git there:
-    /// the remote's default first and chosen, then the rest, `origin/HEAD` and
-    /// repeats left out. With no remote default, the folder's own branch
+    /// A tab's own command reaches the far shell as the line it was: its
+    /// words and quotes are the shell's, and only a word that can only have
+    /// been one argument is quoted
     #[test]
     fn a_tabs_own_command_reaches_the_far_shell_as_it_was_written() {
         let line = |argv: &[&str]| as_written(&argv.iter().map(|a| a.to_string()).collect::<Vec<_>>());
         assert_eq!(line(&["npm", "run", "dev", "&&", "npm", "test"]), "npm run dev && npm test", "the shell's own words were quoted into text");
         assert_eq!(line(&["echo", "$M", "*"]), "echo $M *");
         assert_eq!(line(&["cd", "/srv/a b"]), "cd '/srv/a b'", "a word with a space is two words");
+        assert_eq!(line(&["echo", "it's here"]), r"echo 'it'\''s here'");
+        assert_eq!(line(&["printf", ""]), "printf ''", "an empty argument was dropped");
+        assert_eq!(line(&["printf", "a\nb", "c\td"]), "printf 'a\nb' 'c\td'", "a line break ended the command");
+        let written = |l: &str| as_written(&crate::config::CommandSpec::Line(l.into()).argv());
+        assert_eq!(written(r#"echo "a b" 'c d'"#), r#"echo "a b" 'c d'"#, "the quotes written were typed as text");
+        assert_eq!(written(r#"git commit -m "it's done""#), r#"git commit -m "it's done""#);
     }
 
     #[test]
@@ -3371,6 +3382,9 @@ mod tests {
         assert_eq!(line(&["ls", "~/work", ""]), "ls ~/work ''", "home is not home, or an empty word is no word");
     }
 
+    /// The branches of a folder on another machine, read back from git there:
+    /// the remote's default first and chosen, then the rest, `origin/HEAD` and
+    /// repeats left out. With no remote default, the folder's own branch
     #[test]
     fn a_far_folders_branches_are_read_back() {
         let said = format!("origin/main
