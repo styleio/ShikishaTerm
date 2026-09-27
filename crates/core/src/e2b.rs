@@ -538,9 +538,11 @@ pub fn kill(key: &str, id: &str) -> Result<()> {
     }
 }
 
-/// The machines this run asked for, until they are deleted: a machine being
-/// made is in no settings yet, and the list in the settings must not offer to
-/// delete one out from under the making
+/// The machines this run asked for, until they are written down or deleted: a
+/// machine being made is in no settings yet, and the list in the settings must
+/// not offer to delete one out from under the making. Once it is written down
+/// it is the settings' like any other -- taken off a list afterwards, it is
+/// one to put back or delete, not one still being made
 static MADE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
     std::sync::OnceLock::new();
 
@@ -550,10 +552,18 @@ fn made_here(id: &str) {
     }
 }
 
-/// Whether this run made this machine and has not let it go. Asked about one
-/// the settings do not name: that is one still being made
+/// Whether this run made this machine and has not written it down or let it
+/// go. Asked about one the settings do not name: that is one still being made
 pub fn being_made(id: &str) -> bool {
     MADE.get_or_init(Default::default).lock().is_ok_and(|m| m.contains(id))
+}
+
+/// A machine this run made is written down in the settings, or deleted: it is
+/// no longer one being made
+pub fn made_settled(id: &str) {
+    if let Ok(mut m) = MADE.get_or_init(Default::default).lock() {
+        m.remove(id);
+    }
 }
 
 /// Throw away a machine a making made and could not finish with.
@@ -2118,6 +2128,16 @@ mod tests {
         assert!(said.contains("400") && said.contains("timeout too long"), "{said}");
         // Kept as "not there" under the words a caller puts on it
         assert!(super::is_gone(&gone.context("the machine of vm is not there")));
+    }
+
+    /// A machine this run made is one being made until it is written down:
+    /// taken off a list afterwards, it is one to put back or delete
+    #[test]
+    fn a_machine_written_down_is_no_longer_being_made() {
+        super::made_here("made-settled-test");
+        assert!(super::being_made("made-settled-test"));
+        super::made_settled("made-settled-test");
+        assert!(!super::being_made("made-settled-test"), "a machine written down stays one being made");
     }
 
     /// Work of this app's own on a machine is counted while it runs, so the

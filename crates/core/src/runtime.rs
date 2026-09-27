@@ -230,6 +230,7 @@ impl Pending {
                 false => String::new(),
             },
             unlinked: self.unlinked.clone(),
+            step: None,
         }
     }
 
@@ -295,6 +296,8 @@ impl Pending {
             )?;
         }
         config::set_folder_far(&self.desk, &plan.main, &host.name, Some(&plan.project), Some(&id))?;
+        // The settings' from now on: no longer one being made
+        crate::e2b::made_settled(&id);
         Ok(())
     }
 
@@ -333,6 +336,9 @@ impl Pending {
                 Some(&plan.project).filter(|p| !p.is_empty()).map(String::as_str),
                 self.making.machines().worktree.as_deref(),
             )?;
+            if let Some(id) = self.making.machines().worktree {
+                crate::e2b::made_settled(&id);
+            }
         }
         // The branch it is really on, and whether this app is the one that
         // thought of that name. The line above writes the label as the branch,
@@ -618,6 +624,15 @@ impl VmJob {
                 (None, false, _) => crate::microvm::PHASE_PREPARING.into(),
             },
             error: self.error.clone().unwrap_or_default(),
+            // The command running now, while one is -- stopping included:
+            // a stop is heard once that command is done
+            step: match &self.work {
+                VmWork::Clone { job, .. } => job.step(),
+                VmWork::Prepare { job, .. } => job.step(),
+                VmWork::SshClone { .. } => None,
+            }
+            .filter(|_| self.error.is_none())
+            .map(|s| crate::uistate::MakingStep { n: s.n, of: s.of, what: s.what, since: s.since }),
             ..Default::default()
         }
     }
@@ -8502,8 +8517,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             });
             for (host, home, worktree) in targets.homes.into_iter().map(|(h, home)| (h, home, false)).chain(worktrees) {
                 // One at a time per machine: a second ask while the first is
-                // still on it would run the same install twice at once
-                if vm_jobs.iter().any(|j| !j.gone && j.error.is_none() && j.host.instance == host.instance) {
+                // still on it would run the same install twice at once. It is
+                // not dropped either: where it was going is where the one
+                // already running goes once it is done (the page that asked
+                // has said it is already running, see microvm::preparing)
+                if let Some(running) = vm_jobs.iter_mut().find(|j| !j.gone && j.error.is_none() && j.host.instance == host.instance) {
+                    if let VmWork::Prepare { follow, worktree: false, .. } = &mut running.work
+                        && !worktree
+                        && follow.is_none()
+                    {
+                        *follow = ask.follow.clone();
+                    }
                     continue;
                 }
                 making_seq += 1;
@@ -8636,6 +8660,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 })
                                 .and_then(|()| config::set_folder_far(&j.desk, std::path::Path::new(&at), &add.host, Some(&add.project), Some(&sandbox)))
                                 .map(|()| {
+                                    // Written down: no longer one being made
+                                    crate::e2b::made_settled(&sandbox);
                                     // On to the rules -- through the sign-in
                                     // step first when the machine was given an
                                     // AI, since every worktree is a copy of

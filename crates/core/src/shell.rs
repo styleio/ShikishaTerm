@@ -922,6 +922,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .making.failed { border-color:color-mix(in srgb, var(--stop) 35%, transparent); }
   .making.failed .ms { color:var(--stop); white-space:normal; overflow-wrap:anywhere; max-height:4.5em; overflow:auto; }
   .making .mbtns { flex-basis:100%; display:flex; flex-wrap:wrap; gap:var(--s2); padding:var(--s1) 0 2px 18px; }
+  .making .mstep { flex-basis:100%; padding-left:18px; font-size:11px; color:var(--dim); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; font-variant-numeric:tabular-nums; }
   .making .mbtns button { font:inherit; font-size:11px; min-height:24px; padding:0 var(--s2); border-radius:var(--r-ctl);
     border:1px solid var(--edge); background:var(--panel2); color:var(--text); cursor:pointer; }
   .making .mbtns button:hover { border-color:var(--edge-hi); }
@@ -6761,6 +6763,9 @@ function makingRow(m) {
     el("span", {class:"ms"}, untrusted ? (T["worktree.trust.row"] || "")
       : unlinked ? (T["worktree.nolink.row"] || "").replace("{names}", (m.unlinked || []).join(", "))
       : failed ? (m.error || T["tui.making.failed"] || "") : (T["tui.making.stage." + m.stage] || "")));
+  // The command running now, which of how many, and for how long: an install
+  // can take many minutes, and a stop is heard once that command is done
+  if (m.step && !failed) row.append(makingStep(m.step, stopping));
   // The branch is there and git will not go into it. The press is the same
   // one the question asks for, so a row answered here needs no dialog
   if (untrusted) {
@@ -6793,6 +6798,30 @@ function makingRow(m) {
   }
   return row;
 }
+function makingStep(st, stopping) {
+  const line = el("div", {class:"mstep", "data-since":String(st.since), title:st.what || ""});
+  // The time goes in last, and the command as written goes in as it is: a
+  // setup line is the person's own, and may hold anything
+  line.dataset.said = (T["tui.making.step"] || "{n}/{of} {what} · {time}")
+    .replace("{n}", st.n).replace("{of}", st.of).replace("{time}", "\u0000").replace("{what}", () => st.what || "")
+    + (stopping ? " · " + (T["tui.making.step.stopping"] || "") : "");
+  line.textContent = stepText(line);
+  return line;
+}
+// How long the command has run, as minutes and seconds
+function stepText(line) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - Number(line.dataset.since));
+  const time = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  return line.dataset.said.replace("\u0000", () => time);
+}
+// The row is drawn when something changes, and a command running for minutes
+// changes nothing: its time alone is brought up to date, every second
+setInterval(() => {
+  for (const line of document.querySelectorAll(".making .mstep[data-since]")) {
+    const said = stepText(line);
+    if (line.textContent !== said) line.textContent = said;
+  }
+}, 1000);
 // A branch git will not work in is asked about once, where it is seen: what
 // would be written, and into which file. Cancel leaves the row to answer
 // later, and the row's own buttons say the same two things
@@ -10946,14 +10975,12 @@ window.__state = function (json) {
     if (!showPager) pgReset();
     // Arriving on a terminal tab shows them, and the idle count starts there
     else if (!wasShown) pgWake();
-    // 📖 rides with the pager because it answers the same need — reading what
-    // was said — and offers the better half of the answer wherever there is a
-    // record to read. Where there is none it is not shown at all: a button that
-    // does nothing on some tabs teaches people not to trust it
+    // Keep 📖 in the same place on every terminal tab. Whether the app has
+    // identified this conversation can change after the tab appears; hiding
+    // the button makes that delay (or a failed lookup) look like lost UI.
     const openRead = document.getElementById("readOpen");
-    const here = activeTab();
     if (openRead) {
-      openRead.style.display = (showPager && here && here.readable) ? "flex" : "none";
+      openRead.style.display = showPager ? "flex" : "none";
       openRead.title = T["tui.read.open"] || "";
     }
   }
@@ -13611,17 +13638,21 @@ async function rdOlder() {
 
 async function rdShow() {
   const tab = activeTab();
-  if (!REMOTE || !tab || !tab.readable) return;
+  if (!REMOTE || !tab) return;
   rdTab = tab.index;
   rdFrom = 0; rdMore = false; rdWasBusy = false; rdSeen = "";
   document.getElementById("rname").textContent = tab.name || "";
   document.getElementById("rmore").classList.remove("on");
-  rdNote(T["tui.read.loading"] || "…");
   rdPanel().classList.add("on");
   document.body.classList.add("reading");
   // Reading is reading: put the keyboard away and stop the screen relay's
   // gestures from being aimed at a tab nobody is looking at
   if (kbd) kbd.blur();
+  if (!tab.readable) {
+    rdNote(T["tui.read.unavailable"] || "");
+    return;
+  }
+  rdNote(T["tui.read.loading"] || "…");
   try {
     const j = await rdAsk(null, RD_FIRST);
     if (!j.ok || !j.turns || !j.turns.length) {
@@ -13692,6 +13723,7 @@ function rdOnState() {
   // it would quietly show somebody else's conversation under the same heading
   if (S && S.active !== rdTab) { rdHide(); return; }
   const tab = (S && S.tabs) ? S.tabs.find(t => t.index === rdTab) : null;
+  if (!tab || !tab.readable) return;
   const busy = !!(tab && (tab.state === "BUSY" || tab.busy));
   const foot = document.getElementById("rfoot");
   foot.classList.toggle("on", busy);

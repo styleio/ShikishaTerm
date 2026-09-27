@@ -326,6 +326,25 @@ once it reaches its first tagged release.
   deletes the original", which never happens: the links are taken out first.
 
 ### Fixed
+- **A MicroVM taken off the list can be put back or deleted at once.** The
+  settings' list of machines called a machine made in this run "being made"
+  until the app was restarted, even after its folder was taken off a list,
+  and offered neither putting it back nor deleting it. A machine is "being
+  made" only until it is written down.
+- **Deleting a MicroVM from the settings asks about its work first.** A
+  machine whose folder was taken off a list is asked, as the board asks
+  before deleting a folder, whether that folder has changes not committed or
+  commits not pushed; with any, it is not deleted, and the refusal says to
+  put the folder back on the list and push them first.
+- **"Run on the MicroVM" pressed again while it runs is not lost.** A second
+  press while the machines are still being prepared said it had started and
+  did nothing, and the worktree dialog it was to open afterwards never
+  opened. It now says it is running already, and the dialog opens once the
+  one running is done.
+- **A MicroVM being set up says what it is doing.** Its row says which
+  command it is on, of how many -- getting the machine ready, installing the
+  AI, a setup line as written -- and how long that command has run; stopped,
+  it says it stops once that command has finished.
 - **The same path on two machines is two folders.** A folder is its machine
   and its path: `/home/ubuntu/app` on staging and on production, or a
   project's checkout on two MicroVM entries, were one folder to the board --

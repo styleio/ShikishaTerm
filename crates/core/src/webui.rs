@@ -1517,6 +1517,52 @@ pub fn take_folder_discards() -> Vec<String> {
     std::mem::take(&mut *FOLDER_DISCARDS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
+/// Deletes a MicroVM machine from the settings' list of machines, and says
+/// how that went. Waits on the machine: for a thread.
+///
+/// A machine whose folder was taken off a list is kept with what that folder
+/// was, and the folder may still hold work: what is not committed, or not
+/// pushed, is lost with the machine. It is asked the same as the board asks
+/// before deleting a folder, and refused the same way -- put back on the
+/// list, the work can be pushed first. A machine the service no longer has
+/// has nothing left to lose
+fn drop_machine(id: &str) -> serde_json::Value {
+    let Some(key) = crate::e2b::key() else {
+        return serde_json::json!({ "ok": false, "error": crate::i18n::t("err.e2b.no_key") });
+    };
+    let off = crate::config::off_list();
+    let kept = off.get(id).and_then(|k| k.get("entry")).and_then(|entry| {
+        let cwd = entry.get("cwd").and_then(|c| c.as_str())?.to_string();
+        let name = entry.get("host").and_then(|h| h.as_str())?.trim().to_string();
+        Some((name, cwd))
+    });
+    if let Some((name, cwd)) = kept {
+        // The entry it was made from, when the settings still have it; else
+        // the machine by its id alone, which is all a MicroVM is asked by
+        let host = crate::config::load()
+            .and_then(|c| c.hosts.into_iter().find(|h| h.name.trim() == name && h.is_made()))
+            .unwrap_or_else(|| crate::config::HostSpec { name: name.clone(), kind: Some("e2b".into()), ..Default::default() })
+            .with_instance(Some(id));
+        if let Err(e) = crate::worktree::far_ready_to_discard(&host, &cwd) {
+            if !crate::e2b::check_gone(id) {
+                return serde_json::json!({ "ok": false, "error": crate::i18n::tp(
+                    "settings.machines.drop_unsaved",
+                    &[("folder", &cwd), ("why", &format!("{e:#}"))],
+                ) });
+            }
+        }
+    }
+    match crate::e2b::kill(&key, id) {
+        Ok(()) => serde_json::json!({ "ok": true }),
+        Err(e) => {
+            // Not let go of after all: nothing points at it, and a second
+            // press is how it is tried again
+            crate::e2b::take_back(id);
+            serde_json::json!({ "ok": false, "error": format!("{e:#}") })
+        }
+    }
+}
+
 /// The machine a folder on the desks is on, when it is not this one
 fn far_host_of(at: &std::path::Path) -> Option<crate::config::HostSpec> {
     crate::config::load().and_then(|c| {
@@ -2033,19 +2079,15 @@ fn handle(
                 serde_json::json!({ "ok": false, "error": crate::i18n::t("settings.machines.in_use") })
             } else if crate::e2b::being_made(&id) {
                 serde_json::json!({ "ok": false, "error": crate::i18n::t("settings.machines.making_refused") })
+            } else if crate::e2b::key().is_none() {
+                serde_json::json!({ "ok": false, "error": crate::i18n::t("err.e2b.no_key") })
             } else {
-                match crate::e2b::key() {
-                    None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.e2b.no_key") }),
-                    Some(key) => match crate::e2b::kill(&key, &id) {
-                        Ok(()) => serde_json::json!({ "ok": true }),
-                        Err(e) => {
-                            // Not let go of after all: nothing points at it, and
-                            // a second press is how it is tried again
-                            crate::e2b::take_back(&id);
-                            serde_json::json!({ "ok": false, "error": format!("{e:#}") })
-                        }
-                    },
-                }
+                // Asked of the machine first, on a thread: the check wakes it
+                // and waits on it, and this page is served one ask at a time
+                std::thread::spawn(move || {
+                    let _ = req.respond(json_resp(drop_machine(&id)));
+                });
+                return Ok(());
             };
             req.respond(json_resp(resp))?;
         }
@@ -2478,8 +2520,17 @@ fn handle(
             let resp = match (text("desk"), text("project")) {
                 (Some(desk_id), Some(project)) => match crate::microvm::prepare_targets(&desk_id, &project) {
                     Ok(t) => {
+                        // A machine being prepared already is not started again:
+                        // the ask joins the one running, and the page says so
+                        let machines: Vec<Option<String>> = t
+                            .homes
+                            .iter()
+                            .map(|(h, _)| h.instance.clone())
+                            .chain(t.worktrees.iter().map(|(h, _)| h.instance.clone()))
+                            .collect();
+                        let already = machines.iter().flatten().filter(|id| crate::microvm::preparing(id)).count();
                         PREPARE_ASKS.lock().unwrap_or_else(|e| e.into_inner()).push(PrepareAsk { desk_id, project, follow: text("follow") });
-                        serde_json::json!({ "ok": true, "started": true, "machines": t.homes.len() + t.worktrees.len() })
+                        serde_json::json!({ "ok": true, "started": true, "machines": machines.len(), "already": already })
                     }
                     Err(error) => serde_json::json!({ "ok": false, "error": error }),
                 },
@@ -10046,10 +10097,15 @@ function machinesCard() {
         }}, T["settings.machines.restore"]));
       }
       if (!m.used.length && !m.making && !j.unsure) {
-        row.append(el("button", {class:"danger", onclick: async () => {
+        row.append(el("button", {class:"danger", onclick: async (ev) => {
+          const button = ev.currentTarget;
           const sure = fill(m.ours ? T["settings.machines.drop.sure"] : T["settings.machines.drop.sure_other"],
             {id: m.id, pc: m.pc || "?"});
           if (!await confirmAction(sure, T["settings.machines.drop"])) return;
+          // A folder kept off a list is asked about its work first, which
+          // wakes the machine: said, so the wait is not a page that froze
+          button.disabled = true;
+          if (m.off_list) msg(fill(T["settings.machines.checking"], {id: m.id}));
           let r = {};
           try {
             r = await (await fetch("/api/microvm/drop", {method:"POST",
@@ -12444,7 +12500,11 @@ async function prepareMicrovms(desk, p, follow) {
   if (follow) body.follow = follow;
   const j = await settingsApi("/api/project/machine-setup", body).catch(e => ({ok:false, error: String(e)}));
   if (!j.ok) { toast(j.error || "", true); return false; }
-  toast(T["settings.microvm.started"]);
+  // Every machine already on it: the ask joins that, and where it was going
+  // is where that goes once it is done
+  toast(j.already && j.already === j.machines
+    ? T[follow ? "settings.microvm.already_follow" : "settings.microvm.already"]
+    : T["settings.microvm.started"]);
   return true;
 }
 // The assistant AI's proposal for the machine setup: what to tell it, then

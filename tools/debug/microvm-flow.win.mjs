@@ -580,6 +580,59 @@ try {
   }
   await board.run('closeFolderMenu(); true');
 
+  console.log('5a. the machines, from the settings: preparing asked twice, a folder taken off the list, and its machine');
+  await board.run('openSettings("gitaccounts", true); true');
+  cfg = await connect(await settingsOn(/section=gitaccounts/), 'the settings');
+  await until(() => cfg.run('typeof TOKEN === "string" && !!TOKEN'), 'the settings page, read in', 30000);
+  const api = (p, body) => cfg.run(`fetch(${JSON.stringify(p)}, {method:"POST", headers:{"X-Token":TOKEN}, body:${JSON.stringify(JSON.stringify(body))}}).then(r => r.json())`);
+  const machines = () => cfg.run('fetch("/api/microvm/machines", {headers:{"X-Token":TOKEN}}).then(r => r.json())');
+  // Asked once: a row for each machine of the project, each saying the
+  // command it is on, which of how many, and for how long
+  const prepare = { desk: desk().id, project: PROJECT };
+  const first = await api('/api/project/machine-setup', prepare);
+  check(first.ok && first.machines === 2, 'preparing starts on the checkout\'s machine and the worktree\'s: ' + JSON.stringify(first));
+  const preparingRows = () => board.run('(S.making || []).filter(m => m.stage === "vm_preparing").length');
+  await until(async () => (await preparingRows()) === 2, 'a row for each machine', 60000);
+  await until(() => board.run('[...document.querySelectorAll(".making .mstep")].some(r => /手順 \\d+\\/\\d+：.+・\\d+:\\d\\d/.test(r.textContent))'), 'the row to say the command it is on', 30000)
+    .catch(async (e) => { console.log('    (the rows say: ' + await board.run('[...document.querySelectorAll(".making")].map(r => r.textContent).join(" | ")') + ')'); throw e; });
+  check(true, 'the row says the command it is on, and for how long: ' + await board.run('document.querySelector(".making .mstep").textContent'));
+  // Asked again while it runs: joined, said as that, and not started twice
+  const again = await api('/api/project/machine-setup', prepare);
+  check(again.ok && again.already === again.machines, 'a second ask says it is running already: ' + JSON.stringify(again));
+  await sleep(3000);
+  check((await preparingRows()) <= 2, 'and the install is not started a second time');
+  await until(async () => (await preparingRows()) === 0, 'the machines prepared', 600000)
+    .catch(async (e) => { console.log('    (the board says: ' + JSON.stringify(await board.run('S.making')) + ')'); throw e; });
+  // Taken off the list: its machine stays, and the list of machines says
+  // what the folder was, to put back or to delete -- not "being made"
+  // A tab still at something -- an AI waiting on its own question -- keeps a
+  // folder on the list, and is closed first, as a person would
+  const atWork = `(S.tabs || []).filter(t => ${g} && t.group === (S.groups || []).indexOf(${g}) && /BUSY|QUESTION/.test(t.state || ""))`;
+  console.log('    (at work in the worktree: ' + await board.run(`JSON.stringify(${atWork}.map(t => t.name + ":" + t.state))`) + ')');
+  await board.run(`${atWork}.forEach(t => send({kind:"closetab", tab:t.index, key:t.key || "", sure:true})); true`);
+  await until(async () => (await board.run(`${atWork}.length`)) === 0, 'the worktree\'s tabs at rest', 60000);
+  await board.run(`send({kind:"folderclose", folder: gkey(${g})}); true`);
+  await until(() => !folderAt(wt.cwd), 'the worktree off the list', 60000)
+    .catch(async (e) => { console.log('    (the board says: ' + await board.run('S.flash || ""') + ')'); throw e; });
+  const row = async () => ((await machines()).machines || []).find((m) => m.id === wt.sandbox) || null;
+  await until(async () => !!(await row()), 'the machine in the list', 60000);
+  const r = await row();
+  check(r.making === false && r.off_list === wt.cwd && !r.used.length,
+    'the machine is one to put back or delete, not one being made: ' + JSON.stringify({ making: r.making, off_list: r.off_list }));
+  // What its folder holds is asked before the machine goes: the page 4b
+  // served is not committed, so it is not deleted
+  const dropped = await api('/api/microvm/drop', { id: wt.sandbox });
+  check(!dropped.ok && /削除していません/.test(dropped.error || '') && /コミットしていない/.test(dropped.error || ''),
+    'deleting it is refused while its folder has work that is nowhere else: ' + (dropped.error || JSON.stringify(dropped)));
+  check((await ours()).some((s) => s.sandboxID === wt.sandbox), 'and the machine is still there');
+  const back = await api('/api/microvm/restore', { id: wt.sandbox, desk: desk().name });
+  check(back.ok, 'put back on the list: ' + JSON.stringify(back));
+  await until(() => !!folderAt(wt.cwd), 'the worktree back on the list', 60000);
+  await until(() => board.run(`!!${g}`), 'the worktree\'s card back', 60000);
+  try { cfg.ws.close(); } catch {}
+  cfg = null;
+  await board.run('send({kind:"closesettings"}); true');
+
   console.log('5. deleting the worktree deletes its machine, and only that');
   // The page 4b served is not committed: work that exists only on that
   // machine, so the machine is not deleted, and the board says why

@@ -488,8 +488,10 @@ try {
   check(st.commands.length === 3 && /apt install gh/.test(st.commands[0]) && st.commands[1].startsWith('gh auth login') && st.commands[2] === 'gh auth setup-git',
     'the commands are drafted for an Ubuntu server with no gh: ' + st.commands.map((c) => c.slice(0, 30)).join(' | '));
   await until(() => board.run('!document.getElementById("login").hidden'), 'the step on the board', 20000);
-  check(await board.run('document.querySelectorAll("#login .lcmd button").length === 3 && !document.querySelector("#login .lcmd [onclick*=key]")'),
-    'each command has a copy button, and nothing that runs it');
+  // Copied, or typed into the terminal without the Enter that runs it: the
+  // person reads it there, and presses Enter themselves
+  check(await board.run('(() => { const rows = [...document.querySelectorAll("#login .lcmd")]; return rows.length === 3 && rows.every(r => r.querySelectorAll("button").length === 2); })()'),
+    'each command has a copy button and one that types it, and nothing that runs it');
   await until(() => board.run('/\$\s*$/.test((document.querySelector("#login .lmirror") || {textContent:""}).textContent.trim() + " ") || /shikisha-test\.clones/.test((document.querySelector("#login .lmirror") || {textContent:""}).textContent)'), 'the server\x27s terminal in the step', 60000);
   check(/shikisha-test.clones/.test(await board.run('document.querySelector("#login .lmirror").textContent')), 'the terminal stands in the clone\x27s folder on the server');
   if (!/shikisha-test.clones/.test(await board.run('document.querySelector("#login .lmirror").textContent'))) {

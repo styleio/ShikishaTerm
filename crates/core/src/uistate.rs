@@ -1146,6 +1146,21 @@ pub struct MakingState {
     /// the person to say whether to copy them in instead. Empty nearly always
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unlinked: Vec<String>,
+    /// The command it is on, for work that runs one command after another on
+    /// a machine: a row that says only its phase through a twenty-minute
+    /// install looks stuck. Absent for everything else
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<MakingStep>,
+}
+
+/// Which of a row's commands is running, what it is, and since when
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct MakingStep {
+    pub n: usize,
+    pub of: usize,
+    pub what: String,
+    /// When it started, in Unix seconds: the page counts the time from it
+    pub since: u64,
 }
 
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
